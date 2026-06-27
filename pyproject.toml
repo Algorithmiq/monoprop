@@ -1,0 +1,359 @@
+[build-system]
+requires = [
+  "nanobind",
+  "scikit-build-core>=0.11",
+  "setuptools-scm>=8",
+  "mpi4py>=4.1.0",
+]
+build-backend = "scikit_build_core.build"
+
+
+[project]
+name = "monoprop"
+authors = [
+  { name = "Algorithmiq Development Team", email = "aurora@algorithmiq.fi" },
+]
+description = "Majorana Propagation."
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Chemistry",
+  "Topic :: Scientific/Engineering :: Physics",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dynamic = ["version"]
+dependencies = ["numpy>=2", "msgpack>=1.0.0"]
+
+
+[project.urls]
+Homepage = "https://github.com/Algorithmiq/monoprop"
+"Bug Tracker" = "https://github.com/Algorithmiq/monoprop/issues"
+Discussions = "https://github.com/Algorithmiq/monoprop/discussions"
+Changelog = "https://github.com/Algorithmiq/monoprop/releases"
+
+[project.optional-dependencies]
+mpi = ["mpi4py>=4.1.0"]
+qiskit = ["qiskit>=2.0.0"]
+openfermion = ["openfermion"]
+pyscf = ["pyscf"]
+
+[dependency-groups]
+dev = ["coverage", "pre-commit>=3", "ruff==0.14.8", "gcovr"]
+docs = [
+  "myst-nb",
+  "myst-parser",
+  "sphinx>=9.0",
+  "sphinx-autobuild",
+  "sphinx-autodoc-typehints",
+  "sphinx-copybutton",
+  "sphinx-immaterial",
+  "sphinxcontrib-bibtex",
+  { include-group = "interactive" },
+]
+interactive = [
+  "ipykernel",
+  "matplotlib",
+  "pylatexenc",
+  "monoprop[qiskit,openfermion]",
+]
+test = [
+  "pytest-cases>=3.8.6,<4",
+  "pytest>=8.2.2,<8.3",
+  "pytest-datadir",
+  "pytest-mpi>=0.6",
+]
+
+
+[tool.uv]
+python-preference = "only-managed"
+keyring-provider = "subprocess"
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "include/**/*.h" },
+  { file = "src/**/*.{h,cpp}" },
+  { file = "**/CMakeLists.txt" },
+  { file = "cmake/**/*" },
+  { file = "src/monoprop/bindings/bindings.cpp.in" },
+]
+
+[tool.uv.dependency-groups]
+docs = { requires-python = ">=3.12" }
+
+
+[tool.scikit-build]
+# protect the configuration against future changes in scikit-build-core
+minimum-version = "build-system.requires"
+# setuptools-style build caching in a local directory
+build-dir = "build/{state}/{build_type}"
+# build stable ABI wheels for CPython 3.12+
+wheel.py-api = "cp312"
+metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"
+logging.level = "INFO"
+# read CMake version from CMakeLists.txt
+cmake.version = "CMakeLists.txt"
+cmake.build-type = "Release"
+ninja.make-fallback = false
+sdist.exclude = [
+  ".github",
+  ".devcontainer",
+  ".vscode",
+  "performance_scripts",
+  "results",
+  "src/ex_script.cpp",
+  "tests/cpp",
+  "sandbox",
+  ".clang-format",
+  ".clang-tidy",
+  ".copier-answers.yml",
+  ".gersemirc",
+  ".gitignore",
+  ".pre-commit-config.yaml",
+  ".prettierignore",
+  "cspell.json",
+]
+sdist.include = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py"]
+build.verbose = true
+build.tool-args = ["-j2"]
+# Default to a single build job for Python bindings; CI and one-off builds can
+# still override this via config-settings or environment variables.
+
+
+[tool.setuptools_scm]
+write_to = "src/monoprop/_version.py"
+
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(asctime)s [%(levelname)s] %(message)s (%(filename)s:%(lineno)s)"
+log_date_format = "%Y%m%d %H:%M:%S"
+addopts = [
+  "--import-mode=importlib",
+  "-ra",
+  "--showlocals",
+  "--strict-markers",
+  "--strict-config",
+]
+xfail_strict = true
+filterwarnings = ["error"]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+  "slow: mark test as slow (>=1 minute runtime)",
+  "mpi: mark test as requiring --with-mpi (pytest-mpi)",
+  "qiskit: mark test as requiring qiskit (optional dependency)",
+]
+required_plugins = ["pytest-cases", "pytest-datadir", "pytest-mpi"]
+
+
+[tool.coverage.run]
+source = ["src/monoprop"]
+branch = true
+relative_files = true
+omit = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py"]
+
+[tool.coverage.report]
+omit = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py"]
+exclude_also = [
+  '\.\.\.',
+  "def __repr__",
+  "if self.debug:",
+  "if settings.DEBUG:",
+  "raise NotImplementedError",
+  "if 0:",
+  "if __name__ == .__main__.:",
+  "class .*\\bProtocol\\):",
+  "@(abc\\.)?abstractmethod",
+  "if (typing\\.)?TYPE_CHECKING:",
+  "@jit\\(",
+  "@njit\\(",
+  '^\s*\.\.\.',
+  "logger =",
+  "logger\\.",
+  "return NotImplemented",
+  "@overload",
+]
+
+
+[tool.ruff]
+# for the default settings, see: https://docs.astral.sh/ruff/configuration/#configuring-ruff
+exclude = [
+  "src/monoprop/_version.py",
+  "docs/conf.py",
+  "performance_scripts/*.py",
+  "benches/python_benchmark.py",
+]
+
+target-version = "py311"
+
+[tool.ruff.format]
+# enable auto-formatting of code examples in docstrings
+docstring-code-format = true
+
+# set the line length limit used when formatting code snippets in
+# docstrings
+docstring-code-line-length = "dynamic"
+
+[tool.ruff.lint]
+extend-select = [
+  "A",      # flake8-builtins
+  "ANN",    # flake8-annotations
+  "ARG",    # flake8-unused-arguments
+  "BLE",    # flake8-blind-except
+  "C4",     # flake8-comprehensions
+  "C90",    # mccabe
+  "D",      # pydocstyle
+  "E",
+  "W",      # pycodestyle
+  "ERA",    # eradicate
+  "EXE",    # flake8-executable
+  "FBT",    # flake8-boolean-trap
+  "FLY",    # flynt
+  "FURB",   # refurb
+  "G",      # flake8-logging-format
+  "I",      # isort
+  "ICN",    # flake8-import-conventions
+  "INP",    # flake8-no-pep420
+  "ISC003", # flake8-implicit-str-concat: explicit-string-concatenation (other rules conflict with the formatter)
+  "N",      # pep8-naming
+  "NPY",    # NumPy-specific rules
+  "PERF",   # perflint
+  "PIE",    # flake8-pie
+  "PLC",    # pylint convention
+  "PLE",    # pylint error
+  "PLR",    # pylint refactor
+  "PLW",    # pylint warning
+  "PT",     # flake8-pytest-style
+  "PTH",    # flake8-use-pathlib
+  "PYI",    # flake8-pyi
+  "RET",    # flake8-return
+  "RSE",    # flake8-raise
+  "RUF",    # Ruff-specific rules
+  "S",      # flake8-bandit
+  "SIM",    # flake8-simplify
+  "SLOT",   # flake8-slot
+  "T20",    # flake8-print
+  "TCH",    # flake8-type-checking
+  "TID",    # flake8-tidy-imports
+  "UP",     # pyupgrade
+  "YTT",    # flake8-2020
+  "TRY",    # tryceratops
+]
+
+ignore = [
+  "D206",    # indent-with-spaces: enforced by the formatter
+  "E111",    # indentation-with-invalid-multiple: enforced by the formatter
+  "E114",    # indentation-with-invalid-multiple-ment: enforced by the formatter
+  "E117",    # over-indented: enforced by the formatter
+  "N803",    # pep8-naming: "argument name should be lowercase"
+  "N806",    # pep8-naming: "variable in function should be lowercase"
+  "PLR0913", # pylint refactor: "too many arguments to function call"
+  "PLR0915", # pylint refactor: "too many statements"
+  "PLR2004", # pylint refactor: "magic value used in comparison"
+  "TRY003",  # tryceratops: "Avoid specifying long messages outside the exception class"
+  "W191",    # tab-indentation: enforced by the formatter
+]
+
+# do not attempt autofix with `--fix` for the following rules
+unfixable = [
+  "ERA",  # removes commented-out code
+  "F401", # removes unused imports
+  "F841", # removes unused variables
+  "T20",  # removes print statements
+]
+
+# allow unused variadic arguments, like *args and **kwargs.
+flake8-unused-arguments.ignore-variadic-names = true
+flake8-annotations.allow-star-arg-any = true
+
+[tool.ruff.lint.per-file-ignores]
+# ignore for contents of `tests`:
+# - S101 (flake8-bandit `AssertUsed`),
+# - D (pydocstyle)
+# - C901 (mccabe)
+# - INP001 (flake8-no-pep420)
+# - E721 (type-comparison)
+"tests/*" = ["S101", "D", "C901", "INP001", "E721"]
+# ignore for all `test_*.py` files
+# - ANN (flake8-annotations)
+# - I002 (isort required import)
+"tests/**/test_*.py" = ["ANN", "I002"]
+# ignore I002 (isort required import) for all `__init__.py` files
+"src/monoprop/**/__init__.py" = ["I002"]
+
+[tool.ruff.lint.pycodestyle]
+# maximum line length to allow for line-length violations within documentation,
+# including standalone comments
+max-doc-length = 140
+max-line-length = 120
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+required-imports = ["from __future__ import annotations"]
+
+
+[tool.pyright]
+pythonVersion = "3.11"
+
+include = ["src/monoprop/**/*.py"]
+
+exclude = ["test_*.py", "docs/**", "**/__pycache__"]
+
+typeCheckingMode = "basic"
+useLibraryCodeForTypes = true
+
+reportGeneralTypeIssues = "information"
+reportMissingImports = true
+reportMissingTypeStubs = "warning"
+reportImportCycles = "information"
+reportPrivateUsage = "information"
+reportPrivateImportUsage = "information"
+reportUnnecessaryIsInstance = "information"
+reportUnnecessaryCast = "information"
+reportUnnecessaryComparison = "information"
+reportUnnecessaryContains = "information"
+reportUnnecessaryTypeIgnoreComment = "information"
+reportMatchNotExhaustive = "information"
+
+
+[tool.cibuildwheel]
+build-frontend = "uv"
+build-verbosity = 1
+build = ["cp311-*", "cp312-*", "cp313-*", "cp314-*"]
+skip = ["*-musllinux_*"]
+test-command = "python -m pytest {package}/tests"
+test-groups = ["test"]
+test-extras = ["qiskit", "openfermion", "pyscf"]
+test-environment = { monoprop_LOG_LEVEL = "critical" }
+
+[tool.cibuildwheel.linux]
+before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
+environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
+
+[tool.cibuildwheel.macos]
+before-all = "brew install boost quill tbb"
+environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
+
+[[tool.cibuildwheel.overrides]]
+# override on x86_64 to set TBB environment variables
+select = "*_x86_64"
+inherit.environment = "prepend"
+environment = { ONEAPI_ROOT = "/opt/intel/oneapi", TBBROOT = "$ONEAPI_ROOT/tbb/latest", LD_LIBRARY_PATH = "$TBBROOT/lib/intel64/gcc4.8:/opt/rh/gcc-toolset-14/root/usr/lib64:/opt/rh/gcc-toolset-14/root/usr/lib:/opt/rh/gcc-toolset-14/root/usr/lib64/dyninst:/opt/rh/gcc-toolset-14/root/usr/lib/dyninst", C_INCLUDE_PATH = "$TBBROOT/include", CMAKE_PREFIX_PATH = "$TBBROOT", LIBRARY_PATH = "$TBBROOT/lib/intel64/gcc4.8", CPLUS_INCLUDE_PATH = "$TBBROOT/include", PKG_CONFIG_PATH = "$TBBROOT/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig" }

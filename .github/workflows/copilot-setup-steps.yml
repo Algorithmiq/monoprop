@@ -1,0 +1,56 @@
+name: "Copilot Setup Steps"
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # the job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies from APT
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen graphviz just libtbb-dev libopenmpi-dev openmpi-bin
+
+      - name: Set gcc-14/g++-14 as default compilers
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
+          sudo update-alternatives --set g++ /usr/bin/g++-14
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
+          sudo update-alternatives --set c++ /usr/bin/g++-14
+
+      - name: Install dependencies
+        run: |
+          ./tools/install-deps.sh /opt/Software
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          export CPM_USE_LOCAL_PACKAGES=TRUE
+          export CMAKE_PREFIX_PATH=/opt/Software
+          uv sync --group dev --group test --group interactive --all-extras -v

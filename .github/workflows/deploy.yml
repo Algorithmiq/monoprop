@@ -1,0 +1,123 @@
+name: Publish monoprop Python sdist and wheels to Algorithmiq PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      force-upload:
+        description: 'Upload artifacts without a corresponding release'
+        required: false
+        default: false
+        type: boolean
+  release:
+    types:
+      - published
+  pull_request:
+    # PRs trigger for the "opened", "reopened", "synchronize" events (default) and
+    # "ready_for_review"
+    paths:
+      - .github/workflows/deploy.yml
+    types:
+      - opened
+      - reopened
+      - synchronize # when new commits are pushed to the PR
+      - ready_for_review # when the PR is un-drafted
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COLUMNS: 120
+  FORCE_COLOR: 3
+
+jobs:
+  build-sdist:
+    name: Build source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # such that setuptools_scm can do its job correctly
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Build SDist
+        run: |
+          uv tool run --from build pyproject-build --verbose --sdist --installer uv
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cibw-sdist
+          path: dist/*.tar.gz
+
+  build-wheels:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+    name: Build Python wheels for ${{ matrix.os }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      matrix:
+        os: [ linux-intel, linux-arm, macos-arm ]
+        include:
+          - archs: native
+            platform: auto
+          - os: linux-intel
+            runs-on: ubuntu-latest
+          - os: linux-arm
+            runs-on: aarch64
+          - os: macos-arm
+            runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: pypa/cibuildwheel@v4.1.0
+        with:
+          extras: "uv"
+        env:
+          CIBW_PLATFORM: ${{ matrix.platform }}
+          CIBW_ARCHS: ${{ matrix.archs }}
+          CIBW_DEBUG_TRACEBACK: TRUE
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
+          path: wheelhouse/*.whl
+
+  upload_codeartifact:
+    name: Upload to AWS CodeArtifact
+    needs:
+      - build-sdist
+      - build-wheels
+    if: (github.event_name == 'release' && github.event.action == 'published') || github.event.inputs.force-upload
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          # unpacks all CIBW artifacts into dist/
+          pattern: cibw-*
+          path: dist
+          merge-multiple: true
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::406960181794:role/github-actions-codeartifact-write-access
+          aws-region: eu-west-1
+
+      - name: Publish
+        run: |
+          export TWINE_USERNAME=aws
+          export TWINE_PASSWORD="$(aws codeartifact get-authorization-token --domain algorithmiq --domain-owner 406960181794 --region eu-west-1 --query authorizationToken --output text)"
+          export TWINE_REPOSITORY_URL="$(aws codeartifact get-repository-endpoint --domain algorithmiq --domain-owner 406960181794 --repository pypi --region eu-west-1 --format pypi --query repositoryEndpoint --output text)"
+          pipx run twine upload dist/*
