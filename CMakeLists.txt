@@ -124,5 +124,5 @@ if(NOT DEFINED SKBUILD)
   include(CTest)
 
   # This must come last!!
-  add_subdirectory(tests/monoprop/cpp)
+  add_subdirectory(tests/cpp)
 endif()
