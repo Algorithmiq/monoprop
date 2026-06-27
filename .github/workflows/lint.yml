@@ -1,0 +1,26 @@
+name: Lint
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          # grab the history of the PR, so we can run pre-commit on a commit range
+          fetch-depth: 0
+
+      - name: Run pre-commit for linting
+        uses: pre-commit/action@v3.0.1
+        env:
+          RUFF_OUTPUT_FORMAT: github
+        with:
+          extra_args: --from-ref ${{ github.event.pull_request.base.sha }} --to-ref ${{ github.event.pull_request.head.sha }}

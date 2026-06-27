@@ -1,0 +1,36 @@
+@PACKAGE_INIT@
+
+# monoprop CMake package
+# ======================
+#
+# This config file enables downstream usage via ``find_package``.
+#
+# Usage
+# -----
+#
+# .. code-block:: cmake
+#
+#    find_package(monoprop CONFIG REQUIRED)
+#    target_link_libraries(my_target PRIVATE monoprop::monoprop)
+#
+# Available imported targets
+# --------------------------
+#
+# ``monoprop::monoprop``
+#   Shared library target for the monoprop C++ core API.
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(Boost 1.85 CONFIG REQUIRED)
+find_dependency(TBB REQUIRED)
+
+set(monoprop_ENABLE_MPI "@monoprop_ENABLE_MPI@")
+if(monoprop_ENABLE_MPI)
+  find_dependency(MPI REQUIRED COMPONENTS CXX)
+endif()
+
+if(NOT TARGET monoprop::monoprop)
+  include("${CMAKE_CURRENT_LIST_DIR}/monopropTargets.cmake")
+endif()
+
+check_required_components(monoprop)
