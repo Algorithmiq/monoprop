@@ -354,7 +354,7 @@ struct MPOperator {
         tbb::parallel_for(tbb::blocked_range<size_t>(0, items.size()),
                           [this, &tls_del, &items](const tbb::blocked_range<size_t> &r) {
                               auto &local_del = tls_del.local();
-                              for (size_t i = r.begin(); i != r.end(); ++i) {
+                              for (auto i = r.begin(); i != r.end(); ++i) {
                                   const auto &maj = items[i].first;
                                   const auto coeff = items[i].second;
                                   if (const auto it = indexing.find(maj); it != indexing.end_for(maj)) {

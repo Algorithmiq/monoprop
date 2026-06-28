@@ -74,7 +74,7 @@ inline auto parallel_for_indices(size_t count, Func &&func, size_t grain_size = 
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, count, grain_size),
         [&func](const tbb::blocked_range<size_t> &range) {
-            for (size_t idx = range.begin(); idx < range.end(); ++idx) {
+            for (auto idx = range.begin(); idx < range.end(); ++idx) {
                 func(idx);
             }
         },
@@ -104,7 +104,7 @@ inline Value parallel_reduce_indices(size_t count,
         tbb::blocked_range<size_t>(0, count, effective_grain),
         identity,
         [&body](const tbb::blocked_range<size_t> &range, Value local) {
-            for (size_t idx = range.begin(); idx < range.end(); ++idx) {
+            for (auto idx = range.begin(); idx < range.end(); ++idx) {
                 body(idx, local);
             }
             return local;

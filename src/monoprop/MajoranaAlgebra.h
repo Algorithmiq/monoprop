@@ -140,7 +140,7 @@ auto is_fully_paired(const VecZ &inds, const MajoranaVector<NumModes> &op) -> Ve
     tbb::parallel_for(tbb::blocked_range<size_t>(0, inds.size(), grain_size),
                       [&local_results, &op, &mask, &inds](const tbb::blocked_range<size_t> &range) {
                           auto &local = local_results.local();
-                          for (size_t i = range.begin(); i < range.end(); ++i) {
+                          for (auto i = range.begin(); i < range.end(); ++i) {
                               const auto index = inds[i];
                               if (is_paired<NumModes>(op[index], mask)) {
                                   local.push_back(index);
@@ -189,7 +189,7 @@ auto get_hf_phases(const VecZ &paired_inds, const VecZ &hf, const MajoranaVector
         constexpr size_t grain_size = 512;
         tbb::parallel_for(tbb::blocked_range<size_t>(0, size, grain_size),
                           [&paired_inds, &result, &hf_mask, &op](const tbb::blocked_range<size_t> &range) {
-                              for (size_t idx = range.begin(); idx < range.end(); ++idx) {
+                              for (auto idx = range.begin(); idx < range.end(); ++idx) {
                                   const auto op_idx = paired_inds[idx];
                                   result[idx] = hf_phase<NumModes>(op[op_idx], hf_mask);
                               }

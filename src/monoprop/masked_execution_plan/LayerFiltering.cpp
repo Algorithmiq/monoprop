@@ -247,7 +247,7 @@ auto filter_layer_cosine_data(const Layer &layer, const std::vector<char> &nodes
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, block_count, 1),
         [&blocks, block_size, span_count, &layer, &scan_range, block_count](const tbb::blocked_range<size_t> &range) {
-            for (size_t block_idx = range.begin(); block_idx < range.end(); ++block_idx) {
+            for (auto block_idx = range.begin(); block_idx < range.end(); ++block_idx) {
                 auto &block = blocks[block_idx];
                 const size_t begin = block_idx * block_size;
                 const size_t end = std::min(span_count, begin + block_size);
