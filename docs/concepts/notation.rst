@@ -49,7 +49,7 @@ The string :math:`\nu` records which Majorana operators are present (its set of
 ones is the monomial's **support**), and the **length** :math:`|\nu|` is the
 number of ones - i.e. how many Majorana operators the monomial contains.
 
-The phase :math:`i^{\binom{|\nu|}{2}}` is makes :math:`M_\nu`
+The phase :math:`i^{\binom{|\nu|}{2}}` makes :math:`M_\nu`
 Hermitian. Taking the dagger reverses the order of the :math:`n` Majorana
 operators, and each of the :math:`\binom{n}{2}` transpositions needed to restore
 their order flips a sign, so a bare monomial of length :math:`n` satisfies
