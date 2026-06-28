@@ -80,7 +80,6 @@ jobs:
         run: |
           just doctest-docs
 
-
       - name: Build docs
         run: |
           just build-docs
