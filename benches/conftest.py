@@ -15,7 +15,7 @@
 """Pytest configuration and fixtures for the monoprop benchmark suite.
 
 The random benchmarks are parameterised through command-line options so the
-generator length ``k``, number of observable terms, number of generators ``x``,
+generator length, number of observable terms, number of generators,
 mode count, cutoff, and RNG seed can all be varied without editing code, e.g.::
 
     uv run pytest benches --num-generators 200 --num-modes 64 --cutoff 10
