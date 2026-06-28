@@ -5,8 +5,10 @@ set -euxo pipefail
 echo "Set up development environment in $WORKSPACE"
 
 # install project
-# NOTE docs dependency group excluded, as it requires Python 3.12 and we develop against 3.11
-uv sync --group dev --group test --group interactive --all-extras -v
+# NOTE the docs dependency group is excluded by default (it requires Python 3.12
+# and we develop against 3.11); it is built separately via `just build-docs`.
+# dev/test/interactive are the default groups (see [tool.uv] default-groups).
+uv sync --all-extras -v
 
 # install prek hooks
 uv run prek install --install-hooks

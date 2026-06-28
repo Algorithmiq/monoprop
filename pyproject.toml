@@ -82,6 +82,10 @@ test = [
 [tool.uv]
 python-preference = "only-managed"
 keyring-provider = "subprocess"
+# Full dev environment by default. `docs` is intentionally excluded: it requires
+# Python 3.12 (sphinx>=9) while we develop against 3.11, so it is built separately
+# (see `just build-docs`, which uses --python 3.12).
+default-groups = ["dev", "test", "interactive"]
 cache-keys = [
   { file = "pyproject.toml" },
   { file = "include/**/*.h" },

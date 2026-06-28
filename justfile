@@ -21,7 +21,6 @@ test-py-mpi:
     done
 
 test-py-mpi-matrix:
-    export SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON"; \
     uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v; \
     ranks="${monoprop_MPI_TEST_PROCS:-1;2;4}"; for r in ${ranks//;/ }; do echo "Running MPI-marked Python tests with ${r} rank(s)"; mpiexec --allow-run-as-root -n "$r" uv run --no-sync python -m pytest tests --with-mpi -m mpi -v; done
 
