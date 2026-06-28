@@ -47,18 +47,24 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     """Register benchmark configuration options for the random benchmarks."""
     group = parser.getgroup("monoprop-bench", "monoprop random benchmark sizing")
     group.addoption(
-        "--gen-length", type=int, default=4, help="Generator Majorana length k."
+        "--gen-length",
+        type=int,
+        default=4,
+        help="Number of Majorana operators per generator.",
     )
     group.addoption(
-        "--obs-terms", type=int, default=4, help="Number of observable terms."
+        "--obs-terms", type=int, default=10000, help="Number of observable terms."
     )
     group.addoption(
-        "--num-generators", type=int, default=100, help="Number of random generators x."
+        "--num-generators",
+        type=int,
+        default=200,
+        help="Number of random generators (circuit gates).",
     )
     group.addoption(
-        "--num-modes", type=int, default=32, help="Number of fermionic modes."
+        "--num-modes", type=int, default=128, help="Number of fermionic modes."
     )
-    group.addoption("--cutoff", type=int, default=8, help="Truncation cutoff.")
+    group.addoption("--cutoff", type=int, default=6, help="Truncation cutoff.")
     group.addoption(
         "--seed", type=int, default=0, help="Random seed for reproducibility."
     )
