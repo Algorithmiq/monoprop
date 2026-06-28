@@ -2,14 +2,16 @@
 How to Contribute
 =================
 
+
 Development setup
 -----------------
 
-Set up a local development build — prerequisites, the editable ``uv`` build of the
-Python bindings (with or without MPI), the standalone C++ build, and verifying the
-install — as described in :doc:`building`. The repository's
-`DevContainer <https://containers.dev/>`_ is the quickest route to a working
-environment.
+The repository's `DevContainer <https://containers.dev/>`_ provides a ready-made development environment.
+
+Alternatively, set up a local development build — prerequisites,
+the editable ``uv`` build of the Python bindings (with or without MPI),
+the standalone C++ build, and verifying the install — as described
+in :doc:`building`.
 
 The sections below cover the parts specific to contributing: running the tests and
 building the documentation.
@@ -17,7 +19,7 @@ building the documentation.
 Running the tests
 -----------------
 
-Running the Python and C++ test suites — with and without MPI — is documented in
+Running the Python and C++ test suites --- with and without MPI --- is documented in
 :doc:`building`.
 
 Documentation

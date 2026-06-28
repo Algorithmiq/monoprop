@@ -1,3 +1,4 @@
+.. _propagation_algorithm:
 Propagation Algorithm
 =====================
 
@@ -85,7 +86,8 @@ Applied across a whole circuit, the surviving branches grow the observable as a
 tree - each branching gate can up to double the number of active terms. That
 exponential growth is exactly what truncation keeps in check.
 
-Controlling growth: truncation
+.. _truncation:
+Truncation: controlling growth
 ------------------------------
 
 Without truncation, the number of terms typically grows exponentially with the

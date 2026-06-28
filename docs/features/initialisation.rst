@@ -22,22 +22,48 @@ on fermionic circuits when ``schrodinger_cutoff = cutoff + 2``
 (see Appendix of :cite:`chakraborty2026scalablequantumcircuitgeneration`).
 
 
-Hamiltonian updates
+Operator updates
 -------------------
 
-The coefficients of the initial Hamiltonian can be patched after construction
+The coefficients of the initial operator can be patched after construction
 without rebuilding the simulator or the graph:
 
-.. code-block:: python
-
+.. doctest::
+   >>> from monoprop import MonomialPropagator
+   >>> from monoprop.fermi_data import MajoranaOperator, FermiCircuit
+   >>> observable = MajoranaOperator([(0, 1, 2, 3)], [1.0], 4)
+   >>> circuit = FermiCircuit(initial_state=[0, 1], gates=[])
+   >>> sim = MonomialPropagator(observable, circuit, cutoff=4)
    # Keys are Majorana monomials (tuples of indices); values are the new
    # coefficients, which must keep each monomial Hermitian (real for length-4
    # terms, imaginary for length-2 — see the Notation page).
-   sim.update_coeffs({(0, 1, 2, 3): 0.5})
+   >>> sim.update_coeffs({(0, 1, 2, 3): 0.5})
 
-Only terms that already exist in the initial operator can be updated; supplying a
-monomial that is not present (or a non-Hermitian coefficient) raises
-``RuntimeError``. This is particularly useful
-in the Schrödinger picture: since the state is evolved independently of the
-observable, you can re-weight the observable and read it off against the same
-evolved state, estimating several observables without re-propagating.
+This is particularly useful in the Schrödinger picture: since the state is
+evolved independently of the observable, you can re-weight the observable and
+read it off against the same evolved state, estimating several observables
+without re-propagating.
+
+
+
+.. note::
+
+   Only terms that already exist in the initial operator can be updated; supplying a
+   monomial that is not present (or a non-Hermitian coefficient) raises
+   ``RuntimeError``:
+
+   .. testsetup::
+
+      from monoprop import MonomialPropagator
+      from monoprop.fermi_data import MajoranaOperator, FermiCircuit
+
+      observable = MajoranaOperator([(0, 1, 2, 3)], [1.0], 4)
+      circuit = FermiCircuit(initial_state=[0, 1], gates=[])
+      sim = MonomialPropagator(observable, circuit, cutoff=4)
+
+   .. doctest::
+
+      >>> sim.update_coeffs({(1, 2, 3, 4): 0.5})  # This monomial doesn't exist
+      Traceback (most recent call last):
+         ...
+      RuntimeError: ...

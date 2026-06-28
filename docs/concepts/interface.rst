@@ -22,7 +22,8 @@ is given as a weighted sum of products of fermionic creation and annihilation
 operators on numbered modes (for example :math:`c_0^\dagger c_1`). monoprop maps
 these into the Majorana basis through the Jordan-Wigner transformation.
 
-.. code-block:: python
+
+.. testcode::
 
    from monoprop import MonomialPropagator
    from monoprop.fermi_data import FermiOperator, FermiEvGate, FermiCircuit
@@ -41,7 +42,12 @@ these into the Majorana basis through the Jordan-Wigner transformation.
 
    mp = MonomialPropagator(observable, circuit, cutoff=4)
    mp.propagate(evolve_with_coeffs=True)
-   evolved = mp.evolved_operator_dict()  # keyed by Majorana indices
+   print(mp.evolved_operator_dict())  # keyed by Majorana indices
+
+.. testoutput::
+   :hide:
+
+   {(0, 3): 0.477668244563j, (0, 2): (-0-0.147760103331j), (1, 3): (-0-0.147760103331j), (1, 2): (-0-0.477668244563j)}
 
 Qubit (Pauli) operators
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -50,7 +56,7 @@ The natural starting point when you already hold a qubit Hamiltonian. An
 operator is given as a real-coefficient sum of Pauli strings (tensor products of
 :math:`I, X, Y, Z`), which are likewise carried into the Majorana basis.
 
-.. code-block:: python
+.. testcode::
 
    from monoprop import MonomialPropagator, jordan_wigner_basis_change
    from monoprop.pauli_data import PauliOperator, PauliEvGate, PauliEvCircuit
@@ -67,10 +73,16 @@ operator is given as a real-coefficient sum of Pauli strings (tensor products of
    # "support" counts Majorana modes instead (see the Notation and Cutoff pages).
    bc = jordan_wigner_basis_change(n_qubits=2)
    mp = MonomialPropagator(
-       observable, circuit, cutoff=4, cutoff_type="support", basis_change=bc
+         observable, circuit, cutoff=4, cutoff_type="support", basis_change=bc
    )
    mp.propagate(evolve_with_coeffs=True)
-   evolved = mp.evolved_operator_dict() # WARNING: the keys are Majorana indices - not Pauli strings
+   print(mp.evolved_operator_dict()) # WARNING: the keys are Majorana indices - not Pauli strings
+
+.. testoutput::
+   :hide:
+
+   {(1, 2, 3): 0.564642473395j, (1, 2): (-0-0.5j), (0, 1, 2, 3): (-0.82533561491+0j)}
+
 
 Majorana operators
 ~~~~~~~~~~~~~~~~~~~
@@ -82,7 +94,7 @@ must keep the monomial Hermitian: real for length-4 monomials, imaginary for
 length-2 (since :math:`M_\nu = i^{\binom{|\nu|}{2}} m_{i_1}\cdots m_{i_n}`, see
 :doc:`/concepts/notation`).
 
-.. code-block:: python
+.. testcode::
 
    from monoprop import MonomialPropagator
    from monoprop.fermi_data import MajoranaOperator, FermiEvGate, FermiCircuit
@@ -96,19 +108,25 @@ length-2 (since :math:`M_\nu = i^{\binom{|\nu|}{2}} m_{i_1}\cdots m_{i_n}`, see
 
    mp = MonomialPropagator(observable, circuit, cutoff=4)
    mp.propagate(evolve_with_coeffs=True)
-   evolved = mp.evolved_operator_dict() # WARNING: the keys are Majorana indices - not fermionic
+   print(mp.evolved_operator_dict()) # WARNING: the keys are Majorana indices - not fermionic
+
+.. testoutput::
+   :hide:
+
+   {(0, 1, 2, 4): (-0.564642473395+0j), (0, 1, 2, 3): (0.82533561491-0j)}
 
 The reference state
 -------------------
 
 Alongside the operator, a simulation needs a **reference state**, typically a
-Slater determinant given as the list of occupied orbitals or computational basis state.
+Slater determinant given as the list of occupied orbitals, or computational basis state.
 Expectation values are computed against this state or in Schrödinger picture, the state is evolved from this reference.
 
-Describing a circuit
+The circuit
 --------------------
 
-A circuit is an ordered sequence of Majorana rotations. Each gate is described by
+Finally, a circuit can be specified as a sequence of *gates*,
+each of which is a Majorana rotation. Each gate is described by
 three pieces of information:
 
 - the **generator** - the Majorana monomial :math:`M_\gamma` that defines the
@@ -118,11 +136,10 @@ three pieces of information:
   gate draws its angle from, so that several gates can be tied to share one
   parameter.
 
-For variational workflows these are bundled into a single circuit structure that
-travels together: the generators in order, the current parameter values, the
-mapping from gates to parameters, and the reference state. This is the natural
-representation for algorithms such as ADAPT-VQE, where the circuit grows one
-generator at a time and is re-evaluated repeatedly as parameters are optimised.
+This structure enables the use of monoprop in variational workflows.
+This is the natural representation for algorithms such as ADAPT-VQE, QAOA, etc.
+where the circuit grows one generator at a time and is re-evaluated
+repeatedly as parameters are optimised.
 
 From input to result
 ---------------------
@@ -131,8 +148,8 @@ The typical flow from a problem definition to a result is:
 
 1. **Express** the operator in fermionic, qubit, or Majorana form, and choose a
    reference state.
-2. **Construct** a simulator from the operator, the reference state, and a
-   cutoff.
+2. **Construct** a simulator from the operator, the reference state, and truncation
+   settings (such as cutoff type and value).
 3. **Propagate** the circuit to build the reusable propagated operator.
 4. **Evaluate** expectation values or gradients, re-using that operator across
    many parameter values.

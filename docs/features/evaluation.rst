@@ -2,8 +2,9 @@ Expectation values and gradients
 =================================
 
 Once the circuit has been propagated, the stored graph can be replayed at any
-parameter vector without re-running the Majorana algebra. This is the inner loop
-of a variational optimisation: propagate once, evaluate many times.
+parameter vector without re-running the Majorana algebra. This is a very powerful
+feature for example in variational workflows, where the same circuit is evaluated
+repeatedly at many parameter values.
 
 Expectation value evaluation
 ----------------------------

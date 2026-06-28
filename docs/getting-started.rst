@@ -2,7 +2,7 @@
 Getting Started
 ===============
 
-This page covers the installation and a minimal introduction to monoprop.
+This page covers the installation and a minimal introduction to ``monoprop``.
 For more detailed usage instructions, see the :doc:`python-api`.
 
 Installation
@@ -20,14 +20,14 @@ If you use `uv <https://docs.astral.sh/uv/>`_ as package manager:
 
    uv add monoprop
 
-These prebuilt wheels run on a single process — they are published **without**
+These prebuilt wheels run on a single process — they are published *without*
 MPI. For a multi-rank / MPI-enabled build, or to build the C++ library and
 executables, build from source as described in :doc:`building`.
 
 Introduction
 ============
 
-monoprop is a classical quantum-circuit simulator built on **operator
+monoprop is a classical quantum-circuit simulator based on **operator
 propagation**: rather than storing the full quantum state, it expands an operator
 in the Majorana (or Pauli) basis and propagates it through a circuit, dropping
 terms that contribute little. Expectation values and gradients are then read off

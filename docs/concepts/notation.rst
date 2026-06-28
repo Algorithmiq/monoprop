@@ -49,7 +49,7 @@ The string :math:`\nu` records which Majorana operators are present (its set of
 ones is the monomial's **support**), and the **length** :math:`|\nu|` is the
 number of ones - i.e. how many Majorana operators the monomial contains.
 
-The phase :math:`i^{\binom{|\nu|}{2}}` is exactly what makes :math:`M_\nu`
+The phase :math:`i^{\binom{|\nu|}{2}}` is makes :math:`M_\nu`
 Hermitian. Taking the dagger reverses the order of the :math:`n` Majorana
 operators, and each of the :math:`\binom{n}{2}` transpositions needed to restore
 their order flips a sign, so a bare monomial of length :math:`n` satisfies
@@ -130,8 +130,8 @@ the corresponding density operator factorises one orbital at a time,
    |n_1 \dots n_N\rangle\!\langle n_1 \dots n_N|
    = \frac{1}{2^N} \prod_{j=1}^{N}\bigl(1 + (-1)^{n_j}\,\overline{m}_j\bigr).
 
-Expanding the product, this is a sum of **paired monomials** - products of the
-:math:`\overline{m}_j` - with signs fixed by the occupation numbers.
+Expanding the product, this is a sum of **paired monomials** -- products of the
+:math:`\overline{m}_j` -- with signs fixed by the occupation numbers.
 
 The Pauli representation
 ------------------------
@@ -139,9 +139,11 @@ The Pauli representation
 The engine always works in the Majorana basis: a qubit system enters as a
 *Majorana representation* - the binary strings :math:`\nu` above - and every gate,
 commutator, and product is evaluated there. Pauli strings never appear during
-propagation. To read out or truncate in the qubit picture, you supply a
+propagation.
+
+To read out or truncate in the qubit picture, you supply a
 fermion-to-qubit encoding, which reinterprets the *same* :math:`\nu` as a Pauli
-string. Under Jordan-Wigner, orbital :math:`i` maps to qubit :math:`i` and its two
+string. Under the `Jordan-Wigner mapping <https://en.wikipedia.org/wiki/Jordan%E2%80%93Wigner_transformation>`_, orbital :math:`i` maps to qubit :math:`i` and its two
 Majoranas become
 
 .. math::
@@ -159,14 +161,14 @@ The encoding is *linear* in :math:`\nu` - a change of basis on the binary data,
 :math:`\nu \mapsto \nu'` over :math:`\mathbb{F}_2`. Propagation is untouched; only
 the reading of :math:`\nu` changes. Other mappings, such as the ternary-tree
 constructions, are linear in the same way, so the choice of encoding is just a
-choice of how to read the data, and the algorithm of :doc:`/concepts/algorithm` is
+choice of how to read the data, and the :ref:`propagation algorithm <propagation_algorithm>` is
 unchanged.
 
 Support cutoff = Pauli weight
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The encoding is consulted at one point only: truncation. The ``support`` cutoff
-keeps a monomial acting on at most :math:`\omega` distinct *qubits*, which the
+The encoding is consulted only when truncation is applied (see :ref:`truncation <truncation>`).
+The ``support`` cutoff keeps a monomial acting on at most :math:`\omega` distinct *qubits*, which the
 engine measures on the transformed string :math:`\nu'`, not the raw :math:`\nu`:
 
 .. math::
