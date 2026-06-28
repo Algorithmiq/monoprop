@@ -24,10 +24,12 @@
 #include <quill/core/PatternFormatterOptions.h>
 #include <quill/sinks/ConsoleSink.h>
 
-// Define the shared logger pointer once so logging macros can reuse it cheaply.
-quill::Logger* monoprop_global_logger = nullptr;
-
 namespace monoprop::logging {
+auto global_logger() -> quill::Logger*& {
+    static quill::Logger* logger = nullptr;
+    return logger;
+}
+
 auto log_level() -> quill::LogLevel {
     const char* val = std::getenv("monoprop_LOG_LEVEL");
     return quill::loglevel_from_string((val) ? val : "@monoprop_DEFAULT_LOG_LEVEL@");
@@ -45,7 +47,7 @@ auto setup_quill() -> void {
 
     // setup sink and logger
     auto console_sink = quill::Frontend::create_or_get_sink<quill::ConsoleSink>("sink_id_1");
-    monoprop_global_logger =
+    global_logger() =
         quill::Frontend::create_or_get_logger("monoprop._core", std::move(console_sink), log_pattern_formatter_options());
 }
 } // namespace monoprop::logging
