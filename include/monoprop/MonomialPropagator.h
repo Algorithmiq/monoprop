@@ -74,8 +74,8 @@ public:
                                                  lower_atol.value()));
         }
 
-        const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
-        const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
+        const auto num_ranks = static_cast<size_t>(mpi::size(comm_));
+        const auto my_rank = static_cast<size_t>(mpi::rank(comm_));
         MajoranaVector<NumModes> local_heisenberg_terms;
 
         // convert the operator to the internal format
