@@ -40,3 +40,20 @@ doctest-docs:
 serve-docs:
     uv run --no-dev --group docs --all-extras --python 3.12 \
         sphinx-autobuild -b html -D version="{{ version }}" docs {{ html_dir }}
+
+# Run the benchmark suite (timing + memory) and write benches/results/REPORT.md.
+# Serial by default; pass `--ranks N` for MPI (needs `just bench-build-mpi` first).
+# Any other arguments are forwarded to pytest, e.g.
+#   just bench --ranks 4 --num-modes 64 --bench-rounds 10
+bench *ARGS:
+    uv run --group bench python benches/run.py {{ ARGS }}
+
+# Rebuild monoprop with MPI enabled (editable). Run once before `just bench --ranks N`.
+bench-build-mpi:
+    uv sync --all-extras --group bench --reinstall-package monoprop --no-cache \
+        --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v
+
+# Quick sanity run: tiny sizes, no memory pass, skip the slow static benchmarks.
+bench-smoke:
+    uv run --group bench python benches/run.py --no-mem \
+        -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6
