@@ -1,0 +1,77 @@
+Expectation values and gradients
+=================================
+
+Once the circuit has been propagated, the stored graph can be replayed at any
+parameter vector without re-running the Majorana algebra. This is the inner loop
+of a variational optimisation: propagate once, evaluate many times.
+
+Expectation value evaluation
+----------------------------
+
+``expectation_value_functional`` returns a callable that accepts a parameter vector:
+
+.. code-block:: python
+
+   expval_fn = sim.expectation_value_functional(param_inds, gen_coeffs)
+   expval = expval_fn(parameters)
+
+Gradient estimation
+-------------------
+
+``expectation_value_and_gradient_functional`` computes both the expectation value and the full
+parameter gradient in a single backward pass over the graph:
+
+.. code-block:: python
+
+   expval_grad_fn = sim.expectation_value_and_gradient_functional(
+       param_inds, gen_coeffs, pare_threshold=1e-7
+   )
+   expval, gradient = expval_grad_fn(parameters)
+
+Both functionals accept the same optional ``pare_threshold`` — see *Paring*
+below.
+
+
+Paring
+------
+
+Passing a ``pare_threshold`` to ``expectation_value_functional`` or
+``expectation_value_and_gradient_functional`` is an optional
+speed-up: terms whose contribution to the expectation value falls below the
+threshold are *pared* away, so they no longer have to be tracked through the graph
+during replay. The stored graph itself is unchanged, only the replay skips the
+negligible terms, so this can dramatically speed up replay cost for sparse graphs
+(at the expense of some memory and accuracy):
+
+.. code-block:: python
+
+   pared_expval_fn = sim.expectation_value_functional(param_inds, gen_coeffs, pare_threshold=1e-7)
+
+Partial contraction
+-------------------
+
+Where paring skips terms during replay, ``contract_partially`` permanently folds
+a chosen set of gates *into* the operator, shrinking the graph that remains to be
+replayed. The gates are contracted into the initial operator (Heisenberg picture)
+or into the reference state (Schrödinger picture), and by default the simulator's
+internal graph is updated in place:
+
+.. code-block:: python
+
+   # Fold the gates evaluated at these parameters into the operator, in place.
+   sim.contract_partially(parameters, param_inds, gen_coeffs)
+
+This is useful when a prefix of the circuit is fixed so their contribution can be baked in
+once instead of being replayed on every evaluation. Subsequent functionals only
+need to cover the remaining, shorter graph.
+
+Pass ``inplace=False`` to leave the stored graph untouched and only return the
+contracted operator coefficients, so the same graph can be reused with different
+parameters:
+
+.. code-block:: python
+
+   coeffs = sim.contract_partially(parameters, param_inds, gen_coeffs, inplace=False)
+
+To read the fully evolved operator as a dictionary keyed by Majorana indices —
+without modifying the simulator — use ``evolved_operator_dict``.
