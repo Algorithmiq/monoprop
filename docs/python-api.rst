@@ -84,16 +84,6 @@ Build a ``FermiOperator`` from one- and two-body electronic integrals.
    :undoc-members:
    :show-inheritance:
 
-Results and serialisation
--------------------------
-
-``MPData`` bundles the inputs and results of a run (Hamiltonian, ansatz, energies
-and gradients) and can be serialised to and from dictionaries and MsgPack.
-
-.. automodule:: monoprop.mp_data
-   :members:
-   :undoc-members:
-   :show-inheritance:
 
 Utilities
 ---------
@@ -126,15 +116,3 @@ Exceptions
    :members:
    :undoc-members:
    :show-inheritance:
-
-Module-level functions and constants
-------------------------------------
-
-Symbols exposed directly on the top-level ``monoprop`` namespace from the
-compiled extension.
-
-.. autofunction:: monoprop.is_antihermitian
-
-.. autofunction:: monoprop.antihermitian_generator_correction
-
-.. autodata:: monoprop.MAX_NUM_MODES
