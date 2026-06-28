@@ -169,7 +169,7 @@ public:
 namespace std {
 template <>
 struct formatter<monoprop::Layer> {
-    constexpr auto parse(format_parse_context &ctx) { return ctx.begin(); }
+    constexpr auto parse(const format_parse_context &ctx) const { return ctx.begin(); }
     template <typename FormatContext>
     auto format(const monoprop::Layer &layer, FormatContext &ctx) const {
         size_t outgoing_count = 0, incoming_count = 0;

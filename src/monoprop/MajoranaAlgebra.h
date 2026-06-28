@@ -378,7 +378,8 @@ auto interleave_phase(const MajoranaSet<NumModes> &maj_bs, const MajoranaSet<Num
         }
 
         const uint64_t prefix_xor = prefix_xor_64(maj_word);
-        const uint64_t running_parity = (prefix_xor << 1) ^ (-carry);
+        const uint64_t carry_mask = uint64_t{0} - static_cast<uint64_t>(carry != 0);
+        const uint64_t running_parity = (prefix_xor << 1) ^ carry_mask;
         parity ^= static_cast<size_t>(std::popcount(running_parity & gen_word));
         carry ^= prefix_xor >> 63;
     }
