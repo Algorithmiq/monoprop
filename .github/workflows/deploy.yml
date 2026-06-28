@@ -139,7 +139,7 @@ jobs:
           - os: linux-intel
             runs-on: ubuntu-latest
           - os: linux-arm
-            runs-on: aarch64
+            runs-on: ubuntu-24.04-arm
           - os: macos-arm
             runs-on: macos-15
 
