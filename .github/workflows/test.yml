@@ -178,17 +178,13 @@ jobs:
           sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
           ./tools/install-deps.sh /opt/Software
 
-      - name: Install Build Wrapper
-        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v8
-
       - name: Configure
         run: |
           export CMAKE_PREFIX_PATH=/opt/Software
           cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Coverage
 
       - name: Build
-        run: |
-          build-wrapper-linux-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} cmake --build build
+        run: cmake --build build
 
       - name: Test
         env:
@@ -241,13 +237,11 @@ jobs:
             build \
             --sonarqube coverage_cpp.xml
 
-      - name: Upload SonarQube C++ inputs as artifacts
+      - name: Upload SonarQube C++ coverage as artifact
         uses: actions/upload-artifact@v7
         with:
-          name: sonar_cpp_inputs
-          path: |
-            coverage_cpp.xml
-            ${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
+          name: sonar_cpp_coverage
+          path: coverage_cpp.xml
           retention-days: 1
 
   sonarqube-analysis:
@@ -272,16 +266,50 @@ jobs:
           merge-multiple: true
           path: .
 
-      - name: Download C++ SonarQube inputs
+      - name: Download C++ SonarQube coverage
         uses: actions/download-artifact@v8
         with:
-          name: sonar_cpp_inputs
+          name: sonar_cpp_coverage
           path: .
 
       - name: Combine Python coverage data
         run: |
           pipx run coverage combine coverage-*
           pipx run coverage xml -o coverage.xml
+
+      - name: Set gcc-14/g++-14 as default compilers
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
+          sudo update-alternatives --set g++ /usr/bin/g++-14
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
+          sudo update-alternatives --set c++ /usr/bin/g++-14
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
+          ./tools/install-deps.sh /opt/Software
+
+      - name: Install matching Build Wrapper
+        run: |
+          curl --location --output build-wrapper-linux-x86.zip \
+            https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
+          unzip -q -o build-wrapper-linux-x86.zip
+
+      - name: Configure for SonarQube CFamily analysis
+        run: |
+          export CMAKE_PREFIX_PATH=/opt/Software
+          cmake -S. -Bbuild-sonar -DCMAKE_CXX_COMPILER=g++
+
+      - name: Build with Build Wrapper
+        run: |
+          ./build-wrapper-linux-x86/build-wrapper-linux-x86-64 \
+            --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} \
+            cmake --build build-sonar
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v8
