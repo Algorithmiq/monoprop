@@ -42,12 +42,12 @@ these into the Majorana basis through the Jordan-Wigner transformation.
 
    mp = MonomialPropagator(observable, circuit, cutoff=4)
    mp.propagate(evolve_with_coeffs=True)
-   print(mp.evolved_operator_dict())  # keyed by Majorana indices
+   print(sorted(mp.evolved_operator_dict().items()))  # keyed by Majorana indices
 
 .. testoutput::
    :hide:
 
-   {(0, 3): 0.477668244563j, (0, 2): (-0-0.147760103331j), (1, 3): (-0-0.147760103331j), (1, 2): (-0-0.477668244563j)}
+   [((0, 2), (-0-0.147760103331j)), ((0, 3), 0.477668244563j), ((1, 2), (-0-0.477668244563j)), ((1, 3), (-0-0.147760103331j))]
 
 Qubit (Pauli) operators
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -76,12 +76,12 @@ operator is given as a real-coefficient sum of Pauli strings (tensor products of
          observable, circuit, cutoff=4, cutoff_type="support", basis_change=bc
    )
    mp.propagate(evolve_with_coeffs=True)
-   print(mp.evolved_operator_dict()) # WARNING: the keys are Majorana indices - not Pauli strings
+   print(sorted(mp.evolved_operator_dict().items())) # WARNING: the keys are Majorana indices - not Pauli strings
 
 .. testoutput::
    :hide:
 
-   {(1, 2, 3): 0.564642473395j, (1, 2): (-0-0.5j), (0, 1, 2, 3): (-0.82533561491+0j)}
+   [((0, 1, 2, 3), (-0.82533561491+0j)), ((1, 2), (-0-0.5j)), ((1, 2, 3), 0.564642473395j)]
 
 
 Majorana operators
@@ -108,12 +108,12 @@ length-2 (since :math:`M_\nu = i^{\binom{|\nu|}{2}} m_{i_1}\cdots m_{i_n}`, see
 
    mp = MonomialPropagator(observable, circuit, cutoff=4)
    mp.propagate(evolve_with_coeffs=True)
-   print(mp.evolved_operator_dict()) # WARNING: the keys are Majorana indices - not fermionic
+   print(sorted(mp.evolved_operator_dict().items())) # WARNING: the keys are Majorana indices - not fermionic
 
 .. testoutput::
    :hide:
 
-   {(0, 1, 2, 4): (-0.564642473395+0j), (0, 1, 2, 3): (0.82533561491-0j)}
+   [((0, 1, 2, 3), (0.82533561491-0j)), ((0, 1, 2, 4), (-0.564642473395+0j))]
 
 The reference state
 -------------------
