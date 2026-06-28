@@ -55,4 +55,4 @@ bench-build-mpi:
 # Quick sanity run: tiny sizes, no memory pass, skip the slow static benchmarks.
 bench-smoke:
     uv run --group bench python benches/run.py --no-mem \
-        -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6
+        -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16
