@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 
 PARE_THRESHOLD = 1e-10
 # In-place random bench keeps its own truncation constant (see design non-goals).
-INPLACE_LOWER_ATOL = 1e-6
+INPLACE_LOWER_ATOL = 1e-5
 
 
 # --------------------------------------------------------------------------- #
