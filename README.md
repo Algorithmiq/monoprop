@@ -1,12 +1,13 @@
 # monoprop
+> because your operators deserve to propagate at escape velocity
 
 [![Documentation](https://github.com/Algorithmiq/monoprop/actions/workflows/docpages.yml/badge.svg)](https://docs.algorithmiq.fi/monoprop)
 [![Test monoprop](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml/badge.svg)](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml)
 
-[![Quality gate](https://sonarcloud.io/api/project_badges/quality_gate?project=Algorithmiq_monoprop&token=4639fc1ce1c87d33bf3da90eaa516f2ee77dabb0)](https://sonarcloud.io/summary/new_code?id=Algorithmiq_monoprop)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=Algorithmiq_monoprop&metric=coverage&token=4639fc1ce1c87d33bf3da90eaa516f2ee77dabb0)](https://sonarcloud.io/summary/new_code?id=Algorithmiq_monoprop)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Algorithmiq_monoprop&metric=alert_status&token=b8f15100fbda929efa33b226a723216e0163cfc9)](https://sonarcloud.io/summary/new_code?id=Algorithmiq_monoprop)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=Algorithmiq_monoprop&metric=coverage&token=b8f15100fbda929efa33b226a723216e0163cfc9)](https://sonarcloud.io/summary/new_code?id=Algorithmiq_monoprop)
 
-monoprop is a high-performance C++ library with Python bindings for **Majorana and
+`monoprop` is a high-performance C++ library with Python bindings for **Majorana and
 Pauli propagation** — a backend for classically simulating and variationally
 optimising quantum circuits. Rather than storing the full quantum state, it
 expands an operator in the Majorana basis and propagates it through a circuit,
@@ -113,6 +114,25 @@ The documentation is built with [Sphinx](https://www.sphinx-doc.org/) and hosted
 just build-docs   # output: build/docs/html/index.html
 ```
 
+## Citation
+
+If you use `monoprop` in your research, please cite:
+
+```bibtex
+@ARTICLE{Miller2025-aj,
+  title         = "{Simulation of Fermionic circuits using Majorana Propagation}",
+  author        = "Miller, Aaron and Holmes, Zoë and Salehi, Özlem and
+                   Chakraborty, Rahul and Nykänen, Anton and Zimborás, Zoltán
+                   and Glos, Adam and García-Pérez, Guillermo",
+  journal       = "arXiv [quant-ph]",
+  year          =  2025,
+  eprint        = "2503.18939",
+  archivePrefix = "arXiv",
+  primaryClass  = "quant-ph",
+  url           = "https://arxiv.org/abs/2503.18939"
+}
+```
+
 ## License
 
-monoprop is released under the [Apache License 2.0](LICENSE).
+`monoprop` is released under the [Apache License 2.0](LICENSE).
