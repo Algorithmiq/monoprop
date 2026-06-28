@@ -78,7 +78,7 @@ class RandomProblem:
 
     Attributes:
         observable: Random Hermitian Majorana observable.
-        circuit: Monomial circuit of random length-``k`` generators.
+        circuit: Monomial circuit of random fixed-length Majorana generators.
         cutoff: Truncation cutoff to use when constructing the propagator.
     """
 
@@ -133,9 +133,9 @@ def make_random_problem(
     """Build a random observable and generator circuit for benchmarking.
 
     Args:
-        gen_length: Majorana length ``k`` of each random generator.
+        gen_length: Number of Majorana operators in each random generator.
         obs_terms: Number of terms in the random observable.
-        num_generators: Number ``x`` of random generators in the circuit.
+        num_generators: Number of random generators in the circuit.
         num_modes: Number of fermionic modes (Majorana indices = ``2 * num_modes``).
         cutoff: Truncation cutoff carried on the returned problem.
         seed: Seed for the random number generator (reproducibility).

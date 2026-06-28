@@ -88,19 +88,20 @@ All benchmarks live in a single file, `bench_monoprop.py`.
 
 ### Random (configurable, both pictures)
 
-`make_random_problem` builds `x` random length-`k` Majorana generators and a
-random Hermitian observable with a configurable number of terms. Each random
-operation is run in **both** the Heisenberg and Schrödinger pictures (the latter
-with `schrodinger_cutoff = cutoff + 2`), shown as `[heisenberg]` / `[schrodinger]`
-variants. All sizes are CLI options (defaults in parentheses):
+`make_random_problem` builds `--num-generators` random fixed-length Majorana
+generators and a random Hermitian observable with a configurable number of
+terms. Each random operation is run in **both** the Heisenberg and Schrödinger
+pictures (the latter with `schrodinger_cutoff = cutoff + 2`), shown as
+`[heisenberg]` / `[schrodinger]` variants. All sizes are CLI options (defaults
+in parentheses):
 
 | Option | Meaning | Default |
 |---|---|---|
-| `--gen-length` | generator Majorana length `k` | 4 |
-| `--obs-terms` | number of observable terms | 4 |
-| `--num-generators` | number of generators `x` | 100 |
-| `--num-modes` | fermionic modes (Majorana indices = `2·modes`) | 32 |
-| `--cutoff` | truncation cutoff | 8 |
+| `--gen-length` | Majorana operators per generator | 4 |
+| `--obs-terms` | number of observable terms | 10000 |
+| `--num-generators` | number of generators (circuit gates) | 200 |
+| `--num-modes` | fermionic modes (Majorana indices = `2·modes`) | 128 |
+| `--cutoff` | truncation cutoff | 6 |
 | `--seed` | RNG seed | 0 |
 
 Operations: `test_random_build_graph`, `test_random_pare` (masked execution
