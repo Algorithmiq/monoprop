@@ -29,7 +29,7 @@ We use `uv` for environment management.
 We also use [`just`](https://github.com/casey/just) for task automation.
 
 ```bash
-uv sync --all-groups --all-extras -v  # Build & install
+uv sync --all-extras -v  # Build & install
 uv run pytest  # Run tests
 just build-docs  # Build documentation
 ```
