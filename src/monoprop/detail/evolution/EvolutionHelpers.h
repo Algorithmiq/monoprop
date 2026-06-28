@@ -496,7 +496,7 @@ inline auto collect_anticommuting_ops_for_rank_core(const MajoranaVector<NumMode
          safe_num_ranks](const tbb::blocked_range<size_t> &range) {
             auto &local = local_results.local();
             auto &rank_ops = local.ops_by_target;
-            for (size_t i = range.begin(); i < range.end(); ++i) {
+            for (auto i = range.begin(); i < range.end(); ++i) {
                 const auto &maj = op[i];
                 const auto maj_pop = maj.count();
                 const auto overlap = maj.count_and(gen_maj);
@@ -553,7 +553,7 @@ inline auto collect_anticommuting_ops_for_rank_core(const MajoranaVector<NumMode
     tbb::parallel_for(tbb::blocked_range<size_t>(0, num_locals, 1),
                       [&locals, &cos_updates, &cos_offsets, &ops_by_target, &ops_offsets, safe_num_ranks](
                           const tbb::blocked_range<size_t> &range) {
-                          for (size_t t = range.begin(); t < range.end(); ++t) {
+                          for (auto t = range.begin(); t < range.end(); ++t) {
                               auto *lp = locals[t];
                               if (!lp->cos_updates.empty()) {
                                   std::memcpy(cos_updates.data() + cos_offsets[t],

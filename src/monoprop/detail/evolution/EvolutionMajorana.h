@@ -89,7 +89,7 @@ auto evolve_maj_single_rank(const MPOperator<NumModes> &local_mp_op,
                         ++result.compressed_cos_data.total_count;
                     };
 
-                    for (size_t i = range.begin(); i < range.end(); ++i) {
+                    for (auto i = range.begin(); i < range.end(); ++i) {
                         const auto &maj = op[i];
                         const auto maj_pop = maj.count();
                         const auto overlap = maj.count_and(gen_maj);
@@ -188,7 +188,7 @@ auto evolve_maj_single_rank(const MPOperator<NumModes> &local_mp_op,
 
             tbb::parallel_for(tbb::blocked_range<size_t>(0, num_locals, 1),
                               [&locals, &b, &cyc_off, &hc_off](const tbb::blocked_range<size_t> &range) {
-                                  for (size_t t = range.begin(); t < range.end(); ++t) {
+                                  for (auto t = range.begin(); t < range.end(); ++t) {
                                       auto *lp = locals[t];
                                       const size_t nc = lp->cycles.size();
                                       const size_t nhc = lp->half_cycles.size();
@@ -221,7 +221,7 @@ auto evolve_maj_single_rank(const MPOperator<NumModes> &local_mp_op,
                 tbb::parallel_for(
                     tbb::blocked_range<size_t>(0, num_locals, 1),
                     [&locals, &b, &ci_off](const tbb::blocked_range<size_t> &range) {
-                        for (size_t t = range.begin(); t < range.end(); ++t) {
+                        for (auto t = range.begin(); t < range.end(); ++t) {
                             auto *lp = locals[t];
                             const size_t nci = lp->cos_inds.size();
                             if (nci > 0) {
