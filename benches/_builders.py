@@ -124,10 +124,10 @@ def _random_terms(
 def make_random_problem(
     *,
     gen_length: int = 4,
-    obs_terms: int = 4,
-    num_generators: int = 100,
-    num_modes: int = 32,
-    cutoff: int = 8,
+    obs_terms: int = 10000,
+    num_generators: int = 200,
+    num_modes: int = 128,
+    cutoff: int = 6,
     seed: int = 0,
 ) -> RandomProblem:
     """Build a random observable and generator circuit for benchmarking.
