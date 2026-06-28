@@ -96,7 +96,7 @@ NB_MODULE(_core, m) {
     m.attr("__compiler_flags__") = compiler_flags();
 
     logging::setup_quill();
-    monoprop_global_logger->set_log_level(monoprop::logging::log_level());
+    monoprop::logging::global_logger()->set_log_level(monoprop::logging::log_level());
 
     m.def("is_antihermitian",
           &monoprop::is_antihermitian,
