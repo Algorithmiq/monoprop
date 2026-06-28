@@ -53,7 +53,7 @@ openfermion = ["openfermion"]
 pyscf = ["pyscf"]
 
 [dependency-groups]
-dev = ["coverage", "pre-commit>=3", "ruff==0.14.8", "gcovr"]
+dev = ["coverage", "prek>=0.4", "ruff==0.14.8", "gcovr"]
 docs = [
   "myst-nb",
   "myst-parser",
@@ -122,7 +122,7 @@ sdist.exclude = [
   ".copier-answers.yml",
   ".gersemirc",
   ".gitignore",
-  ".pre-commit-config.yaml",
+  "prek.toml",
   ".prettierignore",
   "cspell.json",
 ]
