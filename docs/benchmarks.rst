@@ -48,34 +48,42 @@ The benchmarks are communicator-aware: each operation is barrier-wrapped so the
 measured time is the makespan across ranks, only rank 0 writes the timing JSON,
 and peak memory is captured per rank.
 
-``REPORT.md`` has three sections — **Configuration** (ranks, threads, launcher,
-host per run label), **Time**, and **Peak memory** — so every configuration is a
-column and they sit side by side.
+``REPORT.md`` opens with a **Configuration** table (ranks, threads, launcher,
+host per run label), then a **Heisenberg** and a **Schrödinger** section, each
+holding a **Time** and a **Peak memory** table. Every run is a column, so
+configurations sit side by side; the Schrödinger section is omitted when no
+Schrödinger benchmarks were run.
 
 Random benchmarks
 =================
 
-The random benchmarks evolve a random observable through ``x`` random
-length-``k`` Majorana generators. The generator length, number of observable
-terms, number of generators, mode count, cutoff, and RNG seed are all
-command-line options, for example:
+All benchmarks live in a single file, ``benches/bench_monoprop.py``. The random
+benchmarks evolve a random observable through a configurable number of random
+fixed-length Majorana generators, and run in **both** the Heisenberg and
+Schrödinger pictures (the latter with ``schrodinger_cutoff = cutoff + 2``). The
+generator length, number of observable terms, number of generators, mode count,
+cutoff, and RNG seed are all command-line options, for example:
 
 .. code-block:: bash
 
    just bench --num-generators 200 --num-modes 64 --cutoff 10
 
-- ``bench_random_evolve.py`` measures the graph-based path as four separate
-  operations: building the graph, paring it into a masked execution plan, and
-  evaluating the energy and the gradient.
-- ``bench_random_inplace.py`` measures the in-place coefficient-truncation path,
+- ``test_random_build_graph``, ``test_random_pare``, ``test_random_energy`` and
+  ``test_random_gradient`` measure the graph-based path: building the graph,
+  paring it into a masked execution plan, and evaluating the energy and the
+  gradient.
+- ``test_random_inplace`` measures the in-place coefficient-truncation path,
   which never materialises the propagation graph.
 
 Static benchmarks
 =================
 
-- ``bench_hubbard.py`` -- a 120-qubit (60-site) Fermi-Hubbard model with the
+- ``test_static[hubbard]`` -- a 120-qubit (60-site) Fermi-Hubbard model with the
   sandbox default input, run as an in-place Trotter trajectory.
-- ``bench_pauli.py`` -- a 127-qubit Pauli-basis kicked-Ising simulation on the
+- ``test_static[pauli]`` -- a 127-qubit Pauli-basis kicked-Ising simulation on the
   IBM Eagle heavy-hex topology.
+
+Both run in the Heisenberg picture; pass ``--lower-atol VALUE`` to override their
+coefficient-truncation tolerance.
 
 See ``benches/README.md`` for the full list of options and details.

@@ -49,5 +49,5 @@ def test_built_graph_is_populated() -> None:
     )
     propagator = build_random_propagator(problem)
     propagator.propagate()
-    _edges, nodes = propagator.graph_size()
-    assert nodes > 0
+    _n_cos_indices, n_cycles = propagator.graph_size()
+    assert n_cycles > 0
