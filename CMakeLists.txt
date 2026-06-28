@@ -81,9 +81,9 @@ if(DEFINED SKBUILD)
     STATUS
     "Maximum simulable Fermionic modes with Python bindings: ${monoprop_MAX_NUM_MODES}"
   )
+else()
+  message(STATUS "${PROJECT_NAME} version: ${PROJECT_VERSION_FULL}")
 endif()
-
-message(STATUS "${PROJECT_NAME} version: ${PROJECT_VERSION_FULL}")
 
 # report on compiler flags in use
 message(STATUS "Configuring a ${CMAKE_BUILD_TYPE} build")
