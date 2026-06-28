@@ -77,6 +77,11 @@ test = [
   "pytest-datadir",
   "pytest-mpi>=0.6",
 ]
+bench = [
+  { include-group = "test" },
+  "pytest-benchmark>=4",
+  "pytest-memray>=1.5",
+]
 
 
 [tool.uv]
@@ -157,11 +162,15 @@ addopts = [
 xfail_strict = true
 filterwarnings = ["error"]
 testpaths = ["tests"]
-pythonpath = ["."]
+# Collect both the test suite (test_*.py) and the benchmark suite (bench_*.py);
+# benches/ is excluded from testpaths so it only runs when invoked explicitly.
+python_files = ["test_*.py", "bench_*.py"]
+pythonpath = [".", "benches"]
 markers = [
   "slow: mark test as slow (>=1 minute runtime)",
   "mpi: mark test as requiring --with-mpi (pytest-mpi)",
   "qiskit: mark test as requiring qiskit (optional dependency)",
+  "bench: mark as a benchmark (collected only from the benches/ suite)",
 ]
 required_plugins = ["pytest-cases", "pytest-datadir", "pytest-mpi"]
 
@@ -201,7 +210,6 @@ exclude = [
   "src/monoprop/_version.py",
   "docs/conf.py",
   "performance_scripts/*.py",
-  "benches/python_benchmark.py",
 ]
 
 target-version = "py311"
@@ -300,6 +308,11 @@ flake8-annotations.allow-star-arg-any = true
 "tests/**/test_*.py" = ["ANN", "I002"]
 # ignore I002 (isort required import) for all `__init__.py` files
 "src/monoprop/**/__init__.py" = ["I002"]
+# benchmark suite: asserts are fine (S101), it is an intentional non-package
+# directory loaded via pythonpath (INP001), the MPI communicator type is
+# unavoidably dynamic (ANN401), and the run.py driver intentionally prints
+# progress (T201) and shells out to pytest/mpiexec (S603/S607).
+"benches/*" = ["S101", "INP001", "ANN401", "T201", "S603", "S607"]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,
