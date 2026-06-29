@@ -123,9 +123,13 @@ def _record_graph_size(picture: str, mp: MonomialPropagator) -> None:
 
     Merged into ``graphsize-<label>.json`` (one entry per picture) so the report
     can show how large the evolved operator actually grew in each picture.
-    Written only by rank 0 when ``benches/run.py`` requested recording.
+
+    Graph size is a deterministic property of the problem, so it is recorded only
+    for a serial run, where ``size()`` reflects the full evolved operator. Under
+    MPI the graph is distributed across ranks and a per-rank size would mislead;
+    the serial column is the authoritative count.
     """
-    if MPI is not None and MPI.COMM_WORLD.Get_rank() != 0:
+    if MPI is not None and MPI.COMM_WORLD.Get_size() > 1:
         return
     label = os.environ.get("MONOPROP_BENCH_LABEL")
     results = os.environ.get("MONOPROP_BENCH_RESULTS")
