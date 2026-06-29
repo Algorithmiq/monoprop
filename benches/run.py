@@ -14,11 +14,12 @@
 
 """Run the monoprop benchmark suite and write a combined Markdown report.
 
-This is the single entry point for the benchmarks. For one run *label* it runs
-the timing pass (``pytest-benchmark``) and the memory pass (``pytest-memray``),
-records the run configuration, then regenerates ``REPORT.md``. Run it again with
-a different configuration (more ranks, different thread count, …) and the new
-label is added as another column so configurations sit side by side.
+This is the single entry point for the benchmarks. For one run *label* it runs a
+single sweep recording both timing (``pytest-benchmark``) and peak memory
+(``pytest-memray``), records the run configuration, then regenerates
+``REPORT.md``. Run it again with a different configuration (more ranks, different
+thread count, …) and the new label is added as another column so configurations
+sit side by side.
 
 Configuration is deliberately external and explicit (KISS):
 
@@ -188,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     overrides = _parse_env(args.env)
     run_env = {**os.environ, **overrides}
     # Let the pytest session (conftest) record the resolved hyperparameters and
-    # graph sizes for this label, keyed and located by these variables.
+    # operator sizes for this label, keyed and located by these variables.
     run_env["MONOPROP_BENCH_LABEL"] = label
     run_env["MONOPROP_BENCH_RESULTS"] = str(results_dir)
 
@@ -227,25 +228,16 @@ def main(argv: list[str] | None = None) -> int:
 
     _write_metadata(results_dir, label, args, prefix, overrides, run_env, pytest_args)
 
-    _launch(
-        prefix,
-        [*common, "--benchmark-json", str(results_dir / f"time-{label}.json")],
-        run_env,
-    )
+    # One sweep records both timing (--benchmark-json) and peak memory
+    # (--memray): memray's allocation tracking does not measurably inflate the
+    # timing for this (compute-bound) suite, so a second pass would only double
+    # the wall-clock -- which the multi-second static models dominate.
+    sweep_args = [*common, "--benchmark-json", str(results_dir / f"time-{label}.json")]
     if not args.no_mem:
         mem_dir = results_dir / f"memray-{label}"
         mem_dir.mkdir(exist_ok=True)
-        _launch(
-            prefix,
-            [
-                *common,
-                "--memray",
-                "--benchmark-disable",
-                "--memray-bin-path",
-                str(mem_dir),
-            ],
-            run_env,
-        )
+        sweep_args += ["--memray", "--memray-bin-path", str(mem_dir)]
+    _launch(prefix, sweep_args, run_env)
 
     report.main([str(results_dir)])
     return 0

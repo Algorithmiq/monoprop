@@ -1,5 +1,5 @@
 # Generated benchmark artifacts (REPORT.md, time-*.json, meta-*.json,
-# params-*.json, graphsize-*.json, memray-*/). See benches/README.md.
+# params-*.json, opsize-*.json, memray-*/). See benches/README.md.
 # Keep this directory in the repo, but ignore everything it holds.
 *
 !.gitignore

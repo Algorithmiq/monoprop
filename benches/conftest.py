@@ -77,7 +77,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--bench-rounds",
         type=int,
-        default=5,
+        default=1,
         help="Fixed number of rounds for the random benchmarks (MPI-safe).",
     )
     group.addoption(
@@ -120,48 +120,65 @@ def _write_run_params(config: pytest.Config) -> None:
     Path(results, f"params-{label}.json").write_text(json.dumps(params, indent=2))
 
 
-def _record_graph_size(picture: str, mp: MonomialPropagator) -> None:
-    """Record the number of terms (and graph metrics) reached for one picture.
+def _record_operator_size(picture: str, mp: MonomialPropagator, comm: Any) -> None:
+    """Record the total number of terms in the evolved operator for one picture.
 
-    Merged into ``graphsize-<label>.json`` (one entry per picture) so the report
+    Merged into ``opsize-<label>.json`` (one entry per picture) so the report
     can show how large the evolved operator actually grew in each picture.
 
-    Graph size is a deterministic property of the problem, so it is recorded only
-    for a serial run, where ``size()`` reflects the full evolved operator. Under
-    MPI the graph is distributed across ranks and a per-rank size would mislead;
-    the serial column is the authoritative count.
+    Under MPI the operator is partitioned disjointly across ranks, so ``mp.size()``
+    returns only this rank's shard; the global total is the sum of the per-rank
+    sizes (an allreduce). The size is deterministic in the hyperparameters, so a
+    serial run and an MPI run at the same hyperparameters report the same total.
+    Only rank 0 writes the file.
     """
-    if MPI is not None and MPI.COMM_WORLD.Get_size() > 1:
+    total = mp.size()
+    rank = 0
+    if comm is not None and comm.Get_size() > 1:
+        total = comm.allreduce(total, op=MPI.SUM)  # collective: all ranks must call
+        rank = comm.Get_rank()
+    if rank != 0:
         return
     label = os.environ.get("MONOPROP_BENCH_LABEL")
     results = os.environ.get("MONOPROP_BENCH_RESULTS")
     if not label or not results:
         return
-    path = Path(results, f"graphsize-{label}.json")
+    path = Path(results, f"opsize-{label}.json")
     data = json.loads(path.read_text()) if path.exists() else {}
-    n_cos_indices, n_cycles = mp.graph_size()
-    data[picture] = {
-        "terms": mp.size(),
-        "n_cos_indices": n_cos_indices,
-        "n_cycles": n_cycles,
-    }
+    data[picture] = {"terms": total}
     path.write_text(json.dumps(data, indent=2))
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
-    """Rank-0 bookkeeping: guard the benchmark JSON and record hyperparameters.
+    """Make rank 0 the sole writer and printer under MPI; record hyperparameters.
 
-    Under MPI every rank would otherwise write the benchmark JSON to the same
-    path, racing on the file. Rank 0 holds the makespan timings (operations are
-    barrier-wrapped), so the other ranks simply do not save. Rank 0 also records
-    the run's resolved hyperparameters for the report.
+    Every rank runs the whole pytest session, so without intervention all R ranks
+    interleave their progress output and each opens the shared ``--benchmark-json``
+    file (``pytest-benchmark`` opens it at parse time), racing on it and leaking
+    the handle. Rank 0 holds the makespan timings (operations are barrier-wrapped)
+    and is the only rank that prints and writes the JSON; the others go silent and
+    close their JSON handle. Per-rank memory dumps (``--memray``) are unaffected.
+
+    Runs ``trylast`` so the terminal reporter is already registered (it registers
+    in its own ``pytest_configure``) by the time the non-root ranks unregister it.
     """
     rank = 0 if MPI is None else MPI.COMM_WORLD.Get_rank()
-    size = 1 if MPI is None else MPI.COMM_WORLD.Get_size()
-    if size > 1 and rank != 0 and getattr(config.option, "benchmark_json", None):
-        config.option.benchmark_json = None
     if rank == 0:
         _write_run_params(config)
+        return
+
+    # Non-root MPI rank: unregister the terminal reporter so it does not
+    # interleave its output with rank 0's, and close+drop the benchmark-JSON file
+    # it opened at parse time so it neither writes nor leaks the handle.
+    reporter = config.pluginmanager.getplugin("terminalreporter")
+    if reporter is not None:
+        config.pluginmanager.unregister(reporter)
+    bench_json = getattr(config.option, "benchmark_json", None)
+    if bench_json is not None:
+        if hasattr(bench_json, "close"):
+            bench_json.close()
+        config.option.benchmark_json = None
 
 
 @pytest.fixture(scope="session")
@@ -261,5 +278,5 @@ def built_graph(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
     )
     mp.propagate()
-    _record_graph_size(picture, mp)
+    _record_operator_size(picture, mp, bench_comm)
     return mp
