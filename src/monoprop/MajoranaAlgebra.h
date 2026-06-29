@@ -23,6 +23,7 @@
 #include <bit>
 #include <complex>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -68,7 +69,7 @@ template <size_t NumModes>
 auto indices_to_bitset(const VecZ &arr) -> MajoranaSet<NumModes> {
     MajoranaSet<NumModes> bs;
     for (const auto &bit_loc : arr) {
-        bs.set(2 * NumModes - 1 - bit_loc);
+        bs.set(2 * NumModes - 1 - bit_loc); // MSb0 index convention: index 0 maps to the top bit
     }
     return bs;
 }
@@ -103,6 +104,8 @@ auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MajoranaVector
  */
 template <size_t NumModes>
 auto is_paired(const MajoranaSet<NumModes> &maj, const MajoranaSet<NumModes> &even_mask) -> bool {
+    // Paired = each mode's two Majoranas (adjacent bits) are both set or both clear, i.e. the
+    // even bit and its odd partner agree for every mode.
     const auto even_bits_masked = maj & even_mask;
     const auto odd_bits_masked = (maj >> 1) & even_mask;
     return (even_bits_masked ^ odd_bits_masked).none();
@@ -125,8 +128,8 @@ auto is_paired(const VecZ &maj) -> bool {
 /**
  * @brief Checks if a collection of Majorana operators are fully paired
  */
-template <size_t NumModes>
-auto is_fully_paired(const VecZ &inds, const MajoranaVector<NumModes> &op) -> VecZ {
+template <size_t NumModes, typename Rows>
+auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     VecZ result;
     const auto mask = even_bits<2 * NumModes, LSb0>();
 
@@ -142,7 +145,8 @@ auto is_fully_paired(const VecZ &inds, const MajoranaVector<NumModes> &op) -> Ve
                           auto &local = local_results.local();
                           for (size_t i = range.begin(); i < range.end(); ++i) {
                               const auto index = inds[i];
-                              if (is_paired<NumModes>(op[index], mask)) {
+                              const auto &op_row = materialize_row<NumModes>(op, index);
+                              if (is_paired<NumModes>(op_row, mask)) {
                                   local.push_back(index);
                               }
                           }
@@ -179,8 +183,8 @@ auto hf_phase(const MajoranaSet<NumModes> &maj, const MajoranaSet<NumModes> &hf_
 /**
  * @brief Calculates phases for paired Majorana operators with respect to a Hartree-Fock state
  */
-template <size_t NumModes>
-auto get_hf_phases(const VecZ &paired_inds, const VecZ &hf, const MajoranaVector<NumModes> &op) -> VecD {
+template <size_t NumModes, typename Rows>
+auto get_hf_phases(const VecZ &paired_inds, const VecZ &hf, const Rows &op) -> VecD {
     const auto hf_mask = get_hf_mask<NumModes>(hf);
     const auto size = paired_inds.size();
     auto result = std::vector(size, 0.0);
@@ -191,7 +195,8 @@ auto get_hf_phases(const VecZ &paired_inds, const VecZ &hf, const MajoranaVector
                           [&paired_inds, &result, &hf_mask, &op](const tbb::blocked_range<size_t> &range) {
                               for (size_t idx = range.begin(); idx < range.end(); ++idx) {
                                   const auto op_idx = paired_inds[idx];
-                                  result[idx] = hf_phase<NumModes>(op[op_idx], hf_mask);
+                                  const auto &op_row = materialize_row<NumModes>(op, op_idx);
+                                  result[idx] = hf_phase<NumModes>(op_row, hf_mask);
                               }
                           });
     }
@@ -213,7 +218,8 @@ auto get_hf_phases(const VecZ &paired_inds, const VecZ &hf, const MajoranaVector
  * discarding them would discard signal regardless of their length.
  */
 template <size_t NumModes>
-auto length_cutoff(const MajoranaSet<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes) -> bool {
+auto length_cutoff(const MajoranaSet<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes)
+    -> bool {
     const size_t inactive_mode_prefix = NumModes - logical_num_modes;
     const size_t active_bit_offset = 2 * inactive_mode_prefix;
 
@@ -323,6 +329,12 @@ public:
           length_cutoff_(cutoff_fn.template target<LengthCutoff<NumModes>>()),
           support_cutoff_(cutoff_fn.template target<SupportCutoff<NumModes>>()) {}
 
+    auto length_cutoff() const -> const LengthCutoff<NumModes> * {
+        return length_cutoff_;
+    }
+
+    auto support_cutoff() const -> const SupportCutoff<NumModes> * { return support_cutoff_; }
+
     auto operator()(const MajoranaSet<NumModes> &maj) const -> bool {
         if (length_cutoff_ != nullptr) {
             return (*length_cutoff_)(maj);
@@ -331,6 +343,42 @@ public:
             return (*support_cutoff_)(maj);
         }
         return cutoff_fn_(maj);
+    }
+
+    // Fast path: caller already knows popcount(maj). For length_pairing and mode cutoffs
+    // the predicate is `xor_sum == 0 || (popcount or or_sum) <= cutoff`; if the popcount
+    // alone is already <= cutoff we can return true without touching the bitset.
+    // For support_cutoff, or_sum <= popcount_sum so the same shortcut is safe.
+    auto passes_with_popcount(const MajoranaSet<NumModes> &maj, size_t popcount_sum) const -> bool {
+        if (length_cutoff_ != nullptr) {
+            if (popcount_sum <= length_cutoff_->cutoff) {
+                return true;
+            }
+            return (*length_cutoff_)(maj);
+        }
+        if (support_cutoff_ != nullptr) {
+            if (popcount_sum <= support_cutoff_->cutoff) {
+                return true;
+            }
+            return (*support_cutoff_)(maj);
+        }
+        return cutoff_fn_(maj);
+    }
+
+    // Upper bound on the number of Majorana positions a surviving term can carry, when the
+    // cutoff is one of the structural kinds whose predicate fails once popcount exceeds the
+    // cutoff (length-pairing-distance, mode). For an arbitrary user-supplied cutoff_fn no such
+    // bound exists and this returns std::nullopt. This is the same threshold passes_with_popcount
+    // short-circuits on; it lets the operator store size its packed inline rows from the cutoff
+    // instead of always reserving the maximum width.
+    auto max_positions_bound() const -> std::optional<size_t> {
+        if (length_cutoff_ != nullptr) {
+            return length_cutoff_->cutoff;
+        }
+        if (support_cutoff_ != nullptr) {
+            return support_cutoff_->cutoff;
+        }
+        return std::nullopt;
     }
 
 private:
@@ -378,6 +426,8 @@ auto interleave_phase(const MajoranaSet<NumModes> &maj_bs, const MajoranaSet<Num
         }
 
         const uint64_t prefix_xor = prefix_xor_64(maj_word);
+        // Strict-lower-position parity: shift left by 1 to exclude the bit itself, fold in carry
+        // (-carry broadcasts the previous words' parity to all 64 bits).
         const uint64_t running_parity = (prefix_xor << 1) ^ (-carry);
         parity ^= static_cast<size_t>(std::popcount(running_parity & gen_word));
         carry ^= prefix_xor >> 63;
@@ -483,7 +533,7 @@ auto change_basis(const MajoranaSet<NumModes> &maj, const MajoranaVector<NumMode
 
     size_t pos = maj.find_first();
     while (pos < maj.size()) {
-        new_maj ^= basis[2 * NumModes - pos - 1];
+        new_maj ^= materialize_row<NumModes>(basis, 2 * NumModes - pos - 1);
         pos = maj.find_next(pos);
     }
 

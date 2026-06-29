@@ -275,29 +275,48 @@ inline Value parallel_reduce_rank_ranges(size_t num_ranks,
 }
 
 template <typename LayerLike, typename Body>
-inline auto parallel_for_cross_rank_ranges(const LayerLike &layer, int my_rank, bool outgoing, Body &&body) -> void {
+inline void parallel_for_cross_rank_b_ranges(const LayerLike &layer, int my_rank, Body &&body) {
     parallel_for_rank_ranges(
         layer.cross_rank_rank_count(),
         my_rank,
-        [&layer, outgoing](size_t rank) {
-            return outgoing ? layer.cross_rank_out_size(rank) : layer.cross_rank_in_size(rank);
-        },
+        [&](size_t rank) { return layer.cross_rank_b_size(rank); },
+        std::forward<Body>(body));
+}
+
+template <typename LayerLike, typename Body>
+inline void parallel_for_cross_rank_d_ranges(const LayerLike &layer, int my_rank, Body &&body) {
+    parallel_for_rank_ranges(
+        layer.cross_rank_rank_count(),
+        my_rank,
+        [&](size_t rank) { return layer.cross_rank_d_size(rank); },
         std::forward<Body>(body));
 }
 
 template <typename LayerLike, typename Value, typename Body, typename ReduceOp>
-inline Value parallel_reduce_cross_rank_ranges(const LayerLike &layer,
-                                               int my_rank,
-                                               bool outgoing,
-                                               Value identity,
-                                               Body &&body,
-                                               ReduceOp &&reduce) {
+inline Value parallel_reduce_cross_rank_b_ranges(const LayerLike &layer,
+                                                 int my_rank,
+                                                 Value identity,
+                                                 Body &&body,
+                                                 ReduceOp &&reduce) {
     return parallel_reduce_rank_ranges(
         layer.cross_rank_rank_count(),
         my_rank,
-        [&layer, outgoing](size_t rank) {
-            return outgoing ? layer.cross_rank_out_size(rank) : layer.cross_rank_in_size(rank);
-        },
+        [&](size_t rank) { return layer.cross_rank_b_size(rank); },
+        std::move(identity),
+        std::forward<Body>(body),
+        std::forward<ReduceOp>(reduce));
+}
+
+template <typename LayerLike, typename Value, typename Body, typename ReduceOp>
+inline Value parallel_reduce_cross_rank_d_ranges(const LayerLike &layer,
+                                                 int my_rank,
+                                                 Value identity,
+                                                 Body &&body,
+                                                 ReduceOp &&reduce) {
+    return parallel_reduce_rank_ranges(
+        layer.cross_rank_rank_count(),
+        my_rank,
+        [&](size_t rank) { return layer.cross_rank_d_size(rank); },
         std::move(identity),
         std::forward<Body>(body),
         std::forward<ReduceOp>(reduce));

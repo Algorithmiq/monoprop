@@ -14,16 +14,27 @@
 
 #pragma once
 
+#include <algorithm>
+#include <bit>
+#include <cassert>
+#include <cstdio>
+#include <cstring>
+#include <numeric>
+#include <utility>
+
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/detail/evolution/CosineRecompute.h"
+#include "monoprop/detail/evolution/DistributedLayerBuilder.h"
 
 namespace monoprop {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
     if (basis_change_.has_value()) {
-        MajoranaVector<NumModes> basis(2 * logical_num_modes_);
+        MajoranaVector<NumModes> basis;
+        basis.reserve(2 * logical_num_modes_);
         for (size_t i = 0; i < 2 * logical_num_modes_; ++i) {
-            basis[i] = indices_to_bitset<NumModes>(basis_change_.value()[i]);
+            basis.push_back(indices_to_bitset<NumModes>(basis_change_.value()[i]));
         }
         cutoff_fn_ = detail::cutoff_function_basis_change<NumModes>(cutoff_type_, cutoff_, basis, logical_num_modes_);
     }
@@ -34,8 +45,13 @@ auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
+    // Pre-warm the lazy operator/state/sidecar caches (results discarded) so later eval-time recompute
+    // hits them already built, then trim the now-stable coeff vectors' slack.
     (void)mp_op_.get_operator();
     (void)mp_op_.get_state();
+    (void)mp_op_.even_parity_scan_sidecar();
+    mp_op_.op_coeffs.shrink_to_fit();
+    mp_op_.state_coeffs.shrink_to_fit();
 }
 
 template <size_t NumModes>
@@ -54,7 +70,10 @@ auto MonomialPropagator<NumModes>::extend_coeffs_from_current_picture_if_needed_
         return;
     }
 
-    coeffs.insert(coeffs.end(), current.begin() + static_cast<std::ptrdiff_t>(coeffs.size()), current.end());
+    if (coeffs.size() < current.size()) {
+        coeffs.insert(coeffs.end(), current.begin() + static_cast<std::ptrdiff_t>(coeffs.size()), current.end());
+    }
+    coeffs.resize(mp_op_.size(), 0.0);
 }
 
 template <size_t NumModes>
@@ -79,14 +98,24 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
     propagate_with_timing_(
         majoranas,
         only_rotate_len_k,
-        [this, &mapped_params, &coeffs, majoranas_size](const VecZ &maj, int only_rotate_len_k, size_t i) {
+        [this, &mapped_params, &coeffs, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
             const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
-            propagate_one_(maj, only_rotate_len_k, std::cref(coeffs), mapped_params[idx]);
+            // The cos word list is no longer persisted on the layer; the builder MOVES it out transiently
+            // (the per-layer recompute metadata still rides on the storage and is appended to the graph).
+            // The immediate evolve_step scales that transient word list in parallel via scale_cos_words,
+            // rather than reading the layer's (now empty) stored cos_data.
+            auto cos = std::make_shared<CosineWordList>();
+            auto storage = build_evolve_result_(maj, rot_len, std::cref(coeffs), mapped_params[idx], cos.get());
+            graph_.append(storage);
+
             const auto param = schrodinger_ ? -mapped_params[idx] : mapped_params[idx];
-            const auto graph_idx = schrodinger_ ? 0 : i;
             extend_coeffs_from_current_picture_if_needed_(coeffs);
 
-            evolve_step(coeffs, graph_, param, graph_idx, comm_);
+            Layer layer(std::move(storage));
+            detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v) {
+                detail::scale_cos_words(c, *cos, v); // parallel; build-produced list is 64-aligned & disjoint
+            };
+            evolve_step(coeffs, layer, param, cos_scale, comm_);
         });
 }
 
@@ -104,14 +133,23 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
     propagate_with_timing_(
         majoranas,
         only_rotate_len_k,
-        [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &maj, int only_rotate_len_k, size_t i) {
+        [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
             const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
-            propagate_one_(maj, only_rotate_len_k, std::cref(*op_coeffs), mapped_params[idx]);
+            // build_evolve_result_ performs the self-rank operator inserts that grow the operator;
+            // extend_coeffs must run AFTER that grow and BEFORE evolve_step.
+            // The cos word list is no longer persisted; the builder moves it out transiently and the
+            // immediate evolve_step scales it in parallel via scale_cos_words.
+            auto cos = std::make_shared<CosineWordList>();
+            auto storage = build_evolve_result_(maj, rot_len, std::cref(*op_coeffs), mapped_params[idx], cos.get());
+
             extend_coeffs_from_current_picture_if_needed_(*op_coeffs);
 
             const auto param = schrodinger_ ? -mapped_params[idx] : mapped_params[idx];
-            evolve_step(*op_coeffs, graph_.slice_view(1), param, 0, comm_);
-            graph_.consume_prefix(1);
+            Layer layer(std::move(storage));
+            detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v) {
+                detail::scale_cos_words(c, *cos, v); // parallel; build-produced list is 64-aligned & disjoint
+            };
+            evolve_step(*op_coeffs, layer, param, cos_scale, comm_);
         });
 }
 
@@ -143,7 +181,7 @@ auto MonomialPropagator<NumModes>::execute_evolution_mode_(EvolutionMode mode,
                                               only_rotate_len_k);
             break;
         default:
-            throw std::invalid_argument("Unknown evolution mode.");
+            throw std::runtime_error("Unknown evolution mode.");
     }
 }
 
@@ -163,33 +201,50 @@ auto MonomialPropagator<NumModes>::propagate_with_timing_(const std::vector<VecZ
 }
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
+                                                        int only_rotate_len_k,
+                                                        std::optional<std::reference_wrapper<const VecD>> coeffs,
+                                                        std::optional<double> param,
+                                                        CosineWordList *out_cos) -> std::shared_ptr<LayerCore> {
+    const auto gen_maj = indices_to_bitset<NumModes>(gen_vec);
+
+    // Unified build pass (paper Algorithm 2). Both parities go through the
+    // parity-corrected fastpath sidecar scan + pivot-bit leader/follower split
+    // (odd generators apply the g_odd parity(|M|) correction in the fold). The per-layer recompute
+    // metadata (generator words + cos_count) is written onto the returned LayerCore by the
+    // builder, so it travels with the layer through every graph transform.
+    return detail::build_distributed_layer<NumModes>(mp_op_,
+                                                     gen_maj,
+                                                     cutoff_fn_,
+                                                     lower_atol_,
+                                                     coeffs,
+                                                     upper_atol_,
+                                                     param,
+                                                     only_rotate_len_k,
+                                                     comm_,
+                                                     out_cos);
+}
+
+template <size_t NumModes>
 auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
                                                   int only_rotate_len_k,
                                                   std::optional<std::reference_wrapper<const VecD>> coeffs,
                                                   std::optional<double> param) -> void {
-    const auto gen_maj = indices_to_bitset<NumModes>(gen_vec);
+    // The per-layer recompute metadata (generator words + cos_count) is stored ON the layer's
+    // LayerCore by the builder, so it travels with the layer through every graph transform — no
+    // separate lockstep append is needed here.
+    graph_.append(build_evolve_result_(gen_vec, only_rotate_len_k, coeffs, param));
+}
 
-    auto evolve_result = evolve_maj<NumModes>(mp_op_,
-                                              gen_maj,
-                                              cutoff_fn_,
-                                              lower_atol_,
-                                              coeffs,
-                                              upper_atol_,
-                                              param,
-                                              only_rotate_len_k,
-                                              comm_);
-
-    SplitCycleResult split;
-    update_mp<NumModes>(mp_op_,
-                        evolve_result.half_op,
-                        evolve_result.half_cycles,
-                        evolve_result.half_phases,
-                        evolve_result.cycles,
-                        evolve_result.phases,
-                        comm_);
-    split = split_and_exchange_cycles(evolve_result.cycles, evolve_result.phases, comm_);
-
-    append_to_graph(graph_, evolve_result.cos_inds, evolve_result.compressed_cos_data, split, comm_);
+template <size_t NumModes>
+template <typename GraphLike>
+auto MonomialPropagator<NumModes>::evolve_operator_with_recompute_(VecD &&coeffs,
+                                                                   const GraphLike &graph,
+                                                                   const VecD &params) -> VecD {
+    const auto &sidecar = mp_op_.even_parity_scan_sidecar();
+    auto cache = detail::build_layer_cos_cache<NumModes>(sidecar, graph);
+    detail::LayerCosScale cos_scale = detail::make_cos_scale_from_cache(cache);
+    return evolve_operator(std::move(coeffs), graph, params, cos_scale, comm_);
 }
 
 template <size_t NumModes>
@@ -210,29 +265,141 @@ auto MonomialPropagator<NumModes>::make_functional_(const VecZ &parameter_mappin
     const auto comm = comm_;
 
     if (pare_threshold.has_value()) {
-        auto masked_graph = get_masked_execution_plan(state, op, *pare_threshold, graph_, schrodinger_, comm_);
+        // ── Streaming pare: build a typed-layer MPGraph (FoldLayer / PrunedLayer) ──
+        // pare_graph runs the backward keep-set sweep and materializes each ORIGINAL graph layer's
+        // full cosine set LAZILY (one layer at a time) via the provider below — no up-front
+        // materialization of all N layers (the old memory spike). Each emitted layer is either a
+        // FoldLayer (cos unchanged → recomputed from the fold at replay, exactly like the non-pare
+        // path) or a PrunedLayer (cos trimmed → stored explicitly). The pared graph reuses the
+        // source layer cores (shared_ptr), so capturing it by value is cheap.
+        const auto &sidecar = mp_op_.even_parity_scan_sidecar();
+        auto full_cos_of_layer = [this, &sidecar](size_t i) -> CosineWordList {
+            const auto &layer = graph_.get_layer(i);
+            MajoranaSet<NumModes> gen{};
+            const auto &gw = layer.generator_words();
+            std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
+            const auto fold = detail::make_prepared_fold<NumModes>(sidecar, gen, layer.cos_count());
+            return detail::fold_to_cos_words<NumModes>(fold);
+        };
+
+        // Own the pared graph through a shared_ptr so the cos cache below can hold raw pointers into
+        // each PrunedLayer's stored cos with NO copy and NO dangling: the functional captures this
+        // same shared_ptr, so every copy of the (copyable) std::function keeps the one heap-resident
+        // MPGraph — and therefore those cos pointers — alive. The graph object never moves.
+        auto pared = std::make_shared<const MPGraph>(
+            get_pared_graph(state, op, *pare_threshold, graph_, schrodinger_, comm_, full_cos_of_layer));
         const auto expected_layers = graph_layers();
 
-        return make_parameter_validated_functional(
-            num_params,
-            [func = std::forward<Fn>(func),
-             core_term,
-             state = std::move(state),
-             op = std::move(op),
-             graph = std::move(masked_graph),
-             parameter_mapping,
-             gen_coeffs,
-             expected_layers,
-             comm](const VecD &params) -> R {
-                validate_expected_graph_layers(graph.layers(), expected_layers);
-                return func(core_term, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
-            });
+        // ── Per-functional cos cache over the PARED graph ──
+        //   - FoldLayer (pruned_cos() == nullptr): cos == the full anticommuting set → recompute from
+        //     the sidecar fold (PreparedFold), exactly like the non-pare path.
+        //   - PrunedLayer (pruned_cos() != nullptr): cos == a FILTERED SUBSET stored on the layer as a
+        //     CosineWordList; scaled in parallel.
+        // The sidecar is persistent for the simulator's lifetime; the folds reference its dense
+        // columns by pointer and own their materialized sparse columns, so they outlive the closure.
+        struct ParedLayerCos {
+            bool is_fold = false;
+            detail::PreparedFold<NumModes> fold{};
+            const CosineWordList *filtered = nullptr; // points into the pared layer's stored cos
+        };
+        auto cache = std::make_shared<std::vector<ParedLayerCos>>();
+        cache->reserve(pared->layers());
+        for (size_t i = 0; i < pared->layers(); ++i) {
+            const auto &pared_layer = pared->get_layer(i);
+            ParedLayerCos entry;
+            if (const CosineWordList *pruned = pared_layer.pruned_cos(); pruned != nullptr) {
+                // Pruned layer: scale the stored filtered cos in PARALLEL (the pruned set is often
+                // still large at modest pare thresholds; a serial per-bit walk regresses the pared
+                // gradient ~3x). `pared` (a shared_ptr) is captured by the functional below, so this
+                // pointer into the heap-resident graph stays valid for every copy of the closure.
+                entry.is_fold = false;
+                entry.filtered = pruned;
+            }
+            else {
+                // Fold layer: fold the operator's sidecar truncated to the layer's POST-insert size,
+                // reconstructing the generator MajoranaSet from the underlying LayerCore words.
+                MajoranaSet<NumModes> gen{};
+                const auto &gw = pared_layer.generator_words();
+                std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
+                entry.is_fold = true;
+                entry.fold = detail::make_prepared_fold<NumModes>(sidecar, gen, pared_layer.cos_count());
+            }
+            cache->push_back(std::move(entry));
+        }
+
+        detail::LayerCosScale cos_scale = [cache](size_t i, double *c, double v) {
+            if ((*cache)[i].is_fold) {
+                detail::scale_cos_fold<NumModes>((*cache)[i].fold, c, v);
+            }
+            else {
+                detail::scale_cos_words(c, *(*cache)[i].filtered, v);
+            }
+        };
+        detail::LayerCosAccumulate cos_acc = [cache](size_t i, double *s, double *h, double v, double sec) {
+            return (*cache)[i].is_fold ? detail::accumulate_cos_fold<NumModes>((*cache)[i].fold, s, h, v, sec)
+                                       : detail::accumulate_cos_words(s, h, *(*cache)[i].filtered, v, sec);
+        };
+
+        // Route the pared graph through the SAME MPGraph replay path the non-pare path uses (func is
+        // the generic ev / ev_and_grad lambda — it dispatches to the const MPGraph& overload).
+        return make_parameter_validated_functional(num_params,
+                                                    [func = std::move(func),
+                                                     core_term,
+                                                     state = std::move(state),
+                                                     op = std::move(op),
+                                                     graph = std::move(pared),
+                                                     parameter_mapping,
+                                                     gen_coeffs,
+                                                     expected_layers,
+                                                     cos_scale = std::move(cos_scale),
+                                                     cos_acc = std::move(cos_acc),
+                                                     comm](const VecD &params) -> R {
+                                                        validate_expected_graph_layers(graph->layers(), expected_layers);
+                                                        return func(core_term,
+                                                                    state,
+                                                                    op,
+                                                                    parameter_mapping,
+                                                                    gen_coeffs,
+                                                                    *graph,
+                                                                    params,
+                                                                    comm,
+                                                                    cos_scale,
+                                                                    cos_acc);
+                                                    });
     }
 
     const auto expected_layers = graph_layers();
+
+    // ── Build the per-layer prepared-fold cache + recompute callbacks (non-pare path) ──
+    // The sidecar is persistent (pre-warmed in initialize_operator_caches_) and lives as long as this
+    // simulator; the prepared folds reference its dense columns by pointer and own their materialized
+    // sparse columns, so they stay valid for the captured closure's lifetime. cos is no longer stored —
+    // the callbacks recompute the full cosine set from the sidecar fold at eval time.
+    const auto &sidecar = mp_op_.even_parity_scan_sidecar();
+    auto prepared = std::make_shared<std::vector<detail::PreparedFold<NumModes>>>();
+    prepared->reserve(graph_.layers());
+    for (size_t i = 0; i < graph_.layers(); ++i) {
+        const auto &layer = graph_.get_layer(i);
+        MajoranaSet<NumModes> gen{};
+        const auto &gw = layer.generator_words();
+        std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
+        // cos_count is the layer's POST-insert operator size (build_distributed_layer): the cosine set
+        // is "all anticommuting" including this layer's inserted rotation-target endpoints, so folding
+        // the full operator's sidecar truncated to cos_count reproduces the full cosine set exactly
+        // (both pictures). cos is not stored — this fold recomputes it at eval time.
+        prepared->push_back(detail::make_prepared_fold<NumModes>(sidecar, gen, layer.cos_count()));
+    }
+
+    detail::LayerCosScale cos_scale = [prepared](size_t i, double *c, double v) {
+        detail::scale_cos_fold<NumModes>((*prepared)[i], c, v);
+    };
+    detail::LayerCosAccumulate cos_acc = [prepared](size_t i, double *s, double *h, double v, double sec) {
+        return detail::accumulate_cos_fold<NumModes>((*prepared)[i], s, h, v, sec);
+    };
+
     return make_parameter_validated_functional(
         num_params,
-        [func = std::forward<Fn>(func),
+        [func = std::move(func),
          core_term,
          state,
          op,
@@ -240,9 +407,11 @@ auto MonomialPropagator<NumModes>::make_functional_(const VecZ &parameter_mappin
          parameter_mapping,
          gen_coeffs,
          expected_layers,
+         cos_scale = std::move(cos_scale),
+         cos_acc = std::move(cos_acc),
          comm](const VecD &params) -> R {
             validate_expected_graph_layers(graph.layers(), expected_layers);
-            return func(core_term, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
+            return func(core_term, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale, cos_acc);
         });
 }
 

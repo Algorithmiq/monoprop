@@ -96,6 +96,13 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "logical_num_modes"_a = NumModes,
         "Instantiate the simulator.");
 
+    // Deep copy (the operator store is cloned with its index back-pointer repaired; immutable graph
+    // layer cores are shared). Only __deepcopy__ is exposed.
+    cls.def(
+        "__deepcopy__",
+        [](const MonomialPropagator<NumModes> &self, nb::handle) { return MonomialPropagator<NumModes>(self); },
+        "memo"_a = nb::none());
+
     cls.def("propagate",
             &MonomialPropagator<NumModes>::propagate,
             "majoranas"_a,
@@ -157,6 +164,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                     &MonomialPropagator<NumModes>::schrodinger,
                     "Whether the propagator uses Schrodinger picture");
 
+    // Contract the graph, then decode every above-atol term back into a Python {indices: coeff} dict.
     cls.def(
         "evolved_operator_dict",
         [](MonomialPropagator<NumModes> &self,
@@ -164,7 +172,6 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
            const VecZ &parameter_mapping,
            const VecD &gen_coeffs,
            double atol) -> nb::dict {
-            // Validate parameters
             validate_params(parameters, parameter_mapping, gen_coeffs);
 
             // Evolve the operator representation (single rank in non-MPI Python bindings)

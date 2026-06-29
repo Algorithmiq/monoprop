@@ -23,20 +23,17 @@
 
 namespace monoprop::detail {
 
-inline auto remove_incoming_cycle_targets_compressed(const VecZ &cos_inds, const SplitCycleResult &split)
-    -> CompressedCosineData {
-    VecZ incoming;
-    size_t total_incoming = 0;
-    for (const auto &cross_rank : split.cross_rank) {
-        total_incoming += cross_rank.in_indices.size();
-    }
-    incoming.reserve(total_incoming);
+inline constexpr std::string_view kLoopEvolvedOperatorMethod = "loop_evolved_operator";
+inline constexpr std::string_view kLoopInitialOperatorMethod = "loop_initial_operator";
+inline constexpr std::string_view kStateOpCommutatorMethod = "state_op_commutator";
 
-    for (const auto &cross_rank : split.cross_rank) {
-        incoming.insert(incoming.end(), cross_rank.in_indices.begin(), cross_rank.in_indices.end());
-    }
-
-    return build_filtered_compressed_cosine_data(cos_inds, incoming);
+[[noreturn]] inline auto throw_unsupported_generator_dispatch(std::string_view generator_name,
+                                                              bool schrodinger,
+                                                              std::string_view method) -> void {
+    throw std::runtime_error(std::format("Unsupported {} generator dispatch (schrodinger={}, method='{}').",
+                                         generator_name,
+                                         schrodinger,
+                                         method));
 }
 
 template <size_t NumModes>

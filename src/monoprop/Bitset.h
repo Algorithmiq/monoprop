@@ -67,6 +67,13 @@ public:
         return c;
     }
 
+    [[nodiscard]] constexpr auto parity() const noexcept -> bool {
+        word_type parity_word = 0;
+        for (size_t i = 0; i < kNumWords; ++i)
+            parity_word ^= words_[i];
+        return (std::popcount(parity_word) & 1U) != 0;
+    }
+
     [[nodiscard]] constexpr auto test(size_t pos) const noexcept -> bool {
         return (words_[pos / word_width] >> (pos % word_width)) & 1;
     }
@@ -90,6 +97,13 @@ public:
         for (size_t i = 0; i < kNumWords; ++i)
             c += static_cast<size_t>(std::popcount(words_[i] & o.words_[i]));
         return c;
+    }
+
+    [[nodiscard]] constexpr auto parity_and(const Bitset &o) const noexcept -> bool {
+        word_type parity_word = 0;
+        for (size_t i = 0; i < kNumWords; ++i)
+            parity_word ^= words_[i] & o.words_[i];
+        return (std::popcount(parity_word) & 1U) != 0;
     }
 
     /// Count of bits set after left-shifting by n, without creating a temporary.

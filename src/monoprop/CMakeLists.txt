@@ -8,6 +8,7 @@ add_library(
   SHARED
   Evolution.cpp
   MPFunctions.cpp
+  pare/PareGraph.cpp
   MPGraph.cpp
   Threading.cpp
   Utilities.cpp
@@ -48,8 +49,6 @@ list(
 
 set(
   monoprop_PRIVATE_HEADERS
-  ${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/masked_execution_plan/BuildExecutionPlan.h
-  ${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/masked_execution_plan/LayerFiltering.h
 )
 
 set_target_properties(
@@ -64,8 +63,6 @@ set_target_properties(
     PRIVATE_HEADER
       "${monoprop_PRIVATE_HEADERS}"
 )
-
-add_subdirectory(masked_execution_plan)
 
 target_include_directories(
   monoprop

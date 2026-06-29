@@ -177,6 +177,23 @@ class MonomialPropagator:
             comm=comm,
         )
 
+    def __deepcopy__(self, memo):
+        """Deep-copy the simulator into an independent instance.
+
+        The heavy state (the bound simulator and its operator store) is deep-copied; the MPI
+        communicator is shared as-is, which is correct both with MPI (the live mpi4py comm) and
+        without (``None``). Inherited unchanged by ``MonomialPropagatorExtra``.
+        """
+        import copy as _copy
+
+        new = type(self).__new__(type(self))
+        memo[id(self)] = new
+        for key, value in self.__dict__.items():
+            new.__dict__[key] = (
+                value if key == "_comm" else _copy.deepcopy(value, memo)
+            )
+        return new
+
     def _create_functional_wrapper(
         self,
         parameter_mapping: list[int] | np.ndarray | None = None,
