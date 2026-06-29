@@ -44,6 +44,18 @@ def write_json(path: Path, obj: object) -> None:
     path.write_text(json.dumps(obj, indent=2))
 
 
+def _label_header(first_col: str, labels: list[str]) -> list[str]:
+    """Return the two header rows for a table whose columns are run labels.
+
+    The first column (``first_col``) is left-aligned; the per-label value columns
+    are right-aligned.
+    """
+    return [
+        f"| {first_col} | " + " | ".join(labels) + " |",
+        "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
+    ]
+
+
 def _load_by_label(results_dir: Path, prefix: str) -> dict[str, dict]:
     """Return ``{label: parsed_json}`` from ``<prefix>-*.json`` files."""
     return {
@@ -116,8 +128,7 @@ def _hyperparams_table(labels: list[str], params: dict[str, dict]) -> list[str]:
         "",
         "Random-problem sizes and run knobs used for each label.",
         "",
-        "| Parameter | " + " | ".join(labels) + " |",
-        "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
+        *_label_header("Parameter", labels),
     ]
     for key in _PARAM_KEYS:
         cells = []
@@ -143,8 +154,7 @@ def _operator_size_table(labels: list[str], sizes: dict[str, dict]) -> list[str]
         "hyperparameters, so runs at the same hyperparameters report the same count "
         "regardless of rank or thread count.",
         "",
-        "| Picture | " + " | ".join(labels) + " |",
-        "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
+        *_label_header("Picture", labels),
     ]
     for picture in pictures:
         cells = []
@@ -176,12 +186,7 @@ def _model_config_table(
         for field in configs.get(label, {}).get(model, {}):
             if field not in fields:
                 fields.append(field)
-    lines = [
-        f"### {model}",
-        "",
-        "| Parameter | " + " | ".join(labels) + " |",
-        "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
-    ]
+    lines = [f"### {model}", "", *_label_header("Parameter", labels)]
     for field in fields:
         cells = []
         for label in labels:
@@ -265,8 +270,7 @@ def _table(
     values: dict[str, dict[str, str]],
 ) -> list[str]:
     """Render one Markdown table (rows = operations, columns = run labels)."""
-    lines = [f"### {title}", "", "| Operation | " + " | ".join(labels) + " |"]
-    lines.append("| --- | " + " | ".join(["---:"] * len(labels)) + " |")
+    lines = [f"### {title}", "", *_label_header("Operation", labels)]
     for op in ops:
         cells = [values.get(label, {}).get(op, "—") for label in labels]
         lines.append(f"| {_display_op(op)} | " + " | ".join(cells) + " |")
