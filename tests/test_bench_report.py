@@ -185,6 +185,24 @@ def test_build_report_includes_operator_size(tmp_path: Path) -> None:
     assert "| Schrödinger | 11,311,942 |" in md
 
 
+def test_build_report_includes_memory(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    (tmp_path / "mem-np1.json").write_text(
+        json.dumps(
+            {
+                "bench_monoprop.py::test_random_energy[heisenberg]": 52428800,
+                "bench_monoprop.py::test_random_energy[schrodinger]": 104857600,
+            }
+        )
+    )
+    md = report.build_report(tmp_path)
+
+    assert "Memory (PSS)" in md
+    # Bytes render as MiB in the per-picture memory tables.
+    assert "50.00 MiB" in md
+    assert "100.00 MiB" in md
+
+
 def test_build_report_omits_empty_schrodinger_section(tmp_path: Path) -> None:
     data = {
         "benchmarks": [

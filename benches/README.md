@@ -1,9 +1,10 @@
 # monoprop benchmarks
 
 A pytest suite measuring the **time** ([`pytest-benchmark`](https://pytest-benchmark.readthedocs.io))
-and **peak memory** ([`pytest-memray`](https://pytest-memray.readthedocs.io),
-which tracks the C++-side allocations `tracemalloc` misses) of monoprop's core
-operations. It is not part of the normal `pytest` run; invoke it with `just bench`.
+and **peak physical memory (PSS)** of monoprop's core operations. Memory is read
+from the kernel (peak RSS corrected to PSS), capturing the C++/TBB allocations
+`tracemalloc` misses at no measurable cost, so timing and memory share one sweep.
+It is not part of the normal `pytest` run; invoke it with `just bench`.
 
 ## Running
 
@@ -46,12 +47,6 @@ You set configuration on the command line; the driver records it in the report.
 `OMP_PROC_BIND` / `OMP_PLACES` for OpenMP pinning. Use a custom `--label` when
 varying threads/pinning at a fixed rank count so runs don't overwrite each other.
 
-```bash
-just bench-build-mpi                                       # one-time MPI rebuild
-just bench --ranks 4 --mpiexec-args="--bind-to core" \
-    --env monoprop_NUM_THREADS=2 --env OMP_PROC_BIND=close --label r4t2
-```
-
 `--ranks N` launches `mpiexec` with these defaults; `--mpiexec-args` is appended:
 
 - `--allow-run-as-root` — needed in the container/CI images, which run as root.
@@ -63,8 +58,10 @@ just bench --ranks 4 --mpiexec-args="--bind-to core" \
 
 Benchmarks are communicator-aware: each operation is barrier-wrapped so the
 timed cost is the **makespan** across ranks, rank 0 writes the timing JSON, and
-memory is the worst-rank peak. MPI uses fixed-round `pedantic` timing
-(`--bench-rounds`, default 1) so ranks don't diverge and deadlock at the barriers.
+memory is the per-rank peak PSS **summed across ranks** (true physical RAM, with
+shared library pages counted once — not a per-node figure). MPI uses fixed-round
+`pedantic` timing (`--bench-rounds`, default 1) so ranks don't diverge and
+deadlock at the barriers.
 
 **The MPI build must be loaded and stay loaded.** monoprop builds with
 `monoprop_ENABLE_MPI=OFF` by default; a non-MPI extension silently ignores the
@@ -85,7 +82,7 @@ serial / MPI / thread variants sit side by side. Sections:
 - **Hyperparameters** — the resolved random-problem sizes each run used.
 - **Operator size** — terms in the evolved operator per picture.
 - **Static model configuration** — the resolved config of each static model.
-- **Heisenberg** / **Schrödinger** — a **Time** and **Peak memory** table each
+- **Heisenberg** / **Schrödinger** — a **Time** and **Memory (PSS)** table each
   (Schrödinger omitted when unused).
 
 ## Benchmarks
@@ -115,8 +112,8 @@ Operations: `build_graph`, `pare`, `energy`, `gradient` (graph-based), and
 - `test_static[pauli]` — 127-qubit Pauli-basis kicked-Ising (IBM Eagle heavy-hex,
   20 layers, ⟨Z₆₂⟩).
 
-`--lower-atol VALUE` overrides their truncation tolerance (defaults: Hubbard
-1e-5, Pauli 1e-4).
+`--hubbard-lower-atol VALUE` / `--pauli-lower-atol VALUE` override each model's
+truncation tolerance (both default to 1e-4).
 
 ## Notes
 

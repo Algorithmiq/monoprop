@@ -210,7 +210,7 @@ class HubbardConfig:
     observable_spin: str = "up"
     neel_start_spin: str = "down"
     cutoff: int = 6
-    lower_atol: float = 1e-5
+    lower_atol: float = 1e-4
 
     @property
     def num_qubits(self) -> int:
