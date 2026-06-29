@@ -71,6 +71,17 @@ def _write_timings(results_dir: Path) -> None:
     (results_dir / "time-np1.json").write_text(json.dumps(data))
 
 
+def _write_static_configs(results_dir: Path) -> None:
+    (results_dir / "configs-np1.json").write_text(
+        json.dumps(
+            {
+                "hubbard": {"num_sites": 60, "cutoff": 6, "lower_atol": 1e-5},
+                "pauli": {"num_qubits": 127, "cutoff": 8, "lower_atol": 1e-4},
+            }
+        )
+    )
+
+
 def test_build_report_has_two_sections(tmp_path: Path) -> None:
     _write_timings(tmp_path)
     md = report.build_report(tmp_path)
@@ -102,7 +113,6 @@ def test_build_report_includes_hyperparameters(tmp_path: Path) -> None:
                 "cutoff": 6,
                 "seed": 0,
                 "bench_rounds": 5,
-                "lower_atol": 0.0001,
             }
         )
     )
@@ -112,14 +122,41 @@ def test_build_report_includes_hyperparameters(tmp_path: Path) -> None:
     # Each hyperparameter row is present with its value.
     assert "| num_generators | 100 |" in md
     assert "| cutoff | 6 |" in md
-    assert "| lower_atol | 0.0001 |" in md
+    # lower_atol is no longer a random hyperparameter (it is per-model now).
+    assert "| lower_atol |" not in md
     # Hyperparameters sit between Configuration and the picture sections.
     assert md.index("## Hyperparameters") < md.index("## Heisenberg")
 
 
-def test_hyperparams_table_renders_none_lower_atol_as_default() -> None:
-    table = "\n".join(report._hyperparams_table(["np1"], {"np1": {"lower_atol": None}}))
-    assert "| lower_atol | default |" in table
+def test_fmt_config_value_formats_floats_compactly() -> None:
+    assert report._fmt_config_value(1e-5) == "1e-05"
+    assert report._fmt_config_value(1.0) == "1"
+    assert report._fmt_config_value(0.2) == "0.2"
+    assert report._fmt_config_value(60) == "60"
+    assert report._fmt_config_value("up") == "up"
+
+
+def test_build_report_includes_static_config(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    _write_static_configs(tmp_path)
+    md = report.build_report(tmp_path)
+
+    assert "## Static model configuration" in md
+    assert "### hubbard" in md
+    assert "### pauli" in md
+    # Int field and compact-float field rendered in the right sub-tables.
+    assert "| num_sites | 60 |" in md
+    assert "| num_qubits | 127 |" in md
+    assert "| lower_atol | 1e-05 |" in md
+    # hubbard precedes pauli; the section precedes the picture sections.
+    assert md.index("### hubbard") < md.index("### pauli")
+    assert md.index("## Static model configuration") < md.index("## Heisenberg")
+
+
+def test_static_config_section_absent_when_no_configs(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    md = report.build_report(tmp_path)
+    assert "## Static model configuration" not in md
 
 
 def test_build_report_includes_graph_size(tmp_path: Path) -> None:
