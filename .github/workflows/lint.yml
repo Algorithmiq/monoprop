@@ -15,12 +15,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          # grab the history of the PR, so we can run pre-commit on a commit range
+          # grab the history of the PR, so we can run prek on a commit range
           fetch-depth: 0
 
-      - name: Run pre-commit for linting
-        uses: pre-commit/action@v3.0.1
+      - name: Run prek for linting
+        uses: j178/prek-action@v2.0.4
         env:
           RUFF_OUTPUT_FORMAT: github
         with:
-          extra_args: --from-ref ${{ github.event.pull_request.base.sha }} --to-ref ${{ github.event.pull_request.head.sha }}
+          extra-args: --from-ref ${{ github.event.pull_request.base.sha }} --to-ref ${{ github.event.pull_request.head.sha }}
