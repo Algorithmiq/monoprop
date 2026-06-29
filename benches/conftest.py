@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +39,8 @@ import pytest
 from _builders import RandomProblem, build_random_propagator, make_random_problem
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from monoprop import MonomialPropagator
 
 try:
@@ -96,7 +99,6 @@ _RECORDED_OPTIONS = (
     "cutoff",
     "seed",
     "bench_rounds",
-    "lower_atol",
 )
 
 
@@ -178,6 +180,39 @@ def bench_rounds(request: pytest.FixtureRequest) -> int:
 def lower_atol(request: pytest.FixtureRequest) -> float | None:
     """Return the static-benchmark ``lower_atol`` override (``None`` if unset)."""
     return request.config.getoption("--lower-atol")
+
+
+@pytest.fixture
+def record_model_config() -> Callable[[str, Any], None]:
+    """Return a callable recording a static model's resolved config for the report.
+
+    ``benches/run.py`` sets ``MONOPROP_BENCH_LABEL`` and
+    ``MONOPROP_BENCH_RESULTS``; the recorder merges the model's dataclass fields
+    into ``configs-<label>.json`` (one entry per model) so the report can show
+    the configuration each static model actually ran with. The config is pure
+    input and identical across ranks, so only rank 0 writes (mirroring
+    :func:`_write_run_params`); the timing and memory passes overwrite
+    identically.
+
+    Returns:
+        A callable ``record(model, config)`` taking the model name and its
+        resolved (frozen) configuration dataclass.
+    """
+
+    def _record(model: str, config: Any) -> None:
+        rank = 0 if MPI is None else MPI.COMM_WORLD.Get_rank()
+        if rank != 0:
+            return
+        label = os.environ.get("MONOPROP_BENCH_LABEL")
+        results = os.environ.get("MONOPROP_BENCH_RESULTS")
+        if not label or not results:
+            return
+        path = Path(results, f"configs-{label}.json")
+        data = json.loads(path.read_text()) if path.exists() else {}
+        data[model] = asdict(config)
+        path.write_text(json.dumps(data, indent=2))
+
+    return _record
 
 
 @pytest.fixture(scope="session", params=["heisenberg", "schrodinger"])
