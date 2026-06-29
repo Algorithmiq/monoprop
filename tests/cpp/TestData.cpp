@@ -37,11 +37,16 @@ auto load_case(const std::filesystem::path& filename) -> CaseData {
         throw std::runtime_error(std::format("Failed to open msgpack file: {}", filename.string()));
     }
 
-    auto size = file.tellg();
+    const auto size_pos = file.tellg();
+    if (size_pos == std::ifstream::pos_type(-1)) {
+        throw std::runtime_error(
+            std::format("Failed to determine size of msgpack file: {}", filename.string()));
+    }
+    const auto size = static_cast<std::size_t>(size_pos);
     file.seekg(0, std::ios::beg);
 
     std::vector<char> buffer(size);
-    if (!file.read(buffer.data(), size)) {
+    if (!file.read(buffer.data(), static_cast<std::streamsize>(size))) {
         throw std::runtime_error(std::format("Error reading file: {}", filename.string()));
     }
     file.close();
@@ -67,6 +72,15 @@ auto load_case(const std::filesystem::path& filename) -> CaseData {
     auto keys = raw_hamiltonian.at("keys").as<std::vector<VecZ>>();
     auto real = raw_hamiltonian.at("real").as<VecD>();
     auto imag = raw_hamiltonian.at("imag").as<VecD>();
+
+    if (keys.size() != real.size() || keys.size() != imag.size()) {
+        throw std::runtime_error(std::format(
+            "Invalid hamiltonian arrays in {}: keys={}, real={}, imag={}",
+            filename.string(),
+            keys.size(),
+            real.size(),
+            imag.size()));
+    }
 
     FermiOperatorMap hamiltonian;
     for (size_t i = 0; i < keys.size(); ++i) {
