@@ -202,7 +202,9 @@ def _graphsize_table(labels: list[str], sizes: dict[str, dict]) -> list[str]:
     lines = [
         "## Graph size",
         "",
-        "Number of terms in the evolved operator reached per picture.",
+        "Number of terms in the evolved operator reached per picture. Recorded on "
+        "serial runs (it is deterministic in the hyperparameters, so MPI columns "
+        "are blank).",
         "",
         "| Picture | " + " | ".join(labels) + " |",
         "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
