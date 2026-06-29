@@ -194,12 +194,14 @@ def test_static(
     bench_comm: Any,
     lower_atol: float | None,
     model: str,
+    record_model_config: Any,
 ) -> None:
     """Benchmark a fixed in-place static simulation (Heisenberg picture)."""
     build_fn, config_cls, steps = STATIC_MODELS[model]
     config = config_cls()
     if lower_atol is not None:
         config = replace(config, lower_atol=lower_atol)
+    record_model_config(model, config)
 
     def setup() -> tuple[tuple[MonomialPropagator, int], dict]:
         return (build_fn(config, comm=bench_comm), steps), {}
