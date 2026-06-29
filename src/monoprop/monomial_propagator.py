@@ -665,10 +665,6 @@ class MonomialPropagator:
         Args:
             parameters: Optional variational parameter values for the gates to be
                 contracted. If None, defaults to empty list.
-            parameter_mapping: Optional mapping from parameters to gate indices.
-                Must have same length as gen_coeffs. If None, defaults to empty list.
-            gen_coeffs: Optional generator coefficients for each gate. Must have same
-                length as parameter_mapping. If None, defaults to empty list.
             ignore_coeffs: Whether to ignore the generator coefficients. If True (default),
                 the coefficients are not applied to the gates during contraction.
             inplace: Whether to modify the simulator state in place. If True (default),

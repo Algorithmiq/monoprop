@@ -1,4 +1,5 @@
 .. _propagation_algorithm:
+
 Propagation Algorithm
 =====================
 
@@ -87,6 +88,7 @@ tree - each branching gate can up to double the number of active terms. That
 exponential growth is exactly what truncation keeps in check.
 
 .. _truncation:
+
 Truncation: controlling growth
 ------------------------------
 
