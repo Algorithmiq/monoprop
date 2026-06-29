@@ -29,7 +29,7 @@
 
 #include <boost/test/unit_test.hpp>
 
-#include "monoprop/DataGenerators.h"
+#include "TestData.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
@@ -101,10 +101,10 @@ inline auto resolve_test_data_path(int max_depth = 8) -> fs::path {
 
 /// Load test data from a msgpack file (with Boost assertion on existence).
 template <size_t NumModes>
-inline auto load_case_data(const std::string& filename) -> MPData {
+inline auto load_case_data(const std::string& filename) -> CaseData {
     const fs::path data_path = resolve_test_data_path() / filename;
     BOOST_REQUIRE_MESSAGE(fs::exists(data_path), "Missing msgpack data file: " << data_path);
-    return load_from_msgpack(data_path);
+    return load_case(data_path);
 }
 
 /// Configuration for building a simulator instance.
@@ -117,13 +117,13 @@ struct SimulatorConfig {
     std::optional<std::vector<VecZ>> basis_change = std::nullopt;
 };
 
-/// Build a MonomialPropagator from MPData and a config struct.
+/// Build a MonomialPropagator from CaseData and a config struct.
 template <size_t NumModes>
-inline auto build_simulator(const MPData& data, const SimulatorConfig& cfg = {}) -> MonomialPropagator<NumModes> {
+inline auto build_simulator(const CaseData& data, const SimulatorConfig& cfg = {}) -> MonomialPropagator<NumModes> {
     const auto cutoff = static_cast<unsigned int>(2 * NumModes);
-    return MonomialPropagator<NumModes>(data.fermionic_operator,
+    return MonomialPropagator<NumModes>(data.hamiltonian,
                                         cutoff,
-                                        data.slater_determinant,
+                                        data.hartree_fock,
                                         cfg.schrodinger_cutoff,
                                         cfg.comm,
                                         cfg.atol,
@@ -138,7 +138,7 @@ inline auto build_simulator(const MPData& data, const SimulatorConfig& cfg = {})
 
 /// Evolve and evaluate expectation value via expectation_value_functional.
 template <size_t NumModes>
-inline auto evaluate_expval(MonomialPropagator<NumModes>& sim, const MPData& data, bool pare) -> double {
+inline auto evaluate_expval(MonomialPropagator<NumModes>& sim, const CaseData& data, bool pare) -> double {
     sim.propagate(data.majoranas);
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
     auto expval_fn = sim.expectation_value_functional(data.param_inds, data.gen_coeffs, pare_threshold);
@@ -158,7 +158,7 @@ inline auto check_expval_close(const char* label, double expval, double exact, d
 
 /// Test evolve + expectation_value_functional.
 template <size_t n_modes>
-inline auto test_evolve_build_graph(const MPData& data, const SimulatorConfig& cfg, bool pare, double exact_expval)
+inline auto test_evolve_build_graph(const CaseData& data, const SimulatorConfig& cfg, bool pare, double exact_expval)
     -> void {
     auto mp = build_simulator<n_modes>(data, cfg);
     mp.propagate(data.majoranas);
@@ -174,7 +174,7 @@ inline auto test_evolve_build_graph(const MPData& data, const SimulatorConfig& c
 
 /// Test evolve with pre-computed coefficients + expectation_value_functional.
 template <size_t n_modes>
-inline auto test_evolve_build_graph_with_coeffs(const MPData& data,
+inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
                                                 const SimulatorConfig& cfg,
                                                 bool pare,
                                                 double exact_expval) -> void {
@@ -201,12 +201,12 @@ struct ExampleDataFix {
     int cutoff = 2 * n_modes;
     CutoffType cutoff_type = CutoffType::Length;
     std::optional<std::vector<VecZ>> basis_change{std::nullopt};
-    MPData data;
+    CaseData data;
 
     ExampleDataFix() {
         auto data_path = resolve_test_data_path();
         auto msgpack_file = data_path / "random_exact.msgpack";
-        data = load_from_msgpack(msgpack_file);
+        data = load_case(msgpack_file);
     }
 };
 

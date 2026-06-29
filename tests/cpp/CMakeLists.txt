@@ -24,6 +24,7 @@ target_link_libraries(
   PRIVATE
     monoprop
     Boost::unit_test_framework
+    msgpack-cxx
 )
 
 include(${CMAKE_CURRENT_LIST_DIR}/boost-test.cmake)

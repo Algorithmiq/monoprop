@@ -22,39 +22,26 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from monoprop.monomial_data import MonomialCircuit, MonomialOperator
+from tests.cases import load_problem
 
 MPI = pytest.importorskip("mpi4py").MPI
 
-from monoprop import MonomialPropagator, MPData  # noqa: E402
+from monoprop import MonomialPropagator  # noqa: E402
 
 
 @pytest.fixture
 def lih_fermionic_spin_exact(lazy_shared_datadir):
-    """Load test data from msgpack file."""
+    """Load the LiH fermionic test problem from its msgpack fixture."""
     data_path = lazy_shared_datadir / "lih_fermionic_spin_exact.msgpack"
-    return MPData.from_msgpack(filepath=data_path)
+    return load_problem(data_path)
 
 
-def _make_mp(data, comm):
-    """Create a standard MP instance from test data."""
-
-    hamiltonian = MonomialOperator.from_dict(
-        terms_dict=data.fermionic_hamiltonian,
-        num_modes=data.num_modes,
-    )
-    monomial_circuit = MonomialCircuit(
-        initial_state=data.hartree_fock,
-        majoranas=data.majoranas,
-        parameters=data.parameters,
-        gen_coeffs=data.gen_coeffs,
-        param_inds=data.param_inds,
-    )
-
+def _make_mp(problem, comm):
+    """Create a standard MP instance from a fermionic test problem."""
     return MonomialPropagator(
-        hamiltonian,
-        monomial_circuit,
-        cutoff=2 * data.num_modes,
+        problem.operator,
+        problem.monomial_circuit,
+        cutoff=2 * problem.n_modes,
         comm=comm,
     )
 
@@ -86,8 +73,8 @@ class TestMPISimulator:
         expval = mp.expectation_value_functional(
             use_coeffs=True,
             pare_threshold=1e-10,
-        )(lih_fermionic_spin_exact.parameters)
-        _assert_expval(expval, lih_fermionic_spin_exact.actual_energy)
+        )(lih_fermionic_spin_exact.monomial_circuit.parameters)
+        _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
 
     def test_evolve_with_operator_coeffs(self, lih_fermionic_spin_exact):
         mp = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
@@ -99,43 +86,31 @@ class TestMPISimulator:
         expval = mp.expectation_value_functional(
             use_coeffs=True,
             pare_threshold=1e-10,
-        )(lih_fermionic_spin_exact.parameters)
-        _assert_expval(expval, lih_fermionic_spin_exact.actual_energy)
+        )(lih_fermionic_spin_exact.monomial_circuit.parameters)
+        _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
 
     def test_immediate_contraction(self, lih_fermionic_spin_exact):
         mp = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
         mp.propagate(evolve_with_coeffs=True)
         _assert_expval(
             mp.expectation_value_functional([], [], pare_threshold=1e-10)([]),
-            lih_fermionic_spin_exact.actual_energy,
+            lih_fermionic_spin_exact.exact_expval,
         )
 
     def test_schrodinger_picture(self, lih_fermionic_spin_exact):
-        # TODO: hamiltonian and monomial_circuit should be fixtures
-        hamiltonian = MonomialOperator.from_dict(
-            terms_dict=lih_fermionic_spin_exact.fermionic_hamiltonian,
-            num_modes=lih_fermionic_spin_exact.num_modes,
-        )
-        monomial_circuit = MonomialCircuit(
-            initial_state=lih_fermionic_spin_exact.hartree_fock,
-            majoranas=lih_fermionic_spin_exact.majoranas,
-            parameters=lih_fermionic_spin_exact.parameters,
-            gen_coeffs=lih_fermionic_spin_exact.gen_coeffs,
-            param_inds=lih_fermionic_spin_exact.param_inds,
-        )
         mp = MonomialPropagator(
-            hamiltonian,
-            monomial_circuit,
-            cutoff=2 * lih_fermionic_spin_exact.num_modes,
-            schrodinger_cutoff=2 * lih_fermionic_spin_exact.num_modes,
+            lih_fermionic_spin_exact.operator,
+            lih_fermionic_spin_exact.monomial_circuit,
+            cutoff=2 * lih_fermionic_spin_exact.n_modes,
+            schrodinger_cutoff=2 * lih_fermionic_spin_exact.n_modes,
             comm=MPI.COMM_WORLD,
         )
         mp.propagate()
         expval = mp.expectation_value_functional(
             use_coeffs=True,
             pare_threshold=1e-10,
-        )(lih_fermionic_spin_exact.parameters)
-        _assert_expval(expval, lih_fermionic_spin_exact.actual_energy)
+        )(lih_fermionic_spin_exact.monomial_circuit.parameters)
+        _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
 
     def test_gradient_functional(self, lih_fermionic_spin_exact):
         """Test gradient_functional against finite difference."""
@@ -152,7 +127,7 @@ class TestMPISimulator:
         )
 
         rng = np.random.default_rng(42)
-        xk = rng.random(size=len(lih_fermionic_spin_exact.parameters))
+        xk = rng.random(size=len(lih_fermionic_spin_exact.monomial_circuit.parameters))
 
         analytical_grad = grad_fn(xk)
 
@@ -163,11 +138,11 @@ class TestMPISimulator:
     def test_expectation_value_and_gradient_functional(self, lih_fermionic_spin_exact):
         """Test expectation_value_and_gradient_functional returns consistent expectation value and gradient."""
         mp = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
-        mp.propagate(lih_fermionic_spin_exact.majoranas)
+        mp.propagate(lih_fermionic_spin_exact.monomial_circuit.majoranas)
 
         common_kwargs = {
-            "parameter_mapping": lih_fermionic_spin_exact.param_inds,
-            "gen_coeffs": lih_fermionic_spin_exact.gen_coeffs,
+            "parameter_mapping": lih_fermionic_spin_exact.monomial_circuit.param_inds,
+            "gen_coeffs": lih_fermionic_spin_exact.monomial_circuit.gen_coeffs,
             "pare_threshold": 1e-10,
         }
         expval_grad_fn = mp.expectation_value_and_gradient_functional(**common_kwargs)
@@ -175,20 +150,22 @@ class TestMPISimulator:
         grad_fn = mp.gradient_functional(**common_kwargs)
 
         combined_expval, combined_grad = expval_grad_fn(
-            lih_fermionic_spin_exact.parameters
+            lih_fermionic_spin_exact.monomial_circuit.parameters
         )
-        individual_expval = expval_fn(lih_fermionic_spin_exact.parameters)
-        individual_grad = grad_fn(lih_fermionic_spin_exact.parameters)
+        individual_expval = expval_fn(
+            lih_fermionic_spin_exact.monomial_circuit.parameters
+        )
+        individual_grad = grad_fn(lih_fermionic_spin_exact.monomial_circuit.parameters)
 
         assert np.isclose(combined_expval, individual_expval, atol=1e-12)
         assert np.allclose(combined_grad, individual_grad, atol=1e-12)
-        _assert_expval(combined_expval, lih_fermionic_spin_exact.actual_energy)
+        _assert_expval(combined_expval, lih_fermionic_spin_exact.exact_expval)
 
         grad_diff = np.max(
-            np.abs(np.array(combined_grad) - lih_fermionic_spin_exact.actual_gradient)
+            np.abs(np.array(combined_grad) - lih_fermionic_spin_exact.exact_gradient)
         )
         assert np.allclose(
-            combined_grad, lih_fermionic_spin_exact.actual_gradient, atol=1e-9
+            combined_grad, lih_fermionic_spin_exact.exact_gradient, atol=1e-9
         ), f"Gradient vs exact mismatch: max diff = {grad_diff}"
 
     @pytest.mark.mpi(min_size=2)
@@ -203,12 +180,12 @@ class TestMPISimulator:
             expval = mp.expectation_value_functional(
                 use_coeffs=True,
                 pare_threshold=1e-10,
-            )(lih_fermionic_spin_exact.parameters)
+            )(lih_fermionic_spin_exact.monomial_circuit.parameters)
         finally:
             mp = None
             sub_comm.Free()
 
-        _assert_expval(expval, lih_fermionic_spin_exact.actual_energy)
+        _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
 
     def test_mpi_comm_self(self, lih_fermionic_spin_exact):
         """Test single-rank communicator works correctly."""
@@ -217,5 +194,5 @@ class TestMPISimulator:
         expval = mp.expectation_value_functional(
             use_coeffs=True,
             pare_threshold=1e-10,
-        )(lih_fermionic_spin_exact.parameters)
-        _assert_expval(expval, lih_fermionic_spin_exact.actual_energy)
+        )(lih_fermionic_spin_exact.monomial_circuit.parameters)
+        _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)

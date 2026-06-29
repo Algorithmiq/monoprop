@@ -16,24 +16,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, NamedTuple
 
+import numpy as np
+from msgpack import unpackb
 from pytest_cases import case
 
-from monoprop import MPData
 from monoprop.monomial_data import MonomialCircuit, MonomialOperator
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import numpy as np
-
-
-class MPFermData(NamedTuple):
-    """Data class for Monomial Propagator Fermionic data."""
-
-    majoranas: list[tuple[int, ...]]
-    gen_coeffs: np.ndarray
-    param_inds: np.ndarray
-    parameters: np.ndarray
 
 
 class SplitOrbitalRotations(NamedTuple):
@@ -59,16 +49,12 @@ class FermionicProblem:
         exact_expval: float,
         exact_gradient: np.ndarray,
         n_modes: int,
-        fermi_com_data: list[list[tuple[tuple[int, ...], complex]]] | None = None,
-        exact_commutator_gradient: np.ndarray | None = None,
     ) -> None:
         self.monomial_circuit = monomial_circuit
         self.operator = operator
         self.exact_expval = exact_expval
         self.exact_gradient = exact_gradient
         self.n_modes = n_modes
-        self.fermi_com_data = fermi_com_data
-        self.exact_commutator_gradient = exact_commutator_gradient
 
     def split_only_rotate_len_k(self) -> SplitOrbitalRotations:
         """Split the Majorana operators into non-orbital and orbital rotation parts."""
@@ -96,28 +82,47 @@ class FermionicProblem:
         return SplitOrbitalRotations(m1, pi1, gc1, p1, m2, pi2, gc2, p2)
 
 
-def _create_case(pth: Path, fname: str) -> FermionicProblem:
-    monoprop_data = MPData.from_msgpack(filepath=pth / f"{fname}.msgpack")
+def load_problem(path: Path) -> FermionicProblem:
+    """Load a fermionic test case from a minimal-schema msgpack file.
+
+    See ``tests/data/README.md`` for the on-disk schema.
+
+    Args:
+        path: Path to the ``.msgpack`` fixture.
+
+    Returns:
+        A :class:`FermionicProblem` built directly from the public API
+        (:class:`MonomialCircuit` and :class:`MonomialOperator`).
+    """
+    with path.open("rb") as fh:
+        data = unpackb(fh.read())
 
     monomial_circuit = MonomialCircuit(
-        initial_state=monoprop_data.hartree_fock,
-        majoranas=monoprop_data.majoranas,
-        gen_coeffs=monoprop_data.gen_coeffs,
-        param_inds=monoprop_data.param_inds,
-        parameters=monoprop_data.parameters,
+        initial_state=data["hartree_fock"],
+        majoranas=[tuple(maj) for maj in data["majoranas"]],
+        gen_coeffs=np.asarray(data["gen_coeffs"]),
+        param_inds=np.asarray(data["param_inds"], dtype=int),
+        parameters=np.asarray(data["parameters"]),
     )
-    quantum_operator = MonomialOperator.from_dict(
-        monoprop_data.fermionic_hamiltonian, monoprop_data.num_modes
-    )
+
+    ham = data["hamiltonian"]
+    terms = {
+        tuple(key): complex(real, imag)
+        for key, real, imag in zip(ham["keys"], ham["real"], ham["imag"], strict=True)
+    }
+    quantum_operator = MonomialOperator.from_dict(terms, data["num_modes"])
+
     return FermionicProblem(
         monomial_circuit=monomial_circuit,
         operator=quantum_operator,
-        exact_expval=monoprop_data.actual_energy,
-        exact_gradient=monoprop_data.actual_gradient,
-        n_modes=monoprop_data.num_modes,
-        fermi_com_data=monoprop_data.fermionic_pool,
-        exact_commutator_gradient=monoprop_data.commutator_gradient,
+        exact_expval=data["actual_energy"],
+        exact_gradient=np.asarray(data["actual_gradient"]),
+        n_modes=data["num_modes"],
     )
+
+
+def _create_case(pth: Path, fname: str) -> FermionicProblem:
+    return load_problem(pth / f"{fname}.msgpack")
 
 
 class CasesFermionicProblemOrbitalRotations:

@@ -37,17 +37,3 @@ install(
     ${PROJECT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake
   DESTINATION ${monoprop_INSTALL_CMAKEDIR}
 )
-
-if(NOT DEFINED SKBUILD)
-  cpmaddpackage(
-    NAME "msgpack-cxx"
-    VERSION "7.0.0"
-    GIT_REPOSITORY "https://github.com/msgpack/msgpack-c"
-    GIT_TAG "cpp-7.0.0"
-    OPTIONS "MSGPACK_USE_BOOST OFF" "MSGPACK_CXX20 ON"
-  )
-
-  target_sources(monoprop PRIVATE monoprop/DataGenerators.cpp)
-
-  target_link_libraries(monoprop PRIVATE msgpack-cxx)
-endif()

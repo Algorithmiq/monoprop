@@ -28,12 +28,10 @@ from ._core import (
 )
 from ._version import version as __version__
 from .monomial_propagator import MonomialPropagator
-from .mp_data import MPData
 from .utils import jordan_wigner_basis_change
 
 __all__ = [
     "MAX_NUM_MODES",
-    "MPData",
     "MonomialPropagator",
     "__build_type__",
     "__compiler_flags__",
