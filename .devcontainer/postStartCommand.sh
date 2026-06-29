@@ -10,5 +10,5 @@ echo "Set up development environment in $WORKSPACE"
 # dev/test/interactive are the default groups (see [tool.uv] default-groups).
 uv sync --all-extras -v
 
-# install pre-commit hooks
-uv run pre-commit install --install-hooks
+# install prek hooks
+uv run prek install --install-hooks
