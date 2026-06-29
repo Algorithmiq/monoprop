@@ -177,6 +177,43 @@ def _resting_footprint_table(labels: list[str], resting: dict[str, dict]) -> lis
     return lines
 
 
+def _storage_breakdown_table(labels: list[str], storage: dict[str, dict]) -> list[str]:
+    """Render the built footprint split into operator vs graph storage per picture.
+
+    Sourced from the C++ structural accounting (capacity-based byte totals), so --
+    unlike the process-wide PSS tables -- it attributes memory to the two
+    structures. The operator holds the evolved terms, coefficients, index and
+    even-parity sidecar; the graph holds the per-layer propagation storage
+    (cross-rank, layer metadata, and any stored cosine data). Summed across ranks.
+    """
+    if not storage:
+        return []
+    pictures = [
+        p for p in _PICTURES if any(p in storage.get(lbl, {}) for lbl in labels)
+    ]
+    lines = [
+        "## Storage breakdown: operator vs graph",
+        "",
+        "Resident structural memory of the built propagator, attributed to the "
+        "operator vs the propagation graph (C++ capacity-based accounting, not PSS). "
+        "The operator is the evolved terms, coefficients, index and even-parity "
+        "sidecar; the graph is the per-layer storage (cross-rank, layer metadata, "
+        "stored cosine data). Summed across ranks under MPI.",
+        "",
+        *_label_header("Picture / component", labels),
+    ]
+    for picture in pictures:
+        for component in ("operator", "graph"):
+            cells = []
+            for label in labels:
+                num_bytes = storage.get(label, {}).get(picture, {}).get(component)
+                cells.append(_fmt_mem(num_bytes))
+            row = f"{_PICTURE_NAMES[picture]} / {component}"
+            lines.append(f"| {row} | " + " | ".join(cells) + " |")
+    lines.append("")
+    return lines
+
+
 def _operator_size_table(labels: list[str], sizes: dict[str, dict]) -> list[str]:
     """Render the number of terms reached per picture (one column per label)."""
     if not sizes:
@@ -341,6 +378,7 @@ def build_report(results_dir: Path) -> str:
     params = _load_by_label(results_dir, "params")
     operator_sizes = _load_by_label(results_dir, "opsize")
     resting = _load_by_label(results_dir, "memrest")
+    storage = _load_by_label(results_dir, "storage")
     configs = _load_by_label(results_dir, "configs")
 
     labels = sorted(
@@ -350,6 +388,7 @@ def build_report(results_dir: Path) -> str:
         | set(params)
         | set(operator_sizes)
         | set(resting)
+        | set(storage)
         | set(configs)
     )
     all_ops = sorted(
@@ -387,6 +426,7 @@ def build_report(results_dir: Path) -> str:
         *_hyperparams_table(labels, params),
         *_operator_size_table(labels, operator_sizes),
         *_resting_footprint_table(labels, resting),
+        *_storage_breakdown_table(labels, storage),
         *_static_config_section(labels, configs),
         *_section("Heisenberg", labels, heisenberg_ops, time_cells, mem_cells),
         *_section("Schrödinger", labels, schrodinger_ops, time_cells, mem_cells),

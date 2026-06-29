@@ -381,8 +381,25 @@ def built_graph(
     )
     mp.propagate()
     _record_operator_size(picture, mp, bench_comm)
+    _record_storage_breakdown(picture, mp, bench_comm)
     _record_resting_footprint(picture, bench_comm)
     return mp
+
+
+def _record_storage_breakdown(picture: str, mp: MonomialPropagator, comm: Any) -> None:
+    """Record the built footprint split into operator vs graph storage.
+
+    Uses the C++ structural memory accounting (capacity-based byte totals) rather
+    than PSS, so it attributes the footprint to its two structures -- which a
+    process-wide PSS reading cannot. Under MPI each value is this rank's shard, so
+    they are summed across ranks (allreduce), matching :func:`_record_operator_size`.
+    Merged into ``storage-<label>.json`` (one entry per picture) by rank 0.
+    """
+    sim = mp._simulator  # noqa: SLF001 - the bound C++ object holds the accounting
+    operator_total, rank = _reduce_sum(comm, sim.operator_memory_bytes())
+    graph_total, _ = _reduce_sum(comm, sim.graph_memory_bytes())
+    if rank == 0:
+        _merge_record("storage", picture, {"operator": operator_total, "graph": graph_total})
 
 
 def _record_resting_footprint(picture: str, comm: Any) -> None:
