@@ -71,6 +71,10 @@ Each run regenerates `REPORT.md`, which has:
 
 - **Configuration** — one row per run label: ranks, thread counts, launcher (incl.
   pinning args), CPU count, host.
+- **Hyperparameters** — the resolved random-problem sizes and run knobs each run
+  actually used (defaults included, not just CLI overrides), one column per label.
+- **Graph size** — the number of terms in the evolved operator reached per
+  picture (Heisenberg / Schrödinger), one column per label.
 - **Heisenberg** and **Schrödinger** — one section each, every section holding a
   **Time** and a **Peak memory** table (one row per operation, one column per
   label). The Schrödinger section is omitted when no Schrödinger ops were run.
@@ -99,7 +103,7 @@ in parentheses):
 |---|---|---|
 | `--gen-length` | Majorana operators per generator | 4 |
 | `--obs-terms` | number of observable terms | 10000 |
-| `--num-generators` | number of generators (circuit gates) | 200 |
+| `--num-generators` | number of generators (circuit gates) | 100 |
 | `--num-modes` | fermionic modes (Majorana indices = `2·modes`) | 128 |
 | `--cutoff` | truncation cutoff | 6 |
 | `--seed` | RNG seed | 0 |

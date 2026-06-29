@@ -90,6 +90,64 @@ def test_build_report_has_two_sections(tmp_path: Path) -> None:
     assert "random / energy" in schr
 
 
+def test_build_report_includes_hyperparameters(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    (tmp_path / "params-np1.json").write_text(
+        json.dumps(
+            {
+                "gen_length": 4,
+                "obs_terms": 10000,
+                "num_generators": 100,
+                "num_modes": 128,
+                "cutoff": 6,
+                "seed": 0,
+                "bench_rounds": 5,
+                "lower_atol": 0.0001,
+            }
+        )
+    )
+    md = report.build_report(tmp_path)
+
+    assert "## Hyperparameters" in md
+    # Each hyperparameter row is present with its value.
+    assert "| num_generators | 100 |" in md
+    assert "| cutoff | 6 |" in md
+    assert "| lower_atol | 0.0001 |" in md
+    # Hyperparameters sit between Configuration and the picture sections.
+    assert md.index("## Hyperparameters") < md.index("## Heisenberg")
+
+
+def test_hyperparams_table_renders_none_lower_atol_as_default() -> None:
+    table = "\n".join(report._hyperparams_table(["np1"], {"np1": {"lower_atol": None}}))
+    assert "| lower_atol | default |" in table
+
+
+def test_build_report_includes_graph_size(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    (tmp_path / "graphsize-np1.json").write_text(
+        json.dumps(
+            {
+                "heisenberg": {
+                    "terms": 132220,
+                    "n_cos_indices": 1051388,
+                    "n_cycles": 122220,
+                },
+                "schrodinger": {
+                    "terms": 11311942,
+                    "n_cos_indices": 253573716,
+                    "n_cycles": 294309,
+                },
+            }
+        )
+    )
+    md = report.build_report(tmp_path)
+
+    assert "## Graph size" in md
+    # Term counts are rendered with thousands separators, one row per picture.
+    assert "| Heisenberg | 132,220 |" in md
+    assert "| Schrödinger | 11,311,942 |" in md
+
+
 def test_build_report_omits_empty_schrodinger_section(tmp_path: Path) -> None:
     data = {
         "benchmarks": [

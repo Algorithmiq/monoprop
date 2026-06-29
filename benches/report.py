@@ -108,6 +108,24 @@ def _load_metadata(results_dir: Path) -> dict[str, dict]:
     return metas
 
 
+def _load_params(results_dir: Path) -> dict[str, dict]:
+    """Return ``{label: hyperparameters}`` from ``params-*.json`` files."""
+    params: dict[str, dict] = {}
+    for path in sorted(results_dir.glob("params-*.json")):
+        label = path.stem.removeprefix("params-")
+        params[label] = json.loads(path.read_text())
+    return params
+
+
+def _load_graphsize(results_dir: Path) -> dict[str, dict]:
+    """Return ``{label: {picture: metrics}}`` from ``graphsize-*.json`` files."""
+    sizes: dict[str, dict] = {}
+    for path in sorted(results_dir.glob("graphsize-*.json")):
+        label = path.stem.removeprefix("graphsize-")
+        sizes[label] = json.loads(path.read_text())
+    return sizes
+
+
 def _config_table(labels: list[str], metas: dict[str, dict]) -> list[str]:
     """Render the run-configuration table (one row per run label)."""
     if not metas:
@@ -140,6 +158,65 @@ def _config_table(labels: list[str], metas: dict[str, dict]) -> list[str]:
     return lines
 
 
+# Hyperparameter rows, in display order. Keys match params-*.json.
+_PARAM_KEYS = (
+    "gen_length",
+    "obs_terms",
+    "num_generators",
+    "num_modes",
+    "cutoff",
+    "seed",
+    "bench_rounds",
+    "lower_atol",
+)
+
+
+def _hyperparams_table(labels: list[str], params: dict[str, dict]) -> list[str]:
+    """Render the random-problem hyperparameters (one column per run label)."""
+    if not params:
+        return []
+    lines = [
+        "## Hyperparameters",
+        "",
+        "Random-problem sizes and run knobs used for each label "
+        "(``lower_atol`` applies to the static benchmarks).",
+        "",
+        "| Parameter | " + " | ".join(labels) + " |",
+        "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
+    ]
+    for key in _PARAM_KEYS:
+        cells = []
+        for label in labels:
+            value = params.get(label, {}).get(key, "—")
+            cells.append("default" if value is None else str(value))
+        lines.append(f"| {key} | " + " | ".join(cells) + " |")
+    lines.append("")
+    return lines
+
+
+def _graphsize_table(labels: list[str], sizes: dict[str, dict]) -> list[str]:
+    """Render the number of terms reached per picture (one column per label)."""
+    if not sizes:
+        return []
+    pictures = [p for p in _PICTURES if any(p in sizes.get(lbl, {}) for lbl in labels)]
+    lines = [
+        "## Graph size",
+        "",
+        "Number of terms in the evolved operator reached per picture.",
+        "",
+        "| Picture | " + " | ".join(labels) + " |",
+        "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
+    ]
+    for picture in pictures:
+        cells = []
+        for label in labels:
+            terms = sizes.get(label, {}).get(picture, {}).get("terms")
+            cells.append(f"{terms:,}" if terms is not None else "—")
+        lines.append(f"| {_PICTURE_NAMES[picture]} | " + " | ".join(cells) + " |")
+    lines.append("")
+    return lines
+
+
 def _fmt_time(seconds: float | None) -> str:
     """Format a duration adaptively (us / ms / s)."""
     if seconds is None:
@@ -159,6 +236,7 @@ def _fmt_mem(num_bytes: int | None) -> str:
 
 
 _PICTURES = ("heisenberg", "schrodinger")
+_PICTURE_NAMES = {"heisenberg": "Heisenberg", "schrodinger": "Schrödinger"}
 
 
 def _picture_of(op_key: str) -> str:
@@ -222,8 +300,12 @@ def build_report(results_dir: Path) -> str:
     timings = _load_timings(results_dir)
     memory = _load_memory(results_dir)
     metas = _load_metadata(results_dir)
+    params = _load_params(results_dir)
+    graphsize = _load_graphsize(results_dir)
 
-    labels = sorted(set(timings) | set(memory) | set(metas))
+    labels = sorted(
+        set(timings) | set(memory) | set(metas) | set(params) | set(graphsize)
+    )
     all_ops = sorted(
         {op for table in timings.values() for op in table}
         | {op for table in memory.values() for op in table}
@@ -253,6 +335,8 @@ def build_report(results_dir: Path) -> str:
         "memory is the peak heap (max across ranks under MPI).",
         "",
         *_config_table(labels, metas),
+        *_hyperparams_table(labels, params),
+        *_graphsize_table(labels, graphsize),
         *_section("Heisenberg", labels, heisenberg_ops, time_cells, mem_cells),
         *_section("Schrödinger", labels, schrodinger_ops, time_cells, mem_cells),
     ]
