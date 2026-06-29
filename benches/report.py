@@ -140,6 +140,43 @@ def _hyperparams_table(labels: list[str], params: dict[str, dict]) -> list[str]:
     return lines
 
 
+def _resting_footprint_table(labels: list[str], resting: dict[str, dict]) -> list[str]:
+    """Render the built operator+graph's resting PSS per picture (one col per label).
+
+    Distinct from the per-operation *peak* memory tables: this is the settled
+    footprint after the build's transient buffers are released (gc + malloc_trim),
+    so it exposes persistent-memory differences (index size, recomputed-vs-stored
+    data) that the mid-build peak metric masks.
+    """
+    if not resting:
+        return []
+    pictures = [
+        p for p in _PICTURES if any(p in resting.get(lbl, {}) for lbl in labels)
+    ]
+    lines = [
+        "## Operator resting footprint (PSS)",
+        "",
+        "Resident physical memory of the built operator and propagation graph at "
+        "rest -- measured after the build's transient buffers are freed "
+        "(`gc.collect()` + `malloc_trim`), with the graph still alive. Unlike the "
+        "per-operation peak memory below (a high-water mark reached mid-build), this "
+        "settled footprint reveals persistent-memory changes that peak hides. It is "
+        "the whole process's footprint, so it includes any sibling-picture graph the "
+        "shared session still holds (a near-constant offset that cancels in "
+        "label-to-label comparisons). Summed across ranks under MPI.",
+        "",
+        *_label_header("Picture", labels),
+    ]
+    for picture in pictures:
+        cells = []
+        for label in labels:
+            num_bytes = resting.get(label, {}).get(picture)
+            cells.append(_fmt_mem(num_bytes))
+        lines.append(f"| {_PICTURE_NAMES[picture]} | " + " | ".join(cells) + " |")
+    lines.append("")
+    return lines
+
+
 def _operator_size_table(labels: list[str], sizes: dict[str, dict]) -> list[str]:
     """Render the number of terms reached per picture (one column per label)."""
     if not sizes:
@@ -303,6 +340,7 @@ def build_report(results_dir: Path) -> str:
     metas = _load_by_label(results_dir, "meta")
     params = _load_by_label(results_dir, "params")
     operator_sizes = _load_by_label(results_dir, "opsize")
+    resting = _load_by_label(results_dir, "memrest")
     configs = _load_by_label(results_dir, "configs")
 
     labels = sorted(
@@ -311,6 +349,7 @@ def build_report(results_dir: Path) -> str:
         | set(metas)
         | set(params)
         | set(operator_sizes)
+        | set(resting)
         | set(configs)
     )
     all_ops = sorted(
@@ -347,6 +386,7 @@ def build_report(results_dir: Path) -> str:
         *_config_table(labels, metas),
         *_hyperparams_table(labels, params),
         *_operator_size_table(labels, operator_sizes),
+        *_resting_footprint_table(labels, resting),
         *_static_config_section(labels, configs),
         *_section("Heisenberg", labels, heisenberg_ops, time_cells, mem_cells),
         *_section("Schrödinger", labels, schrodinger_ops, time_cells, mem_cells),
