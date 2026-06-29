@@ -50,6 +50,46 @@ except ImportError:  # pragma: no cover - depends on optional MPI build
     MPI = None
 
 
+def _rank() -> int:
+    """Return this process's MPI rank (``0`` without MPI)."""
+    return 0 if MPI is None else MPI.COMM_WORLD.Get_rank()
+
+
+def _reduce_sum(comm: Any, value: int) -> tuple[int, int]:
+    """Sum ``value`` across ranks and return ``(total, rank)``.
+
+    Collective: every rank must call it when multi-rank. A serial run (no
+    communicator or size 1) returns ``(value, 0)`` without communicating.
+    """
+    if comm is not None and comm.Get_size() > 1:
+        return comm.allreduce(value, op=MPI.SUM), comm.Get_rank()
+    return value, 0
+
+
+def _record_path(prefix: str) -> Path | None:
+    """Return ``results/<prefix>-<label>.json``, or ``None`` if recording is off.
+
+    Recording is enabled only when ``run.py`` exported ``MONOPROP_BENCH_LABEL``
+    and ``MONOPROP_BENCH_RESULTS``; otherwise the suite was run directly and has
+    nowhere to write.
+    """
+    label = os.environ.get("MONOPROP_BENCH_LABEL")
+    results = os.environ.get("MONOPROP_BENCH_RESULTS")
+    if not label or not results:
+        return None
+    return Path(results, f"{prefix}-{label}.json")
+
+
+def _merge_record(prefix: str, key: str, value: Any) -> None:
+    """Merge ``{key: value}`` into this label's ``prefix`` artifact (rank-0 callers)."""
+    path = _record_path(prefix)
+    if path is None:
+        return
+    data = json.loads(path.read_text()) if path.exists() else {}
+    data[key] = value
+    path.write_text(json.dumps(data, indent=2))
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Register benchmark configuration options for the random benchmarks."""
     group = parser.getgroup("monoprop-bench", "monoprop random benchmark sizing")
@@ -114,16 +154,15 @@ _RECORDED_OPTIONS = (
 def _write_run_params(config: pytest.Config) -> None:
     """Record this label's resolved hyperparameters (defaults included) for the report.
 
-    Env-gated on the variables ``run.py`` sets; rank 0 only.
+    Called on rank 0 only; a no-op when recording is off (see :func:`_record_path`).
     """
-    label = os.environ.get("MONOPROP_BENCH_LABEL")
-    results = os.environ.get("MONOPROP_BENCH_RESULTS")
-    if not label or not results:
+    path = _record_path("params")
+    if path is None:
         return
     params = {
         opt: config.getoption(f"--{opt.replace('_', '-')}") for opt in _RECORDED_OPTIONS
     }
-    Path(results, f"params-{label}.json").write_text(json.dumps(params, indent=2))
+    path.write_text(json.dumps(params, indent=2))
 
 
 def _record_operator_size(picture: str, mp: MonomialPropagator, comm: Any) -> None:
@@ -133,21 +172,9 @@ def _record_operator_size(picture: str, mp: MonomialPropagator, comm: Any) -> No
     this rank's shard; the global total is their sum (allreduce). Merged into
     ``opsize-<label>.json`` (one entry per picture) by rank 0.
     """
-    total = mp.size()
-    rank = 0
-    if comm is not None and comm.Get_size() > 1:
-        total = comm.allreduce(total, op=MPI.SUM)  # collective: all ranks must call
-        rank = comm.Get_rank()
-    if rank != 0:
-        return
-    label = os.environ.get("MONOPROP_BENCH_LABEL")
-    results = os.environ.get("MONOPROP_BENCH_RESULTS")
-    if not label or not results:
-        return
-    path = Path(results, f"opsize-{label}.json")
-    data = json.loads(path.read_text()) if path.exists() else {}
-    data[picture] = {"terms": total}
-    path.write_text(json.dumps(data, indent=2))
+    total, rank = _reduce_sum(comm, mp.size())
+    if rank == 0:
+        _merge_record("opsize", picture, {"terms": total})
 
 
 def _reset_peak_rss() -> None:
@@ -205,8 +232,7 @@ def pytest_configure(config: pytest.Config) -> None:
     ``trylast`` so the terminal reporter is already registered by the time the
     non-root ranks unregister it.
     """
-    rank = 0 if MPI is None else MPI.COMM_WORLD.Get_rank()
-    if rank == 0:
+    if _rank() == 0:
         _write_run_params(config)
         return
 
@@ -259,17 +285,8 @@ def record_model_config() -> Callable[[str, Any], None]:
     """
 
     def _record(model: str, config: Any) -> None:
-        rank = 0 if MPI is None else MPI.COMM_WORLD.Get_rank()
-        if rank != 0:
-            return
-        label = os.environ.get("MONOPROP_BENCH_LABEL")
-        results = os.environ.get("MONOPROP_BENCH_RESULTS")
-        if not label or not results:
-            return
-        path = Path(results, f"configs-{label}.json")
-        data = json.loads(path.read_text()) if path.exists() else {}
-        data[model] = asdict(config)
-        path.write_text(json.dumps(data, indent=2))
+        if _rank() == 0:
+            _merge_record("configs", model, asdict(config))
 
     return _record
 
@@ -289,22 +306,9 @@ def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[N
     """
     _reset_peak_rss()
     yield
-    mem = _peak_pss_bytes()
-    rank = 0
-    if bench_comm is not None and bench_comm.Get_size() > 1:
-        mem = bench_comm.allreduce(mem, op=MPI.SUM)  # collective: all ranks call
-        rank = bench_comm.Get_rank()
-    if rank != 0:
-        return
-    label = os.environ.get("MONOPROP_BENCH_LABEL")
-    results = os.environ.get("MONOPROP_BENCH_RESULTS")
-    if not label or not results:
-        return
-    op_key = request.node.nodeid.split("/")[-1]
-    path = Path(results, f"mem-{label}.json")
-    data = json.loads(path.read_text()) if path.exists() else {}
-    data[op_key] = mem
-    path.write_text(json.dumps(data, indent=2))
+    mem, rank = _reduce_sum(bench_comm, _peak_pss_bytes())
+    if rank == 0:
+        _merge_record("mem", request.node.nodeid.split("/")[-1], mem)
 
 
 @pytest.fixture(scope="session", params=["heisenberg", "schrodinger"])
