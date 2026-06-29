@@ -33,6 +33,7 @@ constexpr MPI_Comm MPI_COMM_SELF = 0;
 #endif
 
 // These includes are here on purpose and should not be moved to the top
+#include "monoprop/detail/print_compat.h"
 #include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 
@@ -314,7 +315,7 @@ inline auto size(MPI_Comm /*comm*/ = MPI_COMM_WORLD) -> int {
     return 1;
 }
 inline auto barrier(MPI_Comm comm = MPI_COMM_WORLD) -> void {
-    static_cast<void>(size(comm));
+    static_cast<void>(size(comm)); // no-op for a single process; discard size() to silence unused-param
 }
 
 inline auto finalize() -> void {

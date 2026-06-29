@@ -14,8 +14,11 @@
 
 #pragma once
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <utility>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -26,51 +29,61 @@ struct LayerExchangeLayout final {
     std::vector<int> counts;
     std::vector<int> displs;
     size_t total_count = 0;
+
+    // Cached result of the per-layer send-count exchange (MPI_Alltoall of `counts`). The send
+    // pattern is FIXED for a replayed graph, so the recv counts/displs an optimizer would otherwise
+    // recompute on every one of its thousands of evaluations are identical each call. Filled lazily
+    // on the first exchange and reused while `cached_comm_size` matches. A monoprop graph is bound to a
+    // single communicator for its lifetime, so comm size is the relevant invalidation signal; the
+    // fields are eval-time-only (default-empty, never touched by the build path). `mutable` because
+    // the layout is reached through const traversal handles during evaluation.
+    mutable std::vector<int> cached_recv_counts;
+    mutable std::vector<int> cached_recv_displs;
+    mutable int cached_recv_total = 0;
+    mutable int cached_comm_size = -1;
 };
 
-struct CosineSpan final {
-    size_t start = 0;
-    uint16_t count = 0;
+} // namespace monoprop
+
+namespace monoprop {
+
+// Materialized cosine (anticommuting) index set: ascending (block_base, 64-bit mask) blocks,
+// block_base = absolute operator index of the word's bit 0. The sidecar fold (scale_cos_fold) is
+// still the primary path; this type is only for sets that must be stored (pruned pare layers) or
+// carried transiently (in-build contraction, combined cos, graph_data export).
+struct CosineWordList final {
+    std::vector<std::pair<size_t, uint64_t>> blocks;
+    size_t total_count = 0; // number of set bits
+    auto empty() const -> bool { return blocks.empty(); }
+    auto span_count() const -> size_t { return blocks.size(); } // WORD count (parallel split unit)
+    auto reset() -> void { blocks.clear(); total_count = 0; }
+    auto shrink_to_fit() -> void { blocks.shrink_to_fit(); }
 };
 
-struct StoredPositionSpan final {
-    size_t logical_start = 0;
-    uint32_t position_start = 0;
-    uint16_t count = 0;
-};
-
-struct CompressedCosineData final {
-    size_t total_count = 0;
-    std::vector<size_t> chunk_bases;
-    std::vector<size_t> chunk_span_starts;
-    std::vector<uint16_t> span_offsets;
-    std::vector<uint8_t> span_counts;
-    bool has_wide_start_values = false;
-
-    auto chunk_count() const -> size_t { return chunk_bases.size(); }
-    auto span_count() const -> size_t { return span_offsets.size(); }
-    auto empty() const -> bool { return span_offsets.empty(); }
-    auto has_wide_starts() const -> bool { return has_wide_start_values; }
-    auto reset() -> void {
-        total_count = 0;
-        chunk_bases.clear();
-        chunk_span_starts.clear();
-        span_offsets.clear();
-        span_counts.clear();
-        has_wide_start_values = false;
+// Coalesces ascending absolute indices (or whole word-aligned blocks) into a CosineWordList.
+// Mirrors the build scan's two emit modes: whole-word stores (primary, word-aligned) and per-index
+// appends (orbital, not word-aligned). Indices/blocks MUST arrive in ascending order.
+struct CosineWordBuilder final {
+    CosineWordList list;
+    size_t cur_base = std::numeric_limits<size_t>::max();
+    uint64_t cur_bits = 0;
+    auto flush() -> void {
+        if (cur_bits != 0) { list.blocks.emplace_back(cur_base, cur_bits); cur_bits = 0; }
+        cur_base = std::numeric_limits<size_t>::max();
     }
-};
-
-struct CompressedPositionData final {
-    size_t total_count = 0;
-    std::vector<StoredPositionSpan> spans;
-
-    auto span_count() const -> size_t { return spans.size(); }
-    auto empty() const -> bool { return total_count == 0; }
-    auto reset() -> void {
-        total_count = 0;
-        spans.clear();
+    auto push_index(size_t idx) -> void {
+        const size_t base = (idx >> 6) << 6;
+        if (base != cur_base) { flush(); cur_base = base; }
+        cur_bits |= (uint64_t{1} << (idx & 63U));
+        ++list.total_count;
     }
+    auto push_word(size_t block_base, uint64_t bits) -> void { // block_base % 64 == 0
+        if (bits == 0) { return; }
+        flush();
+        list.blocks.emplace_back(block_base, bits);
+        list.total_count += static_cast<size_t>(std::popcount(bits));
+    }
+    auto finish() -> CosineWordList { flush(); return std::move(list); }
 };
 
 struct PackedPhaseStorage final {
@@ -83,45 +96,65 @@ struct PackedPhaseStorage final {
     auto empty() const -> bool { return total_count == 0; }
 };
 
-struct PackedLocalCycleStorage final {
-    bool uses_wide_indices = false;
-    std::vector<uint64_t> compact_pairs;
-    std::vector<size_t> wide_src_indices;
-    std::vector<size_t> wide_tgt_indices;
-    PackedPhaseStorage phases;
-
-    auto size() const -> size_t { return uses_wide_indices ? wide_src_indices.size() : compact_pairs.size(); }
+/// Build-time input for one partner rank's per-layer cross-rank data.
+/// `b_indices`: local indices whose op[i] we send to this partner (in paper order:
+///   first the "in" block's source idx, then the "out" block's source idx).
+/// `d`: (local_target_idx, phi_signed) pairs forming the single phased D list. Former D-
+///   entries (sign already negated to -phi) come first, former D+ entries (+phi) second.
+///   No boundary is stored — the signed phase carries everything downstream consumers need.
+struct CrossRankPartnerData {
+    // default-init storage: assemble_partners resizes then overwrites EVERY element in parallel, so
+    // the serial resize() zero-fill was pure waste (and the Amdahl anchor that capped this phase ~2.3×).
+    DefaultInitVector<size_t> b_indices;
+    DefaultInitVector<std::pair<size_t, int>> d;
+    // Size of the in-block (P). Layout invariant: b = [in(P)]++[out(Q)], d = [out(Q)]++[in(P)], so the
+    // D index list is a permutation of B and is NOT stored — it is derived from B via in_count (see
+    // cross_rank_d_index). The D PHASES are not derivable (in/out phases differ) and ARE stored.
+    size_t in_count = 0;
+    bool empty() const { return b_indices.empty() && d.empty(); }
 };
 
-struct CrossRankStorageRange final {
-    size_t out_offset = 0;
-    size_t out_count = 0;
-    size_t in_offset = 0;
-    size_t in_count = 0;
+struct CrossRankPartnerRange final {
+    TermIndex b_offset = 0; // into b_indices
+    TermIndex b_count  = 0; // == d_count (paper invariant); TermIndex-wide so one rank/layer can exceed 2^32
+    TermIndex d_offset = 0; // into d_phases (the D index list is derived from B, not stored)
+    // Single phased D list: former D- entries (sign baked as -phi) come first, former D+ entries
+    // (+phi) second, but no consumer needs the boundary — the signed phase carries everything.
+    TermIndex d_count = 0;
+    // Size of the in-block within B (P). B = [in(P)]++[out(Q)], D = [out(Q)]++[in(P)] with Q=d_count-P,
+    // so D index k = (k<Q) ? B[P+k] : B[k-Q]. Lets us store B only and derive D (see cross_rank_d_index).
+    TermIndex in_count = 0;
 };
 
 struct PackedCrossRankStorage final {
-    bool out_indices_wide = false;
-    bool in_indices_wide = false;
-    std::vector<CrossRankStorageRange> ranges;
-    std::vector<uint32_t> out_indices;
-    std::vector<size_t> wide_out_indices;
-    PackedPhaseStorage out_phases;
-    std::vector<uint32_t> in_indices;
-    std::vector<size_t> wide_in_indices;
-    PackedPhaseStorage in_phases;
+    std::vector<CrossRankPartnerRange> ranges;     // size == R
+    std::vector<TermIndex> b_indices;              // D indices are derived from B on read, not stored
+    PackedPhaseStorage    d_phases;                // one phased entry per D index, sign baked in
 
     auto rank_count() const -> size_t { return ranges.size(); }
-    auto out_size(size_t rank) const -> size_t { return ranges[rank].out_count; }
-    auto in_size(size_t rank) const -> size_t { return ranges[rank].in_count; }
-    auto empty() const -> bool { return out_phases.empty() && in_phases.empty(); }
+    auto b_size(size_t rank)  const -> size_t { return ranges[rank].b_count; }
+    auto d_size(size_t rank)  const -> size_t { return ranges[rank].d_count; }
+    // P = number of in-entries = number of rotations on this rank (each rotation has one in/target).
+    // d_size = in_count + out_count counts BOTH endpoints, so it double-counts self-rank rotations.
+    auto in_count(size_t rank) const -> size_t { return ranges[rank].in_count; }
+    auto empty() const -> bool { return d_phases.empty() && b_indices.empty(); }
 };
 
-struct LayerStorage final {
-    CompressedCosineData cos_data;
-    PackedLocalCycleStorage local_cycles;
+struct LayerCore final {
     PackedCrossRankStorage cross_rank;
     LayerExchangeLayout evolution_exchange_layout;
+    LayerExchangeLayout derivative_exchange_layout;  // precomputed 2x of evolution_exchange_layout
+
+    // ── Per-layer recompute metadata (NumModes-agnostic) ─────────────────────────────────────────
+    // What the future cosine-recompute path needs to reconstruct this layer's cosine set on the fly
+    // from the operator's even-parity sidecar (an XOR-fold of the generator's sidecar columns),
+    // instead of storing it. These ride WITH the layer (in its shared LayerCore), so they travel
+    // correctly through every graph transform (slice/union/consume/Schrödinger-prepend) for free.
+    //   - generator_words: this layer's generator G serialized as W = kWords<NumModes> backing words.
+    //   - cos_count: the fold truncation bound — the operator size BEFORE this layer's partner
+    //     inserts, i.e. the number of operator indices the cosine set may cover.
+    std::vector<uint64_t> generator_words;
+    uint64_t cos_count = 0;
 };
 
 } // namespace monoprop

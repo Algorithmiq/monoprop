@@ -38,12 +38,12 @@ auto eval_scratch() -> EvalScratch & {
 // The graph is traversed in simulation order, while parameter_mapping is stored
 // in optimizer order. This helper writes either forward or reversed mapped
 // coefficients without rebuilding any metadata.
-auto fill_mapped_params(VecD &result,
+void fill_mapped_params(VecD &result,
                         const VecD &parameters,
                         const VecZ &parameter_mapping,
                         const VecD &gen_coeffs,
                         double phase,
-                        bool reverse) -> void {
+                        bool reverse) {
     const size_t count = parameter_mapping.size();
     result.resize(count);
     for (size_t i = 0; i < count; ++i) {
@@ -59,10 +59,14 @@ auto prepare_evolved_operator(EvalScratch &scratch,
                               const VecZ &parameter_mapping,
                               const VecD &gen_coeffs,
                               const GraphType &graph,
-                              MPI_Comm comm) -> void {
+                              MPI_Comm comm,
+                              const detail::LayerCosScale &cos_scale) -> void {
     fill_mapped_params(scratch.mapped_params, params, parameter_mapping, gen_coeffs, 1.0, true);
     scratch.op = op;
-    scratch.op = evolve_operator(std::move(scratch.op), graph, scratch.mapped_params, comm);
+    // Every functional now supplies a non-empty cos_scale callback (the layer cosine set is always
+    // recomputed/transient — never read from a stored bitmap), so the cos pass routes through it
+    // unconditionally.
+    scratch.op = evolve_operator(std::move(scratch.op), graph, scratch.mapped_params, cos_scale, comm);
 }
 
 template <typename GraphType>
@@ -73,13 +77,14 @@ auto ev_impl(double e_core,
              const VecD &gen_coeffs,
              const GraphType &graph,
              const VecD &params,
-             MPI_Comm comm) -> double {
+             MPI_Comm comm,
+             const detail::LayerCosScale &cos_scale) -> double {
     if (params.empty()) {
         return e_core + mpi::allreduce_sum(inner_product(state, op), comm);
     }
 
     auto &scratch = eval_scratch();
-    prepare_evolved_operator(scratch, op, params, parameter_mapping, gen_coeffs, graph, comm);
+    prepare_evolved_operator(scratch, op, params, parameter_mapping, gen_coeffs, graph, comm, cos_scale);
     return e_core + mpi::allreduce_sum(inner_product(state, scratch.op), comm);
 }
 
@@ -91,14 +96,16 @@ auto ev_and_grad_impl(double e_core,
                       const VecD &gen_coeffs,
                       const GraphType &graph,
                       const VecD &params,
-                      MPI_Comm comm) -> std::pair<double, VecD> {
+                      MPI_Comm comm,
+                      const detail::LayerCosScale &cos_scale,
+                      const detail::LayerCosAccumulate &cos_acc) -> std::pair<double, VecD> {
     if (params.empty()) {
         return {e_core + mpi::allreduce_sum(inner_product(state, op), comm), VecD(0)};
     }
 
     auto &scratch = eval_scratch();
     scratch.state = state;
-    prepare_evolved_operator(scratch, op, params, parameter_mapping, gen_coeffs, graph, comm);
+    prepare_evolved_operator(scratch, op, params, parameter_mapping, gen_coeffs, graph, comm, cos_scale);
 
     auto &state_ = scratch.state;
     auto &op_ = scratch.op;
@@ -108,8 +115,10 @@ auto ev_and_grad_impl(double e_core,
     for (size_t i = 0; i < parameter_mapping.size(); ++i) {
         const auto idx = parameter_mapping.size() - 1 - i;
         const auto param_ind = parameter_mapping[i];
+        // cos_acc is always non-empty (see prepare_evolved_operator): the reverse-derivative
+        // cosine accumulation always routes through the recompute/transient callback.
         scratch.gradient[param_ind] +=
-            state_operator_derivative_local(state_, op_, graph, idx, gen_coeffs[i], params[param_ind], comm);
+            state_operator_derivative_local(state_, op_, graph, idx, gen_coeffs[i], params[param_ind], cos_acc, comm);
     }
 
     mpi::allreduce_sum_inplace(scratch.gradient, comm);
@@ -145,19 +154,9 @@ auto ev(double e_core,
         const VecD &gen_coeffs,
         const MPGraph &graph,
         const VecD &params,
-        MPI_Comm comm) -> double {
-    return ev_impl(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
-}
-
-auto ev(double e_core,
-        const VecD &state,
-        const VecD &op,
-        const VecZ &parameter_mapping,
-        const VecD &gen_coeffs,
-        const MPExecutionPlan &graph,
-        const VecD &params,
-        MPI_Comm comm) -> double {
-    return ev_impl(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
+        MPI_Comm comm,
+        const detail::LayerCosScale &cos_scale) -> double {
+    return ev_impl(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale);
 }
 
 auto ev_and_grad(double e_core,
@@ -167,19 +166,10 @@ auto ev_and_grad(double e_core,
                  const VecD &gen_coeffs,
                  const MPGraph &graph,
                  const VecD &params,
-                 MPI_Comm comm) -> std::pair<double, VecD> {
-    return ev_and_grad_impl(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
-}
-
-auto ev_and_grad(double e_core,
-                 const VecD &state,
-                 const VecD &op,
-                 const VecZ &parameter_mapping,
-                 const VecD &gen_coeffs,
-                 const MPExecutionPlan &graph,
-                 const VecD &params,
-                 MPI_Comm comm) -> std::pair<double, VecD> {
-    return ev_and_grad_impl(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
+                 MPI_Comm comm,
+                 const detail::LayerCosScale &cos_scale,
+                 const detail::LayerCosAccumulate &cos_acc) -> std::pair<double, VecD> {
+    return ev_and_grad_impl(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale, cos_acc);
 }
 
 } // namespace monoprop

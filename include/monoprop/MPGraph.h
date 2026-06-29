@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include <cstddef>
 #include <format>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -92,21 +94,8 @@ public:
         : schrodinger_(schrodinger),
           layers_(std::move(layers)) {}
 
-    /**
-     * @brief Append a new layer to the graph with flattened cross-rank storage.
-     *
-     * @param cos_inds Cosine indices for this layer.
-     * @param local_cycles Local cycles (source, target, phase on this rank).
-     * @param cross_rank Cross-rank cycles indexed by remote rank.
-     */
-    auto append(VecZ cos_inds, std::vector<LocalCycle> local_cycles, std::vector<CrossRankCycles> cross_rank) -> void {
-        append_layer(Layer(std::move(cos_inds), std::move(local_cycles), std::move(cross_rank)));
-    }
-
-    auto append(CompressedCosineData cos_data,
-                std::vector<LocalCycle> local_cycles,
-                std::vector<CrossRankCycles> cross_rank) -> void {
-        append_layer(Layer(std::move(cos_data), std::move(local_cycles), std::move(cross_rank)));
+    auto append(std::shared_ptr<LayerCore> storage) -> void {
+        append_layer(Layer(std::move(storage)));
     }
 
     /**
@@ -118,8 +107,10 @@ public:
      */
     auto slice_graph(size_t key, bool contract = false) -> MPGraph;
 
+    // Non-owning view of the first `key` layers; shares layer cores, copies nothing.
     auto slice_view(size_t key) const -> MPGraphView;
 
+    // Drop the first `key` layers in place (advances the active-layer front offset).
     auto consume_prefix(size_t key) -> void;
 
     /**
@@ -172,17 +163,16 @@ struct formatter<monoprop::Layer> {
     constexpr auto parse(format_parse_context &ctx) { return ctx.begin(); }
     template <typename FormatContext>
     auto format(const monoprop::Layer &layer, FormatContext &ctx) const {
-        size_t outgoing_count = 0, incoming_count = 0;
+        size_t b_count = 0, d_count = 0;
         for (size_t rank = 0; rank < layer.cross_rank_rank_count(); ++rank) {
-            outgoing_count += layer.cross_rank_out_size(rank);
-            incoming_count += layer.cross_rank_in_size(rank);
+            b_count += layer.cross_rank_b_size(rank);
+            d_count += layer.cross_rank_d_size(rank);
         }
         return std::format_to(ctx.out(),
-                              "Layer{{cos_inds={}, local={}, outgoing={}, incoming={}}}",
+                              "Layer{{cos_inds={}, send_b={}, recv_d={}}}",
                               layer.num_cos_inds(),
-                              layer.local_cycle_count(),
-                              outgoing_count,
-                              incoming_count);
+                              b_count,
+                              d_count);
     }
 };
 } // namespace std

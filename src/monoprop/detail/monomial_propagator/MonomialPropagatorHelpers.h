@@ -14,27 +14,13 @@
 
 #pragma once
 
+#include <algorithm>
+
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/detail/evolution/DistributedLayerBuilder.h"
+#include "monoprop/detail/evolution/EvolutionHelpers.h"
 
 namespace monoprop {
-
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::append_to_graph(MPGraph &graph,
-                                                   VecZ &cos_inds,
-                                                   std::optional<CompressedCosineData> &compressed_cos_data,
-                                                   SplitCycleResult &split,
-                                                   MPI_Comm comm) -> void {
-    if (mpi::size(comm) > 1) {
-        compressed_cos_data = detail::remove_incoming_cycle_targets_compressed(cos_inds, split);
-        cos_inds.clear();
-    }
-    if (compressed_cos_data.has_value()) {
-        graph.append(std::move(*compressed_cos_data), std::move(split.local_cycles), std::move(split.cross_rank));
-    }
-    else {
-        graph.append(std::move(cos_inds), std::move(split.local_cycles), std::move(split.cross_rank));
-    }
-}
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expected_num_params(const VecZ &parameter_mapping) -> size_t {
@@ -93,10 +79,8 @@ auto MonomialPropagator<NumModes>::print_object_memory_report_(std::string_view 
     print_memory_row_("layer descriptors", graph_breakdown.layer_descriptor_bytes);
     print_memory_row_("layer storage", graph_breakdown.layer_storage_object_bytes);
     print_memory_row_("cos data", graph_breakdown.cos_data_bytes);
-    print_memory_row_("local cycles", graph_breakdown.local_cycle_bytes);
     print_memory_row_("cross rank", graph_breakdown.cross_rank_bytes);
     print_memory_row_("exchange layouts", graph_breakdown.exchange_layout_bytes);
-    print_memory_row_("execution plan", graph_breakdown.execution_plan_bytes);
 
     if (mpi::rank(comm_) == 0) {
         std::print("\n");
@@ -112,6 +96,7 @@ auto MonomialPropagator<NumModes>::print_object_memory_report_(std::string_view 
     print_memory_row_("indexing", operator_breakdown.indexing_bytes);
     print_memory_row_("initial operator", operator_breakdown.init_operator_bytes);
     print_memory_row_("slater determinant", operator_breakdown.slater_determinant_bytes);
+    print_memory_row_("even-parity sidecar", operator_breakdown.even_parity_scan_sidecar_bytes);
 
     if (mpi::rank(comm_) == 0) {
         std::print("--------------------------------\n");

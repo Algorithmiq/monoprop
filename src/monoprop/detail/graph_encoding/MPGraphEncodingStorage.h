@@ -24,7 +24,8 @@
 #include <utility>
 #include <vector>
 
-#include "monoprop/detail/graph_encoding/MPGraphEncodingCompression.h"
+#include "monoprop/Threading.h"
+#include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 
 namespace monoprop::detail {
 
@@ -34,6 +35,20 @@ inline auto checked_mpi_int(size_t value, const char *what) -> int {
             std::format("{} {} exceeds the MPI int limit {}.", what, value, std::numeric_limits<int>::max()));
     }
     return static_cast<int>(value);
+}
+
+// Bounds-check a TERM-SPACE index (an index into the operator's term list). Capped by the TermIndex
+// width: ~2^32 by default, ~2^64 under -DMONOPROP_WIDE_TERM_INDEX. This is the ceiling that the wide
+// build exists to lift, so it must track TermIndex — NOT a fixed 32-bit limit.
+inline auto checked_term_index(size_t value, const char *what) -> TermIndex {
+    if (value > static_cast<size_t>(std::numeric_limits<TermIndex>::max())) {
+        throw std::overflow_error(
+            std::format("{} {} exceeds the TermIndex ceiling {}; rebuild with -DMONOPROP_WIDE_TERM_INDEX.",
+                        what,
+                        value,
+                        std::numeric_limits<TermIndex>::max()));
+    }
+    return static_cast<TermIndex>(value);
 }
 
 inline auto checked_packed_phase(int value, const char *what) -> int8_t {
@@ -104,191 +119,107 @@ inline auto packed_phase_storage_bytes(const PackedPhaseStorage &storage) -> siz
                                       : storage.phase_values.capacity() * sizeof(int8_t);
 }
 
-inline auto pack_local_cycle_pair(size_t src, size_t tgt) -> uint64_t {
-    return (static_cast<uint64_t>(checked_packed_index(src, "Local cycle source index")) << 32)
-           | static_cast<uint64_t>(checked_packed_index(tgt, "Local cycle target index"));
-}
-
-inline auto packed_local_cycle_src(uint64_t pair) -> size_t {
-    return static_cast<size_t>(pair >> 32);
-}
-
-inline auto packed_local_cycle_tgt(uint64_t pair) -> size_t {
-    return static_cast<size_t>(static_cast<uint32_t>(pair));
-}
-
-inline auto build_packed_local_cycle_storage(std::vector<LocalCycle> local_cycles) -> PackedLocalCycleStorage {
-    PackedLocalCycleStorage storage;
-    const auto max_packed_index = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
-    bool uses_wide_indices = false;
-    bool uses_binary_phases = true;
-    for (const auto &cycle : local_cycles) {
-        uses_wide_indices = uses_wide_indices || cycle.src > max_packed_index || cycle.tgt > max_packed_index;
-        uses_binary_phases = uses_binary_phases && is_binary_phase(cycle.phase);
-        if (uses_wide_indices && !uses_binary_phases) {
-            break;
-        }
-    }
-
-    storage.uses_wide_indices = uses_wide_indices;
-    storage.phases = make_packed_phase_storage(local_cycles.size(), uses_binary_phases);
-
-    if (uses_wide_indices) {
-        storage.wide_src_indices.resize(local_cycles.size());
-        storage.wide_tgt_indices.resize(local_cycles.size());
-        for (size_t idx = 0; idx < local_cycles.size(); ++idx) {
-            const auto &cycle = local_cycles[idx];
-            storage.wide_src_indices[idx] = cycle.src;
-            storage.wide_tgt_indices[idx] = cycle.tgt;
-            set_packed_phase(storage.phases, idx, cycle.phase, "Local cycle phase");
-        }
-        return storage;
-    }
-
-    storage.compact_pairs.resize(local_cycles.size());
-    for (size_t idx = 0; idx < local_cycles.size(); ++idx) {
-        const auto &cycle = local_cycles[idx];
-        storage.compact_pairs[idx] = pack_local_cycle_pair(cycle.src, cycle.tgt);
-        set_packed_phase(storage.phases, idx, cycle.phase, "Local cycle phase");
-    }
-    return storage;
-}
-
-inline auto local_cycle_src(const PackedLocalCycleStorage &storage, size_t idx) -> size_t {
-    return storage.uses_wide_indices ? storage.wide_src_indices[idx]
-                                     : packed_local_cycle_src(storage.compact_pairs[idx]);
-}
-
-inline auto local_cycle_tgt(const PackedLocalCycleStorage &storage, size_t idx) -> size_t {
-    return storage.uses_wide_indices ? storage.wide_tgt_indices[idx]
-                                     : packed_local_cycle_tgt(storage.compact_pairs[idx]);
-}
-
-inline auto local_cycle_phase(const PackedLocalCycleStorage &storage, size_t idx) -> int {
-    return packed_phase_at(storage.phases, idx);
-}
-
-inline auto build_packed_cross_rank_storage(std::vector<CrossRankCycles> cross_rank) -> PackedCrossRankStorage {
+inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> data) -> PackedCrossRankStorage {
     PackedCrossRankStorage storage;
-    storage.ranges.resize(cross_rank.size());
+    const size_t num_ranks = data.size();
+    storage.ranges.resize(num_ranks);
 
-    size_t total_out = 0;
-    size_t total_in = 0;
-    bool out_uses_binary_phases = true;
-    bool in_uses_binary_phases = true;
-    for (const auto &cycles : cross_rank) {
-        total_out += cycles.out_size();
-        total_in += cycles.in_size();
-        storage.out_indices_wide = storage.out_indices_wide
-                                   || std::any_of(cycles.out_indices.begin(), cycles.out_indices.end(), [](size_t idx) {
-                                          return idx > static_cast<size_t>(std::numeric_limits<uint32_t>::max());
-                                      });
-        storage.in_indices_wide =
-            storage.in_indices_wide || std::any_of(cycles.in_indices.begin(), cycles.in_indices.end(), [](size_t idx) {
-                return idx > static_cast<size_t>(std::numeric_limits<uint32_t>::max());
-            });
-        out_uses_binary_phases =
-            out_uses_binary_phases && std::all_of(cycles.out_phases.begin(), cycles.out_phases.end(), [](int phase) {
-                return is_binary_phase(phase);
-            });
-        in_uses_binary_phases =
-            in_uses_binary_phases && std::all_of(cycles.in_phases.begin(), cycles.in_phases.end(), [](int phase) {
-                return is_binary_phase(phase);
-            });
-    }
-
-    if (storage.out_indices_wide) {
-        storage.wide_out_indices.resize(total_out);
-    }
-    else {
-        storage.out_indices.resize(total_out);
-    }
-    storage.out_phases = make_packed_phase_storage(total_out, out_uses_binary_phases);
-
-    if (storage.in_indices_wide) {
-        storage.wide_in_indices.resize(total_in);
-    }
-    else {
-        storage.in_indices.resize(total_in);
-    }
-    storage.in_phases = make_packed_phase_storage(total_in, in_uses_binary_phases);
-
-    size_t out_offset = 0;
-    size_t in_offset = 0;
-    for (size_t rank = 0; rank < cross_rank.size(); ++rank) {
-        const auto &cycles = cross_rank[rank];
+    // ── Pass 1 (serial, one iteration per rank — cheap): assign per-rank offsets/counts so the
+    // fill pass can write distinct slots in parallel, and accumulate the global totals. ──
+    size_t total_b = 0;
+    size_t total_d = 0;
+    for (size_t rank = 0; rank < num_ranks; ++rank) {
+        const auto &partner = data[rank];
         auto &range = storage.ranges[rank];
-        range.out_offset = out_offset;
-        range.out_count = cycles.out_size();
-        range.in_offset = in_offset;
-        range.in_count = cycles.in_size();
+        range.b_offset = static_cast<TermIndex>(total_b);
+        range.b_count  = static_cast<TermIndex>(partner.b_indices.size());
+        range.d_offset = static_cast<TermIndex>(total_d);
+        range.d_count  = static_cast<TermIndex>(partner.d.size());
+        range.in_count = static_cast<TermIndex>(partner.in_count);
+        total_b += partner.b_indices.size();
+        total_d += partner.d.size();
+    }
 
-        for (size_t idx = 0; idx < cycles.out_size(); ++idx) {
-            if (storage.out_indices_wide) {
-                storage.wide_out_indices[out_offset + idx] = cycles.out_indices[idx];
+    // ── Pass 2: reduce the binary-phase flag over every element (parallel within each rank; AND is
+    // order-independent, so the result is thread-count-independent). B indices are stored as u32 and
+    // checked at the store site (checked_term_index throws above the TermIndex ceiling), so no
+    // width reduction is needed here. ──
+    bool uses_binary_phases = true;
+    for (const auto &partner : data) {
+        // Only the phase needs scanning — the D index list is derived from B at read time, so it
+        // is neither width-checked nor stored.
+        const bool non_binary_phase = threading::parallel_reduce_indices<bool>(
+            partner.d.size(), false,
+            [&](size_t k, bool &acc) { acc = acc || !is_binary_phase(partner.d[k].second); },
+            [](bool a, bool b) { return a || b; });
+        uses_binary_phases = uses_binary_phases && !non_binary_phase;
+    }
+
+    storage.b_indices.resize(total_b);
+
+    // NOTE: D indices are not stored — derived from B on read (see cross_rank_d_index).
+    storage.d_phases = make_packed_phase_storage(total_d, uses_binary_phases);
+
+    // ── Pass 3: fill the flat arrays. Within a rank every slot is distinct, so the index writes
+    // are race-free. For binary phases the packed bit-words are SHARED across rank boundaries, so
+    // set the (rare) negative-phase bits with an atomic OR — the word is zero-initialised, so a
+    // non-negative phase needs no write. Non-binary phases occupy one distinct byte per slot. ──
+    for (size_t rank = 0; rank < num_ranks; ++rank) {
+        const auto &partner = data[rank];
+        const size_t b_off = storage.ranges[rank].b_offset;
+        const size_t d_off = storage.ranges[rank].d_offset;
+
+        threading::parallel_for_indices(partner.b_indices.size(), [&](size_t k) {
+            storage.b_indices[b_off + k] = checked_term_index(partner.b_indices[k], "Cross-rank B index");
+        });
+
+        // Single phased D list: phi is already signed (former D- carry -phi, former D+ carry +phi).
+        // Only the phase is stored; the D index is derived from B at read time (cross_rank_d_index).
+        threading::parallel_for_indices(partner.d.size(), [&](size_t k) {
+            const auto &[i, phi] = partner.d[k];
+            (void)i;
+            const size_t slot = d_off + k;
+            if (uses_binary_phases) {
+                // Pass 2 already proved every phase is binary; only -1 sets a bit (default is 0).
+                if (phi < 0) {
+                    __atomic_fetch_or(&storage.d_phases.phase_words[packed_phase_word_index(slot)],
+                                      packed_phase_bit_mask(slot), __ATOMIC_RELAXED);
+                }
             }
             else {
-                storage.out_indices[out_offset + idx] =
-                    checked_packed_index(cycles.out_indices[idx], "Cross-rank outgoing index");
+                storage.d_phases.phase_values[slot] = checked_packed_phase(phi, "Cross-rank D phase");
             }
-            set_packed_phase(storage.out_phases, out_offset + idx, cycles.out_phases[idx], "Cross-rank outgoing phase");
-        }
-
-        for (size_t idx = 0; idx < cycles.in_size(); ++idx) {
-            if (storage.in_indices_wide) {
-                storage.wide_in_indices[in_offset + idx] = cycles.in_indices[idx];
-            }
-            else {
-                storage.in_indices[in_offset + idx] =
-                    checked_packed_index(cycles.in_indices[idx], "Cross-rank incoming index");
-            }
-            set_packed_phase(storage.in_phases, in_offset + idx, cycles.in_phases[idx], "Cross-rank incoming phase");
-        }
-
-        out_offset += cycles.out_size();
-        in_offset += cycles.in_size();
+        });
     }
 
     return storage;
 }
 
-inline auto cross_rank_out_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
-    const size_t offset = storage.ranges[rank].out_offset + idx;
-    return storage.out_indices_wide ? storage.wide_out_indices[offset]
-                                    : static_cast<size_t>(storage.out_indices[offset]);
+inline auto cross_rank_b_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
+    const size_t offset = storage.ranges[rank].b_offset + idx;
+    return static_cast<size_t>(storage.b_indices[offset]);
 }
 
-inline auto cross_rank_out_phase(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> int {
-    return packed_phase_at(storage.out_phases, storage.ranges[rank].out_offset + idx);
+// Derive the D index from B. Layout invariant (assemble_partners): B = [in(P)]++[out(Q)] and
+// D = [out(Q)]++[in(P)] with P=in_count, Q=d_count-P. Hence D[idx] = (idx<Q) ? B[P+idx] : B[idx-Q].
+// The D index list is therefore not stored (saves one full uint32 array ≈ half of cross_rank).
+inline auto cross_rank_d_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
+    const auto &range = storage.ranges[rank];
+    const size_t in_count = range.in_count;          // P
+    const size_t out_count = range.d_count - in_count; // Q
+    const size_t b_local = (idx < out_count) ? (in_count + idx) : (idx - out_count);
+    return cross_rank_b_index(storage, rank, b_local);
 }
 
-inline auto cross_rank_in_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
-    const size_t offset = storage.ranges[rank].in_offset + idx;
-    return storage.in_indices_wide ? storage.wide_in_indices[offset] : static_cast<size_t>(storage.in_indices[offset]);
-}
-
-inline auto cross_rank_in_phase(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> int {
-    return packed_phase_at(storage.in_phases, storage.ranges[rank].in_offset + idx);
-}
-
-inline auto local_cycle_storage_bytes(const PackedLocalCycleStorage &storage) -> size_t {
-    size_t bytes = packed_phase_storage_bytes(storage.phases);
-    if (storage.uses_wide_indices) {
-        bytes += storage.wide_src_indices.capacity() * sizeof(size_t);
-        bytes += storage.wide_tgt_indices.capacity() * sizeof(size_t);
-        return bytes;
-    }
-
-    return bytes + storage.compact_pairs.capacity() * sizeof(uint64_t);
+inline auto cross_rank_d_phase(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> int {
+    return packed_phase_at(storage.d_phases, storage.ranges[rank].d_offset + idx);
 }
 
 inline auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t {
-    size_t bytes = storage.ranges.capacity() * sizeof(CrossRankStorageRange)
-                   + packed_phase_storage_bytes(storage.out_phases) + packed_phase_storage_bytes(storage.in_phases);
-    bytes += storage.out_indices_wide ? storage.wide_out_indices.capacity() * sizeof(size_t)
-                                      : storage.out_indices.capacity() * sizeof(uint32_t);
-    bytes += storage.in_indices_wide ? storage.wide_in_indices.capacity() * sizeof(size_t)
-                                     : storage.in_indices.capacity() * sizeof(uint32_t);
+    size_t bytes = storage.ranges.capacity() * sizeof(CrossRankPartnerRange)
+                 + packed_phase_storage_bytes(storage.d_phases);
+    bytes += storage.b_indices.capacity() * sizeof(TermIndex);
+    // D indices are derived from B (not stored), so they contribute nothing.
     return bytes;
 }
 
@@ -296,76 +227,63 @@ inline auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layou
     return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
 }
 
-template <typename CrossRankRange>
-inline auto build_layer_exchange_layout_impl(const std::vector<CrossRankRange> &cross_rank, int scale)
+// build_layer_exchange_layout_impl: sums b_count * scale per rank.
+// PartnerRangeLike must have a uint32_t b_count field.
+template <typename PartnerRangeLike>
+inline auto build_layer_exchange_layout_impl(const std::vector<PartnerRangeLike> &ranges, int scale)
     -> LayerExchangeLayout {
     LayerExchangeLayout layout;
-    layout.counts.resize(cross_rank.size());
-    layout.displs.resize(cross_rank.size());
-
-    size_t total_count = 0;
-    for (size_t rank = 0; rank < cross_rank.size(); ++rank) {
-        const auto &cr = cross_rank[rank];
-        const size_t count = static_cast<size_t>(scale) * (cr.out_size() + cr.in_size());
-        layout.counts[rank] = checked_mpi_int(count, "Layer exchange count");
-        total_count += count;
+    layout.counts.resize(ranges.size());
+    layout.displs.resize(ranges.size());
+    size_t total = 0;
+    for (size_t r = 0; r < ranges.size(); ++r) {
+        const size_t count = static_cast<size_t>(scale) * static_cast<size_t>(ranges[r].b_count);
+        layout.counts[r] = checked_mpi_int(count, "Layer exchange count");
+        layout.displs[r] = checked_mpi_int(total, "Layer exchange displacement");
+        total += count;
     }
-
-    if (!layout.displs.empty()) {
-        size_t displacement = 0;
-        for (size_t rank = 0; rank < cross_rank.size(); ++rank) {
-            layout.displs[rank] = checked_mpi_int(displacement, "Layer exchange displacement");
-            displacement += static_cast<size_t>(layout.counts[rank]);
-        }
-    }
-
-    layout.total_count = total_count;
+    layout.total_count = total;
     return layout;
 }
 
-inline auto build_layer_exchange_layout(const std::vector<CrossRankCycles> &cross_rank, int scale)
+inline auto build_layer_exchange_layout(const std::vector<CrossRankPartnerData> &data, int scale)
     -> LayerExchangeLayout {
-    return build_layer_exchange_layout_impl(cross_rank, scale);
+    // Build temporary range-like objects with b_count for the impl.
+    struct BCountOnly { uint32_t b_count; };
+    std::vector<BCountOnly> ranges;
+    ranges.reserve(data.size());
+    for (const auto &partner : data) {
+        ranges.push_back({static_cast<uint32_t>(partner.b_indices.size())});
+    }
+    return build_layer_exchange_layout_impl(ranges, scale);
 }
 
-struct CrossRankMaskRange final {
-    size_t out_offset = 0;
-    size_t out_count = 0;
-    size_t in_offset = 0;
-    size_t in_count = 0;
+// build_layer_storage_unified: stores C = all anticommuting, with local cycles folded
+// into the self-rank partner slot (my_rank).  The exchange layout zeroes counts[my_rank]
+// so MPI_Alltoallv never touches the self-rank slot; the replay handles it as a local
+// buffer copy.  This matches paper Algorithm 3 (BuildDistributedLayer / ContractLayer).
+inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners,
+                                        size_t my_rank) -> std::shared_ptr<LayerCore> {
+    auto storage = std::make_shared<LayerCore>();
 
-    bool empty() const { return out_count == 0 && in_count == 0; }
-    size_t out_size() const { return out_count; }
-    size_t in_size() const { return in_count; }
-};
+    // Build exchange layout excluding self-rank (counts[my_rank] = 0).
+    {
+        struct BCountOnly { uint32_t b_count; };
+        std::vector<BCountOnly> ranges;
+        ranges.reserve(all_partners.size());
+        for (size_t r = 0; r < all_partners.size(); ++r) {
+            // Self-rank slot: zero MPI count (handled locally by the replay).
+            const uint32_t cnt = (r == my_rank) ? 0u
+                                                 : static_cast<uint32_t>(all_partners[r].b_indices.size());
+            ranges.push_back({cnt});
+        }
+        storage->evolution_exchange_layout = build_layer_exchange_layout_impl(ranges, 1);
+        storage->derivative_exchange_layout = build_layer_exchange_layout_impl(ranges, 2);
+    }
 
-struct ExecutionPlanStorage final {
-    std::vector<CompressedCosineData> cos_data_blocks;
-    std::vector<CompressedPositionData> local_cycle_position_blocks;
-    std::vector<CompressedPositionData> cross_rank_out_position_blocks;
-    std::vector<CompressedPositionData> cross_rank_in_position_blocks;
-};
-
-inline auto build_layer_exchange_layout(const std::vector<CrossRankMaskRange> &cross_rank, int scale)
-    -> LayerExchangeLayout {
-    return build_layer_exchange_layout_impl(cross_rank, scale);
-}
-
-inline auto build_layer_storage(CompressedCosineData cos_data,
-                                std::vector<LocalCycle> local_cycs,
-                                std::vector<CrossRankCycles> cross_rank) -> std::shared_ptr<LayerStorage> {
-    auto storage = std::make_shared<LayerStorage>();
-    storage->cos_data = std::move(cos_data);
-    storage->evolution_exchange_layout = build_layer_exchange_layout(cross_rank, 1);
-    storage->local_cycles = build_packed_local_cycle_storage(std::move(local_cycs));
-    storage->cross_rank = build_packed_cross_rank_storage(std::move(cross_rank));
+    // Local cycles are folded into the self-rank cross_rank slot (no PackedLocalCycleStorage).
+    storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
     return storage;
-}
-
-inline auto build_layer_storage(VecZ cos_inds,
-                                std::vector<LocalCycle> local_cycs,
-                                std::vector<CrossRankCycles> cross_rank) -> std::shared_ptr<LayerStorage> {
-    return build_layer_storage(build_compressed_cosine_data(cos_inds), std::move(local_cycs), std::move(cross_rank));
 }
 
 } // namespace monoprop::detail

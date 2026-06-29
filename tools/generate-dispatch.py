@@ -90,6 +90,14 @@ def _simulator_adapter_source() -> str:
 
     def __repr__(self) -> str:
         return repr(self._core)
+
+    def __deepcopy__(self, memo):
+        import copy as _copy
+
+        new = object.__new__(type(self))
+        object.__setattr__(new, "_logical_num_modes", self._logical_num_modes)
+        object.__setattr__(new, "_core", _copy.deepcopy(self._core, memo))
+        return new
 """
 
 
