@@ -7,7 +7,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES Clang)
   else()
     set(
       monoprop_CXX_FLAGS
-      "-Wall -Wno-padded -Wno-unknown-pragmas -Woverloaded-virtual -Wwrite-strings -fcolor-diagnostics -Wno-c++98-compat"
+      "-Wall -Wno-padded -Wno-unknown-pragmas -Woverloaded-virtual -Wwrite-strings -fcolor-diagnostics -Wno-c++98-compat  -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer"
     )
     set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
     set(
