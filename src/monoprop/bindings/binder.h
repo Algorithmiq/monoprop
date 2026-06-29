@@ -213,5 +213,14 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
     cls.def("graph_data", &MonomialPropagator<NumModes>::graph_data);
 
     cls.def("graph_layers", &MonomialPropagator<NumModes>::graph_layers);
+
+    // Read-only structural memory accounting (capacity-based byte totals), so the
+    // benchmark report can attribute footprint to the operator vs the graph.
+    cls.def("operator_memory_bytes", [](const MonomialPropagator<NumModes> &self) {
+        return self.operator_memory_usage().total_bytes();
+    });
+    cls.def("graph_memory_bytes", [](const MonomialPropagator<NumModes> &self) {
+        return self.graph_memory_usage().total_bytes();
+    });
 }
 } // namespace monoprop::bindings::detail
