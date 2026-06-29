@@ -53,7 +53,8 @@ mp = MonomialPropagator(operator, num_modes=4, ...)
 
 ### Testing Structure
 
-- `tests/cases.py`: Parametrized test cases using `pytest-cases`
+- `tests/cases.py`: Parametrized test cases using `pytest-cases`; `load_problem()` loads a `tests/data/*.msgpack` fixture directly into the public API (`MonomialCircuit` + `MonomialOperator`). C++ tests use the equivalent `test_utils::load_case()` in `tests/cpp/TestData.h`
+- Fixture msgpack schema is documented in `tests/data/README.md`
 - Tests validate against exact solutions for small systems
 - Heavy use of `@parametrize_with_cases` decorators
 
@@ -66,7 +67,7 @@ mp = MonomialPropagator(operator, num_modes=4, ...)
 - **fmt**: C++ formatting library
 - **quill**: High-performance C++ logging
 - **Boost**: Used for various utilities (unordered_map, unit tests)
-- **msgpack**: Data serialization for input/output
+- **msgpack**: Serialization of the test-data fixtures only (`tests/data/*.msgpack`); consumed by the Python test loaders and the C++ test suite, not by the shipped library
 
 ## Common Tasks
 
