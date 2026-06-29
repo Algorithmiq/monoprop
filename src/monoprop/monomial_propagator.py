@@ -417,11 +417,10 @@ class MonomialPropagator:
         if ignore_circuit_parameters or operator_coeffs:
             self._add_coeffs_to_queue(quantum_circuit)
 
-        parameter_mapping = (
-            None if ignore_circuit_parameters else quantum_circuit.param_inds
-        )
-        gen_coeffs = None if ignore_circuit_parameters else quantum_circuit.gen_coeffs
-        parameters = None if ignore_circuit_parameters else quantum_circuit.parameters
+        use_params = not ignore_circuit_parameters or operator_coeffs is not None
+        parameter_mapping = quantum_circuit.param_inds if use_params else None
+        gen_coeffs = quantum_circuit.gen_coeffs if use_params else None
+        parameters = quantum_circuit.parameters if use_params else None
 
         self._simulator.propagate(
             majoranas=majoranas,
