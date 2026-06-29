@@ -65,6 +65,25 @@ fixed-round `pedantic` timing because pytest-benchmark's auto-calibration would
 let ranks diverge and deadlock at the barriers; set the count with
 `--bench-rounds` (default 5).
 
+**MPI build must be loaded, and stay loaded.** `monoprop` builds with
+`monoprop_ENABLE_MPI=OFF` by default; a non-MPI extension silently ignores the
+communicator, so every rank holds the **full** operator (no distribution, and
+N× the memory — this OOMs at large sizes). `just bench-build-mpi` installs the
+MPI build, and `just bench` runs with `uv run --no-sync` so a later run does not
+re-sync a default non-MPI build over it. Because of `--no-sync`, sync deps once
+up front (`uv sync --all-groups --all-extras`, or `just bench-build-mpi`), and
+rebuild explicitly after editing monoprop sources.
+
+Before the heavy passes, an `--ranks > 1` run runs a fast **distribution
+preflight** (`benches/_mpi_check.py`): it builds a tiny problem and checks that
+each rank holds only a *fraction* of the operator. If the loaded build is not
+distributing it aborts immediately with remediation instead of OOMing hours
+later. Pass `--skip-mpi-check` to bypass it. To run the check on its own:
+
+```bash
+mpiexec --allow-run-as-root -n 4 uv run --no-sync python benches/_mpi_check.py
+```
+
 ## Reporting
 
 Each run regenerates `REPORT.md`, which has:

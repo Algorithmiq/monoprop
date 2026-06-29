@@ -43,17 +43,23 @@ serve-docs:
 
 # Run the benchmark suite (timing + memory) and write benches/results/REPORT.md.
 # Serial by default; pass `--ranks N` for MPI (needs `just bench-build-mpi` first).
+# Uses `--no-sync` so a plain run does NOT rebuild monoprop with the default
+# (MPI=OFF) settings and clobber an MPI build. Sync deps once first with
+# `uv sync --all-groups --all-extras` (or `just bench-build-mpi` for MPI). After
+# editing monoprop sources, rebuild explicitly before benching.
 # Any other arguments are forwarded to pytest, e.g.
 #   just bench --ranks 4 --num-modes 64 --bench-rounds 10
 bench *ARGS:
-    uv run --group bench python benches/run.py {{ ARGS }}
+    uv run --no-sync python benches/run.py {{ ARGS }}
 
 # Rebuild monoprop with MPI enabled (editable). Run once before `just bench --ranks N`.
+# A plain `just bench` uses `--no-sync`, so this MPI build survives until the next
+# explicit `uv sync` / rebuild.
 bench-build-mpi:
     uv sync --all-extras --group bench --reinstall-package monoprop --no-cache \
         --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v
 
 # Quick sanity run: tiny sizes, no memory pass, skip the slow static benchmarks.
 bench-smoke:
-    uv run --group bench python benches/run.py --no-mem \
+    uv run --no-sync python benches/run.py --no-mem \
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16

@@ -104,6 +104,11 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         "--no-mem", action="store_true", help="Skip the memory pass (timing only)."
     )
     parser.add_argument(
+        "--skip-mpi-check",
+        action="store_true",
+        help="Skip the preflight that verifies MPI distribution (ranks > 1).",
+    )
+    parser.add_argument(
         "--results-dir", type=Path, default=RESULTS_DIR, help="Output directory."
     )
     return parser.parse_known_args(argv)
@@ -161,6 +166,18 @@ def _launch(prefix: list[str], pytest_args: list[str], run_env: dict[str, str]) 
     subprocess.run(cmd, check=True, env=run_env)
 
 
+def _mpi_distribution_ok(prefix: list[str], run_env: dict[str, str]) -> bool:
+    """Run the MPI distribution preflight under ``mpiexec``; True if distributing.
+
+    Catches the common failure where the loaded ``monoprop`` extension was built
+    without MPI (so every rank holds the full operator and the run OOMs). Runs a
+    tiny probe, so it is cheap relative to the real passes.
+    """
+    cmd = [*prefix, sys.executable, str(BENCH_DIR / "_mpi_check.py")]
+    print(f"$ {shlex.join(cmd)}", flush=True)
+    return subprocess.run(cmd, check=False, env=run_env).returncode == 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the timing and memory passes for one label, then write the report."""
     args, pytest_args = _parse_args(sys.argv[1:] if argv is None else argv)
@@ -189,6 +206,20 @@ def main(argv: list[str] | None = None) -> int:
             *forwards,
             *shlex.split(args.mpiexec_args),
         ]
+
+    # Fail fast if an MPI run is not actually distributing (e.g. a non-MPI build
+    # got loaded): otherwise every rank holds the full operator and the run OOMs.
+    if (
+        args.ranks > 1
+        and not args.skip_mpi_check
+        and not _mpi_distribution_ok(prefix, run_env)
+    ):
+        sys.stderr.write(
+            "ERROR: MPI distribution preflight failed (see [mpi-check] above). "
+            "Aborting before the heavy passes. Rebuild the MPI extension with "
+            "`just bench-build-mpi`, or pass --skip-mpi-check to override.\n"
+        )
+        return 1
 
     # ``-o filterwarnings=default`` overrides the project-wide ``error`` filter so
     # benchmark-plugin warnings do not fail the run.
