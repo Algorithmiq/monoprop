@@ -1,154 +1,104 @@
 # monoprop benchmarks
 
-A pytest-based benchmark suite measuring the **time** and **peak memory** of
-monoprop's core operations. Timing uses
-[`pytest-benchmark`](https://pytest-benchmark.readthedocs.io); memory uses
-[`pytest-memray`](https://pytest-memray.readthedocs.io), whose allocator-level
-tracking captures the C++-side graph and coefficient allocations that dominate
-this library (Python's `tracemalloc` would miss them).
-
-This directory is **not** collected by the normal `pytest` run (`testpaths` is
-`tests/`). Run the benchmarks explicitly with `just bench`.
+A pytest suite measuring the **time** ([`pytest-benchmark`](https://pytest-benchmark.readthedocs.io))
+and **peak memory** ([`pytest-memray`](https://pytest-memray.readthedocs.io),
+which tracks the C++-side allocations `tracemalloc` misses) of monoprop's core
+operations. It is not part of the normal `pytest` run; invoke it with `just bench`.
 
 ## Running
 
-There is one command. `just bench` runs the timing pass, the memory pass, and
-regenerates `benches/results/REPORT.md`:
+`just bench` runs the timing pass, the memory pass, and regenerates
+`benches/results/REPORT.md`. Driver options (`--ranks`, `--mpiexec-args`,
+`--no-mem`) are consumed by `run.py`; everything else is forwarded to pytest.
 
 ```bash
-just bench                       # serial (label np1)
-just bench-smoke                 # quick sanity check (tiny sizes, no memory pass)
-```
-
-Anything after `just bench` is handled by the driver (`benches/run.py`):
-driver options (`--ranks`, `--mpiexec-args`, `--no-mem`) are consumed, and
-everything else is forwarded to pytest — so you size the random benchmarks,
-choose the round count, or select tests the same way:
-
-```bash
-just bench --num-generators 200 --num-modes 64 --cutoff 10
-just bench --bench-rounds 20 benches/bench_random_evolve.py::test_energy
-just bench --no-mem              # timing only
+just bench                                   # serial (label np1)
+just bench-smoke                             # quick check: tiny sizes, no memory pass
+just bench --num-modes 64 --bench-rounds 10  # forwarded to pytest
+just bench --no-mem                          # timing only
 ```
 
 ## Configuring a run (MPI, threads, pinning)
 
-Configuration is external and explicit — you set it on the command line and the
-driver records it in the report. Three knobs:
+You set configuration on the command line; the driver records it in the report.
 
 | Knob | How | Example |
 |---|---|---|
 | MPI ranks | `--ranks N` | `--ranks 4` |
-| mpiexec args (incl. rank pinning) | `--mpiexec-args` | `--mpiexec-args="--bind-to core"` |
-| threads & thread pinning | `--env KEY=VAL` (repeatable) | `--env monoprop_NUM_THREADS=2` |
-| run name / report column | `--label` | `--label r4t2-pinned` |
+| mpiexec args (incl. pinning) | `--mpiexec-args` | `--mpiexec-args="--bind-to core"` |
+| threads & pinning | `--env KEY=VAL` (repeatable) | `--env monoprop_NUM_THREADS=2` |
+| run name / report column | `--label` | `--label r4t2` |
 
-`monoprop` reads its thread count from `monoprop_NUM_THREADS` at import; add
-`OMP_NUM_THREADS` / `OMP_PROC_BIND` / `OMP_PLACES` for OpenMP-side pinning. Give a
-custom `--label` when you vary threads/pinning at a fixed rank count so runs do
-not overwrite each other.
+`monoprop` reads `monoprop_NUM_THREADS` at import; add `OMP_NUM_THREADS` /
+`OMP_PROC_BIND` / `OMP_PLACES` for OpenMP pinning. Use a custom `--label` when
+varying threads/pinning at a fixed rank count so runs don't overwrite each other.
 
 ```bash
-# threads only (serial), named column
-just bench --env monoprop_NUM_THREADS=4 --label t4
-
-# 4 ranks × 2 threads, cores pinned
 just bench-build-mpi                                       # one-time MPI rebuild
 just bench --ranks 4 --mpiexec-args="--bind-to core" \
     --env monoprop_NUM_THREADS=2 --env OMP_PROC_BIND=close --label r4t2
 ```
 
-The benchmarks are communicator-aware: each operation is barrier-wrapped so the
-timed cost is the **makespan** across ranks, only rank 0 writes the timing JSON,
-and memory is captured per rank (the report shows the worst-rank peak). MPI uses
-fixed-round `pedantic` timing because pytest-benchmark's auto-calibration would
-let ranks diverge and deadlock at the barriers; set the count with
-`--bench-rounds` (default 5).
+Benchmarks are communicator-aware: each operation is barrier-wrapped so the
+timed cost is the **makespan** across ranks, rank 0 writes the timing JSON, and
+memory is the worst-rank peak. MPI uses fixed-round `pedantic` timing
+(`--bench-rounds`, default 5) so ranks don't diverge and deadlock at the barriers.
 
-**MPI build must be loaded, and stay loaded.** `monoprop` builds with
+**The MPI build must be loaded and stay loaded.** monoprop builds with
 `monoprop_ENABLE_MPI=OFF` by default; a non-MPI extension silently ignores the
-communicator, so every rank holds the **full** operator (no distribution, and
-N× the memory — this OOMs at large sizes). `just bench-build-mpi` installs the
-MPI build, and `just bench` runs with `uv run --no-sync` so a later run does not
-re-sync a default non-MPI build over it. Because of `--no-sync`, sync deps once
-up front (`uv sync --all-groups --all-extras`, or `just bench-build-mpi`), and
-rebuild explicitly after editing monoprop sources.
-
-Before the heavy passes, an `--ranks > 1` run runs a fast **distribution
-preflight** (`benches/_mpi_check.py`): it builds a tiny problem and checks that
-each rank holds only a *fraction* of the operator. If the loaded build is not
-distributing it aborts immediately with remediation instead of OOMing hours
-later. Pass `--skip-mpi-check` to bypass it. To run the check on its own:
-
-```bash
-mpiexec --allow-run-as-root -n 4 uv run --no-sync python benches/_mpi_check.py
-```
+communicator, so every rank holds the **full** operator (N× memory, OOMs at
+scale). `just bench-build-mpi` installs the MPI build and `just bench` runs with
+`--no-sync` so it survives — rebuild explicitly after editing monoprop sources.
+An `--ranks > 1` run first runs a fast **distribution preflight**
+(`_mpi_check.py`) that aborts with remediation if the build is not distributing;
+bypass it with `--skip-mpi-check`.
 
 ## Reporting
 
-Each run regenerates `REPORT.md`, which has:
+Each run regenerates `REPORT.md`; rebuild it from existing artifacts (no re-run)
+with `uv run --group bench python benches/report.py`. Every run is one column, so
+serial / MPI / thread variants sit side by side. Sections:
 
-- **Configuration** — one row per run label: ranks, thread counts, launcher (incl.
-  pinning args), CPU count, host.
-- **Hyperparameters** — the resolved random-problem sizes and run knobs each run
-  actually used (defaults included, not just CLI overrides), one column per label.
-- **Graph size** — the number of terms in the evolved operator reached per
-  picture (Heisenberg / Schrödinger), one column per label.
-- **Heisenberg** and **Schrödinger** — one section each, every section holding a
-  **Time** and a **Peak memory** table (one row per operation, one column per
-  label). The Schrödinger section is omitted when no Schrödinger ops were run.
-
-Every run is one column, so serial / MPI / thread variants sit side by side. To
-rebuild the report from existing artifacts without re-running anything:
-
-```bash
-uv run --group bench python benches/report.py
-```
+- **Configuration** — ranks, thread counts, launcher, CPU count, host.
+- **Hyperparameters** — the resolved random-problem sizes each run used.
+- **Graph size** — terms in the evolved operator per picture.
+- **Static model configuration** — the resolved config of each static model.
+- **Heisenberg** / **Schrödinger** — a **Time** and **Peak memory** table each
+  (Schrödinger omitted when unused).
 
 ## Benchmarks
 
-All benchmarks live in a single file, `bench_monoprop.py`.
+All live in `bench_monoprop.py`.
 
-### Random (configurable, both pictures)
-
-`make_random_problem` builds `--num-generators` random fixed-length Majorana
-generators and a random Hermitian observable with a configurable number of
-terms. Each random operation is run in **both** the Heisenberg and Schrödinger
-pictures (the latter with `schrodinger_cutoff = cutoff + 2`), shown as
-`[heisenberg]` / `[schrodinger]` variants. All sizes are CLI options (defaults
-in parentheses):
+**Random** (configurable, both pictures) — random fixed-length Majorana
+generators and a random Hermitian observable, run in the Heisenberg and
+Schrödinger pictures (`schrodinger_cutoff = cutoff + 2`), shown as `[heisenberg]`
+/ `[schrodinger]`. CLI options (defaults):
 
 | Option | Meaning | Default |
 |---|---|---|
 | `--gen-length` | Majorana operators per generator | 4 |
-| `--obs-terms` | number of observable terms | 10000 |
-| `--num-generators` | number of generators (circuit gates) | 100 |
+| `--obs-terms` | observable terms | 10000 |
+| `--num-generators` | generators (circuit gates) | 100 |
 | `--num-modes` | fermionic modes (Majorana indices = `2·modes`) | 128 |
 | `--cutoff` | truncation cutoff | 6 |
 | `--seed` | RNG seed | 0 |
 
-Operations: `test_random_build_graph`, `test_random_pare` (masked execution
-plan), `test_random_energy`, `test_random_gradient` (graph-based path), and
-`test_random_inplace` (in-place coefficient truncation, never materialising the
-graph).
+Operations: `build_graph`, `pare`, `energy`, `gradient` (graph-based), and
+`inplace` (in-place truncation, no graph stored).
 
-### Static (fixed, in-place, Heisenberg only)
+**Static** (fixed, in-place, Heisenberg only, marked `slow`):
 
-- `test_static[hubbard]` — 120-qubit Fermi-Hubbard model (60 sites), sandbox
-  default input, run as a 29-step in-place Trotter trajectory.
-- `test_static[pauli]` — 127-qubit Pauli-basis kicked-Ising simulation (IBM Eagle
-  heavy-hex, 20 layers, ⟨Z₆₂⟩).
+- `test_static[hubbard]` — 120-qubit Fermi-Hubbard (60 sites), 29-step Trotter.
+- `test_static[pauli]` — 127-qubit Pauli-basis kicked-Ising (IBM Eagle heavy-hex,
+  20 layers, ⟨Z₆₂⟩).
 
-Both are marked `slow`. Pass `--lower-atol VALUE` to override their coefficient
-truncation tolerance (defaults: Hubbard 1e-5, Pauli 1e-4).
+`--lower-atol VALUE` overrides their truncation tolerance (defaults: Hubbard
+1e-5, Pauli 1e-4).
 
 ## Notes
 
-- The driver passes `-o filterwarnings=default` to pytest, overriding the
-  project-wide `filterwarnings=["error"]` so benchmark-plugin warnings do not
-  fail the run.
-- Static benchmarks use `benchmark.pedantic(rounds=1)` so the multi-second
-  simulations are not re-run hundreds of times.
-- Files are organised as: `run.py` (the driver), `report.py` (Markdown report),
-  `conftest.py` (fixtures + CLI options), `_builders.py` (model construction),
-  and `bench_monoprop.py` (the unified benchmark suite).
+- The driver passes `-o filterwarnings=default` so benchmark-plugin warnings
+  don't fail the run (the project default is `error`).
+- Files: `run.py` (driver), `report.py` (report), `conftest.py` (fixtures + CLI
+  options), `_builders.py` (model construction), `bench_monoprop.py` (suite).
