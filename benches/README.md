@@ -9,13 +9,21 @@ operations. It is not part of the normal `pytest` run; invoke it with `just benc
 
 `just bench` runs the timing pass, the memory pass, and regenerates
 `benches/results/REPORT.md`. Driver options (`--ranks`, `--mpiexec-args`,
-`--no-mem`) are consumed by `run.py`; everything else is forwarded to pytest.
+`--label`) are consumed by `run.py`; everything else is forwarded to pytest.
 
 ```bash
 just bench                                   # serial (label np1)
-just bench-smoke                             # quick check: tiny sizes, no memory pass
+just bench-smoke                             # quick sanity check (tiny sizes)
 just bench --num-modes 64 --bench-rounds 10  # forwarded to pytest
-just bench --no-mem                          # timing only
+```
+
+Each run adds a column to the same `REPORT.md`, so a non-MPI and an MPI run land
+side by side — both with timing and memory:
+
+```bash
+just bench-build-mpi                  # build once (MPI on; also runs serially)
+just bench --label serial             # non-MPI column (1 rank)
+just bench --ranks 4 --label mpi-r4   # MPI column, same report
 ```
 
 ## Configuring a run (MPI, threads, pinning)
