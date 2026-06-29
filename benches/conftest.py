@@ -30,6 +30,9 @@ reflects the slowest rank, and only rank 0 writes the timing JSON.
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import ctypes.util
+import gc
 import json
 import os
 from dataclasses import asdict
@@ -219,6 +222,32 @@ def _peak_pss_bytes() -> int:
     return max(hwm - overcount, 0)
 
 
+def _malloc_trim() -> None:
+    """Return free heap pages held by the C allocator to the OS (glibc only).
+
+    ``malloc_trim`` is what makes a *resting* PSS reading meaningful: glibc keeps
+    freed pages in its per-arena heaps, so without trimming the resident footprint
+    still includes transient build buffers that are logically gone. A no-op (and
+    silently ignored) on non-glibc libc.
+    """
+    with contextlib.suppress(Exception):  # non-glibc libc or no malloc_trim symbol
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
+        libc.malloc_trim(ctypes.c_size_t(0))
+
+
+def _resting_pss_bytes() -> int:
+    """Return current PSS after collecting garbage and trimming the C heap.
+
+    Unlike :func:`_peak_pss_bytes` (a high-water mark reached mid-operation, e.g.
+    while transient build buffers are live), this is the *settled* footprint once
+    those transients are released -- the metric that reveals persistent-memory
+    wins (a smaller index, recomputed-vs-stored data) that peak RSS cannot see.
+    """
+    gc.collect()
+    _malloc_trim()
+    return _proc_field("/proc/self/smaps_rollup", "Pss:")
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
     """Make rank 0 the sole writer and printer under MPI; record hyperparameters.
@@ -352,4 +381,18 @@ def built_graph(
     )
     mp.propagate()
     _record_operator_size(picture, mp, bench_comm)
+    _record_resting_footprint(picture, bench_comm)
     return mp
+
+
+def _record_resting_footprint(picture: str, comm: Any) -> None:
+    """Record the built operator+graph's *resting* PSS for one picture.
+
+    Measured here, while the session-scoped graph is resident and its build
+    transients have been released, so it captures the persistent footprint the
+    per-operation peak metric cannot. Summed across ranks (true physical RAM) and
+    merged into ``memrest-<label>.json`` by rank 0, one entry per picture.
+    """
+    total, rank = _reduce_sum(comm, _resting_pss_bytes())
+    if rank == 0:
+        _merge_record("memrest", picture, total)
