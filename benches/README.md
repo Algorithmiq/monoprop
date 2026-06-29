@@ -39,6 +39,15 @@ just bench --ranks 4 --mpiexec-args="--bind-to core" \
     --env monoprop_NUM_THREADS=2 --env OMP_PROC_BIND=close --label r4t2
 ```
 
+`--ranks N` launches `mpiexec` with these defaults; `--mpiexec-args` is appended:
+
+- `--allow-run-as-root` — needed in the container/CI images, which run as root.
+- `-n N` — the rank count from `--ranks`.
+- `-x <var>` for each `--env` override plus `MONOPROP_BENCH_LABEL` /
+  `MONOPROP_BENCH_RESULTS` — forwards them to every rank (OpenMPI).
+- no binding/mapping by default — add pinning yourself via `--mpiexec-args`
+  (e.g. `--bind-to core --map-by socket`).
+
 Benchmarks are communicator-aware: each operation is barrier-wrapped so the
 timed cost is the **makespan** across ranks, rank 0 writes the timing JSON, and
 memory is the worst-rank peak. MPI uses fixed-round `pedantic` timing
