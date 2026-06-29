@@ -125,7 +125,7 @@ def make_random_problem(
     *,
     gen_length: int = 4,
     obs_terms: int = 10000,
-    num_generators: int = 200,
+    num_generators: int = 100,
     num_modes: int = 128,
     cutoff: int = 6,
     seed: int = 0,

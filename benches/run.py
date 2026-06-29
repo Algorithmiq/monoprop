@@ -170,11 +170,17 @@ def main(argv: list[str] | None = None) -> int:
     label = args.label or f"np{args.ranks}"
     overrides = _parse_env(args.env)
     run_env = {**os.environ, **overrides}
+    # Let the pytest session (conftest) record the resolved hyperparameters and
+    # graph sizes for this label, keyed and located by these variables.
+    run_env["MONOPROP_BENCH_LABEL"] = label
+    run_env["MONOPROP_BENCH_RESULTS"] = str(results_dir)
 
     prefix: list[str] = []
     if args.ranks > 1:
-        # Forward overridden vars to the ranks (OpenMPI) and add user mpiexec args.
-        forwards = [tok for key in overrides for tok in ("-x", key)]
+        # Forward overridden vars and the recording variables to the ranks
+        # (OpenMPI), then add user mpiexec args.
+        forwarded_keys = (*overrides, "MONOPROP_BENCH_LABEL", "MONOPROP_BENCH_RESULTS")
+        forwards = [tok for key in forwarded_keys for tok in ("-x", key)]
         prefix = [
             "mpiexec",
             "--allow-run-as-root",

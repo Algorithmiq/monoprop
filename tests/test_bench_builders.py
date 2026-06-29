@@ -32,7 +32,7 @@ def test_random_default_sizes_are_meaningful() -> None:
     }
     assert defaults["gen_length"] == 4
     assert defaults["obs_terms"] == 10000
-    assert defaults["num_generators"] == 200
+    assert defaults["num_generators"] == 100
     assert defaults["num_modes"] == 128
     assert defaults["cutoff"] == 6
     assert defaults["seed"] == 0

@@ -29,6 +29,9 @@ reflects the slowest rank, and only rank 0 writes the timing JSON.
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -58,7 +61,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--num-generators",
         type=int,
-        default=200,
+        default=100,
         help="Number of random generators (circuit gates).",
     )
     group.addoption(
@@ -82,19 +85,77 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-def pytest_configure(config: pytest.Config) -> None:
-    """Ensure only rank 0 writes the pytest-benchmark JSON under MPI.
+# Resolved random-problem sizes (and run knobs) recorded for the report so the
+# hyperparameters a run actually used are visible alongside its numbers. The
+# ``--`` CLI names map to plain keys here.
+_RECORDED_OPTIONS = (
+    "gen_length",
+    "obs_terms",
+    "num_generators",
+    "num_modes",
+    "cutoff",
+    "seed",
+    "bench_rounds",
+    "lower_atol",
+)
 
-    Every rank otherwise writes to the same path, racing on the file. Rank 0
-    holds the makespan timings (operations are barrier-wrapped), so the other
-    ranks simply do not save.
+
+def _write_run_params(config: pytest.Config) -> None:
+    """Record the resolved hyperparameters for this run label, if requested.
+
+    ``benches/run.py`` sets ``MONOPROP_BENCH_LABEL`` and
+    ``MONOPROP_BENCH_RESULTS`` so the report can show, per label, the sizes the
+    benchmarks actually used -- defaults included, not just CLI overrides.
+    Written only by rank 0; the timing and memory passes overwrite identically.
     """
-    if MPI is None or MPI.COMM_WORLD.Get_size() == 1:
+    label = os.environ.get("MONOPROP_BENCH_LABEL")
+    results = os.environ.get("MONOPROP_BENCH_RESULTS")
+    if not label or not results:
         return
-    if MPI.COMM_WORLD.Get_rank() != 0 and getattr(
-        config.option, "benchmark_json", None
-    ):
+    params = {
+        opt: config.getoption(f"--{opt.replace('_', '-')}") for opt in _RECORDED_OPTIONS
+    }
+    Path(results, f"params-{label}.json").write_text(json.dumps(params, indent=2))
+
+
+def _record_graph_size(picture: str, mp: MonomialPropagator) -> None:
+    """Record the number of terms (and graph metrics) reached for one picture.
+
+    Merged into ``graphsize-<label>.json`` (one entry per picture) so the report
+    can show how large the evolved operator actually grew in each picture.
+    Written only by rank 0 when ``benches/run.py`` requested recording.
+    """
+    if MPI is not None and MPI.COMM_WORLD.Get_rank() != 0:
+        return
+    label = os.environ.get("MONOPROP_BENCH_LABEL")
+    results = os.environ.get("MONOPROP_BENCH_RESULTS")
+    if not label or not results:
+        return
+    path = Path(results, f"graphsize-{label}.json")
+    data = json.loads(path.read_text()) if path.exists() else {}
+    n_cos_indices, n_cycles = mp.graph_size()
+    data[picture] = {
+        "terms": mp.size(),
+        "n_cos_indices": n_cos_indices,
+        "n_cycles": n_cycles,
+    }
+    path.write_text(json.dumps(data, indent=2))
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Rank-0 bookkeeping: guard the benchmark JSON and record hyperparameters.
+
+    Under MPI every rank would otherwise write the benchmark JSON to the same
+    path, racing on the file. Rank 0 holds the makespan timings (operations are
+    barrier-wrapped), so the other ranks simply do not save. Rank 0 also records
+    the run's resolved hyperparameters for the report.
+    """
+    rank = 0 if MPI is None else MPI.COMM_WORLD.Get_rank()
+    size = 1 if MPI is None else MPI.COMM_WORLD.Get_size()
+    if size > 1 and rank != 0 and getattr(config.option, "benchmark_json", None):
         config.option.benchmark_json = None
+    if rank == 0:
+        _write_run_params(config)
 
 
 @pytest.fixture(scope="session")
@@ -149,4 +210,5 @@ def built_graph(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
     )
     mp.propagate()
+    _record_graph_size(picture, mp)
     return mp
