@@ -21,8 +21,8 @@ Heisenberg-only in-place simulations: the 120-qubit Fermi-Hubbard trajectory and
 the 127-qubit Pauli-basis kicked-Ising circuit.
 
 Operations are barrier-wrapped so the measured time is the makespan across MPI
-ranks. Timing uses ``pytest-benchmark``; peak memory uses ``pytest-memray``
-(``--memray``).
+ranks. Timing uses ``pytest-benchmark``; peak memory is the per-test physical
+footprint (PSS), recorded by the ``record_memory`` fixture in ``conftest.py``.
 """
 
 from __future__ import annotations
@@ -50,9 +50,7 @@ PARE_THRESHOLD = 1e-10
 INPLACE_LOWER_ATOL = 1e-5
 
 
-# --------------------------------------------------------------------------- #
-# Random benchmarks (configurable; both pictures)
-# --------------------------------------------------------------------------- #
+# Random benchmarks (configurable; both pictures).
 @pytest.mark.bench
 def test_random_build_graph(
     benchmark: object,
@@ -174,12 +172,10 @@ def test_random_inplace(
     assert isinstance(result, float)
 
 
-# --------------------------------------------------------------------------- #
-# Static benchmarks (fixed, heavy, Heisenberg-only, in-place)
-# --------------------------------------------------------------------------- #
-# Mapping name -> (builder, config factory, Trotter steps per measured run).
-# Hubbard re-applies its one-step circuit ``trotter_steps`` times; the Pauli
-# circuit already contains all layers, so a single propagate suffices.
+# Static benchmarks (fixed, heavy, Heisenberg-only, in-place).
+# name -> (builder, config factory, Trotter steps per measured run). Hubbard
+# re-applies its one-step circuit ``trotter_steps`` times; the Pauli circuit
+# already contains all layers, so a single propagate suffices.
 STATIC_MODELS: dict[str, tuple] = {
     "hubbard": (build_hubbard_problem, HubbardConfig, HubbardConfig().trotter_steps),
     "pauli": (build_kicked_ising_problem, KickedIsingConfig, 1),
@@ -192,15 +188,16 @@ STATIC_MODELS: dict[str, tuple] = {
 def test_static(
     benchmark: object,
     bench_comm: Any,
-    lower_atol: float | None,
+    static_lower_atol: dict[str, float | None],
     model: str,
     record_model_config: Any,
 ) -> None:
     """Benchmark a fixed in-place static simulation (Heisenberg picture)."""
     build_fn, config_cls, steps = STATIC_MODELS[model]
     config = config_cls()
-    if lower_atol is not None:
-        config = replace(config, lower_atol=lower_atol)
+    override = static_lower_atol[model]
+    if override is not None:
+        config = replace(config, lower_atol=override)
     record_model_config(model, config)
 
     def setup() -> tuple[tuple[MonomialPropagator, int], dict]:

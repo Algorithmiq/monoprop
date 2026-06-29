@@ -62,7 +62,7 @@ bench-build-mpi:
     uv sync --all-extras --group bench --reinstall-package monoprop --no-cache \
         --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v
 
-# Quick sanity run: tiny sizes, no memory pass, skip the slow static benchmarks.
+# Quick sanity run: tiny sizes, skip the slow static benchmarks.
 bench-smoke:
-    uv run --no-sync python benches/run.py --no-mem \
+    uv run --no-sync python benches/run.py \
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16

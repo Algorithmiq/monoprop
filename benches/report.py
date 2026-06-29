@@ -19,12 +19,11 @@ directory and writes ``REPORT.md`` combining, per operation:
 
 - wall-clock time (mean of the rounds) from ``pytest-benchmark`` JSON files
   named ``time-<label>.json`` (e.g. ``time-np1.json``, ``time-np4.json``), and
-- peak memory from ``pytest-memray`` binary dumps under ``memray-<label>/``.
+- peak physical memory (PSS) per operation from ``mem-<label>.json``.
 
 ``<label>`` is the run label, conventionally ``np<N>`` for an N-rank MPI run
 (``np1`` being the serial baseline). Under MPI, timing JSON is written by rank 0
-(the makespan) while memory is reported per rank, so the peak shown is the
-maximum across ranks.
+(the makespan) and the recorded memory is the per-rank PSS summed across ranks.
 
 Usage::
 
@@ -34,12 +33,10 @@ Usage::
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
 RESULTS_DIR = Path(__file__).parent / "results"
-_HEX_PREFIX = re.compile(r"^[0-9a-f]{32}-")
 
 
 def write_json(path: Path, obj: object) -> None:
@@ -47,92 +44,23 @@ def write_json(path: Path, obj: object) -> None:
     path.write_text(json.dumps(obj, indent=2))
 
 
-def _op_key_from_fullname(fullname: str) -> str:
-    """Normalise a pytest-benchmark ``fullname`` to ``file.py::test`` form."""
-    return fullname.split("/")[-1]
-
-
-def _op_key_from_bin(filename: str) -> str | None:
-    """Recover ``file.py::test`` from a pytest-memray ``.bin`` filename."""
-    stem = _HEX_PREFIX.sub("", filename.removesuffix(".bin"))
-    if ".py-" not in stem:
-        return None
-    file_part, test_part = stem.rsplit(".py-", 1)
-    return f"{file_part.split('-')[-1]}.py::{test_part}"
+def _load_by_label(results_dir: Path, prefix: str) -> dict[str, dict]:
+    """Return ``{label: parsed_json}`` from ``<prefix>-*.json`` files."""
+    return {
+        path.stem.removeprefix(f"{prefix}-"): json.loads(path.read_text())
+        for path in sorted(results_dir.glob(f"{prefix}-*.json"))
+    }
 
 
 def _load_timings(results_dir: Path) -> dict[str, dict[str, float]]:
     """Return ``{label: {op_key: mean_seconds}}`` from ``time-*.json`` files."""
-    timings: dict[str, dict[str, float]] = {}
-    for path in sorted(results_dir.glob("time-*.json")):
-        label = path.stem.removeprefix("time-")
-        data = json.loads(path.read_text())
-        timings[label] = {
-            _op_key_from_fullname(b["fullname"]): b["stats"]["mean"]
+    return {
+        label: {
+            b["fullname"].split("/")[-1]: b["stats"]["mean"]
             for b in data.get("benchmarks", [])
         }
-    return timings
-
-
-def _load_memory(results_dir: Path) -> dict[str, dict[str, int]]:
-    """Return ``{label: {op_key: peak_bytes}}`` from ``memray-*/`` directories."""
-    try:
-        import memray  # noqa: PLC0415
-    except ImportError:
-        return {}
-
-    memory: dict[str, dict[str, int]] = {}
-    for bin_dir in sorted(results_dir.glob("memray-*")):
-        if not bin_dir.is_dir():
-            continue
-        label = bin_dir.name.removeprefix("memray-")
-        peaks: dict[str, int] = {}
-        for bin_path in sorted(bin_dir.glob("*.bin")):
-            op_key = _op_key_from_bin(bin_path.name)
-            if op_key is None:
-                continue
-            peak = memray.FileReader(str(bin_path)).metadata.peak_memory
-            # Max across ranks (one dump per rank under MPI).
-            peaks[op_key] = max(peaks.get(op_key, 0), peak)
-        if peaks:
-            memory[label] = peaks
-    return memory
-
-
-def _load_metadata(results_dir: Path) -> dict[str, dict]:
-    """Return ``{label: metadata}`` from ``meta-*.json`` files."""
-    metas: dict[str, dict] = {}
-    for path in sorted(results_dir.glob("meta-*.json")):
-        label = path.stem.removeprefix("meta-")
-        metas[label] = json.loads(path.read_text())
-    return metas
-
-
-def _load_params(results_dir: Path) -> dict[str, dict]:
-    """Return ``{label: hyperparameters}`` from ``params-*.json`` files."""
-    params: dict[str, dict] = {}
-    for path in sorted(results_dir.glob("params-*.json")):
-        label = path.stem.removeprefix("params-")
-        params[label] = json.loads(path.read_text())
-    return params
-
-
-def _load_operator_sizes(results_dir: Path) -> dict[str, dict]:
-    """Return ``{label: {picture: metrics}}`` from ``opsize-*.json`` files."""
-    sizes: dict[str, dict] = {}
-    for path in sorted(results_dir.glob("opsize-*.json")):
-        label = path.stem.removeprefix("opsize-")
-        sizes[label] = json.loads(path.read_text())
-    return sizes
-
-
-def _load_configs(results_dir: Path) -> dict[str, dict]:
-    """Return ``{label: {model: config_fields}}`` from ``configs-*.json`` files."""
-    configs: dict[str, dict] = {}
-    for path in sorted(results_dir.glob("configs-*.json")):
-        label = path.stem.removeprefix("configs-")
-        configs[label] = json.loads(path.read_text())
-    return configs
+        for label, data in _load_by_label(results_dir, "time").items()
+    }
 
 
 def _config_table(labels: list[str], metas: dict[str, dict]) -> list[str]:
@@ -277,7 +205,8 @@ def _static_config_section(labels: list[str], configs: dict[str, dict]) -> list[
         "## Static model configuration",
         "",
         "Resolved configuration of each static model for this run "
-        "(``--lower-atol`` overrides the per-model truncation tolerance).",
+        "(``--hubbard-lower-atol`` / ``--pauli-lower-atol`` override each "
+        "model's truncation tolerance).",
         "",
     ]
     for model in ordered:
@@ -352,25 +281,25 @@ def _section(
     time_cells: dict[str, dict[str, str]],
     mem_cells: dict[str, dict[str, str]],
 ) -> list[str]:
-    """Render one picture section (Time + Peak memory), or nothing if empty."""
+    """Render one picture section (Time + Memory), or nothing if empty."""
     if not ops:
         return []
     return [
         f"## {name}",
         "",
         *_table("Time", labels, ops, time_cells),
-        *_table("Peak memory", labels, ops, mem_cells),
+        *_table("Memory (PSS)", labels, ops, mem_cells),
     ]
 
 
 def build_report(results_dir: Path) -> str:
     """Build the Markdown report string from the artifacts in ``results_dir``."""
     timings = _load_timings(results_dir)
-    memory = _load_memory(results_dir)
-    metas = _load_metadata(results_dir)
-    params = _load_params(results_dir)
-    operator_sizes = _load_operator_sizes(results_dir)
-    configs = _load_configs(results_dir)
+    memory = _load_by_label(results_dir, "mem")
+    metas = _load_by_label(results_dir, "meta")
+    params = _load_by_label(results_dir, "params")
+    operator_sizes = _load_by_label(results_dir, "opsize")
+    configs = _load_by_label(results_dir, "configs")
 
     labels = sorted(
         set(timings)
@@ -406,7 +335,10 @@ def build_report(results_dir: Path) -> str:
         "# monoprop benchmark report",
         "",
         f"Run labels: **{', '.join(labels)}**. Times are the mean over rounds; "
-        "memory is the peak heap (max across ranks under MPI).",
+        "memory is the peak physical footprint (PSS) during each operation, "
+        "including structures already resident when it runs. Under MPI it is "
+        "summed across ranks (true physical RAM, with shared library pages counted "
+        "once), so it is not lower just because the operator is distributed.",
         "",
         *_config_table(labels, metas),
         *_hyperparams_table(labels, params),

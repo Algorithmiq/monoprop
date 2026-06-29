@@ -29,6 +29,7 @@ reflects the slowest rank, and only rank 0 writes the timing JSON.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from dataclasses import asdict
@@ -39,7 +40,7 @@ import pytest
 from _builders import RandomProblem, build_random_propagator, make_random_problem
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from monoprop import MonomialPropagator
 
@@ -81,10 +82,18 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Fixed number of rounds for the random benchmarks (MPI-safe).",
     )
     group.addoption(
-        "--lower-atol",
+        "--hubbard-lower-atol",
         type=float,
         default=None,
-        help="Override lower_atol for the static (hubbard, pauli) benchmarks.",
+        help="Override lower_atol for the hubbard static benchmark "
+        "(default: HubbardConfig's 1e-4).",
+    )
+    group.addoption(
+        "--pauli-lower-atol",
+        type=float,
+        default=None,
+        help="Override lower_atol for the pauli static benchmark "
+        "(default: KickedIsingConfig's 1e-4).",
     )
 
 
@@ -103,12 +112,9 @@ _RECORDED_OPTIONS = (
 
 
 def _write_run_params(config: pytest.Config) -> None:
-    """Record the resolved hyperparameters for this run label, if requested.
+    """Record this label's resolved hyperparameters (defaults included) for the report.
 
-    ``benches/run.py`` sets ``MONOPROP_BENCH_LABEL`` and
-    ``MONOPROP_BENCH_RESULTS`` so the report can show, per label, the sizes the
-    benchmarks actually used -- defaults included, not just CLI overrides.
-    Written only by rank 0; the timing and memory passes overwrite identically.
+    Env-gated on the variables ``run.py`` sets; rank 0 only.
     """
     label = os.environ.get("MONOPROP_BENCH_LABEL")
     results = os.environ.get("MONOPROP_BENCH_RESULTS")
@@ -121,16 +127,11 @@ def _write_run_params(config: pytest.Config) -> None:
 
 
 def _record_operator_size(picture: str, mp: MonomialPropagator, comm: Any) -> None:
-    """Record the total number of terms in the evolved operator for one picture.
+    """Record the evolved operator's total term count for one picture.
 
-    Merged into ``opsize-<label>.json`` (one entry per picture) so the report
-    can show how large the evolved operator actually grew in each picture.
-
-    Under MPI the operator is partitioned disjointly across ranks, so ``mp.size()``
-    returns only this rank's shard; the global total is the sum of the per-rank
-    sizes (an allreduce). The size is deterministic in the hyperparameters, so a
-    serial run and an MPI run at the same hyperparameters report the same total.
-    Only rank 0 writes the file.
+    Under MPI the operator is partitioned across ranks, so ``mp.size()`` is only
+    this rank's shard; the global total is their sum (allreduce). Merged into
+    ``opsize-<label>.json`` (one entry per picture) by rank 0.
     """
     total = mp.size()
     rank = 0
@@ -149,31 +150,78 @@ def _record_operator_size(picture: str, mp: MonomialPropagator, comm: Any) -> No
     path.write_text(json.dumps(data, indent=2))
 
 
+def _reset_peak_rss() -> None:
+    """Reset this process's peak-RSS high-water mark to its current RSS.
+
+    Linux resets ``VmHWM`` when ``5`` (``CLEAR_REFS_MM_HIWATER_RSS``, kernel
+    >= 4.0) is written to ``/proc/self/clear_refs``. A no-op where ``/proc`` is
+    unavailable (the benchmark environment is Linux).
+    """
+    with contextlib.suppress(OSError):  # non-Linux or restricted /proc
+        Path("/proc/self/clear_refs").write_text("5\n")
+
+
+def _proc_field(path: str, key: str) -> int:
+    """Return a ``/proc/self`` size field (kB → bytes); 0 if unavailable."""
+    try:
+        text = Path(path).read_text()
+    except OSError:  # pragma: no cover - non-Linux or restricted /proc
+        return 0
+    for line in text.splitlines():
+        if line.startswith(key):
+            return int(line.split()[1]) * 1024  # values are in kB
+    return 0
+
+
+def _peak_pss_bytes() -> int:
+    """Return this operation's peak proportional set size (PSS) in bytes.
+
+    PSS (shared pages split across their sharers) is the honest per-process share
+    of physical RAM, so summing it across MPI ranks gives the job's true footprint
+    -- unlike RSS, which counts shared library/code pages at full size in every rank.
+
+    PSS has no kernel high-water mark, so derive the peak from ``VmHWM`` (peak RSS,
+    reset per test) minus RSS's shared-page over-count (``VmRSS - Pss``). That
+    over-count is near-constant over the process lifetime, so reading it at
+    teardown still recovers ``peak PSS = peak RSS - shared double-count``.
+    """
+    hwm = _proc_field("/proc/self/status", "VmHWM:")
+    rss = _proc_field("/proc/self/status", "VmRSS:")
+    pss = _proc_field("/proc/self/smaps_rollup", "Pss:")
+    overcount = max(rss - pss, 0)  # shared pages counted >1x in RSS but not PSS
+    return max(hwm - overcount, 0)
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
     """Make rank 0 the sole writer and printer under MPI; record hyperparameters.
 
-    Every rank runs the whole pytest session, so without intervention all R ranks
-    interleave their progress output and each opens the shared ``--benchmark-json``
-    file (``pytest-benchmark`` opens it at parse time), racing on it and leaking
-    the handle. Rank 0 holds the makespan timings (operations are barrier-wrapped)
-    and is the only rank that prints and writes the JSON; the others go silent and
-    close their JSON handle. Per-rank memory dumps (``--memray``) are unaffected.
+    Every rank runs the whole session, so without intervention all ranks interleave
+    their output and race on the shared ``--benchmark-json`` file. Rank 0 (holding
+    the makespan timings) prints and writes the JSON; the others go silent and
+    disable their JSON output. The memory fixture still runs on every rank (for the
+    collective reduce); only rank 0 writes its ``mem-<label>.json``.
 
-    Runs ``trylast`` so the terminal reporter is already registered (it registers
-    in its own ``pytest_configure``) by the time the non-root ranks unregister it.
+    ``trylast`` so the terminal reporter is already registered by the time the
+    non-root ranks unregister it.
     """
     rank = 0 if MPI is None else MPI.COMM_WORLD.Get_rank()
     if rank == 0:
         _write_run_params(config)
         return
 
-    # Non-root MPI rank: unregister the terminal reporter so it does not
-    # interleave its output with rank 0's, and close+drop the benchmark-JSON file
-    # it opened at parse time so it neither writes nor leaks the handle.
+    # Non-root rank: drop the terminal reporter so it does not interleave with
+    # rank 0's output.
     reporter = config.pluginmanager.getplugin("terminalreporter")
     if reporter is not None:
         config.pluginmanager.unregister(reporter)
+    # pytest-benchmark opens --benchmark-json at parse time and writes it at session
+    # finish. Null the session handle to skip the write, then close the file so it
+    # does not leak -- closing alone leaves the session's ``with self.json`` raising
+    # on a closed file.
+    bench_session = getattr(config, "_benchmarksession", None)
+    if bench_session is not None:
+        bench_session.json = None
     bench_json = getattr(config.option, "benchmark_json", None)
     if bench_json is not None:
         if hasattr(bench_json, "close"):
@@ -194,26 +242,20 @@ def bench_rounds(request: pytest.FixtureRequest) -> int:
 
 
 @pytest.fixture(scope="session")
-def lower_atol(request: pytest.FixtureRequest) -> float | None:
-    """Return the static-benchmark ``lower_atol`` override (``None`` if unset)."""
-    return request.config.getoption("--lower-atol")
+def static_lower_atol(request: pytest.FixtureRequest) -> dict[str, float | None]:
+    """Return per-model ``lower_atol`` CLI overrides (``None`` = use config default)."""
+    return {
+        "hubbard": request.config.getoption("--hubbard-lower-atol"),
+        "pauli": request.config.getoption("--pauli-lower-atol"),
+    }
 
 
 @pytest.fixture
 def record_model_config() -> Callable[[str, Any], None]:
-    """Return a callable recording a static model's resolved config for the report.
+    """Return ``record(model, config)`` recording a static model's resolved config.
 
-    ``benches/run.py`` sets ``MONOPROP_BENCH_LABEL`` and
-    ``MONOPROP_BENCH_RESULTS``; the recorder merges the model's dataclass fields
-    into ``configs-<label>.json`` (one entry per model) so the report can show
-    the configuration each static model actually ran with. The config is pure
-    input and identical across ranks, so only rank 0 writes (mirroring
-    :func:`_write_run_params`); the timing and memory passes overwrite
-    identically.
-
-    Returns:
-        A callable ``record(model, config)`` taking the model name and its
-        resolved (frozen) configuration dataclass.
+    Merges the config dataclass fields into ``configs-<label>.json`` (one entry per
+    model) for the report. The config is identical across ranks, so rank 0 only.
     """
 
     def _record(model: str, config: Any) -> None:
@@ -230,6 +272,39 @@ def record_model_config() -> Callable[[str, Any], None]:
         path.write_text(json.dumps(data, indent=2))
 
     return _record
+
+
+@pytest.fixture(autouse=True)
+def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[None]:
+    """Record each benchmark's peak physical-memory footprint (PSS) for the report.
+
+    Resets the peak-RSS high-water mark before the test and derives peak PSS (see
+    :func:`_peak_pss_bytes`) at teardown -- no allocation tracking, so timing in the
+    same sweep is undistorted. It is a footprint: it includes structures already
+    resident when the operation starts (e.g. the shared :func:`built_graph`).
+
+    Under MPI the per-rank PSS values are summed via a collective reduce (every rank
+    runs every test), giving the job's true physical RAM. Written env-gated and
+    rank-0 only into ``mem-<label>.json``.
+    """
+    _reset_peak_rss()
+    yield
+    mem = _peak_pss_bytes()
+    rank = 0
+    if bench_comm is not None and bench_comm.Get_size() > 1:
+        mem = bench_comm.allreduce(mem, op=MPI.SUM)  # collective: all ranks call
+        rank = bench_comm.Get_rank()
+    if rank != 0:
+        return
+    label = os.environ.get("MONOPROP_BENCH_LABEL")
+    results = os.environ.get("MONOPROP_BENCH_RESULTS")
+    if not label or not results:
+        return
+    op_key = request.node.nodeid.split("/")[-1]
+    path = Path(results, f"mem-{label}.json")
+    data = json.loads(path.read_text()) if path.exists() else {}
+    data[op_key] = mem
+    path.write_text(json.dumps(data, indent=2))
 
 
 @pytest.fixture(scope="session", params=["heisenberg", "schrodinger"])
@@ -262,17 +337,11 @@ def built_graph(
 ) -> MonomialPropagator:
     """Return a propagator whose graph has been built (no coefficients contracted).
 
-    Session-scoped per picture so the graph is built **once** and shared across
-    the graph-based benchmarks (``pare``, ``energy``, ``gradient``) instead of
-    rebuilt for each. This is safe because those operations only read the graph:
-    constructing a (pared) functional and evaluating it do not mutate it -- the
-    ``pare`` benchmark already re-runs the construction many rounds on one
-    instance with stable results.
-
-    The build happens in fixture setup, which ``pytest-memray`` does not track
-    (it hooks the call phase only), so the build cost stays out of each
-    operation's memory profile while the resident graph still counts toward its
-    peak -- the numbers are the same as a per-test build, only built once.
+    Session-scoped per picture so the graph is built once and shared across the
+    graph-based benchmarks (``pare``, ``energy``, ``gradient``) -- safe because
+    those operations only read it. The build runs in fixture setup, before each
+    test resets the peak-RSS counter, so its transient cost stays out of each
+    operation's memory profile while the resident graph still counts toward its peak.
     """
     mp = build_random_propagator(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"

@@ -80,7 +80,6 @@ test = [
 bench = [
   { include-group = "test" },
   "pytest-benchmark>=4",
-  "pytest-memray>=1.5",
 ]
 
 

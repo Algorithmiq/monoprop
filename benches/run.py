@@ -15,11 +15,11 @@
 """Run the monoprop benchmark suite and write a combined Markdown report.
 
 This is the single entry point for the benchmarks. For one run *label* it runs a
-single sweep recording both timing (``pytest-benchmark``) and peak memory
-(``pytest-memray``), records the run configuration, then regenerates
-``REPORT.md``. Run it again with a different configuration (more ranks, different
-thread count, …) and the new label is added as another column so configurations
-sit side by side.
+single sweep recording both timing (``pytest-benchmark``) and peak physical
+memory (PSS, recorded by the suite itself at no measurable cost), records the run
+configuration, then regenerates ``REPORT.md``. Run it again with a different
+configuration (more ranks, different thread count, …) and the new label is added
+as another column so configurations sit side by side.
 
 Configuration is deliberately external and explicit (KISS):
 
@@ -100,9 +100,6 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         "--label",
         default=None,
         help="Run label / report column (default: np<ranks>).",
-    )
-    parser.add_argument(
-        "--no-mem", action="store_true", help="Skip the memory pass (timing only)."
     )
     parser.add_argument(
         "--skip-mpi-check",
@@ -228,15 +225,11 @@ def main(argv: list[str] | None = None) -> int:
 
     _write_metadata(results_dir, label, args, prefix, overrides, run_env, pytest_args)
 
-    # One sweep records both timing (--benchmark-json) and peak memory
-    # (--memray): memray's allocation tracking does not measurably inflate the
-    # timing for this (compute-bound) suite, so a second pass would only double
-    # the wall-clock -- which the multi-second static models dominate.
+    # One sweep records both timing (--benchmark-json) and peak memory: the
+    # record_memory fixture reads the kernel's per-process high-water mark around
+    # each test at no measurable cost, so memory rides along with timing in a
+    # single pass instead of needing a second, slower one.
     sweep_args = [*common, "--benchmark-json", str(results_dir / f"time-{label}.json")]
-    if not args.no_mem:
-        mem_dir = results_dir / f"memray-{label}"
-        mem_dir.mkdir(exist_ok=True)
-        sweep_args += ["--memray", "--memray-bin-path", str(mem_dir)]
     _launch(prefix, sweep_args, run_env)
 
     report.main([str(results_dir)])
