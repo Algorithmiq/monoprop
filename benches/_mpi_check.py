@@ -77,7 +77,11 @@ def verify_distribution(comm: object) -> tuple[bool, str]:
     distributed.propagate()
     local_terms = distributed.size()
 
-    serial = build_random_propagator(problem, comm=None, schrodinger=False)
+    # Serial reference: a size-1 communicator forces the *full* operator onto
+    # this rank, giving a ground-truth global term count. (``comm=None`` would
+    # NOT work -- the binding maps it to MPI_COMM_WORLD, so under mpiexec it
+    # would distribute too and the comparison would be meaningless.)
+    serial = build_random_propagator(problem, comm=MPI.COMM_SELF, schrodinger=False)
     serial.propagate()
     full_terms = serial.size()
 
