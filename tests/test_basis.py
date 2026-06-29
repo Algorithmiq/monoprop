@@ -27,7 +27,6 @@ def test_basis_change(serial_comm):
     initial_op = MajoranaOperator([(0,)], [1.0], n_modes)
 
     quantum_circuit = MonomialCircuit(
-        initial_state=[],
         majoranas=[(5,)],
         parameters=[1.0],
         gen_coeffs=[-1.0],
@@ -37,12 +36,12 @@ def test_basis_change(serial_comm):
     pauli_basis = jordan_wigner_basis_change(n_modes)
     mp = MonomialPropagator(
         initial_op,
-        quantum_circuit,
+        [],
         cutoff=cutoff,
         basis_change=pauli_basis,
         comm=serial_comm,
     )
-    mp.propagate()
+    mp.propagate(quantum_circuit)
     tes_op = mp.evolved_operator_dict(evolve_with_coeffs=True)
     act_op = {(0,): np.cos(2 * 1.0)}
     assert len(tes_op) == 1, f"Expected 1 operator, got {len(tes_op)}: {tes_op}"

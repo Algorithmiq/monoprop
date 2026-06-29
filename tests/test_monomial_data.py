@@ -27,7 +27,6 @@ def test_monomial_circuit_fields():
     identical_params = np.array([1, 2])
 
     mc = MonomialCircuit(
-        initial_state=[0, 1],
         majoranas=majoranas,
         parameters=[1.0, 2.0],
         gen_coeffs=gen_coeffs,
@@ -35,7 +34,6 @@ def test_monomial_circuit_fields():
         identical_params=identical_params,
     )
 
-    assert mc.initial_state == [0, 1]
     for actual, exp in zip(mc.majoranas, majoranas):
         np.testing.assert_array_equal(actual, exp)
     assert mc.gen_coeffs == gen_coeffs

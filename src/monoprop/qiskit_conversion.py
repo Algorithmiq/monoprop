@@ -87,7 +87,6 @@ def to_qiskit_operator(
 
 def from_qiskit_circuit(
     circuit: QuantumCircuit,
-    initial_state: list[int],
 ) -> PauliEvCircuit:
     """Convert a Qiskit circuit to a PauliOperator.
 
@@ -96,7 +95,6 @@ def from_qiskit_circuit(
 
     Args:
         circuit: A qiskit quantum circuit.
-        initial_state: Initial quantum state as a list of integers.
 
     Returns:
         A PauliEvCircuit instance representing the given circuit.
@@ -134,9 +132,7 @@ def from_qiskit_circuit(
                 f"Unsupported gate {gate_name}. Only PauliEvolutionGate or equivalent gates are supported."
             )
 
-    return PauliEvCircuit(
-        initial_state=initial_state, gates=gates, num_qubits=len(qregs)
-    )  # type: ignore
+    return PauliEvCircuit(gates=gates, num_qubits=len(qregs))  # type: ignore
 
 
 def to_qiskit_circuit(circuit: PauliEvCircuit) -> QuantumCircuit:

@@ -278,28 +278,14 @@ class FermiCircuit:
 
     def __init__(
         self,
-        initial_state: list[int],
         gates: list[FermiEvGate],
     ) -> None:
         """Initialize the fermi circuit.
 
         Args:
-            initial_state: List of mode indices representing the initial state.
             gates: List of FermiEvGate objects representing the gates in the circuit.
         """
-        initial_state = sorted(initial_state)
-
-        self._validate_inputs(initial_state)
-
-        self.initial_state = initial_state
         self.gates = [gate for gate in gates if not gate.generator.is_identity()]
-
-    @staticmethod
-    def _validate_inputs(initial_state: list[int]) -> None:
-        """Validate the inputs for the fermi circuit."""
-        set_initial = set(initial_state)
-        if len(set_initial) != len(initial_state):
-            raise ValueError("Duplicate indices in initial state")
 
     def __len__(self) -> int:
         """Number of gates in the circuit."""
@@ -307,11 +293,7 @@ class FermiCircuit:
 
     def __repr__(self) -> str:
         """Return a string representation of the circuit."""
-        return (
-            f"{self.__class__.__name__}("
-            f"{len(self)} gates, "
-            f"initial_state={self.initial_state})"
-        )
+        return f"{self.__class__.__name__}({len(self)} gates)"
 
     def get_monomial_circuit(self) -> MonomialCircuit:
         """Convert the fermi circuit to a MonomialCircuit."""
@@ -327,7 +309,6 @@ class FermiCircuit:
                 param_inds.append(identical_params[i])
 
         return MonomialCircuit(
-            initial_state=self.initial_state,
             majoranas=majoranas,
             parameters=parameters,
             gen_coeffs=gen_coeffs,

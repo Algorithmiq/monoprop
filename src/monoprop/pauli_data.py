@@ -292,20 +292,16 @@ class PauliEvCircuit:
     def __init__(
         self,
         gates: list[PauliEvGate],
-        initial_state: list[int],
         num_qubits: int,
     ) -> None:
         """Initialize the Pauli evolution circuit.
 
         Args:
             gates: List of :class:`PauliEvGate` instances.
-            initial_state: List of qubit indices specifying the initial
-                single-qubit states where it is placed an X gate.
             num_qubits: Total number of qubits in the circuit.
 
         """
         self.gates = [gate for gate in gates if not gate.is_identity()]
-        self.initial_state = initial_state
         self.num_qubits = num_qubits
 
     def __len__(self) -> int:
@@ -317,7 +313,7 @@ class PauliEvCircuit:
         return (
             f"{self.__class__.__name__}("
             f"{len(self)} gates, "
-            f"initial_state={self.initial_state})"
+            f"num_qubits={self.num_qubits})"
         )
 
     def get_monomial_circuit(self) -> MonomialCircuit:
@@ -341,7 +337,6 @@ class PauliEvCircuit:
                 majoranas.append(np.array(majorana))
 
         return MonomialCircuit(
-            initial_state=self.initial_state,
             majoranas=majoranas,
             parameters=parameters,
             gen_coeffs=np.real(gen_coeffs),
@@ -368,8 +363,6 @@ class PauliEvCircuit:
                 f"Cannot compare PauliEvCircuit with {type(other).__name__}."
             )
         if self.num_qubits != other.num_qubits:
-            return False
-        if self.initial_state != other.initial_state:
             return False
         if len(self) != len(other):
             return False

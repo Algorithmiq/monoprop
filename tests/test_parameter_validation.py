@@ -59,13 +59,13 @@ def _get_num_params(parameter_mapping):
 class TestValidators:
     """Test the parameter validation helpers."""
 
-    def testnormalize_parameters_all_none(self):
+    def test_normalize_parameters_all_none(self):
         params, param_mapping, gen_coeffs = normalize_parameters(None, None, None)
         assert params == []
         assert param_mapping == []
         assert gen_coeffs == []
 
-    def testnormalize_parameters_mixed(self):
+    def test_normalize_parameters_mixed(self):
         normalized_params, normalized_mapping, normalized_coeffs = normalize_parameters(
             [1.0, 2.0], None, [1.0, 2.0]
         )
@@ -153,16 +153,8 @@ class TestMonomialPropagatorValidation:
         initial_operator = MonomialOperator.from_dict(
             terms_dict={(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2
         )
-        monomial_circuit = MonomialCircuit(
-            initial_state=[0, 1],
-            majoranas=[],
-            parameters=[],
-            gen_coeffs=[],
-            param_inds=[],
-        )
-        return MonomialPropagator(
-            initial_operator, monomial_circuit, 4, comm=serial_comm
-        )
+
+        return MonomialPropagator(initial_operator, [0, 1], 4, comm=serial_comm)
 
     def test_init_invalid_basis_change_length(self, serial_comm):
         with pytest.raises(
@@ -170,13 +162,7 @@ class TestMonomialPropagatorValidation:
         ):
             MonomialPropagator(
                 MonomialOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2),
-                MonomialCircuit(
-                    initial_state=[0, 1],
-                    majoranas=[],
-                    parameters=[],
-                    gen_coeffs=[],
-                    param_inds=[],
-                ),
+                [],
                 4,
                 comm=serial_comm,
                 basis_change=[[0], [1], [2]],
@@ -189,13 +175,7 @@ class TestMonomialPropagatorValidation:
         ):
             MonomialPropagator(
                 MonomialOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2),
-                MonomialCircuit(
-                    initial_state=[0, 1],
-                    majoranas=[],
-                    parameters=[],
-                    gen_coeffs=[],
-                    param_inds=[],
-                ),
+                [0, 1],
                 4,
                 upper_atol=0.1,
                 lower_atol=0.5,
@@ -210,75 +190,99 @@ class TestMonomialPropagatorValidation:
             (None, [0], None),
             (None, None, [1.0]),
         ]:
+            monomial_circuit = MonomialCircuit(
+                majoranas=majoranas,
+                parameters=params,
+                gen_coeffs=gen_coeffs,
+                param_inds=param_mapping,
+            )
             with pytest.raises(RuntimeError, match=error_msg):
-                simple_mp.propagate(
-                    majoranas,
-                    parameters=params,
-                    parameter_mapping=param_mapping,
-                    gen_coeffs=gen_coeffs,
-                )
+                simple_mp.propagate(monomial_circuit, ignore_circuit_parameters=False)
 
     def test_propagate_no_params_graph_mode(self, simple_mp):
-        simple_mp.propagate([(0,), (1,)])
+        quantum_circuit = MonomialCircuit(
+            [(0,), (1,)], param_inds=[], gen_coeffs=[], parameters=[]
+        )
+        simple_mp.propagate(quantum_circuit)
         assert simple_mp.graph_layers == 2
 
     def test_propagate_length_mismatch(self, simple_mp):
         majoranas = [(0,), (1,)]
+
         with pytest.raises(RuntimeError, match="must be the same"):
             simple_mp.propagate(
-                majoranas,
-                parameters=[1.0, 2.0],
-                parameter_mapping=[0, 1],
-                gen_coeffs=[1.0],
+                MonomialCircuit(
+                    majoranas=majoranas,
+                    param_inds=[0, 1],
+                    parameters=[1.0, 2.0],
+                    gen_coeffs=[1.0],
+                ),
+                ignore_circuit_parameters=False,
             )
         with pytest.raises(RuntimeError, match="The length of parameters"):
             simple_mp.propagate(
-                majoranas,
-                parameters=[1.0],
-                parameter_mapping=[0, 1],
-                gen_coeffs=[1.0, 2.0],
+                MonomialCircuit(
+                    majoranas=majoranas,
+                    parameters=[1.0],
+                    param_inds=[0, 1],
+                    gen_coeffs=[1.0, 2.0],
+                ),
+                ignore_circuit_parameters=False,
             )
 
     def test_validate_propagation_params(self, simple_mp):
-        simple_mp.propagate([(0,), (1,)])
+        simple_mp.propagate(
+            MonomialCircuit(
+                majoranas=[(0,), (1,)], parameters=[], param_inds=[0], gen_coeffs=[1.0]
+            ),
+        )
         with pytest.raises(
             RuntimeError,
             match="must be the same as the number of propagated Majoranas 2",
         ):
-            simple_mp.expectation_value_functional(
-                parameter_mapping=[0], gen_coeffs=[1.0]
-            )
+            simple_mp.expectation_value_functional()
 
     def test_validate_propagation_contraction(self, simple_mp):
-        simple_mp.propagate([(0,), (1,)])
-        with pytest.raises(RuntimeError, match="must be less than or equal to"):
-            simple_mp.contract_partially(
+        simple_mp.propagate(
+            MonomialCircuit(
+                majoranas=[(0,), (1,)],
                 parameters=[1.0, 2.0, 3.0],
-                parameter_mapping=[0, 1, 2],
+                param_inds=[0, 1, 2],
                 gen_coeffs=[1.0, 2.0, 3.0],
             )
+        )
+        with pytest.raises(RuntimeError, match="must be less than or equal to"):
+            simple_mp.contract_partially(ignore_coeffs=False)
 
     def test_functional_call_validation(self, simple_mp):
-        simple_mp.propagate([(0,), (1,)])
+        simple_mp.propagate(
+            MonomialCircuit(
+                majoranas=[(0,), (1,)],
+                parameters=[1.0, 2.0],
+                param_inds=[0, 1],
+                gen_coeffs=[1.0, 2.0],
+            )
+        )
         expval_func = simple_mp.expectation_value_functional(
-            parameter_mapping=[0, 1],
-            gen_coeffs=[1.0, 2.0],
             pare_threshold=None,
         )
         simple_mp.contract_partially(
-            parameters=[1.0, 2.0],
-            parameter_mapping=[0, 1],
-            gen_coeffs=[1.0, 2.0],
+            ignore_coeffs=False,
             inplace=True,
         )
         with pytest.raises(RuntimeError, match="MP object has been modified"):
             expval_func([1.0, 2.0])
 
     def test_functional_parameter_length_validation(self, simple_mp):
-        simple_mp.propagate([(0,), (1,)])
-        expval_func = simple_mp.expectation_value_functional(
-            parameter_mapping=[0, 1], gen_coeffs=[1.0, 2.0]
+        simple_mp.propagate(
+            MonomialCircuit(
+                majoranas=[(0,), (1,)],
+                parameters=[1.0, 2.0],
+                param_inds=[0, 1],
+                gen_coeffs=[1.0, 2.0],
+            )
         )
+        expval_func = simple_mp.expectation_value_functional()
         for params, length in [([1.0, 2.0, 3.0], 3), ([1.0], 1)]:
             with pytest.raises(RuntimeError, match=f"Parameter length {length}"):
                 expval_func(params)
@@ -289,13 +293,7 @@ class TestMonomialPropagatorValidation:
         )
         mp = MonomialPropagator(
             initial_operator,
-            MonomialCircuit(
-                initial_state=[0, 1],
-                majoranas=[],
-                parameters=[1.0],
-                gen_coeffs=[1.0],
-                param_inds=[0],
-            ),
+            [0, 1],
             4,
             schrodinger_cutoff=2,
             comm=serial_comm,
@@ -308,9 +306,17 @@ class TestMonomialPropagatorValidation:
             )
 
     def test_gradient_method_validation(self, simple_mp):
+        simple_mp.propagate(
+            MonomialCircuit(
+                majoranas=[(0,), (1,)],
+                parameters=[1.0, 2.0],
+                param_inds=[0, 1],
+                gen_coeffs=[1.0],
+            ),
+        )
         with pytest.raises(RuntimeError, match="must be the same"):
             simple_mp.gradient(
-                parameters=[1.0, 2.0], parameter_mapping=[0, 1], gen_coeffs=[1.0]
+                parameters=[1.0, 2.0],
             )
 
 

@@ -24,7 +24,7 @@ from tests.cases import CasesFermionicProblem
 def _bound_simulator_type(problem, serial_comm):
     wrapper = MonomialPropagator(
         problem.operator,
-        problem.monomial_circuit,
+        problem.initial_state,
         cutoff=2 * problem.n_modes,
         comm=serial_comm,
     )
@@ -35,7 +35,7 @@ def _make_bound_simulator(bound_type, problem, serial_comm, *, schrodinger: bool
     return bound_type(
         initial_operator=problem.operator.terms,
         cutoff=2 * problem.n_modes,
-        slater_determinant=problem.monomial_circuit.initial_state,
+        slater_determinant=problem.initial_state,
         comm=serial_comm,
         schrodinger_cutoff=2 * problem.n_modes if schrodinger else None,
         lower_atol=None,

@@ -74,7 +74,7 @@ class MonomialPropagator:
     def __init__(
         self,
         initial_operator: IQuantumOperator | MonomialOperator,
-        quantum_circuit: IQuantumCircuit | MonomialCircuit,
+        initial_state: list[int],
         cutoff: int,
         *,
         schrodinger_cutoff: int | None = None,
@@ -93,8 +93,7 @@ class MonomialPropagator:
         Args:
             initial_operator: Initial Operator represented as objects implementing
             the IQuantumOperator protocol.
-            quantum_circuit: Quantum circuit representing the evolution. Can be provided
-            as an object implementing the IQuantumCircuit protocol.
+            initial_state: Initial state represented as a list of integers.
             cutoff: Truncation parameter controlling the maximum complexity of
                 Monomial operators retained during evolution. Its meaning depends
                 on ``cutoff_type`` (see below). Higher values increase accuracy but
@@ -146,13 +145,9 @@ class MonomialPropagator:
             if isinstance(initial_operator, MonomialOperator)
             else initial_operator.get_monomial_operator()
         )
-        self.quantum_circuit: MonomialCircuit = (
-            quantum_circuit
-            if isinstance(quantum_circuit, MonomialCircuit)
-            else quantum_circuit.get_monomial_circuit()
-        )
+
         num_modes = monomial_operator.num_modes
-        slater_determinant = self.quantum_circuit.initial_state
+        slater_determinant = initial_state
         logger.debug(
             "__init__. num_modes=%d, cutoff=%d, slater_determinant=%s, schrodinger_cutoff=%s",
             num_modes,
@@ -163,6 +158,10 @@ class MonomialPropagator:
         cls = dispatch(num_modes)
 
         validate_basis_change(basis_change, num_modes)
+
+        self._parameters_queue = []
+        self._gen_coeffs_queue = []
+        self._parameter_mapping_queue = []
 
         self._comm = comm
         self._simulator = cls(
@@ -346,46 +345,58 @@ class MonomialPropagator:
         """
         return self._simulator.schrodinger
 
+    def _adjust_parameter_mapping_queue(
+        self,
+        new_mapping: list[int],
+        parameter_mapping_queue: list[int],
+    ) -> list[int]:
+        """Adjust the parameter mapping queue to match the new mapping.
+
+        Args:
+            new_mapping: The new parameter mapping.
+            parameter_mapping_queue: The current parameter mapping queue.
+        """
+        if len(parameter_mapping_queue) == 0:
+            return new_mapping
+
+        previous_max_val = max(parameter_mapping_queue) + 1
+        return [val + previous_max_val for val in new_mapping]
+
+    def _add_coeffs_to_queue(self, monomial_circuit: MonomialCircuit) -> None:
+        self._parameters_queue.extend(monomial_circuit.parameters)
+        self._gen_coeffs_queue.extend(monomial_circuit.gen_coeffs)
+        readjusted_new_param_inds = self._adjust_parameter_mapping_queue(
+            list(monomial_circuit.param_inds),
+            self._parameter_mapping_queue,
+        )
+        self._parameter_mapping_queue.extend(readjusted_new_param_inds)
+
     def propagate(
         self,
-        majoranas: list[tuple[int, ...]] | None = None,
+        quantum_circuit: IQuantumCircuit | MonomialCircuit,
         operator_coeffs: None | list[float] | np.ndarray = None,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
-        parameters: list[float] | np.ndarray | None = None,
         *,
-        evolve_with_coeffs: bool = False,
+        ignore_circuit_parameters: bool = True,
         only_rotate_len_k: int = 0,
     ) -> None:
-        """Propagate the Operator by multiple Majorana operators.
+        """Propagate the Operator by multiple gates in the Quantum Circuit.
 
         This method supports three propagation strategies:
 
-        1. Build only the propagation graph by providing only ``majoranas``.
-        2. Build the propagation graph with coefficient information by providing
-           ``majoranas``, ``parameter_mapping``, ``gen_coeffs``, ``parameters``,
-           and ``operator_coeffs``. Operator coefficients can be obtained from a
+        1. Build only the propagation graph by ignoring circuit parameters.
+        2. Build the propagation graph with coefficient information by using the circuit
+           parameters and ``operator_coeffs``. Operator coefficients can be obtained from a
            prior call to ``contract_partially(inplace=False)`` if you want to
            preserve the graph.
         3. Propagate and contract immediately without building a graph by providing
-           ``majoranas``, ``parameter_mapping``, ``gen_coeffs``, and
-           ``parameters`` only (do not provide ``operator_coeffs``). This mode is
+           the only the circuit (do not provide ``operator_coeffs``). This mode is
            more memory efficient because it does not store the propagation graph.
 
         Args:
-            majoranas: List of Majorana operators to evolve.
-            parameter_mapping: Optional mapping from variational parameters to
-                generator indices. Must be provided together with ``gen_coeffs``
-                and ``parameters``.
-            gen_coeffs: Optional generator coefficients corresponding to each
-                entry in ``parameter_mapping``. Must be provided together with
-                ``parameter_mapping`` and ``parameters``.
-            parameters: Optional parameter values for immediate evolution.
-                Must be provided together with ``parameter_mapping`` and
-                ``gen_coeffs``.
+            quantum_circuit: The quantum circuit to propagate through.
             operator_coeffs: Optional operator coefficients for the current
                 state or operator.
-            evolve_with_coeffs: Whether to evolve with coefficients. Defaults to False.
+            ignore_circuit_parameters: Whether to ignore circuit parameters. Defaults to False.
             only_rotate_len_k: If > 0, apply gates to monomials of length <= k in the evolved
                 operator even if they anticommute. This is useful for when you apply many free
                 fermionic gates (ie: gates generated by length 2 majorana monomials) before
@@ -396,14 +407,21 @@ class MonomialPropagator:
                 are already propagated Majorana operators when coefficient
                 information is supplied.
         """
-        majoranas = (
-            majoranas if majoranas is not None else self.quantum_circuit.majoranas
+        quantum_circuit = (
+            quantum_circuit
+            if isinstance(quantum_circuit, MonomialCircuit)
+            else quantum_circuit.get_monomial_circuit()
         )
+        majoranas = quantum_circuit.majoranas
 
-        if evolve_with_coeffs:
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
-            parameters = self.quantum_circuit.parameters
+        if ignore_circuit_parameters or operator_coeffs:
+            self._add_coeffs_to_queue(quantum_circuit)
+
+        parameter_mapping = (
+            None if ignore_circuit_parameters else quantum_circuit.param_inds
+        )
+        gen_coeffs = None if ignore_circuit_parameters else quantum_circuit.gen_coeffs
+        parameters = None if ignore_circuit_parameters else quantum_circuit.parameters
 
         self._simulator.propagate(
             majoranas=majoranas,
@@ -416,10 +434,8 @@ class MonomialPropagator:
 
     def expectation_value_functional(
         self,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
         *,
-        use_coeffs: bool = False,
+        ignore_coeffs: bool = False,
         pare_threshold: float | None = 1e-10,
     ) -> ExpectationValueFunctional:
         """Create an expectation value functional for the current system state.
@@ -428,12 +444,8 @@ class MonomialPropagator:
         for given variational parameters using the current evolution graph.
 
         Args:
-            parameter_mapping: Optional mapping from variational parameters to generator
-                indices. If None, defaults to the quantum circuit's parameter indices.
-            gen_coeffs: Optional generator coefficients corresponding to each parameter.
-                If None, defaults to the quantum circuit's generator coefficients.
-            use_coeffs: If True, use the quantum circuit's parameter mapping and generator
-                coefficients to construct the expectation value functional.
+            ignore_coeffs: If True, ignore the quantum circuit's parameter mapping and
+                generator coefficients when constructing the expectation value functional.
             pare_threshold: Absolute value cutoff for retaining edges in the pared graph.
                 If None, graph paring is disabled. Defaults to 1e-10.
 
@@ -444,9 +456,12 @@ class MonomialPropagator:
             ValueError: If parameter_mapping and gen_coeffs have different lengths,
                 or if the lengths don't match the number of evolved Majoranas.
         """
-        if use_coeffs:
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
+        parameter_mapping = None
+        gen_coeffs = None
+
+        if not ignore_coeffs:
+            parameter_mapping = self._parameter_mapping_queue
+            gen_coeffs = self._gen_coeffs_queue
 
         ener_fn = self._create_functional_wrapper(
             parameter_mapping=parameter_mapping,
@@ -454,14 +469,13 @@ class MonomialPropagator:
             pare_threshold=pare_threshold,
             functional_type="expectation_value",
         )
+
         return wrap_functional_call(ener_fn)
 
     def expectation_value_and_gradient_functional(
         self,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
         *,
-        use_coeffs: bool = False,
+        ignore_coeffs: bool = False,
         pare_threshold: float | None = 1e-10,
     ) -> ExpectationValueAndGradientFunctional:
         """Create an expectation value and gradient functional for the current system state.
@@ -471,12 +485,8 @@ class MonomialPropagator:
         evolution graph.
 
         Args:
-            parameter_mapping: Optional mapping from variational parameters to generator
-                indices. If None, defaults to the quantum circuit's parameter indices.
-            gen_coeffs: Optional generator coefficients corresponding to each parameter.
-                If None, defaults to the quantum circuit's generator coefficients.
-            use_coeffs: If True, use the quantum circuit's parameter mapping and generator
-                coefficients to construct the expectation value and gradient functional.
+            ignore_coeffs: If True, ignore the quantum circuit's parameter mapping and generator
+                coefficients when constructing the expectation value and gradient functional.
             pare_threshold: Absolute value cutoff for retaining edges in the pared graph.
                 If None, graph paring is disabled. Defaults to 1e-10.
 
@@ -488,9 +498,11 @@ class MonomialPropagator:
             ValueError: If parameter_mapping and gen_coeffs have different lengths,
                 or if the lengths don't match the number of evolved Majoranas.
         """
-        if use_coeffs:
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
+        parameter_mapping = None
+        gen_coeffs = None
+        if not ignore_coeffs:
+            parameter_mapping = self._parameter_mapping_queue
+            gen_coeffs = self._gen_coeffs_queue
 
         grad_fn = self._create_functional_wrapper(
             parameter_mapping=parameter_mapping,
@@ -502,10 +514,8 @@ class MonomialPropagator:
 
     def gradient_functional(
         self,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
         *,
-        use_coeffs: bool = False,
+        ignore_coeffs: bool = False,
         pare_threshold: float | None = 1e-10,
     ) -> GradientFunctional:
         """Create a gradient functional for the current system state.
@@ -514,12 +524,8 @@ class MonomialPropagator:
         with respect to variational parameters using the current evolution graph.
 
         Args:
-            parameter_mapping: Optional mapping from variational parameters to generator
-                indices. If None, defaults to the quantum circuit's parameter indices.
-            gen_coeffs: Optional generator coefficients corresponding to each parameter.
-                If None, defaults to the quantum circuit's generator coefficients.
-            use_coeffs: If True, use the quantum circuit's parameter mapping and generator
-                coefficients to construct the gradient functional.
+            ignore_coeffs: If True, ignore the quantum circuit's parameter mapping and generator
+                coefficients when constructing the gradient functional.
             pare_threshold: Absolute value cutoff for retaining edges in the pared graph.
                 If None, graph paring is disabled. Defaults to 1e-10.
 
@@ -531,12 +537,8 @@ class MonomialPropagator:
             This method internally calls expectation_value_and_gradient_functional and
             extracts only the gradient component from the result.
         """
-        if use_coeffs:
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
         expval_grad_fn = self.expectation_value_and_gradient_functional(
-            parameter_mapping=parameter_mapping,
-            gen_coeffs=gen_coeffs,
+            ignore_coeffs=ignore_coeffs,
             pare_threshold=pare_threshold,
         )
         return wrap_functional_call(
@@ -546,8 +548,9 @@ class MonomialPropagator:
 
     def expectation_value(
         self,
+        parameters: list[float] | np.ndarray | None = None,
         *,
-        use_coeffs: bool = False,
+        ignore_coeffs: bool = False,
     ) -> float:
         """Compute the expectation value for the current system state.
 
@@ -556,9 +559,10 @@ class MonomialPropagator:
         that creates and immediately evaluates an expectation value functional.
 
         Args:
-            use_coeffs: Whether to use the quantum circuit's parameter mapping and
-                generator coefficients to evaluate the expectation value. If False, the expectation value is
-                evaluated at the current parameter values without coefficient mapping.
+            parameters: Variational parameters for the expectation value evaluation.
+                If None and ignore_coeffs is True, uses the quantum circuit's parameters.
+            ignore_coeffs: If True, ignore the quantum circuit's parameter mapping and generator
+                coefficients when constructing the expectation value functional.
 
         Returns:
             The expectation value as a float.
@@ -567,34 +571,29 @@ class MonomialPropagator:
             This method internally calls expectation_value_functional() with pare_threshold=None to
             avoid graph optimization overhead for single evaluations.
         """
-        parameter_mapping = None
-        gen_coeffs = None
-        parameters = None
-        if use_coeffs:
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
-            parameters = self.quantum_circuit.parameters
+        if not ignore_coeffs:
+            parameters = self._parameters_queue
 
         parameters, _, _ = normalize_parameters(parameters, None, None)
 
         return self.expectation_value_functional(
-            parameter_mapping=parameter_mapping,
-            gen_coeffs=gen_coeffs,
+            ignore_coeffs=ignore_coeffs,
             pare_threshold=None,
         )(parameters)
 
     def expectation_value_and_gradient(
         self,
         parameters: list[float] | np.ndarray | None = None,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
+        *,
+        ignore_coeffs: bool = False,
     ) -> tuple[float, np.ndarray]:
         """Get the expectation value and gradient for the current state.
 
         Args:
             parameters: The parameters.
-            parameter_mapping: The parameter mapping.
-            gen_coeffs: The generator coefficients.
+            ignore_coeffs: Whether to ignore the quantum circuit's parameter mapping and
+                generator coefficients when evaluating the expectation value. If False, the expectation value is
+                evaluated at the current parameter values without coefficient mapping.
 
         Returns:
             The expectation value and gradient.
@@ -603,31 +602,27 @@ class MonomialPropagator:
             Returns the result of calling the expectation-value-and-gradient functional with `parameters` and no paring.
         """
         if parameters is None:
-            parameters = self.quantum_circuit.parameters
-        if parameter_mapping is None:
-            parameter_mapping = self.quantum_circuit.param_inds
-        if gen_coeffs is None:
-            gen_coeffs = self.quantum_circuit.gen_coeffs
+            parameters = self._parameters_queue
 
         parameters, _, _ = normalize_parameters(parameters, None, None)
         return self.expectation_value_and_gradient_functional(
-            parameter_mapping=parameter_mapping,
-            gen_coeffs=gen_coeffs,
+            ignore_coeffs=ignore_coeffs,
             pare_threshold=None,
         )(parameters)
 
     def gradient(
         self,
         parameters: list[float] | np.ndarray | None = None,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
+        *,
+        ignore_coeffs: bool = False,
     ) -> np.ndarray:
         """Get the gradient for the current state.
 
         Args:
             parameters: The parameters.
-            parameter_mapping: The parameter mapping.
-            gen_coeffs: The generator coefficients.
+            ignore_coeffs: Whether to ignore the quantum circuit's parameter mapping and
+                generator coefficients when evaluating the gradient. If False, the gradient is
+                evaluated at the current parameter values without coefficient mapping.
 
         Returns:
             The gradient as a numpy array.
@@ -635,27 +630,21 @@ class MonomialPropagator:
         Note:
             Returns the result of calling the expectation-value-and-gradient functional with `parameters` and no paring.
         """
-        parameter_mapping = (
-            parameter_mapping
-            if parameter_mapping is not None
-            else self.quantum_circuit.param_inds
-        )
-        gen_coeffs = (
-            gen_coeffs if gen_coeffs is not None else self.quantum_circuit.gen_coeffs
-        )
-        parameters = (
-            parameters if parameters is not None else self.quantum_circuit.parameters
-        )
+        parameter_mapping = None
+        gen_coeffs = None
 
+        if not ignore_coeffs:
+            parameter_mapping = self._parameter_mapping_queue
+            gen_coeffs = self._gen_coeffs_queue
+
+        parameters = parameters if parameters is not None else self._parameters_queue
         parameters, parameter_mapping, gen_coeffs = normalize_parameters(
             parameters, parameter_mapping, gen_coeffs
         )
 
         return np.array(
             self.expectation_value_and_gradient(
-                parameters=parameters,
-                parameter_mapping=parameter_mapping,
-                gen_coeffs=gen_coeffs,
+                parameters=parameters, ignore_coeffs=ignore_coeffs
             )[1],
             dtype=np.float64,
         )
@@ -663,8 +652,6 @@ class MonomialPropagator:
     def contract_partially(
         self,
         parameters: list[float] | np.ndarray | None = None,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
         *,
         ignore_coeffs: bool = True,
         inplace: bool = True,
@@ -699,10 +686,12 @@ class MonomialPropagator:
                 if parameter length doesn't match mapping requirements, or if mapping
                 length exceeds the number of evolved Majoranas.
         """
+        parameter_mapping = None
+        gen_coeffs = None
         if not ignore_coeffs:
-            parameters = self.quantum_circuit.parameters
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
+            parameters = self._parameters_queue
+            parameter_mapping = self._parameter_mapping_queue
+            gen_coeffs = self._gen_coeffs_queue
 
         parameters, parameter_mapping, gen_coeffs = normalize_parameters(
             parameters, parameter_mapping, gen_coeffs
@@ -717,6 +706,7 @@ class MonomialPropagator:
 
     def evolved_operator_dict(
         self,
+        parameters: list[float] | np.ndarray | None = None,
         atol: float = 1e-12,
         *,
         evolve_with_coeffs: bool = False,
@@ -727,6 +717,8 @@ class MonomialPropagator:
         and returns the evolved operator.
 
         Args:
+            parameters: Parameters for the quantum circuit. If None, uses parameters
+                from the last quantum circuit. Defaults to None.
             atol: Absolute tolerance for filtering small coefficients. Terms with
                 coefficients smaller than this threshold will be removed from the
                 result. Defaults to 1e-12. Set to 0.0 to keep all terms.
@@ -737,14 +729,14 @@ class MonomialPropagator:
             The evolved operator.
         """
         # Convert None to empty lists (following expectation_value_functional pattern)
-        parameters = None
-        parameter_mapping = None
-        gen_coeffs = None
 
+        parameters = parameters if parameters else self._parameters_queue
+
+        gen_coeffs = None
+        parameter_mapping = None
         if evolve_with_coeffs:
-            parameters = self.quantum_circuit.parameters
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
+            parameter_mapping = self._parameter_mapping_queue
+            gen_coeffs = self._gen_coeffs_queue
 
         parameters, parameter_mapping, gen_coeffs = normalize_parameters(
             parameters, parameter_mapping, gen_coeffs
@@ -759,6 +751,7 @@ class MonomialPropagator:
 
     def evolved_operator(
         self,
+        parameters: list[float] | np.ndarray | None = None,
         atol: float = 1e-12,
         *,
         evolve_with_coeffs: bool = False,
@@ -768,6 +761,8 @@ class MonomialPropagator:
         Applies contract_partially, but does not affect the state of the simulator, and returns the evolved operator.
 
         Args:
+            parameters: Parameters for the quantum circuit. If None, uses parameters
+                from the last quantum circuit. Defaults to None.
             atol: Absolute tolerance for filtering small coefficients.
                 Terms with coefficients smaller than this threshold will be removed from
                 the result. Defaults to 1e-12. Set to 0.0 to keep all terms.
@@ -784,6 +779,7 @@ class MonomialPropagator:
             )
 
         return self.evolved_operator_dict(
+            parameters=parameters,
             atol=atol,
             evolve_with_coeffs=evolve_with_coeffs,
         )

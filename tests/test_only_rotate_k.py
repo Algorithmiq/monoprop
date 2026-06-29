@@ -35,8 +35,8 @@ def serial_mp_kwargs(serial_comm):
     return {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
 
 
-def _create_mp(operator, monomial_circuit, **kwargs):
-    return MonomialPropagator(operator, monomial_circuit, **kwargs)
+def _create_mp(operator, initial_state, **kwargs):
+    return MonomialPropagator(operator, initial_state, **kwargs)
 
 
 def test_basic_orbital_rotation(serial_comm):
@@ -48,25 +48,26 @@ def test_basic_orbital_rotation(serial_comm):
     gen_coeffs = [1.0]
 
     kwargs = {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
-    operator = MonomialOperator({}, n_modes)
+    operator = MonomialOperator([], n_modes)
     monomial_circuit = MonomialCircuit(
-        initial_state=[],
         majoranas=majs,
         parameters=params,
         gen_coeffs=gen_coeffs,
         param_inds=param_inds,
     )
-    mp_act = _create_mp(operator, monomial_circuit, **kwargs)
+    mp_act = _create_mp(operator, [], **kwargs)
     initial_state = mp_act.evolved_operator_dict()
 
     mp_act.propagate(
-        evolve_with_coeffs=True,
+        monomial_circuit,
+        ignore_circuit_parameters=False,
     )
     rotated_state = mp_act.evolved_operator_dict()
 
-    mp_orb = _create_mp(operator, monomial_circuit, **kwargs)
+    mp_orb = _create_mp(operator, [], **kwargs)
     mp_orb.propagate(
-        evolve_with_coeffs=True,
+        monomial_circuit,
+        ignore_circuit_parameters=False,
         only_rotate_len_k=4,
     )
     orb_rotated_state = mp_orb.evolved_operator_dict()
@@ -87,37 +88,45 @@ def test_basic_orbital_rotation(serial_comm):
 def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     """Tests size/graph_size (rank-local) so uses serial_comm."""
 
-    mp = _create_mp(problem.operator, problem.monomial_circuit, **serial_mp_kwargs)
-    mp_act = _create_mp(problem.operator, problem.monomial_circuit, **serial_mp_kwargs)
-    mp_act.propagate()
-    act_ener = mp_act.expectation_value_functional(
-        use_coeffs=True,
-    )(problem.monomial_circuit.parameters)
+    mp = _create_mp(problem.operator, problem.initial_state, **serial_mp_kwargs)
+    mp_act = _create_mp(problem.operator, problem.initial_state, **serial_mp_kwargs)
+    mp_act.propagate(problem.monomial_circuit)
+    act_ener = mp_act.expectation_value_functional()(
+        problem.monomial_circuit.parameters
+    )
 
     orb = problem.split_only_rotate_len_k()
-
+    qc_without_orbs = MonomialCircuit(
+        majoranas=orb.majs,
+        parameters=orb.parameters,
+        gen_coeffs=orb.gen_coeffs,
+        param_inds=orb.param_inds,
+    )
+    qc_with_orbs = MonomialCircuit(
+        majoranas=orb.majs_orb,
+        parameters=orb.parameters_orb,
+        gen_coeffs=orb.gen_coeffs_orb,
+        param_inds=orb.param_inds_orb,
+    )
     if inplace:
         mp.propagate(
-            parameter_mapping=orb.param_inds,
-            majoranas=orb.majs,
-            gen_coeffs=orb.gen_coeffs,
-            parameters=orb.parameters,
+            qc_without_orbs,
+            ignore_circuit_parameters=False,
         )
         mp.propagate(
-            parameter_mapping=orb.param_inds_orb,
-            majoranas=orb.majs_orb,
-            gen_coeffs=orb.gen_coeffs_orb,
-            parameters=orb.parameters_orb,
+            qc_with_orbs,
+            ignore_circuit_parameters=False,
             only_rotate_len_k=4,
         )
-        ener_fn = mp.expectation_value_functional(parameter_mapping=[], gen_coeffs=[])
+        ener_fn = mp.expectation_value_functional(ignore_coeffs=True)
         test_expval = ener_fn([])
     else:
-        mp.propagate(orb.majs)
-        mp.propagate(orb.majs_orb, only_rotate_len_k=4)
-        ener_fn = mp.expectation_value_functional(
-            use_coeffs=True,
+        mp.propagate(qc_without_orbs)
+        mp.propagate(
+            qc_with_orbs,
+            only_rotate_len_k=4,
         )
+        ener_fn = mp.expectation_value_functional()
         test_expval = ener_fn(problem.monomial_circuit.parameters)
         assert sum(mp.graph_size()) < sum(mp_act.graph_size())
 

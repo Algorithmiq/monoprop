@@ -55,6 +55,7 @@ class FermionicProblem:
     def __init__(
         self,
         monomial_circuit: MonomialCircuit,
+        initial_state: list[int],
         operator: MonomialOperator,
         exact_expval: float,
         exact_gradient: np.ndarray,
@@ -63,6 +64,7 @@ class FermionicProblem:
         exact_commutator_gradient: np.ndarray | None = None,
     ) -> None:
         self.monomial_circuit = monomial_circuit
+        self.initial_state = initial_state
         self.operator = operator
         self.exact_expval = exact_expval
         self.exact_gradient = exact_gradient
@@ -98,9 +100,8 @@ class FermionicProblem:
 
 def _create_case(pth: Path, fname: str) -> FermionicProblem:
     monoprop_data = MPData.from_msgpack(filepath=pth / f"{fname}.msgpack")
-
+    initial_state = monoprop_data.hartree_fock
     monomial_circuit = MonomialCircuit(
-        initial_state=monoprop_data.hartree_fock,
         majoranas=monoprop_data.majoranas,
         gen_coeffs=monoprop_data.gen_coeffs,
         param_inds=monoprop_data.param_inds,
@@ -111,6 +112,7 @@ def _create_case(pth: Path, fname: str) -> FermionicProblem:
     )
     return FermionicProblem(
         monomial_circuit=monomial_circuit,
+        initial_state=initial_state,
         operator=quantum_operator,
         exact_expval=monoprop_data.actual_energy,
         exact_gradient=monoprop_data.actual_gradient,

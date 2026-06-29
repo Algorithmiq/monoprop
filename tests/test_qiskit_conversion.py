@@ -171,7 +171,6 @@ class TestToQiskitCircuit:
     def test_single_gate(self):
         circuit = PauliEvCircuit(
             [PauliEvGate([0], PauliOperator(["Z"], [1.0]), 0.7)],
-            [],
             num_qubits=1,
         )
 
@@ -196,7 +195,6 @@ class QiskitCircuitsCases:
                     qubits=[0], paulis=PauliOperator(["Z"], [1.0]), parameter=0.7
                 )
             ],
-            initial_state=[],
             num_qubits=1,
         )
         return circuit, expected
@@ -216,7 +214,6 @@ class QiskitCircuitsCases:
                     qubits=[0, 1], paulis=PauliOperator(["YI"], [0.5]), parameter=0.5
                 ),
             ],
-            initial_state=[],
             num_qubits=2,
         )
         return circuit, expected
@@ -238,7 +235,6 @@ class QiskitCircuitsCases:
                     qubits=[0], paulis=PauliOperator(["Z"], [1.0]), parameter=0.35
                 ),
             ],
-            initial_state=[],
             num_qubits=1,
         )
         return circuit, expected
@@ -254,7 +250,6 @@ class QiskitCircuitsCases:
                     qubits=[0], paulis=PauliOperator(["Z"], [1.0]), parameter=0.7
                 )
             ],
-            initial_state=[],
             num_qubits=1,
         )
         return circuit, expected
@@ -265,7 +260,7 @@ class QiskitCircuitsCases:
 class TestFromQiskitCircuit:
     @parametrize_with_cases("circuit, expected", cases=QiskitCircuitsCases)
     def test_valid_circuits(self, circuit, expected):
-        converted_circuit = from_qiskit_circuit(circuit, [])
+        converted_circuit = from_qiskit_circuit(circuit)
         assert converted_circuit.isclose(expected)
 
     def test_unsupported_gate_raises(self):
@@ -275,4 +270,4 @@ class TestFromQiskitCircuit:
         circuit.h(0)  # Hadamard gate is not supported
 
         with pytest.raises(ValueError, match="Unsupported gate"):
-            from_qiskit_circuit(circuit, [])
+            from_qiskit_circuit(circuit)
