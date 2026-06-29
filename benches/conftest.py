@@ -180,9 +180,13 @@ def lower_atol(request: pytest.FixtureRequest) -> float | None:
     return request.config.getoption("--lower-atol")
 
 
-@pytest.fixture(params=["heisenberg", "schrodinger"])
+@pytest.fixture(scope="session", params=["heisenberg", "schrodinger"])
 def picture(request: pytest.FixtureRequest) -> str:
-    """Parametrize the random benchmarks over the physical picture."""
+    """Parametrize the random benchmarks over the physical picture.
+
+    Session-scoped so the (expensive) shared :func:`built_graph` can be built
+    once per picture and reused across the graph-based benchmarks.
+    """
     return request.param
 
 
@@ -200,15 +204,23 @@ def random_problem(request: pytest.FixtureRequest) -> RandomProblem:
     )
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def built_graph(
     random_problem: RandomProblem, bench_comm: Any, picture: str
 ) -> MonomialPropagator:
     """Return a propagator whose graph has been built (no coefficients contracted).
 
-    Built fresh per test, in the requested picture, so its propagation graph is
-    not shared between measurements; the build cost happens in fixture setup so
-    it is excluded from the memory profile of the operation under test.
+    Session-scoped per picture so the graph is built **once** and shared across
+    the graph-based benchmarks (``pare``, ``energy``, ``gradient``) instead of
+    rebuilt for each. This is safe because those operations only read the graph:
+    constructing a (pared) functional and evaluating it do not mutate it -- the
+    ``pare`` benchmark already re-runs the construction many rounds on one
+    instance with stable results.
+
+    The build happens in fixture setup, which ``pytest-memray`` does not track
+    (it hooks the call phase only), so the build cost stays out of each
+    operation's memory profile while the resident graph still counts toward its
+    peak -- the numbers are the same as a per-test build, only built once.
     """
     mp = build_random_propagator(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
