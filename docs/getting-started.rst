@@ -57,10 +57,10 @@ rotation; see more in :doc:`concepts/algorithm`:
    >>> from monoprop.fermi_data import FermiCircuit, MajoranaOperator, FermiEvGate
    >>> observable = MajoranaOperator([(0, 1, 2, 4)], [1.0], 8)  # 8 = number of fermionic modes
    >>> generator = MajoranaOperator([(4, 5)], [1j], 8)  # i * m_4 m_5
-   >>> circuit = FermiCircuit(initial_state=[], gates=[FermiEvGate(generator, 0.5)])
-   >>> mbs = MonomialPropagator(observable, circuit, cutoff=16)
-   >>> mbs.propagate(evolve_with_coeffs=True)
-   >>> result = mbs.evolved_operator_dict()
+   >>> circuit = FermiCircuit(gates=[FermiEvGate(generator, 0.5)])
+   >>> mbs = MonomialPropagator(observable, [], cutoff=16)
+   >>> mbs.propagate(circuit)
+   >>> result = mbs.evolved_operator_dict(evolve_with_coeffs=True)
    >>> sorted(result)  # original (cosine) term plus the new (sine) term
    [(0, 1, 2, 4), (0, 1, 2, 5)]
    >>> bool(np.isclose(result[(0, 1, 2, 4)].real, np.cos(2 * 0.5)))  # cosine branch
@@ -79,10 +79,10 @@ the Majorana basis (see :doc:`concepts/notation`), so the gate likewise splits
    >>> from monoprop.pauli_data import PauliOperator, PauliEvGate, PauliEvCircuit
    >>> observable = PauliOperator(["ZZ"], [1.0])
    >>> gate = PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.5)  # exp(-i * 0.5 * X_0)
-   >>> circuit = PauliEvCircuit(gates=[gate], initial_state=[], num_qubits=2)
-   >>> mbs = MonomialPropagator(observable, circuit, cutoff=16)
-   >>> mbs.propagate(evolve_with_coeffs=True)
-   >>> result = mbs.evolved_operator_dict()  # WARNING: keys are Majorana indices, not Pauli strings
+   >>> circuit = PauliEvCircuit(gates=[gate], num_qubits=2)
+   >>> mbs = MonomialPropagator(observable, [], cutoff=16)
+   >>> mbs.propagate(circuit)
+   >>> result = mbs.evolved_operator_dict(evolve_with_coeffs=True)  # WARNING: keys are Majorana indices, not Pauli strings
    >>> sorted(result)
    [(0, 1, 2, 3), (1, 2, 3)]
    >>> bool(np.isclose(result[(0, 1, 2, 3)].real, -np.cos(2 * 0.5)))  # cosine branch
