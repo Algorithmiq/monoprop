@@ -153,9 +153,8 @@ jobs:
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
-    name: Check C++ on ubuntu-latest (coverage + Sonar)
+    name: Check C++ on ubuntu-latest (coverage)
     runs-on: ubuntu-latest
-    needs: python-checks
 
     steps:
       - uses: actions/checkout@v7
@@ -179,17 +178,13 @@ jobs:
           sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
           ./tools/install-deps.sh /opt/Software
 
-      - name: Install Build Wrapper
-        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v8
-
       - name: Configure
         run: |
           export CMAKE_PREFIX_PATH=/opt/Software
           cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Coverage
 
       - name: Build
-        run: |
-          build-wrapper-linux-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} cmake --build build
+        run: cmake --build build
 
       - name: Test
         env:
@@ -242,16 +237,79 @@ jobs:
             build \
             --sonarqube coverage_cpp.xml
 
+      - name: Upload SonarQube C++ coverage as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sonar_cpp_coverage
+          path: coverage_cpp.xml
+          retention-days: 1
+
+  sonarqube-analysis:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: SonarQube analysis
+    runs-on: ubuntu-latest
+    needs:
+      - python-checks
+      - cpp-checks
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - name: Download Python coverage artifacts
         uses: actions/download-artifact@v8
         with:
           merge-multiple: true
           path: .
 
+      - name: Download C++ SonarQube coverage
+        uses: actions/download-artifact@v8
+        with:
+          name: sonar_cpp_coverage
+          path: .
+
       - name: Combine Python coverage data
         run: |
           pipx run coverage combine coverage-*
           pipx run coverage xml -o coverage.xml
+
+      - name: Set gcc-14/g++-14 as default compilers
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
+          sudo update-alternatives --set g++ /usr/bin/g++-14
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
+          sudo update-alternatives --set c++ /usr/bin/g++-14
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
+          ./tools/install-deps.sh /opt/Software
+
+      - name: Install matching Build Wrapper
+        run: |
+          curl --location --output build-wrapper-linux-x86.zip \
+            https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
+          unzip -q -o build-wrapper-linux-x86.zip
+
+      - name: Configure for SonarQube CFamily analysis
+        run: |
+          export CMAKE_PREFIX_PATH=/opt/Software
+          cmake -S. -Bbuild-sonar -DCMAKE_CXX_COMPILER=g++
+
+      - name: Build with Build Wrapper
+        run: |
+          ./build-wrapper-linux-x86/build-wrapper-linux-x86-64 \
+            --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} \
+            cmake --build build-sonar
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v8
@@ -261,11 +319,7 @@ jobs:
           SONAR_HOST_URL: https://sonarcloud.io
         with:
           args: >
-            -Dsonar.exclusions=src/monoprop/_version.py,src/monoprop/_dispatch.py
-            -Dsonar.test.exclusions=tests/data/**
-            -Dsonar.python.coverage.reportPaths=coverage.xml
-            -Dsonar.coverageReportPaths=coverage_cpp.xml
-            -Dsonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json'
+            -Dsonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
 
   cpp-checks-other:
     # in combination with the PR types selection, this top-level if statement
@@ -344,6 +398,7 @@ jobs:
     needs:
       - python-checks
       - cpp-checks
+      - sonarqube-analysis
       - cpp-checks-other
     runs-on: ubuntu-latest
     permissions:
