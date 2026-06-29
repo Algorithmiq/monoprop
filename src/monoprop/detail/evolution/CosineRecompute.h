@@ -32,6 +32,9 @@
 #include <utility>
 #include <vector>
 
+#include <tbb/blocked_range.h>
+#include <tbb/parallel_for.h>
+
 #include "monoprop/Threading.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"       // LayerCosScale, LayerCosAccumulate
 #include "monoprop/detail/evolution/DistributedLayerBuilder.h"        // FoldColumns, fold_overlap_word, gen columns, sidecar
@@ -79,11 +82,19 @@ auto make_prepared_fold(const EvenParityMajoranaScanSidecar<NumModes> &sc,
     }
 
     // Materialize one sparse column into an owned word buffer (XOR-scatter of its set rows).
-    auto materialize_sparse = [&](size_t col) -> const uint64_t * {
-        p.owned_words.emplace_back(full, 0);
+    // The fold only ever reads words [0, cos_words) (fold_cos_word masks the last word and never
+    // touches wi >= cos_words), so size the buffer to cos_words and skip set rows beyond it. This is
+    // bit-exact and a large saving for early layers, where cos_count << sc.words() (full): both the
+    // owned-buffer allocation and the XOR-scatter shrink from `full` to `cos_words`.
+    const size_t cw = p.cos_words;
+    auto materialize_sparse = [&, cw](size_t col) -> const uint64_t * {
+        p.owned_words.emplace_back(cw, 0);
         std::vector<uint64_t> &buf = p.owned_words.back();
         for (TermIndex r : sc.sparse_column_rows(col)) {
-            buf[r >> 6] ^= (uint64_t{1} << (r & 63U));
+            const size_t w = static_cast<size_t>(r) >> 6;
+            if (w < cw) {
+                buf[w] ^= (uint64_t{1} << (r & 63U));
+            }
         }
         return buf.data();
     };
@@ -271,10 +282,38 @@ inline auto make_cos_acc_from_cache(const std::shared_ptr<std::vector<LayerCosEn
 // ---- fold → CosineWordList / index vector ----
 template <size_t NumModes>
 inline auto fold_to_cos_words(const PreparedFold<NumModes> &p) -> CosineWordList {
+    const size_t nwords = p.cos_words;
+    auto scan = [&](size_t begin, size_t end, CosineWordList &out) {
+        for (size_t wi = begin; wi < end; ++wi) {
+            const uint64_t b = fold_cos_word<NumModes>(p, wi);
+            if (b) {
+                out.blocks.emplace_back(wi * 64, b);
+                out.total_count += static_cast<size_t>(std::popcount(b));
+            }
+        }
+    };
+    // The recompute (one fold per pared layer) is otherwise SERIAL — the dominant pare-creation cost
+    // on a many-core box. Parallelize over disjoint word ranges and concatenate the per-range block
+    // lists IN ORDER (each range is internally ascending), so the result is bit-identical to the
+    // serial scan. Mirrors filter_layer_cosine_data's ordered-parallel pattern.
+    if (threading::effective_parallelism() <= 1 || nwords < threading::kSmallLoopThreshold) {
+        CosineWordList c;
+        scan(0, nwords, c);
+        return c;
+    }
+    const size_t workers = threading::effective_parallelism();
+    const size_t block_count = std::min(nwords, std::max<size_t>(1, workers * 8));
+    const size_t chunk = (nwords + block_count - 1) / block_count;
+    std::vector<CosineWordList> parts((nwords + chunk - 1) / chunk);
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, parts.size(), 1), [&](const tbb::blocked_range<size_t> &r) {
+        for (size_t pi = r.begin(); pi < r.end(); ++pi) {
+            scan(pi * chunk, std::min(nwords, (pi + 1) * chunk), parts[pi]);
+        }
+    });
     CosineWordList c;
-    for (size_t wi = 0; wi < p.cos_words; ++wi) {
-        const uint64_t b = fold_cos_word<NumModes>(p, wi);
-        if (b) { c.blocks.emplace_back(wi * 64, b); c.total_count += static_cast<size_t>(std::popcount(b)); }
+    for (auto &part : parts) {
+        c.total_count += part.total_count;
+        c.blocks.insert(c.blocks.end(), part.blocks.begin(), part.blocks.end());
     }
     return c;
 }

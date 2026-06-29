@@ -105,6 +105,13 @@ target_include_directories(
 
 target_link_libraries(_core PRIVATE monoprop)
 
+# The hot templated MonomialPropagator<N> kernels (evolve apply, cos scale/accumulate, the cosine
+# recompute fold, find_anticommuting) are instantiated HERE in _core, not in libmonoprop. Without the
+# architecture flag they compile to baseline x86-64: std::popcount falls back to the soft
+# __popcountdi2 (a measured ~4% of replay/recompute) and the kernels miss POPCNT/BMI/AVX entirely.
+# Apply the same ARCH_FLAG the `monoprop` library target gets so these kernels are vectorized too.
+target_compile_options(_core BEFORE PRIVATE "${ARCH_FLAG}")
+
 file(
   RELATIVE_PATH
   _rel
