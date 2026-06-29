@@ -7,7 +7,7 @@ operations. It is not part of the normal `pytest` run; invoke it with `just benc
 
 ## Running
 
-`just bench` runs the timing pass, the memory pass, and regenerates
+`just bench` runs a single timing + memory sweep and regenerates
 `benches/results/REPORT.md`. Driver options (`--ranks`, `--mpiexec-args`,
 `--label`) are consumed by `run.py`; everything else is forwarded to pytest.
 
@@ -17,13 +17,18 @@ just bench-smoke                             # quick sanity check (tiny sizes)
 just bench --num-modes 64 --bench-rounds 10  # forwarded to pytest
 ```
 
-Each run adds a column to the same `REPORT.md`, so a non-MPI and an MPI run land
-side by side — both with timing and memory:
+Each run adds a column to the same `REPORT.md`, so an MPI run and serial runs at
+different thread counts land side by side — each with timing and memory:
 
 ```bash
-just bench-build-mpi                  # build once (MPI on; also runs serially)
-just bench --label serial             # non-MPI column (1 rank)
-just bench --ranks 4 --label mpi-r4   # MPI column, same report
+just bench-build-mpi  # build once (MPI on; also runs serially)
+# 5 ranks, each pinned to 2 cores (2 threads/rank, fills a 10-core host)
+just bench --ranks 5 --mpiexec-args="--map-by slot:PE=2 --bind-to core" \
+    --env monoprop_NUM_THREADS=2 --env OMP_NUM_THREADS=2 --label mpi-r5t2
+# serial, single-threaded
+just bench --env monoprop_NUM_THREADS=1 --env OMP_NUM_THREADS=1 --label serial
+# serial, 10 threads
+just bench --env monoprop_NUM_THREADS=10 --env OMP_NUM_THREADS=10 --label serial-t10
 ```
 
 ## Configuring a run (MPI, threads, pinning)
@@ -59,7 +64,7 @@ just bench --ranks 4 --mpiexec-args="--bind-to core" \
 Benchmarks are communicator-aware: each operation is barrier-wrapped so the
 timed cost is the **makespan** across ranks, rank 0 writes the timing JSON, and
 memory is the worst-rank peak. MPI uses fixed-round `pedantic` timing
-(`--bench-rounds`, default 5) so ranks don't diverge and deadlock at the barriers.
+(`--bench-rounds`, default 1) so ranks don't diverge and deadlock at the barriers.
 
 **The MPI build must be loaded and stay loaded.** monoprop builds with
 `monoprop_ENABLE_MPI=OFF` by default; a non-MPI extension silently ignores the
@@ -78,7 +83,7 @@ serial / MPI / thread variants sit side by side. Sections:
 
 - **Configuration** — ranks, thread counts, launcher, CPU count, host.
 - **Hyperparameters** — the resolved random-problem sizes each run used.
-- **Graph size** — terms in the evolved operator per picture.
+- **Operator size** — terms in the evolved operator per picture.
 - **Static model configuration** — the resolved config of each static model.
 - **Heisenberg** / **Schrödinger** — a **Time** and **Peak memory** table each
   (Schrödinger omitted when unused).

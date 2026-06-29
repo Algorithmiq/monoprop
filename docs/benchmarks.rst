@@ -50,7 +50,7 @@ and peak memory is captured per rank.
 
 ``REPORT.md`` opens with a **Configuration** table (ranks, threads, launcher,
 host per run label), a **Hyperparameters** table (the resolved random-problem
-sizes and run knobs each run used) and a **Graph size** table (the number of
+sizes and run knobs each run used) and an **Operator size** table (the number of
 terms reached per picture), then a **Heisenberg** and a **Schrödinger** section,
 each holding a **Time** and a **Peak memory** table. Every run is a column, so
 configurations sit side by side; the Schrödinger section is omitted when no

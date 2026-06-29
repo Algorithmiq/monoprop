@@ -1,4 +1,8 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+# Pass recipe arguments through as real argv (preserves quoting, e.g. a
+# `--mpiexec-args="--bind-to core"` value with spaces) via "$@" instead of the
+# space-splitting `{{ ARGS }}` interpolation.
+set positional-arguments
 
 version := `uvx setuptools-scm | tr -d '\n'`
 project_source_dir := `pwd | tr -d '\n'`
@@ -49,7 +53,7 @@ serve-docs:
 # Any other arguments are forwarded to pytest, e.g.
 #   just bench --ranks 4 --num-modes 64 --bench-rounds 10
 bench *ARGS:
-    uv run --no-sync python benches/run.py {{ ARGS }}
+    uv run --no-sync python benches/run.py "$@"
 
 # Rebuild monoprop with MPI enabled (editable). Run once before `just bench --ranks N`.
 # A plain `just bench` uses `--no-sync`, so this MPI build survives until the next

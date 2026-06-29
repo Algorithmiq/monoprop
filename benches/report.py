@@ -117,11 +117,11 @@ def _load_params(results_dir: Path) -> dict[str, dict]:
     return params
 
 
-def _load_graphsize(results_dir: Path) -> dict[str, dict]:
-    """Return ``{label: {picture: metrics}}`` from ``graphsize-*.json`` files."""
+def _load_operator_sizes(results_dir: Path) -> dict[str, dict]:
+    """Return ``{label: {picture: metrics}}`` from ``opsize-*.json`` files."""
     sizes: dict[str, dict] = {}
-    for path in sorted(results_dir.glob("graphsize-*.json")):
-        label = path.stem.removeprefix("graphsize-")
+    for path in sorted(results_dir.glob("opsize-*.json")):
+        label = path.stem.removeprefix("opsize-")
         sizes[label] = json.loads(path.read_text())
     return sizes
 
@@ -201,17 +201,19 @@ def _hyperparams_table(labels: list[str], params: dict[str, dict]) -> list[str]:
     return lines
 
 
-def _graphsize_table(labels: list[str], sizes: dict[str, dict]) -> list[str]:
+def _operator_size_table(labels: list[str], sizes: dict[str, dict]) -> list[str]:
     """Render the number of terms reached per picture (one column per label)."""
     if not sizes:
         return []
     pictures = [p for p in _PICTURES if any(p in sizes.get(lbl, {}) for lbl in labels)]
     lines = [
-        "## Graph size",
+        "## Operator size",
         "",
-        "Number of terms in the evolved operator reached per picture. Recorded on "
-        "serial runs (it is deterministic in the hyperparameters, so MPI columns "
-        "are blank).",
+        "Number of terms in the evolved operator reached per picture. Under MPI the "
+        "operator is partitioned across ranks, so the per-rank shard sizes are summed "
+        "(allreduce) into the full count. The size is deterministic in the "
+        "hyperparameters, so runs at the same hyperparameters report the same count "
+        "regardless of rank or thread count.",
         "",
         "| Picture | " + " | ".join(labels) + " |",
         "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
@@ -367,7 +369,7 @@ def build_report(results_dir: Path) -> str:
     memory = _load_memory(results_dir)
     metas = _load_metadata(results_dir)
     params = _load_params(results_dir)
-    graphsize = _load_graphsize(results_dir)
+    operator_sizes = _load_operator_sizes(results_dir)
     configs = _load_configs(results_dir)
 
     labels = sorted(
@@ -375,7 +377,7 @@ def build_report(results_dir: Path) -> str:
         | set(memory)
         | set(metas)
         | set(params)
-        | set(graphsize)
+        | set(operator_sizes)
         | set(configs)
     )
     all_ops = sorted(
@@ -408,7 +410,7 @@ def build_report(results_dir: Path) -> str:
         "",
         *_config_table(labels, metas),
         *_hyperparams_table(labels, params),
-        *_graphsize_table(labels, graphsize),
+        *_operator_size_table(labels, operator_sizes),
         *_static_config_section(labels, configs),
         *_section("Heisenberg", labels, heisenberg_ops, time_cells, mem_cells),
         *_section("Schrödinger", labels, schrodinger_ops, time_cells, mem_cells),

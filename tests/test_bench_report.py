@@ -159,9 +159,9 @@ def test_static_config_section_absent_when_no_configs(tmp_path: Path) -> None:
     assert "## Static model configuration" not in md
 
 
-def test_build_report_includes_graph_size(tmp_path: Path) -> None:
+def test_build_report_includes_operator_size(tmp_path: Path) -> None:
     _write_timings(tmp_path)
-    (tmp_path / "graphsize-np1.json").write_text(
+    (tmp_path / "opsize-np1.json").write_text(
         json.dumps(
             {
                 "heisenberg": {
@@ -179,7 +179,7 @@ def test_build_report_includes_graph_size(tmp_path: Path) -> None:
     )
     md = report.build_report(tmp_path)
 
-    assert "## Graph size" in md
+    assert "## Operator size" in md
     # Term counts are rendered with thousands separators, one row per picture.
     assert "| Heisenberg | 132,220 |" in md
     assert "| Schrödinger | 11,311,942 |" in md
