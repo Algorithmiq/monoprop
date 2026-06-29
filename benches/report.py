@@ -126,6 +126,15 @@ def _load_graphsize(results_dir: Path) -> dict[str, dict]:
     return sizes
 
 
+def _load_configs(results_dir: Path) -> dict[str, dict]:
+    """Return ``{label: {model: config_fields}}`` from ``configs-*.json`` files."""
+    configs: dict[str, dict] = {}
+    for path in sorted(results_dir.glob("configs-*.json")):
+        label = path.stem.removeprefix("configs-")
+        configs[label] = json.loads(path.read_text())
+    return configs
+
+
 def _config_table(labels: list[str], metas: dict[str, dict]) -> list[str]:
     """Render the run-configuration table (one row per run label)."""
     if not metas:
@@ -167,7 +176,6 @@ _PARAM_KEYS = (
     "cutoff",
     "seed",
     "bench_rounds",
-    "lower_atol",
 )
 
 
@@ -178,8 +186,7 @@ def _hyperparams_table(labels: list[str], params: dict[str, dict]) -> list[str]:
     lines = [
         "## Hyperparameters",
         "",
-        "Random-problem sizes and run knobs used for each label "
-        "(``lower_atol`` applies to the static benchmarks).",
+        "Random-problem sizes and run knobs used for each label.",
         "",
         "| Parameter | " + " | ".join(labels) + " |",
         "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
@@ -216,6 +223,63 @@ def _graphsize_table(labels: list[str], sizes: dict[str, dict]) -> list[str]:
             cells.append(f"{terms:,}" if terms is not None else "—")
         lines.append(f"| {_PICTURE_NAMES[picture]} | " + " | ".join(cells) + " |")
     lines.append("")
+    return lines
+
+
+# Static models in display order; any others sorted after.
+_STATIC_MODEL_ORDER = ("hubbard", "pauli")
+
+
+def _fmt_config_value(value: object) -> str:
+    """Format a config field value compactly (floats via ``g``, else ``str``)."""
+    if isinstance(value, float):
+        return format(value, "g")
+    return str(value)
+
+
+def _model_config_table(
+    model: str, labels: list[str], configs: dict[str, dict]
+) -> list[str]:
+    """Render one static model's config sub-table (rows = fields, cols = labels)."""
+    fields: list[str] = []
+    for label in labels:
+        for field in configs.get(label, {}).get(model, {}):
+            if field not in fields:
+                fields.append(field)
+    lines = [
+        f"### {model}",
+        "",
+        "| Parameter | " + " | ".join(labels) + " |",
+        "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
+    ]
+    for field in fields:
+        cells = []
+        for label in labels:
+            model_cfg = configs.get(label, {}).get(model, {})
+            cells.append(
+                _fmt_config_value(model_cfg[field]) if field in model_cfg else "—"
+            )
+        lines.append(f"| {field} | " + " | ".join(cells) + " |")
+    lines.append("")
+    return lines
+
+
+def _static_config_section(labels: list[str], configs: dict[str, dict]) -> list[str]:
+    """Render the static-model configuration section (one sub-table per model)."""
+    present = {model for cfg in configs.values() for model in cfg}
+    if not present:
+        return []
+    ordered = [m for m in _STATIC_MODEL_ORDER if m in present]
+    ordered += sorted(present.difference(ordered))
+    lines = [
+        "## Static model configuration",
+        "",
+        "Resolved configuration of each static model for this run "
+        "(``--lower-atol`` overrides the per-model truncation tolerance).",
+        "",
+    ]
+    for model in ordered:
+        lines += _model_config_table(model, labels, configs)
     return lines
 
 
@@ -304,9 +368,15 @@ def build_report(results_dir: Path) -> str:
     metas = _load_metadata(results_dir)
     params = _load_params(results_dir)
     graphsize = _load_graphsize(results_dir)
+    configs = _load_configs(results_dir)
 
     labels = sorted(
-        set(timings) | set(memory) | set(metas) | set(params) | set(graphsize)
+        set(timings)
+        | set(memory)
+        | set(metas)
+        | set(params)
+        | set(graphsize)
+        | set(configs)
     )
     all_ops = sorted(
         {op for table in timings.values() for op in table}
@@ -339,6 +409,7 @@ def build_report(results_dir: Path) -> str:
         *_config_table(labels, metas),
         *_hyperparams_table(labels, params),
         *_graphsize_table(labels, graphsize),
+        *_static_config_section(labels, configs),
         *_section("Heisenberg", labels, heisenberg_ops, time_cells, mem_cells),
         *_section("Schrödinger", labels, schrodinger_ops, time_cells, mem_cells),
     ]
