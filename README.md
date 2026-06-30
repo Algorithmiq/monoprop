@@ -44,7 +44,7 @@ print(mp.evolved_operator_dict())  # the gate splits the monomial into two terms
 ```
 
 The same simulator also accepts qubit (Pauli) and fermionic operators. See the
-[getting-started guide](https://docs.algorithmiq.fi/monoprop/getting-started.html)
+[getting-started guide](https://docs.algorithmiq.fi/monoprop/docs/getting-started)
 for more.
 
 ## Building from source
@@ -69,7 +69,7 @@ cmake --build --preset release-gcc
 ```
 
 Full instructions — prerequisites, MPI options, and running the example
-executable — are in the [building guide](https://docs.algorithmiq.fi/monoprop/building.html).
+executable — are in the [building guide](https://docs.algorithmiq.fi/monoprop/docs/building).
 
 ## Running the tests
 
@@ -79,7 +79,7 @@ just test-py-mpi                       # Python tests under MPI
 ctest --preset release-gcc             # C++ unit tests (release-gcc-mpi for MPI)
 ```
 
-See the [building guide](https://docs.algorithmiq.fi/monoprop/building.html#running-the-tests)
+See the [building guide](https://docs.algorithmiq.fi/monoprop/docs/building#running-the-tests)
 for the with/without-MPI details and the rank matrix.
 
 ## Development environment
@@ -101,17 +101,20 @@ git clone https://github.com/Algorithmiq/monoprop.git
 ```
 
 Without a DevContainer, install the prerequisites from the
-[building guide](https://docs.algorithmiq.fi/monoprop/building.html#prerequisites)
+[building guide](https://docs.algorithmiq.fi/monoprop/docs/building#prerequisites)
 by hand. Contribution workflow and standards are in the
-[contributing guide](https://docs.algorithmiq.fi/monoprop/how-to-contribute.html).
+[contributing guide](https://docs.algorithmiq.fi/monoprop/docs/how-to-contribute).
 
 ## Documentation
 
-The documentation is built with [Sphinx](https://www.sphinx-doc.org/) and hosted at
-<https://docs.algorithmiq.fi/monoprop>. To build it locally:
+The documentation is built with [Fumadocs](https://fumadocs.dev/) and hosted at
+<https://docs.algorithmiq.fi/monoprop>. The Python API reference is generated from
+docstrings ([griffe](https://mkdocstrings.github.io/griffe/)) and the tutorials are
+executed from the notebooks in `docs/notebooks/`. To build it locally:
 
 ```bash
-just build-docs   # output: build/docs/html/index.html
+just build-docs   # output: docs/out/
+just serve-docs   # live-reloading dev server
 ```
 
 ## Citation

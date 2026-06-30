@@ -48,7 +48,7 @@ jobs:
       - name: Install dependencies from APT
         run: |
           sudo apt-get update
-          sudo apt-get install -y doxygen graphviz just libtbb-dev libopenmpi-dev openmpi-bin
+          sudo apt-get install -y just libtbb-dev libopenmpi-dev openmpi-bin
 
       - name: Set gcc-14/g++-14 as default compilers
         run: |
@@ -71,15 +71,22 @@ jobs:
           enable-cache: true
           python-version: 3.12
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
       - name: Install package
         run: |
           echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
           CMAKE_PREFIX_PATH=/opt/Software uv sync --group docs --all-extras
 
-      - name: Run doc tests
-        run: |
-          just doctest-docs
-
+      # `just build-docs` runs, in order: docs-install (npm ci), gen-api
+      # (docstrings -> API reference MDX), doctest-py (runnable docstring
+      # examples), gen-notebooks (executes the tutorial notebooks, failing on
+      # any cell error), then the static Next.js export into `docs/out`.
       - name: Build docs
         run: |
           just build-docs
@@ -92,7 +99,7 @@ jobs:
         if: ${{ github.ref == 'refs/heads/main' }}
         uses: actions/upload-pages-artifact@v5
         with:
-          path: build/docs/html
+          path: docs/out
 
   deploy:
     if: ${{ github.ref == 'refs/heads/main' }}
