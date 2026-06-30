@@ -15,7 +15,9 @@
 """Unit tests for the benchmark report builder (``benches/report.py``).
 
 ``benches`` is on the pytest pythonpath (see ``pyproject.toml``), so the module
-imports as ``report`` from the normal test suite.
+imports as ``report`` from the normal test suite. Each run contributes two
+artifacts to the results directory: ``time-<label>.json`` (pytest-benchmark
+timings) and ``<label>.json`` (everything else, keyed by section).
 """
 
 from __future__ import annotations
@@ -30,56 +32,49 @@ if TYPE_CHECKING:
 
 
 def test_picture_of_routes_by_tag() -> None:
-    key = "bench_monoprop.py::test_random_energy"
+    key = "bench_random.py::test_random_energy"
     assert report._picture_of(f"{key}[schrodinger]") == "schrodinger"
     assert report._picture_of(f"{key}[heisenberg]") == "heisenberg"
-    assert report._picture_of("bench_monoprop.py::test_static[hubbard]") == "heisenberg"
+    assert report._picture_of("bench_models.py::test_model[hubbard]") == "heisenberg"
 
 
-def test_display_op_strips_picture_and_names_static() -> None:
+def test_display_op_strips_picture_and_names_model() -> None:
     assert (
-        report._display_op("bench_monoprop.py::test_random_energy[heisenberg]")
+        report._display_op("bench_random.py::test_random_energy[heisenberg]")
         == "random / energy"
     )
     assert (
-        report._display_op("bench_monoprop.py::test_random_build_graph[schrodinger]")
+        report._display_op("bench_random.py::test_random_build_graph[schrodinger]")
         == "random / build_graph"
     )
     assert (
-        report._display_op("bench_monoprop.py::test_static[hubbard]")
-        == "static / hubbard"
+        report._display_op("bench_models.py::test_model[hubbard]") == "model / hubbard"
     )
 
 
-def _write_timings(results_dir: Path) -> None:
+def _write_timings(results_dir: Path, label: str = "np1") -> None:
     data = {
         "benchmarks": [
             {
-                "fullname": "benches/bench_monoprop.py::test_random_energy[heisenberg]",
+                "fullname": "benches/bench_random.py::test_random_energy[heisenberg]",
                 "stats": {"mean": 0.001},
             },
             {
-                "fullname": "benches/bench_monoprop.py::test_random_energy[schrodinger]",
+                "fullname": "benches/bench_random.py::test_random_energy[schrodinger]",
                 "stats": {"mean": 0.002},
             },
             {
-                "fullname": "benches/bench_monoprop.py::test_static[hubbard]",
+                "fullname": "benches/bench_models.py::test_model[hubbard]",
                 "stats": {"mean": 1.5},
             },
         ]
     }
-    (results_dir / "time-np1.json").write_text(json.dumps(data))
+    (results_dir / f"time-{label}.json").write_text(json.dumps(data))
 
 
-def _write_static_configs(results_dir: Path) -> None:
-    (results_dir / "configs-np1.json").write_text(
-        json.dumps(
-            {
-                "hubbard": {"num_sites": 60, "cutoff": 6, "lower_atol": 1e-5},
-                "pauli": {"num_qubits": 127, "cutoff": 8, "lower_atol": 1e-4},
-            }
-        )
-    )
+def _write_results(results_dir: Path, label: str = "np1", **sections: object) -> None:
+    """Write the consolidated ``<label>.json`` artifact from named sections."""
+    (results_dir / f"{label}.json").write_text(json.dumps(sections))
 
 
 def test_build_report_has_two_sections(tmp_path: Path) -> None:
@@ -94,27 +89,26 @@ def test_build_report_has_two_sections(tmp_path: Path) -> None:
     heis = md[md.index("## Heisenberg") : md.index("## Schrödinger")]
     schr = md[md.index("## Schrödinger") :]
 
-    # Static op only under Heisenberg; random energy appears in both sections.
-    assert "static / hubbard" in heis
-    assert "static / hubbard" not in schr
+    # Model op only under Heisenberg; random energy appears in both sections.
+    assert "model / hubbard" in heis
+    assert "model / hubbard" not in schr
     assert "random / energy" in heis
     assert "random / energy" in schr
 
 
 def test_build_report_includes_hyperparameters(tmp_path: Path) -> None:
     _write_timings(tmp_path)
-    (tmp_path / "params-np1.json").write_text(
-        json.dumps(
-            {
-                "gen_length": 4,
-                "obs_terms": 10000,
-                "num_generators": 100,
-                "num_modes": 128,
-                "cutoff": 6,
-                "seed": 0,
-                "bench_rounds": 5,
-            }
-        )
+    _write_results(
+        tmp_path,
+        params={
+            "gen_length": 4,
+            "obs_terms": 10000,
+            "num_generators": 100,
+            "num_modes": 128,
+            "cutoff": 6,
+            "seed": 0,
+            "bench_rounds": 5,
+        },
     )
     md = report.build_report(tmp_path)
 
@@ -128,20 +122,26 @@ def test_build_report_includes_hyperparameters(tmp_path: Path) -> None:
     assert md.index("## Hyperparameters") < md.index("## Heisenberg")
 
 
-def test_fmt_config_value_formats_floats_compactly() -> None:
-    assert report._fmt_config_value(1e-5) == "1e-05"
-    assert report._fmt_config_value(1.0) == "1"
-    assert report._fmt_config_value(0.2) == "0.2"
-    assert report._fmt_config_value(60) == "60"
-    assert report._fmt_config_value("up") == "up"
+def test_fmt_config_formats_floats_compactly() -> None:
+    assert report._fmt_config(1e-5) == "1e-05"
+    assert report._fmt_config(1.0) == "1"
+    assert report._fmt_config(0.2) == "0.2"
+    assert report._fmt_config(60) == "60"
+    assert report._fmt_config("up") == "up"
 
 
-def test_build_report_includes_static_config(tmp_path: Path) -> None:
+def test_build_report_includes_model_config(tmp_path: Path) -> None:
     _write_timings(tmp_path)
-    _write_static_configs(tmp_path)
+    _write_results(
+        tmp_path,
+        configs={
+            "hubbard": {"num_sites": 60, "cutoff": 6, "lower_atol": 1e-5},
+            "pauli": {"num_qubits": 127, "cutoff": 8, "lower_atol": 1e-4},
+        },
+    )
     md = report.build_report(tmp_path)
 
-    assert "## Static model configuration" in md
+    assert "## Model configuration" in md
     assert "### hubbard" in md
     assert "### pauli" in md
     # Int field and compact-float field rendered in the right sub-tables.
@@ -150,32 +150,23 @@ def test_build_report_includes_static_config(tmp_path: Path) -> None:
     assert "| lower_atol | 1e-05 |" in md
     # hubbard precedes pauli; the section precedes the picture sections.
     assert md.index("### hubbard") < md.index("### pauli")
-    assert md.index("## Static model configuration") < md.index("## Heisenberg")
+    assert md.index("## Model configuration") < md.index("## Heisenberg")
 
 
-def test_static_config_section_absent_when_no_configs(tmp_path: Path) -> None:
+def test_model_config_section_absent_when_no_configs(tmp_path: Path) -> None:
     _write_timings(tmp_path)
     md = report.build_report(tmp_path)
-    assert "## Static model configuration" not in md
+    assert "## Model configuration" not in md
 
 
 def test_build_report_includes_operator_size(tmp_path: Path) -> None:
     _write_timings(tmp_path)
-    (tmp_path / "opsize-np1.json").write_text(
-        json.dumps(
-            {
-                "heisenberg": {
-                    "terms": 132220,
-                    "n_cos_indices": 1051388,
-                    "n_cycles": 122220,
-                },
-                "schrodinger": {
-                    "terms": 11311942,
-                    "n_cos_indices": 253573716,
-                    "n_cycles": 294309,
-                },
-            }
-        )
+    _write_results(
+        tmp_path,
+        opsize={
+            "heisenberg": {"terms": 132220},
+            "schrodinger": {"terms": 11311942},
+        },
     )
     md = report.build_report(tmp_path)
 
@@ -187,13 +178,12 @@ def test_build_report_includes_operator_size(tmp_path: Path) -> None:
 
 def test_build_report_includes_memory(tmp_path: Path) -> None:
     _write_timings(tmp_path)
-    (tmp_path / "mem-np1.json").write_text(
-        json.dumps(
-            {
-                "bench_monoprop.py::test_random_energy[heisenberg]": 52428800,
-                "bench_monoprop.py::test_random_energy[schrodinger]": 104857600,
-            }
-        )
+    _write_results(
+        tmp_path,
+        mem={
+            "bench_random.py::test_random_energy[heisenberg]": 52428800,
+            "bench_random.py::test_random_energy[schrodinger]": 104857600,
+        },
     )
     md = report.build_report(tmp_path)
 
@@ -203,11 +193,35 @@ def test_build_report_includes_memory(tmp_path: Path) -> None:
     assert "100.00 MiB" in md
 
 
+def test_build_report_includes_resting_and_storage(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    _write_results(
+        tmp_path,
+        memrest={"heisenberg": 52428800},
+        storage={"heisenberg": {"operator": 104857600, "graph": 10485760}},
+    )
+    md = report.build_report(tmp_path)
+
+    assert "## Operator resting footprint (PSS)" in md
+    assert "## Storage breakdown: operator vs graph" in md
+    assert "| Heisenberg | 50.00 MiB |" in md
+    assert "| Heisenberg / operator | 100.00 MiB |" in md
+    assert "| Heisenberg / graph | 10.00 MiB |" in md
+
+
+def test_build_report_sorts_labels_numerically(tmp_path: Path) -> None:
+    for label in ("np1", "np2", "np10"):
+        _write_timings(tmp_path, label)
+    md = report.build_report(tmp_path)
+    # Natural sort: np2 before np10 (not lexicographic np1, np10, np2).
+    assert md.index("np1") < md.index("np2") < md.index("np10")
+
+
 def test_build_report_omits_empty_schrodinger_section(tmp_path: Path) -> None:
     data = {
         "benchmarks": [
             {
-                "fullname": "benches/bench_monoprop.py::test_static[pauli]",
+                "fullname": "benches/bench_models.py::test_model[pauli]",
                 "stats": {"mean": 2.0},
             }
         ]

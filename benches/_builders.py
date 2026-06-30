@@ -18,8 +18,8 @@ This module is import-only (no pytest dependency) so the builders can also be
 reused from scripts or notebooks. It provides:
 
 - :func:`make_random_problem` for the configurable random benchmarks,
-- :func:`build_hubbard_problem` for the static 120-qubit Hubbard benchmark,
-- :func:`build_kicked_ising_problem` for the static 127-qubit Pauli-basis benchmark.
+- :func:`build_hubbard_problem` for the fixed 120-qubit Hubbard model benchmark,
+- :func:`build_kicked_ising_problem` for the fixed 127-qubit Pauli-basis benchmark.
 """
 
 from __future__ import annotations
@@ -535,12 +535,12 @@ def build_kicked_ising_problem(
     )
 
 
-# Static-benchmark registry: model -> (config class, builder, steps-per-run).
+# Fixed-model benchmark registry: model -> (config class, builder, steps-per-run).
 # ``steps`` is derived from the resolved config: Hubbard re-applies its one-step
 # circuit ``trotter_steps`` times, while the Pauli circuit already contains all
 # layers, so a single propagate suffices. This is the single source of truth the
 # benchmark suite and the conftest CLI options are both built from.
-STATIC_MODELS: dict[str, tuple[type, Callable[..., MonomialPropagator], Callable]] = {
+MODELS: dict[str, tuple[type, Callable[..., MonomialPropagator], Callable]] = {
     "hubbard": (
         HubbardConfig,
         build_hubbard_problem,

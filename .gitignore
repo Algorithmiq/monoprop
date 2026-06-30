@@ -169,5 +169,9 @@ Testing/
 *.egg-info
 sandbox/**
 
+# locally generated benchmark artifacts (keep the tracked README.md)
+benches/results/**
+!benches/results/README.md
+
 # devcontainer files
 .devcontainer/devcontainer-lock.json

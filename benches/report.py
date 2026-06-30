@@ -15,7 +15,7 @@
 """Merge benchmark results into a single side-by-side Markdown report.
 
 For each run label the suite writes ``<label>.json`` (metadata, hyperparameters,
-per-operation peak memory, per-picture sizes/footprints, static configs) and
+per-operation peak memory, per-picture sizes/footprints, model configs) and
 pytest-benchmark writes ``time-<label>.json`` (timings). This reads every label
 in a results directory and renders ``REPORT.md`` with one column per label, so
 serial / MPI / thread variants sit side by side.
@@ -167,7 +167,7 @@ def _display_op(op_key: str) -> str:
     """Turn a node id into a ``group / op`` label, dropping the picture tag.
 
     ``...::test_random_energy[heisenberg]`` -> ``random / energy``;
-    ``...::test_static[hubbard]``           -> ``static / hubbard``.
+    ``...::test_model[hubbard]``            -> ``model / hubbard``.
     """
     _file, _, test = op_key.partition("::")
     base, _, param = test.removeprefix("test_").partition("[")
@@ -175,7 +175,7 @@ def _display_op(op_key: str) -> str:
     if param in _PICTURES:
         param = ""  # the section header already states the picture
     group, _, op = base.partition("_")
-    if not op:  # parametrized-only name, e.g. "static" + param "hubbard"
+    if not op:  # parametrized-only name, e.g. "model" + param "hubbard"
         return f"{group} / {param}" if param else group
     return f"{group} / {op}"
 
@@ -206,8 +206,8 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
     return lines
 
 
-def _static_config_section(labels: list[str], results: dict[str, dict]) -> list[str]:
-    """Render the static-model configuration section (one sub-table per model)."""
+def _model_config_section(labels: list[str], results: dict[str, dict]) -> list[str]:
+    """Render the fixed-model configuration section (one sub-table per model)."""
     configs = {lbl: results.get(lbl, {}).get("configs", {}) for lbl in labels}
     models: list[str] = []
     for cfg in configs.values():
@@ -217,9 +217,9 @@ def _static_config_section(labels: list[str], results: dict[str, dict]) -> list[
     if not models:
         return []
     lines = [
-        "## Static model configuration",
+        "## Model configuration",
         "",
-        "Resolved configuration of each static model "
+        "Resolved configuration of each fixed model "
         "(override any field with `--<model>-<field>`).",
         "",
     ]
@@ -352,7 +352,7 @@ def build_report(results_dir: Path) -> str:
             labels,
             lambda lbl, key: _fmt_mem(storage.get(lbl, {}).get(key[0], {}).get(key[1])),
         ),
-        *_static_config_section(labels, results),
+        *_model_config_section(labels, results),
         *ops_section("Heisenberg", "heisenberg"),
         *ops_section("Schrödinger", "schrodinger"),
     ]

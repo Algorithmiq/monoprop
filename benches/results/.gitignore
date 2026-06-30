@@ -1,5 +1,0 @@
-# Generated benchmark artifacts: REPORT.md, time-<label>.json (pytest-benchmark
-# timings) and <label>.json (everything else). See benches/README.md.
-# Keep this directory in the repo, but ignore everything it holds.
-*
-!.gitignore

@@ -55,13 +55,11 @@ scale). `just bench-build-mpi` installs the MPI build, and the bench recipes use
 
 ## Benchmarks
 
-All live in `bench_monoprop.py`.
-
-**Random** (configurable, both pictures) — random fixed-length Majorana
-generators and a random Hermitian observable, run in the Heisenberg and
-Schrödinger pictures (`schrodinger_cutoff = cutoff + 2`). Operations:
-`build_graph`, `pare`, `energy`, `gradient` (graph-based), and `inplace`
-(in-place truncation, no graph stored). CLI options (defaults):
+**Random** (`bench_random.py`; configurable, both pictures) — random
+fixed-length Majorana generators and a random Hermitian observable, run in the
+Heisenberg and Schrödinger pictures (`schrodinger_cutoff = cutoff + 2`).
+Operations: `build_graph`, `pare`, `energy`, `gradient` (graph-based), and
+`inplace` (in-place truncation, no graph stored). CLI options (defaults):
 
 | Option | Meaning | Default |
 |---|---|---|
@@ -73,10 +71,10 @@ Schrödinger pictures (`schrodinger_cutoff = cutoff + 2`). Operations:
 | `--seed` | RNG seed | 0 |
 | `--bench-rounds` | fixed timing rounds (MPI-safe) | 1 |
 
-**Static** (fixed, in-place, Heisenberg only, marked `slow`):
+**Models** (`bench_models.py`; fixed, in-place, Heisenberg only, marked `slow`):
 
-- `test_static[hubbard]` — 120-qubit Fermi-Hubbard (60 sites), 29-step Trotter.
-- `test_static[pauli]` — 127-qubit Pauli-basis kicked-Ising (IBM Eagle heavy-hex,
+- `test_model[hubbard]` — 120-qubit Fermi-Hubbard (60 sites), 29-step Trotter.
+- `test_model[pauli]` — 127-qubit Pauli-basis kicked-Ising (IBM Eagle heavy-hex,
   20 layers, ⟨Z₆₂⟩).
 
 Every field of `HubbardConfig` / `KickedIsingConfig` is overridable via a
@@ -88,7 +86,7 @@ for the full list.
 
 `results/REPORT.md` is regenerated after each run with one column per label:
 Configuration, Hyperparameters, Operator size, resting footprint and
-operator-vs-graph storage breakdown, static-model configs, and a **Time** and
+operator-vs-graph storage breakdown, model configs, and a **Time** and
 **Memory (PSS)** table per picture. Each run writes two artifacts to `results/`:
 `time-<label>.json` (pytest-benchmark) and `<label>.json` (everything else);
 `report.py` merges all labels found there.
@@ -96,5 +94,5 @@ operator-vs-graph storage breakdown, static-model configs, and a **Time** and
 ## Files
 
 `report.py` (report), `conftest.py` (fixtures, CLI options, memory + result
-recording), `_builders.py` (model construction), `bench_monoprop.py` (suite),
-`_mpi_check.py` (MPI preflight).
+recording), `_builders.py` (model construction), `bench_random.py` and
+`bench_models.py` (the two suites), `_mpi_check.py` (MPI preflight).

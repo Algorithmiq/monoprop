@@ -169,7 +169,6 @@ markers = [
   "slow: mark test as slow (>=1 minute runtime)",
   "mpi: mark test as requiring --with-mpi (pytest-mpi)",
   "qiskit: mark test as requiring qiskit (optional dependency)",
-  "bench: mark as a benchmark (collected only from the benches/ suite)",
 ]
 required_plugins = ["pytest-cases", "pytest-datadir", "pytest-mpi"]
 
@@ -311,6 +310,8 @@ flake8-annotations.allow-star-arg-any = true
 # directory loaded via pythonpath (INP001), the MPI communicator type is
 # unavoidably dynamic (ANN401), and report.py intentionally prints (T201).
 "benches/*" = ["S101", "INP001", "ANN401", "T201"]
+# benchmark test functions: annotations on the pytest signatures are just noise.
+"benches/bench_*.py" = ["ANN"]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,

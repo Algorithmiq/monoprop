@@ -21,7 +21,7 @@ cutoff, and RNG seed can all be varied without editing code, e.g.::
     uv run pytest benches --num-generators 200 --num-modes 64 --cutoff 10
 
 All non-timing results a run produces -- run metadata, resolved hyperparameters,
-per-operation peak memory, per-picture operator sizes and footprints, static
+per-operation peak memory, per-picture operator sizes and footprints, model
 configs -- are accumulated in ``_RESULTS`` and written once, at session end, to
 ``results/<label>.json`` (rank 0 only). Timing is written separately by
 pytest-benchmark to ``time-<label>.json``. ``report.py`` merges the two into
@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from _builders import (
-    STATIC_MODELS,
+    MODELS,
     RandomProblem,
     build_random_propagator,
     make_random_problem,
@@ -111,7 +111,7 @@ _RESULTS: dict[str, Any] = {
     "opsize": {},  # picture -> {"terms": n}
     "memrest": {},  # picture -> resting PSS bytes
     "storage": {},  # picture -> {"operator": bytes, "graph": bytes}
-    "configs": {},  # static model -> config dataclass fields
+    "configs": {},  # fixed model -> config dataclass fields
 }
 
 
@@ -242,12 +242,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=1,
         help="Fixed number of rounds for the random benchmarks (MPI-safe).",
     )
-    # Static-model overrides: one option per dataclass field, defaulting to that
+    # Fixed-model overrides: one option per dataclass field, defaulting to that
     # field's own default, so the config classes stay the single source of truth.
-    static = parser.getgroup("monoprop-static", "monoprop static-model overrides")
-    for model, (config_cls, _builder, _steps) in STATIC_MODELS.items():
+    models = parser.getgroup("monoprop-models", "monoprop fixed-model overrides")
+    for model, (config_cls, _builder, _steps) in MODELS.items():
         for field in fields(config_cls):
-            static.addoption(
+            models.addoption(
                 f"--{model}-{field.name.replace('_', '-')}",
                 type=type(field.default),
                 default=field.default,
@@ -334,8 +334,8 @@ def bench_rounds(request: pytest.FixtureRequest) -> int:
 
 
 @pytest.fixture(scope="session")
-def static_configs(request: pytest.FixtureRequest) -> dict[str, Any]:
-    """Return each static model's config, with every field resolved from the CLI.
+def model_configs(request: pytest.FixtureRequest) -> dict[str, Any]:
+    """Return each fixed model's config, with every field resolved from the CLI.
 
     Each ``--<model>-<field>`` option defaults to the dataclass field's own
     default (see :func:`pytest_addoption`), so reconstructing the config from
@@ -350,13 +350,13 @@ def static_configs(request: pytest.FixtureRequest) -> dict[str, Any]:
                 for field in fields(config_cls)
             }
         )
-        for model, (config_cls, _builder, _steps) in STATIC_MODELS.items()
+        for model, (config_cls, _builder, _steps) in MODELS.items()
     }
 
 
 @pytest.fixture
 def record_model_config() -> Callable[[str, Any], None]:
-    """Return ``record(model, config)`` recording a static model's resolved config.
+    """Return ``record(model, config)`` recording a fixed model's resolved config.
 
     The config is identical across ranks, so :func:`_record` keeps only rank 0's.
     """
@@ -382,7 +382,8 @@ def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[N
     _reset_peak_rss()
     yield
     mem, _ = _reduce_sum(bench_comm, _peak_pss_bytes())
-    _record("mem", request.node.nodeid.split("/")[-1], mem)
+    if mem:  # 0 => /proc unavailable (non-Linux); skip so it reads as "—", not 0 MiB
+        _record("mem", request.node.nodeid.split("/")[-1], mem)
 
 
 @pytest.fixture(scope="session", params=["heisenberg", "schrodinger"])
@@ -407,6 +408,28 @@ def random_problem(request: pytest.FixtureRequest) -> RandomProblem:
         cutoff=opt("--cutoff"),
         seed=opt("--seed"),
     )
+
+
+@pytest.fixture
+def make_random_propagator(
+    random_problem: RandomProblem, bench_comm: Any, picture: str
+) -> Callable[..., MonomialPropagator]:
+    """Return a factory building a fresh propagator for the current picture.
+
+    Wraps the picture/communicator wiring so a benchmark's ``setup`` callback can
+    just call ``make_random_propagator(lower_atol=...)`` to get a fresh propagator
+    each round, without restating how the random problem is built.
+    """
+
+    def _make(*, lower_atol: float | None = None) -> MonomialPropagator:
+        return build_random_propagator(
+            random_problem,
+            comm=bench_comm,
+            lower_atol=lower_atol,
+            schrodinger=picture == "schrodinger",
+        )
+
+    return _make
 
 
 @pytest.fixture(scope="session")
@@ -443,6 +466,7 @@ def built_graph(
     # Resting footprint: settled PSS once the build's transients are released, the
     # persistent-memory metric the per-operation peak cannot see. Summed across ranks.
     resting, _ = _reduce_sum(bench_comm, _resting_pss_bytes())
-    _record("memrest", picture, resting)
+    if resting:  # 0 => /proc unavailable (non-Linux); skip rather than record 0 MiB
+        _record("memrest", picture, resting)
 
     return mp
