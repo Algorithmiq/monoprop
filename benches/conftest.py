@@ -37,10 +37,6 @@ reflects the slowest rank, and only rank 0 writes results.
 
 from __future__ import annotations
 
-import contextlib
-import ctypes
-import ctypes.util
-import gc
 import json
 import os
 import socket
@@ -56,6 +52,7 @@ from _builders import (
     build_random_propagator,
     make_random_problem,
 )
+from _memory import PssSampler, merge_peak_of_sum, resting_pss_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -143,72 +140,22 @@ def _monoprop_version() -> str:
         return "unknown"
 
 
-def _reset_peak_rss() -> None:
-    """Reset this process's peak-RSS high-water mark to its current RSS.
+def _peak_of_sum(comm: Any, samples: list[tuple[float, int]]) -> int:
+    """Reduce per-rank PSS sample timelines to the job's peak summed PSS (bytes).
 
-    Linux resets ``VmHWM`` when ``5`` (``CLEAR_REFS_MM_HIWATER_RSS``, kernel
-    >= 4.0) is written to ``/proc/self/clear_refs``. A no-op where ``/proc`` is
-    unavailable (the benchmark environment is Linux).
+    Gathers every rank's ``(wall_clock, pss)`` samples to rank 0 and merges them
+    via :func:`_memory.merge_peak_of_sum` (the max over time of the summed live
+    PSS). A serial run (no communicator or a single rank) merges its own series.
+    Returns ``0`` on non-root ranks, which have nothing to record.
+
+    Collective: every rank must call it when multi-rank.
     """
-    with contextlib.suppress(OSError):  # non-Linux or restricted /proc
-        Path("/proc/self/clear_refs").write_text("5\n")
-
-
-def _proc_field(path: str, key: str) -> int:
-    """Return a ``/proc/self`` size field (kB → bytes); 0 if unavailable."""
-    try:
-        text = Path(path).read_text()
-    except OSError:  # pragma: no cover - non-Linux or restricted /proc
+    if comm is None or comm.Get_size() == 1:
+        return merge_peak_of_sum([samples])
+    gathered = comm.gather(samples, root=0)
+    if comm.Get_rank() != 0:
         return 0
-    for line in text.splitlines():
-        if line.startswith(key):
-            return int(line.split()[1]) * 1024  # values are in kB
-    return 0
-
-
-def _peak_pss_bytes() -> int:
-    """Return this operation's peak proportional set size (PSS) in bytes.
-
-    PSS (shared pages split across their sharers) is the honest per-process share
-    of physical RAM, so summing it across MPI ranks gives the job's true footprint
-    -- unlike RSS, which counts shared library/code pages at full size in every rank.
-
-    PSS has no kernel high-water mark, so derive the peak from ``VmHWM`` (peak RSS,
-    reset per test) minus RSS's shared-page over-count (``VmRSS - Pss``). That
-    over-count is near-constant over the process lifetime, so reading it at
-    teardown still recovers ``peak PSS = peak RSS - shared double-count``.
-    """
-    hwm = _proc_field("/proc/self/status", "VmHWM:")
-    rss = _proc_field("/proc/self/status", "VmRSS:")
-    pss = _proc_field("/proc/self/smaps_rollup", "Pss:")
-    overcount = max(rss - pss, 0)  # shared pages counted >1x in RSS but not PSS
-    return max(hwm - overcount, 0)
-
-
-def _malloc_trim() -> None:
-    """Return free heap pages held by the C allocator to the OS (glibc only).
-
-    ``malloc_trim`` is what makes a *resting* PSS reading meaningful: glibc keeps
-    freed pages in its per-arena heaps, so without trimming the resident footprint
-    still includes transient build buffers that are logically gone. A no-op (and
-    silently ignored) on non-glibc libc.
-    """
-    with contextlib.suppress(Exception):  # non-glibc libc or no malloc_trim symbol
-        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
-        libc.malloc_trim(ctypes.c_size_t(0))
-
-
-def _resting_pss_bytes() -> int:
-    """Return current PSS after collecting garbage and trimming the C heap.
-
-    Unlike :func:`_peak_pss_bytes` (a high-water mark reached mid-operation, e.g.
-    while transient build buffers are live), this is the *settled* footprint once
-    those transients are released -- the metric that reveals persistent-memory
-    wins (a smaller index, recomputed-vs-stored data) that peak RSS cannot see.
-    """
-    gc.collect()
-    _malloc_trim()
-    return _proc_field("/proc/self/smaps_rollup", "Pss:")
+    return merge_peak_of_sum(gathered)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -371,18 +318,20 @@ def record_model_config() -> Callable[[str, Any], None]:
 def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[None]:
     """Record each benchmark's peak physical-memory footprint (PSS) for the report.
 
-    Resets the peak-RSS high-water mark before the test and derives peak PSS (see
-    :func:`_peak_pss_bytes`) at teardown -- no allocation tracking, so timing in the
-    same sweep is undistorted. It is a footprint: it includes structures already
+    A background :class:`PssSampler` samples this rank's live PSS while the test
+    runs (no allocation tracking, and monoprop's compute releases the GIL, so the
+    timed sweep is undistorted). It is a footprint: it includes structures already
     resident when the operation starts (e.g. the shared :func:`built_graph`).
 
-    Under MPI the per-rank PSS values are summed via a collective reduce (every rank
-    runs every test), giving the job's true physical RAM. Kept rank-0 only.
+    Under MPI the per-rank sample timelines are gathered and merged into the true
+    peak-of-sum (see :func:`_peak_of_sum`) -- the largest summed footprint that
+    actually coexisted, not the sum of independently-timed per-rank peaks. The
+    ``gather`` is collective, so every rank runs it; only rank 0 records.
     """
-    _reset_peak_rss()
-    yield
-    mem, _ = _reduce_sum(bench_comm, _peak_pss_bytes())
-    if mem:  # 0 => /proc unavailable (non-Linux); skip so it reads as "—", not 0 MiB
+    with PssSampler() as sampler:
+        yield
+    mem = _peak_of_sum(bench_comm, sampler.samples)
+    if mem:  # 0 => non-root rank, or /proc unavailable (non-Linux): nothing to record
         _record("mem", request.node.nodeid.split("/")[-1], mem)
 
 
@@ -464,8 +413,9 @@ def built_graph(
     _record("storage", picture, {"operator": operator_total, "graph": graph_total})
 
     # Resting footprint: settled PSS once the build's transients are released, the
-    # persistent-memory metric the per-operation peak cannot see. Summed across ranks.
-    resting, _ = _reduce_sum(bench_comm, _resting_pss_bytes())
+    # persistent-memory metric the per-operation peak cannot see. Summed across ranks
+    # (all quiesced post-build, so the per-rank readings are effectively simultaneous).
+    resting, _ = _reduce_sum(bench_comm, resting_pss_bytes())
     if resting:  # 0 => /proc unavailable (non-Linux); skip rather than record 0 MiB
         _record("memrest", picture, resting)
 

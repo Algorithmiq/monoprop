@@ -310,8 +310,9 @@ def build_report(results_dir: Path) -> str:
         "# monoprop benchmark report",
         "",
         f"Run labels: **{', '.join(labels)}**. Times are the mean over rounds; "
-        "memory is the peak physical footprint (PSS) during each operation, summed "
-        "across ranks under MPI (true physical RAM, shared library pages counted once).",
+        "memory is the peak physical footprint (PSS) during each operation. Under "
+        "MPI it is the peak of the PSS summed across ranks (true physical RAM, "
+        "shared pages counted once), not the sum of per-rank peaks.",
         "",
         *_config_table(labels, results),
         *_section(

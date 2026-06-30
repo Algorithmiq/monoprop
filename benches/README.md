@@ -1,12 +1,27 @@
 # monoprop benchmarks
 
 A pytest suite measuring the **time** ([`pytest-benchmark`](https://pytest-benchmark.readthedocs.io))
-and **peak physical memory (PSS)** of monoprop's core operations. Memory is read
-from the kernel (peak RSS corrected to PSS), capturing the C++/TBB allocations
-`tracemalloc` misses at no measurable cost, so timing and memory share one sweep.
-It is not part of the normal `pytest` run; invoke it with `just bench`.
+and **peak physical memory (PSS)** of monoprop's core operations. Memory is
+sampled from the kernel as PSS (proportional set size), capturing the C++/TBB
+allocations `tracemalloc` misses; a background sampler reads it while each
+operation runs, which is effectively free since monoprop's compute releases the
+GIL, so timing and memory share one sweep. It is not part of the normal `pytest`
+run; invoke it with `just bench`.
 
 ## Running
+
+**Prerequisite — install the `bench` dependency group once:**
+
+```bash
+uv sync --group bench          # or: uv sync --all-groups --all-extras
+```
+
+The recipes run with `uv run --no-sync` (so a run never rebuilds monoprop with
+the default `MPI=OFF` and clobbers an MPI build), which means they do **not**
+install dependencies themselves. Without the `bench` group, `pytest-benchmark`
+is absent and pytest rejects the run with a cryptic
+`error: unrecognized arguments: --benchmark-json=…` — that just means the group
+isn't installed. (`just bench-build-mpi` installs the `bench` group too.)
 
 Each run takes a **label** and becomes one column in `results/REPORT.md`, so
 serial, MPI, and thread variants sit side by side. Extra arguments are forwarded
@@ -36,8 +51,10 @@ uv run --group bench python benches/report.py
 
 The benchmarks are communicator-aware: each operation is barrier-wrapped so the
 timed cost is the **makespan** across ranks, rank 0 writes the results, and
-memory is the per-rank peak PSS **summed across ranks** (true physical RAM, with
-shared library pages counted once).
+memory is the **peak of the PSS summed across ranks** — each rank samples its PSS
+over the operation, and the timelines are merged into the largest summed
+footprint that actually coexisted (true physical RAM, shared pages counted once;
+not the sum of per-rank peaks, which would count transients that never overlapped).
 
 ```bash
 just bench-build-mpi                         # build once (MPI on; also runs serially)
