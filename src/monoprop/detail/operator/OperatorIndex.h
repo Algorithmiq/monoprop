@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -12,7 +14,9 @@
 #include <vector>
 
 #include <boost/unordered/unordered_flat_set.hpp>
+#include <tbb/parallel_for.h>
 
+#include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 
 namespace monoprop::detail {
@@ -103,6 +107,29 @@ public:
     };
     using Set = boost::unordered_flat_set<Entry, RowHash, RowEq>;
 
+    // The index is SHARDED into independent sets so the per-layer build insert -- a serial probe loop on
+    // one giant table, latency-bound and non-scaling -- becomes a parallel disjoint-shard insert. The
+    // shard COUNT is chosen from the available parallelism at construction (choose_shard_count): an MPI
+    // rank with a small thread pool gets few shards, a 1-thread build gets a single table (no overhead),
+    // a 20-thread build gets enough shards for load balance. Routing uses the HIGH bits of the avalanched
+    // hash, leaving the low/mid bits (in-shard bucketing + the SIMD tag byte) full-entropy. Sharding only
+    // relocates entries; it never changes membership or what find() returns, so it is BIT-EXACT, and
+    // power-of-2 shard counts keep total bucket_count -- hence memory -- ~neutral.
+    static constexpr size_t kMaxShards = 64;                    // cap (bounds per-shard overhead)
+    static constexpr size_t kBulkInsertParallelMin = 1U << 12U; // small batches insert serially
+
+    // ~2x the worker count, rounded up to a power of two and capped: each worker gets a couple of shards
+    // for load balance without excessive per-shard overhead. 1 worker -> 1 shard (single table).
+    static auto choose_shard_count() -> size_t {
+        const size_t workers = threading::effective_parallelism();
+        if (workers <= 1) {
+            return 1;
+        }
+        return std::min(kMaxShards, std::bit_ceil(workers * 2));
+    }
+    // Route by the top log2(shard_count_) bits of the avalanched hash; the mask makes shard_count_==1 -> 0.
+    auto shard_of(uint32_t h) const noexcept -> size_t { return (spread(h) >> shard_shift_) & shard_mask_; }
+
     // ---- ctors (immovable: RowEq holds a fixed back-pointer to this store) ------------------
     // The inline width (hence stride) is a CONSTRUCTION INVARIANT, fixed here and never mutated.
     // It is purely a memory/overflow trade: rows longer than the width spill to overflow losslessly,
@@ -116,7 +143,16 @@ public:
     // so no move-repair (the former SelfRef cell + move ctor/assign) is needed.
     explicit OperatorIndex(size_t inline_width = kMaxInlinePositions)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)), stride_(1 + inline_width_),
-          index_(0, RowHash{}, RowEq{this}) {}
+          shard_count_(choose_shard_count()),
+          shard_shift_(shard_count_ <= 1 ? 0 : 64U - static_cast<size_t>(std::countr_zero(shard_count_))),
+          shard_mask_(shard_count_ - 1) {
+        // Each shard is an independent set whose RowEq back-references THIS store (confirms hash hits via
+        // dense(idx)). Built here so every shard carries the correct back-pointer.
+        shards_.reserve(shard_count_);
+        for (size_t i = 0; i < shard_count_; ++i) {
+            shards_.emplace_back(0, RowHash{}, RowEq{this});
+        }
+    }
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
     OperatorIndex(OperatorIndex &&) = delete;
@@ -137,9 +173,13 @@ public:
             out->size_ = size_;
             out->overflow_ = overflow_;
         }
-        out->index_.reserve(index_.size());
-        for (const Entry &e : index_) {
-            out->index_.insert(e); // uses out's RowEq{out} -> confirms against the cloned rows
+        // Re-route each entry through the clone's own shard_of (its shard_count_ may differ if the worker
+        // count changed); out's RowEq{out} confirms each against the cloned rows.
+        out->reserve_index(index_size());
+        for (const Set &shard : shards_) {
+            for (const Entry &e : shard) {
+                out->shards_[out->shard_of(e.h)].insert(e);
+            }
         }
         return out;
     }
@@ -156,7 +196,12 @@ public:
     // Coupling an index reserve to that 2x row growth would over-reserve the hash table to ~2x its
     // elements (cache-sparse probes). Use reserve(n) only when sizing once to a known final count.
     auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
-    auto reserve_index(size_t n) -> void { index_.reserve(n); }
+    auto reserve_index(size_t n) -> void {
+        const size_t per = n / shard_count_ + 1;
+        for (Set &shard : shards_) {
+            shard.reserve(per);
+        }
+    }
     auto reserve(size_t n) -> void {
         reserve_rows(n);
         reserve_index(n);
@@ -175,7 +220,9 @@ public:
         rows_.clear();
         overflow_.clear();
         size_ = 0;
-        index_.clear();
+        for (Set &shard : shards_) {
+            shard.clear();
+        }
     }
 
     // ---- row writes -------------------------------------------------------------------------
@@ -237,8 +284,9 @@ public:
     // ---- index API --------------------------------------------------------------------------
     // Returns the dense row index for `key`, or nullopt if absent. Usage: `if (auto i = find(k)) ...`.
     std::optional<size_t> find(const key_type &key) const {
-        const auto it = index_.find(key);
-        if (it == index_.end()) {
+        const Set &shard = shards_[shard_of(fold_hash(key))];
+        const auto it = shard.find(key);
+        if (it == shard.end()) {
             return std::nullopt;
         }
         return static_cast<size_t>(it->idx);
@@ -247,7 +295,8 @@ public:
     // Insert-or-no-op. Row at `value` MUST already be written (find's confirm reads dense(value)).
     void emplace(const key_type &key, mapped_type value) {
         check_index_fits(value);
-        index_.insert(Entry{static_cast<TermIndex>(value), fold_hash(key)});
+        const uint32_t h = fold_hash(key);
+        shards_[shard_of(h)].insert(Entry{static_cast<TermIndex>(value), h});
     }
     // Insert n distinct rows with consecutive indices [base, base+n). Rows MUST already be written.
     template <typename KeyFn>
@@ -256,23 +305,56 @@ public:
             return;
         }
         check_index_fits(base + n - 1);
-        index_.reserve(index_.size() + n);
-        for (size_t k = 0; k < n; ++k) {
-            index_.insert(Entry{static_cast<TermIndex>(base + k), fold_hash(key_at(k))});
+        // Small batch (or unsharded single-thread build): serial insert -- parallel_for + per-shard
+        // bucketing overhead would exceed the work.
+        if (shard_count_ == 1 || n < kBulkInsertParallelMin) {
+            for (size_t k = 0; k < n; ++k) {
+                const uint32_t h = fold_hash(key_at(k));
+                shards_[shard_of(h)].insert(Entry{static_cast<TermIndex>(base + k), h});
+            }
+            return;
         }
+        // Bucket the n DISTINCT keys by shard (serial, hash-only -- no table probe), then insert each
+        // shard's entries in parallel: shards are disjoint, so the probe-heavy inserts never contend.
+        std::vector<std::vector<Entry>> per_shard(shard_count_);
+        for (size_t k = 0; k < n; ++k) {
+            const uint32_t h = fold_hash(key_at(k));
+            per_shard[shard_of(h)].push_back(Entry{static_cast<TermIndex>(base + k), h});
+        }
+        tbb::parallel_for(size_t{0}, shard_count_, [&](size_t s) {
+            std::vector<Entry> &batch = per_shard[s];
+            if (batch.empty()) {
+                return;
+            }
+            Set &shard = shards_[s];
+            shard.reserve(shard.size() + batch.size());
+            for (const Entry &e : batch) {
+                shard.insert(e);
+            }
+        });
     }
-    size_t index_size() const { return index_.size(); }
+    size_t index_size() const {
+        size_t total = 0;
+        for (const Set &shard : shards_) {
+            total += shard.size();
+        }
+        return total;
+    }
     template <typename Func>
     void for_each(Func &&fn) const {
-        for (const Entry &e : index_) {
-            fn(dense(static_cast<size_t>(e.idx)), static_cast<size_t>(e.idx));
+        for (const Set &shard : shards_) {
+            for (const Entry &e : shard) {
+                fn(dense(static_cast<size_t>(e.idx)), static_cast<size_t>(e.idx));
+            }
         }
     }
     size_t index_estimated_memory_bytes() const {
-        return sizeof(OperatorIndex) + index_.bucket_count() * (sizeof(Entry) + sizeof(unsigned char));
+        size_t buckets = 0;
+        for (const Set &shard : shards_) {
+            buckets += shard.bucket_count();
+        }
+        return sizeof(OperatorIndex) + buckets * (sizeof(Entry) + sizeof(unsigned char));
     }
-    Set &index_set() { return index_; }
-    const Set &index_set() const { return index_; }
 
 private:
     auto write_row(size_t i, const value_type &maj) -> void {
@@ -309,7 +391,12 @@ private:
     size_t stride_ = 1 + kMaxInlinePositions;
     mutable std::unordered_map<size_t, value_type> overflow_ = {};
     mutable std::mutex overflow_mutex_ = {};
-    Set index_; // RowEq holds a fixed `this` pointer -- so the store must never move (see ctors).
+    // Sharded index: each shard's RowEq holds a fixed `this` pointer, so the store must never move (see
+    // ctors). Count/shift/mask are set once at construction from the worker count (choose_shard_count).
+    size_t shard_count_ = 1;
+    size_t shard_shift_ = 0;
+    size_t shard_mask_ = 0;
+    std::vector<Set> shards_ = {};
 };
 
 } // namespace monoprop::detail
