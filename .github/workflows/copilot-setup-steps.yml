@@ -53,5 +53,4 @@ jobs:
         run: |
           export CPM_USE_LOCAL_PACKAGES=TRUE
           export CMAKE_PREFIX_PATH=/opt/Software
-          # docs group excluded: it requires Python 3.12 and this job runs on 3.11
           uv sync --all-extras
