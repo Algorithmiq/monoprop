@@ -130,81 +130,27 @@ struct EvenParityMajoranaScanSidecar {
                 col.words.resize(required_words, 0);
             }
         }
-        // Small batches (the per-generator deferred-insert case, called thousands of times) take a
-        // serial path: the parallel machinery's fixed per-call cost (thread-local buffer construction +
-        // the all-column merge sweep) dwarfs the actual O(n·k) work and otherwise regresses the append.
-        // Dense writes go straight to the word array; sparse rows append straight to the column list (no
-        // race when serial). Only large bulk fills (rebuild) amortize the parallel path below.
-        constexpr size_t kSerialFillRows = 1U << 15U;
-        if (n < kSerialFillRows) {
-            for (size_t row_idx = base; row_idx < new_total_rows; ++row_idx) {
-                const size_t w = row_idx >> 6U;
-                const uint64_t row_bit = uint64_t{1} << (row_idx & 63U);
-                for_each_row_position<NumModes>(op, row_idx, [&](size_t bit) {
-                    Column &col = cols[bit];
-                    if (col.is_dense) {
-                        col.words[w] |= row_bit;
-                    }
-                    else {
-                        col.set_rows.push_back(static_cast<TermIndex>(row_idx));
-                    }
-                });
-            }
-            for (size_t c = 0; c < kNumColumns; ++c) {
-                Column &col = cols[c];
-                if (!col.is_dense && col.set_rows.size() * kPromoteDensityInv >= row_count) {
-                    promote_to_dense(c);
+        // Always SERIAL. The per-layer deferred-insert batch is O(new terms), append-only and cache-
+        // friendly. A column-parallel scatter+merge was tried but only helps for small (cache-resident)
+        // operators and REGRESSES badly at scale (83M Heisenberg: 4.9s serial vs 19.8s parallel —
+        // bandwidth/cache thrash across the large dense column arrays), so the resync stays serial at
+        // every scale. Dense writes go straight to the word array; sparse rows append to the column list.
+        for (size_t row_idx = base; row_idx < new_total_rows; ++row_idx) {
+            const size_t w = row_idx >> 6U;
+            const uint64_t row_bit = uint64_t{1} << (row_idx & 63U);
+            for_each_row_position<NumModes>(op, row_idx, [&](size_t bit) {
+                Column &col = cols[bit];
+                if (col.is_dense) {
+                    col.words[w] |= row_bit;
                 }
-            }
-            return;
+                else {
+                    col.set_rows.push_back(static_cast<TermIndex>(row_idx));
+                }
+            });
         }
-
-        const size_t first_word = base / 64;
-        const size_t last_word = (new_total_rows - 1) / 64;
-        const size_t word_span = last_word - first_word + 1;
-        const size_t grain = std::max<size_t>(1, word_span / 64);
-
-        using Partials = std::array<std::vector<TermIndex>, kNumColumns>;
-        tbb::enumerable_thread_specific<Partials> tls;
-        tbb::parallel_for(tbb::blocked_range<size_t>(first_word, last_word + 1, grain),
-                          [&](const tbb::blocked_range<size_t> &range) {
-                              Partials &part = tls.local();
-                              for (size_t w = range.begin(); w < range.end(); ++w) {
-                                  const size_t row_lo = std::max(base, w * 64);
-                                  const size_t row_hi = std::min(new_total_rows, (w + 1) * 64);
-                                  for (size_t row_idx = row_lo; row_idx < row_hi; ++row_idx) {
-                                      const uint64_t row_bit = uint64_t{1} << (row_idx % 64);
-                                      for_each_row_position<NumModes>(op, row_idx, [&](size_t bit) {
-                                          Column &col = cols[bit];
-                                          if (col.is_dense) {
-                                              col.words[w] |= row_bit; // sole writer of (bit, w)
-                                          }
-                                          else {
-                                              part[bit].push_back(static_cast<TermIndex>(row_idx));
-                                          }
-                                      });
-                                  }
-                              }
-                          });
-
-        // Merge thread-local sparse contributions and promote any column that crossed the density line.
         for (size_t c = 0; c < kNumColumns; ++c) {
             Column &col = cols[c];
-            if (col.is_dense) {
-                continue;
-            }
-            size_t add = 0;
-            for (auto &part : tls) {
-                add += part[c].size();
-            }
-            if (add == 0) {
-                continue;
-            }
-            col.set_rows.reserve(col.set_rows.size() + add);
-            for (auto &part : tls) {
-                col.set_rows.insert(col.set_rows.end(), part[c].begin(), part[c].end());
-            }
-            if (col.set_rows.size() * kPromoteDensityInv >= row_count) {
+            if (!col.is_dense && col.set_rows.size() * kPromoteDensityInv >= row_count) {
                 promote_to_dense(c);
             }
         }
