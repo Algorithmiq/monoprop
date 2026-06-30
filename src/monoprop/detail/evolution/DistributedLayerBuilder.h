@@ -32,10 +32,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -57,6 +60,77 @@
 #include "monoprop/detail/mpi/MPIUtils.h"
 
 namespace monoprop::detail {
+
+// ── TEMPORARY per-phase build timers (env MONOPROP_PHASE_TIMERS=1) ────────────────
+// Throwaway profiling instrumentation: attributes single-node build wall to the build's
+// top-level phases so we can see which phase fails to thread-scale. Zero overhead when off.
+// The layer loop is sequential (parallel_for joins before each phase returns), so wrapping a
+// phase call on the orchestrating thread measures that phase's wall contribution; summed over
+// layers gives the per-phase total. Dumped via atexit.
+struct PhaseTimers {
+    static constexpr int N = 11;
+    std::array<std::atomic<uint64_t>, N> ns{};
+    std::array<std::atomic<uint64_t>, N> calls{};
+    static auto name(int i) -> const char * {
+        static const char *names[N] = {
+            "find",     "gather",    "self_resolve", "defer_insert", "assemble",  "storage",
+            "meta",     "  di.grow", "  di.scatter",  "  di.index",   "  di.sidecar"};
+        return names[i];
+    }
+    static auto enabled() -> bool {
+        static const bool e = [] {
+            const char *v = std::getenv("MONOPROP_PHASE_TIMERS");
+            return v && v[0] == '1';
+        }();
+        return e;
+    }
+    auto add(int i, uint64_t dt) -> void {
+        ns[i].fetch_add(dt, std::memory_order_relaxed);
+        calls[i].fetch_add(1, std::memory_order_relaxed);
+    }
+    auto dump() -> void {
+        double tot = 0;
+        for (int i = 0; i < N; ++i) {
+            tot += static_cast<double>(ns[i].load()) / 1e9;
+        }
+        std::fprintf(stderr, "\n[PHASE] ==== build per-phase wall (sum=%.3f s) ====\n", tot);
+        for (int i = 0; i < N; ++i) {
+            const double s = static_cast<double>(ns[i].load()) / 1e9;
+            std::fprintf(stderr, "[PHASE] %-13s %8.3f s  %5.1f%%  (%llu calls)\n", name(i), s,
+                         tot > 0 ? 100.0 * s / tot : 0.0,
+                         static_cast<unsigned long long>(calls[i].load()));
+        }
+    }
+    static auto get() -> PhaseTimers & {
+        static PhaseTimers t;
+        static int reg = [] {
+            std::atexit([] { PhaseTimers::get().dump(); });
+            return 0;
+        }();
+        (void)reg;
+        return t;
+    }
+};
+struct ScopedPhase {
+    int idx;
+    bool on;
+    std::chrono::steady_clock::time_point t0;
+    explicit ScopedPhase(int i) : idx(i), on(PhaseTimers::enabled()) {
+        if (on) {
+            t0 = std::chrono::steady_clock::now();
+        }
+    }
+    ~ScopedPhase() {
+        if (on) {
+            const auto dt = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - t0)
+                                .count();
+            PhaseTimers::get().add(idx, static_cast<uint64_t>(dt));
+        }
+    }
+    ScopedPhase(const ScopedPhase &) = delete;
+    auto operator=(const ScopedPhase &) -> ScopedPhase & = delete;
+};
 
 // ─── PartnerAcc ────────────────────────────────────────────────────────────────
 // Uniform per-rank rotation accumulator. The self slot is just the partner with
@@ -949,6 +1023,7 @@ struct LayerBuildEngine {
     // Resolves THIS rank's own query stream (queries_r[my_rank]/src_idx_r[my_rank], populated by the
     // current pass) inline; clears it so the subsequent alltoallv never sends to self.
     auto resolve_self_queries(bool is_leader_pass) -> void {
+        ScopedPhase _ph(2);
         VecZ &lq = queries_r[my_rank];
         std::vector<size_t> &ls = src_idx_r[my_rank];
         const size_t nq = lq.empty() ? 0 : lq.size() / kQueryWords<NumModes>;
@@ -1027,6 +1102,7 @@ struct LayerBuildEngine {
     // resolve passes complete. Inserting earlier would corrupt the base+k ↔ acc-slot index assignment
     // established below (and the per-miss distinctness argument relies on all passes having run).
     auto insert_deferred_self_misses() -> void {
+        ScopedPhase _ph(3);
         const size_t n_miss = deferred_self_misses.size();
         if (n_miss > 0) {
             // ── Parallel deterministic insert (any rank count) ──
@@ -1038,10 +1114,13 @@ struct LayerBuildEngine {
             const size_t base = insert_op.op->size();
             // Grow op GEOMETRICALLY (≥2× before resize) for amortized O(1)/layer; an exact-fit
             // reserve(base+n_miss) would realloc the whole persistent operator every layer.
-            if (insert_op.op->capacity() < base + n_miss) {
-                insert_op.op->reserve_rows(std::max(base + n_miss, insert_op.op->capacity() * 2 + 1));
+            {
+                ScopedPhase _g(7);
+                if (insert_op.op->capacity() < base + n_miss) {
+                    insert_op.op->reserve_rows(std::max(base + n_miss, insert_op.op->capacity() * 2 + 1));
+                }
+                insert_op.op->resize(base + n_miss);
             }
-            insert_op.op->resize(base + n_miss);
 
             const size_t in_base = acc[my_rank].in_entries.size();
             const size_t out_base = acc[my_rank].out_entries.size();
@@ -1049,26 +1128,36 @@ struct LayerBuildEngine {
             acc[my_rank].out_entries.resize(out_base + n_miss);
 
             // Scatter majs into disjoint op slots, fill disjoint acc slots.
-            parallel_for_indices(n_miss, [&](size_t k) {
-                const auto &m = deferred_self_misses[k];
-                assign_row<NumModes>(*insert_op.op, base + k, m.maj);
-                acc[my_rank].in_entries[in_base + k] = {base + k, m.phase};
-                acc[my_rank].out_entries[out_base + k] = {m.src, m.phase};
-            });
+            {
+                ScopedPhase _s(8);
+                parallel_for_indices(n_miss, [&](size_t k) {
+                    const auto &m = deferred_self_misses[k];
+                    assign_row<NumModes>(*insert_op.op, base + k, m.maj);
+                    acc[my_rank].in_entries[in_base + k] = {base + k, m.phase};
+                    acc[my_rank].out_entries[out_base + k] = {m.src, m.phase};
+                });
+            }
 
             // Index map: shard-partitioned insert (key k → base+k), disjoint shards, no atomics.
             // key_at reads the staged dense MajoranaSet directly (no packed-row re-materialization).
-            insert_op.op->bulk_insert(n_miss, base, [&](size_t k) -> const MajoranaSet<NumModes> & {
-                return deferred_self_misses[k].maj;
-            });
+            {
+                ScopedPhase _i(9);
+                insert_op.op->bulk_insert(n_miss, base, [&](size_t k) -> const MajoranaSet<NumModes> & {
+                    return deferred_self_misses[k].maj;
+                });
+            }
 
             // Sidecar: atomics-free word-partitioned append (only if present; has_value ⟹ rows==base).
-            insert_op.resync_sidecar_after_bulk_growth(base, n_miss);
+            {
+                ScopedPhase _sc(10);
+                insert_op.resync_sidecar_after_bulk_growth(base, n_miss);
+            }
         }
     }
 
     // Sub-step of finish() — do not call directly (consumes acc after both passes + the deferred inserts).
     auto assemble_partners() -> std::vector<CrossRankPartnerData> {
+        ScopedPhase _ph(4);
         // Layout: b = [in.idx]++[out.idx]; d = [{out.idx,−φ}]++[{in.idx,+φ}]. cos covers ALL
         // anticommuting indices (endpoints included) since the D-apply only ADDS the sine term.
         std::vector<CrossRankPartnerData> partners(R);
@@ -1136,6 +1225,7 @@ struct LayerBuildEngine {
             }
             *out_cos = std::move(cos_all);
         }
+        ScopedPhase _ph(5);
         return build_layer_storage_unified(std::move(partners), my_rank);
     }
 
@@ -1199,10 +1289,14 @@ auto build_distributed_layer(MPOperator<NumModes> &local_op,
     // partner inserts; capture that bound now (the scan/inserts below grow local_op).
     const uint64_t cos_count_pre_insert = static_cast<uint64_t>(local_op.op->size());
 
-    FusedScanResult fused =
-        fused_find_and_collect<NumModes>(local_op, gen, cut_eval, cut_st, coeffs, only_rotate_len_k, R, my_rank);
+    FusedScanResult fused = [&] {
+        ScopedPhase _ph(0);
+        return fused_find_and_collect<NumModes>(local_op, gen, cut_eval, cut_st, coeffs,
+                                                only_rotate_len_k, R, my_rank);
+    }();
     CosineWordList cos_all;
     {
+        ScopedPhase _ph(1);
         std::vector<CosineWordList *> blocks;
         blocks.reserve(fused.cos_blocks.size());
         for (auto &block : fused.cos_blocks) {
@@ -1241,8 +1335,11 @@ auto build_distributed_layer(MPOperator<NumModes> &local_op,
     // (slice/union/consume/Schrödinger-prepend). cos_count is the POST-insert operator size (after
     // finish() ran this layer's partner inserts): the stored cos is "all anticommuting", so folding the
     // sidecar truncated to cos_count reproduces it bit-for-bit in both pictures with no stored bitmap.
-    storage->generator_words.assign(gen.data(), gen.data() + mpi_detail::kWords<NumModes>);
-    storage->cos_count = static_cast<uint64_t>(local_op.op->size());
+    {
+        ScopedPhase _ph(6);
+        storage->generator_words.assign(gen.data(), gen.data() + mpi_detail::kWords<NumModes>);
+        storage->cos_count = static_cast<uint64_t>(local_op.op->size());
+    }
 
     return storage;
 }
