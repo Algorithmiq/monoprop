@@ -395,11 +395,14 @@ def _record_storage_breakdown(picture: str, mp: MonomialPropagator, comm: Any) -
     they are summed across ranks (allreduce), matching :func:`_record_operator_size`.
     Merged into ``storage-<label>.json`` (one entry per picture) by rank 0.
     """
-    sim = mp._simulator  # noqa: SLF001 - the bound C++ object holds the accounting
+    # Reach into the bound C++ object, which holds the memory accounting.
+    sim = mp._simulator
     operator_total, rank = _reduce_sum(comm, sim.operator_memory_bytes())
     graph_total, _ = _reduce_sum(comm, sim.graph_memory_bytes())
     if rank == 0:
-        _merge_record("storage", picture, {"operator": operator_total, "graph": graph_total})
+        _merge_record(
+            "storage", picture, {"operator": operator_total, "graph": graph_total}
+        )
 
 
 def _record_resting_footprint(picture: str, comm: Any) -> None:
