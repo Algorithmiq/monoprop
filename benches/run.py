@@ -25,9 +25,9 @@ Configuration is deliberately external and explicit (KISS):
 
 - **MPI** — ``--ranks N`` runs under ``mpiexec -n N``; ``--mpiexec-args`` passes
   anything else (core pinning via ``--bind-to core``, ``--map-by socket``, …).
-- **Threads** — set ``--env monoprop_NUM_THREADS=K`` (the variable monoprop
-  reads at import); add ``--env OMP_NUM_THREADS=K`` / ``OMP_PROC_BIND=close`` /
-  ``OMP_PLACES=cores`` for thread pinning.
+- **Threads** — ``--env monoprop_NUM_THREADS=K`` sets monoprop's oneTBB worker
+  count; it is the only thread variable monoprop reads (at import). Per-process
+  pinning is via ``mpiexec --bind-to`` (see MPI above).
 - **Label** — ``--label`` names the run (default ``np<ranks>``); use a custom
   label to compare thread/pinning variants at the same rank count.
 
@@ -37,7 +37,7 @@ Examples::
     uv run --group bench python benches/run.py --ranks 4             # 4 ranks (np4)
     uv run --group bench python benches/run.py \
         --ranks 4 --mpiexec-args="--bind-to core" \
-        --env monoprop_NUM_THREADS=2 --env OMP_PROC_BIND=close \
+        --env monoprop_NUM_THREADS=2 \
         --label r4t2-pinned                                          # custom config
     uv run --group bench python benches/run.py --num-modes 64 --bench-rounds 10
 
@@ -60,17 +60,10 @@ import report
 BENCH_DIR = Path(__file__).parent
 RESULTS_DIR = BENCH_DIR / "results"
 
-# Environment variables recorded in each run's metadata (threading + pinning).
-TRACKED_ENV = (
-    "monoprop_NUM_THREADS",
-    "OMP_NUM_THREADS",
-    "OMP_PROC_BIND",
-    "OMP_PLACES",
-    "OPENBLAS_NUM_THREADS",
-    "MKL_NUM_THREADS",
-    "NUMEXPR_NUM_THREADS",
-    "TBB_NUM_THREADS",
-)
+# Environment variable recorded (if set) in each run's metadata for provenance.
+# monoprop_NUM_THREADS is the only knob that affects monoprop (its oneTBB worker
+# count); it is read at import.
+TRACKED_ENV = ("monoprop_NUM_THREADS",)
 
 
 def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -164,14 +157,15 @@ def _launch(prefix: list[str], pytest_args: list[str], run_env: dict[str, str]) 
     subprocess.run(cmd, check=True, env=run_env)
 
 
-def _mpi_distribution_ok(prefix: list[str], run_env: dict[str, str]) -> bool:
-    """Run the MPI distribution preflight under ``mpiexec``; True if distributing.
+def _mpi_build_ok(run_env: dict[str, str]) -> bool:
+    """Check that the loaded ``monoprop`` extension was built with MPI.
 
     Catches the common failure where the loaded ``monoprop`` extension was built
-    without MPI (so every rank holds the full operator and the run OOMs). Runs a
-    tiny probe, so it is cheap relative to the real passes.
+    without MPI (so every rank holds the full operator and the run OOMs). The
+    extension reports this via ``monoprop.has_mpi``, so a single import suffices --
+    no ``mpiexec`` and no probe problem needed.
     """
-    cmd = [*prefix, sys.executable, str(BENCH_DIR / "_mpi_check.py")]
+    cmd = [sys.executable, str(BENCH_DIR / "_mpi_check.py")]
     print(f"$ {shlex.join(cmd)}", flush=True)
     return subprocess.run(cmd, check=False, env=run_env).returncode == 0
 
@@ -205,15 +199,11 @@ def main(argv: list[str] | None = None) -> int:
             *shlex.split(args.mpiexec_args),
         ]
 
-    # Fail fast if an MPI run is not actually distributing (e.g. a non-MPI build
+    # Fail fast if an MPI run would not actually distribute (e.g. a non-MPI build
     # got loaded): otherwise every rank holds the full operator and the run OOMs.
-    if (
-        args.ranks > 1
-        and not args.skip_mpi_check
-        and not _mpi_distribution_ok(prefix, run_env)
-    ):
+    if args.ranks > 1 and not args.skip_mpi_check and not _mpi_build_ok(run_env):
         sys.stderr.write(
-            "ERROR: MPI distribution preflight failed (see [mpi-check] above). "
+            "ERROR: MPI build preflight failed (see [mpi-check] above). "
             "Aborting before the heavy passes. Rebuild the MPI extension with "
             "`just bench-build-mpi`, or pass --skip-mpi-check to override.\n"
         )
@@ -225,10 +215,6 @@ def main(argv: list[str] | None = None) -> int:
 
     _write_metadata(results_dir, label, args, prefix, overrides, run_env, pytest_args)
 
-    # One sweep records both timing (--benchmark-json) and peak memory: the
-    # record_memory fixture reads the kernel's per-process high-water mark around
-    # each test at no measurable cost, so memory rides along with timing in a
-    # single pass instead of needing a second, slower one.
     sweep_args = [*common, "--benchmark-json", str(results_dir / f"time-{label}.json")]
     _launch(prefix, sweep_args, run_env)
 

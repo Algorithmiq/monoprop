@@ -1461,7 +1461,7 @@ provides-extras = ["mpi", "qiskit", "openfermion", "pyscf"]
 [package.metadata.requires-dev]
 bench = [
     { name = "pytest", specifier = ">=8.2.2,<8.3" },
-    { name = "pytest-benchmark", specifier = ">=4" },
+    { name = "pytest-benchmark", specifier = ">=5" },
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi", specifier = ">=0.6" },

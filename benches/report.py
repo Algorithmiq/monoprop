@@ -33,6 +33,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -56,12 +57,34 @@ def _label_header(first_col: str, labels: list[str]) -> list[str]:
     ]
 
 
+def _natural_key(label: str) -> list[object]:
+    """Sort key ordering embedded integers numerically (so ``t2`` < ``t10``)."""
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", label)]
+
+
 def _load_by_label(results_dir: Path, prefix: str) -> dict[str, dict]:
-    """Return ``{label: parsed_json}`` from ``<prefix>-*.json`` files."""
-    return {
-        path.stem.removeprefix(f"{prefix}-"): json.loads(path.read_text())
-        for path in sorted(results_dir.glob(f"{prefix}-*.json"))
-    }
+    """Return ``{label: parsed_json}`` from ``<prefix>-*.json`` files.
+
+    Empty or malformed artifacts are skipped with a warning rather than
+    aborting the report -- a run that fails before writing its JSON (e.g. a
+    ``--benchmark-json`` file pytest-benchmark opened but never populated)
+    must not poison report generation for the runs that did succeed.
+    """
+    by_label: dict[str, dict] = {}
+    for path in sorted(results_dir.glob(f"{prefix}-*.json")):
+        label = path.stem.removeprefix(f"{prefix}-")
+        text = path.read_text()
+        if not text.strip():
+            print(f"report: skipping empty artifact {path.name}", file=sys.stderr)
+            continue
+        try:
+            by_label[label] = json.loads(text)
+        except json.JSONDecodeError as exc:
+            print(
+                f"report: skipping malformed artifact {path.name}: {exc}",
+                file=sys.stderr,
+            )
+    return by_label
 
 
 def _load_timings(results_dir: Path) -> dict[str, dict[str, float]]:
@@ -83,7 +106,6 @@ def _config_table(labels: list[str], metas: dict[str, dict]) -> list[str]:
         "Label",
         "Ranks",
         "monoprop threads",
-        "OMP threads",
         "Launcher",
         "CPUs",
         "Host",
@@ -97,7 +119,6 @@ def _config_table(labels: list[str], metas: dict[str, dict]) -> list[str]:
             label,
             str(meta.get("ranks", "—")),
             str(env.get("monoprop_NUM_THREADS", "default")),
-            str(env.get("OMP_NUM_THREADS", "default")),
             f"`{meta['launcher']}`" if meta.get("launcher") else "—",
             str(meta.get("cpu_count", "—")),
             str(meta.get("hostname", "—")),
@@ -389,7 +410,8 @@ def build_report(results_dir: Path) -> str:
         | set(operator_sizes)
         | set(resting)
         | set(storage)
-        | set(configs)
+        | set(configs),
+        key=_natural_key,
     )
     all_ops = sorted(
         {op for table in timings.values() for op in table}

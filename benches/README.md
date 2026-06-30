@@ -25,11 +25,11 @@ different thread counts land side by side — each with timing and memory:
 just bench-build-mpi  # build once (MPI on; also runs serially)
 # 5 ranks, each pinned to 2 cores (2 threads/rank, fills a 10-core host)
 just bench --ranks 5 --mpiexec-args="--map-by slot:PE=2 --bind-to core" \
-    --env monoprop_NUM_THREADS=2 --env OMP_NUM_THREADS=2 --label mpi-r5t2
+    --env monoprop_NUM_THREADS=2 --label mpi-r5t2
 # serial, single-threaded
-just bench --env monoprop_NUM_THREADS=1 --env OMP_NUM_THREADS=1 --label serial
+just bench --env monoprop_NUM_THREADS=1 --label serial
 # serial, 10 threads
-just bench --env monoprop_NUM_THREADS=10 --env OMP_NUM_THREADS=10 --label serial-t10
+just bench --env monoprop_NUM_THREADS=10 --label serial-t10
 ```
 
 ## Configuring a run (MPI, threads, pinning)
@@ -40,12 +40,14 @@ You set configuration on the command line; the driver records it in the report.
 |---|---|---|
 | MPI ranks | `--ranks N` | `--ranks 4` |
 | mpiexec args (incl. pinning) | `--mpiexec-args` | `--mpiexec-args="--bind-to core"` |
-| threads & pinning | `--env KEY=VAL` (repeatable) | `--env monoprop_NUM_THREADS=2` |
+| monoprop threads | `--env monoprop_NUM_THREADS=K` | `--env monoprop_NUM_THREADS=2` |
+| per-process pinning | `--mpiexec-args` (`--bind-to`) | `--mpiexec-args="--bind-to core"` |
 | run name / report column | `--label` | `--label r4t2` |
 
-`monoprop` reads `monoprop_NUM_THREADS` at import; add `OMP_NUM_THREADS` /
-`OMP_PROC_BIND` / `OMP_PLACES` for OpenMP pinning. Use a custom `--label` when
-varying threads/pinning at a fixed rank count so runs don't overwrite each other.
+`monoprop` is parallelised with oneTBB and reads only `monoprop_NUM_THREADS` (at
+import) — that is the single knob for its thread count. Per-process pinning is
+done by `mpiexec` (`--bind-to core`). Use a custom `--label` when varying
+threads/pinning at a fixed rank count so runs don't overwrite each other.
 
 `--ranks N` launches `mpiexec` with these defaults; `--mpiexec-args` is appended:
 
@@ -68,9 +70,9 @@ deadlock at the barriers.
 communicator, so every rank holds the **full** operator (N× memory, OOMs at
 scale). `just bench-build-mpi` installs the MPI build and `just bench` runs with
 `--no-sync` so it survives — rebuild explicitly after editing monoprop sources.
-An `--ranks > 1` run first runs a fast **distribution preflight**
-(`_mpi_check.py`) that aborts with remediation if the build is not distributing;
-bypass it with `--skip-mpi-check`.
+An `--ranks > 1` run first runs a fast **build preflight** (`_mpi_check.py`,
+which just checks `monoprop.has_mpi`) that aborts with remediation if the loaded
+extension was not built with MPI; bypass it with `--skip-mpi-check`.
 
 ## Reporting
 
