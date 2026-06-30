@@ -533,3 +533,18 @@ def build_kicked_ising_problem(
         basis_change=jordan_wigner_basis_change(config.num_qubits),
         comm=comm,
     )
+
+
+# Static-benchmark registry: model -> (config class, builder, steps-per-run).
+# ``steps`` is derived from the resolved config: Hubbard re-applies its one-step
+# circuit ``trotter_steps`` times, while the Pauli circuit already contains all
+# layers, so a single propagate suffices. This is the single source of truth the
+# benchmark suite and the conftest CLI options are both built from.
+STATIC_MODELS: dict[str, tuple[type, Callable[..., MonomialPropagator], Callable]] = {
+    "hubbard": (
+        HubbardConfig,
+        build_hubbard_problem,
+        lambda config: config.trotter_steps,
+    ),
+    "pauli": (KickedIsingConfig, build_kicked_ising_problem, lambda _config: 1),
+}

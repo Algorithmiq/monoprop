@@ -309,9 +309,8 @@ flake8-annotations.allow-star-arg-any = true
 "src/monoprop/**/__init__.py" = ["I002"]
 # benchmark suite: asserts are fine (S101), it is an intentional non-package
 # directory loaded via pythonpath (INP001), the MPI communicator type is
-# unavoidably dynamic (ANN401), and the run.py driver intentionally prints
-# progress (T201) and shells out to pytest/mpiexec (S603/S607).
-"benches/*" = ["S101", "INP001", "ANN401", "T201", "S603", "S607"]
+# unavoidably dynamic (ANN401), and report.py intentionally prints (T201).
+"benches/*" = ["S101", "INP001", "ANN401", "T201"]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,

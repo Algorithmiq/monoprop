@@ -27,16 +27,12 @@ footprint (PSS), recorded by the ``record_memory`` fixture in ``conftest.py``.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from _builders import (
-    HubbardConfig,
-    KickedIsingConfig,
+    STATIC_MODELS,
     barriered,
-    build_hubbard_problem,
-    build_kicked_ising_problem,
     build_random_propagator,
 )
 
@@ -172,32 +168,23 @@ def test_random_inplace(
     assert isinstance(result, float)
 
 
-# Static benchmarks (fixed, heavy, Heisenberg-only, in-place).
-# name -> (builder, config factory, Trotter steps per measured run). Hubbard
-# re-applies its one-step circuit ``trotter_steps`` times; the Pauli circuit
-# already contains all layers, so a single propagate suffices.
-STATIC_MODELS: dict[str, tuple] = {
-    "hubbard": (build_hubbard_problem, HubbardConfig, HubbardConfig().trotter_steps),
-    "pauli": (build_kicked_ising_problem, KickedIsingConfig, 1),
-}
-
-
+# Static benchmarks (fixed, heavy, Heisenberg-only, in-place). The model registry
+# (config class, builder, steps-per-run) lives in ``_builders.STATIC_MODELS``, and
+# each config field is overridable via ``--<model>-<field>`` (see conftest).
 @pytest.mark.bench
 @pytest.mark.slow
 @pytest.mark.parametrize("model", list(STATIC_MODELS))
 def test_static(
     benchmark: object,
     bench_comm: Any,
-    static_lower_atol: dict[str, float | None],
+    static_configs: dict[str, Any],
     model: str,
     record_model_config: Any,
 ) -> None:
     """Benchmark a fixed in-place static simulation (Heisenberg picture)."""
-    build_fn, config_cls, steps = STATIC_MODELS[model]
-    config = config_cls()
-    override = static_lower_atol[model]
-    if override is not None:
-        config = replace(config, lower_atol=override)
+    _config_cls, build_fn, steps_fn = STATIC_MODELS[model]
+    config = static_configs[model]
+    steps = steps_fn(config)
     record_model_config(model, config)
 
     def setup() -> tuple[tuple[MonomialPropagator, int], dict]:

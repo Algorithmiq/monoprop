@@ -15,16 +15,24 @@
 """Pytest configuration and fixtures for the monoprop benchmark suite.
 
 The random benchmarks are parameterised through command-line options so the
-generator length, number of observable terms, number of generators,
-mode count, cutoff, and RNG seed can all be varied without editing code, e.g.::
+generator length, number of observable terms, number of generators, mode count,
+cutoff, and RNG seed can all be varied without editing code, e.g.::
 
     uv run pytest benches --num-generators 200 --num-modes 64 --cutoff 10
+
+All non-timing results a run produces -- run metadata, resolved hyperparameters,
+per-operation peak memory, per-picture operator sizes and footprints, static
+configs -- are accumulated in ``_RESULTS`` and written once, at session end, to
+``results/<label>.json`` (rank 0 only). Timing is written separately by
+pytest-benchmark to ``time-<label>.json``. ``report.py`` merges the two into
+``REPORT.md``. Recording is enabled only when the ``just bench`` recipe exports
+``MONOPROP_BENCH_LABEL`` / ``MONOPROP_BENCH_RESULTS``.
 
 MPI: the benchmarks are communicator-aware. When ``mpi4py`` is available the
 ``bench_comm`` fixture yields ``MPI.COMM_WORLD`` (size 1 for a serial run, size
 R under ``mpiexec -n R``); otherwise it yields ``None``. Each measured operation
 is wrapped in barriers (see :func:`_builders.barriered`) so the timed cost
-reflects the slowest rank, and only rank 0 writes the timing JSON.
+reflects the slowest rank, and only rank 0 writes results.
 """
 
 from __future__ import annotations
@@ -35,12 +43,19 @@ import ctypes.util
 import gc
 import json
 import os
-from dataclasses import asdict
+import socket
+from dataclasses import asdict, fields
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from _builders import RandomProblem, build_random_propagator, make_random_problem
+from _builders import (
+    STATIC_MODELS,
+    RandomProblem,
+    build_random_propagator,
+    make_random_problem,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -58,6 +73,11 @@ def _rank() -> int:
     return 0 if MPI is None else MPI.COMM_WORLD.Get_rank()
 
 
+def _size() -> int:
+    """Return the number of MPI ranks (``1`` without MPI)."""
+    return 1 if MPI is None else MPI.COMM_WORLD.Get_size()
+
+
 def _reduce_sum(comm: Any, value: int) -> tuple[int, int]:
     """Sum ``value`` across ranks and return ``(total, rank)``.
 
@@ -69,81 +89,10 @@ def _reduce_sum(comm: Any, value: int) -> tuple[int, int]:
     return value, 0
 
 
-def _record_path(prefix: str) -> Path | None:
-    """Return ``results/<prefix>-<label>.json``, or ``None`` if recording is off.
-
-    Recording is enabled only when ``run.py`` exported ``MONOPROP_BENCH_LABEL``
-    and ``MONOPROP_BENCH_RESULTS``; otherwise the suite was run directly and has
-    nowhere to write.
-    """
-    label = os.environ.get("MONOPROP_BENCH_LABEL")
-    results = os.environ.get("MONOPROP_BENCH_RESULTS")
-    if not label or not results:
-        return None
-    return Path(results, f"{prefix}-{label}.json")
-
-
-def _merge_record(prefix: str, key: str, value: Any) -> None:
-    """Merge ``{key: value}`` into this label's ``prefix`` artifact (rank-0 callers)."""
-    path = _record_path(prefix)
-    if path is None:
-        return
-    data = json.loads(path.read_text()) if path.exists() else {}
-    data[key] = value
-    path.write_text(json.dumps(data, indent=2))
-
-
-def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register benchmark configuration options for the random benchmarks."""
-    group = parser.getgroup("monoprop-bench", "monoprop random benchmark sizing")
-    group.addoption(
-        "--gen-length",
-        type=int,
-        default=4,
-        help="Number of Majorana operators per generator.",
-    )
-    group.addoption(
-        "--obs-terms", type=int, default=10000, help="Number of observable terms."
-    )
-    group.addoption(
-        "--num-generators",
-        type=int,
-        default=100,
-        help="Number of random generators (circuit gates).",
-    )
-    group.addoption(
-        "--num-modes", type=int, default=128, help="Number of fermionic modes."
-    )
-    group.addoption("--cutoff", type=int, default=6, help="Truncation cutoff.")
-    group.addoption(
-        "--seed", type=int, default=0, help="Random seed for reproducibility."
-    )
-    group.addoption(
-        "--bench-rounds",
-        type=int,
-        default=1,
-        help="Fixed number of rounds for the random benchmarks (MPI-safe).",
-    )
-    group.addoption(
-        "--hubbard-lower-atol",
-        type=float,
-        default=None,
-        help="Override lower_atol for the hubbard static benchmark "
-        "(default: HubbardConfig's 1e-4).",
-    )
-    group.addoption(
-        "--pauli-lower-atol",
-        type=float,
-        default=None,
-        help="Override lower_atol for the pauli static benchmark "
-        "(default: KickedIsingConfig's 1e-4).",
-    )
-
-
-# Resolved random-problem sizes (and run knobs) recorded for the report so the
-# hyperparameters a run actually used are visible alongside its numbers. The
-# ``--`` CLI names map to plain keys here.
-_RECORDED_OPTIONS = (
+# Resolved hyperparameters recorded for the report (the ``--`` CLI names map to
+# these plain keys). Kept here as the single source of truth; report.py displays
+# them in this order.
+RECORDED_OPTIONS = (
     "gen_length",
     "obs_terms",
     "num_generators",
@@ -153,31 +102,45 @@ _RECORDED_OPTIONS = (
     "bench_rounds",
 )
 
+# All non-timing results for this run, written once at session end (rank 0) to
+# ``results/<label>.json``. The fixtures and hooks below fill the sections.
+_RESULTS: dict[str, Any] = {
+    "meta": {},  # run configuration (ranks, threads, host, ...)
+    "params": {},  # resolved random-problem hyperparameters
+    "mem": {},  # node id -> peak PSS bytes (per operation)
+    "opsize": {},  # picture -> {"terms": n}
+    "memrest": {},  # picture -> resting PSS bytes
+    "storage": {},  # picture -> {"operator": bytes, "graph": bytes}
+    "configs": {},  # static model -> config dataclass fields
+}
 
-def _write_run_params(config: pytest.Config) -> None:
-    """Record this label's resolved hyperparameters (defaults included) for the report.
 
-    Called on rank 0 only; a no-op when recording is off (see :func:`_record_path`).
+def _record(section: str, key: str, value: Any) -> None:
+    """Store one value into the in-memory results (rank-0 only)."""
+    if _rank() == 0:
+        _RESULTS[section][key] = value
+
+
+def _results_path() -> Path | None:
+    """Return ``results/<label>.json``, or ``None`` when recording is off.
+
+    Recording is enabled only when the ``just bench`` recipe exported
+    ``MONOPROP_BENCH_LABEL`` and ``MONOPROP_BENCH_RESULTS``; run directly, the
+    suite has nowhere to write and the results stay in memory only.
     """
-    path = _record_path("params")
-    if path is None:
-        return
-    params = {
-        opt: config.getoption(f"--{opt.replace('_', '-')}") for opt in _RECORDED_OPTIONS
-    }
-    path.write_text(json.dumps(params, indent=2))
+    label = os.environ.get("MONOPROP_BENCH_LABEL")
+    results = os.environ.get("MONOPROP_BENCH_RESULTS")
+    if not label or not results:
+        return None
+    return Path(results, f"{label}.json")
 
 
-def _record_operator_size(picture: str, mp: MonomialPropagator, comm: Any) -> None:
-    """Record the evolved operator's total term count for one picture.
-
-    Under MPI the operator is partitioned across ranks, so ``mp.size()`` is only
-    this rank's shard; the global total is their sum (allreduce). Merged into
-    ``opsize-<label>.json`` (one entry per picture) by rank 0.
-    """
-    total, rank = _reduce_sum(comm, mp.size())
-    if rank == 0:
-        _merge_record("opsize", picture, {"terms": total})
+def _monoprop_version() -> str:
+    """Return the installed monoprop version, or 'unknown'."""
+    try:
+        return version("monoprop")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 def _reset_peak_rss() -> None:
@@ -248,21 +211,86 @@ def _resting_pss_bytes() -> int:
     return _proc_field("/proc/self/smaps_rollup", "Pss:")
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register benchmark configuration options for the random benchmarks."""
+    group = parser.getgroup("monoprop-bench", "monoprop random benchmark sizing")
+    group.addoption(
+        "--gen-length",
+        type=int,
+        default=4,
+        help="Number of Majorana operators per generator.",
+    )
+    group.addoption(
+        "--obs-terms", type=int, default=10000, help="Number of observable terms."
+    )
+    group.addoption(
+        "--num-generators",
+        type=int,
+        default=100,
+        help="Number of random generators (circuit gates).",
+    )
+    group.addoption(
+        "--num-modes", type=int, default=128, help="Number of fermionic modes."
+    )
+    group.addoption("--cutoff", type=int, default=6, help="Truncation cutoff.")
+    group.addoption(
+        "--seed", type=int, default=0, help="Random seed for reproducibility."
+    )
+    group.addoption(
+        "--bench-rounds",
+        type=int,
+        default=1,
+        help="Fixed number of rounds for the random benchmarks (MPI-safe).",
+    )
+    # Static-model overrides: one option per dataclass field, defaulting to that
+    # field's own default, so the config classes stay the single source of truth.
+    static = parser.getgroup("monoprop-static", "monoprop static-model overrides")
+    for model, (config_cls, _builder, _steps) in STATIC_MODELS.items():
+        for field in fields(config_cls):
+            static.addoption(
+                f"--{model}-{field.name.replace('_', '-')}",
+                type=type(field.default),
+                default=field.default,
+                help=f"{config_cls.__name__}.{field.name} (default: {field.default}).",
+            )
+
+
+def _meta() -> dict[str, Any]:
+    """Return this run's configuration metadata for the report."""
+    return {
+        "label": os.environ.get("MONOPROP_BENCH_LABEL", "?"),
+        "ranks": _size(),
+        # monoprop's thread knob is genuinely lower-case (read at import).
+        "monoprop_threads": os.environ.get("monoprop_NUM_THREADS", "default"),  # noqa: SIM112
+        "cpu_count": os.cpu_count(),
+        "hostname": socket.gethostname(),
+        "monoprop_version": _monoprop_version(),
+    }
+
+
+def _params(config: pytest.Config) -> dict[str, Any]:
+    """Return the resolved random-problem hyperparameters (defaults included)."""
+    return {
+        opt: config.getoption(f"--{opt.replace('_', '-')}") for opt in RECORDED_OPTIONS
+    }
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
-    """Make rank 0 the sole writer and printer under MPI; record hyperparameters.
+    """Record run metadata on rank 0; silence the other ranks under MPI.
 
     Every rank runs the whole session, so without intervention all ranks interleave
     their output and race on the shared ``--benchmark-json`` file. Rank 0 (holding
-    the makespan timings) prints and writes the JSON; the others go silent and
-    disable their JSON output. The memory fixture still runs on every rank (for the
-    collective reduce); only rank 0 writes its ``mem-<label>.json``.
+    the makespan timings) prints, writes the JSON, and records the run's metadata;
+    the others go silent and disable their JSON output. The memory fixture still
+    runs on every rank (for the collective reduce); only rank 0 writes results.
 
     ``trylast`` so the terminal reporter is already registered by the time the
     non-root ranks unregister it.
     """
     if _rank() == 0:
-        _write_run_params(config)
+        _RESULTS["meta"] = _meta()
+        _RESULTS["params"] = _params(config)
         return
 
     # Non-root rank: drop the terminal reporter so it does not interleave with
@@ -284,6 +312,15 @@ def pytest_configure(config: pytest.Config) -> None:
         config.option.benchmark_json = None
 
 
+def pytest_sessionfinish() -> None:
+    """Write the accumulated results to ``results/<label>.json`` (rank 0 only)."""
+    if _rank() != 0:
+        return
+    path = _results_path()
+    if path is not None:
+        path.write_text(json.dumps(_RESULTS, indent=2))
+
+
 @pytest.fixture(scope="session")
 def bench_comm() -> Any:
     """Return the benchmark communicator (``MPI.COMM_WORLD`` or ``None``)."""
@@ -297,11 +334,23 @@ def bench_rounds(request: pytest.FixtureRequest) -> int:
 
 
 @pytest.fixture(scope="session")
-def static_lower_atol(request: pytest.FixtureRequest) -> dict[str, float | None]:
-    """Return per-model ``lower_atol`` CLI overrides (``None`` = use config default)."""
+def static_configs(request: pytest.FixtureRequest) -> dict[str, Any]:
+    """Return each static model's config, with every field resolved from the CLI.
+
+    Each ``--<model>-<field>`` option defaults to the dataclass field's own
+    default (see :func:`pytest_addoption`), so reconstructing the config from
+    those options reproduces the dataclass default unless the user overrode a
+    field.
+    """
+    opt = request.config.getoption
     return {
-        "hubbard": request.config.getoption("--hubbard-lower-atol"),
-        "pauli": request.config.getoption("--pauli-lower-atol"),
+        model: config_cls(
+            **{
+                field.name: opt(f"--{model}-{field.name.replace('_', '-')}")
+                for field in fields(config_cls)
+            }
+        )
+        for model, (config_cls, _builder, _steps) in STATIC_MODELS.items()
     }
 
 
@@ -309,15 +358,13 @@ def static_lower_atol(request: pytest.FixtureRequest) -> dict[str, float | None]
 def record_model_config() -> Callable[[str, Any], None]:
     """Return ``record(model, config)`` recording a static model's resolved config.
 
-    Merges the config dataclass fields into ``configs-<label>.json`` (one entry per
-    model) for the report. The config is identical across ranks, so rank 0 only.
+    The config is identical across ranks, so :func:`_record` keeps only rank 0's.
     """
 
-    def _record(model: str, config: Any) -> None:
-        if _rank() == 0:
-            _merge_record("configs", model, asdict(config))
+    def _do(model: str, config: Any) -> None:
+        _record("configs", model, asdict(config))
 
-    return _record
+    return _do
 
 
 @pytest.fixture(autouse=True)
@@ -330,14 +377,12 @@ def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[N
     resident when the operation starts (e.g. the shared :func:`built_graph`).
 
     Under MPI the per-rank PSS values are summed via a collective reduce (every rank
-    runs every test), giving the job's true physical RAM. Written env-gated and
-    rank-0 only into ``mem-<label>.json``.
+    runs every test), giving the job's true physical RAM. Kept rank-0 only.
     """
     _reset_peak_rss()
     yield
-    mem, rank = _reduce_sum(bench_comm, _peak_pss_bytes())
-    if rank == 0:
-        _merge_record("mem", request.node.nodeid.split("/")[-1], mem)
+    mem, _ = _reduce_sum(bench_comm, _peak_pss_bytes())
+    _record("mem", request.node.nodeid.split("/")[-1], mem)
 
 
 @pytest.fixture(scope="session", params=["heisenberg", "schrodinger"])
@@ -375,44 +420,29 @@ def built_graph(
     those operations only read it. The build runs in fixture setup, before each
     test resets the peak-RSS counter, so its transient cost stays out of each
     operation's memory profile while the resident graph still counts toward its peak.
+
+    Records the operator size, operator-vs-graph storage breakdown, and the
+    settled resting footprint for this picture while the graph is resident.
     """
     mp = build_random_propagator(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
     )
     mp.propagate()
-    _record_operator_size(picture, mp, bench_comm)
-    _record_storage_breakdown(picture, mp, bench_comm)
-    _record_resting_footprint(picture, bench_comm)
-    return mp
 
+    # Operator size: under MPI the operator is partitioned, so sum the shards.
+    total, _ = _reduce_sum(bench_comm, mp.size())
+    _record("opsize", picture, {"terms": total})
 
-def _record_storage_breakdown(picture: str, mp: MonomialPropagator, comm: Any) -> None:
-    """Record the built footprint split into operator vs graph storage.
-
-    Uses the C++ structural memory accounting (capacity-based byte totals) rather
-    than PSS, so it attributes the footprint to its two structures -- which a
-    process-wide PSS reading cannot. Under MPI each value is this rank's shard, so
-    they are summed across ranks (allreduce), matching :func:`_record_operator_size`.
-    Merged into ``storage-<label>.json`` (one entry per picture) by rank 0.
-    """
-    # Reach into the bound C++ object, which holds the memory accounting.
+    # Storage breakdown from the C++ structural accounting (capacity-based byte
+    # totals), which a process-wide PSS reading cannot attribute to a structure.
     sim = mp._simulator
-    operator_total, rank = _reduce_sum(comm, sim.operator_memory_bytes())
-    graph_total, _ = _reduce_sum(comm, sim.graph_memory_bytes())
-    if rank == 0:
-        _merge_record(
-            "storage", picture, {"operator": operator_total, "graph": graph_total}
-        )
+    operator_total, _ = _reduce_sum(bench_comm, sim.operator_memory_bytes())
+    graph_total, _ = _reduce_sum(bench_comm, sim.graph_memory_bytes())
+    _record("storage", picture, {"operator": operator_total, "graph": graph_total})
 
+    # Resting footprint: settled PSS once the build's transients are released, the
+    # persistent-memory metric the per-operation peak cannot see. Summed across ranks.
+    resting, _ = _reduce_sum(bench_comm, _resting_pss_bytes())
+    _record("memrest", picture, resting)
 
-def _record_resting_footprint(picture: str, comm: Any) -> None:
-    """Record the built operator+graph's *resting* PSS for one picture.
-
-    Measured here, while the session-scoped graph is resident and its build
-    transients have been released, so it captures the persistent footprint the
-    per-operation peak metric cannot. Summed across ranks (true physical RAM) and
-    merged into ``memrest-<label>.json`` by rank 0, one entry per picture.
-    """
-    total, rank = _reduce_sum(comm, _resting_pss_bytes())
-    if rank == 0:
-        _merge_record("memrest", picture, total)
+    return mp
