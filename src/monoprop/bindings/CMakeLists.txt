@@ -105,6 +105,23 @@ target_include_directories(
 
 target_link_libraries(_core PRIVATE monoprop)
 
+# Architecture/optimization flags must be applied to _core itself, not just to the
+# monoprop library. The hot MonomialPropagator<N> kernels are header templates that
+# are *instantiated* in this target's translation units (bindings.cpp + the generated
+# binders), so they pick up _core's flags, not the library's. Without this, ARCH_FLAG
+# only reached libmonoprop and the kernels compiled to scalar baseline x86-64 — most
+# visibly, popcounts fell back to libgcc's software __popcountdi2. Mirroring the
+# library's flag block here emits hardware popcnt and vectorises the scan/bitset
+# kernels (see docs/benchmarks.rst, "Profiling the bound C++ code").
+target_compile_options(
+  _core
+  BEFORE
+  PRIVATE
+    "${monoprop_CXX_FLAGS}"
+    "${ARCH_FLAG}"
+)
+target_compile_options(_core PRIVATE "${EXTRA_CXXFLAGS}")
+
 file(
   RELATIVE_PATH
   _rel
