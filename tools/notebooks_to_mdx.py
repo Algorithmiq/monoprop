@@ -120,6 +120,30 @@ def convert(stem: str, title: str, description: str) -> Path:
     return out_path
 
 
+def write_index() -> Path:
+    """Write the tutorials landing page (index.mdx) from the tutorial list."""
+    bullets = "\n".join(
+        f"- [{title}](/docs/tutorials/{stem}) — {description}"
+        for stem, title, description in TUTORIALS
+    )
+    body = (
+        "---\n"
+        "title: Tutorials\n"
+        "description: Step-by-step notebooks applying monoprop to concrete "
+        "problems and workflows.\n"
+        "---\n\n"
+        "These tutorials work through complete problems end to end, from setting "
+        "up the operator and circuit to evaluating the propagated result. Each "
+        "one is a runnable notebook — for the ideas behind the method see "
+        "[Concepts](/docs/concepts), and for the full constructors and arguments "
+        "see [Python API](/docs/api).\n\n"
+        f"{bullets}\n"
+    )
+    out_path = OUT_DIR / "index.mdx"
+    out_path.write_text(body)
+    return out_path
+
+
 def main() -> int:
     """Convert the selected tutorial notebooks and write the sidebar meta."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -142,7 +166,16 @@ def main() -> int:
         out = convert(stem, title, description)
         print(f"  -> {out.relative_to(ROOT)}", flush=True)  # noqa: T201
 
-    # Sidebar ordering + section title for the tutorials folder.
+    # Landing page for `/docs/tutorials`. fumadocs picks up `index.mdx` as the
+    # folder's own index automatically, so the "Tutorials" sidebar/nav title
+    # links here. Always regenerated from the full list (independent of the
+    # `selected` subset) so every tutorial stays listed.
+    write_index()
+
+    # Sidebar ordering + section title for the tutorials folder. "index" is
+    # deliberately *not* listed: fumadocs already treats `index.mdx` as the
+    # folder index, so the folder title links to `/docs/tutorials`. Listing it
+    # would add a redundant child entry duplicating the section title.
     meta = OUT_DIR / "meta.json"
     pages = ", ".join(f'"{t[0]}"' for t in TUTORIALS)
     meta.write_text(f'{{\n  "title": "Tutorials",\n  "pages": [{pages}]\n}}\n')

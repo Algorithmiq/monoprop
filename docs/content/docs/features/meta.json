@@ -1,4 +1,4 @@
 {
   "title": "Features",
-  "pages": ["index", "initialisation", "cutoff", "evaluation", "parallelism"]
+  "pages": ["initialisation", "cutoff", "evaluation", "parallelism"]
 }

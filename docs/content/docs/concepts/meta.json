@@ -1,4 +1,4 @@
 {
   "title": "Concepts",
-  "pages": ["index", "notation", "interface", "algorithm", "simulation_modes"]
+  "pages": ["notation", "interface", "algorithm", "simulation_modes"]
 }

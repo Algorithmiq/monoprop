@@ -77,10 +77,13 @@ async function main() {
   await fs.rm(OUT_DIR, { recursive: true, force: true });
   await write(files, { outDir: OUT_DIR });
 
-  // Sidebar ordering for the API section.
+  // Sidebar ordering for the API section. `index.mdx` is intentionally omitted:
+  // fumadocs treats it as the folder's own index (so the "Python API" title
+  // links to `/docs/api`); listing it would add a redundant child duplicating
+  // the section title in the sidebar.
   await fs.writeFile(
     path.join(OUT_DIR, 'meta.json'),
-    JSON.stringify({ title: 'Python API', pages: ['index', ...MODULES.map(([n]) => n)] }, null, 2),
+    JSON.stringify({ title: 'Python API', pages: [...MODULES.map(([n]) => n)] }, null, 2),
   );
 
   console.log(`Wrote ${files.length} API pages to ${OUT_DIR}`);
