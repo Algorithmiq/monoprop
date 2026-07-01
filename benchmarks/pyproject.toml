@@ -1,0 +1,14 @@
+[project]
+name = "monoprop-benchmarks"
+version = "0.1.0"
+description = "Standalone benchmark scripts for monoprop"
+requires-python = ">=3.11"
+dependencies = [
+    "monoprop",
+    "pennylane",
+    "qiskit",
+    "git+https://github.com/QuEraComputing/ppvm.git#subdirectory=ppvm-python", # ppvm QuEra
+]
+
+[tool.uv]
+python-preference = "only-managed"
