@@ -14,10 +14,8 @@
 
 """Merge benchmark results into a single side-by-side Markdown report.
 
-For each run label the suite writes ``<label>.json`` (metadata, hyperparameters,
-per-operation peak memory, per-picture sizes/footprints, model configs) and
-pytest-benchmark writes ``time-<label>.json`` (timings). This reads every label
-in a results directory and renders ``REPORT.md`` with one column per label, so
+Each label writes ``<label>.json`` (metadata etc.) and pytest-benchmark writes
+``time-<label>.json``. This renders ``REPORT.md`` with one column per label, so
 serial / MPI / thread variants sit side by side.
 
 Usage::
@@ -47,8 +45,8 @@ _PICTURE_NAMES = {"heisenberg": "Heisenberg", "schrodinger": "Schrödinger"}
 def _read_json(path: Path) -> Any:
     """Return the parsed JSON at ``path``, or ``None`` if empty/malformed.
 
-    A run that fails before populating its JSON must not poison the report for
-    the runs that did succeed, so bad artifacts are skipped with a warning.
+    Bad artifacts are skipped with a warning so one failed run doesn't poison the
+    report for the others.
     """
     text = path.read_text()
     if not text.strip():
@@ -212,11 +210,8 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
 def _model_config_section(labels: list[str], results: dict[str, dict]) -> list[str]:
     """Render the fixed-model configuration section (one sub-table per model)."""
     configs = {lbl: results.get(lbl, {}).get("configs", {}) for lbl in labels}
-    models: list[str] = []
-    for cfg in configs.values():
-        for model in cfg:
-            if model not in models:
-                models.append(model)
+    # Order-preserving dedup across labels (dict keys keep insertion order).
+    models = list(dict.fromkeys(model for cfg in configs.values() for model in cfg))
     if not models:
         return []
     lines = [
@@ -227,11 +222,10 @@ def _model_config_section(labels: list[str], results: dict[str, dict]) -> list[s
         "",
     ]
     for model in models:
-        rows: list[tuple[Any, str]] = []
-        for cfg in configs.values():
-            for field in cfg.get(model, {}):
-                if (field, field) not in rows:
-                    rows.append((field, field))
+        fields = dict.fromkeys(
+            f for cfg in configs.values() for f in cfg.get(model, {})
+        )
+        rows = [(f, f) for f in fields]
         lines += _section(
             model,
             "",
@@ -272,8 +266,8 @@ def build_report(results_dir: Path) -> str:
             "# monoprop benchmark report\n\nNo results found. Run `just bench` first.\n"
         )
 
-    # Hyperparameter keys come from the data (insertion order preserved), so there
-    # is no duplicated key list to keep in sync with conftest.
+    # Hyperparameter keys come from the data, so there is no list to keep in sync
+    # with conftest.
     param_keys = next((list(params[lbl]) for lbl in labels if params.get(lbl)), [])
     pictures = _pictures_present(opsize, labels)
     storage_rows = [

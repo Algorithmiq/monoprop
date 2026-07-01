@@ -14,12 +14,10 @@
 
 """Model builders shared across the monoprop benchmark suite.
 
-This module is import-only (no pytest dependency) so the builders can also be
-reused from scripts or notebooks. It provides:
-
-- :func:`make_random_problem` for the configurable random benchmarks,
-- :func:`build_hubbard_problem` for the fixed 120-qubit Hubbard model benchmark,
-- :func:`build_kicked_ising_problem` for the fixed 127-qubit Pauli-basis benchmark.
+Import-only (no pytest) so the builders are reusable from scripts or notebooks:
+:func:`make_random_problem` (configurable random benchmarks),
+:func:`build_hubbard_problem` (120-qubit Hubbard), and
+:func:`build_kicked_ising_problem` (127-qubit Pauli-basis).
 """
 
 from __future__ import annotations
@@ -48,17 +46,12 @@ _T = TypeVar("_T")
 def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
     """Wrap ``fn`` so all MPI ranks enter and leave the call together.
 
-    Surrounding the measured operation with barriers means each rank's measured
-    time reflects the *makespan* (the slowest rank), which is the meaningful
-    figure for a collective benchmark. For a serial run (no communicator or a
-    single rank) the function is returned unchanged so there is no overhead.
+    The barriers make each rank's measured time reflect the makespan (the slowest
+    rank). A serial run returns ``fn`` unchanged, so there is no overhead.
 
     Args:
         fn: The callable to wrap.
         comm: An MPI communicator, or ``None`` for a serial run.
-
-    Returns:
-        Either ``fn`` (serial) or a barrier-wrapped version (multi-rank).
     """
     if comm is None or comm.Get_size() == 1:
         return fn
@@ -148,8 +141,7 @@ def make_random_problem(
     num_majorana_indices = 2 * num_modes
 
     obs_majoranas = _random_terms(rng, obs_terms, gen_length, num_majorana_indices)
-    # Hermitian observable -> real coefficients.
-    obs_coeffs = rng.standard_normal(obs_terms).tolist()
+    obs_coeffs = rng.standard_normal(obs_terms).tolist()  # Hermitian -> real
     observable = MajoranaOperator(obs_majoranas, obs_coeffs, num_modes)
 
     gen_majoranas = _random_terms(rng, num_generators, gen_length, num_majorana_indices)
@@ -215,7 +207,7 @@ class HubbardConfig:
 
     @property
     def num_qubits(self) -> int:
-        """Return the number of interleaved spin orbitals (Majorana modes / 2... qubits)."""
+        """Return the number of spin orbitals (two per site)."""
         return 2 * self.num_sites
 
 
@@ -302,8 +294,7 @@ def build_hubbard_problem(
         num_modes=config.num_qubits,
     )
 
-    # cutoff_type="length": the sandbox default "length_pairing_distance" no longer
-    # exists in the current API (CutoffType is Length | Support).
+    # CutoffType is Length | Support in the current API.
     return MonomialPropagator(
         initial_operator=observable,
         quantum_circuit=fermi_circuit,
@@ -536,11 +527,10 @@ def build_kicked_ising_problem(
     )
 
 
-# Fixed-model benchmark registry: model -> (config class, builder, steps-per-run).
-# ``steps`` is derived from the resolved config: Hubbard re-applies its one-step
-# circuit ``trotter_steps`` times, while the Pauli circuit already contains all
-# layers, so a single propagate suffices. This is the single source of truth the
-# benchmark suite and the conftest CLI options are both built from.
+# Fixed-model registry: model -> (config class, builder, steps-per-run). Steps
+# derive from the config: Hubbard re-applies its one-step circuit ``trotter_steps``
+# times; the Pauli circuit already holds all layers, so one propagate suffices.
+# The benchmark suite and the conftest CLI options are both built from this.
 MODELS: dict[str, tuple[type, Callable[..., MonomialPropagator], Callable]] = {
     "hubbard": (
         HubbardConfig,
