@@ -18,13 +18,13 @@ from __future__ import annotations
 import time
 
 import pylab as plt
+from monoprop import MonomialPropagator, jordan_wigner_basis_change
+from monoprop.qiskit_conversion import from_qiskit_circuit, from_qiskit_operator
+from pauli_prop import propagate_through_circuit
 from ppvm import PauliSum
 from qiskit.circuit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 from tqdm import tqdm
-
-from monoprop import MonomialPropagator, jordan_wigner_basis_change
-from monoprop.qiskit_conversion import from_qiskit_circuit, from_qiskit_operator
 
 ########################### SETTINGS ##########################
 h = 1.0
@@ -42,11 +42,13 @@ lower_atol = 1e-8
 
 labels = [
     "monoprop",
-    "ppvm",
+    "QuEra ppvm",
+    "Qiskit pauli-prop",
 ]
 colors = {
     "monoprop": "tab:green",
-    "ppvm": "tab:orange",
+    "QuEra ppvm": "tab:orange",
+    "Qiskit pauli-prop": "tab:blue",
 }
 runtimes_dict = {label: [] for label in labels}
 
@@ -102,7 +104,19 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
     ppvm_expval = ppvm_obs.overlap_with_zero()
     t2 = time.perf_counter()
 
-    runtimes_dict["ppvm"].append(t2 - t1)
+    runtimes_dict["QuEra ppvm"].append(t2 - t1)
+
+    # ------------------------------- pauli-prop -------------------------------
+    # Re-uses circ and obs already built in the monoprop section.
+    # pauli-prop truncates by max_terms (keep largest N terms) + atol, whereas
+    # monoprop/ppvm truncate by Pauli weight; the comparison is approximate.
+    t1 = time.perf_counter()
+    evolved_obs, _ = propagate_through_circuit(
+        obs, circ, max_terms=10_000, atol=lower_atol, frame="h"
+    )
+    expval = float(evolved_obs.coeffs[~evolved_obs.paulis.x.any(axis=1)].sum())
+    t2 = time.perf_counter()
+    runtimes_dict["Qiskit pauli-prop"].append(t2 - t1)
 
 
 fig1, ax1 = plt.subplots()
