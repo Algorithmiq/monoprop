@@ -18,8 +18,8 @@ import numpy as np
 import pytest
 
 from monoprop.fermi_data import (
-    FermiCircuit,
     FermiEvGate,
+    FermiGatesSequence,
     FermiOperator,
     FermiString,
     MajoranaOperator,
@@ -167,7 +167,7 @@ class TestFermiEvGate:
         assert gate.generator.terms == {(0, 1): 1.0j}
 
 
-class TestFermiCircuit:
+class TestFermiGatesSequence:
     def test_len(self):
         generator = MajoranaOperator(
             majoranas=[(0, 1)], coefficients=[1.0], num_modes=1
@@ -177,11 +177,11 @@ class TestFermiCircuit:
             FermiEvGate(generator=generator, parameter=0.2),
         ]
 
-        circuit = FermiCircuit(gates=gates)
+        circuit = FermiGatesSequence(gates=gates)
 
         assert len(circuit) == 2
 
-    def test_get_monomial_circuit(self):
+    def test_get_monomial_sequence(self):
         generator = MajoranaOperator(
             majoranas=[(0, 1), (2, 3)],
             coefficients=[1.0j, -1.0j],
@@ -190,8 +190,8 @@ class TestFermiCircuit:
         gate_0 = FermiEvGate(generator=generator, parameter=0.3)
         gate_1 = FermiEvGate(generator=generator, parameter=-0.7)
 
-        circuit = FermiCircuit(gates=[gate_0, gate_1])
-        mon_circuit = circuit.get_monomial_circuit()
+        circuit = FermiGatesSequence(gates=[gate_0, gate_1])
+        mon_circuit = circuit.get_monomial_sequence()
 
         np.testing.assert_array_equal(mon_circuit.parameters, np.array([0.3, -0.7]))
         np.testing.assert_array_equal(

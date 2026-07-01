@@ -20,7 +20,7 @@ from abc import abstractmethod
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from monoprop.monomial_data import MonomialCircuit, MonomialOperator
+    from monoprop.monomial_data import MonomialOperator, MonomialSequence
 
 
 class IQuantumOperator(Protocol):
@@ -32,10 +32,10 @@ class IQuantumOperator(Protocol):
         ...
 
 
-class IQuantumCircuit(Protocol):
-    """Protocol representing a quantum circuit."""
+class IQuantumGatesSequence(Protocol):
+    """Protocol representing a quantum gates sequence."""
 
     @abstractmethod
-    def get_monomial_circuit(self) -> MonomialCircuit:
-        """Convert the circuit to a MonomialCircuit."""
+    def get_monomial_sequence(self) -> MonomialSequence:
+        """Convert the gates sequence to a MonomialSequence."""
         ...

@@ -18,7 +18,7 @@ import numpy as np
 
 from monoprop import MonomialPropagator, jordan_wigner_basis_change
 from monoprop.fermi_data import MajoranaOperator
-from monoprop.monomial_data import MonomialCircuit
+from monoprop.monomial_data import MonomialSequence
 
 
 def test_basis_change(serial_comm):
@@ -26,7 +26,7 @@ def test_basis_change(serial_comm):
     cutoff = 3
     initial_op = MajoranaOperator([(0,)], [1.0], n_modes)
 
-    quantum_circuit = MonomialCircuit(
+    quantum_circuit = MonomialSequence(
         majoranas=[(5,)],
         parameters=[1.0],
         gen_coeffs=[-1.0],

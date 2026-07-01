@@ -15,7 +15,7 @@
 import numpy as np
 
 from monoprop import MonomialPropagator
-from monoprop.monomial_data import MonomialCircuit, MonomialOperator
+from monoprop.monomial_data import MonomialOperator, MonomialSequence
 
 
 def test_nonfermi(serial_comm):
@@ -31,7 +31,7 @@ def test_nonfermi(serial_comm):
     fermionic_operator = MonomialOperator.from_dict(
         terms_dict={(1, 2, 3): -1j}, num_modes=num_modes
     )
-    monomial_circuit = MonomialCircuit(
+    monomial_circuit = MonomialSequence(
         majoranas=majoranas,
         gen_coeffs=gen_coeffs,
         param_inds=param_inds,

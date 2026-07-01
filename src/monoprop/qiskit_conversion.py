@@ -27,7 +27,7 @@ except ImportError as e:
         "qiskit is required to use monoprop.qiskit_conversion. Install it with: pip install qiskit"
     ) from e
 
-from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator
+from monoprop.pauli_data import PauliEvGate, PauliGatesSequence, PauliOperator
 
 PAULI_EVOLUTION_EQUIVALENT = {
     "rx",
@@ -87,7 +87,7 @@ def to_qiskit_operator(
 
 def from_qiskit_circuit(
     circuit: QuantumCircuit,
-) -> PauliEvCircuit:
+) -> PauliGatesSequence:
     """Convert a Qiskit circuit to a PauliOperator.
 
     Note that the qiskit circuit must be composed only by PauliEvolutionGates with commuting
@@ -97,7 +97,7 @@ def from_qiskit_circuit(
         circuit: A qiskit quantum circuit.
 
     Returns:
-        A PauliEvCircuit instance representing the given circuit.
+        A PauliGatesSequence instance representing the given circuit.
     """
     gates = []
     qregs = circuit.qregs[0]
@@ -132,17 +132,17 @@ def from_qiskit_circuit(
                 f"Unsupported gate {gate_name}. Only PauliEvolutionGate or equivalent gates are supported."
             )
 
-    return PauliEvCircuit(gates=gates, num_qubits=len(qregs))  # type: ignore
+    return PauliGatesSequence(gates=gates, num_qubits=len(qregs))  # type: ignore
 
 
-def to_qiskit_circuit(circuit: PauliEvCircuit) -> QuantumCircuit:
-    """Convert a PauliEvCircuit to a Qiskit circuit.
+def to_qiskit_circuit(circuit: PauliGatesSequence) -> QuantumCircuit:
+    """Convert a PauliGatesSequence to a Qiskit circuit.
 
     Note that the resulting qiskit circuit will be composed only by PauliEvolutionGates with
     commuting operators.
 
     Args:
-        circuit: A PauliEvCircuit instance representing the given circuit.
+        circuit: A PauliGatesSequence instance representing the given circuit.
 
     Returns:
         A qiskit quantum circuit.

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .conversion_utils import _n_product
-from .monomial_data import Monomial, MonomialCircuit, MonomialOperator
+from .monomial_data import Monomial, MonomialOperator, MonomialSequence
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -273,30 +273,30 @@ class FermiEvGate:
         )
 
 
-class FermiCircuit:
-    """Class representing a fermi circuit."""
+class FermiGatesSequence:
+    """Class representing a sequence of fermi evolution gates."""
 
     def __init__(
         self,
         gates: list[FermiEvGate],
     ) -> None:
-        """Initialize the fermi circuit.
+        """Initialize the fermi gates sequence.
 
         Args:
-            gates: List of FermiEvGate objects representing the gates in the circuit.
+            gates: List of FermiEvGate objects representing the gates in the sequence.
         """
         self.gates = [gate for gate in gates if not gate.generator.is_identity()]
 
     def __len__(self) -> int:
-        """Number of gates in the circuit."""
+        """Number of gates in the sequence."""
         return len(self.gates)
 
     def __repr__(self) -> str:
-        """Return a string representation of the circuit."""
+        """Return a string representation of the sequence."""
         return f"{self.__class__.__name__}({len(self)} gates)"
 
-    def get_monomial_circuit(self) -> MonomialCircuit:
-        """Convert the fermi circuit to a MonomialCircuit."""
+    def get_monomial_sequence(self) -> MonomialSequence:
+        """Convert the fermi gates sequence to a MonomialSequence."""
         majoranas, gen_coeffs, parameters, param_inds = [], [], [], []
         identical_params = np.arange(len(self))
         for i, gate in enumerate(self.gates):
@@ -308,7 +308,7 @@ class FermiCircuit:
                 gen_coeffs.append(float(np.real(antiherm)))
                 param_inds.append(identical_params[i])
 
-        return MonomialCircuit(
+        return MonomialSequence(
             majoranas=majoranas,
             parameters=parameters,
             gen_coeffs=gen_coeffs,

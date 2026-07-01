@@ -19,7 +19,7 @@ import pytest
 from pytest_cases import parametrize_with_cases
 
 from monoprop import MonomialPropagator
-from monoprop.monomial_data import MonomialCircuit, MonomialOperator
+from monoprop.monomial_data import MonomialOperator, MonomialSequence
 from tests.cases import CasesFermionicProblemOrbitalRotations
 
 
@@ -49,7 +49,7 @@ def test_basic_orbital_rotation(serial_comm):
 
     kwargs = {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
     operator = MonomialOperator([], n_modes)
-    monomial_circuit = MonomialCircuit(
+    monomial_circuit = MonomialSequence(
         majoranas=majs,
         parameters=params,
         gen_coeffs=gen_coeffs,
@@ -96,13 +96,13 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     )
 
     orb = problem.split_only_rotate_len_k()
-    qc_without_orbs = MonomialCircuit(
+    qc_without_orbs = MonomialSequence(
         majoranas=orb.majs,
         parameters=orb.parameters,
         gen_coeffs=orb.gen_coeffs,
         param_inds=orb.param_inds,
     )
-    qc_with_orbs = MonomialCircuit(
+    qc_with_orbs = MonomialSequence(
         majoranas=orb.majs_orb,
         parameters=orb.parameters_orb,
         gen_coeffs=orb.gen_coeffs_orb,

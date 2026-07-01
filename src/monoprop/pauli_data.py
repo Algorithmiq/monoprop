@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
-from .monomial_data import Monomial, MonomialCircuit, MonomialOperator
+from .monomial_data import Monomial, MonomialOperator, MonomialSequence
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -279,14 +279,12 @@ class PauliEvGate:
         return bool(np.isclose(self.parameter, other.parameter, rtol=rtol, atol=atol))
 
 
-class PauliEvCircuit:
-    """A circuit composed of Pauli evolution gates with an initial state.
+class PauliGatesSequence:
+    """A sequence of Pauli evolution gates.
 
     Attributes:
         gates: Ordered list of :class:`PauliEvGate` instances.
-        initial_state: List of ``(axis, qubit)`` pairs specifying the initial
-            single-qubit states, where *axis* is one of ``'X'``, ``'Y'``, ``'Z'``
-            and *qubit* is the qubit index.
+        num_qubits: The size of the system.
     """
 
     def __init__(
@@ -316,8 +314,8 @@ class PauliEvCircuit:
             f"num_qubits={self.num_qubits})"
         )
 
-    def get_monomial_circuit(self) -> MonomialCircuit:
-        """Convert the Pauli evolution circuit to a MonomialCircuit."""
+    def get_monomial_sequence(self) -> MonomialSequence:
+        """Convert the Pauli evolution circuit to a MonomialSequence."""
         majoranas, gen_coeffs, parameters, param_inds = [], [], [], []
         identical_params = np.arange(len(self))
         for i, gate in enumerate(self.gates):
@@ -336,7 +334,7 @@ class PauliEvCircuit:
                 param_inds.append(identical_params[i])
                 majoranas.append(np.array(majorana))
 
-        return MonomialCircuit(
+        return MonomialSequence(
             majoranas=majoranas,
             parameters=parameters,
             gen_coeffs=np.real(gen_coeffs),
@@ -345,10 +343,10 @@ class PauliEvCircuit:
         )
 
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1e-8) -> bool:
-        """Check if two PauliEvCircuits are closely equal.
+        """Check if two PauliGatesSequence are closely equal.
 
         Args:
-            other: Another PauliEvCircuit to compare with.
+            other: Another PauliGatesSequence to compare with.
             rtol: Relative tolerance for parameter comparison.
             atol: Absolute tolerance for parameter comparison.
 
@@ -356,11 +354,11 @@ class PauliEvCircuit:
             True if the circuits are closely equal, False otherwise.
 
         Raises:
-            TypeError: If ``other`` is not a :class:`PauliEvCircuit`.
+            TypeError: If ``other`` is not a :class:`PauliGatesSequence`.
         """
-        if not isinstance(other, PauliEvCircuit):
+        if not isinstance(other, PauliGatesSequence):
             raise TypeError(
-                f"Cannot compare PauliEvCircuit with {type(other).__name__}."
+                f"Cannot compare PauliGatesSequence with {type(other).__name__}."
             )
         if self.num_qubits != other.num_qubits:
             return False

@@ -19,7 +19,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator, PauliString
+from monoprop.pauli_data import (
+    PauliEvGate,
+    PauliGatesSequence,
+    PauliOperator,
+    PauliString,
+)
 
 
 class TestPauliString:
@@ -249,56 +254,56 @@ class TestPauliEvGate:
             PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.3).isclose("not a gate")
 
 
-class TestPauliEvCircuit:
+class TestPauliGatesSequence:
     def _make_gate(self):
         op = PauliOperator(["X"], [1.0])
         return PauliEvGate([0], op, 0.5)
 
     def test_basic_construction(self):
         gates = [self._make_gate(), self._make_gate()]
-        circuit = PauliEvCircuit(gates, num_qubits=1)
+        circuit = PauliGatesSequence(gates, num_qubits=1)
         assert len(circuit) == 2
         assert circuit.num_qubits == 1
 
     def test_empty_gates(self):
-        circuit = PauliEvCircuit([], num_qubits=1)
+        circuit = PauliGatesSequence([], num_qubits=1)
         assert len(circuit) == 0
         assert circuit.num_qubits == 1
 
     def test_identity_gates_are_filtered(self):
         identity_gate = PauliEvGate([0], PauliOperator(["I"], [1.0]), 0.5)
 
-        circuit = PauliEvCircuit([identity_gate, self._make_gate()], num_qubits=1)
+        circuit = PauliGatesSequence([identity_gate, self._make_gate()], num_qubits=1)
 
         assert len(circuit) == 1
         assert circuit.gates[0].isclose(self._make_gate())
 
     def test_num_qubits_preserved_without_gates(self):
-        circuit = PauliEvCircuit([], num_qubits=3)
+        circuit = PauliGatesSequence([], num_qubits=3)
         assert circuit.num_qubits == 3
 
     def test_repr(self):
-        circuit = PauliEvCircuit([self._make_gate()], num_qubits=1)
+        circuit = PauliGatesSequence([self._make_gate()], num_qubits=1)
         r = repr(circuit)
-        assert "PauliEvCircuit" in r
+        assert "PauliGatesSequence" in r
         assert "1 gates" in r
 
-    def test_get_monomial_circuit(self):
+    def test_get_monomial_sequence(self):
         op = PauliOperator(["Z"], [2.0])
         gate = PauliEvGate([0], op, 0.7)
-        circuit = PauliEvCircuit([gate], num_qubits=1)
+        circuit = PauliGatesSequence([gate], num_qubits=1)
 
-        mon_circuit = circuit.get_monomial_circuit()
+        mon_circuit = circuit.get_monomial_sequence()
 
         assert mon_circuit.parameters == [0.7]
         assert mon_circuit.gen_coeffs == [pytest.approx(2.0)]
         assert mon_circuit.param_inds == [0]
         np.testing.assert_array_equal(mon_circuit.majoranas[0], np.array([0, 1]))
 
-    def test_get_monomial_circuit_empty(self):
-        circuit = PauliEvCircuit([], num_qubits=1)
+    def test_get_monomial_sequence_empty(self):
+        circuit = PauliGatesSequence([], num_qubits=1)
 
-        mon_circuit = circuit.get_monomial_circuit()
+        mon_circuit = circuit.get_monomial_sequence()
 
         assert mon_circuit.majoranas == []
         assert mon_circuit.parameters == []
@@ -309,11 +314,11 @@ class TestPauliEvCircuit:
         ("circuit", "other", "expected"),
         [
             pytest.param(
-                PauliEvCircuit(
+                PauliGatesSequence(
                     [PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.5)],
                     num_qubits=2,
                 ),
-                PauliEvCircuit(
+                PauliGatesSequence(
                     [PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.5)],
                     num_qubits=2,
                 ),
@@ -321,17 +326,17 @@ class TestPauliEvCircuit:
                 id="same",
             ),
             pytest.param(
-                PauliEvCircuit([], num_qubits=2),
-                PauliEvCircuit([], num_qubits=3),
+                PauliGatesSequence([], num_qubits=2),
+                PauliGatesSequence([], num_qubits=3),
                 False,
                 id="different_num_qubits",
             ),
             pytest.param(
-                PauliEvCircuit(
+                PauliGatesSequence(
                     [PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.5)],
                     num_qubits=1,
                 ),
-                PauliEvCircuit(
+                PauliGatesSequence(
                     [PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.7)],
                     num_qubits=1,
                 ),
@@ -339,20 +344,20 @@ class TestPauliEvCircuit:
                 id="different_parameter",
             ),
             pytest.param(
-                PauliEvCircuit(
+                PauliGatesSequence(
                     [PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.5)],
                     num_qubits=1,
                 ),
-                PauliEvCircuit([], num_qubits=1),
+                PauliGatesSequence([], num_qubits=1),
                 False,
                 id="different_num_gates",
             ),
             pytest.param(
-                PauliEvCircuit(
+                PauliGatesSequence(
                     [PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.5)],
                     num_qubits=1,
                 ),
-                PauliEvCircuit(
+                PauliGatesSequence(
                     [PauliEvGate([0], PauliOperator(["Z"], [1.0]), 0.5)],
                     num_qubits=1,
                 ),
@@ -366,4 +371,4 @@ class TestPauliEvCircuit:
 
     def test_is_closely_equal_type_error(self):
         with pytest.raises(TypeError):
-            PauliEvCircuit([], num_qubits=1).isclose("not a circuit")
+            PauliGatesSequence([], num_qubits=1).isclose("not a circuit")

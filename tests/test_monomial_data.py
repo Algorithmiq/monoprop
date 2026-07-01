@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from monoprop.monomial_data import Monomial, MonomialCircuit, MonomialOperator
+from monoprop.monomial_data import Monomial, MonomialOperator, MonomialSequence
 
 
 def test_monomial_circuit_fields():
@@ -26,7 +26,7 @@ def test_monomial_circuit_fields():
     param_inds = [np.array([0]), np.array([0])]
     identical_params = np.array([1, 2])
 
-    mc = MonomialCircuit(
+    mc = MonomialSequence(
         majoranas=majoranas,
         parameters=[1.0, 2.0],
         gen_coeffs=gen_coeffs,

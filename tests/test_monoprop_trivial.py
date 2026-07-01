@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from monoprop import MonomialPropagator
-from monoprop.fermi_data import FermiCircuit, MajoranaOperator
+from monoprop.fermi_data import FermiGatesSequence, MajoranaOperator
 
 
 @pytest.mark.parametrize(
@@ -39,7 +39,7 @@ def test_trivial_evolved_operator_dict(
 ):
     """Test trivial evolved operator dict for various initial conditions."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
-    quantum_circuit = FermiCircuit(gates=[])
+    quantum_circuit = FermiGatesSequence(gates=[])
     mp = MonomialPropagator(initial_op, [], cutoff, comm=serial_comm, **kwargs)
     mp.propagate(quantum_circuit)
     result = mp.evolved_operator_dict()
@@ -48,7 +48,7 @@ def test_trivial_evolved_operator_dict(
 
 def test_trivial_evolved_operator(serial_comm):
     initial_op = MajoranaOperator([(0, 1, 2, 4)], [1], 8)
-    quantum_circuit = FermiCircuit(gates=[])
+    quantum_circuit = FermiGatesSequence(gates=[])
     mp = MonomialPropagator(initial_op, [], 16, comm=serial_comm)
     mp.propagate(quantum_circuit)
     op = mp.contract_partially(ignore_coeffs=False, inplace=False)
@@ -96,7 +96,7 @@ def test_update_coeffs(
 ):
     """Test updating coefficients in both regular and Schrodinger pictures."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
-    quantum_circuit = FermiCircuit(gates=[])
+    quantum_circuit = FermiGatesSequence(gates=[])
     mp = MonomialPropagator(init_op, [], cutoff, comm=serial_comm, **kwargs)
     mp.propagate(quantum_circuit)
 

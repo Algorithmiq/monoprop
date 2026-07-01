@@ -35,7 +35,7 @@ Fermionic and Majorana operators
 The natural starting point for quantum chemistry and lattice models: weighted
 sums of fermionic creation/annihilation operators (``FermiOperator``), or
 monomials given directly as sets of Majorana indices (``MajoranaOperator``).
-``FermiEvGate`` and ``FermiCircuit`` describe the evolution and the reference
+``FermiEvGate`` and ``FermiGatesSequence`` describe the evolution and the reference
 state.
 
 .. automodule:: monoprop.fermi_data
@@ -48,7 +48,7 @@ Qubit (Pauli) operators
 
 The natural starting point when you already hold a qubit Hamiltonian:
 real-coefficient sums of Pauli strings (``PauliOperator``), with ``PauliEvGate``
-and ``PauliEvCircuit`` describing the circuit. To truncate by qubit Pauli weight,
+and ``PauliGatesSequence`` describing the circuit. To truncate by qubit Pauli weight,
 pair these with a ``basis_change`` (see :func:`monoprop.jordan_wigner_basis_change`
 and :doc:`/features/cutoff`).
 

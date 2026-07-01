@@ -23,7 +23,7 @@ import numpy as np
 
 from monoprop._dispatch import dispatch
 
-from .monomial_data import MonomialCircuit, MonomialOperator
+from .monomial_data import MonomialOperator, MonomialSequence
 from .utils import (
     normalize_parameters,
     validate_basis_change,
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
     from mpi4py import MPI
 
-    from .quantum_data import IQuantumCircuit, IQuantumOperator
+    from .quantum_data import IQuantumGatesSequence, IQuantumOperator
 
 logger = logging.getLogger(__name__)
 
@@ -362,7 +362,7 @@ class MonomialPropagator:
         previous_max_val = max(parameter_mapping_queue) + 1
         return [val + previous_max_val for val in new_mapping]
 
-    def _add_coeffs_to_queue(self, monomial_circuit: MonomialCircuit) -> None:
+    def _add_coeffs_to_queue(self, monomial_circuit: MonomialSequence) -> None:
         self._parameters_queue.extend(monomial_circuit.parameters)
         self._gen_coeffs_queue.extend(monomial_circuit.gen_coeffs)
         readjusted_new_param_inds = self._adjust_parameter_mapping_queue(
@@ -373,7 +373,7 @@ class MonomialPropagator:
 
     def propagate(
         self,
-        quantum_circuit: IQuantumCircuit | MonomialCircuit,
+        quantum_circuit: IQuantumGatesSequence | MonomialSequence,
         operator_coeffs: None | list[float] | np.ndarray = None,
         *,
         ignore_circuit_parameters: bool = True,
@@ -409,8 +409,8 @@ class MonomialPropagator:
         """
         quantum_circuit = (
             quantum_circuit
-            if isinstance(quantum_circuit, MonomialCircuit)
-            else quantum_circuit.get_monomial_circuit()
+            if isinstance(quantum_circuit, MonomialSequence)
+            else quantum_circuit.get_monomial_sequence()
         )
         majoranas = quantum_circuit.majoranas
 

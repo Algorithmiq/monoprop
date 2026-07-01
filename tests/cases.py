@@ -20,7 +20,7 @@ import numpy as np
 from msgpack import unpackb
 from pytest_cases import case
 
-from monoprop.monomial_data import MonomialCircuit, MonomialOperator
+from monoprop.monomial_data import MonomialOperator, MonomialSequence
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -44,7 +44,7 @@ class FermionicProblem:
 
     def __init__(
         self,
-        monomial_circuit: MonomialCircuit,
+        monomial_circuit: MonomialSequence,
         initial_state: list[int],
         operator: MonomialOperator,
         exact_expval: float,
@@ -94,13 +94,13 @@ def load_problem(path: Path) -> FermionicProblem:
 
     Returns:
         A :class:`FermionicProblem` built directly from the public API
-        (:class:`MonomialCircuit` and :class:`MonomialOperator`).
+        (:class:`MonomialSequence` and :class:`MonomialOperator`).
     """
     with path.open("rb") as fh:
         data = unpackb(fh.read())
 
     initial_state = data["hartree_fock"]
-    monomial_circuit = MonomialCircuit(
+    monomial_circuit = MonomialSequence(
         majoranas=[tuple(maj) for maj in data["majoranas"]],
         gen_coeffs=np.asarray(data["gen_coeffs"]),
         param_inds=np.asarray(data["param_inds"], dtype=int),

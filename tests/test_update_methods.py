@@ -18,7 +18,7 @@ import pytest
 from pytest_cases import parametrize_with_cases
 
 from monoprop import MonomialPropagator, jordan_wigner_basis_change
-from monoprop.monomial_data import MonomialCircuit, MonomialOperator
+from monoprop.monomial_data import MonomialOperator, MonomialSequence
 from tests.cases import CasesFermionicProblem
 
 
@@ -103,7 +103,7 @@ class TestUpdateMethods:
 
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
-        quantum_circuit = MonomialCircuit(
+        quantum_circuit = MonomialSequence(
             majoranas=[(0, 1, 2, 3, 4, 5)], parameters=[], param_inds=[], gen_coeffs=[]
         )
         mp.propagate(
@@ -184,7 +184,7 @@ class TestUpdateMethods:
             cutoff=4,
             comm=serial_comm,
         )
-        quantum_circuit = MonomialCircuit(
+        quantum_circuit = MonomialSequence(
             majoranas=[(0, 2), (1, 3)],
             gen_coeffs=[0.0, 0.0],
             param_inds=[0, 1],

@@ -27,7 +27,7 @@ try:
     from qiskit.circuit.library import PauliEvolutionGate
     from qiskit.quantum_info import SparsePauliOp
 
-    from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator
+    from monoprop.pauli_data import PauliEvGate, PauliGatesSequence, PauliOperator
     from monoprop.qiskit_conversion import (
         from_qiskit_circuit,
         from_qiskit_operator,
@@ -169,7 +169,7 @@ class TestToQiskitOperator:
 @pytest.mark.qiskit
 class TestToQiskitCircuit:
     def test_single_gate(self):
-        circuit = PauliEvCircuit(
+        circuit = PauliGatesSequence(
             [PauliEvGate([0], PauliOperator(["Z"], [1.0]), 0.7)],
             num_qubits=1,
         )
@@ -189,7 +189,7 @@ class QiskitCircuitsCases:
         circuit = QuantumCircuit(1)
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
-        expected = PauliEvCircuit(
+        expected = PauliGatesSequence(
             gates=[
                 PauliEvGate(
                     qubits=[0], paulis=PauliOperator(["Z"], [1.0]), parameter=0.7
@@ -205,7 +205,7 @@ class QiskitCircuitsCases:
         operator2 = SparsePauliOp.from_list([("IY", 0.5)])
         circuit.append(PauliEvolutionGate(operator1, time=0.3), [0, 1])
         circuit.append(PauliEvolutionGate(operator2, time=0.5), [0, 1])
-        expected = PauliEvCircuit(
+        expected = PauliGatesSequence(
             gates=[
                 PauliEvGate(
                     qubits=[0, 1], paulis=PauliOperator(["ZX"], [1.0]), parameter=0.3
@@ -223,7 +223,7 @@ class QiskitCircuitsCases:
         circuit.rx(0.5, 0)
         circuit.ry(0.3, 0)
         circuit.rz(0.7, 0)
-        expected = PauliEvCircuit(
+        expected = PauliGatesSequence(
             gates=[
                 PauliEvGate(
                     qubits=[0], paulis=PauliOperator(["X"], [1.0]), parameter=0.25
@@ -244,7 +244,7 @@ class QiskitCircuitsCases:
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         circuit.barrier()
-        expected = PauliEvCircuit(
+        expected = PauliGatesSequence(
             gates=[
                 PauliEvGate(
                     qubits=[0], paulis=PauliOperator(["Z"], [1.0]), parameter=0.7

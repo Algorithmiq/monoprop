@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from monoprop import MonomialPropagator
-from monoprop.monomial_data import MonomialCircuit, MonomialOperator
+from monoprop.monomial_data import MonomialOperator, MonomialSequence
 from monoprop.monomial_propagator import normalize_parameters
 
 
@@ -190,7 +190,7 @@ class TestMonomialPropagatorValidation:
             (None, [0], None),
             (None, None, [1.0]),
         ]:
-            monomial_circuit = MonomialCircuit(
+            monomial_circuit = MonomialSequence(
                 majoranas=majoranas,
                 parameters=params,
                 gen_coeffs=gen_coeffs,
@@ -200,7 +200,7 @@ class TestMonomialPropagatorValidation:
                 simple_mp.propagate(monomial_circuit, ignore_circuit_parameters=False)
 
     def test_propagate_no_params_graph_mode(self, simple_mp):
-        quantum_circuit = MonomialCircuit(
+        quantum_circuit = MonomialSequence(
             [(0,), (1,)], param_inds=[], gen_coeffs=[], parameters=[]
         )
         simple_mp.propagate(quantum_circuit)
@@ -211,7 +211,7 @@ class TestMonomialPropagatorValidation:
 
         with pytest.raises(RuntimeError, match="must be the same"):
             simple_mp.propagate(
-                MonomialCircuit(
+                MonomialSequence(
                     majoranas=majoranas,
                     param_inds=[0, 1],
                     parameters=[1.0, 2.0],
@@ -221,7 +221,7 @@ class TestMonomialPropagatorValidation:
             )
         with pytest.raises(RuntimeError, match="The length of parameters"):
             simple_mp.propagate(
-                MonomialCircuit(
+                MonomialSequence(
                     majoranas=majoranas,
                     parameters=[1.0],
                     param_inds=[0, 1],
@@ -232,7 +232,7 @@ class TestMonomialPropagatorValidation:
 
     def test_validate_propagation_params(self, simple_mp):
         simple_mp.propagate(
-            MonomialCircuit(
+            MonomialSequence(
                 majoranas=[(0,), (1,)], parameters=[], param_inds=[0], gen_coeffs=[1.0]
             ),
         )
@@ -244,7 +244,7 @@ class TestMonomialPropagatorValidation:
 
     def test_validate_propagation_contraction(self, simple_mp):
         simple_mp.propagate(
-            MonomialCircuit(
+            MonomialSequence(
                 majoranas=[(0,), (1,)],
                 parameters=[1.0, 2.0, 3.0],
                 param_inds=[0, 1, 2],
@@ -256,7 +256,7 @@ class TestMonomialPropagatorValidation:
 
     def test_functional_call_validation(self, simple_mp):
         simple_mp.propagate(
-            MonomialCircuit(
+            MonomialSequence(
                 majoranas=[(0,), (1,)],
                 parameters=[1.0, 2.0],
                 param_inds=[0, 1],
@@ -275,7 +275,7 @@ class TestMonomialPropagatorValidation:
 
     def test_functional_parameter_length_validation(self, simple_mp):
         simple_mp.propagate(
-            MonomialCircuit(
+            MonomialSequence(
                 majoranas=[(0,), (1,)],
                 parameters=[1.0, 2.0],
                 param_inds=[0, 1],
@@ -307,7 +307,7 @@ class TestMonomialPropagatorValidation:
 
     def test_gradient_method_validation(self, simple_mp):
         simple_mp.propagate(
-            MonomialCircuit(
+            MonomialSequence(
                 majoranas=[(0,), (1,)],
                 parameters=[1.0, 2.0],
                 param_inds=[0, 1],

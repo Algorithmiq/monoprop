@@ -33,8 +33,8 @@ class Monomial:
 
 
 @dataclass
-class MonomialCircuit:
-    """Monomial circuit."""
+class MonomialSequence:
+    """Monomial sequence."""
 
     majoranas: list[tuple[int, ...]] | ndarray
     parameters: list[float] | ndarray
