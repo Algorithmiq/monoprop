@@ -36,7 +36,6 @@ class Monomial:
 class MonomialCircuit:
     """Monomial circuit."""
 
-    initial_state: list[int] | ndarray
     majoranas: list[tuple[int, ...]] | ndarray
     parameters: list[float] | ndarray
     gen_coeffs: list[float] | ndarray

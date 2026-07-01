@@ -99,13 +99,13 @@ def test_qiskit_with_mp(
 
     operator = from_qiskit_operator(hamiltonian_lih)
     quantum_circuit = from_qiskit_circuit(
-        simple_ev_circuit, initial_state=list(range(1, 12, 2))
+        simple_ev_circuit,
     )
     mp = MonomialPropagator(
         initial_operator=operator,
-        quantum_circuit=quantum_circuit,
+        initial_state=list(range(1, 12, 2)),
         cutoff=6,
     )
-    mp.propagate(evolve_with_coeffs=True)
+    mp.propagate(quantum_circuit, ignore_circuit_parameters=False)
     test_expval = mp.expectation_value()
     assert np.isclose(test_expval, qiskit_result, atol=1e-6)

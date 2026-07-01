@@ -32,7 +32,6 @@ def test_nonfermi(serial_comm):
         terms_dict={(1, 2, 3): -1j}, num_modes=num_modes
     )
     monomial_circuit = MonomialCircuit(
-        initial_state=[],
         majoranas=majoranas,
         gen_coeffs=gen_coeffs,
         param_inds=param_inds,
@@ -50,12 +49,13 @@ def test_nonfermi(serial_comm):
 
     mp = MonomialPropagator(
         fermionic_operator,
-        monomial_circuit,
+        [],
         cutoff=4,
         comm=serial_comm,
     )
     mp.propagate(
-        evolve_with_coeffs=True,
+        monomial_circuit,
+        ignore_circuit_parameters=False,
     )
     test_evolved_op = mp.evolved_operator_dict()
 

@@ -45,12 +45,14 @@ class FermionicProblem:
     def __init__(
         self,
         monomial_circuit: MonomialCircuit,
+        initial_state: list[int],
         operator: MonomialOperator,
         exact_expval: float,
         exact_gradient: np.ndarray,
         n_modes: int,
     ) -> None:
         self.monomial_circuit = monomial_circuit
+        self.initial_state = initial_state
         self.operator = operator
         self.exact_expval = exact_expval
         self.exact_gradient = exact_gradient
@@ -97,8 +99,8 @@ def load_problem(path: Path) -> FermionicProblem:
     with path.open("rb") as fh:
         data = unpackb(fh.read())
 
+    initial_state = data["hartree_fock"]
     monomial_circuit = MonomialCircuit(
-        initial_state=data["hartree_fock"],
         majoranas=[tuple(maj) for maj in data["majoranas"]],
         gen_coeffs=np.asarray(data["gen_coeffs"]),
         param_inds=np.asarray(data["param_inds"], dtype=int),
@@ -114,6 +116,7 @@ def load_problem(path: Path) -> FermionicProblem:
 
     return FermionicProblem(
         monomial_circuit=monomial_circuit,
+        initial_state=initial_state,
         operator=quantum_operator,
         exact_expval=data["actual_energy"],
         exact_gradient=np.asarray(data["actual_gradient"]),

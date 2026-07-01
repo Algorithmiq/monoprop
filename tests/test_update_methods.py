@@ -31,13 +31,7 @@ class TestUpdateMethods:
             initial_operator=MonomialOperator.from_dict(
                 terms_dict={(0, 1): 1.0j}, num_modes=4
             ),
-            quantum_circuit=MonomialCircuit(
-                initial_state=[],
-                majoranas=[],
-                gen_coeffs=[],
-                param_inds=[],
-                parameters=[],
-            ),
+            initial_state=[],
             cutoff=4,
             lower_atol=1e-8,
             upper_atol=1e-4,
@@ -109,7 +103,12 @@ class TestUpdateMethods:
 
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
-        mp.propagate([(0, 1, 2, 3, 4, 5)])
+        quantum_circuit = MonomialCircuit(
+            majoranas=[(0, 1, 2, 3, 4, 5)], parameters=[], param_inds=[], gen_coeffs=[]
+        )
+        mp.propagate(
+            quantum_circuit,
+        )
         assert mp.size() > 0
 
     def test_update_cutoff_invalid(self, mp):
@@ -181,15 +180,15 @@ class TestUpdateMethods:
             initial_operator=MonomialOperator.from_dict(
                 terms_dict={(0, 1): 1.0j}, num_modes=4
             ),
-            quantum_circuit=MonomialCircuit(
-                initial_state=[],
-                majoranas=[(0, 2), (1, 3)],
-                gen_coeffs=[0.0, 0.0],
-                param_inds=[0, 1],
-                parameters=[1.0, 1.0],
-            ),
+            initial_state=[],
             cutoff=4,
             comm=serial_comm,
+        )
+        quantum_circuit = MonomialCircuit(
+            majoranas=[(0, 2), (1, 3)],
+            gen_coeffs=[0.0, 0.0],
+            param_inds=[0, 1],
+            parameters=[1.0, 1.0],
         )
         updates = {
             "lower_atol": 1e-10,
@@ -201,7 +200,7 @@ class TestUpdateMethods:
         for attr, value in updates.items():
             setattr(mp, attr, value)
 
-        mp.propagate(evolve_with_coeffs=True)
+        mp.propagate(quantum_circuit, ignore_circuit_parameters=False)
         expval = mp.expectation_value()
         assert isinstance(expval, (int, float))
 
@@ -251,18 +250,20 @@ def test_evolutions_after_updates(problem, test_type, serial_comm):
 
     mp = MonomialPropagator(
         problem.operator,
-        problem.monomial_circuit,
+        problem.initial_state,
         cutoff=6,
         comm=serial_comm,
     )
+    monomial_circuit = problem.monomial_circuit
     mp.propagate(
-        evolve_with_coeffs=True,
+        monomial_circuit,
+        ignore_circuit_parameters=False,
     )
     mp_size = mp.size()
 
     mp_tes = MonomialPropagator(
         problem.operator,
-        problem.monomial_circuit,
+        problem.initial_state,
         cutoff=6,
         comm=serial_comm,
     )
@@ -276,7 +277,8 @@ def test_evolutions_after_updates(problem, test_type, serial_comm):
         mp_tes.cutoff = 4
 
     mp_tes.propagate(
-        evolve_with_coeffs=True,
+        monomial_circuit,
+        ignore_circuit_parameters=False,
     )
     assert mp_tes.size() != mp_size
 
@@ -287,13 +289,7 @@ def test_update_methods_different_modes(num_modes, serial_comm):
         initial_operator=MonomialOperator.from_dict(
             terms_dict={(0, 1): 1.0j}, num_modes=num_modes
         ),
-        quantum_circuit=MonomialCircuit(
-            initial_state=[],
-            majoranas=[],
-            gen_coeffs=[],
-            param_inds=[],
-            parameters=[],
-        ),
+        initial_state=[],
         cutoff=4,
         comm=serial_comm,
     )
@@ -308,13 +304,7 @@ def test_basis_change_invalid_dimensions(num_modes, serial_comm):
         initial_operator=MonomialOperator.from_dict(
             terms_dict={(0, 1): 1.0j}, num_modes=num_modes
         ),
-        quantum_circuit=MonomialCircuit(
-            initial_state=[],
-            majoranas=[],
-            gen_coeffs=[],
-            param_inds=[],
-            parameters=[],
-        ),
+        initial_state=[],
         cutoff=4,
         comm=serial_comm,
     )

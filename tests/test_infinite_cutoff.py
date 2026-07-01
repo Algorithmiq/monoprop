@@ -22,10 +22,10 @@ from monoprop import MonomialPropagator
 from tests.cases import CasesFermionicProblem
 
 
-def _create_mp(operator, quantum_circuit, n_modes, comm, *, schrodinger_cutoff=None):
+def _create_mp(operator, initial_circuit, n_modes, comm, *, schrodinger_cutoff=None):
     return MonomialPropagator(
         operator,
-        quantum_circuit,
+        initial_circuit,
         cutoff=2 * n_modes,
         schrodinger_cutoff=2 * n_modes
         if schrodinger_cutoff == "max"
@@ -43,34 +43,34 @@ def test_infinite_cutoff(
 ):
     mp = _create_mp(
         problem.operator,
-        problem.monomial_circuit,
+        problem.initial_state,
         problem.n_modes,
         comm,
         schrodinger_cutoff=schrodinger_cutoff,
     )
-
+    quantum_circuit = problem.monomial_circuit
     match evolution_mode:
         case "deferred":
-            mp.propagate()
+            mp.propagate(quantum_circuit=quantum_circuit)
             test_expval = mp.expectation_value_functional(
-                use_coeffs=True,
                 pare_threshold=pare_threshold,
-            )(problem.monomial_circuit.parameters)
+            )(quantum_circuit.parameters)
 
         case "with_coeffs":
             operator_coeffs = mp.contract_partially(inplace=False)
             mp.propagate(
-                evolve_with_coeffs=True,
+                quantum_circuit,
                 operator_coeffs=operator_coeffs,
+                ignore_circuit_parameters=False,
             )
             test_expval = mp.expectation_value_functional(
-                use_coeffs=True,
                 pare_threshold=pare_threshold,
-            )(problem.monomial_circuit.parameters)
+            )(quantum_circuit.parameters)
 
         case "inplace":
             mp.propagate(
-                evolve_with_coeffs=True,
+                quantum_circuit,
+                ignore_circuit_parameters=False,
             )
             test_expval = mp.expectation_value_functional(
                 pare_threshold=pare_threshold
@@ -85,22 +85,21 @@ def test_infinite_cutoff(
 def test_gradient(problem, schrodinger, pare_threshold, comm):
     """Test expectation_value_and_gradient_functional against finite differences."""
     prng = np.random.default_rng(0)
-
+    quantum_circuit = problem.monomial_circuit
     cutoff = 4
     mp = MonomialPropagator(
         problem.operator,
-        problem.monomial_circuit,
+        problem.initial_state,
         cutoff=cutoff,
         schrodinger_cutoff=cutoff + 2 if schrodinger else None,
         comm=comm,
     )
-    mp.propagate()
+    mp.propagate(quantum_circuit)
     ener_fn = mp.expectation_value_functional(
-        use_coeffs=True,
         pare_threshold=pare_threshold,
     )
 
-    xk = prng.random(size=len(problem.monomial_circuit.parameters))
+    xk = prng.random(size=len(quantum_circuit.parameters))
     true_expval = ener_fn(xk)
 
     eps = 1e-6
@@ -115,14 +114,12 @@ def test_gradient(problem, schrodinger, pare_threshold, comm):
         xk[i] = xk_old
 
     fn = mp.expectation_value_and_gradient_functional(
-        use_coeffs=True,
         pare_threshold=pare_threshold,
     )
     test_expval, test_gradient = fn(xk)
     assert np.isclose(test_expval, true_expval, atol=1e-6)
     assert np.allclose(test_gradient, fd_gradient, atol=1e-6)
-    mp.quantum_circuit.parameters = xk
-    test_gradient2 = mp.gradient()
+    test_gradient2 = mp.gradient(xk)
     assert np.allclose(test_gradient2, fd_gradient, atol=1e-6)
 
 
@@ -134,19 +131,20 @@ def test_immediate_contraction(problem, schrodinger, comm):
 
     mp = MonomialPropagator(
         problem.operator,
-        problem.monomial_circuit,
+        problem.initial_state,
         cutoff=2 * n_modes,
         schrodinger_cutoff=2 * n_modes if schrodinger else None,
         lower_atol=1e-15,
         comm=comm,
     )
     mp.propagate(
-        evolve_with_coeffs=True,
+        quantum_circuit=problem.monomial_circuit,
+        ignore_circuit_parameters=False,
     )
-    test_expval, gradient = mp.expectation_value_and_gradient([], [], [])
+    test_expval, gradient = mp.expectation_value_and_gradient([], ignore_coeffs=True)
 
     assert np.isclose(test_expval, problem.exact_expval, atol=1e-12)
     assert len(gradient) == 0
 
-    test_expval = mp.expectation_value_functional([], [])([])
+    test_expval = mp.expectation_value_functional(ignore_coeffs=True)([])
     assert np.isclose(test_expval, problem.exact_expval, atol=1e-12)

@@ -177,7 +177,7 @@ class TestFermiCircuit:
             FermiEvGate(generator=generator, parameter=0.2),
         ]
 
-        circuit = FermiCircuit(initial_state=[0], gates=gates)
+        circuit = FermiCircuit(gates=gates)
 
         assert len(circuit) == 2
 
@@ -190,10 +190,9 @@ class TestFermiCircuit:
         gate_0 = FermiEvGate(generator=generator, parameter=0.3)
         gate_1 = FermiEvGate(generator=generator, parameter=-0.7)
 
-        circuit = FermiCircuit(initial_state=[0, 1], gates=[gate_0, gate_1])
+        circuit = FermiCircuit(gates=[gate_0, gate_1])
         mon_circuit = circuit.get_monomial_circuit()
 
-        np.testing.assert_array_equal(mon_circuit.initial_state, np.array([0, 1]))
         np.testing.assert_array_equal(mon_circuit.parameters, np.array([0.3, -0.7]))
         np.testing.assert_array_equal(
             mon_circuit.gen_coeffs, np.array([-1.0, 1.0, -1.0, 1.0])
@@ -204,12 +203,3 @@ class TestFermiCircuit:
         np.testing.assert_array_equal(mon_circuit.majoranas[1], np.array([2, 3]))
         np.testing.assert_array_equal(mon_circuit.majoranas[2], np.array([0, 1]))
         np.testing.assert_array_equal(mon_circuit.majoranas[3], np.array([2, 3]))
-
-    def test_validate_inputs_duplicate_initial_state_raises(self):
-        generator = MajoranaOperator(
-            majoranas=[(0, 1)], coefficients=[1.0], num_modes=1
-        )
-        gate = FermiEvGate(generator=generator, parameter=0.1)
-
-        with pytest.raises(ValueError, match="Duplicate indices in initial state"):
-            FermiCircuit(initial_state=[0, 0], gates=[gate])

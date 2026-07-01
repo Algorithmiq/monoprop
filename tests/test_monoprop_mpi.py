@@ -40,7 +40,7 @@ def _make_mp(problem, comm):
     """Create a standard MP instance from a fermionic test problem."""
     return MonomialPropagator(
         problem.operator,
-        problem.monomial_circuit,
+        problem.initial_state,
         cutoff=2 * problem.n_modes,
         comm=comm,
     )
@@ -69,9 +69,8 @@ class TestMPISimulator:
 
     def test_evolve_expectation_value_functional(self, lih_fermionic_spin_exact):
         mp = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
-        mp.propagate()
+        mp.propagate(lih_fermionic_spin_exact.monomial_circuit)
         expval = mp.expectation_value_functional(
-            use_coeffs=True,
             pare_threshold=1e-10,
         )(lih_fermionic_spin_exact.monomial_circuit.parameters)
         _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
@@ -80,34 +79,33 @@ class TestMPISimulator:
         mp = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
         operator_coeffs = mp.contract_partially(inplace=False)
         mp.propagate(
-            evolve_with_coeffs=True,
-            operator_coeffs=operator_coeffs,
+            lih_fermionic_spin_exact.monomial_circuit, operator_coeffs=operator_coeffs
         )
         expval = mp.expectation_value_functional(
-            use_coeffs=True,
             pare_threshold=1e-10,
         )(lih_fermionic_spin_exact.monomial_circuit.parameters)
         _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
 
     def test_immediate_contraction(self, lih_fermionic_spin_exact):
         mp = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
-        mp.propagate(evolve_with_coeffs=True)
+        mp.propagate(
+            lih_fermionic_spin_exact.monomial_circuit, ignore_circuit_parameters=False
+        )
         _assert_expval(
-            mp.expectation_value_functional([], [], pare_threshold=1e-10)([]),
+            mp.expectation_value_functional(ignore_coeffs=True, pare_threshold=1e-10)(),
             lih_fermionic_spin_exact.exact_expval,
         )
 
     def test_schrodinger_picture(self, lih_fermionic_spin_exact):
         mp = MonomialPropagator(
             lih_fermionic_spin_exact.operator,
-            lih_fermionic_spin_exact.monomial_circuit,
+            lih_fermionic_spin_exact.initial_state,
             cutoff=2 * lih_fermionic_spin_exact.n_modes,
             schrodinger_cutoff=2 * lih_fermionic_spin_exact.n_modes,
             comm=MPI.COMM_WORLD,
         )
-        mp.propagate()
+        mp.propagate(lih_fermionic_spin_exact.monomial_circuit)
         expval = mp.expectation_value_functional(
-            use_coeffs=True,
             pare_threshold=1e-10,
         )(lih_fermionic_spin_exact.monomial_circuit.parameters)
         _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
@@ -115,22 +113,15 @@ class TestMPISimulator:
     def test_gradient_functional(self, lih_fermionic_spin_exact):
         """Test gradient_functional against finite difference."""
         mp = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
-        mp.propagate()
+        mp.propagate(lih_fermionic_spin_exact.monomial_circuit)
 
-        expval_fn = mp.expectation_value_functional(
-            use_coeffs=True,
-            pare_threshold=1e-10,
-        )
-        grad_fn = mp.gradient_functional(
-            use_coeffs=True,
-            pare_threshold=1e-10,
-        )
+        expval_fn = mp.expectation_value_functional(pare_threshold=1e-10)
+        grad_fn = mp.gradient_functional(pare_threshold=1e-10)
 
         rng = np.random.default_rng(42)
         xk = rng.random(size=len(lih_fermionic_spin_exact.monomial_circuit.parameters))
 
         analytical_grad = grad_fn(xk)
-
         fd_gradient = _finite_difference_gradient(expval_fn, xk)
 
         assert np.allclose(analytical_grad, fd_gradient, atol=1e-9)
@@ -138,16 +129,13 @@ class TestMPISimulator:
     def test_expectation_value_and_gradient_functional(self, lih_fermionic_spin_exact):
         """Test expectation_value_and_gradient_functional returns consistent expectation value and gradient."""
         mp = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
-        mp.propagate(lih_fermionic_spin_exact.monomial_circuit.majoranas)
+        mp.propagate(lih_fermionic_spin_exact.monomial_circuit)
 
-        common_kwargs = {
-            "parameter_mapping": lih_fermionic_spin_exact.monomial_circuit.param_inds,
-            "gen_coeffs": lih_fermionic_spin_exact.monomial_circuit.gen_coeffs,
-            "pare_threshold": 1e-10,
-        }
-        expval_grad_fn = mp.expectation_value_and_gradient_functional(**common_kwargs)
-        expval_fn = mp.expectation_value_functional(**common_kwargs)
-        grad_fn = mp.gradient_functional(**common_kwargs)
+        expval_grad_fn = mp.expectation_value_and_gradient_functional(
+            pare_threshold=1e-10
+        )
+        expval_fn = mp.expectation_value_functional(pare_threshold=1e-10)
+        grad_fn = mp.gradient_functional(pare_threshold=1e-10)
 
         combined_expval, combined_grad = expval_grad_fn(
             lih_fermionic_spin_exact.monomial_circuit.parameters
@@ -176,9 +164,8 @@ class TestMPISimulator:
 
         try:
             mp = _make_mp(lih_fermionic_spin_exact, sub_comm)
-            mp.propagate()
+            mp.propagate(lih_fermionic_spin_exact.monomial_circuit)
             expval = mp.expectation_value_functional(
-                use_coeffs=True,
                 pare_threshold=1e-10,
             )(lih_fermionic_spin_exact.monomial_circuit.parameters)
         finally:
@@ -190,9 +177,8 @@ class TestMPISimulator:
     def test_mpi_comm_self(self, lih_fermionic_spin_exact):
         """Test single-rank communicator works correctly."""
         mp = _make_mp(lih_fermionic_spin_exact, MPI.COMM_SELF)
-        mp.propagate()
+        mp.propagate(lih_fermionic_spin_exact.monomial_circuit)
         expval = mp.expectation_value_functional(
-            use_coeffs=True,
             pare_threshold=1e-10,
         )(lih_fermionic_spin_exact.monomial_circuit.parameters)
         _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
