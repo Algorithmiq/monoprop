@@ -1413,6 +1413,7 @@ bench = [
     { name = "pytest-cases" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi" },
+    { name = "tabulate" },
 ]
 dev = [
     { name = "coverage" },
@@ -1445,6 +1446,7 @@ test = [
     { name = "pytest-cases" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi" },
+    { name = "tabulate" },
 ]
 
 [package.metadata]
@@ -1465,6 +1467,7 @@ bench = [
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi", specifier = ">=0.6" },
+    { name = "tabulate", specifier = ">=0.9" },
 ]
 dev = [
     { name = "coverage" },
@@ -1497,6 +1500,7 @@ test = [
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi", specifier = ">=0.6" },
+    { name = "tabulate", specifier = ">=0.9" },
 ]
 
 [[package]]

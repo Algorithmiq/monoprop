@@ -33,8 +33,8 @@ just bench-smoke                             # quick sanity check (tiny sizes)
 just bench serial --num-modes 64 --bench-rounds 10
 ```
 
-Set the monoprop thread count with the `monoprop_NUM_THREADS` env var (oneTBB
-worker count — monoprop's only thread knob, read at import):
+Set the monoprop thread count with the `monoprop_NUM_THREADS` environment
+variable (the oneTBB worker count, read at import):
 
 ```bash
 monoprop_NUM_THREADS=1  just bench serial      # single-threaded
@@ -67,8 +67,9 @@ monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 communicator, so every rank holds the **full** operator (N× memory, OOMs at
 scale). `just bench-build-mpi` installs the MPI build, and the bench recipes use
 `--no-sync` so it survives — rebuild explicitly after editing monoprop sources.
-`just bench-mpi` runs a fast preflight (`_mpi_check.py`, checking
-`monoprop.has_mpi`) that aborts with remediation if the loaded extension lacks MPI.
+`just bench-mpi` first checks `monoprop.has_mpi` and aborts with remediation if
+the loaded extension lacks MPI. Running as root, add `--allow-run-as-root` to the
+`just bench-mpi` arguments (they are forwarded to `mpiexec`).
 
 ## Benchmarks
 
@@ -111,5 +112,5 @@ operator-vs-graph storage breakdown, model configs, and a **Time** and
 ## Files
 
 `report.py` (report), `conftest.py` (fixtures, CLI options, memory + result
-recording), `_builders.py` (model construction), `bench_random.py` and
-`bench_models.py` (the two suites), `_mpi_check.py` (MPI preflight).
+recording), `_builders.py` (model construction), `_memory.py` (PSS sampling),
+`bench_random.py` and `bench_models.py` (the two suites).

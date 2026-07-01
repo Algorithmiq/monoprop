@@ -23,12 +23,18 @@ timings) and ``<label>.json`` (everything else, keyed by section).
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 import report
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def _collapse(text: str) -> str:
+    """Collapse runs of spaces so table assertions ignore tabulate's padding."""
+    return re.sub(r" +", " ", text)
 
 
 def test_picture_of_routes_by_tag() -> None:
@@ -79,7 +85,7 @@ def _write_results(results_dir: Path, label: str = "np1", **sections: object) ->
 
 def test_build_report_has_two_sections(tmp_path: Path) -> None:
     _write_timings(tmp_path)
-    md = report.build_report(tmp_path)
+    md = _collapse(report.build_report(tmp_path))
 
     assert "## Heisenberg" in md
     assert "## Schrödinger" in md
@@ -110,7 +116,7 @@ def test_build_report_includes_hyperparameters(tmp_path: Path) -> None:
             "bench_rounds": 5,
         },
     )
-    md = report.build_report(tmp_path)
+    md = _collapse(report.build_report(tmp_path))
 
     assert "## Hyperparameters" in md
     # Each hyperparameter row is present with its value.
@@ -139,7 +145,7 @@ def test_build_report_includes_model_config(tmp_path: Path) -> None:
             "pauli": {"num_qubits": 127, "cutoff": 8, "lower_atol": 1e-4},
         },
     )
-    md = report.build_report(tmp_path)
+    md = _collapse(report.build_report(tmp_path))
 
     assert "## Model configuration" in md
     assert "### hubbard" in md
@@ -155,7 +161,7 @@ def test_build_report_includes_model_config(tmp_path: Path) -> None:
 
 def test_model_config_section_absent_when_no_configs(tmp_path: Path) -> None:
     _write_timings(tmp_path)
-    md = report.build_report(tmp_path)
+    md = _collapse(report.build_report(tmp_path))
     assert "## Model configuration" not in md
 
 
@@ -168,7 +174,7 @@ def test_build_report_includes_operator_size(tmp_path: Path) -> None:
             "schrodinger": {"terms": 11311942},
         },
     )
-    md = report.build_report(tmp_path)
+    md = _collapse(report.build_report(tmp_path))
 
     assert "## Operator size" in md
     # Term counts are rendered with thousands separators, one row per picture.
@@ -185,7 +191,7 @@ def test_build_report_includes_memory(tmp_path: Path) -> None:
             "bench_random.py::test_random_energy[schrodinger]": 104857600,
         },
     )
-    md = report.build_report(tmp_path)
+    md = _collapse(report.build_report(tmp_path))
 
     assert "Memory (PSS)" in md
     # Bytes render as MiB in the per-picture memory tables.
@@ -200,7 +206,7 @@ def test_build_report_includes_resting_and_storage(tmp_path: Path) -> None:
         memrest={"heisenberg": 52428800},
         storage={"heisenberg": {"operator": 104857600, "graph": 10485760}},
     )
-    md = report.build_report(tmp_path)
+    md = _collapse(report.build_report(tmp_path))
 
     assert "## Operator resting footprint (PSS)" in md
     assert "## Storage breakdown: operator vs graph" in md
@@ -212,7 +218,7 @@ def test_build_report_includes_resting_and_storage(tmp_path: Path) -> None:
 def test_build_report_sorts_labels_numerically(tmp_path: Path) -> None:
     for label in ("np1", "np2", "np10"):
         _write_timings(tmp_path, label)
-    md = report.build_report(tmp_path)
+    md = _collapse(report.build_report(tmp_path))
     # Natural sort: np2 before np10 (not lexicographic np1, np10, np2).
     assert md.index("np1") < md.index("np2") < md.index("np10")
 
@@ -227,6 +233,6 @@ def test_build_report_omits_empty_schrodinger_section(tmp_path: Path) -> None:
         ]
     }
     (tmp_path / "time-np1.json").write_text(json.dumps(data))
-    md = report.build_report(tmp_path)
+    md = _collapse(report.build_report(tmp_path))
     assert "## Heisenberg" in md
     assert "## Schrödinger" not in md

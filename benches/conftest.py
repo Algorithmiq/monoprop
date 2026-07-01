@@ -26,7 +26,7 @@ configs -- are accumulated in ``_RESULTS`` and written once, at session end, to
 ``results/<label>.json`` (rank 0 only). Timing is written separately by
 pytest-benchmark to ``time-<label>.json``. ``report.py`` merges the two into
 ``REPORT.md``. Recording is enabled only when the ``just bench`` recipe exports
-``MONOPROP_BENCH_LABEL`` / ``MONOPROP_BENCH_RESULTS``.
+``monoprop_BENCH_LABEL`` / ``monoprop_BENCH_RESULTS``.
 
 MPI: the benchmarks are communicator-aware. When ``mpi4py`` is available the
 ``bench_comm`` fixture yields ``MPI.COMM_WORLD`` (size 1 for a serial run, size
@@ -122,11 +122,11 @@ def _results_path() -> Path | None:
     """Return ``results/<label>.json``, or ``None`` when recording is off.
 
     Recording is enabled only when the ``just bench`` recipe exported
-    ``MONOPROP_BENCH_LABEL`` and ``MONOPROP_BENCH_RESULTS``; run directly, the
+    ``monoprop_BENCH_LABEL`` and ``monoprop_BENCH_RESULTS``; run directly, the
     suite has nowhere to write and the results stay in memory only.
     """
-    label = os.environ.get("MONOPROP_BENCH_LABEL")
-    results = os.environ.get("MONOPROP_BENCH_RESULTS")
+    label = os.environ.get("monoprop_BENCH_LABEL")  # noqa: SIM112
+    results = os.environ.get("monoprop_BENCH_RESULTS")  # noqa: SIM112
     if not label or not results:
         return None
     return Path(results, f"{label}.json")
@@ -205,9 +205,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def _meta() -> dict[str, Any]:
     """Return this run's configuration metadata for the report."""
     return {
-        "label": os.environ.get("MONOPROP_BENCH_LABEL", "?"),
+        "label": os.environ.get("monoprop_BENCH_LABEL", "?"),  # noqa: SIM112
         "ranks": _size(),
-        # monoprop's thread knob is genuinely lower-case (read at import).
         "monoprop_threads": os.environ.get("monoprop_NUM_THREADS", "default"),  # noqa: SIM112
         "cpu_count": os.cpu_count(),
         "hostname": socket.gethostname(),

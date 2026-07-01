@@ -128,7 +128,7 @@ def make_random_problem(
     num_generators: int = 100,
     num_modes: int = 128,
     cutoff: int = 6,
-    seed: int = 0,
+    seed: int | np.random.Generator | None = None,
 ) -> RandomProblem:
     """Build a random observable and generator circuit for benchmarking.
 
@@ -138,7 +138,8 @@ def make_random_problem(
         num_generators: Number of random generators in the circuit.
         num_modes: Number of fermionic modes (Majorana indices = ``2 * num_modes``).
         cutoff: Truncation cutoff carried on the returned problem.
-        seed: Seed for the random number generator (reproducibility).
+        seed: Seed or ``Generator`` for the RNG; ``None`` (the default) draws
+            fresh entropy. Fix it for a reproducible problem.
 
     Returns:
         A :class:`RandomProblem` bundling the observable, circuit, and cutoff.

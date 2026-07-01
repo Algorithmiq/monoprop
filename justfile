@@ -56,22 +56,23 @@ serve-docs:
 bench LABEL *ARGS:
     @mkdir -p "{{bench_results}}"
     label="$1"; shift; \
-    MONOPROP_BENCH_LABEL="$label" MONOPROP_BENCH_RESULTS="{{bench_results}}" \
+    monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{bench_results}}" \
         uv run --no-sync python -m pytest benches -o filterwarnings=default \
         --benchmark-json="{{bench_results}}/time-$label.json" "$@"
     uv run --no-sync python benches/report.py "{{bench_results}}"
 
 # Needs an MPI build (`just bench-build-mpi`) -- a non-MPI build is rejected by the
-# preflight. Extra args are passed to mpiexec for pinning, e.g.
+# preflight. Extra args are passed to mpiexec for pinning (and, as root, add
+# `--allow-run-as-root`), e.g.
 #   monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 # Run under MPI: RANKS ranks recorded as one LABEL column.
 bench-mpi LABEL RANKS *MPIARGS:
-    uv run --no-sync python benches/_mpi_check.py
+    uv run --no-sync python -c "import monoprop, sys; sys.exit(0 if monoprop.has_mpi else 'monoprop was built without MPI; run just bench-build-mpi first')"
     @mkdir -p "{{bench_results}}"
     label="$1"; ranks="$2"; shift 2; \
-    MONOPROP_BENCH_LABEL="$label" MONOPROP_BENCH_RESULTS="{{bench_results}}" \
-        uv run --no-sync mpiexec --allow-run-as-root -n "$ranks" \
-        -x MONOPROP_BENCH_LABEL -x MONOPROP_BENCH_RESULTS "$@" \
+    monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{bench_results}}" \
+        uv run --no-sync mpiexec -n "$ranks" \
+        -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS "$@" \
         python -m pytest benches -o filterwarnings=default \
         --benchmark-json="{{bench_results}}/time-$label.json"
     uv run --no-sync python benches/report.py "{{bench_results}}"
@@ -86,7 +87,7 @@ bench-build-mpi:
 # Quick sanity run: tiny sizes, skip the slow static benchmarks.
 bench-smoke:
     @mkdir -p "{{bench_results}}"
-    MONOPROP_BENCH_LABEL=smoke MONOPROP_BENCH_RESULTS="{{bench_results}}" \
+    monoprop_BENCH_LABEL=smoke monoprop_BENCH_RESULTS="{{bench_results}}" \
         uv run --no-sync python -m pytest benches -o filterwarnings=default \
         --benchmark-json="{{bench_results}}/time-smoke.json" \
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16

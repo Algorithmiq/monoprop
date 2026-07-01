@@ -33,6 +33,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from tabulate import tabulate
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -113,6 +115,18 @@ def _fmt_config(value: object) -> str:
     return format(value, "g") if isinstance(value, float) else str(value)
 
 
+def _md_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    """Render a GitHub-flavoured Markdown table (cells are pre-formatted strings).
+
+    ``disable_numparse`` keeps tabulate from re-parsing/realigning our already
+    formatted cells (durations, MiB, thousands-separated counts).
+    """
+    return [
+        tabulate(rows, headers=headers, tablefmt="github", disable_numparse=True),
+        "",
+    ]
+
+
 def _table(
     first_col: str,
     rows: list[tuple[Any, str]],
@@ -124,15 +138,11 @@ def _table(
     ``rows`` are ``(row_id, display)`` pairs; ``cell(label, row_id)`` returns the
     formatted value for one cell.
     """
-    out = [
-        f"| {first_col} | " + " | ".join(labels) + " |",
-        "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
+    body = [
+        [display, *(cell(label, row_id) for label in labels)]
+        for row_id, display in rows
     ]
-    for row_id, display in rows:
-        cells = " | ".join(cell(label, row_id) for label in labels)
-        out.append(f"| {display} | {cells} |")
-    out.append("")
-    return out
+    return _md_table([first_col, *labels], body)
 
 
 def _section(
@@ -185,25 +195,18 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
     metas = {lbl: results.get(lbl, {}).get("meta", {}) for lbl in labels}
     if not any(metas.values()):
         return []
-    header = ["Label", "Ranks", "monoprop threads", "CPUs", "Host"]
-    lines = [
-        "## Configuration",
-        "",
-        "| " + " | ".join(header) + " |",
-        "| " + " | ".join(["---"] * len(header)) + " |",
-    ]
-    for label in labels:
-        meta = metas[label]
-        cells = [
+    headers = ["Label", "Ranks", "monoprop threads", "CPUs", "Host"]
+    rows = [
+        [
             label,
-            str(meta.get("ranks", "—")),
-            str(meta.get("monoprop_threads", "default")),
-            str(meta.get("cpu_count", "—")),
-            str(meta.get("hostname", "—")),
+            str(metas[label].get("ranks", "—")),
+            str(metas[label].get("monoprop_threads", "default")),
+            str(metas[label].get("cpu_count", "—")),
+            str(metas[label].get("hostname", "—")),
         ]
-        lines.append("| " + " | ".join(cells) + " |")
-    lines.append("")
-    return lines
+        for label in labels
+    ]
+    return ["## Configuration", "", *_md_table(headers, rows)]
 
 
 def _model_config_section(labels: list[str], results: dict[str, dict]) -> list[str]:
