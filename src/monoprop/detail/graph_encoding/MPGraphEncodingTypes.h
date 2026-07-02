@@ -122,6 +122,14 @@ struct LayerStorage final {
     PackedLocalCycleStorage local_cycles;
     PackedCrossRankStorage cross_rank;
     LayerExchangeLayout evolution_exchange_layout;
+
+    // Gate information owned by this layer: the index into the variational parameter
+    // vector that drives this layer's rotation, and the generator coefficient g so the
+    // rotation angle is parameters[param_index] * gen_coeff. Populated when the layer is
+    // appended during graph building; read by evaluation instead of threading the
+    // parameter_mapping / gen_coeffs arrays through every call.
+    size_t param_index = 0;
+    double gen_coeff = 0.0;
 };
 
 } // namespace monoprop

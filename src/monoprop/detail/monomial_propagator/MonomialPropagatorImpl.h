@@ -79,9 +79,16 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
     propagate_with_timing_(
         majoranas,
         only_rotate_len_k,
-        [this, &mapped_params, &coeffs, majoranas_size](const VecZ &maj, int only_rotate_len_k, size_t i) {
+        [this, &parameter_mapping, &gen_coeffs, &mapped_params, &coeffs, majoranas_size](const VecZ &maj,
+                                                                                         int only_rotate_len_k,
+                                                                                         size_t i) {
             const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
-            propagate_one_(maj, only_rotate_len_k, std::cref(coeffs), mapped_params[idx]);
+            propagate_one_(maj,
+                           only_rotate_len_k,
+                           std::cref(coeffs),
+                           mapped_params[idx],
+                           parameter_mapping[idx],
+                           gen_coeffs[idx]);
             const auto param = schrodinger_ ? -mapped_params[idx] : mapped_params[idx];
             const auto graph_idx = schrodinger_ ? 0 : i;
             extend_coeffs_from_current_picture_if_needed_(coeffs);
@@ -166,7 +173,9 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
                                                   int only_rotate_len_k,
                                                   std::optional<std::reference_wrapper<const VecD>> coeffs,
-                                                  std::optional<double> param) -> void {
+                                                  std::optional<double> param,
+                                                  size_t param_index,
+                                                  double gen_coeff) -> void {
     const auto gen_maj = indices_to_bitset<NumModes>(gen_vec);
 
     auto evolve_result = evolve_maj<NumModes>(mp_op_,
@@ -189,7 +198,13 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
                         comm_);
     split = split_and_exchange_cycles(evolve_result.cycles, evolve_result.phases, comm_);
 
-    append_to_graph(graph_, evolve_result.cos_inds, evolve_result.compressed_cos_data, split, comm_);
+    append_to_graph(graph_,
+                    evolve_result.cos_inds,
+                    evolve_result.compressed_cos_data,
+                    split,
+                    comm_,
+                    param_index,
+                    gen_coeff);
 }
 
 template <size_t NumModes>

@@ -99,14 +99,24 @@ public:
      * @param local_cycles Local cycles (source, target, phase on this rank).
      * @param cross_rank Cross-rank cycles indexed by remote rank.
      */
-    auto append(VecZ cos_inds, std::vector<LocalCycle> local_cycles, std::vector<CrossRankCycles> cross_rank) -> void {
-        append_layer(Layer(std::move(cos_inds), std::move(local_cycles), std::move(cross_rank)));
+    auto append(VecZ cos_inds,
+                std::vector<LocalCycle> local_cycles,
+                std::vector<CrossRankCycles> cross_rank,
+                size_t param_index = 0,
+                double gen_coeff = 0.0) -> void {
+        Layer layer(std::move(cos_inds), std::move(local_cycles), std::move(cross_rank));
+        layer.set_gate_info(param_index, gen_coeff);
+        append_layer(std::move(layer));
     }
 
     auto append(CompressedCosineData cos_data,
                 std::vector<LocalCycle> local_cycles,
-                std::vector<CrossRankCycles> cross_rank) -> void {
-        append_layer(Layer(std::move(cos_data), std::move(local_cycles), std::move(cross_rank)));
+                std::vector<CrossRankCycles> cross_rank,
+                size_t param_index = 0,
+                double gen_coeff = 0.0) -> void {
+        Layer layer(std::move(cos_data), std::move(local_cycles), std::move(cross_rank));
+        layer.set_gate_info(param_index, gen_coeff);
+        append_layer(std::move(layer));
     }
 
     /**

@@ -23,16 +23,26 @@ auto MonomialPropagator<NumModes>::append_to_graph(MPGraph &graph,
                                                    VecZ &cos_inds,
                                                    std::optional<CompressedCosineData> &compressed_cos_data,
                                                    SplitCycleResult &split,
-                                                   MPI_Comm comm) -> void {
+                                                   MPI_Comm comm,
+                                                   size_t param_index,
+                                                   double gen_coeff) -> void {
     if (mpi::size(comm) > 1) {
         compressed_cos_data = detail::remove_incoming_cycle_targets_compressed(cos_inds, split);
         cos_inds.clear();
     }
     if (compressed_cos_data.has_value()) {
-        graph.append(std::move(*compressed_cos_data), std::move(split.local_cycles), std::move(split.cross_rank));
+        graph.append(std::move(*compressed_cos_data),
+                     std::move(split.local_cycles),
+                     std::move(split.cross_rank),
+                     param_index,
+                     gen_coeff);
     }
     else {
-        graph.append(std::move(cos_inds), std::move(split.local_cycles), std::move(split.cross_rank));
+        graph.append(std::move(cos_inds),
+                     std::move(split.local_cycles),
+                     std::move(split.cross_rank),
+                     param_index,
+                     gen_coeff);
     }
 }
 

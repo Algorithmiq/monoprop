@@ -560,7 +560,9 @@ protected:
                                 VecZ &cos_inds,
                                 std::optional<CompressedCosineData> &compressed_cos_data,
                                 SplitCycleResult &split,
-                                MPI_Comm comm) -> void;
+                                MPI_Comm comm,
+                                size_t param_index = 0,
+                                double gen_coeff = 0.0) -> void;
 
     static auto expected_num_params(const VecZ &parameter_mapping) -> size_t;
 
@@ -679,7 +681,9 @@ private:
     auto propagate_one_(const VecZ &gen_vec,
                         int only_rotate_len_k,
                         std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
-                        std::optional<double> param = std::nullopt) -> void;
+                        std::optional<double> param = std::nullopt,
+                        size_t param_index = 0,
+                        double gen_coeff = 0.0) -> void;
 
     /**
      * @brief Creates a functional (closure) for expectation value or gradient calculations
