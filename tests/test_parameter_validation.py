@@ -18,22 +18,21 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import Gate, MajoranaPropagator, Parameter, ParameterVector, Term
-from monoprop.monomial_data import MonomialOperator
+from monoprop import MajoranaGate, MajoranaPropagator, Term
+from monoprop.majorana_data import MajoranaOperator
 
 
 def _two_gate_graph(serial_comm):
     """A propagator with a two-layer, two-parameter graph already built."""
-    operator = MonomialOperator.from_dict(
+    operator = MajoranaOperator.from_dict(
         terms_dict={(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2
     )
     mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
-    params = ParameterVector()
     gates = [
-        Gate(params.new(), (Term((0,), 1.0),)),
-        Gate(params.new(), (Term((1,), 1.0),)),
+        MajoranaGate((Term((0,), 1.0),)),
+        MajoranaGate((Term((1,), 1.0),)),
     ]
-    mp.propagate_build_graph(gates)
+    mp.propagate_build_graph(gates)  # identity mapping -> two distinct angles
     return mp, gates
 
 
@@ -41,7 +40,7 @@ class TestConstructorValidation:
     """Validation performed at construction time."""
 
     def test_invalid_basis_change_length(self, serial_comm):
-        operator = MonomialOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
+        operator = MajoranaOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
         with pytest.raises(ValueError, match="Basis change must have length 4"):
             MajoranaPropagator(
                 operator,
@@ -52,7 +51,7 @@ class TestConstructorValidation:
             )
 
     def test_invalid_tolerances(self, serial_comm):
-        operator = MonomialOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
+        operator = MajoranaOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
         with pytest.raises(
             RuntimeError,
             match=r"upper_atol \(0\.1\) must be greater than or equal to lower_atol \(0\.5\)",
@@ -81,39 +80,61 @@ class TestGraphAndParameterValidation:
         with pytest.raises(RuntimeError, match="Parameter length"):
             mp.expectation_value(parameters)
 
-    def test_functional_invalidated_after_graph_mutation(self, serial_comm):
-        operator = MonomialOperator.from_dict(
+    def test_non_contiguous_mapping_raises(self, serial_comm):
+        """A parameter_mapping with an index gap is rejected before it reaches the engine."""
+        operator = MajoranaOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
+        mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
+        gates = [MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),))]
+        with pytest.raises(ValueError, match="contiguous"):
+            mp.propagate_build_graph(gates, parameter_mapping=[0, 2])
+
+    def test_mapping_length_must_match_gates(self, serial_comm):
+        """A parameter_mapping whose length differs from the gate count is rejected."""
+        operator = MajoranaOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
+        mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
+        gates = [MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),))]
+        with pytest.raises(ValueError, match="entries but there are 2 gates"):
+            mp.propagate_build_graph(gates, parameter_mapping=[0])
+
+    def test_shared_mapping_index_ties_gates(self, serial_comm):
+        """Repeating an index in the mapping ties gates to one angle (one parameter)."""
+        operator = MajoranaOperator.from_dict(
             terms_dict={(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2
         )
         mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
-        params = ParameterVector()
-        shared = params.new()
-        other = params.new()
+        gates = [
+            MajoranaGate((Term((0,), 1.0),)),
+            MajoranaGate((Term((1,), 1.0),)),
+        ]
+        mp.propagate_build_graph(gates, parameter_mapping=[0, 0])
+        assert mp.graph_layers == 2
+        assert mp.n_parameters == 1
+
+    def test_functional_invalidated_after_graph_mutation(self, serial_comm):
+        operator = MajoranaOperator.from_dict(
+            terms_dict={(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2
+        )
+        mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
         mp.propagate_build_graph(
-            [Gate(shared, (Term((0,), 1.0),)), Gate(other, (Term((1,), 1.0),))]
+            [MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),))]
         )
         functional = mp.expectation_value_functional()
-        # Add a layer reusing an existing parameter so n_parameters is unchanged and the
-        # stale-graph guard (not the parameter-length check) is what fires.
-        mp.propagate_build_graph([Gate(shared, (Term((2,), 1.0),))])
+        # Add a layer reusing an existing parameter index so n_parameters is unchanged and
+        # the stale-graph guard (not the parameter-length check) is what fires.
+        mp.propagate_build_graph(
+            [MajoranaGate((Term((2,), 1.0),))], parameter_mapping=[0]
+        )
         with pytest.raises(RuntimeError, match=r"MP object has been modified"):
             functional([1.0, 2.0])
 
-    def test_bind_rejects_wrong_length(self):
-        params = ParameterVector([Parameter(), Parameter()])
-        with pytest.raises(ValueError, match="Expected 2 parameters"):
-            params.bind([1.0])
 
+class TestEvolvedOperatorBothPictures:
+    """evolved_operator works in both pictures (no picture guard)."""
 
-class TestEvolvedOperatorPictureGuard:
-    """evolved_operator is Heisenberg-only."""
-
-    def test_schrodinger_error(self, serial_comm):
-        operator = MonomialOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
+    def test_schrodinger_returns_state_dict(self, serial_comm):
+        operator = MajoranaOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
         mp = MajoranaPropagator(
             operator, [0, 1], cutoff=4, schrodinger_cutoff=2, comm=serial_comm
         )
-        with pytest.raises(
-            ValueError, match="Cannot call evolved_operator in Schrodinger picture"
-        ):
-            mp.evolved_operator()
+        result = mp.evolved_operator()
+        assert isinstance(result, dict)

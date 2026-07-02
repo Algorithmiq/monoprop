@@ -1,7 +1,7 @@
 Initialisation and updates
 ==========================
 
-The top-level classes are ``MajoranaPropagator`` and ``QubitPropagator`` (Python) /
+The top-level classes are ``MajoranaPropagator`` and ``PauliPropagator`` (Python) /
 ``MonomialPropagator<NumModes>`` (C++). Every significant aspect of the
 simulation can be tuned at construction time and updated at runtime without
 rebuilding. The structural and coefficient cutoffs are covered separately in

@@ -20,14 +20,14 @@ import numpy as np
 from msgpack import unpackb
 from pytest_cases import case
 
-from monoprop.monomial_data import MajoranaSequence, MonomialOperator
+from monoprop.majorana_data import MajoranaOperator, MajoranaSequence
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
 class SplitOrbitalRotations(NamedTuple):
-    """Data class for Monomial Propagator Fermionic data."""
+    """Data class for Majorana propagator fermionic test data."""
 
     majs: list[tuple[int, ...]]
     param_inds: np.ndarray
@@ -45,7 +45,7 @@ class FermionicProblem:
     def __init__(
         self,
         monomial_circuit: MajoranaSequence,
-        operator: MonomialOperator,
+        operator: MajoranaOperator,
         exact_expval: float,
         exact_gradient: np.ndarray,
         n_modes: int,
@@ -92,7 +92,7 @@ def load_problem(path: Path) -> FermionicProblem:
 
     Returns:
         A :class:`FermionicProblem` built directly from the public API
-        (:class:`MajoranaSequence` and :class:`MonomialOperator`).
+        (:class:`MajoranaSequence` and :class:`MajoranaOperator`).
     """
     with path.open("rb") as fh:
         data = unpackb(fh.read())
@@ -110,7 +110,7 @@ def load_problem(path: Path) -> FermionicProblem:
         tuple(key): complex(real, imag)
         for key, real, imag in zip(ham["keys"], ham["real"], ham["imag"], strict=True)
     }
-    quantum_operator = MonomialOperator.from_dict(terms, data["num_modes"])
+    quantum_operator = MajoranaOperator.from_dict(terms, data["num_modes"])
 
     return FermionicProblem(
         monomial_circuit=monomial_circuit,

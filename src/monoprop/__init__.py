@@ -29,33 +29,28 @@ from ._core import (
 )
 from ._version import version as __version__
 from .circuit import (
-    Gate,
-    Parameter,
-    ParameterVector,
-    QubitGate,
+    MajoranaGate,
+    PauliGate,
     Term,
-    gates_from_majorana_sequence,
-    gates_from_qubit_circuit,
+    combine_parameters,
     to_engine_arrays,
 )
-from .monomial_propagator import MajoranaPropagator, QubitPropagator
+from .majorana_propagator import MajoranaPropagator
+from .pauli_propagator import PauliPropagator
 from .utils import jordan_wigner_basis_change
 
 __all__ = [
     "MAX_NUM_MODES",
-    "Gate",
+    "MajoranaGate",
     "MajoranaPropagator",
-    "Parameter",
-    "ParameterVector",
-    "QubitGate",
-    "QubitPropagator",
+    "PauliGate",
+    "PauliPropagator",
     "Term",
     "__build_type__",
     "__compiler_flags__",
     "__version__",
     "antihermitian_generator_correction",
-    "gates_from_majorana_sequence",
-    "gates_from_qubit_circuit",
+    "combine_parameters",
     "has_mpi",
     "is_antihermitian",
     "jordan_wigner_basis_change",

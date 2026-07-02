@@ -21,11 +21,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .circuit import PauliGate
 from .conversion_utils import _pauli_to_fermi
-from .monomial_data import Monomial, MonomialOperator
+from .majorana_data import MajoranaOperator
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
 _VALID_PAULI_CHARS = frozenset("IXYZ")
 
@@ -64,12 +65,6 @@ class PauliString:  # noqa: PLW1641
         if not isinstance(other, PauliString):
             return NotImplemented
         return self.string == other.string
-
-
-def _pauli_to_monomial(pauli: PauliString) -> Monomial:
-    """Convert a Pauli String to a MonomialOperator using Jordan Wigner Mapping."""
-    majoranas, coefficient = _pauli_to_fermi(pauli.string)
-    return Monomial(set_bits=np.array(majoranas), coefficient=coefficient)
 
 
 class PauliOperator:
@@ -194,12 +189,15 @@ class PauliOperator:
         values = self.coefficients
         return dict(zip(keys, values))
 
-    def get_monomial_operator(self) -> MonomialOperator:
-        """Convert the Pauli operator to a MonomialOperator."""
-        terms = [_pauli_to_monomial(s) for s in self.strings]
-        for term, coeff in zip(terms, self.coefficients):
-            term.coefficient *= coeff
-        return MonomialOperator(terms, self.num_qubits)
+    def get_majorana_operator(self) -> MajoranaOperator:
+        """Convert the Pauli operator to a MajoranaOperator via Jordan-Wigner."""
+        majoranas: list[Sequence[int]] = []
+        coefficients: list[complex] = []
+        for pauli_string, coeff in zip(self.strings, self.coefficients):
+            majorana, jw_coeff = _pauli_to_fermi(pauli_string.string)
+            majoranas.append(majorana)
+            coefficients.append(jw_coeff * coeff)
+        return MajoranaOperator(majoranas, coefficients, self.num_qubits)
 
 
 class PauliEvGate:
@@ -319,6 +317,21 @@ class PauliEvCircuit:
             f"{len(self)} gates, "
             f"initial_state={self.initial_state})"
         )
+
+    def to_gates(self) -> tuple[list[PauliGate], list[float], list[int]]:
+        """Lift the circuit into authoring qubit gates.
+
+        One :class:`~monoprop.circuit.PauliGate` per Pauli evolution gate, each its own
+        distinct angle (the identity mapping), matching the one-parameter-per-gate layout.
+
+        Returns:
+            A tuple ``(gates, parameters, parameter_mapping)``: the qubit gates in order, the
+            gate angles, and the identity per-gate angle mapping.
+        """
+        gates = [PauliGate(tuple(gate.qubits), gate.paulis) for gate in self.gates]
+        parameters = [float(gate.parameter) for gate in self.gates]
+        mapping = list(range(len(self.gates)))
+        return gates, parameters, mapping
 
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1e-8) -> bool:
         """Check if two PauliEvCircuits are closely equal.

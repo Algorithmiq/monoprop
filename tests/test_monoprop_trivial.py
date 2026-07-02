@@ -34,7 +34,7 @@ from monoprop.fermi_data import FermiCircuit, MajoranaOperator
         ),  # Schrodinger picture
     ],
 )
-def test_trivial_evolved_operator_dict(
+def test_trivial_evolved_operator_cases(
     initial_op, cutoff, schrodinger_cutoff, expected, serial_comm
 ):
     """Test trivial evolved operator dict for various initial conditions."""
@@ -47,7 +47,7 @@ def test_trivial_evolved_operator_dict(
         comm=serial_comm,
         **kwargs,
     )
-    result = mp.evolved_operator_dict()
+    result = mp.evolved_operator()
     assert result == expected
 
 

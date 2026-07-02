@@ -9,7 +9,7 @@ changed at any point during a simulation.
 The structural cutoff discards monomials that grow "too large". What counts as
 large is set by the cutoff **type** — ``length`` or ``support`` — and by which
 simulator you use: ``MajoranaPropagator`` measures a monomial as a Majorana
-operator, whereas ``QubitPropagator`` measures it as a qubit (Pauli) operator.
+operator, whereas ``PauliPropagator`` measures it as a qubit (Pauli) operator.
 
 Cutoff type and value
 ---------------------
@@ -60,8 +60,8 @@ picking the right simulator is what fixes the meaning of ``length`` and ``suppor
 ``length`` (counts Majorana operators :math:`m_j`) and ``support`` (counts the
 distinct modes touched). This is the natural choice for fermionic problems.
 
-**Qubit (Pauli) operators —** ``QubitPropagator``. For a qubit Hamiltonian you
-usually want to bound the **Pauli weight** instead. ``QubitPropagator`` accepts
+**Qubit (Pauli) operators —** ``PauliPropagator``. For a qubit Hamiltonian you
+usually want to bound the **Pauli weight** instead. ``PauliPropagator`` accepts
 Pauli operators and gates directly and always measures the cutoff as a qubit
 operator, so ``support`` counts the qubits a term touches — its Pauli weight. Its
 cutoff type is fixed to ``support`` (there is no ``cutoff_type`` argument, and

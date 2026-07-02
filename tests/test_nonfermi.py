@@ -14,8 +14,8 @@
 
 import numpy as np
 
-from monoprop import MajoranaPropagator, gates_from_majorana_sequence
-from monoprop.monomial_data import MajoranaSequence, MonomialOperator
+from monoprop import MajoranaPropagator
+from monoprop.majorana_data import MajoranaOperator, MajoranaSequence
 
 
 def test_nonfermi(serial_comm):
@@ -28,7 +28,7 @@ def test_nonfermi(serial_comm):
     param_inds = np.array([0, 1, 2, 3])
     parameters = np.array([0.1, 0.2, 0.2, 0.2])
 
-    fermionic_operator = MonomialOperator.from_dict(
+    fermionic_operator = MajoranaOperator.from_dict(
         terms_dict={(1, 2, 3): -1j}, num_modes=num_modes
     )
     monomial_circuit = MajoranaSequence(
@@ -38,7 +38,7 @@ def test_nonfermi(serial_comm):
         param_inds=param_inds,
         parameters=parameters,
     )
-    gates, _ = gates_from_majorana_sequence(monomial_circuit)
+    gates, _, _ = monomial_circuit.to_gates()
 
     exact_evolved_op = {
         (1, 2, 3): -0.8314427691150754j,
@@ -56,7 +56,7 @@ def test_nonfermi(serial_comm):
         comm=serial_comm,
     )
     mp.propagate(gates, monomial_circuit.parameters)
-    test_evolved_op = mp.evolved_operator_dict()
+    test_evolved_op = mp.evolved_operator()
 
     assert len(test_evolved_op) == len(exact_evolved_op)
 

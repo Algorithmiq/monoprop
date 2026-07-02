@@ -18,15 +18,15 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import QubitPropagator, gates_from_qubit_circuit
+from monoprop import PauliPropagator
 from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator, PauliString
 
 
-class TestQubitPropagatorCutoff:
-    """QubitPropagator fixes the cutoff to Pauli weight ('support')."""
+class TestPauliPropagatorCutoff:
+    """PauliPropagator fixes the cutoff to Pauli weight ('support')."""
 
     def _propagator(self, serial_comm):
-        return QubitPropagator(
+        return PauliPropagator(
             PauliOperator(["ZZ"], [1.0]),
             initial_state=[],
             cutoff=4,
@@ -140,18 +140,18 @@ class TestPauliOperator:
         with pytest.raises(ValueError, match="same length"):
             PauliOperator.from_dict({"X": 1.0, "XY": 2.0})
 
-    def test_get_monomial_operator_identity(self):
+    def test_get_majorana_operator_identity(self):
         op = PauliOperator(["I"], [2.5])
 
-        mon_op = op.get_monomial_operator()
+        mon_op = op.get_majorana_operator()
 
         assert mon_op.num_modes == 1
         assert mon_op.terms == {(): pytest.approx(2.5)}
 
-    def test_get_monomial_operator_z(self):
+    def test_get_majorana_operator_z(self):
         op = PauliOperator(["Z"], [1.0])
 
-        mon_op = op.get_monomial_operator()
+        mon_op = op.get_majorana_operator()
 
         assert mon_op.num_modes == 1
         assert mon_op.terms == {(0, 1): pytest.approx(-1.0j)}
@@ -303,27 +303,29 @@ class TestPauliEvCircuit:
         assert "PauliEvCircuit" in r
         assert "1 gates" in r
 
-    def test_gates_from_qubit_circuit(self):
-        # The Pauli->Majorana mapping lives in QubitPropagator; the circuit adapter
-        # stays in the qubit basis and yields one QubitGate per Pauli evolution gate.
+    def test_to_gates(self):
+        # The Pauli->Majorana mapping lives in PauliPropagator; the circuit adapter
+        # stays in the qubit basis and yields one PauliGate per Pauli evolution gate.
         op = PauliOperator(["Z"], [2.0])
         gate = PauliEvGate([0], op, 0.7)
         circuit = PauliEvCircuit([gate], [0], num_qubits=1)
 
-        gates, params = gates_from_qubit_circuit(circuit)
+        gates, params, mapping = circuit.to_gates()
 
         assert len(gates) == 1
         assert gates[0].qubits == (0,)
         assert gates[0].paulis is op
         assert len(params) == 1
+        assert mapping == list(range(len(gates)))
 
-    def test_gates_from_qubit_circuit_empty(self):
+    def test_to_gates_empty(self):
         circuit = PauliEvCircuit([], [1], num_qubits=1)
 
-        gates, params = gates_from_qubit_circuit(circuit)
+        gates, params, mapping = circuit.to_gates()
 
         assert gates == []
         assert len(params) == 0
+        assert mapping == list(range(len(gates)))
 
     @pytest.mark.parametrize(
         ("circuit", "other", "expected"),

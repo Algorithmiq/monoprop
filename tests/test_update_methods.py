@@ -12,20 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for update methods in MonomialPropagator."""
+"""Tests for update methods in MajoranaPropagator."""
 
 import pytest
 from pytest_cases import parametrize_with_cases
 
 from monoprop import (
-    Gate,
+    MajoranaGate,
     MajoranaPropagator,
-    Parameter,
     Term,
-    gates_from_majorana_sequence,
     jordan_wigner_basis_change,
 )
-from monoprop.monomial_data import MajoranaSequence, MonomialOperator
+from monoprop.majorana_data import MajoranaOperator, MajoranaSequence
 from tests.cases import CasesFermionicProblem
 
 
@@ -35,7 +33,7 @@ class TestUpdateMethods:
     @pytest.fixture
     def mp(self, serial_comm):
         return MajoranaPropagator(
-            initial_operator=MonomialOperator.from_dict(
+            initial_operator=MajoranaOperator.from_dict(
                 terms_dict={(0, 1): 1.0j}, num_modes=4
             ),
             initial_state=[],
@@ -110,7 +108,7 @@ class TestUpdateMethods:
 
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
-        gate = Gate(Parameter(), (Term((0, 1, 2, 3, 4, 5), 1.0),))
+        gate = MajoranaGate((Term((0, 1, 2, 3, 4, 5), 1.0),))
         mp.propagate_build_graph([gate])
         assert mp.size() > 0
 
@@ -187,7 +185,7 @@ class TestUpdateMethods:
             parameters=[1.0, 1.0],
         )
         mp = MajoranaPropagator(
-            initial_operator=MonomialOperator.from_dict(
+            initial_operator=MajoranaOperator.from_dict(
                 terms_dict={(0, 1): 1.0j}, num_modes=4
             ),
             initial_state=sequence.initial_state,
@@ -204,7 +202,7 @@ class TestUpdateMethods:
         for attr, value in updates.items():
             setattr(mp, attr, value)
 
-        gates, _ = gates_from_majorana_sequence(sequence)
+        gates, _, _ = sequence.to_gates()
         mp.propagate(gates, sequence.parameters)
         expval = mp.expectation_value()
         assert isinstance(expval, (int, float))
@@ -253,7 +251,7 @@ class TestUpdateMethods:
 def test_evolutions_after_updates(problem, test_type, serial_comm):
     """Test that evolutions work correctly after parameter updates."""
 
-    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     parameters = problem.monomial_circuit.parameters
 
     mp = MajoranaPropagator(
@@ -287,7 +285,7 @@ def test_evolutions_after_updates(problem, test_type, serial_comm):
 @pytest.mark.parametrize("num_modes", [2, 4, 8, 16])
 def test_update_methods_different_modes(num_modes, serial_comm):
     mp = MajoranaPropagator(
-        initial_operator=MonomialOperator.from_dict(
+        initial_operator=MajoranaOperator.from_dict(
             terms_dict={(0, 1): 1.0j}, num_modes=num_modes
         ),
         initial_state=[],
@@ -302,7 +300,7 @@ def test_update_methods_different_modes(num_modes, serial_comm):
 @pytest.mark.parametrize("num_modes", [4, 8, 16])
 def test_basis_change_invalid_dimensions(num_modes, serial_comm):
     mp = MajoranaPropagator(
-        initial_operator=MonomialOperator.from_dict(
+        initial_operator=MajoranaOperator.from_dict(
             terms_dict={(0, 1): 1.0j}, num_modes=num_modes
         ),
         initial_state=[],

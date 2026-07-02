@@ -18,9 +18,9 @@ import numpy as np
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MajoranaPropagator, gates_from_majorana_sequence
+from monoprop import MajoranaPropagator
 from monoprop.fermi_data import MajoranaOperator
-from monoprop.monomial_data import MajoranaSequence
+from monoprop.majorana_data import MajoranaSequence
 from tests.cases import CasesFermionicProblem, FermionicProblem
 
 
@@ -64,7 +64,7 @@ def test_coeff_trunc(serial_comm):
         gen_coeffs=[1.0],
         param_inds=[0],
     )
-    gates, _ = gates_from_majorana_sequence(sequence)
+    gates, _, _ = sequence.to_gates()
 
     cos_pi6, sin_pi6 = (0.5, -0.8660254037844386)
     act_op = {(0, 1): 1j * cos_pi6, (0, 2, 3, 4): sin_pi6}
@@ -75,7 +75,7 @@ def test_coeff_trunc(serial_comm):
             op, sequence.initial_state, serial_comm, upper_atol, lower_atol, cutoff
         )
         mp.propagate(gates, sequence.parameters)
-        return mp.evolved_operator_dict()
+        return mp.evolved_operator()
 
     test_scenarios = [
         (4, None, None, act_op),
@@ -103,7 +103,7 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
     fermionic_operator = problem.operator
     monomial_circuit = problem.monomial_circuit
     schrodinger_cutoff_val = 2 * n_modes if schrodinger else None
-    gates, _ = gates_from_majorana_sequence(monomial_circuit)
+    gates, _, _ = monomial_circuit.to_gates()
     parameters = monomial_circuit.parameters
 
     mp_inplace = _create_mp(
@@ -148,7 +148,7 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
         gen_coeffs=[1.0],
         param_inds=[0],
     )
-    gates, _ = gates_from_majorana_sequence(sequence)
+    gates, _, _ = sequence.to_gates()
 
     cutoff = 4
     final_operator = {
@@ -168,7 +168,7 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
     assert mp.graph_size()[0] == 0
     assert mp.size() == 2
 
-    test_op = mp.evolved_operator_dict(sequence.parameters)
+    test_op = mp.evolved_operator(sequence.parameters)
     _check_dicts(test_op, final_operator)
 
 
@@ -185,7 +185,7 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
         gen_coeffs=[1.0],
         param_inds=[0],
     )
-    gates, _ = gates_from_majorana_sequence(sequence)
+    gates, _, _ = sequence.to_gates()
 
     cutoff = 4
     final_operator = {
@@ -214,5 +214,5 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
         assert mp.graph_size()[0] == 0
         assert mp.size() == 2
 
-        test_op = mp.evolved_operator_dict(sequence.parameters)
+        test_op = mp.evolved_operator(sequence.parameters)
         _check_dicts(test_op, final_operator)

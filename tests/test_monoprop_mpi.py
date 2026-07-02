@@ -26,7 +26,7 @@ from tests.cases import load_problem
 
 MPI = pytest.importorskip("mpi4py").MPI
 
-from monoprop import MajoranaPropagator, gates_from_majorana_sequence  # noqa: E402
+from monoprop import MajoranaPropagator  # noqa: E402
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def _make_mp(problem, comm, *, schrodinger=False):
         schrodinger_cutoff=2 * problem.n_modes if schrodinger else None,
         comm=comm,
     )
-    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     return mp, gates
 
 

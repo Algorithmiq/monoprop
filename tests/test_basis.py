@@ -18,11 +18,10 @@ import numpy as np
 
 from monoprop import (
     MajoranaPropagator,
-    gates_from_majorana_sequence,
     jordan_wigner_basis_change,
 )
 from monoprop.fermi_data import MajoranaOperator
-from monoprop.monomial_data import MajoranaSequence
+from monoprop.majorana_data import MajoranaSequence
 
 
 def test_basis_change(serial_comm):
@@ -37,7 +36,7 @@ def test_basis_change(serial_comm):
         gen_coeffs=[-1.0],
         param_inds=[0],
     )
-    gates, _ = gates_from_majorana_sequence(sequence)
+    gates, _, _ = sequence.to_gates()
     pauli_basis = jordan_wigner_basis_change(n_modes)
     mp = MajoranaPropagator(
         initial_op,
@@ -47,7 +46,7 @@ def test_basis_change(serial_comm):
         comm=serial_comm,
     )
     mp.propagate_build_graph(gates)
-    tes_op = mp.evolved_operator_dict(sequence.parameters)
+    tes_op = mp.evolved_operator(sequence.parameters)
     act_op = {(0,): np.cos(2 * 1.0)}
     assert len(tes_op) == 1, f"Expected 1 operator, got {len(tes_op)}: {tes_op}"
     for (k1, v1), (k2, v2) in zip(tes_op.items(), act_op.items(), strict=True):

@@ -17,7 +17,7 @@ import json
 import numpy as np
 import pytest
 
-from monoprop import QubitPropagator, gates_from_qubit_circuit
+from monoprop import PauliPropagator
 from monoprop.qiskit_conversion import from_qiskit_circuit, from_qiskit_operator
 
 try:
@@ -95,15 +95,15 @@ def test_qiskit_with_mp(
     simple_ev_circuit: QuantumCircuit,
     qiskit_result: list[complex],
 ):
-    """Integration test for circuits comming from Qiskit and running them with the MonomialPropagator."""
+    """Integration test for circuits comming from Qiskit and running them with the PauliPropagator."""
 
     operator = from_qiskit_operator(hamiltonian_lih)
     quantum_circuit = from_qiskit_circuit(
         simple_ev_circuit, initial_state=list(range(1, 12, 2))
     )
-    gates, _ = gates_from_qubit_circuit(quantum_circuit)
+    gates, _, _ = quantum_circuit.to_gates()
     parameters = [gate.parameter for gate in quantum_circuit.gates]
-    mp = QubitPropagator(
+    mp = PauliPropagator(
         operator,
         quantum_circuit.initial_state,
         cutoff=6,

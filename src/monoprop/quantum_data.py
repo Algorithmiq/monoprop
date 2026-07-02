@@ -20,22 +20,13 @@ from abc import abstractmethod
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from monoprop.monomial_data import MajoranaSequence, MonomialOperator
+    from monoprop.majorana_data import MajoranaOperator
 
 
 class IQuantumOperator(Protocol):
     """Protocol representing a quantum operator."""
 
     @abstractmethod
-    def get_monomial_operator(self) -> MonomialOperator:
-        """Convert the operator to a MonomialOperator."""
-        ...
-
-
-class IQuantumGatesSequence(Protocol):
-    """Protocol representing a quantum circuit."""
-
-    @abstractmethod
-    def get_majorana_sequence(self) -> MajoranaSequence:
-        """Convert the circuit to a MajoranaSequence."""
+    def get_majorana_operator(self) -> MajoranaOperator:
+        """Convert the operator to a MajoranaOperator."""
         ...

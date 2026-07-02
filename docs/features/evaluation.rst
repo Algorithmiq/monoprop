@@ -9,8 +9,10 @@ coefficient), so evaluation takes **only the parameter values**. This is a very
 powerful feature for example in variational workflows, where the same circuit is
 evaluated repeatedly at many parameter values.
 
-The parameter values are given either as a sequence in the canonical parameter-vector
-order, or as a mapping from :class:`~monoprop.Parameter` handle to value.
+The parameter values are given as a plain sequence of floats (a list or numpy array) in
+parameter-index order (``values[i]`` is the angle for gates mapped to index ``i`` by the
+propagator's ``parameter_mapping``). To stitch together two independently-indexed circuit
+halves, use :func:`~monoprop.combine_parameters`.
 
 Expectation value and gradient
 -------------------------------
@@ -22,10 +24,9 @@ The simplest path is to evaluate directly:
    expval = sim.expectation_value(parameters)
    expval, grad = sim.expectation_value_and_gradient(parameters)  # single backward pass
 
-The gradient is returned in the canonical parameter axis order (the order in which
-distinct ``Parameter`` handles were first seen while building the graph), and
-``expectation_value_and_gradient`` computes both quantities in one backward pass over
-the graph.
+The gradient is returned in parameter-index order (``grad[i]`` is the derivative with
+respect to the angle at index ``i``), and ``expectation_value_and_gradient`` computes
+both quantities in one backward pass over the graph.
 
 Reusable functionals
 --------------------
@@ -84,4 +85,4 @@ parameters:
    coeffs = sim.contract_partially(parameters, inplace=False)
 
 To read the fully evolved operator as a dictionary keyed by Majorana indices —
-without modifying the simulator — use ``evolved_operator_dict``.
+without modifying the simulator — use ``evolved_operator``.

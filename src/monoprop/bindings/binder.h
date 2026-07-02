@@ -163,7 +163,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                     "Whether the propagator uses Schrodinger picture");
 
     cls.def(
-        "evolved_operator_dict",
+        "evolved_operator",
         [](MonomialPropagator<NumModes> &self, const VecD &parameters, double atol) -> nb::dict {
             // Evolve the operator representation (single rank in non-MPI Python bindings)
             const auto evolved_op = self.contract_partially(parameters, false);

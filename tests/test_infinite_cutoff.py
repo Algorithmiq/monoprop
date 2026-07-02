@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MajoranaPropagator, gates_from_majorana_sequence
+from monoprop import MajoranaPropagator
 from tests.cases import CasesFermionicProblem
 
 
@@ -43,7 +43,7 @@ def test_infinite_cutoff(
     problem, pare_threshold, schrodinger_cutoff, evolution_mode, comm
 ):
     mp = _create_mp(problem, comm, schrodinger_cutoff=schrodinger_cutoff)
-    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     parameters = problem.monomial_circuit.parameters
 
     match evolution_mode:
@@ -85,7 +85,7 @@ def test_gradient(problem, schrodinger, pare_threshold, comm):
         schrodinger_cutoff=cutoff + 2 if schrodinger else None,
         comm=comm,
     )
-    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     mp.propagate_build_graph(gates)
     ener_fn = mp.expectation_value_functional(pare_threshold=pare_threshold)
 
@@ -125,7 +125,7 @@ def test_immediate_contraction(problem, schrodinger, comm):
         lower_atol=1e-15,
         comm=comm,
     )
-    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     mp.propagate(gates, problem.monomial_circuit.parameters)
     test_expval, gradient = mp.expectation_value_and_gradient()
 

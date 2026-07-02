@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Majorana and qubit propagators.
+"""Majorana propagator.
 
-Both classes wrap the same compiled C++ Majorana simulator. Gate information (the
-Majorana generators, their coefficients, and the parameter each drives) is owned by
-the propagation graph, so evaluation methods take only ``parameters``.
+Wraps the compiled C++ Majorana simulator. Gate information (the Majorana generators,
+their coefficients, and the parameter each drives) is owned by the propagation graph, so
+evaluation methods take only ``parameters``.
 """
 
 from __future__ import annotations
@@ -28,21 +28,19 @@ import numpy as np
 
 from monoprop._dispatch import dispatch
 
-from .circuit import Gate, ParameterVector, Term, to_engine_arrays
-from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
-from .monomial_data import MonomialOperator
-from .utils import jordan_wigner_basis_change, validate_basis_change
+from .circuit import expand_monomials, to_engine_arrays
+from .majorana_data import MajoranaOperator
+from .utils import validate_basis_change
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
     from mpi4py import MPI
 
-    from .circuit import Parameter, QubitGate
-    from .pauli_data import PauliOperator
+    from .circuit import MajoranaGate
     from .quantum_data import IQuantumOperator
 
-    ParameterValues = Sequence[float] | Mapping[Parameter, float] | np.ndarray | None
+    ParameterValues = Sequence[float] | np.ndarray | None
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +65,7 @@ class MajoranaPropagator:
 
     def __init__(
         self,
-        initial_operator: IQuantumOperator | MonomialOperator,
+        initial_operator: IQuantumOperator | MajoranaOperator,
         initial_state: list[int] | np.ndarray,
         *,
         cutoff: int,
@@ -86,8 +84,9 @@ class MajoranaPropagator:
         truncation.
 
         Args:
-            initial_operator: Initial operator, either a :class:`MonomialOperator` or an
-                object implementing ``get_monomial_operator()``.
+            initial_operator: Initial operator, either a
+                :class:`~monoprop.majorana_data.MajoranaOperator` or an object
+                implementing ``get_majorana_operator()``.
             initial_state: Slater determinant (occupied mode indices) for the initial
                 state.
             cutoff: Truncation parameter controlling the maximum complexity of the
@@ -119,12 +118,12 @@ class MajoranaPropagator:
             comm: Optional MPI communicator. The communicator must remain valid for the
                 simulator's lifetime.
         """
-        monomial_operator: MonomialOperator = (
+        majorana_operator: MajoranaOperator = (
             initial_operator
-            if isinstance(initial_operator, MonomialOperator)
-            else initial_operator.get_monomial_operator()
+            if isinstance(initial_operator, MajoranaOperator)
+            else initial_operator.get_majorana_operator()
         )
-        num_modes = monomial_operator.num_modes
+        num_modes = majorana_operator.num_modes
         logger.debug(
             "__init__. num_modes=%d, cutoff=%d, schrodinger_cutoff=%s",
             num_modes,
@@ -134,9 +133,10 @@ class MajoranaPropagator:
         validate_basis_change(basis_change, num_modes)
 
         self._comm = comm
-        self._params = ParameterVector()
+        self._n_params = 0
+        self._seen_params: set[int] = set()
         self._simulator = dispatch(num_modes)(
-            initial_operator=monomial_operator.terms,
+            initial_operator=majorana_operator.terms,
             cutoff=cutoff,
             slater_determinant=list(initial_state),
             schrodinger_cutoff=schrodinger_cutoff,
@@ -149,14 +149,15 @@ class MajoranaPropagator:
 
     # -- gate ingestion ---------------------------------------------------------
 
-    def _majorana_gates(self, gates: Sequence[Gate]) -> Sequence[Gate]:
+    def _majorana_gates(self, gates: Sequence[MajoranaGate]) -> Sequence[MajoranaGate]:
         """Hook for subclasses to map their gate type to Majorana gates."""
         return gates
 
     def propagate_build_graph(
         self,
-        gates: Sequence[Gate | QubitGate],
+        gates: Sequence[MajoranaGate],
         parameters: ParameterValues = None,
+        parameter_mapping: Sequence[int] | None = None,
         *,
         only_rotate_len_k: int = 0,
     ) -> None:
@@ -170,11 +171,15 @@ class MajoranaPropagator:
         regenerated internally by contracting the existing graph at those parameters.
 
         Args:
-            gates: Gates to append (Majorana :class:`~monoprop.circuit.Gate`, or
-                :class:`~monoprop.circuit.QubitGate` for :class:`QubitPropagator`).
-            parameters: Optional full parameter vector (see above), given either as a
-                sequence in canonical parameter order or as a mapping from
-                :class:`~monoprop.circuit.Parameter` handle to value.
+            gates: Gates to append (Majorana :class:`~monoprop.circuit.MajoranaGate`, or
+                :class:`~monoprop.circuit.PauliGate` for :class:`PauliPropagator`).
+            parameters: Optional full parameter vector (see above), given as a sequence in
+                parameter-index order.
+            parameter_mapping: Per-gate angle index into the *global* parameter axis
+                (``parameter_mapping[i]`` drives gate ``i``); ``None`` (the default) assigns
+                each new gate a fresh angle, continuing the accumulated axis. Repeat an index
+                (or reuse one from an earlier call) to tie gates to a shared angle. The union
+                of all indices ever used must stay contiguous ``0..n-1``.
             only_rotate_len_k: If > 0, apply gates to monomials of length <= k in the
                 evolved operator even if they anticommute. Useful when many
                 free-fermionic gates (generators that are length-2 Majorana monomials)
@@ -182,15 +187,34 @@ class MajoranaPropagator:
                 simulations.
         """
         majorana_gates = self._majorana_gates(gates)
-        for gate in majorana_gates:
-            self._params.register(gate.param)
-        majoranas, gen_coeffs, parameter_mapping = to_engine_arrays(
-            majorana_gates, self._params
-        )
+        n = len(majorana_gates)
+        if parameter_mapping is None:
+            # Continue the accumulated axis: each new gate gets a fresh distinct angle.
+            mapping = list(range(self._n_params, self._n_params + n))
+        else:
+            mapping = [int(p) for p in parameter_mapping]
+            if len(mapping) != n:
+                raise ValueError(
+                    f"parameter_mapping has {len(mapping)} entries but there are "
+                    f"{n} gates."
+                )
+        # Indices are global (they extend the graph's parameter axis); the union of every
+        # index used so far must stay contiguous 0..N-1 -- a gap would invent a phantom
+        # parameter that nothing drives.
+        self._seen_params.update(mapping)
+        if self._seen_params and self._seen_params != set(
+            range(max(self._seen_params) + 1)
+        ):
+            raise ValueError(
+                "parameter indices must be contiguous 0..n-1 with no gaps; "
+                f"got {sorted(self._seen_params)}."
+            )
+        self._n_params = max(self._seen_params, default=-1) + 1
+        majoranas, gen_coeffs, per_monomial = expand_monomials(majorana_gates, mapping)
         bound = None if parameters is None else self._bind(parameters)
         self._simulator.propagate_build_graph(
             majoranas,
-            parameter_mapping,
+            per_monomial,
             gen_coeffs,
             bound,
             only_rotate_len_k,
@@ -198,8 +222,9 @@ class MajoranaPropagator:
 
     def propagate(
         self,
-        gates: Sequence[Gate | QubitGate],
-        parameters: ParameterValues,
+        gates: Sequence[MajoranaGate],
+        parameters: ParameterValues = None,
+        parameter_mapping: Sequence[int] | None = None,
         *,
         only_rotate_len_k: int = 0,
     ) -> None:
@@ -207,27 +232,28 @@ class MajoranaPropagator:
 
         More memory-efficient than :meth:`propagate_build_graph` because it does not
         retain the propagation graph; use it for a single contraction at fixed
-        parameters rather than repeated re-evaluation.
+        parameters rather than repeated re-evaluation. Unlike
+        :meth:`propagate_build_graph`, this is one-shot: ``parameter_mapping`` is local and
+        must be contiguous ``0..d-1``, with ``parameters`` supplying exactly those ``d``
+        angle values.
 
         Args:
             gates: Gates to apply.
-            parameters: Parameter values for the gates, given either as a sequence in
-                gate order or as a mapping from
-                :class:`~monoprop.circuit.Parameter` handle to value.
+            parameters: Angle values covering the mapping's parameter indices, given as a
+                sequence in parameter-index order.
+            parameter_mapping: Per-gate angle index; ``None`` assigns each gate its own
+                distinct angle. Must be contiguous ``0..d-1``.
             only_rotate_len_k: See :meth:`propagate_build_graph`.
         """
         majorana_gates = self._majorana_gates(gates)
-        local = ParameterVector()
-        for gate in majorana_gates:
-            local.register(gate.param)
-        majoranas, gen_coeffs, parameter_mapping = to_engine_arrays(
-            majorana_gates, local
+        majoranas, gen_coeffs, mapping = to_engine_arrays(
+            majorana_gates, parameter_mapping
         )
         self._simulator.propagate(
             majoranas,
-            parameter_mapping,
+            mapping,
             gen_coeffs,
-            local.bind(parameters),
+            self._bind(parameters),
             only_rotate_len_k,
         )
 
@@ -236,7 +262,7 @@ class MajoranaPropagator:
     @property
     def n_parameters(self) -> int:
         """Number of distinct variational parameters seen while building the graph."""
-        return len(self._params)
+        return self._n_params
 
     def expectation_value(
         self,
@@ -249,10 +275,9 @@ class MajoranaPropagator:
         expectation-value functional with no paring.
 
         Args:
-            parameters: Variational parameter values, given either as a sequence in
-                canonical parameter order or as a mapping from
-                :class:`~monoprop.circuit.Parameter` handle to value. ``None`` evaluates
-                the current operator with an empty parameter vector.
+            parameters: Variational parameter values, given as a sequence in
+                parameter-index order. ``None`` evaluates the current operator with an
+                empty parameter vector.
 
         Returns:
             The expectation value as a float.
@@ -303,10 +328,9 @@ class MajoranaPropagator:
     ) -> Callable[..., float]:
         """Return a reusable callable computing the expectation value from parameters.
 
-        Returns a callable that accepts a parameter vector (a sequence, a
-        :class:`~monoprop.circuit.Parameter` mapping, or ``None``) and returns the
-        expectation value, replaying the current evolution graph. Build it once and
-        call it repeatedly across many parameter values.
+        Returns a callable that accepts a parameter vector (a sequence, or ``None``) and
+        returns the expectation value, replaying the current evolution graph. Build it once
+        and call it repeatedly across many parameter values.
 
         Args:
             pare_threshold: Edge-retention cutoff for a masked execution plan built for
@@ -375,7 +399,7 @@ class MajoranaPropagator:
             self._simulator.contract_partially(self._bind(parameters), inplace)
         )
 
-    def evolved_operator_dict(
+    def evolved_operator(
         self,
         parameters: ParameterValues = None,
         *,
@@ -393,38 +417,10 @@ class MajoranaPropagator:
                 keep all terms.
 
         Returns:
-            The evolved operator (Heisenberg) or state (Schrodinger) as a dict mapping
-            Majorana-index tuples to complex coefficients.
+            The evolved operator (Heisenberg picture) or the evolved state (Schrodinger
+            picture) as a dict mapping Majorana-index tuples to complex coefficients.
         """
-        return self._simulator.evolved_operator_dict(self._bind(parameters), atol)
-
-    def evolved_operator(
-        self,
-        parameters: ParameterValues = None,
-        *,
-        atol: float = 1e-12,
-    ) -> dict[tuple[int, ...], complex]:
-        """Return the evolved operator (Heisenberg picture only).
-
-        Args:
-            parameters: Variational parameter values (see :meth:`expectation_value`).
-            atol: Absolute tolerance for filtering small coefficients (see
-                :meth:`evolved_operator_dict`).
-
-        Returns:
-            The evolved operator as a dict mapping Majorana-index tuples to complex
-            coefficients.
-
-        Raises:
-            ValueError: If the simulator is in the Schrodinger picture; use
-                :meth:`evolved_operator_dict` there instead.
-        """
-        if self._simulator.schrodinger:
-            raise ValueError(
-                "Cannot call evolved_operator in Schrodinger picture. "
-                "Use evolved_operator_dict instead."
-            )
-        return self.evolved_operator_dict(parameters, atol=atol)
+        return self._simulator.evolved_operator(self._bind(parameters), atol)
 
     def update_coeffs(self, new_operator: dict[tuple[int, ...], complex]) -> None:
         """Replace the initial-operator coefficients (existing terms only).
@@ -527,103 +523,7 @@ class MajoranaPropagator:
     # -- helpers ----------------------------------------------------------------
 
     def _bind(self, parameters: ParameterValues) -> list[float]:
-        """Resolve ``parameters`` into a dense vector in canonical axis order."""
+        """Resolve ``parameters`` into a dense vector in parameter-index order."""
         if parameters is None:
             return []
-        if hasattr(parameters, "keys"):
-            return self._params.bind(parameters)
         return [float(v) for v in parameters]
-
-
-class QubitPropagator(MajoranaPropagator):
-    """Propagator for qubit (Pauli) operators, mapped to Majoranas via Jordan-Wigner.
-
-    Accepts a :class:`~monoprop.pauli_data.PauliOperator` and
-    :class:`~monoprop.circuit.QubitGate` gates; the Jordan-Wigner basis change is set
-    automatically so cutoffs act on Pauli weight. Outputs remain in the Majorana basis.
-
-    The cutoff type is fixed to ``"support"`` -- i.e. the qubit Pauli weight -- since
-    that is the meaningful structural measure for qubit operators; ``"length"`` is not
-    available on this class.
-    """
-
-    def __init__(
-        self,
-        initial_operator: PauliOperator,
-        initial_state: list[int] | np.ndarray,
-        *,
-        cutoff: int,
-        schrodinger_cutoff: int | None = None,
-        lower_atol: None | float = None,
-        upper_atol: None | float = None,
-        comm: MPI.Comm | None = None,
-    ) -> None:
-        """Initialize the qubit propagator.
-
-        See :class:`MajoranaPropagator` for the shared arguments. The cutoff is always
-        measured as Pauli weight (``cutoff_type="support"``), so ``cutoff`` bounds the
-        number of qubits a retained term touches.
-
-        Args:
-            initial_operator: Initial qubit operator as a
-                :class:`~monoprop.pauli_data.PauliOperator`.
-            initial_state: Computational-basis reference (indices of qubits set to 1).
-            cutoff: Maximum Pauli weight (number of qubits touched) retained during
-                evolution. The fully-paired exception described in
-                :class:`MajoranaPropagator` still applies.
-            schrodinger_cutoff: Optional Schrodinger-picture cutoff (enables that
-                picture).
-            lower_atol: Optional lower coefficient-truncation tolerance.
-            upper_atol: Optional upper coefficient-retention tolerance.
-            comm: Optional MPI communicator (must outlive the propagator).
-        """
-        num_qubits = initial_operator.num_qubits
-        self._num_qubits = num_qubits
-        super().__init__(
-            initial_operator.get_monomial_operator(),
-            initial_state,
-            cutoff=cutoff,
-            schrodinger_cutoff=schrodinger_cutoff,
-            cutoff_type="support",
-            lower_atol=lower_atol,
-            upper_atol=upper_atol,
-            basis_change=jordan_wigner_basis_change(num_qubits),
-            comm=comm,
-        )
-
-    @property
-    def cutoff_type(self) -> str:
-        """Cutoff type, always ``"support"`` (Pauli weight) for a qubit propagator."""
-        return self._simulator.cutoff_type
-
-    @cutoff_type.setter
-    def cutoff_type(self, new_cutoff_type: str) -> None:
-        if new_cutoff_type != "support":
-            raise ValueError(
-                "QubitPropagator only supports the 'support' cutoff type (Pauli "
-                f"weight); got {new_cutoff_type!r}. Use MajoranaPropagator for "
-                "length-based truncation."
-            )
-        self._simulator.cutoff_type = new_cutoff_type
-
-    def _majorana_gates(self, gates: Sequence[QubitGate]) -> list[Gate]:  # type: ignore[override]
-        """Map qubit gates to Majorana gates via Jordan-Wigner, preserving handles."""
-        majorana_gates: list[Gate] = []
-        for qubit_gate in gates:
-            terms: list[Term] = []
-            for pauli, coefficient in zip(
-                qubit_gate.paulis.strings,
-                qubit_gate.paulis.coefficients,
-                strict=True,
-            ):
-                extended = _extend_pauli_string(
-                    pauli.string, qubit_gate.qubits, self._num_qubits
-                )
-                majorana, fermi_coeff = _pauli_to_fermi(extended)
-                weight = len(majorana)
-                gen_coeff = (
-                    -coefficient * fermi_coeff / (1j) ** (weight * (weight - 1) / 2)
-                )
-                terms.append(Term(tuple(majorana), float(np.real(gen_coeff))))
-            majorana_gates.append(Gate(qubit_gate.param, tuple(terms)))
-        return majorana_gates

@@ -22,12 +22,10 @@ import numpy as np
 import pytest
 
 from monoprop import (
-    Gate,
+    MajoranaGate,
     MajoranaPropagator,
-    Parameter,
-    ParameterVector,
     Term,
-    gates_from_majorana_sequence,
+    combine_parameters,
     to_engine_arrays,
 )
 from tests.cases import load_problem
@@ -48,44 +46,49 @@ def _propagator(problem):
 
 
 def test_to_engine_arrays_round_trips_sequence() -> None:
-    """gates_from_majorana_sequence + to_engine_arrays reproduce the dense arrays."""
+    """MajoranaSequence.to_gates + to_engine_arrays reproduce the dense arrays."""
     problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
     mc = problem.monomial_circuit
-    gates, params = gates_from_majorana_sequence(mc)
-    majoranas, gen_coeffs, parameter_mapping = to_engine_arrays(gates, params)
+    gates, params, mapping = mc.to_gates()
+    majoranas, gen_coeffs, parameter_mapping = to_engine_arrays(gates, mapping)
 
     assert [tuple(m) for m in majoranas] == [tuple(m) for m in mc.majoranas]
     np.testing.assert_allclose(gen_coeffs, np.asarray(mc.gen_coeffs, dtype=float))
     assert parameter_mapping == [int(p) for p in mc.param_inds]
+    np.testing.assert_allclose(params, np.asarray(mc.parameters, dtype=float))
 
 
-def test_shared_parameter_reduces_n_parameters() -> None:
-    """Reusing one Parameter across gates ties them: fewer params, repeated mapping."""
-    params = ParameterVector()
-    shared = params.new()
-    other = params.new()
+def test_default_mapping_is_identity() -> None:
+    """Omitting the mapping gives each gate its own distinct angle."""
+    gates = [MajoranaGate((Term((0, 1), 1.0),)), MajoranaGate((Term((2, 3), 1.0),))]
+    _, _, parameter_mapping = to_engine_arrays(gates)
+    assert parameter_mapping == [0, 1]
+
+
+def test_shared_mapping_index_ties_gates() -> None:
+    """Reusing one index in the mapping ties gates: repeated parameter mapping."""
     gates = [
-        Gate(shared, (Term((0, 1), 1.0),)),
-        Gate(other, (Term((2, 3), 1.0),)),
-        Gate(shared, (Term((0, 3), 1.0),)),  # same angle as the first gate
+        MajoranaGate((Term((0, 1), 1.0),)),
+        MajoranaGate((Term((2, 3), 1.0),)),
+        MajoranaGate((Term((0, 3), 1.0),)),  # same angle as the first gate
     ]
-    _, _, parameter_mapping = to_engine_arrays(gates, params)
-    assert len(params) == 2
+    _, _, parameter_mapping = to_engine_arrays(gates, [0, 1, 0])
     assert parameter_mapping == [0, 1, 0]
 
 
-def test_parameter_identity_is_by_object() -> None:
-    """Two parameters with the same name are still distinct axes."""
-    assert Parameter("theta") != Parameter("theta")
-    p = Parameter("theta")
-    assert len({p, p}) == 1  # same handle hashes/compares equal to itself
+def test_to_engine_arrays_rejects_non_contiguous_mapping() -> None:
+    """A mapping with an index gap is rejected (it would invent a phantom parameter)."""
+    gates = [MajoranaGate((Term((0, 1), 1.0),)), MajoranaGate((Term((2, 3), 1.0),))]
+    with pytest.raises(ValueError, match="contiguous"):
+        to_engine_arrays(gates, [0, 2])
 
 
-def test_bind_rejects_wrong_length() -> None:
-    """ParameterVector.bind enforces the axis length for sequences."""
-    params = ParameterVector([Parameter(), Parameter()])
-    with pytest.raises(ValueError, match="Expected 2 parameters"):
-        params.bind([1.0])
+def test_combine_parameters_is_picture_ordered() -> None:
+    """combine_parameters concatenates the two halves in picture-dependent order."""
+    first = [1.0, 2.0]
+    second = [3.0]
+    assert combine_parameters(first, second, schrodinger=True) == [1.0, 2.0, 3.0]
+    assert combine_parameters(first, second, schrodinger=False) == [3.0, 1.0, 2.0]
 
 
 # -- evaluation contracts -------------------------------------------------------
@@ -95,7 +98,7 @@ def test_bind_rejects_wrong_length() -> None:
 def test_expectation_value_matches_exact(fixture: str) -> None:
     """Building the graph then evaluating reproduces the exact expectation value."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
-    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     prop = _propagator(problem)
     prop.propagate_build_graph(gates)
     params = list(map(float, problem.monomial_circuit.parameters))
@@ -108,7 +111,7 @@ def test_expectation_value_matches_exact(fixture: str) -> None:
 def test_eval_rejects_wrong_parameter_length() -> None:
     """expectation_value validates the parameter vector length against the graph."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
-    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     prop = _propagator(problem)
     prop.propagate_build_graph(gates)
     with pytest.raises(RuntimeError):
@@ -119,7 +122,7 @@ def test_eval_rejects_wrong_parameter_length() -> None:
 def test_pared_functional_matches_unpared(fixture: str) -> None:
     """A pared functional agrees with the exact (unpared) evaluation."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
-    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     prop = _propagator(problem)
     prop.propagate_build_graph(gates)
     params = list(map(float, problem.monomial_circuit.parameters))
@@ -144,7 +147,7 @@ def _schrodinger_propagator(problem):
 def test_build_graph_accumulates_layers_and_parameters(fixture: str) -> None:
     """Two propagate_build_graph calls accumulate the graph (layers + parameters)."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
-    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     split = len(gates) // 2
 
     single = _propagator(problem)
@@ -168,7 +171,7 @@ def test_build_graph_in_two_calls_schrodinger(fixture: str) -> None:
     split is deliberately *not* equivalent to one call.)
     """
     problem = load_problem(DATA / f"{fixture}.msgpack")
-    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     params = list(map(float, problem.monomial_circuit.parameters))
     split = len(gates) // 2
 
@@ -189,7 +192,7 @@ def test_build_graph_in_two_calls_schrodinger(fixture: str) -> None:
 def test_build_graph_twice_with_seed_regeneration(fixture: str) -> None:
     """Extending a non-empty graph with parameters regenerates the seed internally."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
-    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     params = list(map(float, problem.monomial_circuit.parameters))
     split = len(gates) // 2
 
@@ -200,3 +203,49 @@ def test_build_graph_twice_with_seed_regeneration(fixture: str) -> None:
     prop.propagate_build_graph(gates[split:], params)
 
     np.testing.assert_allclose(prop.expectation_value(params), problem.exact_expval)
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+@pytest.mark.parametrize("schrodinger", [False, True])
+def test_combine_parameters_by_picture(fixture: str, schrodinger) -> None:
+    """combine_parameters stitches two 0-based halves correctly, per picture.
+
+    The circuit is split and each half is authored in its own 0-based parameter space (via
+    its own ``parameter_mapping``), as if built independently. Feeding the halves in the
+    picture-correct order (forward for Schrodinger, reversed for Heisenberg) reproduces a
+    single-call evolution, and ``combine_parameters`` produces the matching flat vector.
+    """
+    problem = load_problem(DATA / f"{fixture}.msgpack")
+    gates, params, _ = problem.monomial_circuit.to_gates()
+    # One parameter per gate for these fixtures, so the split index is the parameter count.
+    split = len(gates) // 2
+    first = params[:split]  # temporally-first chunk A
+    second = params[split:]  # second chunk B
+    a_gates = gates[:split]
+    b_gates = gates[split:]
+    a_map = list(range(len(a_gates)))  # already 0-based
+    b_map = list(range(len(b_gates)))  # rebased to its own 0-based space
+
+    prop = MajoranaPropagator(
+        problem.operator,
+        problem.monomial_circuit.initial_state,
+        cutoff=2 * problem.n_modes,
+        schrodinger_cutoff=2 * problem.n_modes if schrodinger else None,
+    )
+    if schrodinger:
+        # Forward: A then B. Axis = [A, B].
+        prop.propagate_build_graph(a_gates, parameter_mapping=a_map)
+        prop.propagate_build_graph(
+            b_gates, parameter_mapping=[m + len(first) for m in b_map]
+        )
+    else:
+        # Heisenberg reproduces a single call only if the chunks are fed reversed: B then
+        # A. Axis = [B, A].
+        prop.propagate_build_graph(b_gates, parameter_mapping=b_map)
+        prop.propagate_build_graph(
+            a_gates, parameter_mapping=[m + len(second) for m in a_map]
+        )
+
+    combined = combine_parameters(first, second, schrodinger=schrodinger)
+    assert prop.n_parameters == len(combined)
+    np.testing.assert_allclose(prop.expectation_value(combined), problem.exact_expval)

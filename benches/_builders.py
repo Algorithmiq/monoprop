@@ -28,11 +28,9 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import numpy as np
 
 from monoprop import (
-    Gate,
+    MajoranaGate,
     MajoranaPropagator,
-    QubitPropagator,
-    gates_from_majorana_sequence,
-    gates_from_qubit_circuit,
+    PauliPropagator,
 )
 from monoprop.fermi_data import (
     FermiCircuit,
@@ -40,7 +38,7 @@ from monoprop.fermi_data import (
     FermiOperator,
     MajoranaOperator,
 )
-from monoprop.monomial_data import MajoranaSequence
+from monoprop.majorana_data import MajoranaSequence
 from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator
 
 if TYPE_CHECKING:
@@ -49,7 +47,7 @@ if TYPE_CHECKING:
 _T = TypeVar("_T")
 
 # A built model: the propagator, its compiled gates, and the parameter values.
-Built = tuple[MajoranaPropagator, list[Gate], "np.ndarray | list[float]"]
+Built = tuple[MajoranaPropagator, list[MajoranaGate], "np.ndarray | list[float]"]
 
 
 def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
@@ -196,7 +194,7 @@ def build_random_propagator(
         lower_atol=lower_atol,
         comm=comm,
     )
-    gates, _ = gates_from_majorana_sequence(problem.circuit)
+    gates, _, _ = problem.circuit.to_gates()
     return propagator, gates, problem.parameters
 
 
@@ -293,8 +291,7 @@ def build_hubbard_problem(
     ]
     occupied = _neel_occupied_modes(config.num_sites, config.neel_start_spin)
     fermi_circuit = FermiCircuit(initial_state=occupied, gates=fermi_gates)
-    sequence = fermi_circuit.get_majorana_sequence()
-    gates, _ = gates_from_majorana_sequence(sequence)
+    gates, parameters, _ = fermi_circuit.to_gates()
 
     observable = FermiOperator(
         terms=[
@@ -310,13 +307,13 @@ def build_hubbard_problem(
     # CutoffType is Length | Support in the current API.
     propagator = MajoranaPropagator(
         observable,
-        sequence.initial_state,
+        fermi_circuit.initial_state,
         cutoff=config.cutoff,
         cutoff_type="length",
         lower_atol=config.lower_atol,
         comm=comm,
     )
-    return propagator, gates, sequence.parameters
+    return propagator, gates, parameters
 
 
 # IBM Eagle 127-qubit heavy-hex coupling map (i < j for all pairs).
@@ -521,8 +518,7 @@ def build_kicked_ising_problem(
     circuit = PauliEvCircuit(
         gates=pauli_gates, initial_state=[], num_qubits=config.num_qubits
     )
-    gates, _ = gates_from_qubit_circuit(circuit)
-    parameters = [gate.parameter for gate in circuit.gates]
+    gates, parameters, _ = circuit.to_gates()
 
     obs_str = (
         "I" * config.observable_qubit
@@ -531,8 +527,8 @@ def build_kicked_ising_problem(
     )
     observable = PauliOperator.from_dict({obs_str: 1.0})
 
-    # QubitPropagator sets the Jordan-Wigner basis change automatically.
-    propagator = QubitPropagator(
+    # PauliPropagator sets the Jordan-Wigner basis change automatically.
+    propagator = PauliPropagator(
         observable,
         circuit.initial_state,
         cutoff=config.cutoff,

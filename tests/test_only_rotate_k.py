@@ -18,8 +18,8 @@ import numpy as np
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MajoranaPropagator, gates_from_majorana_sequence
-from monoprop.monomial_data import MajoranaSequence, MonomialOperator
+from monoprop import MajoranaPropagator
+from monoprop.majorana_data import MajoranaOperator, MajoranaSequence
 from tests.cases import CasesFermionicProblemOrbitalRotations
 
 
@@ -45,7 +45,7 @@ def _split_orbital_gates(gates):
 def test_basic_orbital_rotation(serial_comm):
     n_modes = 4
 
-    operator = MonomialOperator({}, n_modes)
+    operator = MajoranaOperator([], [], n_modes)
     sequence = MajoranaSequence(
         initial_state=[],
         majoranas=[(1, 2)],
@@ -53,17 +53,17 @@ def test_basic_orbital_rotation(serial_comm):
         gen_coeffs=[1.0],
         param_inds=[0],
     )
-    gates, _ = gates_from_majorana_sequence(sequence)
+    gates, _, _ = sequence.to_gates()
     kwargs = {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
 
     mp_act = MajoranaPropagator(operator, sequence.initial_state, **kwargs)
-    initial_state = mp_act.evolved_operator_dict()
+    initial_state = mp_act.evolved_operator()
     mp_act.propagate(gates, sequence.parameters)
-    rotated_state = mp_act.evolved_operator_dict()
+    rotated_state = mp_act.evolved_operator()
 
     mp_orb = MajoranaPropagator(operator, sequence.initial_state, **kwargs)
     mp_orb.propagate(gates, sequence.parameters, only_rotate_len_k=4)
-    orb_rotated_state = mp_orb.evolved_operator_dict()
+    orb_rotated_state = mp_orb.evolved_operator()
 
     for key in initial_state:
         if len(key) > 4:
@@ -80,10 +80,13 @@ def test_basic_orbital_rotation(serial_comm):
 @pytest.mark.parametrize("inplace", [False, True])
 def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     """Tests size/graph_size (rank-local) so uses serial_comm."""
-    gates, params_vector = gates_from_majorana_sequence(problem.monomial_circuit)
+    gates, _, _ = problem.monomial_circuit.to_gates()
     parameters = problem.monomial_circuit.parameters
-    parameters_by_handle = dict(zip(params_vector, parameters))
     non_orbital_gates, orbital_gates = _split_orbital_gates(gates)
+    # Consecutive prefix/suffix split, so the (identity) parameter values split the same way.
+    split = len(non_orbital_gates)
+    non_orbital_params = parameters[:split]
+    orbital_params = parameters[split:]
 
     mp_act = MajoranaPropagator(
         problem.operator, problem.monomial_circuit.initial_state, **serial_mp_kwargs
@@ -96,8 +99,8 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     )
 
     if inplace:
-        mp.propagate(non_orbital_gates, parameters_by_handle)
-        mp.propagate(orbital_gates, parameters_by_handle, only_rotate_len_k=4)
+        mp.propagate(non_orbital_gates, non_orbital_params)
+        mp.propagate(orbital_gates, orbital_params, only_rotate_len_k=4)
         test_expval = mp.expectation_value()
     else:
         mp.propagate_build_graph(non_orbital_gates)

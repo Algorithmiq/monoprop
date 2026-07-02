@@ -20,8 +20,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .circuit import MajoranaGate, Term
 from .conversion_utils import _n_product
-from .monomial_data import MajoranaSequence, Monomial, MonomialOperator
+from .majorana_data import MajoranaOperator
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -92,15 +93,14 @@ class FermiString:
         return hash(self.expression)
 
 
-def _from_fermi_to_monomial(ferm_string: FermiString) -> list[Monomial]:
-    """Convert a fermi string to a list of Majorana operators."""
+def _fermi_string_to_majorana_terms(
+    ferm_string: FermiString,
+) -> list[tuple[Sequence[int], complex]]:
+    """Expand a fermi string into ``(majorana indices, coefficient)`` terms."""
     expr = list(ferm_string.expression)
     plus_inds = [i for i, (_, op) in enumerate(expr) if op == "+"]
     minus_inds = [i for i, (_, op) in enumerate(expr) if op == "-"]
-    return [
-        Monomial(np.array(key), val)
-        for key, val in _n_product(expr, plus_inds, minus_inds)
-    ]
+    return list(_n_product(expr, plus_inds, minus_inds))
 
 
 class FermiOperator:
@@ -191,58 +191,15 @@ class FermiOperator:
             for term in lhs.keys() | rhs.keys()
         )
 
-    def get_monomial_operator(self) -> MonomialOperator:
-        """Convert the fermi operator to a MonomialOperator."""
-        terms = [
-            Monomial(m.set_bits, m.coefficient * c)
-            for term, c in zip(self.terms, self.coefficients)
-            for m in _from_fermi_to_monomial(term)
-        ]
-        return MonomialOperator(terms, self.num_modes)
-
-
-class MajoranaOperator:
-    """Class representing a Majorana operator."""
-
-    def __init__(
-        self,
-        majoranas: list[tuple[int, ...]],
-        coefficients: list[complex],
-        num_modes: int | None,
-    ) -> None:
-        """Initialize the Majorana operator.
-
-        Args:
-            majoranas: List of tuples representing the indices of the Majorana operators.
-            coefficients: List of coefficients corresponding to the Majorana terms.
-            num_modes: Number of modes in the system.
-        """
-        self.majoranas = list(majoranas)
-        self.coefficients = list(coefficients)
-        self.num_modes = num_modes
-
-    def __len__(self) -> int:
-        """Number of terms in the operator."""
-        return len(self.majoranas)
-
-    def __str__(self) -> str:
-        """Return a string representation of the Majorana operator."""
-        n = len(self)
-        out = f"{self.__class__.__name__}({n} terms, {self.num_modes} modes"
-        if n <= 8:
-            terms = ", ".join(
-                f"{c}*{m!r}" for c, m in zip(self.coefficients, self.majoranas)
-            )
-            out += f": {terms}"
-        out += ")"
-        return out
-
-    def get_monomial_operator(self) -> MonomialOperator:
-        """Convert the Majorana operator to a MonomialOperator."""
-        terms = [
-            Monomial(np.array(m), c) for m, c in zip(self.majoranas, self.coefficients)
-        ]
-        return MonomialOperator(terms, self.num_modes)
+    def get_majorana_operator(self) -> MajoranaOperator:
+        """Convert the fermi operator to a MajoranaOperator."""
+        majoranas: list[Sequence[int]] = []
+        coefficients: list[complex] = []
+        for term, c in zip(self.terms, self.coefficients):
+            for majorana, val in _fermi_string_to_majorana_terms(term):
+                majoranas.append(majorana)
+                coefficients.append(val * c)
+        return MajoranaOperator(majoranas, coefficients, self.num_modes)
 
 
 class FermiEvGate:
@@ -259,7 +216,7 @@ class FermiEvGate:
             generator: The generator of the evolution, either as a FermiOperator or a MajoranaOperator.
             parameter: The parameter for the evolution.
         """
-        self.generator: MonomialOperator = generator.get_monomial_operator()
+        self.generator: MajoranaOperator = generator.get_majorana_operator()
         self.parameter = parameter
 
     def __len__(self) -> int:
@@ -313,22 +270,26 @@ class FermiCircuit:
             f"initial_state={self.initial_state})"
         )
 
-    def get_majorana_sequence(self) -> MajoranaSequence:
-        """Convert the fermi circuit to a MajoranaSequence."""
-        majoranas, gen_coeffs, parameters, param_inds = [], [], [], []
-        for i, gate in enumerate(self.gates):
-            parameters.append(gate.parameter)
+    def to_gates(self) -> tuple[list[MajoranaGate], list[float], list[int]]:
+        """Lift the fermi circuit into authoring Majorana gates.
+
+        Each fermi gate's generator becomes one :class:`~monoprop.circuit.MajoranaGate`
+        (its monomials mapped to antihermitian Majorana :class:`~monoprop.circuit.Term`
+        objects), driven by its own distinct angle (the identity mapping).
+
+        Returns:
+            A tuple ``(gates, parameters, parameter_mapping)``: the Majorana gates in order,
+            the gate angles, and the identity per-gate angle mapping.
+        """
+        gates: list[MajoranaGate] = []
+        parameters: list[float] = []
+        for gate in self.gates:
+            terms: list[Term] = []
             for monomial, coefficient in gate.generator.terms.items():
                 w = len(monomial)
                 antiherm = -coefficient / (1j) ** (w * (w - 1) / 2)
-                majoranas.append(monomial)
-                gen_coeffs.append(float(np.real(antiherm)))
-                param_inds.append(i)
+                terms.append(Term(tuple(monomial), float(np.real(antiherm))))
+            gates.append(MajoranaGate(tuple(terms)))
+            parameters.append(float(np.real(gate.parameter)))
 
-        return MajoranaSequence(
-            initial_state=self.initial_state,
-            majoranas=majoranas,
-            parameters=parameters,
-            gen_coeffs=gen_coeffs,
-            param_inds=param_inds,
-        )
+        return gates, parameters, list(range(len(gates)))

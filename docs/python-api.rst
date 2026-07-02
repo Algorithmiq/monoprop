@@ -11,7 +11,7 @@ The simulator
 -------------
 
 Two propagators are the entry point: ``MajoranaPropagator`` for native Majorana
-(and fermionic) operators, and ``QubitPropagator`` for qubit (Pauli) operators,
+(and fermionic) operators, and ``PauliPropagator`` for qubit (Pauli) operators,
 which it takes directly and truncates by Pauli weight. Construct one from an
 operator, a reference state, and a cutoff, then
 :py:meth:`~monoprop.MajoranaPropagator.propagate` (or
@@ -21,7 +21,12 @@ information, so evaluation takes only the parameter values. See
 :doc:`/features/initialisation`, :doc:`/features/cutoff`, and
 :doc:`/features/evaluation`.
 
-.. automodule:: monoprop.monomial_propagator
+.. automodule:: monoprop.majorana_propagator
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: monoprop.pauli_propagator
    :members:
    :undoc-members:
    :show-inheritance:
@@ -29,12 +34,14 @@ information, so evaluation takes only the parameter values. See
 Authoring gates
 ~~~~~~~~~~~~~~~
 
-Gates are authored with a small handle model: a :class:`~monoprop.Gate` bundles the
-:class:`~monoprop.Term` monomials driven by a single :class:`~monoprop.Parameter`
-angle (:class:`~monoprop.QubitGate` is the qubit analogue). Reusing a ``Parameter``
-across gates ties their angles. Circuits in the transport formats can be regrouped
-into these gates with ``gates_from_majorana_sequence`` and
-``gates_from_qubit_circuit``.
+A :class:`~monoprop.MajoranaGate` is a pure generator: it bundles the
+:class:`~monoprop.Term` monomials it generates and carries no parameter index
+(:class:`~monoprop.PauliGate` is the qubit analogue). Which variational angle drives each
+gate is given separately by the propagator's ``parameter_mapping`` argument (default: one
+distinct angle per gate); reusing an index across gates ties their angles. Angle *values*
+are supplied per evaluation as a plain sequence of floats (a list or numpy array). Circuits
+in the transport formats can be regrouped into these gates with their ``.to_gates()``
+method, which returns ``(gates, parameters, parameter_mapping)``.
 
 .. automodule:: monoprop.circuit
    :members:
@@ -69,7 +76,7 @@ Qubit (Pauli) operators
 
 The natural starting point when you already hold a qubit Hamiltonian:
 real-coefficient sums of Pauli strings (``PauliOperator``), with ``PauliEvGate``
-and ``PauliEvCircuit`` describing the circuit. Feed these to ``QubitPropagator``,
+and ``PauliEvCircuit`` describing the circuit. Feed these to ``PauliPropagator``,
 which takes them directly and truncates by qubit Pauli weight (see
 :doc:`/features/cutoff`).
 
@@ -117,10 +124,10 @@ Utilities
 Internal representations
 ------------------------
 
-The lower-level monomial structures the operators above convert into, and the
-protocols a custom operator or circuit type must satisfy.
+The canonical Majorana operator and dense circuit the builders above convert into, and
+the protocols a custom operator or circuit type must satisfy.
 
-.. automodule:: monoprop.monomial_data
+.. automodule:: monoprop.majorana_data
    :members:
    :undoc-members:
    :show-inheritance:

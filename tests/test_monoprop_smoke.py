@@ -146,7 +146,7 @@ def test_bound_graph_methods_accept_declared_arguments(
     core = _make_bound_core(problem, serial_comm, schrodinger=schrodinger)
     parameters, _ = _evolve_bound_core(core, monomial_circuit)
 
-    evolved_operator = core.evolved_operator_dict(parameters, 1e-12)
+    evolved_operator = core.evolved_operator(parameters, 1e-12)
     assert isinstance(evolved_operator, dict)
 
     assert core.size() > 0

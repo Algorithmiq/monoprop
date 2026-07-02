@@ -17,6 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from monoprop import to_engine_arrays
 from monoprop.fermi_data import (
     FermiCircuit,
     FermiEvGate,
@@ -117,17 +118,15 @@ class TestMajoranaOperator:
             majoranas=[(0, 1), (2, 3)], coefficients=[1.0, -0.5j], num_modes=2
         )
 
-        assert op.majoranas == [(0, 1), (2, 3)]
-        assert op.coefficients == [1.0, -0.5j]
+        assert op.terms == {(0, 1): 1.0, (2, 3): -0.5j}
         assert op.num_modes == 2
         assert (
-            str(op)
-            == "MajoranaOperator(2 terms, 2 modes: 1.0*(0, 1), (-0-0.5j)*(2, 3))"
+            str(op) == "MajoranaOperator(2 terms, 2 modes: (1+0j)*[0, 1], -0.5j*[2, 3])"
         )
 
-    def test_get_monomial_operator(self):
+    def test_get_majorana_operator(self):
         op = MajoranaOperator(majoranas=[(0, 1)], coefficients=[0.25j], num_modes=1)
-        mon_op = op.get_monomial_operator()
+        mon_op = op.get_majorana_operator()
 
         assert mon_op.num_modes == 1
         assert len(mon_op.terms) == 1
@@ -143,7 +142,7 @@ class TestMajoranaOperator:
             num_modes=2,
         )
         expected_terms = {(0, 2): 0.5, (1, 3): 0.5}
-        terms = operator.get_monomial_operator().terms
+        terms = operator.get_majorana_operator().terms
 
         assert expected_terms == terms
 
@@ -181,7 +180,7 @@ class TestFermiCircuit:
 
         assert len(circuit) == 2
 
-    def test_get_majorana_sequence(self):
+    def test_to_gates(self):
         generator = MajoranaOperator(
             majoranas=[(0, 1), (2, 3)],
             coefficients=[1.0j, -1.0j],
@@ -191,19 +190,26 @@ class TestFermiCircuit:
         gate_1 = FermiEvGate(generator=generator, parameter=-0.7)
 
         circuit = FermiCircuit(initial_state=[0, 1], gates=[gate_0, gate_1])
-        mon_circuit = circuit.get_majorana_sequence()
+        gates, parameters, parameter_mapping = circuit.to_gates()
 
-        np.testing.assert_array_equal(mon_circuit.initial_state, np.array([0, 1]))
-        np.testing.assert_array_equal(mon_circuit.parameters, np.array([0.3, -0.7]))
+        np.testing.assert_array_equal(circuit.initial_state, np.array([0, 1]))
+        np.testing.assert_array_equal(parameters, np.array([0.3, -0.7]))
+        # A FermiCircuit lifts one gate per fermi gate with the identity mapping.
+        assert parameter_mapping == list(range(len(gates)))
+
+        majoranas, gen_coeffs, per_monomial_mapping = to_engine_arrays(gates)
+
         np.testing.assert_array_equal(
-            mon_circuit.gen_coeffs, np.array([-1.0, 1.0, -1.0, 1.0])
+            np.array(gen_coeffs), np.array([-1.0, 1.0, -1.0, 1.0])
         )
-        np.testing.assert_array_equal(mon_circuit.param_inds, np.array([0, 0, 1, 1]))
+        np.testing.assert_array_equal(
+            np.array(per_monomial_mapping), np.array([0, 0, 1, 1])
+        )
 
-        np.testing.assert_array_equal(mon_circuit.majoranas[0], np.array([0, 1]))
-        np.testing.assert_array_equal(mon_circuit.majoranas[1], np.array([2, 3]))
-        np.testing.assert_array_equal(mon_circuit.majoranas[2], np.array([0, 1]))
-        np.testing.assert_array_equal(mon_circuit.majoranas[3], np.array([2, 3]))
+        np.testing.assert_array_equal(majoranas[0], np.array([0, 1]))
+        np.testing.assert_array_equal(majoranas[1], np.array([2, 3]))
+        np.testing.assert_array_equal(majoranas[2], np.array([0, 1]))
+        np.testing.assert_array_equal(majoranas[3], np.array([2, 3]))
 
     def test_validate_inputs_duplicate_initial_state_raises(self):
         generator = MajoranaOperator(
