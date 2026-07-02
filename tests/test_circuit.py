@@ -115,6 +115,27 @@ def test_circuit_add_offsets_second_axis() -> None:
     assert combined.n_parameters == 3
 
 
+def test_circuit_with_parameter_mapping_rewires_immutably() -> None:
+    """with_parameter_mapping returns a re-wired copy, leaving the original untouched."""
+    gates = (MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),)))
+    original = Circuit(gates, parameters=(0.1, 0.2))
+
+    # Tie both gates to one angle (parameter count changes, so drop the values first).
+    tied = original.with_parameters(()).with_parameter_mapping((0, 0))
+    assert tied.resolved_mapping == (0, 0)
+    assert tied.n_parameters == 1
+    assert tied.parameters == ()
+
+    # The original is unchanged (immutable value object).
+    assert original.resolved_mapping == (0, 1)
+    assert original.parameters == (0.1, 0.2)
+
+    # Passing None resets to the identity mapping; a bad mapping is still rejected.
+    assert tied.with_parameter_mapping(None).resolved_mapping == (0, 1)
+    with pytest.raises(ValueError, match="contiguous"):
+        original.with_parameter_mapping((0, 2))
+
+
 # -- evaluation contracts -------------------------------------------------------
 
 

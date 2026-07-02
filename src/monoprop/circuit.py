@@ -180,6 +180,56 @@ class Circuit:
             initial_state=self.initial_state or other.initial_state,
         )
 
+    def with_parameter_mapping(
+        self, parameter_mapping: Sequence[int] | None
+    ) -> Circuit:
+        """Return a copy of this circuit with a new parameter mapping.
+
+        Use this to re-wire which angle drives each gate -- for example, to tie gates to a
+        shared angle by repeating an index. Because :class:`Circuit` is immutable, this
+        returns a new circuit rather than mutating in place; the new mapping is validated
+        the same way as at construction (contiguous ``0..n-1``, one entry per gate).
+
+        If the circuit is bound (has ``parameters``), the new mapping must reference the same
+        number of distinct angles, since the existing parameter values are carried over. Drop
+        the parameters first (``circuit.with_parameters(())``) if the count changes.
+
+        Args:
+            parameter_mapping: The new per-gate angle index, or ``None`` for the identity
+                mapping (one distinct angle per gate).
+
+        Returns:
+            A new :class:`Circuit` with the given mapping.
+        """
+        return Circuit(
+            gates=self.gates,
+            parameters=self.parameters,
+            parameter_mapping=(
+                None if parameter_mapping is None else tuple(parameter_mapping)
+            ),
+            initial_state=self.initial_state,
+        )
+
+    def with_parameters(self, parameters: Sequence[float]) -> Circuit:
+        """Return a copy of this circuit bound to new angle values.
+
+        Because :class:`Circuit` is immutable, this returns a new circuit rather than
+        mutating in place. Pass ``()`` to unbind (keep the structure, drop the values).
+
+        Args:
+            parameters: The new angle values (length must equal :attr:`n_parameters`, or
+                empty to unbind).
+
+        Returns:
+            A new :class:`Circuit` with the given parameters.
+        """
+        return Circuit(
+            gates=self.gates,
+            parameters=tuple(parameters),
+            parameter_mapping=self.parameter_mapping,
+            initial_state=self.initial_state,
+        )
+
 
 def _resolve_mapping(
     n_gates: int, parameter_mapping: Sequence[int] | None
