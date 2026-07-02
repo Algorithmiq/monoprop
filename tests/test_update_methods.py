@@ -17,27 +17,28 @@
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MonomialPropagator, jordan_wigner_basis_change
-from monoprop.monomial_data import MonomialCircuit, MonomialOperator
+from monoprop import (
+    Gate,
+    MajoranaPropagator,
+    Parameter,
+    Term,
+    gates_from_monomial_sequence,
+    jordan_wigner_basis_change,
+)
+from monoprop.monomial_data import MonomialOperator, MonomialSequence
 from tests.cases import CasesFermionicProblem
 
 
 class TestUpdateMethods:
-    """Test class for update methods in MonomialPropagator."""
+    """Test class for update methods in MajoranaPropagator."""
 
     @pytest.fixture
     def mp(self, serial_comm):
-        return MonomialPropagator(
+        return MajoranaPropagator(
             initial_operator=MonomialOperator.from_dict(
                 terms_dict={(0, 1): 1.0j}, num_modes=4
             ),
-            quantum_circuit=MonomialCircuit(
-                initial_state=[],
-                majoranas=[],
-                gen_coeffs=[],
-                param_inds=[],
-                parameters=[],
-            ),
+            initial_state=[],
             cutoff=4,
             lower_atol=1e-8,
             upper_atol=1e-4,
@@ -109,7 +110,8 @@ class TestUpdateMethods:
 
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
-        mp.propagate([(0, 1, 2, 3, 4, 5)])
+        gate = Gate(Parameter(), (Term((0, 1, 2, 3, 4, 5), 1.0),))
+        mp.propagate_build_graph([gate])
         assert mp.size() > 0
 
     def test_update_cutoff_invalid(self, mp):
@@ -177,17 +179,18 @@ class TestUpdateMethods:
             mp.basis_change = invalid_basis
 
     def test_integration(self, serial_comm):
-        mp = MonomialPropagator(
+        sequence = MonomialSequence(
+            initial_state=[],
+            majoranas=[(0, 2), (1, 3)],
+            gen_coeffs=[0.0, 0.0],
+            param_inds=[0, 1],
+            parameters=[1.0, 1.0],
+        )
+        mp = MajoranaPropagator(
             initial_operator=MonomialOperator.from_dict(
                 terms_dict={(0, 1): 1.0j}, num_modes=4
             ),
-            quantum_circuit=MonomialCircuit(
-                initial_state=[],
-                majoranas=[(0, 2), (1, 3)],
-                gen_coeffs=[0.0, 0.0],
-                param_inds=[0, 1],
-                parameters=[1.0, 1.0],
-            ),
+            initial_state=sequence.initial_state,
             cutoff=4,
             comm=serial_comm,
         )
@@ -201,7 +204,8 @@ class TestUpdateMethods:
         for attr, value in updates.items():
             setattr(mp, attr, value)
 
-        mp.propagate(evolve_with_coeffs=True)
+        gates, _ = gates_from_monomial_sequence(sequence)
+        mp.propagate(gates, sequence.parameters)
         expval = mp.expectation_value()
         assert isinstance(expval, (int, float))
 
@@ -249,20 +253,21 @@ class TestUpdateMethods:
 def test_evolutions_after_updates(problem, test_type, serial_comm):
     """Test that evolutions work correctly after parameter updates."""
 
-    mp = MonomialPropagator(
+    gates, _ = gates_from_monomial_sequence(problem.monomial_circuit)
+    parameters = problem.monomial_circuit.parameters
+
+    mp = MajoranaPropagator(
         problem.operator,
-        problem.monomial_circuit,
+        problem.monomial_circuit.initial_state,
         cutoff=6,
         comm=serial_comm,
     )
-    mp.propagate(
-        evolve_with_coeffs=True,
-    )
+    mp.propagate(gates, parameters)
     mp_size = mp.size()
 
-    mp_tes = MonomialPropagator(
+    mp_tes = MajoranaPropagator(
         problem.operator,
-        problem.monomial_circuit,
+        problem.monomial_circuit.initial_state,
         cutoff=6,
         comm=serial_comm,
     )
@@ -275,25 +280,17 @@ def test_evolutions_after_updates(problem, test_type, serial_comm):
     else:
         mp_tes.cutoff = 4
 
-    mp_tes.propagate(
-        evolve_with_coeffs=True,
-    )
+    mp_tes.propagate(gates, parameters)
     assert mp_tes.size() != mp_size
 
 
 @pytest.mark.parametrize("num_modes", [2, 4, 8, 16])
 def test_update_methods_different_modes(num_modes, serial_comm):
-    mp = MonomialPropagator(
+    mp = MajoranaPropagator(
         initial_operator=MonomialOperator.from_dict(
             terms_dict={(0, 1): 1.0j}, num_modes=num_modes
         ),
-        quantum_circuit=MonomialCircuit(
-            initial_state=[],
-            majoranas=[],
-            gen_coeffs=[],
-            param_inds=[],
-            parameters=[],
-        ),
+        initial_state=[],
         cutoff=4,
         comm=serial_comm,
     )
@@ -304,17 +301,11 @@ def test_update_methods_different_modes(num_modes, serial_comm):
 
 @pytest.mark.parametrize("num_modes", [4, 8, 16])
 def test_basis_change_invalid_dimensions(num_modes, serial_comm):
-    mp = MonomialPropagator(
+    mp = MajoranaPropagator(
         initial_operator=MonomialOperator.from_dict(
             terms_dict={(0, 1): 1.0j}, num_modes=num_modes
         ),
-        quantum_circuit=MonomialCircuit(
-            initial_state=[],
-            majoranas=[],
-            gen_coeffs=[],
-            param_inds=[],
-            parameters=[],
-        ),
+        initial_state=[],
         cutoff=4,
         comm=serial_comm,
     )
