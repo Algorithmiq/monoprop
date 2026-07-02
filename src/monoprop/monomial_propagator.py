@@ -179,14 +179,6 @@ class MajoranaPropagator:
             only_rotate_len_k,
         )
 
-    def pare(self, threshold: float | None = 1e-10) -> None:
-        """Build and cache a pared execution plan over the current graph.
-
-        Args:
-            threshold: Edge-retention cutoff. ``None`` clears any cached plan.
-        """
-        self._simulator.pare(threshold)
-
     # -- evaluation -------------------------------------------------------------
 
     @property
@@ -218,14 +210,27 @@ class MajoranaPropagator:
         """Compute the gradient at ``parameters``."""
         return self.expectation_value_and_gradient(parameters)[1]
 
-    def expectation_value_functional(self) -> Callable[..., float]:
-        """Return a reusable callable computing the expectation value from parameters."""
-        fn = self._simulator.expectation_value_functional()
+    def expectation_value_functional(
+        self, pare_threshold: float | None = None
+    ) -> Callable[..., float]:
+        """Return a reusable callable computing the expectation value from parameters.
+
+        Args:
+            pare_threshold: Edge-retention cutoff for a masked execution plan built for
+                this functional. ``None`` disables paring.
+        """
+        fn = self._simulator.expectation_value_functional(pare_threshold)
         return lambda parameters=None: fn(self._bind(parameters))
 
-    def expectation_value_and_gradient_functional(self) -> Callable[..., tuple]:
-        """Return a reusable callable computing (expectation value, gradient)."""
-        fn = self._simulator.expectation_value_and_gradient_functional()
+    def expectation_value_and_gradient_functional(
+        self, pare_threshold: float | None = None
+    ) -> Callable[..., tuple]:
+        """Return a reusable callable computing (expectation value, gradient).
+
+        Args:
+            pare_threshold: See :meth:`expectation_value_functional`.
+        """
+        fn = self._simulator.expectation_value_and_gradient_functional(pare_threshold)
 
         def _call(parameters=None):  # noqa: ANN001, ANN202
             value, grad = fn(self._bind(parameters))

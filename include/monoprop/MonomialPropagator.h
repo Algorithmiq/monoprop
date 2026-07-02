@@ -413,18 +413,6 @@ public:
                    int only_rotate_len_k = 0) -> void;
 
     /**
-     * @brief Build and cache a pared (masked) execution plan over the current graph.
-     *
-     * Paring is an explicit state transition: once pared, subsequent expectation_value /
-     * gradient / functional evaluations reuse the cached masked plan. Building the graph
-     * further (propagate_build_graph) or contracting in place invalidates the cache.
-     *
-     * @param threshold Absolute-value cutoff for retaining edges. std::nullopt clears any
-     *        cached plan (evaluations then use the exact graph).
-     */
-    auto pare(std::optional<double> threshold) -> void;
-
-    /**
      * @brief Compute the expectation value at the given variational parameters.
      *
      * Gate information (parameter mapping and generator coefficients) is owned by the
@@ -440,15 +428,19 @@ public:
     /**
      * @brief Return a reusable callable computing the expectation value from parameters.
      *
-     * Uses the cached pared plan if one is present (see pare()). Intended for handing to
-     * optimizers.
+     * @param pare_threshold Absolute-value cutoff for retaining edges in a masked execution
+     *        plan built for this functional. std::nullopt disables paring (exact graph).
      */
-    auto expectation_value_functional() -> std::function<double(const VecD &)>;
+    auto expectation_value_functional(std::optional<double> pare_threshold = std::nullopt)
+        -> std::function<double(const VecD &)>;
 
     /**
      * @brief Return a reusable callable computing (expectation value, gradient) from parameters.
+     *
+     * @param pare_threshold See expectation_value_functional.
      */
-    auto expectation_value_and_gradient_functional() -> std::function<std::pair<double, VecD>(const VecD &)>;
+    auto expectation_value_and_gradient_functional(std::optional<double> pare_threshold = std::nullopt)
+        -> std::function<std::pair<double, VecD>(const VecD &)>;
 
     /**
      * @brief Contract the evolution graph into the operator/state at the given parameters.
@@ -542,11 +534,6 @@ protected:
     CutoffFn<NumModes> cutoff_fn_;
     MPOperator<NumModes> mp_op_; // Single MPOperator for this MPI rank
     MPGraph graph_;              // Single MPGraph for this MPI rank
-
-    // Cached pared (masked) execution plan built by pare(); reused by evaluations until the
-    // graph is mutated. pared_expected_layers_ guards against stale reuse after graph changes.
-    std::optional<MPExecutionPlan> pared_plan_;
-    size_t pared_expected_layers_ = 0;
 
 private:
     unsigned int cutoff_;
@@ -642,18 +629,12 @@ private:
                                                 const MPGraph &,
                                                 const VecD &,
                                                 MPI_Comm>>
-    auto make_functional_(Fn &&func) -> std::function<R(const VecD &)>;
+    auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
 
     // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the gate
     // information owned by the graph layers. Provably identical to the arrays that used to be
     // supplied by callers, for both Heisenberg and Schrodinger pictures.
     auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;
-
-    // Drop any cached pared execution plan (called when the graph is mutated).
-    auto invalidate_pared_() -> void {
-        pared_plan_.reset();
-        pared_expected_layers_ = 0;
-    }
 };
 
 } // namespace monoprop

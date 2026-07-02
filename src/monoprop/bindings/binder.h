@@ -114,21 +114,19 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "only_rotate_len_k"_a = 0,
             "Evolve and contract immediately without storing a graph");
 
-    cls.def("pare",
-            &MonomialPropagator<NumModes>::pare,
-            "threshold"_a = std::nullopt,
-            "Build and cache a pared execution plan over the current graph");
-
     cls.def("expectation_value", &MonomialPropagator<NumModes>::expectation_value, "parameters"_a);
 
     cls.def("expectation_value_and_gradient",
             &MonomialPropagator<NumModes>::expectation_value_and_gradient,
             "parameters"_a);
 
-    cls.def("expectation_value_functional", &MonomialPropagator<NumModes>::expectation_value_functional);
+    cls.def("expectation_value_functional",
+            &MonomialPropagator<NumModes>::expectation_value_functional,
+            "pare_threshold"_a = std::nullopt);
 
     cls.def("expectation_value_and_gradient_functional",
-            &MonomialPropagator<NumModes>::expectation_value_and_gradient_functional);
+            &MonomialPropagator<NumModes>::expectation_value_and_gradient_functional,
+            "pare_threshold"_a = std::nullopt);
 
     cls.def("contract_partially", &MonomialPropagator<NumModes>::contract_partially, "parameters"_a, "inplace"_a);
 

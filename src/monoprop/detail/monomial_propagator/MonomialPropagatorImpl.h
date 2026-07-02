@@ -163,7 +163,6 @@ auto MonomialPropagator<NumModes>::propagate_build_graph(const std::vector<VecZ>
         }
         evolve_mode_graph_with_coeffs_(majoranas, parameter_mapping, gen_coeffs, *parameters, seed, only_rotate_len_k);
     }
-    invalidate_pared_();
 }
 
 template <size_t NumModes>
@@ -178,7 +177,6 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
     validate_coefficient_lengths(parameter_mapping, gen_coeffs);
     validate_parameters_length(parameters, parameter_mapping);
     evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
-    invalidate_pared_();
 }
 
 template <size_t NumModes>
@@ -252,7 +250,8 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
 
 template <size_t NumModes>
 template <typename Fn, typename R>
-auto MonomialPropagator<NumModes>::make_functional_(Fn &&func) -> std::function<R(const VecD &)> {
+auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<double> pare_threshold)
+    -> std::function<R(const VecD &)> {
     auto gate_arrays = graph_gate_arrays_();
     auto parameter_mapping = std::move(gate_arrays.first);
     auto gen_coeffs = std::move(gate_arrays.second);
@@ -263,21 +262,22 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func) -> std::function<
     const auto core_term = this->core_term();
     const auto comm = comm_;
 
-    if (pared_plan_.has_value()) {
-        const auto expected_layers = pared_expected_layers_;
+    if (pare_threshold.has_value()) {
+        auto masked_graph = get_masked_execution_plan(state, op, *pare_threshold, graph_, schrodinger_, comm_);
+        const auto expected_layers = graph_layers();
         return make_parameter_validated_functional(
             num_params,
             [func = std::forward<Fn>(func),
              core_term,
              state = std::move(state),
              op = std::move(op),
-             plan = *pared_plan_,
+             graph = std::move(masked_graph),
              parameter_mapping = std::move(parameter_mapping),
              gen_coeffs = std::move(gen_coeffs),
              expected_layers,
              comm](const VecD &params) -> R {
-                validate_expected_graph_layers(plan.layers(), expected_layers);
-                return func(core_term, state, op, parameter_mapping, gen_coeffs, plan, params, comm);
+                validate_expected_graph_layers(graph.layers(), expected_layers);
+                return func(core_term, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
             });
     }
 
@@ -299,36 +299,25 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func) -> std::function<
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::pare(std::optional<double> threshold) -> void {
-    if (!threshold.has_value()) {
-        invalidate_pared_();
-        return;
-    }
-    const VecD state = mp_op_.get_state();
-    const VecD op = mp_op_.get_operator();
-    pared_plan_ = get_masked_execution_plan(state, op, *threshold, graph_, schrodinger_, comm_);
-    pared_expected_layers_ = graph_layers();
+auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<double> pare_threshold)
+    -> std::function<double(const VecD &)> {
+    return make_functional_(ev_fn, pare_threshold);
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::expectation_value_functional() -> std::function<double(const VecD &)> {
-    return make_functional_(ev_fn);
-}
-
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional()
+auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional(std::optional<double> pare_threshold)
     -> std::function<std::pair<double, VecD>(const VecD &)> {
-    return make_functional_(ev_and_grad_fn);
+    return make_functional_(ev_and_grad_fn, pare_threshold);
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value(const VecD &parameters) -> double {
-    return expectation_value_functional()(parameters);
+    return expectation_value_functional(std::nullopt)(parameters);
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD> {
-    return expectation_value_and_gradient_functional()(parameters);
+    return expectation_value_and_gradient_functional(std::nullopt)(parameters);
 }
 
 template <size_t NumModes>
@@ -351,7 +340,6 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
                     : evolve_operator(state, graph_.slice_view(num_majoranas), mapped_params, comm_);
         if (inplace) {
             mp_op_.state_coeffs = evolved_state;
-            invalidate_pared_();
         }
         return evolved_state;
     }
@@ -362,7 +350,6 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
                                     : evolve_operator(op, graph_.slice_view(num_majoranas), mapped_params, comm_);
     if (inplace) {
         mp_op_.op_coeffs = evolved_op;
-        invalidate_pared_();
     }
     return evolved_op;
 }
