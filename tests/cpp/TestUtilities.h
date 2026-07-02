@@ -139,9 +139,9 @@ inline auto build_simulator(const CaseData& data, const SimulatorConfig& cfg = {
 /// Evolve and evaluate expectation value via expectation_value_functional.
 template <size_t NumModes>
 inline auto evaluate_expval(MonomialPropagator<NumModes>& sim, const CaseData& data, bool pare) -> double {
-    sim.propagate(data.majoranas);
+    sim.propagate_build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
-    auto expval_fn = sim.expectation_value_functional(data.param_inds, data.gen_coeffs, pare_threshold);
+    auto expval_fn = sim.expectation_value_functional(pare_threshold);
     return expval_fn(data.parameters);
 }
 
@@ -161,10 +161,10 @@ template <size_t n_modes>
 inline auto test_evolve_build_graph(const CaseData& data, const SimulatorConfig& cfg, bool pare, double exact_expval)
     -> void {
     auto mp = build_simulator<n_modes>(data, cfg);
-    mp.propagate(data.majoranas);
+    mp.propagate_build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
-    auto expval_fn = mp.expectation_value_functional(data.param_inds, data.gen_coeffs, pare_threshold);
+    auto expval_fn = mp.expectation_value_functional(pare_threshold);
     double expval = expval_fn(data.parameters);
     BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare << " sch_cutoff="
                                   << (cfg.schrodinger_cutoff ? std::to_string(*cfg.schrodinger_cutoff) : "none")) {
@@ -180,11 +180,11 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
                                                 double exact_expval) -> void {
     auto mp = build_simulator<n_modes>(data, cfg);
 
-    auto init_coeffs = mp.contract_partially({}, {}, {}, false);
-    mp.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, init_coeffs, false);
+    // Coefficient-informed build: the seed is regenerated internally from the parameters.
+    mp.propagate_build_graph(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
 
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
-    auto expval_fn = mp.expectation_value_functional(data.param_inds, data.gen_coeffs, pare_threshold);
+    auto expval_fn = mp.expectation_value_functional(pare_threshold);
     double expval = expval_fn(data.parameters);
     BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare << " sch_cutoff="
                                   << (cfg.schrodinger_cutoff ? std::to_string(*cfg.schrodinger_cutoff) : "none")) {
