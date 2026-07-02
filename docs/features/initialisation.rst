@@ -1,7 +1,7 @@
 Initialisation and updates
 ==========================
 
-The top-level class is ``MonomialPropagator`` (Python) /
+The top-level classes are ``MajoranaPropagator`` and ``QubitPropagator`` (Python) /
 ``MonomialPropagator<NumModes>`` (C++). Every significant aspect of the
 simulation can be tuned at construction time and updated at runtime without
 rebuilding. The structural and coefficient cutoffs are covered separately in
@@ -29,11 +29,10 @@ The coefficients of the initial operator can be patched after construction
 without rebuilding the simulator or the graph:
 
 .. doctest::
-   >>> from monoprop import MonomialPropagator
-   >>> from monoprop.fermi_data import MajoranaOperator, FermiCircuit
+   >>> from monoprop import MajoranaPropagator
+   >>> from monoprop.fermi_data import MajoranaOperator
    >>> observable = MajoranaOperator([(0, 1, 2, 3)], [1.0], 4)
-   >>> circuit = FermiCircuit(initial_state=[0, 1], gates=[])
-   >>> sim = MonomialPropagator(observable, circuit, cutoff=4)
+   >>> sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
    # Keys are Majorana monomials (tuples of indices); values are the new
    # coefficients, which must keep each monomial Hermitian (real for length-4
    # terms, imaginary for length-2 — see the Notation page).
@@ -54,12 +53,11 @@ without re-propagating.
 
    .. testsetup::
 
-      from monoprop import MonomialPropagator
-      from monoprop.fermi_data import MajoranaOperator, FermiCircuit
+      from monoprop import MajoranaPropagator
+      from monoprop.fermi_data import MajoranaOperator
 
       observable = MajoranaOperator([(0, 1, 2, 3)], [1.0], 4)
-      circuit = FermiCircuit(initial_state=[0, 1], gates=[])
-      sim = MonomialPropagator(observable, circuit, cutoff=4)
+      sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
 
    .. doctest::
 

@@ -10,12 +10,33 @@ see :doc:`/concepts`; for task-oriented guides see :doc:`/features`.
 The simulator
 -------------
 
-``MonomialPropagator`` is the entry point: construct it from an operator, a
-circuit, and a cutoff, then :py:meth:`~monoprop.MonomialPropagator.propagate` and
-read off expectation values and gradients. See :doc:`/features/initialisation`,
-:doc:`/features/cutoff`, and :doc:`/features/evaluation`.
+Two propagators are the entry point: ``MajoranaPropagator`` for native Majorana
+operators, and ``QubitPropagator`` for qubit (Pauli) operators (mapped through the
+Jordan-Wigner basis change, with the matching cutoff basis set automatically).
+Construct one from an operator, a reference state, and a cutoff, then
+:py:meth:`~monoprop.MajoranaPropagator.propagate` (or
+:py:meth:`~monoprop.MajoranaPropagator.propagate_build_graph` to store a reusable
+graph) and read off expectation values and gradients. The graph owns the gate
+information, so evaluation takes only the parameter values. See
+:doc:`/features/initialisation`, :doc:`/features/cutoff`, and
+:doc:`/features/evaluation`.
 
 .. automodule:: monoprop.monomial_propagator
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Authoring gates
+~~~~~~~~~~~~~~~
+
+Gates are authored with a small handle model: a :class:`~monoprop.Gate` bundles the
+:class:`~monoprop.Term` monomials driven by a single :class:`~monoprop.Parameter`
+angle (:class:`~monoprop.QubitGate` is the qubit analogue). Reusing a ``Parameter``
+across gates ties their angles. Circuits in the transport formats can be regrouped
+into these gates with ``gates_from_majorana_sequence`` and
+``gates_from_qubit_circuit``.
+
+.. automodule:: monoprop.circuit
    :members:
    :undoc-members:
    :show-inheritance:

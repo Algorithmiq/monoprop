@@ -75,11 +75,14 @@ indices; ``jordan_wigner_basis_change`` builds it for Jordan–Wigner:
 
 .. code-block:: python
 
-   from monoprop import MonomialPropagator, jordan_wigner_basis_change
+   from monoprop import MajoranaPropagator, jordan_wigner_basis_change
 
    # m_0 -> X_0, m_1 -> Y_0, m_2 -> Z_0 X_1, m_3 -> Z_0 Y_1, ...
    bc = jordan_wigner_basis_change(n_qubits=2)  # [[0], [1], [0, 1, 2], [0, 1, 3]]
-   sim = MonomialPropagator(..., cutoff_type="support", basis_change=bc)
+   sim = MajoranaPropagator(..., cutoff_type="support", basis_change=bc)
+
+``QubitPropagator`` sets this Jordan-Wigner ``basis_change`` for you, so a
+``"support"`` cutoff there already counts Pauli weight without a manual basis change.
 
 ``basis_change`` is a read/write attribute, so it can also be set or cleared after
 construction:

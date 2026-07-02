@@ -13,7 +13,7 @@ Single-node (``MPI.COMM_SELF``)
 .. code-block:: python
 
    from mpi4py import MPI
-   sim = MonomialPropagator(..., comm=MPI.COMM_SELF)
+   sim = MajoranaPropagator(..., comm=MPI.COMM_SELF)
 
 Multi-node (``MPI.COMM_WORLD``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -23,7 +23,7 @@ Replace the communicator and launch with ``mpiexec``:
 .. code-block:: python
 
    from mpi4py import MPI
-   sim = MonomialPropagator(..., comm=MPI.COMM_WORLD)
+   sim = MajoranaPropagator(..., comm=MPI.COMM_WORLD)
 
 .. code-block:: bash
 

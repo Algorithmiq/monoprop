@@ -1,52 +1,61 @@
 Expectation values and gradients
 =================================
 
-Once the circuit has been propagated, the stored graph can be replayed at any
-parameter vector without re-running the Majorana algebra. This is a very powerful
-feature for example in variational workflows, where the same circuit is evaluated
-repeatedly at many parameter values.
+Once the circuit has been propagated with
+:meth:`~monoprop.MajoranaPropagator.propagate_build_graph`, the stored graph can be
+replayed at any parameter vector without re-running the Majorana algebra. The graph
+owns the gate information (which parameter drives each layer and its generator
+coefficient), so evaluation takes **only the parameter values**. This is a very
+powerful feature for example in variational workflows, where the same circuit is
+evaluated repeatedly at many parameter values.
 
-Expectation value evaluation
-----------------------------
+The parameter values are given either as a sequence in the canonical parameter-vector
+order, or as a mapping from :class:`~monoprop.Parameter` handle to value.
 
-``expectation_value_functional`` returns a callable that accepts a parameter vector:
+Expectation value and gradient
+-------------------------------
+
+The simplest path is to evaluate directly:
 
 .. code-block:: python
 
-   expval_fn = sim.expectation_value_functional(param_inds, gen_coeffs)
+   expval = sim.expectation_value(parameters)
+   expval, grad = sim.expectation_value_and_gradient(parameters)  # single backward pass
+
+The gradient is returned in the canonical parameter axis order (the order in which
+distinct ``Parameter`` handles were first seen while building the graph), and
+``expectation_value_and_gradient`` computes both quantities in one backward pass over
+the graph.
+
+Reusable functionals
+--------------------
+
+When the same graph is evaluated at many parameter values, build a functional once
+and call it repeatedly. ``expectation_value_functional`` and
+``expectation_value_and_gradient_functional`` return callables that accept a
+parameter vector:
+
+.. code-block:: python
+
+   expval_fn = sim.expectation_value_functional()
    expval = expval_fn(parameters)
 
-Gradient estimation
--------------------
-
-``expectation_value_and_gradient_functional`` computes both the expectation value and the full
-parameter gradient in a single backward pass over the graph:
-
-.. code-block:: python
-
-   expval_grad_fn = sim.expectation_value_and_gradient_functional(
-       param_inds, gen_coeffs, pare_threshold=1e-7
-   )
-   expval, gradient = expval_grad_fn(parameters)
-
-Both functionals accept the same optional ``pare_threshold`` — see *Paring*
-below.
-
+   expval_grad_fn = sim.expectation_value_and_gradient_functional()
+   expval, grad = expval_grad_fn(parameters)
 
 Paring
 ------
 
-Passing a ``pare_threshold`` to ``expectation_value_functional`` or
-``expectation_value_and_gradient_functional`` is an optional
-speed-up: terms whose contribution to the expectation value falls below the
-threshold are *pared* away, so they no longer have to be tracked through the graph
-during replay. The stored graph itself is unchanged, only the replay skips the
-negligible terms, so this can dramatically speed up replay cost for sparse graphs
-(at the expense of some memory and accuracy):
+Both functionals accept an optional ``pare_threshold`` — an optional speed-up: terms
+whose contribution to the expectation value falls below the threshold are *pared*
+away, so they no longer have to be tracked through the graph during replay. The
+stored graph itself is unchanged, only the replay skips the negligible terms, so this
+can dramatically speed up replay cost for sparse graphs (at the expense of some memory
+and accuracy):
 
 .. code-block:: python
 
-   pared_expval_fn = sim.expectation_value_functional(param_inds, gen_coeffs, pare_threshold=1e-7)
+   pared_expval_fn = sim.expectation_value_functional(pare_threshold=1e-7)
 
 Partial contraction
 -------------------
@@ -59,8 +68,8 @@ internal graph is updated in place:
 
 .. code-block:: python
 
-   # Fold the gates evaluated at these parameters into the operator, in place.
-   sim.contract_partially(parameters, param_inds, gen_coeffs)
+   # Fold the graph evaluated at these parameters into the operator, in place.
+   sim.contract_partially(parameters)
 
 This is useful when a prefix of the circuit is fixed so their contribution can be baked in
 once instead of being replayed on every evaluation. Subsequent functionals only
@@ -72,7 +81,7 @@ parameters:
 
 .. code-block:: python
 
-   coeffs = sim.contract_partially(parameters, param_inds, gen_coeffs, inplace=False)
+   coeffs = sim.contract_partially(parameters, inplace=False)
 
 To read the fully evolved operator as a dictionary keyed by Majorana indices —
 without modifying the simulator — use ``evolved_operator_dict``.
