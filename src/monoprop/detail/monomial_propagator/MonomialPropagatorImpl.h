@@ -58,11 +58,18 @@ auto MonomialPropagator<NumModes>::extend_coeffs_from_current_picture_if_needed_
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::evolve_mode_graph_only_(const std::vector<VecZ> &majoranas, int only_rotate_len_k)
-    -> void {
-    propagate_with_timing_(majoranas, only_rotate_len_k, [this](const VecZ &maj, int rot_len, size_t) {
-        propagate_one_(maj, rot_len);
-    });
+auto MonomialPropagator<NumModes>::evolve_mode_build_graph_(const std::vector<VecZ> &majoranas,
+                                                            const VecZ &parameter_mapping,
+                                                            const VecD &gen_coeffs,
+                                                            int only_rotate_len_k) -> void {
+    const auto majoranas_size = majoranas.size();
+    propagate_with_timing_(
+        majoranas,
+        only_rotate_len_k,
+        [this, &parameter_mapping, &gen_coeffs, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
+            const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
+            propagate_one_(maj, rot_len, std::nullopt, std::nullopt, parameter_mapping[idx], gen_coeffs[idx]);
+        });
 }
 
 template <size_t NumModes>
@@ -123,35 +130,55 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::execute_evolution_mode_(EvolutionMode mode,
-                                                           const std::vector<VecZ> &majoranas,
-                                                           const std::optional<VecZ> &parameter_mapping,
-                                                           const std::optional<VecD> &gen_coeffs,
-                                                           const std::optional<VecD> &parameters,
-                                                           const std::optional<VecD> &operator_coeffs,
-                                                           int only_rotate_len_k) -> void {
-    switch (mode) {
-        case EvolutionMode::GraphOnly:
-            evolve_mode_graph_only_(majoranas, only_rotate_len_k);
-            break;
-        case EvolutionMode::GraphWithCoeffs:
-            evolve_mode_graph_with_coeffs_(majoranas,
-                                           parameter_mapping.value(),
-                                           gen_coeffs.value(),
-                                           parameters.value(),
-                                           operator_coeffs.value(),
-                                           only_rotate_len_k);
-            break;
-        case EvolutionMode::ContractImmediately:
-            evolve_mode_contract_immediately_(majoranas,
-                                              parameter_mapping.value(),
-                                              gen_coeffs.value(),
-                                              parameters.value(),
-                                              only_rotate_len_k);
-            break;
-        default:
-            throw std::invalid_argument("Unknown evolution mode.");
+auto MonomialPropagator<NumModes>::propagate_build_graph(const std::vector<VecZ> &majoranas,
+                                                         const VecZ &parameter_mapping,
+                                                         const VecD &gen_coeffs,
+                                                         std::optional<VecD> parameters,
+                                                         int only_rotate_len_k) -> void {
+    if (majoranas.empty()) {
+        return;
     }
+    validate_coefficient_lengths(parameter_mapping, gen_coeffs);
+
+    if (!parameters.has_value()) {
+        // Pure structural build: append layers recording their gate information.
+        evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, only_rotate_len_k);
+    }
+    else {
+        // Coefficient-informed build: regenerate the seed by contracting the existing graph
+        // (replacing the former operator_coeffs input), then build+contract the new layers into it
+        // so atol truncation sees realistic coefficients. The existing graph references the
+        // parameter prefix [0, m); slice `parameters` to that so the exact-length check passes.
+        VecD seed;
+        if (graph_layers() > 0) {
+            const auto existing = graph_gate_arrays_();
+            const size_t m = expected_num_params(existing.first);
+            const VecD existing_params(
+                parameters->begin(),
+                parameters->begin() + static_cast<std::ptrdiff_t>(std::min(m, parameters->size())));
+            seed = contract_partially(existing_params, false);
+        }
+        else {
+            seed = current_picture_coeffs_();
+        }
+        evolve_mode_graph_with_coeffs_(majoranas, parameter_mapping, gen_coeffs, *parameters, seed, only_rotate_len_k);
+    }
+    invalidate_pared_();
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
+                                             const VecZ &parameter_mapping,
+                                             const VecD &gen_coeffs,
+                                             const VecD &parameters,
+                                             int only_rotate_len_k) -> void {
+    if (majoranas.empty()) {
+        return;
+    }
+    validate_coefficient_lengths(parameter_mapping, gen_coeffs);
+    validate_parameters_length(parameters, parameter_mapping);
+    evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+    invalidate_pared_();
 }
 
 template <size_t NumModes>
@@ -208,15 +235,27 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
 }
 
 template <size_t NumModes>
-template <typename Fn, typename R>
-auto MonomialPropagator<NumModes>::make_functional_(const VecZ &parameter_mapping,
-                                                    const VecD &gen_coeffs,
-                                                    Fn &&func,
-                                                    std::optional<double> pare_threshold)
-    -> std::function<R(const VecD &)> {
-    validate_coefficient_lengths(parameter_mapping, gen_coeffs);
-    validate_propagation_params(parameter_mapping.size(), graph_layers());
+auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ, VecD> {
+    const size_t count = graph_.layers();
+    VecZ parameter_mapping(count);
+    VecD gen_coeffs(count);
+    // Layers store gate info in simulation order; the evaluation machinery expects it in
+    // optimizer order (the reverse), so place layer `layer` at optimizer index count-1-layer.
+    for (size_t layer = 0; layer < count; ++layer) {
+        const auto traversal = graph_.get_layer_traversal(layer);
+        const size_t optimizer_index = count - 1 - layer;
+        parameter_mapping[optimizer_index] = traversal.param_index();
+        gen_coeffs[optimizer_index] = traversal.gen_coeff();
+    }
+    return {std::move(parameter_mapping), std::move(gen_coeffs)};
+}
 
+template <size_t NumModes>
+template <typename Fn, typename R>
+auto MonomialPropagator<NumModes>::make_functional_(Fn &&func) -> std::function<R(const VecD &)> {
+    auto gate_arrays = graph_gate_arrays_();
+    auto parameter_mapping = std::move(gate_arrays.first);
+    auto gen_coeffs = std::move(gate_arrays.second);
     const auto num_params = expected_num_params(parameter_mapping);
 
     VecD state = mp_op_.get_state();
@@ -224,23 +263,21 @@ auto MonomialPropagator<NumModes>::make_functional_(const VecZ &parameter_mappin
     const auto core_term = this->core_term();
     const auto comm = comm_;
 
-    if (pare_threshold.has_value()) {
-        auto masked_graph = get_masked_execution_plan(state, op, *pare_threshold, graph_, schrodinger_, comm_);
-        const auto expected_layers = graph_layers();
-
+    if (pared_plan_.has_value()) {
+        const auto expected_layers = pared_expected_layers_;
         return make_parameter_validated_functional(
             num_params,
             [func = std::forward<Fn>(func),
              core_term,
              state = std::move(state),
              op = std::move(op),
-             graph = std::move(masked_graph),
-             parameter_mapping,
-             gen_coeffs,
+             plan = *pared_plan_,
+             parameter_mapping = std::move(parameter_mapping),
+             gen_coeffs = std::move(gen_coeffs),
              expected_layers,
              comm](const VecD &params) -> R {
-                validate_expected_graph_layers(graph.layers(), expected_layers);
-                return func(core_term, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
+                validate_expected_graph_layers(plan.layers(), expected_layers);
+                return func(core_term, state, op, parameter_mapping, gen_coeffs, plan, params, comm);
             });
     }
 
@@ -249,16 +286,85 @@ auto MonomialPropagator<NumModes>::make_functional_(const VecZ &parameter_mappin
         num_params,
         [func = std::forward<Fn>(func),
          core_term,
-         state,
-         op,
+         state = std::move(state),
+         op = std::move(op),
          &graph = graph_,
-         parameter_mapping,
-         gen_coeffs,
+         parameter_mapping = std::move(parameter_mapping),
+         gen_coeffs = std::move(gen_coeffs),
          expected_layers,
          comm](const VecD &params) -> R {
             validate_expected_graph_layers(graph.layers(), expected_layers);
             return func(core_term, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
         });
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::pare(std::optional<double> threshold) -> void {
+    if (!threshold.has_value()) {
+        invalidate_pared_();
+        return;
+    }
+    const VecD state = mp_op_.get_state();
+    const VecD op = mp_op_.get_operator();
+    pared_plan_ = get_masked_execution_plan(state, op, *threshold, graph_, schrodinger_, comm_);
+    pared_expected_layers_ = graph_layers();
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::expectation_value_functional() -> std::function<double(const VecD &)> {
+    return make_functional_(ev_fn);
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional()
+    -> std::function<std::pair<double, VecD>(const VecD &)> {
+    return make_functional_(ev_and_grad_fn);
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::expectation_value(const VecD &parameters) -> double {
+    return expectation_value_functional()(parameters);
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD> {
+    return expectation_value_and_gradient_functional()(parameters);
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bool inplace) -> VecD {
+    const auto gate_arrays = graph_gate_arrays_();
+    const auto &parameter_mapping = gate_arrays.first;
+    const auto &gen_coeffs = gate_arrays.second;
+    validate_parameters_length(parameters, parameter_mapping);
+
+    if (parameters.empty()) {
+        return current_picture_coeffs_();
+    }
+
+    const size_t num_majoranas = parameter_mapping.size();
+    if (schrodinger_) {
+        const auto &state = mp_op_.get_state();
+        const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, -1.0);
+        const auto evolved_state =
+            inplace ? evolve_operator(state, graph_.slice_graph(num_majoranas, true), mapped_params, comm_)
+                    : evolve_operator(state, graph_.slice_view(num_majoranas), mapped_params, comm_);
+        if (inplace) {
+            mp_op_.state_coeffs = evolved_state;
+            invalidate_pared_();
+        }
+        return evolved_state;
+    }
+
+    const auto &op = mp_op_.get_operator();
+    const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0, true);
+    const auto evolved_op = inplace ? evolve_operator(op, graph_.slice_graph(num_majoranas, true), mapped_params, comm_)
+                                    : evolve_operator(op, graph_.slice_view(num_majoranas), mapped_params, comm_);
+    if (inplace) {
+        mp_op_.op_coeffs = evolved_op;
+        invalidate_pared_();
+    }
+    return evolved_op;
 }
 
 } // namespace monoprop

@@ -96,34 +96,41 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "logical_num_modes"_a = NumModes,
         "Instantiate the simulator.");
 
+    cls.def("propagate_build_graph",
+            &MonomialPropagator<NumModes>::propagate_build_graph,
+            "majoranas"_a,
+            "parameter_mapping"_a,
+            "gen_coeffs"_a,
+            "parameters"_a = std::nullopt,
+            "only_rotate_len_k"_a = 0,
+            "Build the propagation graph, recording per-layer gate information");
+
     cls.def("propagate",
             &MonomialPropagator<NumModes>::propagate,
             "majoranas"_a,
-            "parameter_mapping"_a = std::nullopt,
-            "gen_coeffs"_a = std::nullopt,
-            "parameters"_a = std::nullopt,
-            "operator_coeffs"_a = std::nullopt,
-            "only_rotate_len_k"_a = 0,
-            "Evolve the system by multiple Majorana operators");
-
-    cls.def("expectation_value_functional",
-            &MonomialPropagator<NumModes>::expectation_value_functional,
             "parameter_mapping"_a,
             "gen_coeffs"_a,
-            "pare_threshold"_a = std::nullopt);
+            "parameters"_a,
+            "only_rotate_len_k"_a = 0,
+            "Evolve and contract immediately without storing a graph");
+
+    cls.def("pare",
+            &MonomialPropagator<NumModes>::pare,
+            "threshold"_a = std::nullopt,
+            "Build and cache a pared execution plan over the current graph");
+
+    cls.def("expectation_value", &MonomialPropagator<NumModes>::expectation_value, "parameters"_a);
+
+    cls.def("expectation_value_and_gradient",
+            &MonomialPropagator<NumModes>::expectation_value_and_gradient,
+            "parameters"_a);
+
+    cls.def("expectation_value_functional", &MonomialPropagator<NumModes>::expectation_value_functional);
 
     cls.def("expectation_value_and_gradient_functional",
-            &MonomialPropagator<NumModes>::expectation_value_and_gradient_functional,
-            "parameter_mapping"_a,
-            "gen_coeffs"_a,
-            "pare_threshold"_a = std::nullopt);
+            &MonomialPropagator<NumModes>::expectation_value_and_gradient_functional);
 
-    cls.def("contract_partially",
-            &MonomialPropagator<NumModes>::contract_partially,
-            "parameters"_a,
-            "parameter_mapping"_a,
-            "gen_coeffs"_a,
-            "inplace"_a);
+    cls.def("contract_partially", &MonomialPropagator<NumModes>::contract_partially, "parameters"_a, "inplace"_a);
 
     cls.def("update_initial_operator", &MonomialPropagator<NumModes>::update_initial_operator, "op_dict"_a);
 
@@ -159,16 +166,9 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
 
     cls.def(
         "evolved_operator_dict",
-        [](MonomialPropagator<NumModes> &self,
-           const VecD &parameters,
-           const VecZ &parameter_mapping,
-           const VecD &gen_coeffs,
-           double atol) -> nb::dict {
-            // Validate parameters
-            validate_params(parameters, parameter_mapping, gen_coeffs);
-
+        [](MonomialPropagator<NumModes> &self, const VecD &parameters, double atol) -> nb::dict {
             // Evolve the operator representation (single rank in non-MPI Python bindings)
-            const auto evolved_op = self.contract_partially(parameters, parameter_mapping, gen_coeffs, false);
+            const auto evolved_op = self.contract_partially(parameters, false);
             const auto &indexing = self.indexing();
 
             nb::dict py_result;
@@ -197,8 +197,6 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             return py_result;
         },
         "parameters"_a,
-        "parameter_mapping"_a,
-        "gen_coeffs"_a,
         "atol"_a);
 
     cls.def_prop_ro("num_modes", &MonomialPropagator<NumModes>::logical_num_modes);
