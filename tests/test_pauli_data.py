@@ -278,12 +278,12 @@ class TestPauliEvCircuit:
         assert "PauliEvCircuit" in r
         assert "1 gates" in r
 
-    def test_get_monomial_circuit(self):
+    def test_get_monomial_sequence(self):
         op = PauliOperator(["Z"], [2.0])
         gate = PauliEvGate([0], op, 0.7)
         circuit = PauliEvCircuit([gate], [0], num_qubits=1)
 
-        mon_circuit = circuit.get_monomial_circuit()
+        mon_circuit = circuit.get_monomial_sequence()
 
         assert mon_circuit.initial_state == [0]
         assert mon_circuit.parameters == [0.7]
@@ -291,10 +291,10 @@ class TestPauliEvCircuit:
         assert mon_circuit.param_inds == [0]
         np.testing.assert_array_equal(mon_circuit.majoranas[0], np.array([0, 1]))
 
-    def test_get_monomial_circuit_empty(self):
+    def test_get_monomial_sequence_empty(self):
         circuit = PauliEvCircuit([], [1], num_qubits=1)
 
-        mon_circuit = circuit.get_monomial_circuit()
+        mon_circuit = circuit.get_monomial_sequence()
 
         assert mon_circuit.initial_state == [1]
         assert mon_circuit.majoranas == []
