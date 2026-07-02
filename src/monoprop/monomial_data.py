@@ -33,15 +33,14 @@ class Monomial:
 
 
 @dataclass
-class MonomialCircuit:
-    """Monomial circuit."""
+class MonomialSequence:
+    """Dense transport representation of a Majorana gate sequence."""
 
     initial_state: list[int] | ndarray
     majoranas: list[tuple[int, ...]] | ndarray
     parameters: list[float] | ndarray
     gen_coeffs: list[float] | ndarray
     param_inds: list[int] | ndarray
-    identical_params: list[int] | ndarray | None = None
 
 
 class MonomialOperator:
