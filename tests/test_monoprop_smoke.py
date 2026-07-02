@@ -17,14 +17,14 @@ from __future__ import annotations
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MonomialPropagator, jordan_wigner_basis_change
+from monoprop import MajoranaPropagator, jordan_wigner_basis_change
 from tests.cases import CasesFermionicProblem
 
 
 def _bound_simulator_type(problem, serial_comm):
-    wrapper = MonomialPropagator(
+    wrapper = MajoranaPropagator(
         problem.operator,
-        problem.monomial_circuit,
+        problem.monomial_circuit.initial_state,
         cutoff=2 * problem.n_modes,
         comm=serial_comm,
     )
@@ -56,25 +56,16 @@ def _make_bound_core(problem, serial_comm, *, schrodinger: bool):
 
 
 def _evolve_bound_core(core, monomial_circuit):
-    core.propagate(
-        majoranas=monomial_circuit.majoranas,
-        parameter_mapping=None,
-        gen_coeffs=None,
-        parameters=None,
-        operator_coeffs=None,
-        only_rotate_len_k=0,
-    )
-
     parameter_mapping = monomial_circuit.param_inds.tolist()
     gen_coeffs = monomial_circuit.gen_coeffs.tolist()
     parameters = monomial_circuit.parameters.tolist()
-    coeffs = core.contract_partially(
-        parameters=parameters,
-        parameter_mapping=parameter_mapping,
-        gen_coeffs=gen_coeffs,
-        inplace=False,
+    core.propagate_build_graph(
+        monomial_circuit.majoranas,
+        parameter_mapping,
+        gen_coeffs,
     )
-    return parameter_mapping, gen_coeffs, parameters, coeffs
+    coeffs = core.contract_partially(parameters, inplace=False)
+    return parameters, coeffs
 
 
 @parametrize_with_cases(
@@ -126,22 +117,14 @@ def test_bound_expectation_value_methods_accept_declared_arguments(
 ):
     monomial_circuit = problem.monomial_circuit
     core = _make_bound_core(problem, serial_comm, schrodinger=schrodinger)
-    parameter_mapping, gen_coeffs, parameters, coeffs = _evolve_bound_core(
-        core, monomial_circuit
-    )
+    parameters, coeffs = _evolve_bound_core(core, monomial_circuit)
 
-    expectation_value_fn = core.expectation_value_functional(
-        parameter_mapping=parameter_mapping,
-        gen_coeffs=gen_coeffs,
-        pare_threshold=None,
-    )
+    expectation_value_fn = core.expectation_value_functional(pare_threshold=None)
     expectation_value = expectation_value_fn(parameters)
     assert isinstance(expectation_value, float)
 
     expectation_value_grad_fn = core.expectation_value_and_gradient_functional(
-        parameter_mapping=parameter_mapping,
-        gen_coeffs=gen_coeffs,
-        pare_threshold=None,
+        pare_threshold=None
     )
     expectation_value_with_grad, gradient = expectation_value_grad_fn(parameters)
     assert isinstance(expectation_value_with_grad, float)
@@ -161,16 +144,9 @@ def test_bound_graph_methods_accept_declared_arguments(
 ):
     monomial_circuit = problem.monomial_circuit
     core = _make_bound_core(problem, serial_comm, schrodinger=schrodinger)
-    parameter_mapping, gen_coeffs, parameters, _ = _evolve_bound_core(
-        core, monomial_circuit
-    )
+    parameters, _ = _evolve_bound_core(core, monomial_circuit)
 
-    evolved_operator = core.evolved_operator_dict(
-        parameters=parameters,
-        parameter_mapping=parameter_mapping,
-        gen_coeffs=gen_coeffs,
-        atol=1e-12,
-    )
+    evolved_operator = core.evolved_operator_dict(parameters, 1e-12)
     assert isinstance(evolved_operator, dict)
 
     assert core.size() > 0

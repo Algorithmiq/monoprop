@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from monoprop import MonomialPropagator
+from monoprop import MajoranaPropagator
 from monoprop.fermi_data import FermiCircuit, MajoranaOperator
 
 
@@ -40,8 +40,12 @@ def test_trivial_evolved_operator_dict(
     """Test trivial evolved operator dict for various initial conditions."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
     quantum_circuit = FermiCircuit(initial_state=[], gates=[])
-    mp = MonomialPropagator(
-        initial_op, quantum_circuit, cutoff, comm=serial_comm, **kwargs
+    mp = MajoranaPropagator(
+        initial_op,
+        quantum_circuit.initial_state,
+        cutoff=cutoff,
+        comm=serial_comm,
+        **kwargs,
     )
     result = mp.evolved_operator_dict()
     assert result == expected
@@ -50,8 +54,10 @@ def test_trivial_evolved_operator_dict(
 def test_trivial_evolved_operator(serial_comm):
     initial_op = MajoranaOperator([(0, 1, 2, 4)], [1], 8)
     quantum_circuit = FermiCircuit(initial_state=[], gates=[])
-    mp = MonomialPropagator(initial_op, quantum_circuit, 16, comm=serial_comm)
-    op = mp.contract_partially([], [], [], inplace=False)
+    mp = MajoranaPropagator(
+        initial_op, quantum_circuit.initial_state, cutoff=16, comm=serial_comm
+    )
+    op = mp.contract_partially(inplace=False)
     assert op == np.array([-1.0])
 
 
@@ -97,8 +103,12 @@ def test_update_coeffs(
     """Test updating coefficients in both regular and Schrodinger pictures."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
     quantum_circuit = FermiCircuit(initial_state=[], gates=[])
-    mp = MonomialPropagator(
-        init_op, quantum_circuit, cutoff, comm=serial_comm, **kwargs
+    mp = MajoranaPropagator(
+        init_op,
+        quantum_circuit.initial_state,
+        cutoff=cutoff,
+        comm=serial_comm,
+        **kwargs,
     )
 
     if expval_check:
@@ -108,8 +118,8 @@ def test_update_coeffs(
         expval_new = mp.expectation_value()
         assert np.isclose(expval_new, expval_check[1])
     else:
-        op_init = mp.contract_partially([], [], [], inplace=False)
+        op_init = mp.contract_partially(inplace=False)
         mp.update_coeffs(new_op)
-        op_new = mp.contract_partially([], [], [], inplace=False)
+        op_new = mp.contract_partially(inplace=False)
         assert np.array_equal(op_new, expected_new)
         assert not np.array_equal(op_init, op_new)

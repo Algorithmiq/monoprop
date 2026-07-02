@@ -16,9 +16,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from monoprop import MonomialPropagator, jordan_wigner_basis_change
+from monoprop import (
+    MajoranaPropagator,
+    gates_from_monomial_sequence,
+    jordan_wigner_basis_change,
+)
 from monoprop.fermi_data import MajoranaOperator
-from monoprop.monomial_data import MonomialCircuit
+from monoprop.monomial_data import MonomialSequence
 
 
 def test_basis_change(serial_comm):
@@ -26,24 +30,24 @@ def test_basis_change(serial_comm):
     cutoff = 3
     initial_op = MajoranaOperator([(0,)], [1.0], n_modes)
 
-    quantum_circuit = MonomialCircuit(
+    sequence = MonomialSequence(
         initial_state=[],
         majoranas=[(5,)],
         parameters=[1.0],
         gen_coeffs=[-1.0],
         param_inds=[0],
-        identical_params=[0],
     )
+    gates, _ = gates_from_monomial_sequence(sequence)
     pauli_basis = jordan_wigner_basis_change(n_modes)
-    mp = MonomialPropagator(
+    mp = MajoranaPropagator(
         initial_op,
-        quantum_circuit,
+        sequence.initial_state,
         cutoff=cutoff,
         basis_change=pauli_basis,
         comm=serial_comm,
     )
-    mp.propagate()
-    tes_op = mp.evolved_operator_dict(evolve_with_coeffs=True)
+    mp.propagate_build_graph(gates)
+    tes_op = mp.evolved_operator_dict(sequence.parameters)
     act_op = {(0,): np.cos(2 * 1.0)}
     assert len(tes_op) == 1, f"Expected 1 operator, got {len(tes_op)}: {tes_op}"
     for (k1, v1), (k2, v2) in zip(tes_op.items(), act_op.items(), strict=True):
