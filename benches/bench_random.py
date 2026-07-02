@@ -35,21 +35,20 @@ def test_random_build_graph(
     def setup():
         return (make_random_propagator(),), {}
 
-    def build(mp):
-        mp.propagate()
+    def build(built):
+        propagator, gates, _parameters = built
+        propagator.propagate_build_graph(gates)
 
     benchmark.pedantic(
         barriered(build, bench_comm), setup=setup, rounds=bench_rounds, iterations=1
     )
 
 
-def test_random_pare(benchmark, built_graph, random_problem, bench_comm, bench_rounds):
+def test_random_pare(benchmark, built_graph, bench_comm, bench_rounds):
     """Benchmark paring the graph into a masked execution plan."""
 
     def pare():
         return built_graph.expectation_value_and_gradient_functional(
-            parameter_mapping=random_problem.parameter_mapping,
-            gen_coeffs=random_problem.gen_coeffs,
             pare_threshold=PARE_THRESHOLD,
         )
 
@@ -61,8 +60,6 @@ def test_random_energy(
 ):
     """Benchmark evaluating the expectation-value functional."""
     functional = built_graph.expectation_value_functional(
-        parameter_mapping=random_problem.parameter_mapping,
-        gen_coeffs=random_problem.gen_coeffs,
         pare_threshold=PARE_THRESHOLD,
     )
     result = benchmark.pedantic(
@@ -79,8 +76,6 @@ def test_random_gradient(
 ):
     """Benchmark evaluating the expectation-value-and-gradient functional."""
     functional = built_graph.expectation_value_and_gradient_functional(
-        parameter_mapping=random_problem.parameter_mapping,
-        gen_coeffs=random_problem.gen_coeffs,
         pare_threshold=PARE_THRESHOLD,
     )
     _value, gradient = benchmark.pedantic(
@@ -98,9 +93,10 @@ def test_random_inplace(benchmark, make_random_propagator, bench_comm, bench_rou
     def setup():
         return (make_random_propagator(lower_atol=INPLACE_LOWER_ATOL),), {}
 
-    def run(mp):
-        mp.propagate(evolve_with_coeffs=True)
-        return mp.expectation_value()
+    def run(built):
+        propagator, gates, parameters = built
+        propagator.propagate(gates, parameters)
+        return propagator.expectation_value()
 
     result = benchmark.pedantic(
         barriered(run, bench_comm), setup=setup, rounds=bench_rounds, iterations=1

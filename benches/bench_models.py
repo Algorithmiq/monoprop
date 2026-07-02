@@ -37,11 +37,12 @@ def test_model(benchmark, bench_comm, model_configs, model, record_model_config)
     def setup():
         return (build_fn(config, comm=bench_comm), steps), {}
 
-    def run(mp, n_steps):
+    def run(built, n_steps):
+        propagator, gates, parameters = built
         value = 0.0
         for _ in range(n_steps):
-            mp.propagate(evolve_with_coeffs=True)
-            value = mp.expectation_value()
+            propagator.propagate(gates, parameters)
+            value = propagator.expectation_value()
         return value
 
     result = benchmark.pedantic(
