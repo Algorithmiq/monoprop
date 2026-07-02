@@ -259,6 +259,43 @@ class MajoranaPropagator:
         """Number of distinct variational parameters seen while building the graph."""
         return self._n_params
 
+    @property
+    def parameter_mapping(self) -> list[int]:
+        """The parameter mapping owned by the graph, one entry per graph layer.
+
+        Entry ``i`` is the variational-parameter index driving the ``i``-th graph layer (a
+        generated Majorana monomial), in the same order as the parameter vector passed to
+        :meth:`expectation_value`. This is the graph's native (per-monomial) mapping, which
+        is finer-grained than the per-gate mapping of the authoring
+        :class:`~monoprop.circuit.Circuit` when gates bundle several monomials.
+        """
+        return list(self._simulator.parameter_mapping)
+
+    @parameter_mapping.setter
+    def parameter_mapping(self, mapping: Sequence[int]) -> None:
+        """Re-wire which parameter drives each graph layer, without rebuilding the graph.
+
+        The graph structure depends only on the generators, not the parameter labels, so
+        this is a cheap relabel -- use it to tie or untie parameters on an already-built
+        graph. The mapping must have one entry per graph layer (see :attr:`graph_layers`)
+        and be contiguous ``0..n-1``. Functionals created earlier keep the mapping they were
+        built with; rebuild a functional to pick up the new one.
+        """
+        resolved = [int(m) for m in mapping]
+        n_layers = self.graph_layers
+        if len(resolved) != n_layers:
+            raise ValueError(
+                f"parameter_mapping has {len(resolved)} entries but the graph has "
+                f"{n_layers} layers."
+            )
+        if resolved and set(resolved) != set(range(max(resolved) + 1)):
+            raise ValueError(
+                "parameter_mapping indices must be contiguous 0..n-1 with no gaps; "
+                f"got {sorted(set(resolved))}."
+            )
+        self._simulator.parameter_mapping = resolved
+        self._n_params = max(resolved, default=-1) + 1
+
     def expectation_value(
         self,
         parameters: ParameterValues = None,

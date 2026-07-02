@@ -233,6 +233,24 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
 }
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_mapping) -> void {
+    const size_t count = graph_.layers();
+    if (parameter_mapping.size() != count) {
+        throw std::runtime_error(std::format("parameter_mapping has {} entries but the graph "
+                                             "has {} layers.",
+                                             parameter_mapping.size(),
+                                             count));
+    }
+    // The input is in optimizer order; layer `layer` holds optimizer index count-1-layer
+    // (see graph_gate_arrays_). Relabel in place, preserving each layer's generator coeff.
+    for (size_t layer = 0; layer < count; ++layer) {
+        const size_t optimizer_index = count - 1 - layer;
+        auto &target = graph_.get_layer(layer);
+        target.set_gate_info(parameter_mapping[optimizer_index], target.gen_coeff());
+    }
+}
+
+template <size_t NumModes>
 auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ, VecD> {
     const size_t count = graph_.layers();
     VecZ parameter_mapping(count);

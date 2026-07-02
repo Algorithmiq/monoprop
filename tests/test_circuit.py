@@ -115,27 +115,6 @@ def test_circuit_add_offsets_second_axis() -> None:
     assert combined.n_parameters == 3
 
 
-def test_circuit_with_parameter_mapping_rewires_immutably() -> None:
-    """with_parameter_mapping returns a re-wired copy, leaving the original untouched."""
-    gates = (MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),)))
-    original = Circuit(gates, parameters=(0.1, 0.2))
-
-    # Tie both gates to one angle (parameter count changes, so drop the values first).
-    tied = original.with_parameters(()).with_parameter_mapping((0, 0))
-    assert tied.resolved_mapping == (0, 0)
-    assert tied.n_parameters == 1
-    assert tied.parameters == ()
-
-    # The original is unchanged (immutable value object).
-    assert original.resolved_mapping == (0, 1)
-    assert original.parameters == (0.1, 0.2)
-
-    # Passing None resets to the identity mapping; a bad mapping is still rejected.
-    assert tied.with_parameter_mapping(None).resolved_mapping == (0, 1)
-    with pytest.raises(ValueError, match="contiguous"):
-        original.with_parameter_mapping((0, 2))
-
-
 # -- evaluation contracts -------------------------------------------------------
 
 
@@ -190,6 +169,58 @@ def test_from_circuit_matches_manual_build() -> None:
         circuit, problem.operator, cutoff=2 * problem.n_modes
     )
     np.testing.assert_allclose(prop.expectation_value(circuit), problem.exact_expval)
+
+
+# -- the graph-owned parameter mapping ------------------------------------------
+
+
+def test_parameter_mapping_getter_reflects_graph() -> None:
+    """The propagator exposes the graph's per-layer mapping; re-setting it is a no-op."""
+    problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
+    circuit = problem.monomial_circuit.to_circuit()
+    prop = _propagator(problem)
+    prop.propagate_build_graph(circuit)
+
+    mapping = prop.parameter_mapping
+    assert len(mapping) == prop.graph_layers  # per-layer (per-monomial) granularity
+    assert max(mapping) + 1 == prop.n_parameters
+    # Round-trip: writing the mapping back changes nothing.
+    prop.parameter_mapping = mapping
+    assert prop.parameter_mapping == mapping
+    np.testing.assert_allclose(prop.expectation_value(circuit), problem.exact_expval)
+
+
+def test_parameter_mapping_setter_ties_parameters() -> None:
+    """Re-wiring the graph mapping ties layers to a shared angle without rebuilding."""
+    problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
+    circuit = problem.monomial_circuit.to_circuit()
+    prop = _propagator(problem)
+    prop.propagate_build_graph(circuit)
+    n_layers = prop.graph_layers
+
+    # Tie every layer to one shared angle: evaluating at [theta] must equal the untied
+    # graph evaluated with that same theta broadcast across every parameter.
+    prop.parameter_mapping = [0] * n_layers
+    assert prop.n_parameters == 1
+    tied = prop.expectation_value([0.3])
+
+    prop.parameter_mapping = list(range(n_layers))
+    assert prop.n_parameters == n_layers
+    reference = prop.expectation_value([0.3] * n_layers)
+    np.testing.assert_allclose(tied, reference)
+
+
+def test_parameter_mapping_setter_validates() -> None:
+    """The setter rejects a wrong-length or non-contiguous mapping."""
+    problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
+    circuit = problem.monomial_circuit.to_circuit()
+    prop = _propagator(problem)
+    prop.propagate_build_graph(circuit)
+
+    with pytest.raises(ValueError, match="layers"):
+        prop.parameter_mapping = [0]  # too short
+    with pytest.raises(ValueError, match="contiguous"):
+        prop.parameter_mapping = [i + 1 for i in range(prop.graph_layers)]  # no 0
 
 
 # -- building the graph incrementally -------------------------------------------

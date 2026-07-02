@@ -210,6 +210,10 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
 
     cls.def("graph_layers", &MonomialPropagator<NumModes>::graph_layers);
 
+    cls.def_prop_rw("parameter_mapping",
+                    &MonomialPropagator<NumModes>::parameter_mapping,
+                    &MonomialPropagator<NumModes>::set_parameter_mapping);
+
     cls.def("operator_memory_bytes",
             [](const MonomialPropagator<NumModes> &self) { return self.operator_memory_usage().total_bytes(); });
     cls.def("graph_memory_bytes",

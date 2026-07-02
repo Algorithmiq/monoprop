@@ -174,6 +174,30 @@ public:
     auto graph_layers() const -> size_t { return graph_.layers(); }
 
     /**
+     * @brief The parameter mapping owned by the graph, in optimizer order.
+     *
+     * Entry i is the variational-parameter index driving the i-th graph layer (a generated
+     * Majorana monomial); this is the mapping the graph uses when binding parameters.
+     *
+     * @return The per-layer parameter mapping (length equals graph_layers()).
+     */
+    auto parameter_mapping() const -> VecZ { return graph_gate_arrays_().first; }
+
+    /**
+     * @brief Re-wire which variational parameter drives each graph layer, in place.
+     *
+     * Relabels the graph layers' parameter indices without rebuilding the graph. The graph
+     * structure depends only on the generators, not on the parameter labels, so this is a
+     * cheap O(layers) relabel that changes only the parameter binding. Existing functionals
+     * created by expectation_value_functional() keep the mapping they captured at creation
+     * (they snapshot it), so rebuild a functional to pick up the new mapping.
+     *
+     * @param parameter_mapping New per-layer parameter index in optimizer order; its length
+     *        must equal graph_layers().
+     */
+    auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
+
+    /**
      * @brief Access this rank's indexing map.
      *
      * Returns the mapping from Majorana bitset terms to their coefficient indices
