@@ -7,11 +7,9 @@ mechanisms: a **structural cutoff** on the size of each monomial, and
 changed at any point during a simulation.
 
 The structural cutoff discards monomials that grow "too large". What counts as
-large is set by two choices: the cutoff **type** — ``length`` or ``support`` —
-and the **basis** in which a monomial is measured. By default monoprop measures
-in the Majorana basis; supplying a *basis change* re-expresses each monomial in a
-qubit (Pauli) basis first, so the same cutoff truncates the mapped qubit operator
-instead.
+large is set by the cutoff **type** — ``length`` or ``support`` — and by which
+simulator you use: ``MajoranaPropagator`` measures a monomial as a Majorana
+operator, whereas ``QubitPropagator`` measures it as a qubit (Pauli) operator.
 
 Cutoff type and value
 ---------------------
@@ -52,45 +50,26 @@ simulation:
    sim.cutoff = 8
    sim.cutoff_type = "length"
 
-The Majorana and Pauli bases
-----------------------------
+Choosing a simulator
+--------------------
 
-The cutoff is always evaluated on a monomial's binary string, but that string can
-be read in different bases. The basis fixes what ``length`` and ``support`` count.
+The cutoff counts operators in whichever representation the simulator works in, so
+picking the right simulator is what fixes the meaning of ``length`` and ``support``.
 
-**Majorana basis (default).** With no basis change the cutoff is measured directly
-on the Majorana monomials: ``length`` counts Majorana operators :math:`m_j` and
+**Majorana operators —** ``MajoranaPropagator``. The cutoff is measured directly on
+the Majorana monomials: ``length`` counts Majorana operators :math:`m_j` and
 ``support`` counts the distinct modes touched. This is the natural choice for
 fermionic problems.
 
-**Pauli basis (via a basis change).** For a qubit Hamiltonian you usually want to
-bound the **Pauli weight** instead. Passing a ``basis_change`` re-expresses each
-monomial under a fermion-to-qubit mapping before measuring it, so ``support`` then
-counts the qubits touched — the Pauli weight. The mapping must be
-applied before the cutoff because fermion-to-qubit mappings are non-local, so Pauli
-weight does not track Majorana length — see the Pauli representation in
-:doc:`/concepts/notation` for the theory. The basis change is a list of :math:`2N`
-entries, one per Majorana operator, each giving its image as a set of Majorana
-indices; ``jordan_wigner_basis_change`` builds it for Jordan–Wigner:
-
-.. code-block:: python
-
-   from monoprop import MajoranaPropagator, jordan_wigner_basis_change
-
-   # m_0 -> X_0, m_1 -> Y_0, m_2 -> Z_0 X_1, m_3 -> Z_0 Y_1, ...
-   bc = jordan_wigner_basis_change(n_qubits=2)  # [[0], [1], [0, 1, 2], [0, 1, 3]]
-   sim = MajoranaPropagator(..., cutoff_type="support", basis_change=bc)
-
-``QubitPropagator`` sets this Jordan-Wigner ``basis_change`` for you, so a
-``"support"`` cutoff there already counts Pauli weight without a manual basis change.
-
-``basis_change`` is a read/write attribute, so it can also be set or cleared after
-construction:
-
-.. code-block:: python
-
-   sim.basis_change = jordan_wigner_basis_change(n_qubits=2)
-   sim.basis_change = None  # revert to the Majorana basis
+**Qubit (Pauli) operators —** ``QubitPropagator``. For a qubit Hamiltonian you
+usually want to bound the **Pauli weight** instead. ``QubitPropagator`` accepts
+Pauli operators and gates directly and measures the cutoff as a qubit operator, so
+``support`` counts the qubits a term touches — its Pauli weight. Reach for it
+whenever your problem is naturally expressed in qubits; use ``MajoranaPropagator``
+for native Majorana or fermionic problems. Pauli weight does not track Majorana
+length (fermion-to-qubit mappings are non-local — see the Pauli representation in
+:doc:`/concepts/notation`), which is exactly why the qubit case has its own
+simulator.
 
 Coefficient tolerance filtering
 -------------------------------

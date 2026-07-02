@@ -68,10 +68,11 @@ rotation; see more in :doc:`concepts/algorithm`:
    >>> bool(np.isclose(result[(0, 1, 2, 4)].real, np.cos(2 * 0.5)))  # cosine branch
    True
 
-The same simulator works directly with qubit (Pauli) operators. The following
-example back-propagates the two-qubit observable :math:`Z \otimes Z` under a single
-qubit rotation :math:`e^{-i\theta X_0/2}`. monoprop maps the Pauli operator into
-the Majorana basis (see :doc:`concepts/notation`), so the gate likewise splits
+For qubit problems there is a dedicated simulator, ``QubitPropagator``, which takes
+Pauli operators and gates directly. The following example back-propagates the
+two-qubit observable :math:`Z \otimes Z` under a single qubit rotation
+:math:`e^{-i\theta X_0/2}`. Internally the Pauli operator is carried into the
+Majorana basis (see :doc:`concepts/notation`), so the gate likewise splits
 :math:`Z \otimes Z` into two terms — keyed by Majorana indices:
 
 .. doctest::

@@ -11,9 +11,9 @@ The simulator
 -------------
 
 Two propagators are the entry point: ``MajoranaPropagator`` for native Majorana
-operators, and ``QubitPropagator`` for qubit (Pauli) operators (mapped through the
-Jordan-Wigner basis change, with the matching cutoff basis set automatically).
-Construct one from an operator, a reference state, and a cutoff, then
+(and fermionic) operators, and ``QubitPropagator`` for qubit (Pauli) operators,
+which it takes directly and truncates by Pauli weight. Construct one from an
+operator, a reference state, and a cutoff, then
 :py:meth:`~monoprop.MajoranaPropagator.propagate` (or
 :py:meth:`~monoprop.MajoranaPropagator.propagate_build_graph` to store a reusable
 graph) and read off expectation values and gradients. The graph owns the gate
@@ -69,9 +69,9 @@ Qubit (Pauli) operators
 
 The natural starting point when you already hold a qubit Hamiltonian:
 real-coefficient sums of Pauli strings (``PauliOperator``), with ``PauliEvGate``
-and ``PauliEvCircuit`` describing the circuit. To truncate by qubit Pauli weight,
-pair these with a ``basis_change`` (see :func:`monoprop.jordan_wigner_basis_change`
-and :doc:`/features/cutoff`).
+and ``PauliEvCircuit`` describing the circuit. Feed these to ``QubitPropagator``,
+which takes them directly and truncates by qubit Pauli weight (see
+:doc:`/features/cutoff`).
 
 .. automodule:: monoprop.pauli_data
    :members:
