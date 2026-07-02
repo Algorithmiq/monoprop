@@ -34,8 +34,8 @@ from .circuit import (
     ParameterVector,
     QubitGate,
     Term,
-    gates_from_monomial_sequence,
-    gates_from_pauli_circuit,
+    gates_from_majorana_sequence,
+    gates_from_qubit_circuit,
     to_engine_arrays,
 )
 from .monomial_propagator import MajoranaPropagator, QubitPropagator
@@ -54,8 +54,8 @@ __all__ = [
     "__compiler_flags__",
     "__version__",
     "antihermitian_generator_correction",
-    "gates_from_monomial_sequence",
-    "gates_from_pauli_circuit",
+    "gates_from_majorana_sequence",
+    "gates_from_qubit_circuit",
     "has_mpi",
     "is_antihermitian",
     "jordan_wigner_basis_change",

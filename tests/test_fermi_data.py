@@ -181,7 +181,7 @@ class TestFermiCircuit:
 
         assert len(circuit) == 2
 
-    def test_get_monomial_sequence(self):
+    def test_get_majorana_sequence(self):
         generator = MajoranaOperator(
             majoranas=[(0, 1), (2, 3)],
             coefficients=[1.0j, -1.0j],
@@ -191,7 +191,7 @@ class TestFermiCircuit:
         gate_1 = FermiEvGate(generator=generator, parameter=-0.7)
 
         circuit = FermiCircuit(initial_state=[0, 1], gates=[gate_0, gate_1])
-        mon_circuit = circuit.get_monomial_sequence()
+        mon_circuit = circuit.get_majorana_sequence()
 
         np.testing.assert_array_equal(mon_circuit.initial_state, np.array([0, 1]))
         np.testing.assert_array_equal(mon_circuit.parameters, np.array([0.3, -0.7]))

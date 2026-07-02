@@ -52,6 +52,17 @@ class MajoranaPropagator:
 
     The propagation graph owns the gate information; evaluation methods
     (:meth:`expectation_value`, :meth:`gradient`, ...) take only ``parameters``.
+
+    .. note::
+        **Incremental building and gate order.** In the Heisenberg picture the
+        Heisenberg evolution applies gates back-to-front, so each
+        :meth:`propagate_build_graph` / :meth:`propagate` call consumes its gate
+        sequence in reverse. Splitting one circuit into forward chunks across several
+        calls is therefore *not* equivalent to a single call with the whole sequence:
+        the chunks are each reversed but not globally reordered. In the Schrodinger
+        picture gates are applied front-to-back, so a forward split *is* equivalent.
+        When you need incremental building to reproduce a single-call result, use the
+        Schrodinger picture (or pass the full sequence in one call).
     """
 
     def __init__(

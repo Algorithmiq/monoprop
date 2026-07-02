@@ -387,6 +387,11 @@ public:
      *        structural build.
      * @param only_rotate_len_k If > 0, apply gates to monomials of length <= k even if
      *        they anticommute (see class docs).
+     *
+     * @note In the Heisenberg picture gates are applied back-to-front, so each call
+     *       consumes its sequence in reverse; splitting a circuit into forward chunks
+     *       across calls is NOT equivalent to one call. In the Schrodinger picture gates
+     *       are applied front-to-back, so a forward split IS equivalent.
      */
     auto propagate_build_graph(const std::vector<VecZ> &majoranas,
                                const VecZ &parameter_mapping,

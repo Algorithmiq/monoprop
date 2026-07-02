@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .conversion_utils import _n_product
-from .monomial_data import Monomial, MonomialOperator, MonomialSequence
+from .monomial_data import MajoranaSequence, Monomial, MonomialOperator
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -313,8 +313,8 @@ class FermiCircuit:
             f"initial_state={self.initial_state})"
         )
 
-    def get_monomial_sequence(self) -> MonomialSequence:
-        """Convert the fermi circuit to a MonomialSequence."""
+    def get_majorana_sequence(self) -> MajoranaSequence:
+        """Convert the fermi circuit to a MajoranaSequence."""
         majoranas, gen_coeffs, parameters, param_inds = [], [], [], []
         for i, gate in enumerate(self.gates):
             parameters.append(gate.parameter)
@@ -325,7 +325,7 @@ class FermiCircuit:
                 gen_coeffs.append(float(np.real(antiherm)))
                 param_inds.append(i)
 
-        return MonomialSequence(
+        return MajoranaSequence(
             initial_state=self.initial_state,
             majoranas=majoranas,
             parameters=parameters,

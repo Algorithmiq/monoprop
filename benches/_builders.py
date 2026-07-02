@@ -31,8 +31,8 @@ from monoprop import (
     Gate,
     MajoranaPropagator,
     QubitPropagator,
-    gates_from_monomial_sequence,
-    gates_from_pauli_circuit,
+    gates_from_majorana_sequence,
+    gates_from_qubit_circuit,
 )
 from monoprop.fermi_data import (
     FermiCircuit,
@@ -40,7 +40,7 @@ from monoprop.fermi_data import (
     FermiOperator,
     MajoranaOperator,
 )
-from monoprop.monomial_data import MonomialSequence
+from monoprop.monomial_data import MajoranaSequence
 from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator
 
 if TYPE_CHECKING:
@@ -85,7 +85,7 @@ class RandomProblem:
     """
 
     observable: MajoranaOperator
-    circuit: MonomialSequence
+    circuit: MajoranaSequence
     cutoff: int
 
     @property
@@ -159,7 +159,7 @@ def make_random_problem(
     parameters = (0.1 * rng.standard_normal(num_generators)).tolist()
     param_inds = list(range(num_generators))
 
-    circuit = MonomialSequence(
+    circuit = MajoranaSequence(
         initial_state=[],
         majoranas=gen_majoranas,
         parameters=parameters,
@@ -196,7 +196,7 @@ def build_random_propagator(
         lower_atol=lower_atol,
         comm=comm,
     )
-    gates, _ = gates_from_monomial_sequence(problem.circuit)
+    gates, _ = gates_from_majorana_sequence(problem.circuit)
     return propagator, gates, problem.parameters
 
 
@@ -293,8 +293,8 @@ def build_hubbard_problem(
     ]
     occupied = _neel_occupied_modes(config.num_sites, config.neel_start_spin)
     fermi_circuit = FermiCircuit(initial_state=occupied, gates=fermi_gates)
-    sequence = fermi_circuit.get_monomial_sequence()
-    gates, _ = gates_from_monomial_sequence(sequence)
+    sequence = fermi_circuit.get_majorana_sequence()
+    gates, _ = gates_from_majorana_sequence(sequence)
 
     observable = FermiOperator(
         terms=[
@@ -521,7 +521,7 @@ def build_kicked_ising_problem(
     circuit = PauliEvCircuit(
         gates=pauli_gates, initial_state=[], num_qubits=config.num_qubits
     )
-    gates, _ = gates_from_pauli_circuit(circuit)
+    gates, _ = gates_from_qubit_circuit(circuit)
     parameters = [gate.parameter for gate in circuit.gates]
 
     obs_str = (

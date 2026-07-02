@@ -22,10 +22,10 @@ from monoprop import (
     MajoranaPropagator,
     Parameter,
     Term,
-    gates_from_monomial_sequence,
+    gates_from_majorana_sequence,
     jordan_wigner_basis_change,
 )
-from monoprop.monomial_data import MonomialOperator, MonomialSequence
+from monoprop.monomial_data import MajoranaSequence, MonomialOperator
 from tests.cases import CasesFermionicProblem
 
 
@@ -179,7 +179,7 @@ class TestUpdateMethods:
             mp.basis_change = invalid_basis
 
     def test_integration(self, serial_comm):
-        sequence = MonomialSequence(
+        sequence = MajoranaSequence(
             initial_state=[],
             majoranas=[(0, 2), (1, 3)],
             gen_coeffs=[0.0, 0.0],
@@ -204,7 +204,7 @@ class TestUpdateMethods:
         for attr, value in updates.items():
             setattr(mp, attr, value)
 
-        gates, _ = gates_from_monomial_sequence(sequence)
+        gates, _ = gates_from_majorana_sequence(sequence)
         mp.propagate(gates, sequence.parameters)
         expval = mp.expectation_value()
         assert isinstance(expval, (int, float))
@@ -253,7 +253,7 @@ class TestUpdateMethods:
 def test_evolutions_after_updates(problem, test_type, serial_comm):
     """Test that evolutions work correctly after parameter updates."""
 
-    gates, _ = gates_from_monomial_sequence(problem.monomial_circuit)
+    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
     parameters = problem.monomial_circuit.parameters
 
     mp = MajoranaPropagator(

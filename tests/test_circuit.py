@@ -27,7 +27,7 @@ from monoprop import (
     Parameter,
     ParameterVector,
     Term,
-    gates_from_monomial_sequence,
+    gates_from_majorana_sequence,
     to_engine_arrays,
 )
 from tests.cases import load_problem
@@ -48,10 +48,10 @@ def _propagator(problem):
 
 
 def test_to_engine_arrays_round_trips_sequence() -> None:
-    """gates_from_monomial_sequence + to_engine_arrays reproduce the dense arrays."""
+    """gates_from_majorana_sequence + to_engine_arrays reproduce the dense arrays."""
     problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
     mc = problem.monomial_circuit
-    gates, params = gates_from_monomial_sequence(mc)
+    gates, params = gates_from_majorana_sequence(mc)
     majoranas, gen_coeffs, parameter_mapping = to_engine_arrays(gates, params)
 
     assert [tuple(m) for m in majoranas] == [tuple(m) for m in mc.majoranas]
@@ -95,7 +95,7 @@ def test_bind_rejects_wrong_length() -> None:
 def test_expectation_value_matches_exact(fixture: str) -> None:
     """Building the graph then evaluating reproduces the exact expectation value."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
-    gates, _ = gates_from_monomial_sequence(problem.monomial_circuit)
+    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
     prop = _propagator(problem)
     prop.propagate_build_graph(gates)
     params = list(map(float, problem.monomial_circuit.parameters))
@@ -108,7 +108,7 @@ def test_expectation_value_matches_exact(fixture: str) -> None:
 def test_eval_rejects_wrong_parameter_length() -> None:
     """expectation_value validates the parameter vector length against the graph."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
-    gates, _ = gates_from_monomial_sequence(problem.monomial_circuit)
+    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
     prop = _propagator(problem)
     prop.propagate_build_graph(gates)
     with pytest.raises(RuntimeError):
@@ -119,7 +119,7 @@ def test_eval_rejects_wrong_parameter_length() -> None:
 def test_pared_functional_matches_unpared(fixture: str) -> None:
     """A pared functional agrees with the exact (unpared) evaluation."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
-    gates, _ = gates_from_monomial_sequence(problem.monomial_circuit)
+    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
     prop = _propagator(problem)
     prop.propagate_build_graph(gates)
     params = list(map(float, problem.monomial_circuit.parameters))
@@ -144,7 +144,7 @@ def _schrodinger_propagator(problem):
 def test_build_graph_accumulates_layers_and_parameters(fixture: str) -> None:
     """Two propagate_build_graph calls accumulate the graph (layers + parameters)."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
-    gates, _ = gates_from_monomial_sequence(problem.monomial_circuit)
+    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
     split = len(gates) // 2
 
     single = _propagator(problem)
@@ -168,7 +168,7 @@ def test_build_graph_in_two_calls_schrodinger(fixture: str) -> None:
     split is deliberately *not* equivalent to one call.)
     """
     problem = load_problem(DATA / f"{fixture}.msgpack")
-    gates, _ = gates_from_monomial_sequence(problem.monomial_circuit)
+    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
     params = list(map(float, problem.monomial_circuit.parameters))
     split = len(gates) // 2
 
@@ -189,7 +189,7 @@ def test_build_graph_in_two_calls_schrodinger(fixture: str) -> None:
 def test_build_graph_twice_with_seed_regeneration(fixture: str) -> None:
     """Extending a non-empty graph with parameters regenerates the seed internally."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
-    gates, _ = gates_from_monomial_sequence(problem.monomial_circuit)
+    gates, _ = gates_from_majorana_sequence(problem.monomial_circuit)
     params = list(map(float, problem.monomial_circuit.parameters))
     split = len(gates) // 2
 

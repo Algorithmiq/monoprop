@@ -18,9 +18,9 @@ import numpy as np
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MajoranaPropagator, gates_from_monomial_sequence
+from monoprop import MajoranaPropagator, gates_from_majorana_sequence
 from monoprop.fermi_data import MajoranaOperator
-from monoprop.monomial_data import MonomialSequence
+from monoprop.monomial_data import MajoranaSequence
 from tests.cases import CasesFermionicProblem, FermionicProblem
 
 
@@ -57,14 +57,14 @@ def test_coeff_trunc(serial_comm):
     n_modes = 5
     op = MajoranaOperator([(0, 1)], [1.0j], num_modes=n_modes)
 
-    sequence = MonomialSequence(
+    sequence = MajoranaSequence(
         initial_state=[],
         majoranas=[(1, 2, 3, 4)],
         parameters=[np.pi / 6],
         gen_coeffs=[1.0],
         param_inds=[0],
     )
-    gates, _ = gates_from_monomial_sequence(sequence)
+    gates, _ = gates_from_majorana_sequence(sequence)
 
     cos_pi6, sin_pi6 = (0.5, -0.8660254037844386)
     act_op = {(0, 1): 1j * cos_pi6, (0, 2, 3, 4): sin_pi6}
@@ -103,7 +103,7 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
     fermionic_operator = problem.operator
     monomial_circuit = problem.monomial_circuit
     schrodinger_cutoff_val = 2 * n_modes if schrodinger else None
-    gates, _ = gates_from_monomial_sequence(monomial_circuit)
+    gates, _ = gates_from_majorana_sequence(monomial_circuit)
     parameters = monomial_circuit.parameters
 
     mp_inplace = _create_mp(
@@ -141,14 +141,14 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
 
     init_op = MajoranaOperator([(0, 1), (0, 2)], [1.0j, 1.0j], num_modes=n_modes)
 
-    sequence = MonomialSequence(
+    sequence = MajoranaSequence(
         initial_state=[],
         majoranas=[(1, 2)],
         parameters=[p],
         gen_coeffs=[1.0],
         param_inds=[0],
     )
-    gates, _ = gates_from_monomial_sequence(sequence)
+    gates, _ = gates_from_majorana_sequence(sequence)
 
     cutoff = 4
     final_operator = {
@@ -178,14 +178,14 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
     init_op = {(0, 1): 1.0j, (0, 2): 1e-7j}
     op = MajoranaOperator([(0, 1), (0, 2)], [1.0j, 1e-7j], num_modes=n_modes)
 
-    sequence = MonomialSequence(
+    sequence = MajoranaSequence(
         initial_state=[],
         majoranas=[(1, 2)],
         parameters=[p],
         gen_coeffs=[1.0],
         param_inds=[0],
     )
-    gates, _ = gates_from_monomial_sequence(sequence)
+    gates, _ = gates_from_majorana_sequence(sequence)
 
     cutoff = 4
     final_operator = {

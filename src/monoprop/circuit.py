@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping, Sequence
 
-    from .monomial_data import MonomialSequence
+    from .monomial_data import MajoranaSequence
     from .pauli_data import PauliEvCircuit, PauliOperator
 
 _parameter_counter = count()
@@ -186,10 +186,10 @@ def to_engine_arrays(
     return majoranas, gen_coeffs, parameter_mapping
 
 
-def gates_from_monomial_sequence(
-    circuit: MonomialSequence,
+def gates_from_majorana_sequence(
+    circuit: MajoranaSequence,
 ) -> tuple[list[Gate], ParameterVector]:
-    """Regroup a dense :class:`MonomialSequence` into gates + a parameter vector.
+    """Regroup a dense :class:`MajoranaSequence` into gates + a parameter vector.
 
     Consecutive monomials sharing a ``param_ind`` become one :class:`Gate`; equal
     ``param_ind`` values reuse the same :class:`Parameter` handle (so weight-tying is
@@ -223,7 +223,7 @@ def gates_from_monomial_sequence(
     return gates, params
 
 
-def gates_from_pauli_circuit(
+def gates_from_qubit_circuit(
     circuit: PauliEvCircuit,
 ) -> tuple[list[QubitGate], ParameterVector]:
     """Regroup a :class:`PauliEvCircuit` into qubit gates + a parameter vector.

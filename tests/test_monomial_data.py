@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from monoprop.monomial_data import Monomial, MonomialOperator, MonomialSequence
+from monoprop.monomial_data import MajoranaSequence, Monomial, MonomialOperator
 
 
 def test_monomial_sequence_fields():
@@ -25,7 +25,7 @@ def test_monomial_sequence_fields():
     gen_coeffs = [0.5j, -0.5j]
     param_inds = [np.array([0]), np.array([0])]
 
-    mc = MonomialSequence(
+    mc = MajoranaSequence(
         initial_state=[0, 1],
         majoranas=majoranas,
         parameters=[1.0, 2.0],

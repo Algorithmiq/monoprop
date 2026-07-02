@@ -16,9 +16,9 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
+from monoprop import gates_from_qubit_circuit
 from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator, PauliString
 
 
@@ -278,29 +278,27 @@ class TestPauliEvCircuit:
         assert "PauliEvCircuit" in r
         assert "1 gates" in r
 
-    def test_get_monomial_sequence(self):
+    def test_gates_from_qubit_circuit(self):
+        # The Pauli->Majorana mapping lives in QubitPropagator; the circuit adapter
+        # stays in the qubit basis and yields one QubitGate per Pauli evolution gate.
         op = PauliOperator(["Z"], [2.0])
         gate = PauliEvGate([0], op, 0.7)
         circuit = PauliEvCircuit([gate], [0], num_qubits=1)
 
-        mon_circuit = circuit.get_monomial_sequence()
+        gates, params = gates_from_qubit_circuit(circuit)
 
-        assert mon_circuit.initial_state == [0]
-        assert mon_circuit.parameters == [0.7]
-        assert mon_circuit.gen_coeffs == [pytest.approx(2.0)]
-        assert mon_circuit.param_inds == [0]
-        np.testing.assert_array_equal(mon_circuit.majoranas[0], np.array([0, 1]))
+        assert len(gates) == 1
+        assert gates[0].qubits == (0,)
+        assert gates[0].paulis is op
+        assert len(params) == 1
 
-    def test_get_monomial_sequence_empty(self):
+    def test_gates_from_qubit_circuit_empty(self):
         circuit = PauliEvCircuit([], [1], num_qubits=1)
 
-        mon_circuit = circuit.get_monomial_sequence()
+        gates, params = gates_from_qubit_circuit(circuit)
 
-        assert mon_circuit.initial_state == [1]
-        assert mon_circuit.majoranas == []
-        assert mon_circuit.parameters == []
-        assert mon_circuit.gen_coeffs.size == 0
-        assert mon_circuit.param_inds == []
+        assert gates == []
+        assert len(params) == 0
 
     @pytest.mark.parametrize(
         ("circuit", "other", "expected"),

@@ -33,7 +33,7 @@ class Monomial:
 
 
 @dataclass
-class MonomialSequence:
+class MajoranaSequence:
     """Dense transport representation of a Majorana gate sequence."""
 
     initial_state: list[int] | ndarray

@@ -21,8 +21,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
-from .monomial_data import Monomial, MonomialOperator, MonomialSequence
+from .conversion_utils import _pauli_to_fermi
+from .monomial_data import Monomial, MonomialOperator
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -318,33 +318,6 @@ class PauliEvCircuit:
             f"{self.__class__.__name__}("
             f"{len(self)} gates, "
             f"initial_state={self.initial_state})"
-        )
-
-    def get_monomial_sequence(self) -> MonomialSequence:
-        """Convert the Pauli evolution circuit to a MonomialSequence."""
-        majoranas, gen_coeffs, parameters, param_inds = [], [], [], []
-        for i, gate in enumerate(self.gates):
-            parameters.append(gate.parameter)
-            for pauli, coefficient in zip(
-                gate.paulis.strings, gate.paulis.coefficients, strict=True
-            ):
-                extended_pauli = _extend_pauli_string(
-                    pauli.string, gate.qubits, self.num_qubits
-                )
-                majorana, fermi_coeff = _pauli_to_fermi(extended_pauli)
-                w = len(majorana)
-                gen_coeffs.append(
-                    -coefficient * fermi_coeff / (1j) ** (w * (w - 1) / 2)
-                )
-                param_inds.append(i)
-                majoranas.append(np.array(majorana))
-
-        return MonomialSequence(
-            initial_state=self.initial_state,
-            majoranas=majoranas,
-            parameters=parameters,
-            gen_coeffs=np.real(gen_coeffs),
-            param_inds=param_inds,
         )
 
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1e-8) -> bool:

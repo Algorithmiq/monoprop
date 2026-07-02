@@ -18,8 +18,8 @@ import numpy as np
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MajoranaPropagator, gates_from_monomial_sequence
-from monoprop.monomial_data import MonomialOperator, MonomialSequence
+from monoprop import MajoranaPropagator, gates_from_majorana_sequence
+from monoprop.monomial_data import MajoranaSequence, MonomialOperator
 from tests.cases import CasesFermionicProblemOrbitalRotations
 
 
@@ -46,14 +46,14 @@ def test_basic_orbital_rotation(serial_comm):
     n_modes = 4
 
     operator = MonomialOperator({}, n_modes)
-    sequence = MonomialSequence(
+    sequence = MajoranaSequence(
         initial_state=[],
         majoranas=[(1, 2)],
         parameters=[np.pi / 4],
         gen_coeffs=[1.0],
         param_inds=[0],
     )
-    gates, _ = gates_from_monomial_sequence(sequence)
+    gates, _ = gates_from_majorana_sequence(sequence)
     kwargs = {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
 
     mp_act = MajoranaPropagator(operator, sequence.initial_state, **kwargs)
@@ -80,7 +80,7 @@ def test_basic_orbital_rotation(serial_comm):
 @pytest.mark.parametrize("inplace", [False, True])
 def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     """Tests size/graph_size (rank-local) so uses serial_comm."""
-    gates, params_vector = gates_from_monomial_sequence(problem.monomial_circuit)
+    gates, params_vector = gates_from_majorana_sequence(problem.monomial_circuit)
     parameters = problem.monomial_circuit.parameters
     parameters_by_handle = dict(zip(params_vector, parameters))
     non_orbital_gates, orbital_gates = _split_orbital_gates(gates)
