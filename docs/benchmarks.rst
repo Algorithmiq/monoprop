@@ -1,17 +1,6 @@
-==========
-Benchmarks
-==========
+.. This page is generated from ``benches/README.md`` so the rendered docs and the
+   in-repo benchmark README never diverge. Extend it with reStructuredText below
+   the include (e.g. plots or cross-library comparisons).
 
-.. note::
-
-   This section is in progress. Planned content includes:
-
-   - microbenchmarks for the C++ replay kernels (compare against the suite
-     in ``benches/``)
-   - end-to-end expectation value evaluation timings for representative quantum
-     chemistry molecules
-   - MPI strong-scaling and weak-scaling results
-   - comparisons against alternative simulation libraries
-
-The C++ benchmark sources live under ``benches/`` in the repository and can
-be built with the standard CMake presets.
+.. include:: ../benches/README.md
+   :parser: myst_parser.sphinx_

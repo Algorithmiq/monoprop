@@ -24,6 +24,7 @@ from ._core import (
     __build_type__,
     __compiler_flags__,
     antihermitian_generator_correction,
+    has_mpi,
     is_antihermitian,
 )
 from ._version import version as __version__
@@ -37,6 +38,7 @@ __all__ = [
     "__compiler_flags__",
     "__version__",
     "antihermitian_generator_correction",
+    "has_mpi",
     "is_antihermitian",
     "jordan_wigner_basis_change",
 ]
