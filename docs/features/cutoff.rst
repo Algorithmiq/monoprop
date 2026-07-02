@@ -56,18 +56,19 @@ Choosing a simulator
 The cutoff counts operators in whichever representation the simulator works in, so
 picking the right simulator is what fixes the meaning of ``length`` and ``support``.
 
-**Majorana operators —** ``MajoranaPropagator``. The cutoff is measured directly on
-the Majorana monomials: ``length`` counts Majorana operators :math:`m_j` and
-``support`` counts the distinct modes touched. This is the natural choice for
-fermionic problems.
+**Majorana operators —** ``MajoranaPropagator``. Choose ``cutoff_type`` between
+``length`` (counts Majorana operators :math:`m_j`) and ``support`` (counts the
+distinct modes touched). This is the natural choice for fermionic problems.
 
 **Qubit (Pauli) operators —** ``QubitPropagator``. For a qubit Hamiltonian you
 usually want to bound the **Pauli weight** instead. ``QubitPropagator`` accepts
-Pauli operators and gates directly and measures the cutoff as a qubit operator, so
-``support`` counts the qubits a term touches — its Pauli weight. Reach for it
-whenever your problem is naturally expressed in qubits; use ``MajoranaPropagator``
-for native Majorana or fermionic problems. Pauli weight does not track Majorana
-length (fermion-to-qubit mappings are non-local — see the Pauli representation in
+Pauli operators and gates directly and always measures the cutoff as a qubit
+operator, so ``support`` counts the qubits a term touches — its Pauli weight. Its
+cutoff type is fixed to ``support`` (there is no ``cutoff_type`` argument, and
+setting it to anything else raises). Reach for it whenever your problem is naturally
+expressed in qubits; use ``MajoranaPropagator`` for native Majorana or fermionic
+problems. Pauli weight does not track Majorana length (fermion-to-qubit mappings are
+non-local — see the Pauli representation in
 :doc:`/concepts/notation`), which is exactly why the qubit case has its own
 simulator.
 

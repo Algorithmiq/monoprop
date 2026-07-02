@@ -18,8 +18,33 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import gates_from_qubit_circuit
+from monoprop import QubitPropagator, gates_from_qubit_circuit
 from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator, PauliString
+
+
+class TestQubitPropagatorCutoff:
+    """QubitPropagator fixes the cutoff to Pauli weight ('support')."""
+
+    def _propagator(self, serial_comm):
+        return QubitPropagator(
+            PauliOperator(["ZZ"], [1.0]),
+            initial_state=[],
+            cutoff=4,
+            comm=serial_comm,
+        )
+
+    def test_cutoff_type_is_support(self, serial_comm):
+        assert self._propagator(serial_comm).cutoff_type == "support"
+
+    def test_setting_support_is_allowed(self, serial_comm):
+        mp = self._propagator(serial_comm)
+        mp.cutoff_type = "support"
+        assert mp.cutoff_type == "support"
+
+    def test_setting_length_is_rejected(self, serial_comm):
+        mp = self._propagator(serial_comm)
+        with pytest.raises(ValueError, match="only supports the 'support' cutoff"):
+            mp.cutoff_type = "length"
 
 
 class TestPauliString:

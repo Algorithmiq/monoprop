@@ -76,11 +76,9 @@ operator is given as a real-coefficient sum of Pauli strings (tensor products of
    parameters = [g.parameter for g in circuit.gates]
 
    # QubitPropagator is the qubit-native simulator: it takes Pauli operators and gates
-   # directly and measures a "support" cutoff as Pauli weight — the qubits a term
-   # touches — rather than Majorana modes (see the Notation and Cutoff pages).
-   mp = QubitPropagator(
-         observable, circuit.initial_state, cutoff=4, cutoff_type="support"
-   )
+   # directly, and its cutoff always counts Pauli weight — the qubits a term touches —
+   # rather than Majorana modes (see the Notation and Cutoff pages).
+   mp = QubitPropagator(observable, circuit.initial_state, cutoff=4)
    mp.propagate(qgates, parameters)
    print(sorted(mp.evolved_operator_dict().items())) # WARNING: the keys are Majorana indices - not Pauli strings
 

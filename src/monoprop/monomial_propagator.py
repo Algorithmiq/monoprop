@@ -80,17 +80,44 @@ class MajoranaPropagator:
     ) -> None:
         """Initialize the propagator.
 
+        Creates a simulator for quantum-system evolution in the Majorana
+        representation. Both Heisenberg (operator evolution, the default) and
+        Schrodinger (state evolution) pictures are supported, with configurable
+        truncation.
+
         Args:
             initial_operator: Initial operator, either a :class:`MonomialOperator` or an
                 object implementing ``get_monomial_operator()``.
-            initial_state: Slater determinant (occupied mode indices) for the initial state.
-            cutoff: Truncation parameter (meaning depends on ``cutoff_type``).
-            schrodinger_cutoff: Optional Schrodinger-picture cutoff (enables that picture).
-            cutoff_type: ``"length"`` (Majorana length) or ``"support"`` (orbital support).
-            lower_atol: Optional lower coefficient-truncation tolerance.
-            upper_atol: Optional upper coefficient-retention tolerance.
-            basis_change: Optional Majorana basis change used by the cutoff function.
-            comm: Optional MPI communicator (must outlive the propagator).
+            initial_state: Slater determinant (occupied mode indices) for the initial
+                state.
+            cutoff: Truncation parameter controlling the maximum complexity of the
+                Majorana monomials retained during evolution; its meaning depends on
+                ``cutoff_type``. Higher values increase accuracy at greater cost. A
+                *fully paired* monomial -- one whose support consists entirely of
+                complete pairs ``(m_{2j-1} m_{2j})`` on a mode -- is always kept
+                regardless of this cutoff, because only paired monomials can contribute
+                to an expectation value against a computational-basis state or Slater
+                determinant; discarding them would throw away signal.
+            schrodinger_cutoff: Optional cutoff for Schrodinger-picture evolution. If
+                provided, enables the Schrodinger picture; if ``None``, the Heisenberg
+                picture is used.
+            cutoff_type: Truncation scheme (the fully-paired exception above always
+                applies on top of either). ``"length"`` (default) keeps monomials
+                whose length -- the number of Majorana operators -- does not exceed
+                ``cutoff``; ``"support"`` keeps monomials acting on at most ``cutoff``
+                distinct orbitals (their orbital support).
+            lower_atol: Optional lower absolute-tolerance threshold for coefficient
+                truncation. Monomials with ``|coeff| < lower_atol`` are discarded during
+                evolution to improve performance.
+            upper_atol: Optional upper absolute-tolerance threshold. Monomials with
+                ``|coeff| > upper_atol`` are always retained regardless of their
+                complexity, overriding cutoff-based truncation.
+            basis_change: Optional basis transformation for the Majorana operators used
+                by the cutoff function. If ``None``, the cutoff is measured in the
+                standard Majorana representation. If provided, a list of ``2*num_modes``
+                lists, each giving one basis vector as a set of Majorana indices.
+            comm: Optional MPI communicator. The communicator must remain valid for the
+                simulator's lifetime.
         """
         monomial_operator: MonomialOperator = (
             initial_operator
@@ -135,16 +162,24 @@ class MajoranaPropagator:
     ) -> None:
         """Append gates to the propagation graph.
 
-        The graph records each layer's gate information. When extending a non-empty graph
-        with coefficient-informed truncation, pass ``parameters`` covering the whole
-        accumulated graph plus these new gates; the seed is regenerated internally.
+        Builds (or extends) the reusable evolution graph, recording each layer's gate
+        information (the parameter that drives it and its generator coefficient) so
+        that later evaluation takes only ``parameters``. When extending a non-empty
+        graph with coefficient-informed truncation, pass ``parameters`` covering the
+        whole accumulated graph plus these new gates; the coefficient seed is
+        regenerated internally by contracting the existing graph at those parameters.
 
         Args:
             gates: Gates to append (Majorana :class:`~monoprop.circuit.Gate`, or
                 :class:`~monoprop.circuit.QubitGate` for :class:`QubitPropagator`).
-            parameters: Optional full parameter vector (see above).
-            only_rotate_len_k: If > 0, rotate monomials of length <= k even if they
-                anticommute.
+            parameters: Optional full parameter vector (see above), given either as a
+                sequence in canonical parameter order or as a mapping from
+                :class:`~monoprop.circuit.Parameter` handle to value.
+            only_rotate_len_k: If > 0, apply gates to monomials of length <= k in the
+                evolved operator even if they anticommute. Useful when many
+                free-fermionic gates (generators that are length-2 Majorana monomials)
+                are applied before expectation-value estimation in Schrodinger-picture
+                simulations.
         """
         majorana_gates = self._majorana_gates(gates)
         for gate in majorana_gates:
@@ -170,9 +205,15 @@ class MajoranaPropagator:
     ) -> None:
         """Evolve and contract immediately, without storing a graph.
 
+        More memory-efficient than :meth:`propagate_build_graph` because it does not
+        retain the propagation graph; use it for a single contraction at fixed
+        parameters rather than repeated re-evaluation.
+
         Args:
             gates: Gates to apply.
-            parameters: Parameter values for the gates.
+            parameters: Parameter values for the gates, given either as a sequence in
+                gate order or as a mapping from
+                :class:`~monoprop.circuit.Parameter` handle to value.
             only_rotate_len_k: See :meth:`propagate_build_graph`.
         """
         majorana_gates = self._majorana_gates(gates)
@@ -201,14 +242,38 @@ class MajoranaPropagator:
         self,
         parameters: ParameterValues = None,
     ) -> float:
-        """Compute the expectation value at ``parameters``."""
+        """Compute the expectation value at ``parameters``.
+
+        Replays the stored graph against the current initial operator and reference
+        state. This is a convenience wrapper that builds and immediately evaluates an
+        expectation-value functional with no paring.
+
+        Args:
+            parameters: Variational parameter values, given either as a sequence in
+                canonical parameter order or as a mapping from
+                :class:`~monoprop.circuit.Parameter` handle to value. ``None`` evaluates
+                the current operator with an empty parameter vector.
+
+        Returns:
+            The expectation value as a float.
+        """
         return self._simulator.expectation_value(self._bind(parameters))
 
     def expectation_value_and_gradient(
         self,
         parameters: ParameterValues = None,
     ) -> tuple[float, np.ndarray]:
-        """Compute the expectation value and gradient at ``parameters``."""
+        """Compute the expectation value and gradient at ``parameters``.
+
+        Both quantities are computed in a single backward pass over the graph.
+
+        Args:
+            parameters: Variational parameter values (see :meth:`expectation_value`).
+
+        Returns:
+            A tuple ``(expectation_value, gradient)``, where ``gradient`` is a NumPy
+            array in the canonical parameter-axis order.
+        """
         value, grad = self._simulator.expectation_value_and_gradient(
             self._bind(parameters)
         )
@@ -218,7 +283,19 @@ class MajoranaPropagator:
         self,
         parameters: ParameterValues = None,
     ) -> np.ndarray:
-        """Compute the gradient at ``parameters``."""
+        """Compute the gradient at ``parameters``.
+
+        Args:
+            parameters: Variational parameter values (see :meth:`expectation_value`).
+
+        Returns:
+            The gradient as a NumPy array of ``float64`` values, in canonical
+            parameter-axis order.
+
+        Note:
+            Internally calls :meth:`expectation_value_and_gradient` and returns only its
+            gradient component.
+        """
         return self.expectation_value_and_gradient(parameters)[1]
 
     def expectation_value_functional(
@@ -226,9 +303,20 @@ class MajoranaPropagator:
     ) -> Callable[..., float]:
         """Return a reusable callable computing the expectation value from parameters.
 
+        Returns a callable that accepts a parameter vector (a sequence, a
+        :class:`~monoprop.circuit.Parameter` mapping, or ``None``) and returns the
+        expectation value, replaying the current evolution graph. Build it once and
+        call it repeatedly across many parameter values.
+
         Args:
             pare_threshold: Edge-retention cutoff for a masked execution plan built for
-                this functional. ``None`` disables paring.
+                this functional: edges whose contribution falls below the threshold are
+                pared away so they are skipped during replay (a speed-up for sparse
+                graphs, at the cost of some memory and accuracy). ``None`` (the default)
+                disables paring.
+
+        Returns:
+            A callable ``fn(parameters=None) -> float``.
         """
         fn = self._simulator.expectation_value_functional(pare_threshold)
         return lambda parameters=None: fn(self._bind(parameters))
@@ -238,8 +326,16 @@ class MajoranaPropagator:
     ) -> Callable[..., tuple]:
         """Return a reusable callable computing (expectation value, gradient).
 
+        Like :meth:`expectation_value_functional`, but the returned callable computes
+        both the expectation value and the full parameter gradient in a single backward
+        pass over the graph.
+
         Args:
             pare_threshold: See :meth:`expectation_value_functional`.
+
+        Returns:
+            A callable ``fn(parameters=None) -> (float, np.ndarray)``, where the
+            gradient is in canonical parameter-axis order.
         """
         fn = self._simulator.expectation_value_and_gradient_functional(pare_threshold)
 
@@ -257,13 +353,23 @@ class MajoranaPropagator:
     ) -> np.ndarray:
         """Contract the graph into the operator/state at ``parameters``.
 
+        Permanently folds the stored gates, evaluated at ``parameters``, into the
+        operand: the initial operator in the Heisenberg picture, or the reference state
+        in the Schrodinger picture. This shrinks the graph that remains to be replayed,
+        which is useful when a prefix of the circuit is fixed and its contribution can
+        be baked in once instead of being replayed on every evaluation.
+
         Args:
-            parameters: Parameter values.
-            inplace: If True, update internal state (consuming the graph); otherwise
-                return the evolved coefficients without modifying state.
+            parameters: Variational parameter values (see :meth:`expectation_value`).
+            inplace: If ``True`` (default), update the internal state, consuming the
+                graph. If ``False``, leave the stored graph untouched and only return
+                the contracted coefficients, so the same graph can be reused with other
+                parameters.
 
         Returns:
-            The evolved coefficients (core term excluded).
+            The evolved coefficients (core term excluded) as a NumPy array. In the
+            Schrodinger picture these are the evolved-state coefficients; in the
+            Heisenberg picture, the evolved-operator coefficients.
         """
         return np.asarray(
             self._simulator.contract_partially(self._bind(parameters), inplace)
@@ -275,7 +381,21 @@ class MajoranaPropagator:
         *,
         atol: float = 1e-12,
     ) -> dict[tuple[int, ...], complex]:
-        """Return the evolved operator/state as a dict, without modifying state."""
+        """Return the evolved operator/state as a dict, without modifying state.
+
+        Equivalent to :meth:`contract_partially` with ``inplace=False``, returned as a
+        mapping keyed by Majorana indices and without touching the simulator state.
+
+        Args:
+            parameters: Variational parameter values (see :meth:`expectation_value`).
+            atol: Absolute tolerance for filtering small coefficients; terms with
+                ``|coeff| < atol`` are dropped. Defaults to ``1e-12``; set to ``0.0`` to
+                keep all terms.
+
+        Returns:
+            The evolved operator (Heisenberg) or state (Schrodinger) as a dict mapping
+            Majorana-index tuples to complex coefficients.
+        """
         return self._simulator.evolved_operator_dict(self._bind(parameters), atol)
 
     def evolved_operator(
@@ -284,7 +404,21 @@ class MajoranaPropagator:
         *,
         atol: float = 1e-12,
     ) -> dict[tuple[int, ...], complex]:
-        """Return the evolved operator (Heisenberg picture only)."""
+        """Return the evolved operator (Heisenberg picture only).
+
+        Args:
+            parameters: Variational parameter values (see :meth:`expectation_value`).
+            atol: Absolute tolerance for filtering small coefficients (see
+                :meth:`evolved_operator_dict`).
+
+        Returns:
+            The evolved operator as a dict mapping Majorana-index tuples to complex
+            coefficients.
+
+        Raises:
+            ValueError: If the simulator is in the Schrodinger picture; use
+                :meth:`evolved_operator_dict` there instead.
+        """
         if self._simulator.schrodinger:
             raise ValueError(
                 "Cannot call evolved_operator in Schrodinger picture. "
@@ -293,22 +427,45 @@ class MajoranaPropagator:
         return self.evolved_operator_dict(parameters, atol=atol)
 
     def update_coeffs(self, new_operator: dict[tuple[int, ...], complex]) -> None:
-        """Replace the initial-operator coefficients (existing terms only)."""
+        """Replace the initial-operator coefficients (existing terms only).
+
+        Allows dynamic re-weighting of the initial operator without rebuilding the
+        simulator or the graph. Only Majorana terms already present in the operator can
+        be updated.
+
+        Args:
+            new_operator: Mapping from Majorana-index tuples to their new complex
+                coefficients.
+
+        Raises:
+            RuntimeError: If a term in ``new_operator`` is not present in the current
+                operator.
+        """
         self._simulator.update_initial_operator(new_operator)
 
     # -- introspection ----------------------------------------------------------
 
     def size(self) -> int:
-        """Number of Majorana terms currently tracked."""
+        """Number of Majorana terms currently tracked.
+
+        Returns:
+            The number of distinct Majorana monomial terms in the simulator's current
+            representation.
+        """
         return self._simulator.size()
 
     def graph_size(self) -> tuple[int, int]:
-        """(n_cos_indices, n_cycles) of the evolution graph."""
+        """Size metrics of the evolution graph.
+
+        Returns:
+            A tuple ``(n_cos_indices, n_cycles)``: the number of cosine indices and the
+            number of cycles in the MP graph.
+        """
         return self._simulator.graph_size()
 
     @property
     def num_modes(self) -> int:
-        """Number of fermionic modes."""
+        """Number of fermionic modes for the simulator."""
         return self._simulator.num_modes
 
     @property
@@ -318,12 +475,12 @@ class MajoranaPropagator:
 
     @property
     def schrodinger(self) -> bool:
-        """Whether the simulator is in Schrodinger picture."""
+        """Whether the simulator is in the Schrodinger picture (else Heisenberg)."""
         return self._simulator.schrodinger
 
     @property
     def cutoff(self) -> int:
-        """Current cutoff value."""
+        """Current cutoff value for the simulation."""
         return self._simulator.cutoff
 
     @cutoff.setter
@@ -332,7 +489,7 @@ class MajoranaPropagator:
 
     @property
     def lower_atol(self) -> None | float:
-        """Current lower absolute tolerance."""
+        """Current lower absolute tolerance for the cutoff function (``None`` if unset)."""
         return self._simulator.lower_atol
 
     @lower_atol.setter
@@ -341,7 +498,7 @@ class MajoranaPropagator:
 
     @property
     def upper_atol(self) -> None | float:
-        """Current upper absolute tolerance."""
+        """Current upper absolute tolerance for the cutoff function (``None`` if unset)."""
         return self._simulator.upper_atol
 
     @upper_atol.setter
@@ -350,7 +507,7 @@ class MajoranaPropagator:
 
     @property
     def cutoff_type(self) -> str:
-        """Current cutoff type."""
+        """Current cutoff type (``"length"`` or ``"support"``)."""
         return self._simulator.cutoff_type
 
     @cutoff_type.setter
@@ -359,7 +516,7 @@ class MajoranaPropagator:
 
     @property
     def basis_change(self) -> None | list[list[int]]:
-        """Current basis change."""
+        """Current basis change for the cutoff function (``None`` if unset)."""
         return self._simulator.basis_change
 
     @basis_change.setter
@@ -384,6 +541,10 @@ class QubitPropagator(MajoranaPropagator):
     Accepts a :class:`~monoprop.pauli_data.PauliOperator` and
     :class:`~monoprop.circuit.QubitGate` gates; the Jordan-Wigner basis change is set
     automatically so cutoffs act on Pauli weight. Outputs remain in the Majorana basis.
+
+    The cutoff type is fixed to ``"support"`` -- i.e. the qubit Pauli weight -- since
+    that is the meaningful structural measure for qubit operators; ``"length"`` is not
+    available on this class.
     """
 
     def __init__(
@@ -393,12 +554,29 @@ class QubitPropagator(MajoranaPropagator):
         *,
         cutoff: int,
         schrodinger_cutoff: int | None = None,
-        cutoff_type: str = "length",
         lower_atol: None | float = None,
         upper_atol: None | float = None,
         comm: MPI.Comm | None = None,
     ) -> None:
-        """Initialize the qubit propagator (see :class:`MajoranaPropagator`)."""
+        """Initialize the qubit propagator.
+
+        See :class:`MajoranaPropagator` for the shared arguments. The cutoff is always
+        measured as Pauli weight (``cutoff_type="support"``), so ``cutoff`` bounds the
+        number of qubits a retained term touches.
+
+        Args:
+            initial_operator: Initial qubit operator as a
+                :class:`~monoprop.pauli_data.PauliOperator`.
+            initial_state: Computational-basis reference (indices of qubits set to 1).
+            cutoff: Maximum Pauli weight (number of qubits touched) retained during
+                evolution. The fully-paired exception described in
+                :class:`MajoranaPropagator` still applies.
+            schrodinger_cutoff: Optional Schrodinger-picture cutoff (enables that
+                picture).
+            lower_atol: Optional lower coefficient-truncation tolerance.
+            upper_atol: Optional upper coefficient-retention tolerance.
+            comm: Optional MPI communicator (must outlive the propagator).
+        """
         num_qubits = initial_operator.num_qubits
         self._num_qubits = num_qubits
         super().__init__(
@@ -406,12 +584,27 @@ class QubitPropagator(MajoranaPropagator):
             initial_state,
             cutoff=cutoff,
             schrodinger_cutoff=schrodinger_cutoff,
-            cutoff_type=cutoff_type,
+            cutoff_type="support",
             lower_atol=lower_atol,
             upper_atol=upper_atol,
             basis_change=jordan_wigner_basis_change(num_qubits),
             comm=comm,
         )
+
+    @property
+    def cutoff_type(self) -> str:
+        """Cutoff type, always ``"support"`` (Pauli weight) for a qubit propagator."""
+        return self._simulator.cutoff_type
+
+    @cutoff_type.setter
+    def cutoff_type(self, new_cutoff_type: str) -> None:
+        if new_cutoff_type != "support":
+            raise ValueError(
+                "QubitPropagator only supports the 'support' cutoff type (Pauli "
+                f"weight); got {new_cutoff_type!r}. Use MajoranaPropagator for "
+                "length-based truncation."
+            )
+        self._simulator.cutoff_type = new_cutoff_type
 
     def _majorana_gates(self, gates: Sequence[QubitGate]) -> list[Gate]:  # type: ignore[override]
         """Map qubit gates to Majorana gates via Jordan-Wigner, preserving handles."""
