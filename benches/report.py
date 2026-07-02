@@ -188,18 +188,25 @@ def _display_op(op_key: str) -> str:
     return f"{group} / {op}"
 
 
+def _fmt_cpus(meta: dict) -> str:
+    """Render a run's CPU counts as ``logical/physical`` (``—`` when missing)."""
+    logical = meta.get("cpu_count_logical", "—")
+    physical = meta.get("cpu_count_physical", "—")
+    return f"{logical}/{physical}"
+
+
 def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
     """Render the run-configuration table (one row per run label)."""
     metas = {lbl: results.get(lbl, {}).get("meta", {}) for lbl in labels}
     if not any(metas.values()):
         return []
-    headers = ["Label", "Ranks", "monoprop threads", "CPUs", "Host"]
+    headers = ["Label", "Ranks", "monoprop threads", "CPUs (logical/physical)", "Host"]
     rows = [
         [
             label,
             str(metas[label].get("ranks", "—")),
             str(metas[label].get("monoprop_threads", "default")),
-            str(metas[label].get("cpu_count", "—")),
+            _fmt_cpus(metas[label]),
             str(metas[label].get("hostname", "—")),
         ]
         for label in labels
@@ -335,7 +342,7 @@ def build_report(results_dir: Path) -> str:
         *_section(
             "Operator resting footprint (PSS)",
             "Settled resident memory of the built operator + graph, after the "
-            "build's transient buffers are freed (`gc.collect()` + `malloc_trim`).",
+            "build's transient buffers are freed (`gc.collect()` + `heap_trim`).",
             "Picture",
             [(p, _PICTURE_NAMES[p]) for p in _pictures_present(memrest, labels)],
             labels,

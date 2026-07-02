@@ -1408,6 +1408,7 @@ qiskit = [
 
 [package.dev-dependencies]
 bench = [
+    { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
     { name = "pytest-cases" },
@@ -1462,6 +1463,7 @@ provides-extras = ["mpi", "qiskit", "openfermion", "pyscf"]
 
 [package.metadata.requires-dev]
 bench = [
+    { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<8.3" },
     { name = "pytest-benchmark", specifier = ">=5" },
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },

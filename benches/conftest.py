@@ -34,10 +34,10 @@ import json
 import os
 import socket
 from dataclasses import asdict, fields
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import psutil
 import pytest
 from _builders import (
     MODELS,
@@ -46,6 +46,8 @@ from _builders import (
     make_random_problem,
 )
 from _memory import PssSampler, merge_peak_of_sum, resting_pss_bytes
+
+import monoprop
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -119,14 +121,6 @@ def _results_path() -> Path | None:
     return Path(results, f"{label}.json")
 
 
-def _monoprop_version() -> str:
-    """Return the installed monoprop version, or 'unknown'."""
-    try:
-        return version("monoprop")
-    except PackageNotFoundError:
-        return "unknown"
-
-
 def _peak_of_sum(comm: Any, samples: list[tuple[float, int]]) -> int:
     """Reduce per-rank PSS timelines to the job's peak summed PSS (bytes).
 
@@ -166,9 +160,10 @@ def _meta() -> dict[str, Any]:
         "label": os.environ.get("monoprop_BENCH_LABEL", "?"),  # noqa: SIM112
         "ranks": _size(),
         "monoprop_threads": os.environ.get("monoprop_NUM_THREADS", "default"),  # noqa: SIM112
-        "cpu_count": os.cpu_count(),
+        "cpu_count_logical": psutil.cpu_count(logical=True),
+        "cpu_count_physical": psutil.cpu_count(logical=False),
         "hostname": socket.gethostname(),
-        "monoprop_version": _monoprop_version(),
+        "monoprop_version": monoprop.__version__,
     }
 
 

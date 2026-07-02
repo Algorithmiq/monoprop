@@ -81,6 +81,7 @@ test = [
 bench = [
   { include-group = "test" },
   "pytest-benchmark>=5",
+  "psutil>=7.2",
 ]
 
 

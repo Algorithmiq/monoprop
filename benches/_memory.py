@@ -33,13 +33,13 @@ Two choices make the per-test peak honest under MPI:
 from __future__ import annotations
 
 import contextlib
-import ctypes
-import ctypes.util
 import gc
 import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import psutil
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -71,15 +71,15 @@ def pss_bytes() -> int:
     return proc_field("/proc/self/smaps_rollup", "Pss:")
 
 
-def malloc_trim() -> None:
-    """Return free heap pages held by the C allocator to the OS (glibc only).
+def heap_trim() -> None:
+    """Ask the C allocator to return unused heap pages to the OS.
 
-    glibc keeps freed pages in its per-arena heaps, so without trimming a resting
-    reading still includes transient build buffers. Silently ignored on non-glibc.
+    The allocator keeps freed pages in its per-arena heaps, so without trimming a
+    resting reading still includes transient build buffers. Best-effort: modern
+    allocators may decline, and the call is unsupported on some platforms.
     """
-    with contextlib.suppress(Exception):  # non-glibc libc or no malloc_trim symbol
-        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
-        libc.malloc_trim(ctypes.c_size_t(0))
+    with contextlib.suppress(Exception):  # unsupported platform / allocator
+        psutil.heap_trim()
 
 
 def resting_pss_bytes() -> int:
@@ -90,7 +90,7 @@ def resting_pss_bytes() -> int:
     the peak cannot see.
     """
     gc.collect()
-    malloc_trim()
+    heap_trim()
     return pss_bytes()
 
 
