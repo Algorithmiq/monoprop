@@ -1,0 +1,68 @@
+# monoprop benchmarks
+
+A pytest suite measuring the **time** and **peak physical memory (PSS)** of
+monoprop's core operations. Run with `just bench`, not plain `pytest`.
+
+## Running
+
+Each run takes a **label** and becomes one column in `results/REPORT.md`, so
+serial, MPI, and thread variants sit side by side. Extra args go to pytest.
+
+```bash
+uv sync --group bench                          # once
+
+just bench serial                              # serial run, column "serial"
+just bench-smoke                               # quick sanity check (tiny sizes)
+just bench serial --num-modes 64 --bench-rounds 10
+
+monoprop_NUM_THREADS=10 just bench serial-t10  # set oneTBB worker count
+
+uv run --group bench python benches/report.py  # rebuild report, no re-run
+```
+
+## MPI
+
+Communicator-aware: operations are barrier-wrapped so the timed cost is the
+**makespan** across ranks, and memory is the **peak of the PSS summed across
+ranks** (shared pages counted once), not the sum of per-rank peaks.
+
+```bash
+just bench-build-mpi                           # build once (MPI on)
+monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
+```
+
+**The MPI build must stay loaded.** monoprop builds `MPI=OFF` by default; a
+non-MPI extension ignores the communicator, so every rank holds the **full**
+operator (N× memory). The recipes use `--no-sync` so the MPI build survives —
+rebuild after editing sources. `just bench-mpi` checks `monoprop.has_mpi` and
+aborts if MPI is missing; extra args are forwarded to `mpiexec` (as root, add
+`--allow-run-as-root`).
+
+## Benchmarks
+
+**Random** (`bench_random.py`; configurable, both pictures) — `build_graph`,
+`pare`, `energy`, `gradient` (graph-based), and `inplace`. CLI options:
+
+| Option | Meaning | Default |
+|---|---|---|
+| `--gen-length` | Majorana operators per generator | 4 |
+| `--obs-terms` | observable terms | 10000 |
+| `--num-generators` | generators (circuit gates) | 100 |
+| `--num-modes` | fermionic modes (Majorana indices = `2·modes`) | 128 |
+| `--cutoff` | truncation cutoff | 6 |
+| `--seed` | RNG seed | 0 |
+| `--bench-rounds` | fixed timing rounds (MPI-safe) | 1 |
+
+**Models** (`bench_models.py`; fixed, in-place, `slow`):
+
+- `test_model[hubbard]` — 120-qubit Fermi-Hubbard, 29-step Trotter.
+- `test_model[pauli]` — 127-qubit Pauli-basis kicked-Ising, 20 layers.
+
+Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`);
+`just bench --help` lists all.
+
+## Output
+
+Each run writes `results/time-<label>.json` (pytest-benchmark) and
+`<label>.json` (everything else); `report.py` merges all labels into
+`results/REPORT.md`.
