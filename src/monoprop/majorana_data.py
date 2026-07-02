@@ -20,7 +20,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .circuit import MajoranaGate, Term
+from .circuit import Circuit, MajoranaGate, Term
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -43,17 +43,16 @@ class MajoranaSequence:
     gen_coeffs: list[float] | ndarray
     param_inds: list[int] | ndarray
 
-    def to_gates(self) -> tuple[list[MajoranaGate], list[float], list[int]]:
-        """Lift the dense sequence into authoring gates.
+    def to_circuit(self) -> Circuit:
+        """Lift the dense sequence into a :class:`~monoprop.circuit.Circuit`.
 
         Consecutive monomials sharing a ``param_ind`` become one :class:`MajoranaGate`; the
-        per-gate ``param_ind`` values are returned as the parameter mapping, so weight-tying
+        per-gate ``param_ind`` values become the circuit's parameter mapping, so weight-tying
         is preserved and the expanded engine arrays stay identical to the original.
 
         Returns:
-            A tuple ``(gates, parameters, parameter_mapping)``: the gates in order, the angle
-            values, and the per-gate angle index driving each (matching the argument order
-            of :meth:`~monoprop.MajoranaPropagator.propagate`).
+            A :class:`~monoprop.circuit.Circuit` carrying the gates, angle values, mapping,
+            and initial state.
         """
         param_inds = [int(p) for p in self.param_inds]
 
@@ -74,7 +73,12 @@ class MajoranaSequence:
             gates.append(MajoranaGate(tuple(current_terms)))
             mapping.append(current_index)  # type: ignore[arg-type]
 
-        return gates, [float(p) for p in self.parameters], mapping
+        return Circuit(
+            gates=tuple(gates),
+            parameters=tuple(float(p) for p in self.parameters),
+            parameter_mapping=tuple(mapping),
+            initial_state=tuple(int(i) for i in self.initial_state),
+        )
 
 
 class MajoranaOperator:

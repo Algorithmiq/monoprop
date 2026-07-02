@@ -11,8 +11,10 @@ evaluated repeatedly at many parameter values.
 
 The parameter values are given as a plain sequence of floats (a list or numpy array) in
 parameter-index order (``values[i]`` is the angle for gates mapped to index ``i`` by the
-propagator's ``parameter_mapping``). To stitch together two independently-indexed circuit
-halves, use :func:`~monoprop.combine_parameters`.
+circuit's ``parameter_mapping``), or as the :class:`~monoprop.Circuit` itself (its
+:attr:`~monoprop.Circuit.parameters` are used). To evaluate two independently-authored
+circuit halves together, compose them with ``+`` and build the combined circuit in a single
+:meth:`~monoprop.MajoranaPropagator.propagate_build_graph` call.
 
 Expectation value and gradient
 -------------------------------

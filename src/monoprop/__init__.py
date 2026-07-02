@@ -29,11 +29,10 @@ from ._core import (
 )
 from ._version import version as __version__
 from .circuit import (
+    Circuit,
     MajoranaGate,
     PauliGate,
     Term,
-    combine_parameters,
-    to_engine_arrays,
 )
 from .majorana_propagator import MajoranaPropagator
 from .pauli_propagator import PauliPropagator
@@ -41,6 +40,7 @@ from .utils import jordan_wigner_basis_change
 
 __all__ = [
     "MAX_NUM_MODES",
+    "Circuit",
     "MajoranaGate",
     "MajoranaPropagator",
     "PauliGate",
@@ -50,9 +50,7 @@ __all__ = [
     "__compiler_flags__",
     "__version__",
     "antihermitian_generator_correction",
-    "combine_parameters",
     "has_mpi",
     "is_antihermitian",
     "jordan_wigner_basis_change",
-    "to_engine_arrays",
 ]

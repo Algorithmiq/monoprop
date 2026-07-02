@@ -308,24 +308,24 @@ class TestPauliEvCircuit:
         # stays in the qubit basis and yields one PauliGate per Pauli evolution gate.
         op = PauliOperator(["Z"], [2.0])
         gate = PauliEvGate([0], op, 0.7)
-        circuit = PauliEvCircuit([gate], [0], num_qubits=1)
+        pauli_circuit = PauliEvCircuit([gate], [0], num_qubits=1)
 
-        gates, params, mapping = circuit.to_gates()
+        circuit = pauli_circuit.to_circuit()
 
-        assert len(gates) == 1
-        assert gates[0].qubits == (0,)
-        assert gates[0].paulis is op
-        assert len(params) == 1
-        assert mapping == list(range(len(gates)))
+        assert len(circuit) == 1
+        assert circuit.gates[0].qubits == (0,)
+        assert circuit.gates[0].paulis is op
+        assert len(circuit.parameters) == 1
+        assert list(circuit.resolved_mapping) == list(range(len(circuit)))
 
     def test_to_gates_empty(self):
-        circuit = PauliEvCircuit([], [1], num_qubits=1)
+        pauli_circuit = PauliEvCircuit([], [1], num_qubits=1)
 
-        gates, params, mapping = circuit.to_gates()
+        circuit = pauli_circuit.to_circuit()
 
-        assert gates == []
-        assert len(params) == 0
-        assert mapping == list(range(len(gates)))
+        assert circuit.gates == ()
+        assert len(circuit.parameters) == 0
+        assert list(circuit.resolved_mapping) == list(range(len(circuit)))
 
     @pytest.mark.parametrize(
         ("circuit", "other", "expected"),

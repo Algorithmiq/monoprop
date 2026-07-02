@@ -43,26 +43,26 @@ def test_infinite_cutoff(
     problem, pare_threshold, schrodinger_cutoff, evolution_mode, comm
 ):
     mp = _create_mp(problem, comm, schrodinger_cutoff=schrodinger_cutoff)
-    gates, _, _ = problem.monomial_circuit.to_gates()
+    circuit = problem.monomial_circuit.to_circuit()
     parameters = problem.monomial_circuit.parameters
 
     match evolution_mode:
         case "deferred":
-            mp.propagate_build_graph(gates)
+            mp.propagate_build_graph(circuit)
             test_expval = mp.expectation_value_functional(
                 pare_threshold=pare_threshold
             )(parameters)
 
         case "with_coeffs":
             # Coefficient-informed build: the seed is regenerated internally from the
-            # parameters (replacing the old operator_coeffs round-trip).
-            mp.propagate_build_graph(gates, parameters)
+            # circuit's parameters (replacing the old operator_coeffs round-trip).
+            mp.propagate_build_graph(circuit)
             test_expval = mp.expectation_value_functional(
                 pare_threshold=pare_threshold
             )(parameters)
 
         case "inplace":
-            mp.propagate(gates, parameters)
+            mp.propagate(circuit)
             test_expval = mp.expectation_value_functional(
                 pare_threshold=pare_threshold
             )()
@@ -85,8 +85,8 @@ def test_gradient(problem, schrodinger, pare_threshold, comm):
         schrodinger_cutoff=cutoff + 2 if schrodinger else None,
         comm=comm,
     )
-    gates, _, _ = problem.monomial_circuit.to_gates()
-    mp.propagate_build_graph(gates)
+    circuit = problem.monomial_circuit.to_circuit()
+    mp.propagate_build_graph(circuit)
     ener_fn = mp.expectation_value_functional(pare_threshold=pare_threshold)
 
     xk = prng.random(size=len(problem.monomial_circuit.parameters))
@@ -125,8 +125,8 @@ def test_immediate_contraction(problem, schrodinger, comm):
         lower_atol=1e-15,
         comm=comm,
     )
-    gates, _, _ = problem.monomial_circuit.to_gates()
-    mp.propagate(gates, problem.monomial_circuit.parameters)
+    circuit = problem.monomial_circuit.to_circuit()
+    mp.propagate(circuit)
     test_expval, gradient = mp.expectation_value_and_gradient()
 
     assert np.isclose(test_expval, problem.exact_expval, atol=1e-12)

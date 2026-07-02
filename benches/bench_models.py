@@ -38,10 +38,10 @@ def test_model(benchmark, bench_comm, model_configs, model, record_model_config)
         return (build_fn(config, comm=bench_comm), steps), {}
 
     def run(built, n_steps):
-        propagator, gates, parameters = built
+        propagator, circuit = built
         value = 0.0
         for _ in range(n_steps):
-            propagator.propagate(gates, parameters)
+            propagator.propagate(circuit)
             value = propagator.expectation_value()
         return value
 

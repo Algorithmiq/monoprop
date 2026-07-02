@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import MajoranaGate, MajoranaPropagator, Term
+from monoprop import Circuit, MajoranaGate, MajoranaPropagator, Term
 from monoprop.majorana_data import MajoranaOperator
 
 
@@ -28,12 +28,11 @@ def _two_gate_graph(serial_comm):
         terms_dict={(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2
     )
     mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
-    gates = [
-        MajoranaGate((Term((0,), 1.0),)),
-        MajoranaGate((Term((1,), 1.0),)),
-    ]
-    mp.propagate_build_graph(gates)  # identity mapping -> two distinct angles
-    return mp, gates
+    circuit = Circuit(
+        (MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),)))
+    )
+    mp.propagate_build_graph(circuit)  # identity mapping -> two distinct angles
+    return mp, circuit
 
 
 class TestConstructorValidation:
@@ -80,21 +79,17 @@ class TestGraphAndParameterValidation:
         with pytest.raises(RuntimeError, match="Parameter length"):
             mp.expectation_value(parameters)
 
-    def test_non_contiguous_mapping_raises(self, serial_comm):
-        """A parameter_mapping with an index gap is rejected before it reaches the engine."""
-        operator = MajoranaOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
-        mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
-        gates = [MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),))]
+    def test_non_contiguous_mapping_raises(self):
+        """A parameter_mapping with an index gap is rejected at circuit construction."""
+        gates = (MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),)))
         with pytest.raises(ValueError, match="contiguous"):
-            mp.propagate_build_graph(gates, parameter_mapping=[0, 2])
+            Circuit(gates, parameter_mapping=(0, 2))
 
-    def test_mapping_length_must_match_gates(self, serial_comm):
+    def test_mapping_length_must_match_gates(self):
         """A parameter_mapping whose length differs from the gate count is rejected."""
-        operator = MajoranaOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
-        mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
-        gates = [MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),))]
+        gates = (MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),)))
         with pytest.raises(ValueError, match="entries but there are 2 gates"):
-            mp.propagate_build_graph(gates, parameter_mapping=[0])
+            Circuit(gates, parameter_mapping=(0,))
 
     def test_shared_mapping_index_ties_gates(self, serial_comm):
         """Repeating an index in the mapping ties gates to one angle (one parameter)."""
@@ -102,11 +97,11 @@ class TestGraphAndParameterValidation:
             terms_dict={(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2
         )
         mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
-        gates = [
-            MajoranaGate((Term((0,), 1.0),)),
-            MajoranaGate((Term((1,), 1.0),)),
-        ]
-        mp.propagate_build_graph(gates, parameter_mapping=[0, 0])
+        circuit = Circuit(
+            (MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),))),
+            parameter_mapping=(0, 0),
+        )
+        mp.propagate_build_graph(circuit)
         assert mp.graph_layers == 2
         assert mp.n_parameters == 1
 
@@ -116,14 +111,16 @@ class TestGraphAndParameterValidation:
         )
         mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
         mp.propagate_build_graph(
-            [MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),))]
+            Circuit(
+                (MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),)))
+            )
         )
         functional = mp.expectation_value_functional()
-        # Add a layer reusing an existing parameter index so n_parameters is unchanged and
-        # the stale-graph guard (not the parameter-length check) is what fires.
-        mp.propagate_build_graph(
-            [MajoranaGate((Term((2,), 1.0),))], parameter_mapping=[0]
-        )
+        # Appending another layer mutates the graph, so the previously-built functional
+        # must reject being called against the stale plan.
+        mp.propagate_build_graph(Circuit((MajoranaGate((Term((2,), 1.0),)),)))
+        # Call with the parameter count the functional was built with (2), so the
+        # stale-graph guard fires rather than the parameter-length check.
         with pytest.raises(RuntimeError, match=r"MP object has been modified"):
             functional([1.0, 2.0])
 

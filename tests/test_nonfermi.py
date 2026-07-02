@@ -38,7 +38,7 @@ def test_nonfermi(serial_comm):
         param_inds=param_inds,
         parameters=parameters,
     )
-    gates, _, _ = monomial_circuit.to_gates()
+    circuit = monomial_circuit.to_circuit()
 
     exact_evolved_op = {
         (1, 2, 3): -0.8314427691150754j,
@@ -55,7 +55,7 @@ def test_nonfermi(serial_comm):
         cutoff=4,
         comm=serial_comm,
     )
-    mp.propagate(gates, monomial_circuit.parameters)
+    mp.propagate(circuit)
     test_evolved_op = mp.evolved_operator()
 
     assert len(test_evolved_op) == len(exact_evolved_op)

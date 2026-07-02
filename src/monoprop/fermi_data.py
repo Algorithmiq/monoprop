@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .circuit import MajoranaGate, Term
+from .circuit import Circuit, MajoranaGate, Term
 from .conversion_utils import _n_product
 from .majorana_data import MajoranaOperator
 
@@ -270,16 +270,16 @@ class FermiCircuit:
             f"initial_state={self.initial_state})"
         )
 
-    def to_gates(self) -> tuple[list[MajoranaGate], list[float], list[int]]:
-        """Lift the fermi circuit into authoring Majorana gates.
+    def to_circuit(self) -> Circuit:
+        """Lift the fermi circuit into a :class:`~monoprop.circuit.Circuit`.
 
         Each fermi gate's generator becomes one :class:`~monoprop.circuit.MajoranaGate`
         (its monomials mapped to antihermitian Majorana :class:`~monoprop.circuit.Term`
         objects), driven by its own distinct angle (the identity mapping).
 
         Returns:
-            A tuple ``(gates, parameters, parameter_mapping)``: the Majorana gates in order,
-            the gate angles, and the identity per-gate angle mapping.
+            A :class:`~monoprop.circuit.Circuit` carrying the Majorana gates, angle values,
+            the identity mapping, and the initial state.
         """
         gates: list[MajoranaGate] = []
         parameters: list[float] = []
@@ -292,4 +292,8 @@ class FermiCircuit:
             gates.append(MajoranaGate(tuple(terms)))
             parameters.append(float(np.real(gate.parameter)))
 
-        return gates, parameters, list(range(len(gates)))
+        return Circuit(
+            gates=tuple(gates),
+            parameters=tuple(parameters),
+            initial_state=tuple(int(i) for i in self.initial_state),
+        )

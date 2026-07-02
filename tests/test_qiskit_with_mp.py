@@ -101,13 +101,12 @@ def test_qiskit_with_mp(
     quantum_circuit = from_qiskit_circuit(
         simple_ev_circuit, initial_state=list(range(1, 12, 2))
     )
-    gates, _, _ = quantum_circuit.to_gates()
-    parameters = [gate.parameter for gate in quantum_circuit.gates]
+    circuit = quantum_circuit.to_circuit()
     mp = PauliPropagator(
         operator,
         quantum_circuit.initial_state,
         cutoff=6,
     )
-    mp.propagate(gates, parameters)
+    mp.propagate(circuit)
     test_expval = mp.expectation_value()
     assert np.isclose(test_expval, qiskit_result, atol=1e-6)

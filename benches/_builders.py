@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import numpy as np
 
 from monoprop import (
-    MajoranaGate,
+    Circuit,
     MajoranaPropagator,
     PauliPropagator,
 )
@@ -46,8 +46,8 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 
-# A built model: the propagator, its compiled gates, and the parameter values.
-Built = tuple[MajoranaPropagator, list[MajoranaGate], "np.ndarray | list[float]"]
+# A built model: the propagator and its circuit (gates + parameters + initial state).
+Built = tuple[MajoranaPropagator, Circuit]
 
 
 def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
@@ -184,7 +184,7 @@ def build_random_propagator(
             ``schrodinger_cutoff = problem.cutoff + 2``; otherwise Heisenberg.
 
     Returns:
-        ``(propagator, gates, parameters)`` ready for propagate_build_graph / propagate.
+        ``(propagator, circuit)`` ready for propagate_build_graph / propagate.
     """
     propagator = MajoranaPropagator(
         problem.observable,
@@ -194,8 +194,7 @@ def build_random_propagator(
         lower_atol=lower_atol,
         comm=comm,
     )
-    gates, _, _ = problem.circuit.to_gates()
-    return propagator, gates, problem.parameters
+    return propagator, problem.circuit.to_circuit()
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,7 +281,7 @@ def build_hubbard_problem(
         comm: Optional MPI communicator (``None`` for a serial run).
 
     Returns:
-        ``(propagator, gates, parameters)`` for one Trotter step, re-applied by the driver.
+        ``(propagator, circuit)`` for one Trotter step, re-applied by the driver.
     """
     config = config or HubbardConfig()
     fermi_gates = [
@@ -291,7 +290,7 @@ def build_hubbard_problem(
     ]
     occupied = _neel_occupied_modes(config.num_sites, config.neel_start_spin)
     fermi_circuit = FermiCircuit(initial_state=occupied, gates=fermi_gates)
-    gates, parameters, _ = fermi_circuit.to_gates()
+    circuit = fermi_circuit.to_circuit()
 
     observable = FermiOperator(
         terms=[
@@ -313,7 +312,7 @@ def build_hubbard_problem(
         lower_atol=config.lower_atol,
         comm=comm,
     )
-    return propagator, gates, parameters
+    return propagator, circuit
 
 
 # IBM Eagle 127-qubit heavy-hex coupling map (i < j for all pairs).
@@ -508,17 +507,17 @@ def build_kicked_ising_problem(
         comm: Optional MPI communicator (``None`` for a serial run).
 
     Returns:
-        ``(propagator, gates, parameters)`` ready for in-place propagation.
+        ``(propagator, circuit)`` ready for in-place propagation.
     """
     config = config or KickedIsingConfig()
     pauli_gates: list[PauliEvGate] = []
     for _ in range(config.num_layers):
         pauli_gates.extend(_xlayer(config.num_qubits, config.theta / 2))
         pauli_gates.extend(_zzlayer(config.coupling, HEAVY_HEX_TOPOLOGY))
-    circuit = PauliEvCircuit(
+    pauli_circuit = PauliEvCircuit(
         gates=pauli_gates, initial_state=[], num_qubits=config.num_qubits
     )
-    gates, parameters, _ = circuit.to_gates()
+    circuit = pauli_circuit.to_circuit()
 
     obs_str = (
         "I" * config.observable_qubit
@@ -537,7 +536,7 @@ def build_kicked_ising_problem(
         cutoff_type="support",
         comm=comm,
     )
-    return propagator, gates, parameters
+    return propagator, circuit
 
 
 # Fixed-model registry: model -> (config class, builder, steps-per-run). Steps

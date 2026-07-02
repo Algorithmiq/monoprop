@@ -36,12 +36,13 @@ Authoring gates
 
 A :class:`~monoprop.MajoranaGate` is a pure generator: it bundles the
 :class:`~monoprop.Term` monomials it generates and carries no parameter index
-(:class:`~monoprop.PauliGate` is the qubit analogue). Which variational angle drives each
-gate is given separately by the propagator's ``parameter_mapping`` argument (default: one
-distinct angle per gate); reusing an index across gates ties their angles. Angle *values*
-are supplied per evaluation as a plain sequence of floats (a list or numpy array). Circuits
-in the transport formats can be regrouped into these gates with their ``.to_gates()``
-method, which returns ``(gates, parameters, parameter_mapping)``.
+(:class:`~monoprop.PauliGate` is the qubit analogue). A :class:`~monoprop.Circuit` bundles a sequence of these gates with the angle *values* that
+drive them, the ``parameter_mapping`` wiring each gate to an angle (default: one distinct
+angle per gate; reusing an index across gates ties their angles), and the reference
+``initial_state``. The transport formats produce a ``Circuit`` through their
+``to_circuit()`` method, and two circuits compose temporally with ``+``. The propagator
+consumes a ``Circuit``; evaluation accepts either a plain parameter vector or the circuit
+itself.
 
 .. automodule:: monoprop.circuit
    :members:

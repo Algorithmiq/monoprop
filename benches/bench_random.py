@@ -36,8 +36,8 @@ def test_random_build_graph(
         return (make_random_propagator(),), {}
 
     def build(built):
-        propagator, gates, _parameters = built
-        propagator.propagate_build_graph(gates)
+        propagator, circuit = built
+        propagator.propagate_build_graph(circuit)
 
     benchmark.pedantic(
         barriered(build, bench_comm), setup=setup, rounds=bench_rounds, iterations=1
@@ -94,8 +94,8 @@ def test_random_inplace(benchmark, make_random_propagator, bench_comm, bench_rou
         return (make_random_propagator(lower_atol=INPLACE_LOWER_ATOL),), {}
 
     def run(built):
-        propagator, gates, parameters = built
-        propagator.propagate(gates, parameters)
+        propagator, circuit = built
+        propagator.propagate(circuit)
         return propagator.expectation_value()
 
     result = benchmark.pedantic(

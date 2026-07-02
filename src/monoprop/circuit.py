@@ -12,15 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Authoring types for Majorana/qubit gate sequences.
+"""Authoring types for Majorana/qubit circuits.
 
 A :class:`MajoranaGate` (or its qubit analogue :class:`PauliGate`) is a *pure generator*:
 the bundle of Majorana monomials -- or Pauli operators -- driven by a single variational
-angle. Gates carry no parameter index. Which variational angle drives each gate is a
-property of the *ansatz*, expressed separately as a ``parameter_mapping`` argument to the
-propagator (``parameter_mapping[i]`` is the angle index driving gate ``i``; ``None`` means
-one distinct angle per gate). Sharing an angle across gates is expressed by repeating an
-index in that mapping. Angle *values* are a plain sequence of floats indexed the same way.
+angle. Gates carry no parameter index.
+
+A :class:`Circuit` bundles a sequence of those gates with the angle *values* that drive
+them (:attr:`Circuit.parameters`), the ``parameter_mapping`` wiring each gate to an angle,
+and the reference :attr:`Circuit.initial_state`. The propagator consumes a ``Circuit``;
+domain types (Majorana/Pauli/Fermi) build one via ``to_circuit()``.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterator, Sequence
 
     from .pauli_data import PauliOperator
 
@@ -79,39 +80,105 @@ class PauliGate:
     paulis: PauliOperator
 
 
-def combine_parameters(
-    first: Iterable[float],
-    second: Iterable[float],
-    *,
-    schrodinger: bool = False,
-) -> list[float]:
-    """Stitch two independently-indexed circuit halves into one parameter vector.
+@dataclass(frozen=True, slots=True)
+class Circuit:
+    """A variational circuit: gates, the angles that drive them, and a reference state.
 
-    Use this when a circuit is split into two chunks that are each authored with their own
-    ``0``-based parameter indices and rebuilt across two
-    :meth:`~monoprop.MajoranaPropagator.propagate_build_graph` calls. ``first`` holds the
-    angles of the temporally-first chunk, ``second`` the second. The result is ordered to
-    match the propagator's parameter axis when the chunks are fed in the order that
-    reproduces a single-call evolution:
+    Bundles everything the propagator needs to build or evaluate an evolution:
 
-    - Schrodinger picture (``schrodinger=True``): gates apply front-to-back, so the chunks
-      are fed in order (first, then second) and the axis is ``[*first, *second]``.
-    - Heisenberg picture (``schrodinger=False``, the default): each call applies its chunk
-      back-to-front, so reproducing a single call feeds the chunks *reversed* (second, then
-      first) and the axis is ``[*second, *first]``.
+    - ``gates``: the ordered generators (:class:`MajoranaGate` or :class:`PauliGate`).
+    - ``parameter_mapping``: the angle index driving each gate (``parameter_mapping[i]``
+      drives gate ``i``); ``None`` gives each gate its own distinct angle. Repeat an index
+      to tie gates to a shared angle.
+    - ``parameters``: the angle *values* (a point in parameter space). Empty means unbound
+      -- author the structure now and supply values at evaluation time.
+    - ``initial_state``: the reference Slater determinant / computational-basis state.
 
-    Args:
-        first: The temporally-first chunk's angle values.
-        second: The second chunk's angle values.
-        schrodinger: Whether the propagator is in the Schrodinger picture.
+    Compose circuits with ``+`` (temporal concatenation; the right operand's angles are
+    appended on a fresh axis). A *bound* circuit is self-consistent: when ``parameters`` is
+    non-empty its length must equal :attr:`n_parameters`.
 
-    Returns:
-        The combined angle values in parameter-axis order.
+    Attributes:
+        gates: The ordered generators.
+        parameters: The angle values, or empty for an unbound circuit.
+        parameter_mapping: Per-gate angle index, or ``None`` for the identity mapping.
+        initial_state: The reference state (occupied mode / qubit indices).
     """
-    first_vals = [float(v) for v in first]
-    second_vals = [float(v) for v in second]
-    lead, tail = (first_vals, second_vals) if schrodinger else (second_vals, first_vals)
-    return [*lead, *tail]
+
+    gates: tuple[MajoranaGate | PauliGate, ...]
+    parameters: tuple[float, ...] = ()
+    parameter_mapping: tuple[int, ...] | None = None
+    initial_state: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Normalize fields to tuples and validate the mapping and parameter length."""
+        object.__setattr__(self, "gates", tuple(self.gates))
+        object.__setattr__(self, "parameters", tuple(float(v) for v in self.parameters))
+        object.__setattr__(
+            self, "initial_state", tuple(int(i) for i in self.initial_state)
+        )
+        mapping = (
+            None
+            if self.parameter_mapping is None
+            else tuple(int(p) for p in self.parameter_mapping)
+        )
+        object.__setattr__(self, "parameter_mapping", mapping)
+        _resolve_mapping(len(self.gates), mapping)  # validates contiguity + length
+        if self.parameters and len(self.parameters) != self.n_parameters:
+            raise ValueError(
+                f"parameters has {len(self.parameters)} values but the circuit has "
+                f"{self.n_parameters} parameters."
+            )
+
+    @property
+    def resolved_mapping(self) -> tuple[int, ...]:
+        """Per-gate angle index, with the identity filled in when unset."""
+        if self.parameter_mapping is None:
+            return tuple(range(len(self.gates)))
+        return self.parameter_mapping
+
+    @property
+    def n_parameters(self) -> int:
+        """Number of distinct variational angles the circuit references."""
+        mapping = self.resolved_mapping
+        return max(mapping) + 1 if mapping else 0
+
+    def __len__(self) -> int:
+        """Number of gates."""
+        return len(self.gates)
+
+    def __iter__(self) -> Iterator[MajoranaGate | PauliGate]:
+        """Iterate over the gates in application order."""
+        return iter(self.gates)
+
+    def __add__(self, other: Circuit) -> Circuit:
+        """Concatenate two circuits, appending ``other``'s angles on a fresh axis.
+
+        The result applies ``self``'s gates then ``other``'s; ``other``'s angle indices are
+        shifted up by ``self.n_parameters`` so the two halves keep independent angles. Build
+        the whole thing in a single :meth:`~monoprop.MajoranaPropagator.propagate_build_graph`
+        call to avoid the picture-dependent ordering of incremental multi-call building.
+        """
+        if not isinstance(other, Circuit):
+            return NotImplemented
+        if (
+            self.initial_state
+            and other.initial_state
+            and self.initial_state != other.initial_state
+        ):
+            raise ValueError(
+                "Cannot concatenate circuits with different initial states."
+            )
+        offset = self.n_parameters
+        mapping = self.resolved_mapping + tuple(
+            m + offset for m in other.resolved_mapping
+        )
+        return Circuit(
+            gates=self.gates + other.gates,
+            parameters=self.parameters + other.parameters,
+            parameter_mapping=mapping,
+            initial_state=self.initial_state or other.initial_state,
+        )
 
 
 def _resolve_mapping(
@@ -169,28 +236,3 @@ def expand_monomials(
             gen_coeffs.append(float(term.gen_coeff))
             per_monomial.append(param)
     return majoranas, gen_coeffs, per_monomial
-
-
-def to_engine_arrays(
-    gates: Sequence[MajoranaGate],
-    parameter_mapping: Sequence[int] | None = None,
-) -> tuple[list[tuple[int, ...]], list[float], list[int]]:
-    """Compile Majorana gates into the dense engine arrays (0-based, one-shot).
-
-    Resolves ``parameter_mapping`` in the *local* 0-based sense (the mapping must be
-    contiguous ``0..n-1``) — as used by :meth:`~monoprop.MajoranaPropagator.propagate`. For
-    graph accumulation, where indices extend a global axis, see
-    :func:`expand_monomials`.
-
-    Args:
-        gates: Majorana gates to compile, in application order.
-        parameter_mapping: Per-gate angle index (``parameter_mapping[i]`` drives gate ``i``),
-            or ``None`` for the identity mapping (one distinct angle per gate). Must be
-            contiguous ``0..n-1``.
-
-    Returns:
-        A tuple ``(majoranas, gen_coeffs, parameter_mapping)`` for the C++ engine, where the
-        returned ``parameter_mapping`` is expanded per monomial.
-    """
-    mapping = _resolve_mapping(len(gates), parameter_mapping)
-    return expand_monomials(gates, mapping)

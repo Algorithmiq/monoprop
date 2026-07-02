@@ -30,12 +30,9 @@ from .majorana_propagator import MajoranaPropagator
 from .utils import jordan_wigner_basis_change
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from mpi4py import MPI
 
-    from .circuit import PauliGate
-    from .majorana_propagator import ParameterValues
+    from .circuit import Circuit
     from .pauli_data import PauliOperator
 
 
@@ -111,42 +108,10 @@ class PauliPropagator(MajoranaPropagator):
             )
         self._simulator.cutoff_type = new_cutoff_type
 
-    def propagate_build_graph(
-        self,
-        gates: Sequence[PauliGate],  # type: ignore[override]
-        parameters: ParameterValues = None,
-        parameter_mapping: Sequence[int] | None = None,
-        *,
-        only_rotate_len_k: int = 0,
-    ) -> None:
-        """Append qubit gates to the graph (see :meth:`MajoranaPropagator.propagate_build_graph`)."""
-        super().propagate_build_graph(
-            gates,  # type: ignore[arg-type]
-            parameters,
-            parameter_mapping,
-            only_rotate_len_k=only_rotate_len_k,
-        )
-
-    def propagate(
-        self,
-        gates: Sequence[PauliGate],  # type: ignore[override]
-        parameters: ParameterValues = None,
-        parameter_mapping: Sequence[int] | None = None,
-        *,
-        only_rotate_len_k: int = 0,
-    ) -> None:
-        """Evolve and contract qubit gates immediately (see :meth:`MajoranaPropagator.propagate`)."""
-        super().propagate(
-            gates,  # type: ignore[arg-type]
-            parameters,
-            parameter_mapping,
-            only_rotate_len_k=only_rotate_len_k,
-        )
-
-    def _majorana_gates(self, gates: Sequence[PauliGate]) -> list[MajoranaGate]:  # type: ignore[override]
+    def _majorana_gates(self, circuit: Circuit) -> list[MajoranaGate]:
         """Map each qubit gate to one Majorana gate via Jordan-Wigner (1:1, mapping-preserving)."""
         majorana_gates: list[MajoranaGate] = []
-        for pauli_gate in gates:
+        for pauli_gate in circuit.gates:
             terms: list[Term] = []
             for pauli, coefficient in zip(
                 pauli_gate.paulis.strings,

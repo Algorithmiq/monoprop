@@ -36,7 +36,7 @@ def test_basis_change(serial_comm):
         gen_coeffs=[-1.0],
         param_inds=[0],
     )
-    gates, _, _ = sequence.to_gates()
+    circuit = sequence.to_circuit()
     pauli_basis = jordan_wigner_basis_change(n_modes)
     mp = MajoranaPropagator(
         initial_op,
@@ -45,8 +45,8 @@ def test_basis_change(serial_comm):
         basis_change=pauli_basis,
         comm=serial_comm,
     )
-    mp.propagate_build_graph(gates)
-    tes_op = mp.evolved_operator(sequence.parameters)
+    mp.propagate_build_graph(circuit)
+    tes_op = mp.evolved_operator(circuit)
     act_op = {(0,): np.cos(2 * 1.0)}
     assert len(tes_op) == 1, f"Expected 1 operator, got {len(tes_op)}: {tes_op}"
     for (k1, v1), (k2, v2) in zip(tes_op.items(), act_op.items(), strict=True):

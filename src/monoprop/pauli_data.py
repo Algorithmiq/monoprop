@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .circuit import PauliGate
+from .circuit import Circuit, PauliGate
 from .conversion_utils import _pauli_to_fermi
 from .majorana_data import MajoranaOperator
 
@@ -318,20 +318,23 @@ class PauliEvCircuit:
             f"initial_state={self.initial_state})"
         )
 
-    def to_gates(self) -> tuple[list[PauliGate], list[float], list[int]]:
-        """Lift the circuit into authoring qubit gates.
+    def to_circuit(self) -> Circuit:
+        """Lift the circuit into a :class:`~monoprop.circuit.Circuit`.
 
         One :class:`~monoprop.circuit.PauliGate` per Pauli evolution gate, each its own
         distinct angle (the identity mapping), matching the one-parameter-per-gate layout.
 
         Returns:
-            A tuple ``(gates, parameters, parameter_mapping)``: the qubit gates in order, the
-            gate angles, and the identity per-gate angle mapping.
+            A :class:`~monoprop.circuit.Circuit` carrying the qubit gates, angle values, the
+            identity mapping, and the initial state.
         """
-        gates = [PauliGate(tuple(gate.qubits), gate.paulis) for gate in self.gates]
-        parameters = [float(gate.parameter) for gate in self.gates]
-        mapping = list(range(len(self.gates)))
-        return gates, parameters, mapping
+        gates = tuple(PauliGate(tuple(gate.qubits), gate.paulis) for gate in self.gates)
+        parameters = tuple(float(gate.parameter) for gate in self.gates)
+        return Circuit(
+            gates=gates,
+            parameters=parameters,
+            initial_state=tuple(int(i) for i in self.initial_state),
+        )
 
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1e-8) -> bool:
         """Check if two PauliEvCircuits are closely equal.

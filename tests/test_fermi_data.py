@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from monoprop import to_engine_arrays
+from monoprop.circuit import expand_monomials
 from monoprop.fermi_data import (
     FermiCircuit,
     FermiEvGate,
@@ -189,15 +189,17 @@ class TestFermiCircuit:
         gate_0 = FermiEvGate(generator=generator, parameter=0.3)
         gate_1 = FermiEvGate(generator=generator, parameter=-0.7)
 
-        circuit = FermiCircuit(initial_state=[0, 1], gates=[gate_0, gate_1])
-        gates, parameters, parameter_mapping = circuit.to_gates()
+        fermi_circuit = FermiCircuit(initial_state=[0, 1], gates=[gate_0, gate_1])
+        circuit = fermi_circuit.to_circuit()
 
         np.testing.assert_array_equal(circuit.initial_state, np.array([0, 1]))
-        np.testing.assert_array_equal(parameters, np.array([0.3, -0.7]))
+        np.testing.assert_array_equal(list(circuit.parameters), np.array([0.3, -0.7]))
         # A FermiCircuit lifts one gate per fermi gate with the identity mapping.
-        assert parameter_mapping == list(range(len(gates)))
+        assert list(circuit.resolved_mapping) == list(range(len(circuit)))
 
-        majoranas, gen_coeffs, per_monomial_mapping = to_engine_arrays(gates)
+        majoranas, gen_coeffs, per_monomial_mapping = expand_monomials(
+            circuit.gates, circuit.resolved_mapping
+        )
 
         np.testing.assert_array_equal(
             np.array(gen_coeffs), np.array([-1.0, 1.0, -1.0, 1.0])

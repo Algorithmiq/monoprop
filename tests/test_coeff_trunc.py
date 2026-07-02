@@ -64,7 +64,7 @@ def test_coeff_trunc(serial_comm):
         gen_coeffs=[1.0],
         param_inds=[0],
     )
-    gates, _, _ = sequence.to_gates()
+    circuit = sequence.to_circuit()
 
     cos_pi6, sin_pi6 = (0.5, -0.8660254037844386)
     act_op = {(0, 1): 1j * cos_pi6, (0, 2, 3, 4): sin_pi6}
@@ -74,7 +74,7 @@ def test_coeff_trunc(serial_comm):
         mp = _create_mp(
             op, sequence.initial_state, serial_comm, upper_atol, lower_atol, cutoff
         )
-        mp.propagate(gates, sequence.parameters)
+        mp.propagate(circuit)
         return mp.evolved_operator()
 
     test_scenarios = [
@@ -103,7 +103,7 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
     fermionic_operator = problem.operator
     monomial_circuit = problem.monomial_circuit
     schrodinger_cutoff_val = 2 * n_modes if schrodinger else None
-    gates, _, _ = monomial_circuit.to_gates()
+    circuit = monomial_circuit.to_circuit()
     parameters = monomial_circuit.parameters
 
     mp_inplace = _create_mp(
@@ -115,7 +115,7 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
         cutoff,
         schrodinger_cutoff_val,
     )
-    mp_inplace.propagate(gates, parameters)
+    mp_inplace.propagate(circuit)
     expval_inplace = mp_inplace.expectation_value()
 
     mp_build = _create_mp(
@@ -128,7 +128,7 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
         schrodinger_cutoff_val,
     )
     # Coefficient-informed build: the seed is regenerated internally from parameters.
-    mp_build.propagate_build_graph(gates, parameters)
+    mp_build.propagate_build_graph(circuit)
     expval_build = mp_build.expectation_value(parameters)
 
     assert mp_inplace.size() == mp_build.size()
@@ -148,7 +148,7 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
         gen_coeffs=[1.0],
         param_inds=[0],
     )
-    gates, _, _ = sequence.to_gates()
+    circuit = sequence.to_circuit()
 
     cutoff = 4
     final_operator = {
@@ -163,7 +163,7 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
         schrodinger_cutoff=None,
         comm=serial_comm,
     )
-    mp.propagate_build_graph(gates, sequence.parameters)
+    mp.propagate_build_graph(circuit)
     assert mp.graph_size()[1] == 1
     assert mp.graph_size()[0] == 0
     assert mp.size() == 2
@@ -185,7 +185,7 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
         gen_coeffs=[1.0],
         param_inds=[0],
     )
-    gates, _, _ = sequence.to_gates()
+    circuit = sequence.to_circuit()
 
     cutoff = 4
     final_operator = {
@@ -208,7 +208,7 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
         mp = _create_mp(
             op, sequence.initial_state, serial_comm, upper_atol, lower_atol, cutoff
         )
-        mp.propagate_build_graph(gates, sequence.parameters)
+        mp.propagate_build_graph(circuit)
 
         assert mp.graph_size()[1] == 1
         assert mp.graph_size()[0] == 0

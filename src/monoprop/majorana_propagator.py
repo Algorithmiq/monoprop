@@ -28,19 +28,20 @@ import numpy as np
 
 from monoprop._dispatch import dispatch
 
-from .circuit import expand_monomials, to_engine_arrays
+from .circuit import Circuit, expand_monomials
 from .majorana_data import MajoranaOperator
 from .utils import validate_basis_change
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from typing import Self
 
     from mpi4py import MPI
 
     from .circuit import MajoranaGate
     from .quantum_data import IQuantumOperator
 
-    ParameterValues = Sequence[float] | np.ndarray | None
+    ParameterValues = Circuit | Sequence[float] | np.ndarray | None
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +135,7 @@ class MajoranaPropagator:
 
         self._comm = comm
         self._n_params = 0
-        self._seen_params: set[int] = set()
+        self._initial_state = list(initial_state)
         self._simulator = dispatch(num_modes)(
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,
@@ -149,69 +150,71 @@ class MajoranaPropagator:
 
     # -- gate ingestion ---------------------------------------------------------
 
-    def _majorana_gates(self, gates: Sequence[MajoranaGate]) -> Sequence[MajoranaGate]:
+    @classmethod
+    def from_circuit(
+        cls,
+        circuit: Circuit,
+        initial_operator: IQuantumOperator | MajoranaOperator,
+        **config: object,
+    ) -> Self:
+        """Construct a propagator from a circuit and build its graph in one step.
+
+        Uses ``circuit.initial_state`` as the reference state and builds the full graph
+        from ``circuit``. The observable (``initial_operator``) and truncation settings
+        (``cutoff`` and the rest of ``config``) are supplied separately -- they are not part
+        of the circuit.
+
+        Args:
+            circuit: The circuit whose gates and initial state define the evolution.
+            initial_operator: The observable to propagate.
+            **config: Keyword arguments forwarded to the constructor (``cutoff``, etc.).
+
+        Returns:
+            A propagator with ``circuit`` already built into its graph.
+        """
+        propagator = cls(initial_operator, list(circuit.initial_state), **config)  # type: ignore[arg-type]
+        propagator.propagate_build_graph(circuit)
+        return propagator
+
+    def _majorana_gates(self, circuit: Circuit) -> Sequence[MajoranaGate]:
         """Hook for subclasses to map their gate type to Majorana gates."""
-        return gates
+        return circuit.gates
 
     def propagate_build_graph(
         self,
-        gates: Sequence[MajoranaGate],
-        parameters: ParameterValues = None,
-        parameter_mapping: Sequence[int] | None = None,
+        circuit: Circuit,
         *,
+        seed_parameters: ParameterValues = None,
         only_rotate_len_k: int = 0,
     ) -> None:
-        """Append gates to the propagation graph.
+        """Append a circuit to the propagation graph.
 
         Builds (or extends) the reusable evolution graph, recording each layer's gate
-        information (the parameter that drives it and its generator coefficient) so
-        that later evaluation takes only ``parameters``. When extending a non-empty
-        graph with coefficient-informed truncation, pass ``parameters`` covering the
-        whole accumulated graph plus these new gates; the coefficient seed is
-        regenerated internally by contracting the existing graph at those parameters.
+        information (the parameter that drives it and its generator coefficient) so that
+        later evaluation takes only ``parameters``. The circuit's angle indices are local
+        (``0``-based); when extending a non-empty graph they are shifted up onto the
+        accumulated parameter axis automatically, so each call's circuit is authored
+        independently.
 
         Args:
-            gates: Gates to append (Majorana :class:`~monoprop.circuit.MajoranaGate`, or
-                :class:`~monoprop.circuit.PauliGate` for :class:`PauliPropagator`).
-            parameters: Optional full parameter vector (see above), given as a sequence in
-                parameter-index order.
-            parameter_mapping: Per-gate angle index into the *global* parameter axis
-                (``parameter_mapping[i]`` drives gate ``i``); ``None`` (the default) assigns
-                each new gate a fresh angle, continuing the accumulated axis. Repeat an index
-                (or reuse one from an earlier call) to tie gates to a shared angle. The union
-                of all indices ever used must stay contiguous ``0..n-1``.
+            circuit: Gates to append, as a :class:`~monoprop.circuit.Circuit`.
+            seed_parameters: Only needed when extending a non-empty graph *with*
+                coefficient-informed truncation: the full parameter vector covering the whole
+                accumulated graph, used to regenerate the coefficient seed by contracting the
+                existing graph. Defaults to the circuit's own parameters (correct for the
+                first, or a single, call).
             only_rotate_len_k: If > 0, apply gates to monomials of length <= k in the
-                evolved operator even if they anticommute. Useful when many
-                free-fermionic gates (generators that are length-2 Majorana monomials)
-                are applied before expectation-value estimation in Schrodinger-picture
-                simulations.
+                evolved operator even if they anticommute. Useful when many free-fermionic
+                gates (generators that are length-2 Majorana monomials) are applied before
+                expectation-value estimation in Schrodinger-picture simulations.
         """
-        majorana_gates = self._majorana_gates(gates)
-        n = len(majorana_gates)
-        if parameter_mapping is None:
-            # Continue the accumulated axis: each new gate gets a fresh distinct angle.
-            mapping = list(range(self._n_params, self._n_params + n))
-        else:
-            mapping = [int(p) for p in parameter_mapping]
-            if len(mapping) != n:
-                raise ValueError(
-                    f"parameter_mapping has {len(mapping)} entries but there are "
-                    f"{n} gates."
-                )
-        # Indices are global (they extend the graph's parameter axis); the union of every
-        # index used so far must stay contiguous 0..N-1 -- a gap would invent a phantom
-        # parameter that nothing drives.
-        self._seen_params.update(mapping)
-        if self._seen_params and self._seen_params != set(
-            range(max(self._seen_params) + 1)
-        ):
-            raise ValueError(
-                "parameter indices must be contiguous 0..n-1 with no gaps; "
-                f"got {sorted(self._seen_params)}."
-            )
-        self._n_params = max(self._seen_params, default=-1) + 1
+        majorana_gates = self._majorana_gates(circuit)
+        # Shift the circuit's local 0-based angle indices onto the accumulated axis.
+        mapping = [self._n_params + m for m in circuit.resolved_mapping]
+        self._n_params += circuit.n_parameters
         majoranas, gen_coeffs, per_monomial = expand_monomials(majorana_gates, mapping)
-        bound = None if parameters is None else self._bind(parameters)
+        seed = seed_parameters if seed_parameters is not None else circuit.parameters
+        bound = self._bind(seed) if seed else None
         self._simulator.propagate_build_graph(
             majoranas,
             per_monomial,
@@ -222,38 +225,30 @@ class MajoranaPropagator:
 
     def propagate(
         self,
-        gates: Sequence[MajoranaGate],
-        parameters: ParameterValues = None,
-        parameter_mapping: Sequence[int] | None = None,
+        circuit: Circuit,
         *,
         only_rotate_len_k: int = 0,
     ) -> None:
         """Evolve and contract immediately, without storing a graph.
 
-        More memory-efficient than :meth:`propagate_build_graph` because it does not
-        retain the propagation graph; use it for a single contraction at fixed
-        parameters rather than repeated re-evaluation. Unlike
-        :meth:`propagate_build_graph`, this is one-shot: ``parameter_mapping`` is local and
-        must be contiguous ``0..d-1``, with ``parameters`` supplying exactly those ``d``
-        angle values.
+        More memory-efficient than :meth:`propagate_build_graph` because it does not retain
+        the propagation graph; use it for a single contraction at the circuit's parameters
+        rather than repeated re-evaluation.
 
         Args:
-            gates: Gates to apply.
-            parameters: Angle values covering the mapping's parameter indices, given as a
-                sequence in parameter-index order.
-            parameter_mapping: Per-gate angle index; ``None`` assigns each gate its own
-                distinct angle. Must be contiguous ``0..d-1``.
+            circuit: Gates to apply and the angle values to apply them at, as a
+                :class:`~monoprop.circuit.Circuit`.
             only_rotate_len_k: See :meth:`propagate_build_graph`.
         """
-        majorana_gates = self._majorana_gates(gates)
-        majoranas, gen_coeffs, mapping = to_engine_arrays(
-            majorana_gates, parameter_mapping
+        majorana_gates = self._majorana_gates(circuit)
+        majoranas, gen_coeffs, mapping = expand_monomials(
+            majorana_gates, circuit.resolved_mapping
         )
         self._simulator.propagate(
             majoranas,
             mapping,
             gen_coeffs,
-            self._bind(parameters),
+            self._bind(circuit.parameters),
             only_rotate_len_k,
         )
 
@@ -275,9 +270,9 @@ class MajoranaPropagator:
         expectation-value functional with no paring.
 
         Args:
-            parameters: Variational parameter values, given as a sequence in
-                parameter-index order. ``None`` evaluates the current operator with an
-                empty parameter vector.
+            parameters: Variational parameter values, as a sequence in parameter-index
+                order, or a :class:`~monoprop.circuit.Circuit` (its parameters are used).
+                ``None`` evaluates the current operator with an empty parameter vector.
 
         Returns:
             The expectation value as a float.
@@ -523,7 +518,13 @@ class MajoranaPropagator:
     # -- helpers ----------------------------------------------------------------
 
     def _bind(self, parameters: ParameterValues) -> list[float]:
-        """Resolve ``parameters`` into a dense vector in parameter-index order."""
+        """Resolve ``parameters`` into a dense vector in parameter-index order.
+
+        Accepts a :class:`~monoprop.circuit.Circuit` (its ``parameters`` are used), a plain
+        sequence of floats, or ``None`` (an empty vector).
+        """
+        if isinstance(parameters, Circuit):
+            parameters = parameters.parameters
         if parameters is None:
             return []
         return [float(v) for v in parameters]

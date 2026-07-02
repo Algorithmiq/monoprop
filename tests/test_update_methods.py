@@ -18,6 +18,7 @@ import pytest
 from pytest_cases import parametrize_with_cases
 
 from monoprop import (
+    Circuit,
     MajoranaGate,
     MajoranaPropagator,
     Term,
@@ -109,7 +110,7 @@ class TestUpdateMethods:
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
         gate = MajoranaGate((Term((0, 1, 2, 3, 4, 5), 1.0),))
-        mp.propagate_build_graph([gate])
+        mp.propagate_build_graph(Circuit((gate,)))
         assert mp.size() > 0
 
     def test_update_cutoff_invalid(self, mp):
@@ -202,8 +203,8 @@ class TestUpdateMethods:
         for attr, value in updates.items():
             setattr(mp, attr, value)
 
-        gates, _, _ = sequence.to_gates()
-        mp.propagate(gates, sequence.parameters)
+        circuit = sequence.to_circuit()
+        mp.propagate(circuit)
         expval = mp.expectation_value()
         assert isinstance(expval, (int, float))
 
@@ -251,8 +252,7 @@ class TestUpdateMethods:
 def test_evolutions_after_updates(problem, test_type, serial_comm):
     """Test that evolutions work correctly after parameter updates."""
 
-    gates, _, _ = problem.monomial_circuit.to_gates()
-    parameters = problem.monomial_circuit.parameters
+    circuit = problem.monomial_circuit.to_circuit()
 
     mp = MajoranaPropagator(
         problem.operator,
@@ -260,7 +260,7 @@ def test_evolutions_after_updates(problem, test_type, serial_comm):
         cutoff=6,
         comm=serial_comm,
     )
-    mp.propagate(gates, parameters)
+    mp.propagate(circuit)
     mp_size = mp.size()
 
     mp_tes = MajoranaPropagator(
@@ -278,7 +278,7 @@ def test_evolutions_after_updates(problem, test_type, serial_comm):
     else:
         mp_tes.cutoff = 4
 
-    mp_tes.propagate(gates, parameters)
+    mp_tes.propagate(circuit)
     assert mp_tes.size() != mp_size
 
 

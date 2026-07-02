@@ -303,7 +303,7 @@ def random_problem(request: pytest.FixtureRequest) -> RandomProblem:
 def make_random_propagator(
     random_problem: RandomProblem, bench_comm: Any, picture: str
 ) -> Callable[..., Built]:
-    """Return a factory building a fresh ``(propagator, gates, parameters)`` tuple.
+    """Return a factory building a fresh ``(propagator, circuit)`` tuple.
 
     Wraps the picture/communicator wiring so a benchmark ``setup`` can just call
     ``make_random_propagator(lower_atol=...)`` for a fresh build each round.
@@ -332,10 +332,10 @@ def built_graph(
     Also records the operator size, operator-vs-graph storage breakdown, and
     resting footprint for this picture while the graph is resident.
     """
-    mp, gates, _parameters = build_random_propagator(
+    mp, circuit = build_random_propagator(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
     )
-    mp.propagate_build_graph(gates)
+    mp.propagate_build_graph(circuit)
 
     # Under MPI the operator is partitioned, so sum the shards.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})
