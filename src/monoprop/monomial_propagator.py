@@ -12,71 +12,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Monomial Propagator module."""
+"""Majorana and qubit propagators.
+
+Both classes wrap the same compiled C++ Majorana simulator. Gate information (the
+Majorana generators, their coefficients, and the parameter each drives) is owned by
+the propagation graph, so evaluation methods take only ``parameters``.
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from monoprop._dispatch import dispatch
 
-from .monomial_data import MonomialCircuit, MonomialOperator
-from .utils import (
-    normalize_parameters,
-    validate_basis_change,
-    wrap_functional_call,
-)
+from .circuit import Gate, ParameterVector, Term, to_engine_arrays
+from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
+from .monomial_data import MonomialOperator
+from .utils import jordan_wigner_basis_change, validate_basis_change
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping, Sequence
 
     from mpi4py import MPI
 
-    from .quantum_data import IQuantumCircuit, IQuantumOperator
+    from .circuit import Parameter, QubitGate
+    from .pauli_data import PauliOperator
+    from .quantum_data import IQuantumOperator
+
+    ParameterValues = Sequence[float] | Mapping[Parameter, float] | np.ndarray | None
 
 logger = logging.getLogger(__name__)
 
 
-class ExpectationValueFunctional(Protocol):
-    """Protocol for expectation value functional callables."""
+class MajoranaPropagator:
+    """Classical simulator for Majorana operators.
 
-    def __call__(self, parameters: list[float] | np.ndarray | None = None) -> float:
-        """Compute expectation value for given parameters."""
-        ...
-
-
-class ExpectationValueAndGradientFunctional(Protocol):
-    """Protocol for expectation value and gradient functional callables."""
-
-    def __call__(
-        self, parameters: list[float] | np.ndarray | None = None
-    ) -> tuple[float, np.ndarray]:
-        """Compute expectation value and gradient for given parameters."""
-        ...
-
-
-class GradientFunctional(Protocol):
-    """Protocol for gradient functional callables."""
-
-    def __call__(
-        self, parameters: list[float] | np.ndarray | None = None
-    ) -> np.ndarray:
-        """Compute gradient for given parameters."""
-        ...
-
-
-class MonomialPropagator:
-    """Classical simulator for Majorana operators."""
+    The propagation graph owns the gate information; evaluation methods
+    (:meth:`expectation_value`, :meth:`gradient`, ...) take only ``parameters``.
+    """
 
     def __init__(
         self,
         initial_operator: IQuantumOperator | MonomialOperator,
-        quantum_circuit: IQuantumCircuit | MonomialCircuit,
-        cutoff: int,
+        initial_state: list[int] | np.ndarray,
         *,
+        cutoff: int,
         schrodinger_cutoff: int | None = None,
         cutoff_type: str = "length",
         lower_atol: None | float = None,
@@ -84,91 +67,40 @@ class MonomialPropagator:
         basis_change: None | list[list[int]] = None,
         comm: MPI.Comm | None = None,
     ) -> None:
-        """Initialize the MonomialPropagator.
-
-        Creates a new Monomial Propagator for quantum system evolution using
-        the Monomial fermion representation. The simulator supports both Heisenberg
-        and Schrödinger picture evolution with configurable truncation schemes.
+        """Initialize the propagator.
 
         Args:
-            initial_operator: Initial Operator represented as objects implementing
-            the IQuantumOperator protocol.
-            quantum_circuit: Quantum circuit representing the evolution. Can be provided
-            as an object implementing the IQuantumCircuit protocol.
-            cutoff: Truncation parameter controlling the maximum complexity of
-                Monomial operators retained during evolution. Its meaning depends
-                on ``cutoff_type`` (see below). Higher values increase accuracy but
-                require more computational resources. Note that a *fully paired*
-                monomial -- one whose support consists entirely of complete pairs
-                (m_{2j-1} m_{2j}) on a mode -- is always kept regardless of this cutoff,
-                because only paired monomials can contribute to an expectation value
-                against a computational-basis state or Slater determinant; discarding
-                them would throw away signal.
-            schrodinger_cutoff: Optional cutoff parameter for Schrödinger picture
-                evolution. If provided, enables Schrödinger picture mode; if None,
-                uses Heisenberg picture (default behaviour).
-            cutoff_type: Type of truncation scheme to apply (the fully-paired
-                exception above always applies on top of either). Supported values:
-                "length" (default) keeps monomials whose length -- the number of
-                Majorana operators -- does not exceed ``cutoff``;
-                "support" keeps monomials acting on at most ``cutoff`` distinct
-                orbitals (the orbital support). Under the Jordan-Wigner mapping the
-                support equals the qubit Pauli weight, so "support" truncates by the
-                number of X/Y/Z factors.
-            lower_atol: Optional lower absolute tolerance threshold for coefficient
-                truncation. Monomial operators with coefficients below this value
-                will be discarded during evolution to improve performance.
-            upper_atol: Optional upper absolute tolerance threshold. Monomial operators
-                with coefficients above this value will always be retained regardless
-                of their complexity, overriding cutoff-based truncation.
-            basis_change: Optional basis transformation for Majorana operators used
-                in the cutoff function. If None, cutoff is based on standard Majorana
-                representation. If provided, must be a list of 2*num_modes lists,
-                where each inner list defines a basis vector in terms of Majorana indices.
-            comm: Optional MPI communicator specifier. The communicator must remain valid for the simulator's lifetime.
-
-                Example for fermion-to-qubit (Jordan-Wigner) transformation:
-
-                .. code-block:: python
-
-                    basis_change = [
-                        [0],  # m_0 -> X_0
-                        [1],  # m_1 -> Y_0
-                        [0, 1, 2],  # m_2 -> Z_0 X_1
-                        [0, 1, 3],  # m_3 -> Z_0 Y_1
-                        ...,
-                    ]
-
-                This enables cutoff based on Pauli weight rather than Majorana length.
+            initial_operator: Initial operator, either a :class:`MonomialOperator` or an
+                object implementing ``get_monomial_operator()``.
+            initial_state: Slater determinant (occupied mode indices) for the initial state.
+            cutoff: Truncation parameter (meaning depends on ``cutoff_type``).
+            schrodinger_cutoff: Optional Schrodinger-picture cutoff (enables that picture).
+            cutoff_type: ``"length"`` (Majorana length) or ``"support"`` (orbital support).
+            lower_atol: Optional lower coefficient-truncation tolerance.
+            upper_atol: Optional upper coefficient-retention tolerance.
+            basis_change: Optional Majorana basis change used by the cutoff function.
+            comm: Optional MPI communicator (must outlive the propagator).
         """
         monomial_operator: MonomialOperator = (
             initial_operator
             if isinstance(initial_operator, MonomialOperator)
             else initial_operator.get_monomial_operator()
         )
-        self.quantum_circuit: MonomialCircuit = (
-            quantum_circuit
-            if isinstance(quantum_circuit, MonomialCircuit)
-            else quantum_circuit.get_monomial_circuit()
-        )
         num_modes = monomial_operator.num_modes
-        slater_determinant = self.quantum_circuit.initial_state
         logger.debug(
-            "__init__. num_modes=%d, cutoff=%d, slater_determinant=%s, schrodinger_cutoff=%s",
+            "__init__. num_modes=%d, cutoff=%d, schrodinger_cutoff=%s",
             num_modes,
             cutoff,
-            slater_determinant,
             schrodinger_cutoff,
         )
-        cls = dispatch(num_modes)
-
         validate_basis_change(basis_change, num_modes)
 
         self._comm = comm
-        self._simulator = cls(
+        self._params = ParameterVector()
+        self._simulator = dispatch(num_modes)(
             initial_operator=monomial_operator.terms,
             cutoff=cutoff,
-            slater_determinant=slater_determinant,
+            slater_determinant=list(initial_state),
             schrodinger_cutoff=schrodinger_cutoff,
             lower_atol=lower_atol,
             upper_atol=upper_atol,
@@ -177,659 +109,312 @@ class MonomialPropagator:
             comm=comm,
         )
 
-    def _create_functional_wrapper(
+    # -- gate ingestion ---------------------------------------------------------
+
+    def _majorana_gates(self, gates: Sequence[Gate]) -> Sequence[Gate]:
+        """Hook for subclasses to map their gate type to Majorana gates."""
+        return gates
+
+    def propagate_build_graph(
         self,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
+        gates: Sequence[Gate | QubitGate],
+        parameters: ParameterValues = None,
         *,
-        pare_threshold: float | None = None,
-        functional_type: str = "expectation_value",
-    ) -> Callable:
-        """Create a functional wrapper with validation and state capture.
+        only_rotate_len_k: int = 0,
+    ) -> None:
+        """Append gates to the propagation graph.
 
-        This helper method centralizes the common logic for creating expectation value and
-        gradient functionals, including parameter validation and state capture
-        for runtime validation of functional calls.
+        The graph records each layer's gate information. When extending a non-empty graph
+        with coefficient-informed truncation, pass ``parameters`` covering the whole
+        accumulated graph plus these new gates; the seed is regenerated internally.
 
         Args:
-            parameter_mapping: The parameter mapping.
-            gen_coeffs: The generator coefficients.
-            pare_threshold: Absolute value cutoff for retaining edges in the pared graph.
-                If None, graph paring is disabled.
-            functional_type: Type of functional to create ('expectation_value' or 'gradient').
-
-        Returns:
-            Callable: expectation value or gradient functional
-
-        Raises:
-            ValueError: If functional_type is unknown.
+            gates: Gates to append (Majorana :class:`~monoprop.circuit.Gate`, or
+                :class:`~monoprop.circuit.QubitGate` for :class:`QubitPropagator`).
+            parameters: Optional full parameter vector (see above).
+            only_rotate_len_k: If > 0, rotate monomials of length <= k even if they
+                anticommute.
         """
-        _, parameter_mapping, gen_coeffs = normalize_parameters(
-            None, parameter_mapping, gen_coeffs
+        majorana_gates = self._majorana_gates(gates)
+        for gate in majorana_gates:
+            self._params.register(gate.param)
+        majoranas, gen_coeffs, parameter_mapping = to_engine_arrays(
+            majorana_gates, self._params
         )
-
-        if functional_type == "expectation_value":
-            underlying_fn = self._simulator.expectation_value_functional(
-                parameter_mapping=parameter_mapping,
-                gen_coeffs=gen_coeffs,
-                pare_threshold=pare_threshold,
-            )
-        elif functional_type == "gradient":
-            underlying_fn = self._simulator.expectation_value_and_gradient_functional(
-                parameter_mapping=parameter_mapping,
-                gen_coeffs=gen_coeffs,
-                pare_threshold=pare_threshold,
-            )
-        else:
-            raise ValueError(f"Unknown functional type: {functional_type}")
-
-        return underlying_fn
-
-    @property
-    def num_modes(self) -> int:
-        """Number of Fermionic modes.
-
-        Returns:
-            The number of Fermionic modes for the simulator.
-        """
-        return self._simulator.num_modes
-
-    @property
-    def graph_layers(self) -> int:
-        """Number of evolved Majoranas (graph layers).
-
-        Returns:
-            The number of Majorana operators that have been evolved.
-        """
-        return self._simulator.graph_layers()
-
-    @property
-    def cutoff(self) -> int:
-        """Current cutoff value for the simulation.
-
-        Returns:
-            The current cutoff value.
-        """
-        return self._simulator.cutoff
-
-    @cutoff.setter
-    def cutoff(self, new_cutoff: int) -> None:
-        """Set the cutoff value for the simulation.
-
-        Args:
-            new_cutoff: The new cutoff value.
-        """
-        self._simulator.cutoff = new_cutoff
-
-    @property
-    def lower_atol(self) -> None | float:
-        """Current lower absolute tolerance for the cutoff function.
-
-        Returns:
-            The current lower absolute tolerance, or None if not set.
-        """
-        return self._simulator.lower_atol
-
-    @lower_atol.setter
-    def lower_atol(self, new_lower_atol: None | float) -> None:
-        """Set the lower absolute tolerance for the cutoff function.
-
-        Args:
-            new_lower_atol: The new lower absolute tolerance. If None, the lower atol is disabled.
-        """
-        self._simulator.lower_atol = new_lower_atol
-
-    @property
-    def upper_atol(self) -> None | float:
-        """Current upper absolute tolerance for the cutoff function.
-
-        Returns:
-            The current upper absolute tolerance, or None if not set.
-        """
-        return self._simulator.upper_atol
-
-    @upper_atol.setter
-    def upper_atol(self, new_upper_atol: None | float) -> None:
-        """Set the upper absolute tolerance for the cutoff function.
-
-        Args:
-            new_upper_atol: The new upper absolute tolerance. If None, the upper atol is disabled.
-        """
-        self._simulator.upper_atol = new_upper_atol
-
-    @property
-    def cutoff_type(self) -> str:
-        """Current cutoff type for the simulation.
-
-        Returns:
-            The current cutoff type as a string.
-        """
-        return self._simulator.cutoff_type
-
-    @cutoff_type.setter
-    def cutoff_type(self, new_cutoff_type: str) -> None:
-        """Set the cutoff type for the simulation.
-
-        Args:
-            new_cutoff_type: The new cutoff type.
-        """
-        self._simulator.cutoff_type = new_cutoff_type
-
-    @property
-    def basis_change(self) -> None | list[list[int]]:
-        """Current basis change for the cutoff function.
-
-        Returns:
-            The current basis change, or None if not set.
-        """
-        return self._simulator.basis_change
-
-    @basis_change.setter
-    def basis_change(self, new_basis_change: None | list[list[int]]) -> None:
-        """Set the basis change for the cutoff function.
-
-        Args:
-            new_basis_change: The new basis change. If None, no basis change is applied.
-
-        Raises:
-            ValueError: If the basis change is invalid.
-        """
-        validate_basis_change(new_basis_change, self.num_modes)
-        self._simulator.basis_change = new_basis_change
-
-    @property
-    def schrodinger(self) -> bool:
-        """Whether the simulator is in Schrödinger picture.
-
-        Returns:
-            True if the simulator is in Schrödinger picture, False if in Heisenberg picture.
-        """
-        return self._simulator.schrodinger
+        bound = None if parameters is None else self._bind(parameters)
+        self._simulator.propagate_build_graph(
+            majoranas,
+            parameter_mapping,
+            gen_coeffs,
+            bound,
+            only_rotate_len_k,
+        )
 
     def propagate(
         self,
-        majoranas: list[tuple[int, ...]] | None = None,
-        operator_coeffs: None | list[float] | np.ndarray = None,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
-        parameters: list[float] | np.ndarray | None = None,
+        gates: Sequence[Gate | QubitGate],
+        parameters: ParameterValues,
         *,
-        evolve_with_coeffs: bool = False,
         only_rotate_len_k: int = 0,
     ) -> None:
-        """Propagate the Operator by multiple Majorana operators.
-
-        This method supports three propagation strategies:
-
-        1. Build only the propagation graph by providing only ``majoranas``.
-        2. Build the propagation graph with coefficient information by providing
-           ``majoranas``, ``parameter_mapping``, ``gen_coeffs``, ``parameters``,
-           and ``operator_coeffs``. Operator coefficients can be obtained from a
-           prior call to ``contract_partially(inplace=False)`` if you want to
-           preserve the graph.
-        3. Propagate and contract immediately without building a graph by providing
-           ``majoranas``, ``parameter_mapping``, ``gen_coeffs``, and
-           ``parameters`` only (do not provide ``operator_coeffs``). This mode is
-           more memory efficient because it does not store the propagation graph.
+        """Evolve and contract immediately, without storing a graph.
 
         Args:
-            majoranas: List of Majorana operators to evolve.
-            parameter_mapping: Optional mapping from variational parameters to
-                generator indices. Must be provided together with ``gen_coeffs``
-                and ``parameters``.
-            gen_coeffs: Optional generator coefficients corresponding to each
-                entry in ``parameter_mapping``. Must be provided together with
-                ``parameter_mapping`` and ``parameters``.
-            parameters: Optional parameter values for immediate evolution.
-                Must be provided together with ``parameter_mapping`` and
-                ``gen_coeffs``.
-            operator_coeffs: Optional operator coefficients for the current
-                state or operator.
-            evolve_with_coeffs: Whether to evolve with coefficients. Defaults to False.
-            only_rotate_len_k: If > 0, apply gates to monomials of length <= k in the evolved
-                operator even if they anticommute. This is useful for when you apply many free
-                fermionic gates (ie: gates generated by length 2 majorana monomials) before
-                expectation value estimation in schrodinger picture simulations.
-
-        Raises:
-            ValueError: If the provided parameters are inconsistent or if there
-                are already propagated Majorana operators when coefficient
-                information is supplied.
+            gates: Gates to apply.
+            parameters: Parameter values for the gates.
+            only_rotate_len_k: See :meth:`propagate_build_graph`.
         """
-        majoranas = (
-            majoranas if majoranas is not None else self.quantum_circuit.majoranas
+        majorana_gates = self._majorana_gates(gates)
+        local = ParameterVector()
+        for gate in majorana_gates:
+            local.register(gate.param)
+        majoranas, gen_coeffs, parameter_mapping = to_engine_arrays(
+            majorana_gates, local
         )
-
-        if evolve_with_coeffs:
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
-            parameters = self.quantum_circuit.parameters
-
         self._simulator.propagate(
-            majoranas=majoranas,
-            parameter_mapping=parameter_mapping,
-            gen_coeffs=gen_coeffs,
-            parameters=parameters,
-            operator_coeffs=operator_coeffs,
-            only_rotate_len_k=only_rotate_len_k,
+            majoranas,
+            parameter_mapping,
+            gen_coeffs,
+            local.bind(parameters),
+            only_rotate_len_k,
         )
 
-    def expectation_value_functional(
-        self,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
-        *,
-        use_coeffs: bool = False,
-        pare_threshold: float | None = 1e-10,
-    ) -> ExpectationValueFunctional:
-        """Create an expectation value functional for the current system state.
-
-        Returns a callable function that computes the expectation value
-        for given variational parameters using the current evolution graph.
+    def pare(self, threshold: float | None = 1e-10) -> None:
+        """Build and cache a pared execution plan over the current graph.
 
         Args:
-            parameter_mapping: Optional mapping from variational parameters to generator
-                indices. If None, defaults to the quantum circuit's parameter indices.
-            gen_coeffs: Optional generator coefficients corresponding to each parameter.
-                If None, defaults to the quantum circuit's generator coefficients.
-            use_coeffs: If True, use the quantum circuit's parameter mapping and generator
-                coefficients to construct the expectation value functional.
-            pare_threshold: Absolute value cutoff for retaining edges in the pared graph.
-                If None, graph paring is disabled. Defaults to 1e-10.
-
-        Returns:
-            A callable that takes optional parameters and returns the expectation value as a float.
-
-        Raises:
-            ValueError: If parameter_mapping and gen_coeffs have different lengths,
-                or if the lengths don't match the number of evolved Majoranas.
+            threshold: Edge-retention cutoff. ``None`` clears any cached plan.
         """
-        if use_coeffs:
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
+        self._simulator.pare(threshold)
 
-        ener_fn = self._create_functional_wrapper(
-            parameter_mapping=parameter_mapping,
-            gen_coeffs=gen_coeffs,
-            pare_threshold=pare_threshold,
-            functional_type="expectation_value",
-        )
-        return wrap_functional_call(ener_fn)
+    # -- evaluation -------------------------------------------------------------
 
-    def expectation_value_and_gradient_functional(
-        self,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
-        *,
-        use_coeffs: bool = False,
-        pare_threshold: float | None = 1e-10,
-    ) -> ExpectationValueAndGradientFunctional:
-        """Create an expectation value and gradient functional for the current system state.
-
-        Returns a callable function that computes both the expectation value
-        and its gradient with respect to variational parameters using the current
-        evolution graph.
-
-        Args:
-            parameter_mapping: Optional mapping from variational parameters to generator
-                indices. If None, defaults to the quantum circuit's parameter indices.
-            gen_coeffs: Optional generator coefficients corresponding to each parameter.
-                If None, defaults to the quantum circuit's generator coefficients.
-            use_coeffs: If True, use the quantum circuit's parameter mapping and generator
-                coefficients to construct the expectation value and gradient functional.
-            pare_threshold: Absolute value cutoff for retaining edges in the pared graph.
-                If None, graph paring is disabled. Defaults to 1e-10.
-
-        Returns:
-            A callable that takes optional parameters and returns a tuple of
-            (expectation_value, gradient) where expectation_value is a float and gradient is a numpy array.
-
-        Raises:
-            ValueError: If parameter_mapping and gen_coeffs have different lengths,
-                or if the lengths don't match the number of evolved Majoranas.
-        """
-        if use_coeffs:
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
-
-        grad_fn = self._create_functional_wrapper(
-            parameter_mapping=parameter_mapping,
-            gen_coeffs=gen_coeffs,
-            pare_threshold=pare_threshold,
-            functional_type="gradient",
-        )
-        return wrap_functional_call(grad_fn)
-
-    def gradient_functional(
-        self,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
-        *,
-        use_coeffs: bool = False,
-        pare_threshold: float | None = 1e-10,
-    ) -> GradientFunctional:
-        """Create a gradient functional for the current system state.
-
-        Returns a callable function that computes the gradient of the expectation value
-        with respect to variational parameters using the current evolution graph.
-
-        Args:
-            parameter_mapping: Optional mapping from variational parameters to generator
-                indices. If None, defaults to the quantum circuit's parameter indices.
-            gen_coeffs: Optional generator coefficients corresponding to each parameter.
-                If None, defaults to the quantum circuit's generator coefficients.
-            use_coeffs: If True, use the quantum circuit's parameter mapping and generator
-                coefficients to construct the gradient functional.
-            pare_threshold: Absolute value cutoff for retaining edges in the pared graph.
-                If None, graph paring is disabled. Defaults to 1e-10.
-
-        Returns:
-            A callable that takes optional parameters and returns the gradient
-            as a numpy array of float64 values.
-
-        Note:
-            This method internally calls expectation_value_and_gradient_functional and
-            extracts only the gradient component from the result.
-        """
-        if use_coeffs:
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
-        expval_grad_fn = self.expectation_value_and_gradient_functional(
-            parameter_mapping=parameter_mapping,
-            gen_coeffs=gen_coeffs,
-            pare_threshold=pare_threshold,
-        )
-        return wrap_functional_call(
-            expval_grad_fn,
-            lambda result: np.array(result[1], dtype=np.float64),
-        )
+    @property
+    def n_parameters(self) -> int:
+        """Number of distinct variational parameters seen while building the graph."""
+        return len(self._params)
 
     def expectation_value(
         self,
-        *,
-        use_coeffs: bool = False,
+        parameters: ParameterValues = None,
     ) -> float:
-        """Compute the expectation value for the current system state.
-
-        Evaluates the expectation value using the current evolution graph
-        and the provided variational parameters. This is a convenience method
-        that creates and immediately evaluates an expectation value functional.
-
-        Args:
-            use_coeffs: Whether to use the quantum circuit's parameter mapping and
-                generator coefficients to evaluate the expectation value. If False, the expectation value is
-                evaluated at the current parameter values without coefficient mapping.
-
-        Returns:
-            The expectation value as a float.
-
-        Note:
-            This method internally calls expectation_value_functional() with pare_threshold=None to
-            avoid graph optimization overhead for single evaluations.
-        """
-        parameter_mapping = None
-        gen_coeffs = None
-        parameters = None
-        if use_coeffs:
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
-            parameters = self.quantum_circuit.parameters
-
-        parameters, _, _ = normalize_parameters(parameters, None, None)
-
-        return self.expectation_value_functional(
-            parameter_mapping=parameter_mapping,
-            gen_coeffs=gen_coeffs,
-            pare_threshold=None,
-        )(parameters)
+        """Compute the expectation value at ``parameters``."""
+        return self._simulator.expectation_value(self._bind(parameters))
 
     def expectation_value_and_gradient(
         self,
-        parameters: list[float] | np.ndarray | None = None,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
+        parameters: ParameterValues = None,
     ) -> tuple[float, np.ndarray]:
-        """Get the expectation value and gradient for the current state.
-
-        Args:
-            parameters: The parameters.
-            parameter_mapping: The parameter mapping.
-            gen_coeffs: The generator coefficients.
-
-        Returns:
-            The expectation value and gradient.
-
-        Note:
-            Returns the result of calling the expectation-value-and-gradient functional with `parameters` and no paring.
-        """
-        if parameters is None:
-            parameters = self.quantum_circuit.parameters
-        if parameter_mapping is None:
-            parameter_mapping = self.quantum_circuit.param_inds
-        if gen_coeffs is None:
-            gen_coeffs = self.quantum_circuit.gen_coeffs
-
-        parameters, _, _ = normalize_parameters(parameters, None, None)
-        return self.expectation_value_and_gradient_functional(
-            parameter_mapping=parameter_mapping,
-            gen_coeffs=gen_coeffs,
-            pare_threshold=None,
-        )(parameters)
+        """Compute the expectation value and gradient at ``parameters``."""
+        value, grad = self._simulator.expectation_value_and_gradient(
+            self._bind(parameters)
+        )
+        return value, np.asarray(grad, dtype=np.float64)
 
     def gradient(
         self,
-        parameters: list[float] | np.ndarray | None = None,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
+        parameters: ParameterValues = None,
     ) -> np.ndarray:
-        """Get the gradient for the current state.
+        """Compute the gradient at ``parameters``."""
+        return self.expectation_value_and_gradient(parameters)[1]
 
-        Args:
-            parameters: The parameters.
-            parameter_mapping: The parameter mapping.
-            gen_coeffs: The generator coefficients.
+    def expectation_value_functional(self) -> Callable[..., float]:
+        """Return a reusable callable computing the expectation value from parameters."""
+        fn = self._simulator.expectation_value_functional()
+        return lambda parameters=None: fn(self._bind(parameters))
 
-        Returns:
-            The gradient as a numpy array.
+    def expectation_value_and_gradient_functional(self) -> Callable[..., tuple]:
+        """Return a reusable callable computing (expectation value, gradient)."""
+        fn = self._simulator.expectation_value_and_gradient_functional()
 
-        Note:
-            Returns the result of calling the expectation-value-and-gradient functional with `parameters` and no paring.
-        """
-        parameter_mapping = (
-            parameter_mapping
-            if parameter_mapping is not None
-            else self.quantum_circuit.param_inds
-        )
-        gen_coeffs = (
-            gen_coeffs if gen_coeffs is not None else self.quantum_circuit.gen_coeffs
-        )
-        parameters = (
-            parameters if parameters is not None else self.quantum_circuit.parameters
-        )
+        def _call(parameters=None):  # noqa: ANN001, ANN202
+            value, grad = fn(self._bind(parameters))
+            return value, np.asarray(grad, dtype=np.float64)
 
-        parameters, parameter_mapping, gen_coeffs = normalize_parameters(
-            parameters, parameter_mapping, gen_coeffs
-        )
-
-        return np.array(
-            self.expectation_value_and_gradient(
-                parameters=parameters,
-                parameter_mapping=parameter_mapping,
-                gen_coeffs=gen_coeffs,
-            )[1],
-            dtype=np.float64,
-        )
+        return _call
 
     def contract_partially(
         self,
-        parameters: list[float] | np.ndarray | None = None,
-        parameter_mapping: list[int] | np.ndarray | None = None,
-        gen_coeffs: list[float] | np.ndarray | None = None,
+        parameters: ParameterValues = None,
         *,
-        ignore_coeffs: bool = True,
         inplace: bool = True,
     ) -> np.ndarray:
-        """Contract evolution gates into the operator and update simulator state.
-
-        Applies the evolution gates with specified parameters to the system by contracting
-        them into the initial operator. In Heisenberg picture, gates are contracted into
-        the initial operator. In Schrödinger picture, gates are contracted into the
-        Hartree-Fock state. This operation modifies the simulator's internal state.
+        """Contract the graph into the operator/state at ``parameters``.
 
         Args:
-            parameters: Optional variational parameter values for the gates to be
-                contracted. If None, defaults to empty list.
-            parameter_mapping: Optional mapping from parameters to gate indices.
-                Must have same length as gen_coeffs. If None, defaults to empty list.
-            gen_coeffs: Optional generator coefficients for each gate. Must have same
-                length as parameter_mapping. If None, defaults to empty list.
-            ignore_coeffs: Whether to ignore the generator coefficients. If True (default),
-                the coefficients are not applied to the gates during contraction.
-            inplace: Whether to modify the simulator state in place. If True (default),
-                the simulator's internal graph is contracted. If False, the simulator graph
-                is preserved and only the coefficients are returned.
+            parameters: Parameter values.
+            inplace: If True, update internal state (consuming the graph); otherwise
+                return the evolved coefficients without modifying state.
 
         Returns:
-            The updated operator coefficients as a numpy array. In Schrödinger picture,
-            returns the evolved state. In Heisenberg picture, returns the evolved
-            operator coefficients.
-
-        Raises:
-            ValueError: If parameter_mapping and gen_coeffs have different lengths,
-                if parameter length doesn't match mapping requirements, or if mapping
-                length exceeds the number of evolved Majoranas.
+            The evolved coefficients (core term excluded).
         """
-        if not ignore_coeffs:
-            parameters = self.quantum_circuit.parameters
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
-
-        parameters, parameter_mapping, gen_coeffs = normalize_parameters(
-            parameters, parameter_mapping, gen_coeffs
-        )
-
-        return self._simulator.contract_partially(
-            parameters=parameters,
-            parameter_mapping=parameter_mapping,
-            gen_coeffs=gen_coeffs,
-            inplace=inplace,
+        return np.asarray(
+            self._simulator.contract_partially(self._bind(parameters), inplace)
         )
 
     def evolved_operator_dict(
         self,
-        atol: float = 1e-12,
+        parameters: ParameterValues = None,
         *,
-        evolve_with_coeffs: bool = False,
+        atol: float = 1e-12,
     ) -> dict[tuple[int, ...], complex]:
-        """Get the evolved state or operator.
-
-        Applies contract_partially, but does not affect the state of the simulator,
-        and returns the evolved operator.
-
-        Args:
-            atol: Absolute tolerance for filtering small coefficients. Terms with
-                coefficients smaller than this threshold will be removed from the
-                result. Defaults to 1e-12. Set to 0.0 to keep all terms.
-            evolve_with_coeffs: If True, the operator is evolved with the generator
-                coefficients. Defaults to False.
-
-        Returns:
-            The evolved operator.
-        """
-        # Convert None to empty lists (following expectation_value_functional pattern)
-        parameters = None
-        parameter_mapping = None
-        gen_coeffs = None
-
-        if evolve_with_coeffs:
-            parameters = self.quantum_circuit.parameters
-            parameter_mapping = self.quantum_circuit.param_inds
-            gen_coeffs = self.quantum_circuit.gen_coeffs
-
-        parameters, parameter_mapping, gen_coeffs = normalize_parameters(
-            parameters, parameter_mapping, gen_coeffs
-        )
-
-        return self._simulator.evolved_operator_dict(
-            parameters=parameters,
-            parameter_mapping=parameter_mapping,
-            gen_coeffs=gen_coeffs,
-            atol=atol,
-        )
+        """Return the evolved operator/state as a dict, without modifying state."""
+        return self._simulator.evolved_operator_dict(self._bind(parameters), atol)
 
     def evolved_operator(
         self,
-        atol: float = 1e-12,
+        parameters: ParameterValues = None,
         *,
-        evolve_with_coeffs: bool = False,
+        atol: float = 1e-12,
     ) -> dict[tuple[int, ...], complex]:
-        """Get the evolved operator.
-
-        Applies contract_partially, but does not affect the state of the simulator, and returns the evolved operator.
-
-        Args:
-            atol: Absolute tolerance for filtering small coefficients.
-                Terms with coefficients smaller than this threshold will be removed from
-                the result. Defaults to 1e-12. Set to 0.0 to keep all terms.
-            evolve_with_coeffs: If True, the operator is evolved with the generator
-                coefficients. Defaults to False.
-
-        Returns:
-            The evolved operator dictionary.
-        """
+        """Return the evolved operator (Heisenberg picture only)."""
         if self._simulator.schrodinger:
             raise ValueError(
                 "Cannot call evolved_operator in Schrodinger picture. "
                 "Use evolved_operator_dict instead."
             )
+        return self.evolved_operator_dict(parameters, atol=atol)
 
-        return self.evolved_operator_dict(
-            atol=atol,
-            evolve_with_coeffs=evolve_with_coeffs,
-        )
-
-    def update_coeffs(
-        self,
-        new_operator: dict[tuple[int, ...], complex],
-    ) -> None:
-        """Update the initial operator with new coefficients.
-
-        Replaces the coefficients of the initial operator with the provided values.
-        This allows for dynamic modification of the system's operator during simulation.
-        Only Majorana terms that already exist in the system can be updated.
-
-        Args:
-            new_operator: Dictionary mapping Majorana operator indices (as tuples)
-                to their new complex coefficients. Keys are tuples of integer indices
-                representing Majorana operators, values are the corresponding coefficients.
-
-        Raises:
-            RuntimeError: If an operator term in new_operator is not found
-                in the current system.
-        """
+    def update_coeffs(self, new_operator: dict[tuple[int, ...], complex]) -> None:
+        """Replace the initial-operator coefficients (existing terms only)."""
         self._simulator.update_initial_operator(new_operator)
 
+    # -- introspection ----------------------------------------------------------
+
     def size(self) -> int:
-        """Get the number of Majorana operators in the current system.
-
-        Returns the total number of distinct Majorana operator terms that are
-        currently tracked in the simulator's internal representation.
-
-        Returns:
-            The number of Majorana operators currently in the system as an integer.
-        """
+        """Number of Majorana terms currently tracked."""
         return self._simulator.size()
 
     def graph_size(self) -> tuple[int, int]:
-        """Get the size metrics of the evolution graph.
-
-        Returns information about the computational complexity of the current
-        evolution graph, which is useful for performance monitoring and optimization.
-
-        Returns:
-            A tuple containing (n_cos_indices, n_cycles) where:
-
-            - n_cos_indices: Number of cosine indices in the MP graph
-            - n_cycles: Number of cycles in the MP graph
-        """
+        """(n_cos_indices, n_cycles) of the evolution graph."""
         return self._simulator.graph_size()
+
+    @property
+    def num_modes(self) -> int:
+        """Number of fermionic modes."""
+        return self._simulator.num_modes
+
+    @property
+    def graph_layers(self) -> int:
+        """Number of evolved Majoranas (graph layers)."""
+        return self._simulator.graph_layers()
+
+    @property
+    def schrodinger(self) -> bool:
+        """Whether the simulator is in Schrodinger picture."""
+        return self._simulator.schrodinger
+
+    @property
+    def cutoff(self) -> int:
+        """Current cutoff value."""
+        return self._simulator.cutoff
+
+    @cutoff.setter
+    def cutoff(self, new_cutoff: int) -> None:
+        self._simulator.cutoff = new_cutoff
+
+    @property
+    def lower_atol(self) -> None | float:
+        """Current lower absolute tolerance."""
+        return self._simulator.lower_atol
+
+    @lower_atol.setter
+    def lower_atol(self, new_lower_atol: None | float) -> None:
+        self._simulator.lower_atol = new_lower_atol
+
+    @property
+    def upper_atol(self) -> None | float:
+        """Current upper absolute tolerance."""
+        return self._simulator.upper_atol
+
+    @upper_atol.setter
+    def upper_atol(self, new_upper_atol: None | float) -> None:
+        self._simulator.upper_atol = new_upper_atol
+
+    @property
+    def cutoff_type(self) -> str:
+        """Current cutoff type."""
+        return self._simulator.cutoff_type
+
+    @cutoff_type.setter
+    def cutoff_type(self, new_cutoff_type: str) -> None:
+        self._simulator.cutoff_type = new_cutoff_type
+
+    @property
+    def basis_change(self) -> None | list[list[int]]:
+        """Current basis change."""
+        return self._simulator.basis_change
+
+    @basis_change.setter
+    def basis_change(self, new_basis_change: None | list[list[int]]) -> None:
+        validate_basis_change(new_basis_change, self.num_modes)
+        self._simulator.basis_change = new_basis_change
+
+    # -- helpers ----------------------------------------------------------------
+
+    def _bind(self, parameters: ParameterValues) -> list[float]:
+        """Resolve ``parameters`` into a dense vector in canonical axis order."""
+        if parameters is None:
+            return []
+        if hasattr(parameters, "keys"):
+            return self._params.bind(parameters)
+        return [float(v) for v in parameters]
+
+
+class QubitPropagator(MajoranaPropagator):
+    """Propagator for qubit (Pauli) operators, mapped to Majoranas via Jordan-Wigner.
+
+    Accepts a :class:`~monoprop.pauli_data.PauliOperator` and
+    :class:`~monoprop.circuit.QubitGate` gates; the Jordan-Wigner basis change is set
+    automatically so cutoffs act on Pauli weight. Outputs remain in the Majorana basis.
+    """
+
+    def __init__(
+        self,
+        initial_operator: PauliOperator,
+        initial_state: list[int] | np.ndarray,
+        *,
+        cutoff: int,
+        schrodinger_cutoff: int | None = None,
+        cutoff_type: str = "length",
+        lower_atol: None | float = None,
+        upper_atol: None | float = None,
+        comm: MPI.Comm | None = None,
+    ) -> None:
+        """Initialize the qubit propagator (see :class:`MajoranaPropagator`)."""
+        num_qubits = initial_operator.num_qubits
+        self._num_qubits = num_qubits
+        super().__init__(
+            initial_operator.get_monomial_operator(),
+            initial_state,
+            cutoff=cutoff,
+            schrodinger_cutoff=schrodinger_cutoff,
+            cutoff_type=cutoff_type,
+            lower_atol=lower_atol,
+            upper_atol=upper_atol,
+            basis_change=jordan_wigner_basis_change(num_qubits),
+            comm=comm,
+        )
+
+    def _majorana_gates(self, gates: Sequence[QubitGate]) -> list[Gate]:  # type: ignore[override]
+        """Map qubit gates to Majorana gates via Jordan-Wigner, preserving handles."""
+        majorana_gates: list[Gate] = []
+        for qubit_gate in gates:
+            terms: list[Term] = []
+            for pauli, coefficient in zip(
+                qubit_gate.paulis.strings,
+                qubit_gate.paulis.coefficients,
+                strict=True,
+            ):
+                extended = _extend_pauli_string(
+                    pauli.string, qubit_gate.qubits, self._num_qubits
+                )
+                majorana, fermi_coeff = _pauli_to_fermi(extended)
+                weight = len(majorana)
+                gen_coeff = (
+                    -coefficient * fermi_coeff / (1j) ** (weight * (weight - 1) / 2)
+                )
+                terms.append(Term(tuple(majorana), float(np.real(gen_coeff))))
+            majorana_gates.append(Gate(qubit_gate.param, tuple(terms)))
+        return majorana_gates

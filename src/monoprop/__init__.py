@@ -28,17 +28,36 @@ from ._core import (
     is_antihermitian,
 )
 from ._version import version as __version__
-from .monomial_propagator import MonomialPropagator
+from .circuit import (
+    Gate,
+    Parameter,
+    ParameterVector,
+    QubitGate,
+    Term,
+    gates_from_monomial_circuit,
+    gates_from_pauli_circuit,
+    to_engine_arrays,
+)
+from .monomial_propagator import MajoranaPropagator, QubitPropagator
 from .utils import jordan_wigner_basis_change
 
 __all__ = [
     "MAX_NUM_MODES",
-    "MonomialPropagator",
+    "Gate",
+    "MajoranaPropagator",
+    "Parameter",
+    "ParameterVector",
+    "QubitGate",
+    "QubitPropagator",
+    "Term",
     "__build_type__",
     "__compiler_flags__",
     "__version__",
     "antihermitian_generator_correction",
+    "gates_from_monomial_circuit",
+    "gates_from_pauli_circuit",
     "has_mpi",
     "is_antihermitian",
     "jordan_wigner_basis_change",
+    "to_engine_arrays",
 ]
