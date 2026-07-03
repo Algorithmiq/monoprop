@@ -94,6 +94,11 @@ class PauliPropagator(MajoranaPropagator):
         )
 
     @property
+    def num_qubits(self) -> int:
+        """Number of qubits the propagator acts on."""
+        return self._num_qubits
+
+    @property
     def cutoff_type(self) -> str:
         """Cutoff type, always ``"support"`` (Pauli weight) for a qubit propagator.
 
@@ -102,6 +107,16 @@ class PauliPropagator(MajoranaPropagator):
         truncation.
         """
         return self._simulator.cutoff_type
+
+    @property
+    def basis_change(self) -> list[list[int]] | None:
+        """The Jordan-Wigner basis change, fixed at construction (read-only).
+
+        A qubit propagator's cutoff acts on Pauli weight via a fixed Jordan-Wigner basis;
+        overwriting it would break that semantics, so unlike
+        :class:`~monoprop.majorana_propagator.MajoranaPropagator` the setter is not exposed.
+        """
+        return self._simulator.basis_change
 
     def _majorana_gates(self, circuit: Circuit) -> list[MajoranaGate]:
         """Map each qubit gate to one Majorana gate via Jordan-Wigner (1:1, mapping-preserving)."""
