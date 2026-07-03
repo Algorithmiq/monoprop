@@ -115,9 +115,11 @@ configure_file(
 )
 
 nanobind_add_module(_core
-  STABLE_ABI  # Perform a stable ABI build
-  NB_STATIC  # Compile the core nanobind library as a static library
-  NOMINSIZE  # Don’t perform optimizations to minimize binary size
+  STABLE_ABI  # perform a stable ABI build
+  NB_SUPPRESS_WARNINGS  # suppress warnings from nanobind and Python headers
+  NB_STATIC  # compile the core nanobind library as a static library
+  NOMINSIZE  # don’t perform optimizations to minimize binary size
+  LTO  # perform link-time optimization
   ${CMAKE_CURRENT_BINARY_DIR}/bindings.cpp
   ${_bind_cpps}  # List of generated binders
 )
