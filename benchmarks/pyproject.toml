@@ -3,7 +3,15 @@ name = "monoprop-benchmarks"
 version = "0.1.0"
 description = "Standalone benchmark scripts for monoprop"
 requires-python = ">=3.11"
-dependencies = ["monoprop", "pennylane", "qiskit", "tqdm", "ppvm", "pauli-prop"]
+dependencies = [
+    "monoprop",
+    "pennylane",
+    "qiskit",
+    "tqdm",
+    "ppvm",
+    "pauli-prop",
+    "cuquantum-python-cu12",
+]
 
 [tool.uv]
 python-preference = "only-managed"
