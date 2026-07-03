@@ -92,7 +92,7 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     mp_act = MajoranaPropagator(
         problem.operator, problem.monomial_circuit.initial_state, **serial_mp_kwargs
     )
-    mp_act.propagate_build_graph(circuit)
+    mp_act.build_graph(circuit)
     act_ener = mp_act.expectation_value_functional()(parameters)
 
     mp = MajoranaPropagator(
@@ -104,8 +104,8 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
         mp.propagate(orbital, only_rotate_len_k=4)
         test_expval = mp.expectation_value()
     else:
-        mp.propagate_build_graph(non_orbital)
-        mp.propagate_build_graph(orbital, only_rotate_len_k=4)
+        mp.build_graph(non_orbital)
+        mp.build_graph(orbital, only_rotate_len_k=4)
         test_expval = mp.expectation_value_functional()(parameters)
         assert sum(mp.graph_size()) < sum(mp_act.graph_size())
 

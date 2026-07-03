@@ -156,7 +156,7 @@ class Circuit:
 
         The result applies ``self``'s gates then ``other``'s; ``other``'s angle indices are
         shifted up by ``self.n_parameters`` so the two halves keep independent angles. Build
-        the whole thing in a single :meth:`~monoprop.MajoranaPropagator.propagate_build_graph`
+        the whole thing in a single :meth:`~monoprop.MajoranaPropagator.build_graph`
         call to avoid the picture-dependent ordering of incremental multi-call building.
         """
         if not isinstance(other, Circuit):

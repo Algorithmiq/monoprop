@@ -184,7 +184,7 @@ def build_random_propagator(
             ``schrodinger_cutoff = problem.cutoff + 2``; otherwise Heisenberg.
 
     Returns:
-        ``(propagator, circuit)`` ready for propagate_build_graph / propagate.
+        ``(propagator, circuit)`` ready for build_graph / propagate.
     """
     propagator = MajoranaPropagator(
         problem.observable,

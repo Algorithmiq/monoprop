@@ -139,7 +139,7 @@ inline auto build_simulator(const CaseData& data, const SimulatorConfig& cfg = {
 /// Evolve and evaluate expectation value via expectation_value_functional.
 template <size_t NumModes>
 inline auto evaluate_expval(MonomialPropagator<NumModes>& sim, const CaseData& data, bool pare) -> double {
-    sim.propagate_build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
     auto expval_fn = sim.expectation_value_functional(pare_threshold);
     return expval_fn(data.parameters);
@@ -161,7 +161,7 @@ template <size_t n_modes>
 inline auto test_evolve_build_graph(const CaseData& data, const SimulatorConfig& cfg, bool pare, double exact_expval)
     -> void {
     auto mp = build_simulator<n_modes>(data, cfg);
-    mp.propagate_build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    mp.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
     auto expval_fn = mp.expectation_value_functional(pare_threshold);
@@ -181,7 +181,7 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
     auto mp = build_simulator<n_modes>(data, cfg);
 
     // Coefficient-informed build: the seed is regenerated internally from the parameters.
-    mp.propagate_build_graph(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
+    mp.build_graph(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
 
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
     auto expval_fn = mp.expectation_value_functional(pare_threshold);

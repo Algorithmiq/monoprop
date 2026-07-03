@@ -50,6 +50,6 @@ def test_built_graph_is_populated() -> None:
         gen_length=4, obs_terms=3, num_generators=5, num_modes=6, cutoff=3, seed=0
     )
     propagator, circuit = build_random_propagator(problem)
-    propagator.propagate_build_graph(circuit)
+    propagator.build_graph(circuit)
     _n_cos_indices, n_cycles = propagator.graph_size()
     assert n_cycles > 0

@@ -45,7 +45,7 @@ def test_basis_change(serial_comm):
         basis_change=pauli_basis,
         comm=serial_comm,
     )
-    mp.propagate_build_graph(circuit)
+    mp.build_graph(circuit)
     tes_op = mp.evolved_operator(circuit)
     act_op = {(0,): np.cos(2 * 1.0)}
     assert len(tes_op) == 1, f"Expected 1 operator, got {len(tes_op)}: {tes_op}"

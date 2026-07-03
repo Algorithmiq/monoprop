@@ -335,7 +335,7 @@ def built_graph(
     mp, circuit = build_random_propagator(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
     )
-    mp.propagate_build_graph(circuit)
+    mp.build_graph(circuit)
 
     # Under MPI the operator is partitioned, so sum the shards.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})

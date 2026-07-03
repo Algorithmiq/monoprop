@@ -147,7 +147,7 @@ operand's angles are appended on a fresh axis).
 
 A ``Circuit`` is then handed to the propagator via
 :meth:`~monoprop.MajoranaPropagator.propagate` (immediate) or
-:meth:`~monoprop.MajoranaPropagator.propagate_build_graph` (stored for reuse), and the
+:meth:`~monoprop.MajoranaPropagator.build_graph` (stored for reuse), and the
 graph itself owns this gate information — so evaluation takes only the parameter
 values (a plain sequence of floats, or the circuit itself). This structure enables the use
 of monoprop in variational workflows.

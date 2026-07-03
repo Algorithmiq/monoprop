@@ -126,7 +126,7 @@ def test_expectation_value_matches_exact(fixture: str) -> None:
     problem = load_problem(DATA / f"{fixture}.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
-    prop.propagate_build_graph(circuit)
+    prop.build_graph(circuit)
 
     assert prop.n_parameters == circuit.n_parameters
     # The circuit carries its own parameters, so it can be evaluated directly.
@@ -144,7 +144,7 @@ def test_eval_rejects_wrong_parameter_length() -> None:
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
-    prop.propagate_build_graph(circuit)
+    prop.build_graph(circuit)
     with pytest.raises(RuntimeError):
         prop.expectation_value([0.1])  # graph has more than one parameter
 
@@ -155,7 +155,7 @@ def test_pared_functional_matches_unpared(fixture: str) -> None:
     problem = load_problem(DATA / f"{fixture}.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
-    prop.propagate_build_graph(circuit)
+    prop.build_graph(circuit)
 
     pared = prop.expectation_value_functional(pare_threshold=1e-12)
     np.testing.assert_allclose(
@@ -181,7 +181,7 @@ def test_parameter_mapping_getter_reflects_graph() -> None:
     problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
-    prop.propagate_build_graph(circuit)
+    prop.build_graph(circuit)
 
     mapping = prop.parameter_mapping
     assert len(mapping) == prop.graph_layers  # per-layer (per-monomial) granularity
@@ -197,7 +197,7 @@ def test_parameter_mapping_setter_ties_parameters() -> None:
     problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
-    prop.propagate_build_graph(circuit)
+    prop.build_graph(circuit)
     n_layers = prop.graph_layers
 
     # Tie every layer to one shared angle: evaluating at [theta] must equal the untied
@@ -217,7 +217,7 @@ def test_parameter_mapping_setter_validates() -> None:
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
-    prop.propagate_build_graph(circuit)
+    prop.build_graph(circuit)
 
     with pytest.raises(ValueError, match="layers"):
         prop.parameter_mapping = [0]  # too short
@@ -249,19 +249,19 @@ def _schrodinger_propagator(problem):
 
 @pytest.mark.parametrize("fixture", FIXTURES)
 def test_build_graph_accumulates_layers_and_parameters(fixture: str) -> None:
-    """Two propagate_build_graph calls accumulate the graph (layers + parameters)."""
+    """Two build_graph calls accumulate the graph (layers + parameters)."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     gates = circuit.gates
     split = len(gates) // 2
 
     single = _propagator(problem)
-    single.propagate_build_graph(circuit)
+    single.build_graph(circuit)
 
     twice = _propagator(problem)
-    twice.propagate_build_graph(Circuit(gates[:split]))
+    twice.build_graph(Circuit(gates[:split]))
     layers_after_first = twice.graph_layers
-    twice.propagate_build_graph(Circuit(gates[split:]))
+    twice.build_graph(Circuit(gates[split:]))
 
     assert 0 < layers_after_first < twice.graph_layers
     assert twice.graph_layers == single.graph_layers
@@ -273,7 +273,7 @@ def test_compose_then_single_build_matches_single_call(fixture: str) -> None:
     """Composing two circuit halves with ``+`` and building in one call matches.
 
     Composition is picture-independent: because the whole sequence is fed in a single
-    propagate_build_graph call, there is no back-to-front reordering across calls to
+    build_graph call, there is no back-to-front reordering across calls to
     reason about (in either picture).
     """
     problem = load_problem(DATA / f"{fixture}.msgpack")
@@ -286,10 +286,10 @@ def test_compose_then_single_build_matches_single_call(fixture: str) -> None:
     composed = a + b
 
     single = _propagator(problem)
-    single.propagate_build_graph(circuit)
+    single.build_graph(circuit)
 
     fused = _propagator(problem)
-    fused.propagate_build_graph(composed)
+    fused.build_graph(composed)
 
     np.testing.assert_allclose(
         fused.expectation_value(composed), single.expectation_value(circuit)
@@ -311,11 +311,11 @@ def test_build_graph_in_two_calls_schrodinger(fixture: str) -> None:
     split = len(gates) // 2
 
     single = _schrodinger_propagator(problem)
-    single.propagate_build_graph(circuit)
+    single.build_graph(circuit)
 
     twice = _schrodinger_propagator(problem)
-    twice.propagate_build_graph(Circuit(gates[:split]))
-    twice.propagate_build_graph(Circuit(gates[split:]))
+    twice.build_graph(Circuit(gates[:split]))
+    twice.build_graph(Circuit(gates[split:]))
 
     np.testing.assert_allclose(
         twice.expectation_value(params), single.expectation_value(params)
@@ -333,9 +333,9 @@ def test_build_graph_twice_with_seed_regeneration(fixture: str) -> None:
     split = len(gates) // 2
 
     prop = _schrodinger_propagator(problem)
-    prop.propagate_build_graph(Circuit(gates[:split]))
+    prop.build_graph(Circuit(gates[:split]))
     # seed_parameters on the second call exercises the internal seed regeneration
     # (the former operator_coeffs round-trip) used for coefficient-informed truncation.
-    prop.propagate_build_graph(Circuit(gates[split:]), seed_parameters=params)
+    prop.build_graph(Circuit(gates[split:]), seed_parameters=params)
 
     np.testing.assert_allclose(prop.expectation_value(params), problem.exact_expval)

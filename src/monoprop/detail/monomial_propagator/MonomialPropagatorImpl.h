@@ -130,11 +130,11 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::propagate_build_graph(const std::vector<VecZ> &majoranas,
-                                                         const VecZ &parameter_mapping,
-                                                         const VecD &gen_coeffs,
-                                                         std::optional<VecD> parameters,
-                                                         int only_rotate_len_k) -> void {
+auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majoranas,
+                                               const VecZ &parameter_mapping,
+                                               const VecD &gen_coeffs,
+                                               std::optional<VecD> parameters,
+                                               int only_rotate_len_k) -> void {
     if (majoranas.empty()) {
         return;
     }

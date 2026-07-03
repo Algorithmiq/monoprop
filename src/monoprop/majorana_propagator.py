@@ -59,7 +59,7 @@ class MajoranaPropagator:
     .. note::
         **Incremental building and gate order.** In the Heisenberg picture the
         Heisenberg evolution applies gates back-to-front, so each
-        :meth:`propagate_build_graph` / :meth:`propagate` call consumes its gate
+        :meth:`build_graph` / :meth:`propagate` call consumes its gate
         sequence in reverse. Splitting one circuit into forward chunks across several
         calls is therefore *not* equivalent to a single call with the whole sequence:
         the chunks are each reversed but not globally reordered. In the Schrodinger
@@ -177,7 +177,7 @@ class MajoranaPropagator:
             A propagator with ``circuit`` already built into its graph.
         """
         propagator = cls(initial_operator, list(circuit.initial_state), **config)  # type: ignore[arg-type]
-        propagator.propagate_build_graph(circuit)
+        propagator.build_graph(circuit)
         return propagator
 
     def _majorana_gates(self, circuit: Circuit) -> Sequence[MajoranaGate]:
@@ -190,7 +190,7 @@ class MajoranaPropagator:
                 )
         return circuit.gates
 
-    def propagate_build_graph(
+    def build_graph(
         self,
         circuit: Circuit,
         *,
@@ -225,7 +225,7 @@ class MajoranaPropagator:
         majoranas, gen_coeffs, per_monomial = expand_monomials(majorana_gates, mapping)
         seed = seed_parameters if seed_parameters is not None else circuit.parameters
         bound = self._bind(seed) if seed else None
-        self._simulator.propagate_build_graph(
+        self._simulator.build_graph(
             majoranas,
             per_monomial,
             gen_coeffs,
@@ -241,14 +241,14 @@ class MajoranaPropagator:
     ) -> None:
         """Evolve and contract immediately, without storing a graph.
 
-        More memory-efficient than :meth:`propagate_build_graph` because it does not retain
+        More memory-efficient than :meth:`build_graph` because it does not retain
         the propagation graph; use it for a single contraction at the circuit's parameters
         rather than repeated re-evaluation.
 
         Args:
             circuit: Gates to apply and the angle values to apply them at, as a
                 :class:`~monoprop.circuit.Circuit`.
-            only_rotate_len_k: See :meth:`propagate_build_graph`.
+            only_rotate_len_k: See :meth:`build_graph`.
         """
         majorana_gates = self._majorana_gates(circuit)
         majoranas, gen_coeffs, mapping = expand_monomials(

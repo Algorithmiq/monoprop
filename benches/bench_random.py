@@ -37,7 +37,7 @@ def test_random_build_graph(
 
     def build(built):
         propagator, circuit = built
-        propagator.propagate_build_graph(circuit)
+        propagator.build_graph(circuit)
 
     benchmark.pedantic(
         barriered(build, bench_comm), setup=setup, rounds=bench_rounds, iterations=1

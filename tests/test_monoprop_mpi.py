@@ -72,7 +72,7 @@ class TestMPISimulator:
 
     def test_evolve_expectation_value_functional(self, lih_fermionic_spin_exact):
         mp, circuit = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
-        mp.propagate_build_graph(circuit)
+        mp.build_graph(circuit)
         expval = mp.expectation_value_functional(pare_threshold=1e-10)(
             lih_fermionic_spin_exact.monomial_circuit.parameters
         )
@@ -81,7 +81,7 @@ class TestMPISimulator:
     def test_evolve_build_graph_with_coeffs(self, lih_fermionic_spin_exact):
         mp, circuit = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
         parameters = lih_fermionic_spin_exact.monomial_circuit.parameters
-        mp.propagate_build_graph(circuit)
+        mp.build_graph(circuit)
         expval = mp.expectation_value_functional(pare_threshold=1e-10)(parameters)
         _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
 
@@ -97,7 +97,7 @@ class TestMPISimulator:
         mp, circuit = _make_mp(
             lih_fermionic_spin_exact, MPI.COMM_WORLD, schrodinger=True
         )
-        mp.propagate_build_graph(circuit)
+        mp.build_graph(circuit)
         expval = mp.expectation_value_functional(pare_threshold=1e-10)(
             lih_fermionic_spin_exact.monomial_circuit.parameters
         )
@@ -106,7 +106,7 @@ class TestMPISimulator:
     def test_gradient(self, lih_fermionic_spin_exact):
         """Test the gradient against finite difference."""
         mp, circuit = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
-        mp.propagate_build_graph(circuit)
+        mp.build_graph(circuit)
 
         expval_fn = mp.expectation_value_functional(pare_threshold=1e-10)
         grad_fn = mp.expectation_value_and_gradient_functional(pare_threshold=1e-10)
@@ -122,7 +122,7 @@ class TestMPISimulator:
     def test_expectation_value_and_gradient_functional(self, lih_fermionic_spin_exact):
         """Combined expectation value + gradient is consistent and matches exact."""
         mp, circuit = _make_mp(lih_fermionic_spin_exact, MPI.COMM_WORLD)
-        mp.propagate_build_graph(circuit)
+        mp.build_graph(circuit)
         parameters = lih_fermionic_spin_exact.monomial_circuit.parameters
 
         expval_grad_fn = mp.expectation_value_and_gradient_functional(
@@ -148,7 +148,7 @@ class TestMPISimulator:
 
         try:
             mp, circuit = _make_mp(lih_fermionic_spin_exact, sub_comm)
-            mp.propagate_build_graph(circuit)
+            mp.build_graph(circuit)
             expval = mp.expectation_value_functional(pare_threshold=1e-10)(
                 lih_fermionic_spin_exact.monomial_circuit.parameters
             )
@@ -161,7 +161,7 @@ class TestMPISimulator:
     def test_mpi_comm_self(self, lih_fermionic_spin_exact):
         """Test single-rank communicator works correctly."""
         mp, circuit = _make_mp(lih_fermionic_spin_exact, MPI.COMM_SELF)
-        mp.propagate_build_graph(circuit)
+        mp.build_graph(circuit)
         expval = mp.expectation_value_functional(pare_threshold=1e-10)(
             lih_fermionic_spin_exact.monomial_circuit.parameters
         )

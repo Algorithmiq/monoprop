@@ -128,7 +128,7 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
         schrodinger_cutoff_val,
     )
     # Coefficient-informed build: the seed is regenerated internally from parameters.
-    mp_build.propagate_build_graph(circuit)
+    mp_build.build_graph(circuit)
     expval_build = mp_build.expectation_value(parameters)
 
     assert mp_inplace.size() == mp_build.size()
@@ -163,7 +163,7 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
         schrodinger_cutoff=None,
         comm=serial_comm,
     )
-    mp.propagate_build_graph(circuit)
+    mp.build_graph(circuit)
     assert mp.graph_size()[1] == 1
     assert mp.graph_size()[0] == 0
     assert mp.size() == 2
@@ -208,7 +208,7 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
         mp = _create_mp(
             op, sequence.initial_state, serial_comm, upper_atol, lower_atol, cutoff
         )
-        mp.propagate_build_graph(circuit)
+        mp.build_graph(circuit)
 
         assert mp.graph_size()[1] == 1
         assert mp.graph_size()[0] == 0

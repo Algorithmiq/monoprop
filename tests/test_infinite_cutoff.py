@@ -48,7 +48,7 @@ def test_infinite_cutoff(
 
     match evolution_mode:
         case "deferred":
-            mp.propagate_build_graph(circuit)
+            mp.build_graph(circuit)
             test_expval = mp.expectation_value_functional(
                 pare_threshold=pare_threshold
             )(parameters)
@@ -56,7 +56,7 @@ def test_infinite_cutoff(
         case "with_coeffs":
             # Coefficient-informed build: the seed is regenerated internally from the
             # circuit's parameters (replacing the old operator_coeffs round-trip).
-            mp.propagate_build_graph(circuit)
+            mp.build_graph(circuit)
             test_expval = mp.expectation_value_functional(
                 pare_threshold=pare_threshold
             )(parameters)
@@ -86,7 +86,7 @@ def test_gradient(problem, schrodinger, pare_threshold, comm):
         comm=comm,
     )
     circuit = problem.monomial_circuit.to_circuit()
-    mp.propagate_build_graph(circuit)
+    mp.build_graph(circuit)
     ener_fn = mp.expectation_value_functional(pare_threshold=pare_threshold)
 
     xk = prng.random(size=len(problem.monomial_circuit.parameters))

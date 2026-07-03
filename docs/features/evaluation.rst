@@ -2,7 +2,7 @@ Expectation values and gradients
 =================================
 
 Once the circuit has been propagated with
-:meth:`~monoprop.MajoranaPropagator.propagate_build_graph`, the stored graph can be
+:meth:`~monoprop.MajoranaPropagator.build_graph`, the stored graph can be
 replayed at any parameter vector without re-running the Majorana algebra. The graph
 owns the gate information (which parameter drives each layer and its generator
 coefficient), so evaluation takes **only the parameter values**. This is a very
@@ -14,7 +14,7 @@ parameter-index order (``values[i]`` is the angle for gates mapped to index ``i`
 circuit's ``parameter_mapping``), or as the :class:`~monoprop.Circuit` itself (its
 :attr:`~monoprop.Circuit.parameters` are used). To evaluate two independently-authored
 circuit halves together, compose them with ``+`` and build the combined circuit in a single
-:meth:`~monoprop.MajoranaPropagator.propagate_build_graph` call.
+:meth:`~monoprop.MajoranaPropagator.build_graph` call.
 
 Expectation value and gradient
 -------------------------------

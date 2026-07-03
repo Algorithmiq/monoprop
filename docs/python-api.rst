@@ -15,7 +15,7 @@ Two propagators are the entry point: ``MajoranaPropagator`` for native Majorana
 which it takes directly and truncates by Pauli weight. Construct one from an
 operator, a reference state, and a cutoff, then
 :py:meth:`~monoprop.MajoranaPropagator.propagate` (or
-:py:meth:`~monoprop.MajoranaPropagator.propagate_build_graph` to store a reusable
+:py:meth:`~monoprop.MajoranaPropagator.build_graph` to store a reusable
 graph) and read off expectation values and gradients. The graph owns the gate
 information, so evaluation takes only the parameter values. See
 :doc:`/features/initialisation`, :doc:`/features/cutoff`, and

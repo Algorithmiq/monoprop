@@ -96,8 +96,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "logical_num_modes"_a = NumModes,
         "Instantiate the simulator.");
 
-    cls.def("propagate_build_graph",
-            &MonomialPropagator<NumModes>::propagate_build_graph,
+    cls.def("build_graph",
+            &MonomialPropagator<NumModes>::build_graph,
             "majoranas"_a,
             "parameter_mapping"_a,
             "gen_coeffs"_a,

@@ -31,7 +31,7 @@ def _two_gate_graph(serial_comm):
     circuit = Circuit(
         (MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),)))
     )
-    mp.propagate_build_graph(circuit)  # identity mapping -> two distinct angles
+    mp.build_graph(circuit)  # identity mapping -> two distinct angles
     return mp, circuit
 
 
@@ -101,7 +101,7 @@ class TestGraphAndParameterValidation:
             (MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),))),
             parameter_mapping=(0, 0),
         )
-        mp.propagate_build_graph(circuit)
+        mp.build_graph(circuit)
         assert mp.graph_layers == 2
         assert mp.n_parameters == 1
 
@@ -110,7 +110,7 @@ class TestGraphAndParameterValidation:
             terms_dict={(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2
         )
         mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
-        mp.propagate_build_graph(
+        mp.build_graph(
             Circuit(
                 (MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),)))
             )
@@ -118,7 +118,7 @@ class TestGraphAndParameterValidation:
         functional = mp.expectation_value_functional()
         # Appending another layer mutates the graph, so the previously-built functional
         # must reject being called against the stale plan.
-        mp.propagate_build_graph(Circuit((MajoranaGate((Term((2,), 1.0),)),)))
+        mp.build_graph(Circuit((MajoranaGate((Term((2,), 1.0),)),)))
         # Call with the parameter count the functional was built with (2), so the
         # stale-graph guard fires rather than the parameter-length check.
         with pytest.raises(RuntimeError, match=r"MP object has been modified"):

@@ -417,11 +417,11 @@ public:
      *       across calls is NOT equivalent to one call. In the Schrodinger picture gates
      *       are applied front-to-back, so a forward split IS equivalent.
      */
-    auto propagate_build_graph(const std::vector<VecZ> &majoranas,
-                               const VecZ &parameter_mapping,
-                               const VecD &gen_coeffs,
-                               std::optional<VecD> parameters = std::nullopt,
-                               int only_rotate_len_k = 0) -> void;
+    auto build_graph(const std::vector<VecZ> &majoranas,
+                     const VecZ &parameter_mapping,
+                     const VecD &gen_coeffs,
+                     std::optional<VecD> parameters = std::nullopt,
+                     int only_rotate_len_k = 0) -> void;
 
     /**
      * @brief Evolve and contract immediately, without storing a propagation graph.
@@ -433,7 +433,7 @@ public:
      * @param parameter_mapping Per-generator index into `parameters`.
      * @param gen_coeffs Per-generator coefficient g.
      * @param parameters Variational parameter values.
-     * @param only_rotate_len_k See propagate_build_graph.
+     * @param only_rotate_len_k See build_graph.
      */
     auto propagate(const std::vector<VecZ> &majoranas,
                    const VecZ &parameter_mapping,

@@ -110,7 +110,7 @@ class TestUpdateMethods:
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
         gate = MajoranaGate((Term((0, 1, 2, 3, 4, 5), 1.0),))
-        mp.propagate_build_graph(Circuit((gate,)))
+        mp.build_graph(Circuit((gate,)))
         assert mp.size() > 0
 
     def test_update_cutoff_invalid(self, mp):

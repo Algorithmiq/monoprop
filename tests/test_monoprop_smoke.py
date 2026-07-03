@@ -59,7 +59,7 @@ def _evolve_bound_core(core, monomial_circuit):
     parameter_mapping = monomial_circuit.param_inds.tolist()
     gen_coeffs = monomial_circuit.gen_coeffs.tolist()
     parameters = monomial_circuit.parameters.tolist()
-    core.propagate_build_graph(
+    core.build_graph(
         monomial_circuit.majoranas,
         parameter_mapping,
         gen_coeffs,
