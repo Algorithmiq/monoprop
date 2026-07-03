@@ -238,6 +238,27 @@ def test_majorana_propagator_rejects_pauli_circuit() -> None:
         prop.propagate(circuit)
 
 
+def test_propagate_rejects_mismatched_initial_state() -> None:
+    """A circuit whose initial_state disagrees with the propagator's raises ValueError."""
+    problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
+    prop = _propagator(problem)  # built with the fixture's initial state ([])
+    gate = MajoranaGate((Term((0, 1), 1.0),))
+    circuit = MajoranaCircuit((gate,), parameters=(0.1,), initial_state=(0, 1))
+
+    with pytest.raises(ValueError, match="initial_state"):
+        prop.propagate(circuit)
+
+
+def test_propagate_accepts_empty_initial_state() -> None:
+    """An empty circuit.initial_state defers to the propagator's reference state."""
+    problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
+    prop = _propagator(problem)
+    gate = MajoranaGate((Term((0, 1), 1.0),))
+    circuit = MajoranaCircuit((gate,), parameters=(0.1,))  # empty initial_state
+
+    prop.propagate(circuit)  # does not raise
+
+
 # -- building the graph incrementally -------------------------------------------
 
 

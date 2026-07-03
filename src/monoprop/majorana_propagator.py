@@ -190,6 +190,24 @@ class MajoranaPropagator:
             )
         return circuit.gates
 
+    def _check_initial_state(self, circuit: Circuit) -> None:
+        """Reject a circuit whose reference state disagrees with the propagator's.
+
+        A circuit's ``initial_state`` is advisory (the propagator was constructed with its
+        own reference state); an empty one defers to the propagator. A non-empty one that
+        names a different occupied set is almost certainly a mistake -- the circuit was
+        authored against a different reference -- so fail loudly rather than silently
+        evolving the wrong state. Occupied-index sets are order-insensitive.
+        """
+        if circuit.initial_state and sorted(circuit.initial_state) != sorted(
+            self._initial_state
+        ):
+            raise ValueError(
+                f"circuit.initial_state {list(circuit.initial_state)} does not match the "
+                f"propagator's initial state {list(self._initial_state)}. Construct the "
+                "propagator with this circuit's initial state (or via from_circuit)."
+            )
+
     def build_graph(
         self,
         circuit: Circuit,
@@ -218,6 +236,7 @@ class MajoranaPropagator:
                 gates (generators that are length-2 Majorana monomials) are applied before
                 expectation-value estimation in Schrodinger-picture simulations.
         """
+        self._check_initial_state(circuit)
         majorana_gates = self._majorana_gates(circuit)
         # Shift the circuit's local 0-based angle indices onto the accumulated axis.
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
@@ -250,6 +269,7 @@ class MajoranaPropagator:
                 :class:`~monoprop.circuit.Circuit`.
             only_rotate_len_k: See :meth:`build_graph`.
         """
+        self._check_initial_state(circuit)
         majorana_gates = self._majorana_gates(circuit)
         majoranas, gen_coeffs, mapping = expand_monomials(
             majorana_gates, circuit.resolved_mapping
