@@ -1,6 +1,8 @@
 @import 'tailwindcss';
 @import 'fumadocs-ui/css/neutral.css';
 @import 'fumadocs-ui/css/preset.css';
+/* Styling for the generated Python API reference components (PyFunction, …). */
+@import 'fumadocs-python/preset.css';
 
 /*
  * Algorithmiq brand accents (algorithmiq.fi).
@@ -37,6 +39,11 @@
   --color-fd-accent: hsl(188, 32%, 16%);
   --color-fd-accent-foreground: hsl(178, 60%, 76%);
   --color-fd-border: hsla(180, 35%, 38%, 0.3);
+}
+
+/* Body copy reads better in GT-Planar Light than the default weight. */
+.prose p {
+  font-weight: 300;
 }
 
 html {

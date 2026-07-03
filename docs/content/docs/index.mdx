@@ -1,13 +1,43 @@
 ---
-title: Hello World
-description: Your first document
+title: monoprop Documentation
+description: High-performance C++/Python library for Majorana and Pauli propagation.
 ---
 
-Welcome to the docs! You can start writing documents in `/content/docs`.
+monoprop is a high-performance C++ library with Python bindings for Majorana and Pauli propagation that provides a backend for simulating and variationally optimising quantum circuits.
+It provides support for large scale simulations through multithreading and multi-node support on HPC clusters through MPI and shared-memory parallelism.
+The simulator backend represents quantum operators and states in the Majorana basis, and uses linear encodings to map them into other representations (such as the Pauli basis) when a truncation needs to be measured there.
 
-## What is Next?
+New here? Install monoprop and run the minimal example in
+[Getting Started](/docs/getting-started), then read [Concepts](/docs/concepts) to understand how propagation
+works.
 
 <Cards>
-  <Card title="Learn more about Next.js" href="https://nextjs.org/docs" />
-  <Card title="Learn more about Fumadocs" href="https://fumadocs.dev" />
+  <Card title="Getting started" href="/docs/getting-started" description="Install monoprop and run the minimal serial and distributed examples." />
+  <Card title="Concepts" href="/docs/concepts" description="The Majorana basis, the propagation algorithm, truncation, and the simulation modes." />
+  <Card title="Features" href="/docs/features" description="Configuration, cutoffs, expectation value and gradient evaluation, and parallel execution." />
+  <Card title="Tutorials" href="/docs/tutorials" description="Step-by-step notebooks for concrete problems and workflows." />
+  <Card title="Python API" href="/docs/api" description="Full API reference for the Python bindings." />
 </Cards>
+
+## How the documentation is organised
+
+**Getting started** — install monoprop and get it running.
+
+- [Getting Started](/docs/getting-started) — installation and minimal serial and distributed examples.
+- [Building from source](/docs/building) — building the Python bindings and the C++ library and executables, with and without MPI, and how to run them.
+
+**User guide** — understand the method and drive a simulation.
+
+- [Concepts](/docs/concepts) — the Majorana basis, the propagation algorithm, truncation, and the simulation modes.
+- [Features](/docs/features) — the simulator's capabilities: configuration, cutoffs, expectation value and gradient evaluation, and parallel execution.
+- [Tutorials](/docs/tutorials) — step-by-step notebooks for concrete problems and workflows.
+
+**Reference** — look up details.
+
+- [Python API](/docs/api) — full API reference for the Python bindings.
+- [Benchmarks](/docs/benchmarks) — performance benchmarks and comparisons to other libraries.
+- [References](/docs/references) — bibliography of the papers and methods behind monoprop.
+
+**Contributing** — work on monoprop itself.
+
+- [How to Contribute](/docs/how-to-contribute) — contribution workflow, coding standards, and testing requirements.

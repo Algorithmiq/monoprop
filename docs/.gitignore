@@ -3,6 +3,11 @@
 
 # generated content
 .source
+# griffe dump + generated API reference and tutorial MDX (produced by
+# `just gen-api` / `just gen-notebooks`)
+/monoprop.json
+/content/docs/api/
+/content/docs/tutorials/
 
 # test & build
 /coverage
