@@ -55,6 +55,8 @@ set_target_properties(
       hidden
     VISIBILITY_INLINES_HIDDEN
       YES
+    INTERPROCEDURAL_OPTIMIZATION
+      ON
     PUBLIC_HEADER
       "${monoprop_PUBLIC_HEADERS}"
     PRIVATE_HEADER
