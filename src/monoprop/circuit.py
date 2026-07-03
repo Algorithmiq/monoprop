@@ -181,6 +181,34 @@ class Circuit:
         )
 
 
+def validate_parameter_mapping(
+    mapping: Sequence[int], expected_len: int, unit: str = "gates"
+) -> None:
+    """Validate that a parameter mapping has the right length and contiguous indices.
+
+    Args:
+        mapping: Per-unit angle indices to validate.
+        expected_len: Number of entries the mapping must have.
+        unit: Noun naming what each entry covers (e.g. ``"gates"`` or ``"graph layers"``),
+            used only in the length-mismatch error message.
+
+    Raises:
+        ValueError: If the mapping length does not match ``expected_len`` or its indices are
+            not contiguous ``0..max`` (an index gap would silently invent a phantom
+            parameter).
+    """
+    if len(mapping) != expected_len:
+        raise ValueError(
+            f"parameter_mapping has {len(mapping)} entries but there are "
+            f"{expected_len} {unit}."
+        )
+    if mapping and set(mapping) != set(range(max(mapping) + 1)):
+        raise ValueError(
+            "parameter_mapping indices must be contiguous 0..n-1 with no gaps; "
+            f"got {sorted(set(mapping))}."
+        )
+
+
 def _resolve_mapping(
     n_gates: int, parameter_mapping: Sequence[int] | None
 ) -> list[int]:
@@ -201,15 +229,7 @@ def _resolve_mapping(
     if parameter_mapping is None:
         return list(range(n_gates))
     mapping = [int(p) for p in parameter_mapping]
-    if len(mapping) != n_gates:
-        raise ValueError(
-            f"parameter_mapping has {len(mapping)} entries but there are {n_gates} gates."
-        )
-    if mapping and set(mapping) != set(range(max(mapping) + 1)):
-        raise ValueError(
-            "parameter_mapping indices must be contiguous 0..n-1 with no gaps; "
-            f"got {sorted(set(mapping))}."
-        )
+    validate_parameter_mapping(mapping, n_gates, "gates")
     return mapping
 
 

@@ -36,14 +36,9 @@ class TestPauliPropagatorCutoff:
     def test_cutoff_type_is_support(self, serial_comm):
         assert self._propagator(serial_comm).cutoff_type == "support"
 
-    def test_setting_support_is_allowed(self, serial_comm):
+    def test_cutoff_type_is_read_only(self, serial_comm):
         mp = self._propagator(serial_comm)
-        mp.cutoff_type = "support"
-        assert mp.cutoff_type == "support"
-
-    def test_setting_length_is_rejected(self, serial_comm):
-        mp = self._propagator(serial_comm)
-        with pytest.raises(ValueError, match="only supports the 'support' cutoff"):
+        with pytest.raises(AttributeError):
             mp.cutoff_type = "length"
 
 

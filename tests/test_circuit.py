@@ -25,8 +25,10 @@ from monoprop import (
     Circuit,
     MajoranaGate,
     MajoranaPropagator,
+    PauliGate,
     Term,
 )
+from monoprop.pauli_data import PauliOperator
 from tests.cases import load_problem
 
 DATA = Path(__file__).parent / "data"
@@ -221,6 +223,16 @@ def test_parameter_mapping_setter_validates() -> None:
         prop.parameter_mapping = [0]  # too short
     with pytest.raises(ValueError, match="contiguous"):
         prop.parameter_mapping = [i + 1 for i in range(prop.graph_layers)]  # no 0
+
+
+def test_majorana_propagator_rejects_pauli_gate() -> None:
+    """A PauliGate in a circuit fed to MajoranaPropagator raises a clear TypeError."""
+    problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
+    prop = _propagator(problem)
+    circuit = Circuit(gates=(PauliGate((0,), PauliOperator(["Z"], [1.0])),))
+
+    with pytest.raises(TypeError, match="MajoranaGate"):
+        prop.propagate(circuit)
 
 
 # -- building the graph incrementally -------------------------------------------

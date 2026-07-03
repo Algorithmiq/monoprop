@@ -28,7 +28,12 @@ import numpy as np
 
 from monoprop._dispatch import dispatch
 
-from .circuit import Circuit, expand_monomials
+from .circuit import (
+    Circuit,
+    MajoranaGate,
+    expand_monomials,
+    validate_parameter_mapping,
+)
 from .majorana_data import MajoranaOperator
 from .utils import validate_basis_change
 
@@ -38,7 +43,6 @@ if TYPE_CHECKING:
 
     from mpi4py import MPI
 
-    from .circuit import MajoranaGate
     from .quantum_data import IQuantumOperator
 
     ParameterValues = Circuit | Sequence[float] | np.ndarray | None
@@ -178,6 +182,12 @@ class MajoranaPropagator:
 
     def _majorana_gates(self, circuit: Circuit) -> Sequence[MajoranaGate]:
         """Hook for subclasses to map their gate type to Majorana gates."""
+        for gate in circuit.gates:
+            if not isinstance(gate, MajoranaGate):
+                raise TypeError(
+                    f"MajoranaPropagator expects MajoranaGate gates; got "
+                    f"{type(gate).__name__}. Use PauliPropagator for PauliGate circuits."
+                )
         return circuit.gates
 
     def propagate_build_graph(
@@ -282,17 +292,7 @@ class MajoranaPropagator:
         built with; rebuild a functional to pick up the new one.
         """
         resolved = [int(m) for m in mapping]
-        n_layers = self.graph_layers
-        if len(resolved) != n_layers:
-            raise ValueError(
-                f"parameter_mapping has {len(resolved)} entries but the graph has "
-                f"{n_layers} layers."
-            )
-        if resolved and set(resolved) != set(range(max(resolved) + 1)):
-            raise ValueError(
-                "parameter_mapping indices must be contiguous 0..n-1 with no gaps; "
-                f"got {sorted(set(resolved))}."
-            )
+        validate_parameter_mapping(resolved, self.graph_layers, "graph layers")
         self._simulator.parameter_mapping = resolved
         self._n_params = max(resolved, default=-1) + 1
 

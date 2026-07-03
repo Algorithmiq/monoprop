@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .circuit import MajoranaGate, Term
+from .circuit import MajoranaGate, PauliGate, Term
 from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
 from .majorana_propagator import MajoranaPropagator
 from .utils import jordan_wigner_basis_change
@@ -95,23 +95,24 @@ class PauliPropagator(MajoranaPropagator):
 
     @property
     def cutoff_type(self) -> str:
-        """Cutoff type, always ``"support"`` (Pauli weight) for a qubit propagator."""
-        return self._simulator.cutoff_type
+        """Cutoff type, always ``"support"`` (Pauli weight) for a qubit propagator.
 
-    @cutoff_type.setter
-    def cutoff_type(self, new_cutoff_type: str) -> None:
-        if new_cutoff_type != "support":
-            raise ValueError(
-                "PauliPropagator only supports the 'support' cutoff type (Pauli "
-                f"weight); got {new_cutoff_type!r}. Use MajoranaPropagator for "
-                "length-based truncation."
-            )
-        self._simulator.cutoff_type = new_cutoff_type
+        Read-only: a qubit propagator's cutoff is fixed to Pauli weight. Use
+        :class:`~monoprop.majorana_propagator.MajoranaPropagator` for length-based
+        truncation.
+        """
+        return self._simulator.cutoff_type
 
     def _majorana_gates(self, circuit: Circuit) -> list[MajoranaGate]:
         """Map each qubit gate to one Majorana gate via Jordan-Wigner (1:1, mapping-preserving)."""
         majorana_gates: list[MajoranaGate] = []
         for pauli_gate in circuit.gates:
+            if not isinstance(pauli_gate, PauliGate):
+                raise TypeError(
+                    f"PauliPropagator expects PauliGate gates; got "
+                    f"{type(pauli_gate).__name__}. Use MajoranaPropagator for "
+                    "MajoranaGate circuits."
+                )
             terms: list[Term] = []
             for pauli, coefficient in zip(
                 pauli_gate.paulis.strings,
