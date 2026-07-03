@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .circuit import MajoranaGate, PauliGate, Term
+from .circuit import MajoranaGate, PauliCircuit, Term
 from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
 from .majorana_propagator import MajoranaPropagator
 from .utils import jordan_wigner_basis_change
@@ -105,14 +105,13 @@ class PauliPropagator(MajoranaPropagator):
 
     def _majorana_gates(self, circuit: Circuit) -> list[MajoranaGate]:
         """Map each qubit gate to one Majorana gate via Jordan-Wigner (1:1, mapping-preserving)."""
+        if not isinstance(circuit, PauliCircuit):
+            raise TypeError(
+                f"PauliPropagator requires a PauliCircuit; got {type(circuit).__name__}. "
+                "Use MajoranaPropagator for a MajoranaCircuit or FermiCircuit."
+            )
         majorana_gates: list[MajoranaGate] = []
         for pauli_gate in circuit.gates:
-            if not isinstance(pauli_gate, PauliGate):
-                raise TypeError(
-                    f"PauliPropagator expects PauliGate gates; got "
-                    f"{type(pauli_gate).__name__}. Use MajoranaPropagator for "
-                    "MajoranaGate circuits."
-                )
             terms: list[Term] = []
             for pauli, coefficient in zip(
                 pauli_gate.paulis.strings,

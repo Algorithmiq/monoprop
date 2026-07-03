@@ -30,6 +30,7 @@ from monoprop._dispatch import dispatch
 
 from .circuit import (
     Circuit,
+    MajoranaCircuit,
     MajoranaGate,
     expand_monomials,
     validate_parameter_mapping,
@@ -182,12 +183,11 @@ class MajoranaPropagator:
 
     def _majorana_gates(self, circuit: Circuit) -> Sequence[MajoranaGate]:
         """Hook for subclasses to map their gate type to Majorana gates."""
-        for gate in circuit.gates:
-            if not isinstance(gate, MajoranaGate):
-                raise TypeError(
-                    f"MajoranaPropagator expects MajoranaGate gates; got "
-                    f"{type(gate).__name__}. Use PauliPropagator for PauliGate circuits."
-                )
+        if not isinstance(circuit, MajoranaCircuit):
+            raise TypeError(
+                f"MajoranaPropagator requires a MajoranaCircuit (or FermiCircuit); got "
+                f"{type(circuit).__name__}. Use PauliPropagator for a PauliCircuit."
+            )
         return circuit.gates
 
     def build_graph(

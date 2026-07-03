@@ -18,13 +18,13 @@ import pytest
 from pytest_cases import parametrize_with_cases
 
 from monoprop import (
-    Circuit,
+    MajoranaCircuit,
     MajoranaGate,
     MajoranaPropagator,
     Term,
     jordan_wigner_basis_change,
 )
-from monoprop.majorana_data import MajoranaOperator, MajoranaSequence
+from monoprop.majorana_data import MajoranaOperator
 from tests.cases import CasesFermionicProblem
 
 
@@ -110,7 +110,7 @@ class TestUpdateMethods:
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
         gate = MajoranaGate((Term((0, 1, 2, 3, 4, 5), 1.0),))
-        mp.build_graph(Circuit((gate,)))
+        mp.build_graph(MajoranaCircuit((gate,)))
         assert mp.size() > 0
 
     def test_update_cutoff_invalid(self, mp):
@@ -178,7 +178,7 @@ class TestUpdateMethods:
             mp.basis_change = invalid_basis
 
     def test_integration(self, serial_comm):
-        sequence = MajoranaSequence(
+        sequence = MajoranaCircuit.from_dense_arrays(
             initial_state=[],
             majoranas=[(0, 2), (1, 3)],
             gen_coeffs=[0.0, 0.0],
@@ -203,7 +203,7 @@ class TestUpdateMethods:
         for attr, value in updates.items():
             setattr(mp, attr, value)
 
-        circuit = sequence.to_circuit()
+        circuit = sequence
         mp.propagate(circuit)
         expval = mp.expectation_value()
         assert isinstance(expval, (int, float))

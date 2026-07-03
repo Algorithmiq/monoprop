@@ -98,13 +98,12 @@ def test_qiskit_with_mp(
     """Integration test for circuits comming from Qiskit and running them with the PauliPropagator."""
 
     operator = from_qiskit_operator(hamiltonian_lih)
-    quantum_circuit = from_qiskit_circuit(
+    circuit = from_qiskit_circuit(
         simple_ev_circuit, initial_state=list(range(1, 12, 2))
     )
-    circuit = quantum_circuit.to_circuit()
     mp = PauliPropagator(
         operator,
-        quantum_circuit.initial_state,
+        circuit.initial_state,
         cutoff=6,
     )
     mp.propagate(circuit)

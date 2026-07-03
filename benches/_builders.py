@@ -29,17 +29,19 @@ import numpy as np
 
 from monoprop import (
     Circuit,
+    MajoranaCircuit,
     MajoranaPropagator,
+    PauliCircuit,
+    PauliGate,
     PauliPropagator,
 )
 from monoprop.fermi_data import (
     FermiCircuit,
-    FermiEvGate,
+    FermiGate,
     FermiOperator,
     MajoranaOperator,
 )
-from monoprop.majorana_data import MajoranaSequence
-from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator
+from monoprop.pauli_data import PauliOperator
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -83,7 +85,7 @@ class RandomProblem:
     """
 
     observable: MajoranaOperator
-    circuit: MajoranaSequence
+    circuit: MajoranaCircuit
     cutoff: int
 
     @property
@@ -157,12 +159,12 @@ def make_random_problem(
     parameters = (0.1 * rng.standard_normal(num_generators)).tolist()
     param_inds = list(range(num_generators))
 
-    circuit = MajoranaSequence(
-        initial_state=[],
+    circuit = MajoranaCircuit.from_dense_arrays(
         majoranas=gen_majoranas,
-        parameters=parameters,
         gen_coeffs=gen_coeffs,
         param_inds=param_inds,
+        parameters=parameters,
+        initial_state=[],
     )
     return RandomProblem(observable=observable, circuit=circuit, cutoff=cutoff)
 
@@ -194,7 +196,7 @@ def build_random_propagator(
         lower_atol=lower_atol,
         comm=comm,
     )
-    return propagator, problem.circuit.to_circuit()
+    return propagator, problem.circuit
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,13 +286,12 @@ def build_hubbard_problem(
         ``(propagator, circuit)`` for one Trotter step, re-applied by the driver.
     """
     config = config or HubbardConfig()
-    fermi_gates = [
-        FermiEvGate(generator=term, parameter=config.trotter_dt)
-        for term in _hubbard_fermion_terms(config)
-    ]
+    fermi_gates = [FermiGate(generator=term) for term in _hubbard_fermion_terms(config)]
+    parameters = [config.trotter_dt] * len(fermi_gates)
     occupied = _neel_occupied_modes(config.num_sites, config.neel_start_spin)
-    fermi_circuit = FermiCircuit(initial_state=occupied, gates=fermi_gates)
-    circuit = fermi_circuit.to_circuit()
+    circuit = FermiCircuit(
+        gates=fermi_gates, parameters=parameters, initial_state=occupied
+    )
 
     observable = FermiOperator(
         terms=[
@@ -306,7 +307,7 @@ def build_hubbard_problem(
     # CutoffType is Length | Support in the current API.
     propagator = MajoranaPropagator(
         observable,
-        fermi_circuit.initial_state,
+        circuit.initial_state,
         cutoff=config.cutoff,
         cutoff_type="length",
         lower_atol=config.lower_atol,
@@ -477,21 +478,20 @@ class KickedIsingConfig:
     lower_atol: float = 1e-4
 
 
-def _xlayer(num_qubits: int, angle: float) -> list[PauliEvGate]:
-    """Single-qubit X rotations exp(-i·angle·X) on all qubits."""
+def _xlayer(num_qubits: int, angle: float) -> list[tuple[PauliGate, float]]:
+    """Single-qubit X rotations exp(-i·angle·X) on all qubits, with their angles."""
     return [
-        PauliEvGate(qubits=[i], paulis=PauliOperator(["X"], [1.0]), parameter=-angle)
+        (PauliGate((i,), PauliOperator(["X"], [1.0])), -angle)
         for i in range(num_qubits)
     ]
 
 
-def _zzlayer(angle: float, topology: list[tuple[int, int]]) -> list[PauliEvGate]:
-    """Two-qubit ZZ interactions exp(-i·angle·ZZ) on every edge in ``topology``."""
+def _zzlayer(
+    angle: float, topology: list[tuple[int, int]]
+) -> list[tuple[PauliGate, float]]:
+    """Two-qubit ZZ interactions exp(-i·angle·ZZ) on every edge, with their angles."""
     return [
-        PauliEvGate(
-            qubits=[i, j], paulis=PauliOperator(["ZZ"], [1.0]), parameter=-angle
-        )
-        for i, j in topology
+        (PauliGate((i, j), PauliOperator(["ZZ"], [1.0])), -angle) for i, j in topology
     ]
 
 
@@ -510,14 +510,16 @@ def build_kicked_ising_problem(
         ``(propagator, circuit)`` ready for in-place propagation.
     """
     config = config or KickedIsingConfig()
-    pauli_gates: list[PauliEvGate] = []
+    gate_angles: list[tuple[PauliGate, float]] = []
     for _ in range(config.num_layers):
-        pauli_gates.extend(_xlayer(config.num_qubits, config.theta / 2))
-        pauli_gates.extend(_zzlayer(config.coupling, HEAVY_HEX_TOPOLOGY))
-    pauli_circuit = PauliEvCircuit(
-        gates=pauli_gates, initial_state=[], num_qubits=config.num_qubits
+        gate_angles.extend(_xlayer(config.num_qubits, config.theta / 2))
+        gate_angles.extend(_zzlayer(config.coupling, HEAVY_HEX_TOPOLOGY))
+    circuit = PauliCircuit(
+        gates=tuple(gate for gate, _ in gate_angles),
+        parameters=tuple(angle for _, angle in gate_angles),
+        initial_state=[],
+        num_qubits=config.num_qubits,
     )
-    circuit = pauli_circuit.to_circuit()
 
     obs_str = (
         "I" * config.observable_qubit

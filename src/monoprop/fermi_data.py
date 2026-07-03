@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .circuit import Circuit, MajoranaGate, Term
+from .circuit import MajoranaCircuit, MajoranaGate, Term
 from .conversion_utils import _n_product
 from .majorana_data import MajoranaOperator
 
@@ -202,22 +202,24 @@ class FermiOperator:
         return MajoranaOperator(majoranas, coefficients, self.num_modes)
 
 
-class FermiEvGate:
-    """Class representing a fermi evolution gate."""
+class FermiGate:
+    """A fermionic evolution gate; a pure generator, the qubit/Majorana analogue.
 
-    def __init__(
-        self,
-        generator: FermiOperator | MajoranaOperator,
-        parameter: complex,
-    ) -> None:
-        """Initialize the fermi evolution gate.
+    Like :class:`~monoprop.circuit.MajoranaGate` and
+    :class:`~monoprop.circuit.PauliGate` it carries no parameter index -- the driving angle
+    is supplied by position via the circuit's ``parameters`` and ``parameter_mapping``. Its
+    generator is normalized to a :class:`~monoprop.majorana_data.MajoranaOperator` on
+    construction.
+    """
+
+    def __init__(self, generator: FermiOperator | MajoranaOperator) -> None:
+        """Initialize the fermi gate.
 
         Args:
-            generator: The generator of the evolution, either as a FermiOperator or a MajoranaOperator.
-            parameter: The parameter for the evolution.
+            generator: The generator of the evolution, either a
+                :class:`FermiOperator` or a :class:`~monoprop.majorana_data.MajoranaOperator`.
         """
         self.generator: MajoranaOperator = generator.get_majorana_operator()
-        self.parameter = parameter
 
     def __len__(self) -> int:
         """Number of terms in the generator."""
@@ -225,75 +227,69 @@ class FermiEvGate:
 
     def __repr__(self) -> str:
         """Return a string representation of the gate."""
-        return (
-            f"{self.__class__.__name__}({len(self)} terms, parameter={self.parameter})"
-        )
+        return f"{self.__class__.__name__}({len(self)} terms)"
 
 
-class FermiCircuit:
-    """Class representing a fermi circuit."""
+def _fermi_gate_to_majorana_gate(gate: FermiGate) -> MajoranaGate:
+    """Convert a fermi gate's generator into an antihermitian Majorana gate."""
+    terms: list[Term] = []
+    for monomial, coefficient in gate.generator.terms.items():
+        w = len(monomial)
+        antiherm = -coefficient / (1j) ** (w * (w - 1) / 2)
+        terms.append(Term(tuple(monomial), float(np.real(antiherm))))
+    return MajoranaGate(tuple(terms))
+
+
+class FermiCircuit(MajoranaCircuit):
+    """A variational circuit of :class:`FermiGate` generators.
+
+    Each gate's generator is converted to a :class:`~monoprop.circuit.MajoranaGate` at
+    construction (its monomials mapped to antihermitian Majorana
+    :class:`~monoprop.circuit.Term` objects), so a ``FermiCircuit`` *is* a
+    :class:`~monoprop.circuit.MajoranaCircuit` and is consumed directly by
+    :class:`~monoprop.majorana_propagator.MajoranaPropagator`. The original fermionic gates
+    remain available on :attr:`fermi_gates`.
+
+    Attributes:
+        fermi_gates: The original :class:`FermiGate` generators, in application order.
+    """
 
     def __init__(
         self,
-        initial_state: list[int],
-        gates: list[FermiEvGate],
+        gates: Sequence[FermiGate] = (),
+        parameters: Sequence[float] = (),
+        parameter_mapping: Sequence[int] | None = None,
+        initial_state: Sequence[int] = (),
     ) -> None:
         """Initialize the fermi circuit.
 
         Args:
-            initial_state: List of mode indices representing the initial state.
-            gates: List of FermiEvGate objects representing the gates in the circuit.
+            gates: The :class:`FermiGate` generators, in application order.
+            parameters: The angle values driving the gates.
+            parameter_mapping: Per-gate angle index, or ``None`` for the identity mapping.
+            initial_state: Mode indices of the reference (occupied) state.
+
+        Raises:
+            ValueError: If ``initial_state`` contains duplicate indices.
         """
-        initial_state = sorted(initial_state)
-
-        self._validate_inputs(initial_state)
-
-        self.initial_state = initial_state
-        self.gates = [gate for gate in gates if not gate.generator.is_identity()]
-
-    @staticmethod
-    def _validate_inputs(initial_state: list[int]) -> None:
-        """Validate the inputs for the fermi circuit."""
-        set_initial = set(initial_state)
-        if len(set_initial) != len(initial_state):
+        occupied = sorted(int(i) for i in initial_state)
+        if len(set(occupied)) != len(occupied):
             raise ValueError("Duplicate indices in initial state")
 
-    def __len__(self) -> int:
-        """Number of gates in the circuit."""
-        return len(self.gates)
+        fermi_gates = tuple(gates)
+        object.__setattr__(self, "fermi_gates", fermi_gates)
+        MajoranaCircuit.__init__(
+            self,
+            gates=tuple(_fermi_gate_to_majorana_gate(g) for g in fermi_gates),
+            parameters=tuple(parameters),
+            parameter_mapping=parameter_mapping,
+            initial_state=tuple(occupied),
+        )
 
     def __repr__(self) -> str:
         """Return a string representation of the circuit."""
         return (
             f"{self.__class__.__name__}("
             f"{len(self)} gates, "
-            f"initial_state={self.initial_state})"
-        )
-
-    def to_circuit(self) -> Circuit:
-        """Lift the fermi circuit into a :class:`~monoprop.circuit.Circuit`.
-
-        Each fermi gate's generator becomes one :class:`~monoprop.circuit.MajoranaGate`
-        (its monomials mapped to antihermitian Majorana :class:`~monoprop.circuit.Term`
-        objects), driven by its own distinct angle (the identity mapping).
-
-        Returns:
-            A :class:`~monoprop.circuit.Circuit` carrying the Majorana gates, angle values,
-            the identity mapping, and the initial state.
-        """
-        gates: list[MajoranaGate] = []
-        parameters: list[float] = []
-        for gate in self.gates:
-            terms: list[Term] = []
-            for monomial, coefficient in gate.generator.terms.items():
-                w = len(monomial)
-                antiherm = -coefficient / (1j) ** (w * (w - 1) / 2)
-                terms.append(Term(tuple(monomial), float(np.real(antiherm))))
-            gates.append(MajoranaGate(tuple(terms)))
-            parameters.append(float(np.real(gate.parameter)))
-
-        return Circuit(
-            gates=tuple(gates),
-            parameters=tuple(parameters),
-            initial_state=tuple(int(i) for i in self.initial_state),
+            f"initial_state={list(self.initial_state)})"
         )

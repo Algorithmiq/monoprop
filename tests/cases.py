@@ -14,16 +14,46 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 from msgpack import unpackb
 from pytest_cases import case
 
-from monoprop.majorana_data import MajoranaOperator, MajoranaSequence
+from monoprop.circuit import MajoranaCircuit
+from monoprop.majorana_data import MajoranaOperator
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from numpy import ndarray
+
+
+@dataclass
+class DenseMajoranaArrays:
+    """Flat per-monomial arrays for a Majorana gate sequence (test transport).
+
+    Mirrors the on-disk msgpack-fixture layout; :meth:`to_circuit` groups it into a
+    :class:`~monoprop.circuit.MajoranaCircuit` via
+    :meth:`~monoprop.circuit.MajoranaCircuit.from_dense_arrays`.
+    """
+
+    initial_state: list[int] | ndarray
+    majoranas: list[tuple[int, ...]] | ndarray
+    parameters: list[float] | ndarray
+    gen_coeffs: list[float] | ndarray
+    param_inds: list[int] | ndarray
+
+    def to_circuit(self) -> MajoranaCircuit:
+        """Group the dense arrays into a :class:`~monoprop.circuit.MajoranaCircuit`."""
+        return MajoranaCircuit.from_dense_arrays(
+            majoranas=self.majoranas,
+            gen_coeffs=self.gen_coeffs,
+            param_inds=self.param_inds,
+            parameters=self.parameters,
+            initial_state=self.initial_state,
+        )
 
 
 class SplitOrbitalRotations(NamedTuple):
@@ -44,7 +74,7 @@ class FermionicProblem:
 
     def __init__(
         self,
-        monomial_circuit: MajoranaSequence,
+        monomial_circuit: DenseMajoranaArrays,
         operator: MajoranaOperator,
         exact_expval: float,
         exact_gradient: np.ndarray,
@@ -55,6 +85,11 @@ class FermionicProblem:
         self.exact_expval = exact_expval
         self.exact_gradient = exact_gradient
         self.n_modes = n_modes
+
+    @property
+    def circuit(self) -> MajoranaCircuit:
+        """The gate sequence as a :class:`~monoprop.circuit.MajoranaCircuit`."""
+        return self.monomial_circuit.to_circuit()
 
     def split_only_rotate_len_k(self) -> SplitOrbitalRotations:
         """Split the Majorana operators into non-orbital and orbital rotation parts."""
@@ -91,13 +126,13 @@ def load_problem(path: Path) -> FermionicProblem:
         path: Path to the ``.msgpack`` fixture.
 
     Returns:
-        A :class:`FermionicProblem` built directly from the public API
-        (:class:`MajoranaSequence` and :class:`MajoranaOperator`).
+        A :class:`FermionicProblem` built from the dense msgpack arrays and
+        :class:`MajoranaOperator`.
     """
     with path.open("rb") as fh:
         data = unpackb(fh.read())
 
-    monomial_circuit = MajoranaSequence(
+    monomial_circuit = DenseMajoranaArrays(
         initial_state=data["hartree_fock"],
         majoranas=[tuple(maj) for maj in data["majoranas"]],
         gen_coeffs=np.asarray(data["gen_coeffs"]),

@@ -14,8 +14,8 @@
 
 import numpy as np
 
-from monoprop import MajoranaPropagator
-from monoprop.majorana_data import MajoranaOperator, MajoranaSequence
+from monoprop import MajoranaCircuit, MajoranaPropagator
+from monoprop.majorana_data import MajoranaOperator
 
 
 def test_nonfermi(serial_comm):
@@ -31,14 +31,13 @@ def test_nonfermi(serial_comm):
     fermionic_operator = MajoranaOperator.from_dict(
         terms_dict={(1, 2, 3): -1j}, num_modes=num_modes
     )
-    monomial_circuit = MajoranaSequence(
-        initial_state=[],
+    circuit = MajoranaCircuit.from_dense_arrays(
         majoranas=majoranas,
         gen_coeffs=gen_coeffs,
         param_inds=param_inds,
         parameters=parameters,
+        initial_state=[],
     )
-    circuit = monomial_circuit.to_circuit()
 
     exact_evolved_op = {
         (1, 2, 3): -0.8314427691150754j,
@@ -51,7 +50,7 @@ def test_nonfermi(serial_comm):
 
     mp = MajoranaPropagator(
         fermionic_operator,
-        monomial_circuit.initial_state,
+        circuit.initial_state,
         cutoff=4,
         comm=serial_comm,
     )

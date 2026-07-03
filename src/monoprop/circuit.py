@@ -18,15 +18,25 @@ A :class:`MajoranaGate` (or its qubit analogue :class:`PauliGate`) is a *pure ge
 the bundle of Majorana monomials -- or Pauli operators -- driven by a single variational
 angle. Gates carry no parameter index.
 
-A :class:`Circuit` bundles a sequence of those gates with the angle *values* that drive
-them (:attr:`Circuit.parameters`), the ``parameter_mapping`` wiring each gate to an angle,
-and the reference :attr:`Circuit.initial_state`. The propagator consumes a ``Circuit``;
-domain types (Majorana/Pauli/Fermi) build one via ``to_circuit()``.
+A circuit bundles a sequence of those gates with the angle *values* that drive them
+(:attr:`Circuit.parameters`), the ``parameter_mapping`` wiring each gate to an angle, and
+the reference :attr:`Circuit.initial_state`. Circuits come in a typed family sharing the
+same shape and feeding directly into the propagator:
+
+- :class:`MajoranaCircuit` -- native Majorana gates, consumed by
+  :class:`~monoprop.majorana_propagator.MajoranaPropagator`.
+- :class:`PauliCircuit` -- qubit (Pauli) gates, consumed by
+  :class:`~monoprop.pauli_propagator.PauliPropagator`.
+- :class:`~monoprop.fermi_data.FermiCircuit` -- fermionic gates converted to Majorana
+  gates at construction; a :class:`MajoranaCircuit`, so also consumed by
+  :class:`~monoprop.majorana_propagator.MajoranaPropagator`.
+
+:class:`Circuit` itself is an abstract base: construct one of the typed subclasses.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -54,8 +64,7 @@ class MajoranaGate:
     """The bundle of Majorana monomials driven by a single variational angle.
 
     A pure generator: it carries only its generated monomials. The angle that drives it is
-    assigned by position via the propagator's ``parameter_mapping`` argument, not stored on
-    the gate.
+    assigned by position via the circuit's ``parameter_mapping``, not stored on the gate.
 
     Attributes:
         terms: The generated monomials.
@@ -80,13 +89,13 @@ class PauliGate:
     paulis: PauliOperator
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Circuit:
-    """A variational circuit: gates, the angles that drive them, and a reference state.
+    """Abstract base for a variational circuit: gates, angles, and a reference state.
 
     Bundles everything the propagator needs to build or evaluate an evolution:
 
-    - ``gates``: the ordered generators (:class:`MajoranaGate` or :class:`PauliGate`).
+    - ``gates``: the ordered generators.
     - ``parameter_mapping``: the angle index driving each gate (``parameter_mapping[i]``
       drives gate ``i``); ``None`` gives each gate its own distinct angle. Repeat an index
       to tie gates to a shared angle.
@@ -94,9 +103,13 @@ class Circuit:
       -- author the structure now and supply values at evaluation time.
     - ``initial_state``: the reference Slater determinant / computational-basis state.
 
-    Compose circuits with ``+`` (temporal concatenation; the right operand's angles are
-    appended on a fresh axis). A *bound* circuit is self-consistent: when ``parameters`` is
-    non-empty its length must equal :attr:`n_parameters`.
+    Compose circuits with ``+`` (temporal concatenation within the same gate family; the
+    right operand's angles are appended on a fresh axis). A *bound* circuit is
+    self-consistent: when ``parameters`` is non-empty its length must equal
+    :attr:`n_parameters`.
+
+    :class:`Circuit` is abstract -- construct :class:`MajoranaCircuit`,
+    :class:`PauliCircuit`, or :class:`~monoprop.fermi_data.FermiCircuit`.
 
     Attributes:
         gates: The ordered generators.
@@ -105,13 +118,18 @@ class Circuit:
         initial_state: The reference state (occupied mode / qubit indices).
     """
 
-    gates: tuple[MajoranaGate | PauliGate, ...]
+    gates: tuple[MajoranaGate | PauliGate, ...] = ()
     parameters: tuple[float, ...] = ()
     parameter_mapping: tuple[int, ...] | None = None
     initial_state: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
-        """Normalize fields to tuples and validate the mapping and parameter length."""
+        """Normalize fields to tuples and validate the mapping, params, and gate types."""
+        if type(self) is Circuit:
+            raise TypeError(
+                "Circuit is abstract; construct MajoranaCircuit, PauliCircuit, or "
+                "FermiCircuit."
+            )
         object.__setattr__(self, "gates", tuple(self.gates))
         object.__setattr__(self, "parameters", tuple(float(v) for v in self.parameters))
         object.__setattr__(
@@ -129,6 +147,10 @@ class Circuit:
                 f"parameters has {len(self.parameters)} values but the circuit has "
                 f"{self.n_parameters} parameters."
             )
+        self._validate_gates()
+
+    def _validate_gates(self) -> None:
+        """Subclass hook: check every gate is of the family's gate type."""
 
     @property
     def resolved_mapping(self) -> tuple[int, ...]:
@@ -152,15 +174,24 @@ class Circuit:
         return iter(self.gates)
 
     def __add__(self, other: Circuit) -> Circuit:
-        """Concatenate two circuits, appending ``other``'s angles on a fresh axis.
+        """Concatenate two circuits of the same family, appending ``other``'s angles.
 
         The result applies ``self``'s gates then ``other``'s; ``other``'s angle indices are
         shifted up by ``self.n_parameters`` so the two halves keep independent angles. Build
-        the whole thing in a single :meth:`~monoprop.MajoranaPropagator.build_graph`
-        call to avoid the picture-dependent ordering of incremental multi-call building.
+        the whole thing in a single :meth:`~monoprop.MajoranaPropagator.build_graph` call to
+        avoid the picture-dependent ordering of incremental multi-call building.
+
+        A :class:`PauliCircuit` may only be concatenated with another :class:`PauliCircuit`;
+        Majorana-family circuits (:class:`MajoranaCircuit` /
+        :class:`~monoprop.fermi_data.FermiCircuit`) concatenate to a :class:`MajoranaCircuit`.
         """
         if not isinstance(other, Circuit):
             return NotImplemented
+        if isinstance(self, PauliCircuit) != isinstance(other, PauliCircuit):
+            raise TypeError(
+                "Cannot concatenate a PauliCircuit with a non-Pauli circuit; the gate "
+                "families differ."
+            )
         if (
             self.initial_state
             and other.initial_state
@@ -173,12 +204,124 @@ class Circuit:
         mapping = self.resolved_mapping + tuple(
             m + offset for m in other.resolved_mapping
         )
-        return Circuit(
-            gates=self.gates + other.gates,
-            parameters=self.parameters + other.parameters,
+        gates = self.gates + other.gates
+        parameters = self.parameters + other.parameters
+        initial_state = self.initial_state or other.initial_state
+        if isinstance(self, PauliCircuit):
+            if self.num_qubits != other.num_qubits:
+                raise ValueError(
+                    "Cannot concatenate PauliCircuits with different qubit counts "
+                    f"({self.num_qubits} != {other.num_qubits})."
+                )
+            return PauliCircuit(
+                gates=gates,
+                parameters=parameters,
+                parameter_mapping=mapping,
+                initial_state=initial_state,
+                num_qubits=self.num_qubits,
+            )
+        return MajoranaCircuit(
+            gates=gates,
+            parameters=parameters,
             parameter_mapping=mapping,
-            initial_state=self.initial_state or other.initial_state,
+            initial_state=initial_state,
         )
+
+
+@dataclass(frozen=True)
+class MajoranaCircuit(Circuit):
+    """A variational circuit of native :class:`MajoranaGate` generators.
+
+    Consumed directly by :class:`~monoprop.majorana_propagator.MajoranaPropagator`.
+    """
+
+    def _validate_gates(self) -> None:
+        for gate in self.gates:
+            if not isinstance(gate, MajoranaGate):
+                raise TypeError(
+                    f"MajoranaCircuit gates must be MajoranaGate; got "
+                    f"{type(gate).__name__}. Use PauliCircuit for PauliGate circuits."
+                )
+
+    @classmethod
+    def from_dense_arrays(
+        cls,
+        majoranas: Sequence[Sequence[int]],
+        gen_coeffs: Sequence[float],
+        param_inds: Sequence[int],
+        parameters: Sequence[float] = (),
+        initial_state: Sequence[int] = (),
+    ) -> MajoranaCircuit:
+        """Build a circuit from flat, per-monomial dense arrays.
+
+        This is the native dense/wire format (also the on-disk msgpack-fixture layout):
+        consecutive monomials sharing a ``param_ind`` become one :class:`MajoranaGate`, and
+        the per-gate ``param_ind`` values become the circuit's parameter mapping, so
+        weight-tying is preserved and the expanded engine arrays stay identical to the
+        original.
+
+        Args:
+            majoranas: One Majorana-index sequence per monomial.
+            gen_coeffs: Generator coefficient per monomial.
+            param_inds: Variational-angle index per monomial (contiguous runs group into
+                gates).
+            parameters: Optional angle values.
+            initial_state: Optional reference state (occupied mode indices).
+
+        Returns:
+            A :class:`MajoranaCircuit` carrying the grouped gates, angle values, mapping,
+            and initial state.
+        """
+        indices = [int(p) for p in param_inds]
+        gates: list[MajoranaGate] = []
+        mapping: list[int] = []
+        current_index: int | None = None
+        current_terms: list[Term] = []
+        for maj, coeff, pidx in zip(majoranas, gen_coeffs, indices, strict=True):
+            if current_terms and pidx != current_index:
+                gates.append(MajoranaGate(tuple(current_terms)))
+                mapping.append(current_index)  # type: ignore[arg-type]
+                current_terms = []
+            current_index = pidx
+            current_terms.append(Term(tuple(int(i) for i in maj), float(coeff)))
+        if current_terms:
+            gates.append(MajoranaGate(tuple(current_terms)))
+            mapping.append(current_index)  # type: ignore[arg-type]
+
+        return cls(
+            gates=tuple(gates),
+            parameters=tuple(float(p) for p in parameters),
+            parameter_mapping=tuple(mapping),
+            initial_state=tuple(int(i) for i in initial_state),
+        )
+
+
+@dataclass(frozen=True)
+class PauliCircuit(Circuit):
+    """A variational circuit of qubit :class:`PauliGate` generators.
+
+    Consumed directly by :class:`~monoprop.pauli_propagator.PauliPropagator`, which maps the
+    gates into the Majorana basis via Jordan-Wigner.
+
+    Attributes:
+        num_qubits: Total number of qubits the circuit acts on (not derivable from the
+            gates, which touch only the qubits they act on).
+    """
+
+    num_qubits: int = field(kw_only=True, default=0)
+
+    def __post_init__(self) -> None:
+        """Normalize ``num_qubits`` then run the shared circuit validation."""
+        object.__setattr__(self, "num_qubits", int(self.num_qubits))
+        super().__post_init__()
+
+    def _validate_gates(self) -> None:
+        for gate in self.gates:
+            if not isinstance(gate, PauliGate):
+                raise TypeError(
+                    f"PauliCircuit gates must be PauliGate; got {type(gate).__name__}. "
+                    "Use MajoranaCircuit for MajoranaGate circuits."
+                )
 
 
 def validate_parameter_mapping(

@@ -30,7 +30,9 @@ from ._core import (
 from ._version import version as __version__
 from .circuit import (
     Circuit,
+    MajoranaCircuit,
     MajoranaGate,
+    PauliCircuit,
     PauliGate,
     Term,
 )
@@ -41,8 +43,10 @@ from .utils import jordan_wigner_basis_change
 __all__ = [
     "MAX_NUM_MODES",
     "Circuit",
+    "MajoranaCircuit",
     "MajoranaGate",
     "MajoranaPropagator",
+    "PauliCircuit",
     "PauliGate",
     "PauliPropagator",
     "Term",

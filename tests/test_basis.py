@@ -17,11 +17,11 @@ from __future__ import annotations
 import numpy as np
 
 from monoprop import (
+    MajoranaCircuit,
     MajoranaPropagator,
     jordan_wigner_basis_change,
 )
 from monoprop.fermi_data import MajoranaOperator
-from monoprop.majorana_data import MajoranaSequence
 
 
 def test_basis_change(serial_comm):
@@ -29,14 +29,14 @@ def test_basis_change(serial_comm):
     cutoff = 3
     initial_op = MajoranaOperator([(0,)], [1.0], n_modes)
 
-    sequence = MajoranaSequence(
+    sequence = MajoranaCircuit.from_dense_arrays(
         initial_state=[],
         majoranas=[(5,)],
         parameters=[1.0],
         gen_coeffs=[-1.0],
         param_inds=[0],
     )
-    circuit = sequence.to_circuit()
+    circuit = sequence
     pauli_basis = jordan_wigner_basis_change(n_modes)
     mp = MajoranaPropagator(
         initial_op,

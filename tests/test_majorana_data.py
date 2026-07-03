@@ -14,31 +14,28 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
-from monoprop.majorana_data import MajoranaOperator, MajoranaSequence
+from monoprop import MajoranaCircuit
+from monoprop.majorana_data import MajoranaOperator
 
 
-def test_majorana_sequence_fields():
-    majoranas = [np.array([0, 1]), np.array([2, 3])]
-    gen_coeffs = [0.5j, -0.5j]
-    param_inds = [np.array([0]), np.array([0])]
-
-    mc = MajoranaSequence(
-        initial_state=[0, 1],
-        majoranas=majoranas,
+def test_from_dense_arrays_groups_by_param_ind():
+    """Consecutive monomials sharing a param_ind group into one gate."""
+    circuit = MajoranaCircuit.from_dense_arrays(
+        majoranas=[(0, 1), (2, 3), (0, 3)],
+        gen_coeffs=[0.5, -0.5, 1.0],
+        param_inds=[0, 0, 1],
         parameters=[1.0, 2.0],
-        gen_coeffs=gen_coeffs,
-        param_inds=param_inds,
+        initial_state=[0, 1],
     )
 
-    assert mc.initial_state == [0, 1]
-    for actual, exp in zip(mc.majoranas, majoranas):
-        np.testing.assert_array_equal(actual, exp)
-    assert mc.gen_coeffs == gen_coeffs
-    for actual, exp in zip(mc.param_inds, param_inds):
-        np.testing.assert_array_equal(actual, exp)
+    assert circuit.initial_state == (0, 1)
+    assert circuit.parameters == (1.0, 2.0)
+    assert circuit.resolved_mapping == (0, 1)
+    assert len(circuit) == 2  # {param 0: two monomials}, {param 1: one monomial}
+    assert len(circuit.gates[0].terms) == 2
+    assert len(circuit.gates[1].terms) == 1
 
 
 def test_majorana_operator_normalizes_terms():

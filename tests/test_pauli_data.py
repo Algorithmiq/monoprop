@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import PauliPropagator
-from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator, PauliString
+from monoprop import MajoranaGate, PauliCircuit, PauliGate, PauliPropagator, Term
+from monoprop.pauli_data import PauliOperator, PauliString
 
 
 class TestPauliPropagatorCutoff:
@@ -200,186 +200,38 @@ class TestPauliOperator:
             PauliOperator(["X"], [1.0]).isclose("not an operator")
 
 
-class TestPauliEvGate:
-    def test_basic_construction(self):
-        gate = PauliEvGate([0, 1], PauliOperator(["XI", "IX"], [1.0, 1.0]), 0.5)
-        assert gate.qubits == [0, 1]
-        assert gate.parameter == 0.5
-
-    def test_len(self):
-        gate = PauliEvGate(
-            [0, 1, 2], PauliOperator(["XII", "IIX", "IXI"], [1.0, 1.0, 1.0]), 1.0
-        )
-        assert len(gate) == 3
-
-    def test_empty_qubits_raises(self):
-        with pytest.raises(ValueError, match=r"At least one qubit"):
-            PauliEvGate([], PauliOperator([], []), 1.0)
-
-    def test_mismatched_paulis_raises(self):
-        with pytest.raises(ValueError, match="must match"):
-            PauliEvGate([0, 1], PauliOperator(["X"], [1.0, 1.0]), 1.0)
-
-    def test_repr(self):
-        gate = PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.1)
-        r = repr(gate)
-        assert "PauliEvGate" in r
-        assert "[0]" in r
-
-    @pytest.mark.parametrize(
-        ("gate", "other", "expected"),
-        [
-            pytest.param(
-                PauliEvGate([0, 1], PauliOperator(["XI", "IX"], [1.0, 0.5]), 0.3),
-                PauliEvGate([0, 1], PauliOperator(["XI", "IX"], [1.0, 0.5]), 0.3),
-                True,
-                id="same",
-            ),
-            pytest.param(
-                PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.3),
-                PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.3 + 1e-9),
-                True,
-                id="within_atol",
-            ),
-            pytest.param(
-                PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.3),
-                PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.5),
-                False,
-                id="different_parameter",
-            ),
-            pytest.param(
-                PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.3),
-                PauliEvGate([1], PauliOperator(["X"], [1.0]), 0.3),
-                False,
-                id="different_qubits",
-            ),
-            pytest.param(
-                PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.3),
-                PauliEvGate([0], PauliOperator(["Z"], [1.0]), 0.3),
-                False,
-                id="different_paulis",
-            ),
-        ],
-    )
-    def test_is_closely_equal(self, gate, other, expected):
-        assert gate.isclose(other) is expected
-
-    def test_is_closely_equal_type_error(self):
-        with pytest.raises(TypeError):
-            PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.3).isclose("not a gate")
-
-
-class TestPauliEvCircuit:
+class TestPauliCircuit:
     def _make_gate(self):
-        op = PauliOperator(["X"], [1.0])
-        return PauliEvGate([0], op, 0.5)
+        return PauliGate((0,), PauliOperator(["X"], [1.0]))
 
     def test_basic_construction(self):
-        gates = [self._make_gate(), self._make_gate()]
-        circuit = PauliEvCircuit(gates, [("Z", 0)], num_qubits=1)
+        gates = (self._make_gate(), self._make_gate())
+        circuit = PauliCircuit(
+            gates, parameters=(0.5, 0.5), initial_state=(0,), num_qubits=1
+        )
         assert len(circuit) == 2
-        assert circuit.initial_state == [("Z", 0)]
+        assert circuit.initial_state == (0,)
+        assert circuit.num_qubits == 1
 
     def test_empty_gates(self):
-        circuit = PauliEvCircuit([], [("X", 0)], num_qubits=1)
+        circuit = PauliCircuit((), initial_state=(0,), num_qubits=1)
         assert len(circuit) == 0
 
-    def test_empty_initial_state(self):
-        circuit = PauliEvCircuit([self._make_gate()], [], num_qubits=1)
-        assert circuit.initial_state == []
+    def test_default_mapping_is_identity(self):
+        circuit = PauliCircuit((self._make_gate(), self._make_gate()), num_qubits=1)
+        assert list(circuit.resolved_mapping) == [0, 1]
+        assert circuit.n_parameters == 2
 
-    def test_all_valid_axes(self):
-        circuit = PauliEvCircuit([], [("X", 0), ("Y", 1), ("Z", 2)], num_qubits=3)
-        assert len(circuit.initial_state) == 3
+    def test_num_qubits_not_derived_from_gates(self):
+        # A gate touching only qubit 0 can still live in a wider register.
+        circuit = PauliCircuit((self._make_gate(),), num_qubits=5)
+        assert circuit.num_qubits == 5
 
-    def test_repr(self):
-        circuit = PauliEvCircuit([self._make_gate()], [("Z", 0)], num_qubits=1)
-        r = repr(circuit)
-        assert "PauliEvCircuit" in r
-        assert "1 gates" in r
+    def test_rejects_non_pauli_gate(self):
+        with pytest.raises(TypeError, match="PauliGate"):
+            PauliCircuit((MajoranaGate((Term((0, 1), 1.0),)),), num_qubits=1)
 
-    def test_to_gates(self):
-        # The Pauli->Majorana mapping lives in PauliPropagator; the circuit adapter
-        # stays in the qubit basis and yields one PauliGate per Pauli evolution gate.
-        op = PauliOperator(["Z"], [2.0])
-        gate = PauliEvGate([0], op, 0.7)
-        pauli_circuit = PauliEvCircuit([gate], [0], num_qubits=1)
-
-        circuit = pauli_circuit.to_circuit()
-
-        assert len(circuit) == 1
-        assert circuit.gates[0].qubits == (0,)
-        assert circuit.gates[0].paulis is op
-        assert len(circuit.parameters) == 1
-        assert list(circuit.resolved_mapping) == list(range(len(circuit)))
-
-    def test_to_gates_empty(self):
-        pauli_circuit = PauliEvCircuit([], [1], num_qubits=1)
-
-        circuit = pauli_circuit.to_circuit()
-
-        assert circuit.gates == ()
-        assert len(circuit.parameters) == 0
-        assert list(circuit.resolved_mapping) == list(range(len(circuit)))
-
-    @pytest.mark.parametrize(
-        ("circuit", "other", "expected"),
-        [
-            pytest.param(
-                PauliEvCircuit(
-                    [PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.5)],
-                    [0],
-                    num_qubits=2,
-                ),
-                PauliEvCircuit(
-                    [PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.5)],
-                    [0],
-                    num_qubits=2,
-                ),
-                True,
-                id="same",
-            ),
-            pytest.param(
-                PauliEvCircuit([], [0], num_qubits=2),
-                PauliEvCircuit([], [0], num_qubits=3),
-                False,
-                id="different_num_qubits",
-            ),
-            pytest.param(
-                PauliEvCircuit([], [0], num_qubits=2),
-                PauliEvCircuit([], [1], num_qubits=2),
-                False,
-                id="different_initial_state",
-            ),
-            pytest.param(
-                PauliEvCircuit(
-                    [PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.5)],
-                    [0],
-                    num_qubits=1,
-                ),
-                PauliEvCircuit([], [0], num_qubits=1),
-                False,
-                id="different_num_gates",
-            ),
-            pytest.param(
-                PauliEvCircuit(
-                    [PauliEvGate([0], PauliOperator(["X"], [1.0]), 0.5)],
-                    [0],
-                    num_qubits=1,
-                ),
-                PauliEvCircuit(
-                    [PauliEvGate([0], PauliOperator(["Z"], [1.0]), 0.5)],
-                    [0],
-                    num_qubits=1,
-                ),
-                False,
-                id="different_gate",
-            ),
-        ],
-    )
-    def test_is_closely_equal(self, circuit, other, expected):
-        assert circuit.isclose(other) is expected
-
-    def test_is_closely_equal_type_error(self):
-        with pytest.raises(TypeError):
-            PauliEvCircuit([], [0], num_qubits=1).isclose("not a circuit")
+    def test_pauli_gate_equality(self):
+        op = PauliOperator(["X"], [1.0])
+        assert PauliGate((0,), op) == PauliGate((0,), op)
+        assert PauliGate((0,), op) != PauliGate((1,), op)

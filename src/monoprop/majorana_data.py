@@ -12,73 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Majorana operator and dense circuit data structures."""
+"""Majorana operator data structure."""
 
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
-
-from .circuit import Circuit, MajoranaGate, Term
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-    from numpy import ndarray
-
-
-@dataclass
-class MajoranaSequence:
-    """Dense transport representation of a Majorana gate sequence.
-
-    This is the native dense/wire format (also the on-disk msgpack-fixture layout): flat,
-    per-monomial arrays plus the ``param_inds`` that tie monomials to variational angles.
-    Use :meth:`to_gates` to lift it into the authoring gates the propagator consumes.
-    """
-
-    initial_state: list[int] | ndarray
-    majoranas: list[tuple[int, ...]] | ndarray
-    parameters: list[float] | ndarray
-    gen_coeffs: list[float] | ndarray
-    param_inds: list[int] | ndarray
-
-    def to_circuit(self) -> Circuit:
-        """Lift the dense sequence into a :class:`~monoprop.circuit.Circuit`.
-
-        Consecutive monomials sharing a ``param_ind`` become one :class:`MajoranaGate`; the
-        per-gate ``param_ind`` values become the circuit's parameter mapping, so weight-tying
-        is preserved and the expanded engine arrays stay identical to the original.
-
-        Returns:
-            A :class:`~monoprop.circuit.Circuit` carrying the gates, angle values, mapping,
-            and initial state.
-        """
-        param_inds = [int(p) for p in self.param_inds]
-
-        gates: list[MajoranaGate] = []
-        mapping: list[int] = []
-        current_index: int | None = None
-        current_terms: list[Term] = []
-        for maj, coeff, pidx in zip(
-            self.majoranas, self.gen_coeffs, param_inds, strict=True
-        ):
-            if current_terms and pidx != current_index:
-                gates.append(MajoranaGate(tuple(current_terms)))
-                mapping.append(current_index)  # type: ignore[arg-type]
-                current_terms = []
-            current_index = pidx
-            current_terms.append(Term(tuple(maj), float(coeff)))
-        if current_terms:
-            gates.append(MajoranaGate(tuple(current_terms)))
-            mapping.append(current_index)  # type: ignore[arg-type]
-
-        return Circuit(
-            gates=tuple(gates),
-            parameters=tuple(float(p) for p in self.parameters),
-            parameter_mapping=tuple(mapping),
-            initial_state=tuple(int(i) for i in self.initial_state),
-        )
 
 
 class MajoranaOperator:
