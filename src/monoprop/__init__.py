@@ -30,26 +30,30 @@ from ._core import (
 from ._version import version as __version__
 from .circuit import (
     Circuit,
+    Gate,
     MajoranaCircuit,
     MajoranaGate,
     PauliCircuit,
     PauliGate,
-    Term,
 )
+from .majorana_data import MajoranaOperator
 from .majorana_propagator import MajoranaPropagator
+from .pauli_data import PauliOperator
 from .pauli_propagator import PauliPropagator
 from .utils import jordan_wigner_basis_change
 
 __all__ = [
     "MAX_NUM_MODES",
     "Circuit",
+    "Gate",
     "MajoranaCircuit",
     "MajoranaGate",
+    "MajoranaOperator",
     "MajoranaPropagator",
     "PauliCircuit",
     "PauliGate",
+    "PauliOperator",
     "PauliPropagator",
-    "Term",
     "__build_type__",
     "__compiler_flags__",
     "__version__",

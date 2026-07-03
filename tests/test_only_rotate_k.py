@@ -34,7 +34,7 @@ def _split_orbital_gates(gates):
     whose generated monomials are all length-2 (free-fermion rotations)."""
 
     def is_orbital(gate):
-        return all(len(term.majorana) == 2 for term in gate.terms)
+        return all(len(majorana) == 2 for majorana in gate.generator.terms)
 
     for i in range(len(gates)):
         if all(is_orbital(gate) for gate in gates[i:]):

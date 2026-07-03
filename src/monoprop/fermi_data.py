@@ -18,9 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
-
-from .circuit import MajoranaCircuit, MajoranaGate, Term
+from .circuit import Gate, MajoranaCircuit, _antihermitian_gen_coeff
 from .conversion_utils import _n_product
 from .majorana_data import MajoranaOperator
 
@@ -230,22 +228,28 @@ class FermiGate:
         return f"{self.__class__.__name__}({len(self)} terms)"
 
 
-def _fermi_gate_to_majorana_gate(gate: FermiGate) -> MajoranaGate:
-    """Convert a fermi gate's generator into an antihermitian Majorana gate."""
-    terms: list[Term] = []
+def _fermi_gate_to_gate(gate: FermiGate) -> Gate:
+    """Convert a fermi gate's generator into a native :class:`~monoprop.circuit.Gate`.
+
+    The generator's monomials are antihermitian-normalized to real structural coefficients
+    and packed into a :class:`~monoprop.majorana_data.MajoranaOperator`; zero-coefficient
+    (identity) monomials are dropped by the operator's construction threshold.
+    """
+    majoranas: list[tuple[int, ...]] = []
+    coefficients: list[complex] = []
     for monomial, coefficient in gate.generator.terms.items():
-        w = len(monomial)
-        antiherm = -coefficient / (1j) ** (w * (w - 1) / 2)
-        terms.append(Term(tuple(monomial), float(np.real(antiherm))))
-    return MajoranaGate(tuple(terms))
+        # Validates the fermionic generator is Hermitian (raises otherwise).
+        majoranas.append(tuple(monomial))
+        coefficients.append(complex(_antihermitian_gen_coeff(monomial, coefficient)))
+    return Gate(MajoranaOperator(majoranas, coefficients, gate.generator.num_modes))
 
 
 class FermiCircuit(MajoranaCircuit):
     """A variational circuit of :class:`FermiGate` generators.
 
-    Each gate's generator is converted to a :class:`~monoprop.circuit.MajoranaGate` at
-    construction (its monomials mapped to antihermitian Majorana
-    :class:`~monoprop.circuit.Term` objects), so a ``FermiCircuit`` *is* a
+    Each gate's generator is converted to a native :class:`~monoprop.circuit.Gate` at
+    construction (its monomials antihermitian-normalized into a
+    :class:`~monoprop.majorana_data.MajoranaOperator`), so a ``FermiCircuit`` *is* a
     :class:`~monoprop.circuit.MajoranaCircuit` and is consumed directly by
     :class:`~monoprop.majorana_propagator.MajoranaPropagator`. The original fermionic gates
     remain available on :attr:`fermi_gates`.
@@ -283,12 +287,12 @@ class FermiCircuit(MajoranaCircuit):
             raise ValueError("Duplicate indices in initial state")
 
         fermi_gates = tuple(gates)
-        majorana_gates = tuple(_fermi_gate_to_majorana_gate(g) for g in fermi_gates)
+        majorana_gates = tuple(_fermi_gate_to_gate(g) for g in fermi_gates)
         parameters = tuple(parameters)
 
         if parameter_mapping is None:
             # Identity mapping: drop identity generators and their aligned parameter.
-            kept = [i for i, gate in enumerate(majorana_gates) if gate.terms]
+            kept = [i for i, gate in enumerate(majorana_gates) if gate.generator.terms]
             fermi_gates = tuple(fermi_gates[i] for i in kept)
             majorana_gates = tuple(majorana_gates[i] for i in kept)
             if parameters:

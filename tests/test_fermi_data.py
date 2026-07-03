@@ -167,7 +167,7 @@ class TestFermiGate:
 class TestFermiCircuit:
     def test_len(self):
         generator = MajoranaOperator(
-            majoranas=[(0, 1)], coefficients=[1.0], num_modes=1
+            majoranas=[(0, 1)], coefficients=[1.0j], num_modes=1
         )
         gates = [FermiGate(generator=generator), FermiGate(generator=generator)]
 
@@ -228,7 +228,7 @@ class TestFermiCircuit:
 
     def test_validate_inputs_duplicate_initial_state_raises(self):
         generator = MajoranaOperator(
-            majoranas=[(0, 1)], coefficients=[1.0], num_modes=1
+            majoranas=[(0, 1)], coefficients=[1.0j], num_modes=1
         )
         gate = FermiGate(generator=generator)
 

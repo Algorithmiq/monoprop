@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import MajoranaGate, PauliCircuit, PauliGate, PauliPropagator, Term
+from monoprop import MajoranaGate, PauliCircuit, PauliGate, PauliPropagator
+from monoprop.majorana_data import MajoranaOperator
 from monoprop.pauli_data import PauliOperator, PauliString
 
 
@@ -27,7 +28,7 @@ class TestPauliPropagatorCutoff:
 
     def _propagator(self, serial_comm):
         return PauliPropagator(
-            PauliOperator(["ZZ"], [1.0]),
+            PauliOperator(["ZZ"], [1.0], num_qubits=2),
             initial_state=[],
             cutoff=4,
             comm=serial_comm,
@@ -50,6 +51,16 @@ class TestPauliPropagatorCutoff:
     def test_num_qubits(self, serial_comm):
         mp = self._propagator(serial_comm)
         assert mp.num_qubits == 2  # "ZZ" operator
+
+    def test_non_hermitian_pauli_gate_rejected(self, serial_comm):
+        """A PauliGate with a complex (non-Hermitian) coefficient is rejected."""
+        circuit = PauliCircuit(
+            (PauliGate((0,), PauliOperator(["X"], [1.0j], num_qubits=1)),),
+            parameters=(0.3,),
+            num_qubits=2,
+        )
+        with pytest.raises(ValueError, match="not Hermitian"):
+            self._propagator(serial_comm).propagate(circuit)
 
 
 class TestPauliString:
@@ -78,26 +89,30 @@ class TestPauliString:
 
 class TestPauliOperator:
     def test_basic_construction(self):
-        op = PauliOperator(["XY", "IZ"], [1.0, 0.5])
+        op = PauliOperator(["XY", "IZ"], [1.0, 0.5], num_qubits=2)
         assert op.strings == [PauliString("XY"), PauliString("IZ")]
         assert op.coefficients == [1.0, 0.5]
 
     def test_num_qubits(self):
-        op = PauliOperator(["XYZ"], [1.0])
+        op = PauliOperator(["XYZ"], [1.0], num_qubits=3)
         assert op.num_qubits == 3
 
+    def test_num_qubits_must_match_string_length(self):
+        with pytest.raises(ValueError, match="same length"):
+            PauliOperator(["XYZ"], [1.0], num_qubits=2)
+
     def test_len(self):
-        op = PauliOperator(["X", "Y", "Z"], [1.0, 2.0, 3.0])
+        op = PauliOperator(["X", "Y", "Z"], [1.0, 2.0, 3.0], num_qubits=1)
         assert len(op) == 3
 
     def test_single_term(self):
-        op = PauliOperator(["XIYZ"], [1 + 2j])
+        op = PauliOperator(["XIYZ"], [1 + 2j], num_qubits=4)
         assert op.num_qubits == 4
         assert len(op) == 1
 
     def test_mismatched_lengths_raises(self):
         with pytest.raises(ValueError, match="must match"):
-            PauliOperator(["XY", "IZ"], [1.0])
+            PauliOperator(["XY", "IZ"], [1.0], num_qubits=2)
 
     def test_invalid_character_raises(self):
         with pytest.raises(ValueError, match="Invalid characters"):
@@ -105,14 +120,14 @@ class TestPauliOperator:
 
     def test_inconsistent_string_lengths_raises(self):
         with pytest.raises(ValueError, match="same length"):
-            PauliOperator(["X", "XY"], [1.0, 2.0])
+            PauliOperator(["X", "XY"], [1.0, 2.0], num_qubits=1)
 
     def test_all_valid_pauli_chars(self):
-        op = PauliOperator(["XYIZ"], [1.0])
+        op = PauliOperator(["XYIZ"], [1.0], num_qubits=4)
         assert op.strings == [PauliString("XYIZ")]
 
     def test_str_few_terms(self):
-        op = PauliOperator(["XY"], [1.0])
+        op = PauliOperator(["XY"], [1.0], num_qubits=2)
         r = str(op)
         assert "PauliOperator" in r
         assert "XY" in r
@@ -120,22 +135,22 @@ class TestPauliOperator:
     def test_str_many_terms(self):
         strings = ["X"] * 10
         coeffs = [1.0] * 10
-        op = PauliOperator(strings, coeffs)
+        op = PauliOperator(strings, coeffs, num_qubits=1)
         r = str(op)
         assert "PauliOperator" in r
         # With >8 terms, individual terms should not appear
         assert "10 terms" in r
 
     def test_from_dict_basic(self):
-        op = PauliOperator.from_dict({"XY": 1.0, "IZ": 0.5})
+        op = PauliOperator.from_dict({"XY": 1.0, "IZ": 0.5}, num_qubits=2)
         assert op.strings == [PauliString("XY"), PauliString("IZ")]
         assert op.coefficients == [1.0, 0.5]
         assert op.num_qubits == 2
 
-    def test_from_dict_single_term(self):
-        op = PauliOperator.from_dict({"IXYZ": 2.0})
+    def test_from_dict_num_qubits_optional(self):
+        op = PauliOperator.from_dict({"IXYZ": 2.0})  # num_qubits left unspecified
         assert len(op) == 1
-        assert op.num_qubits == 4
+        assert op.num_qubits is None
 
     def test_from_dict_invalid_character_raises(self):
         with pytest.raises(ValueError, match="Invalid characters"):
@@ -146,7 +161,7 @@ class TestPauliOperator:
             PauliOperator.from_dict({"X": 1.0, "XY": 2.0})
 
     def test_get_majorana_operator_identity(self):
-        op = PauliOperator(["I"], [2.5])
+        op = PauliOperator(["I"], [2.5], num_qubits=1)
 
         mon_op = op.get_majorana_operator()
 
@@ -154,7 +169,7 @@ class TestPauliOperator:
         assert mon_op.terms == {(): pytest.approx(2.5)}
 
     def test_get_majorana_operator_z(self):
-        op = PauliOperator(["Z"], [1.0])
+        op = PauliOperator(["Z"], [1.0], num_qubits=1)
 
         mon_op = op.get_majorana_operator()
 
@@ -165,38 +180,38 @@ class TestPauliOperator:
         ("left", "right", "expected"),
         [
             pytest.param(
-                PauliOperator(["XY", "IZ"], [1.0, 0.5]),
-                PauliOperator(["XY", "IZ"], [1.0, 0.5]),
+                PauliOperator(["XY", "IZ"], [1.0, 0.5], num_qubits=2),
+                PauliOperator(["XY", "IZ"], [1.0, 0.5], num_qubits=2),
                 True,
                 id="same",
             ),
             pytest.param(
-                PauliOperator(["XY"], [1.0]),
-                PauliOperator(["XY"], [1.0 + 1e-9]),
+                PauliOperator(["XY"], [1.0], num_qubits=2),
+                PauliOperator(["XY"], [1.0 + 1e-9], num_qubits=2),
                 True,
                 id="within_atol",
             ),
             pytest.param(
-                PauliOperator(["XY"], [1.0]),
-                PauliOperator(["XY"], [1.1]),
+                PauliOperator(["XY"], [1.0], num_qubits=2),
+                PauliOperator(["XY"], [1.1], num_qubits=2),
                 False,
                 id="outside_atol",
             ),
             pytest.param(
-                PauliOperator(["XY"], [1.0]),
-                PauliOperator(["XZ"], [1.0]),
+                PauliOperator(["XY"], [1.0], num_qubits=2),
+                PauliOperator(["XZ"], [1.0], num_qubits=2),
                 False,
                 id="different_strings",
             ),
             pytest.param(
-                PauliOperator(["XY", "IZ"], [1.0, 0.5]),
-                PauliOperator(["XY"], [1.0]),
+                PauliOperator(["XY", "IZ"], [1.0, 0.5], num_qubits=2),
+                PauliOperator(["XY"], [1.0], num_qubits=2),
                 False,
                 id="different_num_terms",
             ),
             pytest.param(
-                PauliOperator(["X"], [1.0]),
-                PauliOperator(["XY"], [1.0]),
+                PauliOperator(["X"], [1.0], num_qubits=1),
+                PauliOperator(["XY"], [1.0], num_qubits=2),
                 False,
                 id="different_num_qubits",
             ),
@@ -207,12 +222,12 @@ class TestPauliOperator:
 
     def test_is_closely_equal_type_error(self):
         with pytest.raises(TypeError):
-            PauliOperator(["X"], [1.0]).isclose("not an operator")
+            PauliOperator(["X"], [1.0], num_qubits=1).isclose("not an operator")
 
 
 class TestPauliCircuit:
     def _make_gate(self):
-        return PauliGate((0,), PauliOperator(["X"], [1.0]))
+        return PauliGate((0,), PauliOperator(["X"], [1.0], num_qubits=1))
 
     def test_basic_construction(self):
         gates = (self._make_gate(), self._make_gate())
@@ -239,9 +254,11 @@ class TestPauliCircuit:
 
     def test_rejects_non_pauli_gate(self):
         with pytest.raises(TypeError, match="PauliGate"):
-            PauliCircuit((MajoranaGate((Term((0, 1), 1.0),)),), num_qubits=1)
+            PauliCircuit(
+                (MajoranaGate(MajoranaOperator.from_dict({(0, 1): 1.0})),), num_qubits=1
+            )
 
     def test_pauli_gate_equality(self):
-        op = PauliOperator(["X"], [1.0])
+        op = PauliOperator(["X"], [1.0], num_qubits=1)
         assert PauliGate((0,), op) == PauliGate((0,), op)
         assert PauliGate((0,), op) != PauliGate((1,), op)

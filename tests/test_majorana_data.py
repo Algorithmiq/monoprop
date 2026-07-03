@@ -34,8 +34,8 @@ def test_from_dense_arrays_groups_by_param_ind():
     assert circuit.parameters == (1.0, 2.0)
     assert circuit.resolved_mapping == (0, 1)
     assert len(circuit) == 2  # {param 0: two monomials}, {param 1: one monomial}
-    assert len(circuit.gates[0].terms) == 2
-    assert len(circuit.gates[1].terms) == 1
+    assert len(circuit.gates[0].generator.terms) == 2
+    assert len(circuit.gates[1].generator.terms) == 1
 
 
 def test_majorana_operator_normalizes_terms():

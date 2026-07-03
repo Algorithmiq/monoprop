@@ -27,7 +27,6 @@ from monoprop import (
     MajoranaPropagator,
     PauliCircuit,
     PauliGate,
-    Term,
 )
 from monoprop.majorana_data import MajoranaOperator
 from monoprop.pauli_data import PauliOperator
@@ -55,7 +54,7 @@ def test_to_circuit_round_trips_sequence() -> None:
     circuit = mc.to_circuit()
 
     # Expanding the gates against the mapping reproduces the dense per-monomial arrays.
-    majoranas = [tuple(term.majorana) for gate in circuit for term in gate.terms]
+    majoranas = [maj for gate in circuit for maj in gate.generator.terms]
     assert majoranas == [tuple(m) for m in mc.majoranas]
     assert list(circuit.resolved_mapping) != []  # sanity: mapping is populated
     np.testing.assert_allclose(
@@ -67,7 +66,10 @@ def test_to_circuit_round_trips_sequence() -> None:
 def test_default_mapping_is_identity() -> None:
     """Omitting the mapping gives each gate its own distinct angle."""
     circuit = MajoranaCircuit(
-        (MajoranaGate((Term((0, 1), 1.0),)), MajoranaGate((Term((2, 3), 1.0),)))
+        (
+            MajoranaGate(MajoranaOperator.from_dict({(0, 1): 1.0})),
+            MajoranaGate(MajoranaOperator.from_dict({(2, 3): 1.0})),
+        )
     )
     assert circuit.resolved_mapping == (0, 1)
     assert circuit.n_parameters == 2
@@ -76,9 +78,9 @@ def test_default_mapping_is_identity() -> None:
 def test_shared_mapping_index_ties_gates() -> None:
     """Reusing one index in the mapping ties gates to one angle."""
     gates = (
-        MajoranaGate((Term((0, 1), 1.0),)),
-        MajoranaGate((Term((2, 3), 1.0),)),
-        MajoranaGate((Term((0, 3), 1.0),)),  # same angle as the first gate
+        MajoranaGate(MajoranaOperator.from_dict({(0, 1): 1.0})),
+        MajoranaGate(MajoranaOperator.from_dict({(2, 3): 1.0})),
+        MajoranaGate(MajoranaOperator.from_dict({(0, 3): 1.0})),  # ties to the first
     )
     circuit = MajoranaCircuit(gates, parameter_mapping=(0, 1, 0))
     assert circuit.resolved_mapping == (0, 1, 0)
@@ -87,21 +89,27 @@ def test_shared_mapping_index_ties_gates() -> None:
 
 def test_circuit_rejects_non_contiguous_mapping() -> None:
     """A mapping with an index gap is rejected (it would invent a phantom parameter)."""
-    gates = (MajoranaGate((Term((0, 1), 1.0),)), MajoranaGate((Term((2, 3), 1.0),)))
+    gates = (
+        MajoranaGate(MajoranaOperator.from_dict({(0, 1): 1.0})),
+        MajoranaGate(MajoranaOperator.from_dict({(2, 3): 1.0})),
+    )
     with pytest.raises(ValueError, match="contiguous"):
         MajoranaCircuit(gates, parameter_mapping=(0, 2))
 
 
 def test_circuit_rejects_mapping_length_mismatch() -> None:
     """A mapping whose length differs from the gate count is rejected."""
-    gates = (MajoranaGate((Term((0, 1), 1.0),)), MajoranaGate((Term((2, 3), 1.0),)))
+    gates = (
+        MajoranaGate(MajoranaOperator.from_dict({(0, 1): 1.0})),
+        MajoranaGate(MajoranaOperator.from_dict({(2, 3): 1.0})),
+    )
     with pytest.raises(ValueError, match="entries but there are 2 gates"):
         MajoranaCircuit(gates, parameter_mapping=(0,))
 
 
 def test_circuit_rejects_wrong_parameter_length() -> None:
     """A bound circuit must supply exactly one value per distinct angle."""
-    gates = (MajoranaGate((Term((0, 1), 1.0),)),)
+    gates = (MajoranaGate(MajoranaOperator.from_dict({(0, 1): 1.0})),)
     with pytest.raises(ValueError, match="1 parameters"):
         MajoranaCircuit(gates, parameters=(0.1, 0.2))
 
@@ -109,14 +117,34 @@ def test_circuit_rejects_wrong_parameter_length() -> None:
 def test_circuit_add_offsets_second_axis() -> None:
     """Concatenating circuits appends the second's angles on a fresh axis."""
     a = MajoranaCircuit(
-        (MajoranaGate((Term((0,), 1.0),)), MajoranaGate((Term((1,), 1.0),))),
+        (
+            MajoranaGate(MajoranaOperator.from_dict({(0,): 1.0})),
+            MajoranaGate(MajoranaOperator.from_dict({(1,): 1.0})),
+        ),
         parameters=(0.1, 0.2),
     )
-    b = MajoranaCircuit((MajoranaGate((Term((2,), 1.0),)),), parameters=(0.3,))
+    b = MajoranaCircuit(
+        (MajoranaGate(MajoranaOperator.from_dict({(2,): 1.0})),), parameters=(0.3,)
+    )
     combined = a + b
     assert combined.resolved_mapping == (0, 1, 2)
     assert combined.parameters == (0.1, 0.2, 0.3)
     assert combined.n_parameters == 3
+
+
+def test_non_hermitian_majorana_generator_rejected() -> None:
+    """A Majorana gate whose generator is not Hermitian is rejected on ingestion.
+
+    A length-2 monomial carries a *real* structural generator coefficient; an imaginary
+    one (the Hermitian-observable convention) would silently vanish, so it is rejected.
+    """
+    obs = MajoranaOperator.from_dict({(0, 1): 1.0j}, num_modes=2)
+    prop = MajoranaPropagator(obs, [0, 1], cutoff=4)
+    bad = MajoranaCircuit(
+        (MajoranaGate(MajoranaOperator.from_dict({(0, 1): 1.0j})),), parameters=(0.3,)
+    )
+    with pytest.raises(ValueError, match="not Hermitian"):
+        prop.propagate(bad)
 
 
 # -- evaluation contracts -------------------------------------------------------
@@ -231,8 +259,9 @@ def _multi_term_gate_propagator():
     """A propagator whose graph has a multi-term gate (n_gates < graph_layers)."""
     op = MajoranaOperator.from_dict({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(op, [0, 1], cutoff=4)
-    g0 = MajoranaGate((Term((0,), 1.0), Term((1,), 1.0)))  # two monomials -> two layers
-    g1 = MajoranaGate((Term((2,), 1.0),))
+    # two monomials -> two layers
+    g0 = MajoranaGate(MajoranaOperator.from_dict({(0,): 1.0, (1,): 1.0}))
+    g1 = MajoranaGate(MajoranaOperator.from_dict({(2,): 1.0}))
     prop.build_graph(MajoranaCircuit((g0, g1)))
     return prop
 
@@ -248,9 +277,13 @@ def test_n_gates_accumulates_across_builds() -> None:
     """Each build_graph call extends the gate count on the accumulated axis."""
     op = MajoranaOperator.from_dict({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(op, [0, 1], cutoff=4)
-    prop.build_graph(MajoranaCircuit((MajoranaGate((Term((0,), 1.0),)),)))
+    prop.build_graph(
+        MajoranaCircuit((MajoranaGate(MajoranaOperator.from_dict({(0,): 1.0})),))
+    )
     assert prop.n_gates == 1
-    prop.build_graph(MajoranaCircuit((MajoranaGate((Term((1,), 1.0),)),)))
+    prop.build_graph(
+        MajoranaCircuit((MajoranaGate(MajoranaOperator.from_dict({(1,): 1.0})),))
+    )
     assert prop.n_gates == 2
 
 
@@ -274,7 +307,8 @@ def test_majorana_propagator_rejects_pauli_circuit() -> None:
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)
     circuit = PauliCircuit(
-        gates=(PauliGate((0,), PauliOperator(["Z"], [1.0])),), num_qubits=1
+        gates=(PauliGate((0,), PauliOperator(["Z"], [1.0], num_qubits=1)),),
+        num_qubits=1,
     )
 
     with pytest.raises(TypeError, match="MajoranaCircuit"):
@@ -285,7 +319,7 @@ def test_propagate_rejects_mismatched_initial_state() -> None:
     """A circuit whose initial_state disagrees with the propagator's raises ValueError."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)  # built with the fixture's initial state ([])
-    gate = MajoranaGate((Term((0, 1), 1.0),))
+    gate = MajoranaGate(MajoranaOperator.from_dict({(0, 1): 1.0}))
     circuit = MajoranaCircuit((gate,), parameters=(0.1,), initial_state=(0, 1))
 
     with pytest.raises(ValueError, match="initial_state"):
@@ -296,7 +330,7 @@ def test_propagate_accepts_empty_initial_state() -> None:
     """An empty circuit.initial_state defers to the propagator's reference state."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)
-    gate = MajoranaGate((Term((0, 1), 1.0),))
+    gate = MajoranaGate(MajoranaOperator.from_dict({(0, 1): 1.0}))
     circuit = MajoranaCircuit((gate,), parameters=(0.1,))  # empty initial_state
 
     prop.propagate(circuit)  # does not raise

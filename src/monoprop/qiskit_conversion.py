@@ -68,7 +68,11 @@ def from_qiskit_operator(
         coeffs = np.real_if_close(coeffs)  # type: ignore
         if np.iscomplexobj(coeffs):
             raise ValueError("Operator has complex terms")
-    return PauliOperator(strings=pauli_strings, coefficients=coeffs)  # type: ignore
+    return PauliOperator(
+        strings=pauli_strings,
+        coefficients=coeffs,  # type: ignore[arg-type]
+        num_qubits=qiskit_op.num_qubits,
+    )
 
 
 def to_qiskit_operator(
@@ -121,7 +125,7 @@ def from_qiskit_circuit(
         elif gate_name in PAULI_EVOLUTION_EQUIVALENT:
             parameter = g_op.params[0] * 0.5
             pauli_string = gate_name[1:].upper()  # Remove the leading 'R' and uppercase
-            paulis = PauliOperator([pauli_string], [1.0])
+            paulis = PauliOperator([pauli_string], [1.0], num_qubits=len(qubits))
         else:
             raise ValueError(
                 f"Unsupported gate {gate_name}. Only PauliEvolutionGate or equivalent gates are supported."

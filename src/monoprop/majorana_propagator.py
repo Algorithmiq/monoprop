@@ -30,8 +30,9 @@ from monoprop._dispatch import dispatch
 
 from .circuit import (
     Circuit,
+    Gate,
     MajoranaCircuit,
-    MajoranaGate,
+    PauliGate,
     expand_monomials,
     validate_parameter_mapping,
 )
@@ -181,8 +182,13 @@ class MajoranaPropagator:
         propagator.build_graph(circuit)
         return propagator
 
-    def _majorana_gates(self, circuit: Circuit) -> Sequence[MajoranaGate]:
-        """Hook for subclasses to map their gate type to Majorana gates."""
+    def _circuit_gates(self, circuit: Circuit) -> Sequence[Gate | PauliGate]:
+        """Validate the circuit family and return its gates for expansion.
+
+        The gate-to-Majorana conversion itself is shared (see
+        :func:`~monoprop.circuit.expand_monomials`); subclasses override only to accept a
+        different circuit family.
+        """
         if not isinstance(circuit, MajoranaCircuit):
             raise TypeError(
                 f"MajoranaPropagator requires a MajoranaCircuit (or FermiCircuit); got "
@@ -237,12 +243,13 @@ class MajoranaPropagator:
                 expectation-value estimation in Schrodinger-picture simulations.
         """
         self._check_initial_state(circuit)
-        majorana_gates = self._majorana_gates(circuit)
+        gates = self._circuit_gates(circuit)
+        num_qubits = getattr(circuit, "num_qubits", None)
         # Shift the circuit's local 0-based angle indices onto the accumulated axis.
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
         self._n_params += circuit.n_parameters
         majoranas, gen_coeffs, per_monomial, gate_indices = expand_monomials(
-            majorana_gates, mapping
+            gates, mapping, num_qubits
         )
         seed = seed_parameters if seed_parameters is not None else circuit.parameters
         bound = self._bind(seed) if seed else None
@@ -273,9 +280,10 @@ class MajoranaPropagator:
             only_rotate_len_k: See :meth:`build_graph`.
         """
         self._check_initial_state(circuit)
-        majorana_gates = self._majorana_gates(circuit)
+        gates = self._circuit_gates(circuit)
+        num_qubits = getattr(circuit, "num_qubits", None)
         majoranas, gen_coeffs, mapping, _gate_indices = expand_monomials(
-            majorana_gates, circuit.resolved_mapping
+            gates, circuit.resolved_mapping, num_qubits
         )
         self._simulator.propagate(
             majoranas,

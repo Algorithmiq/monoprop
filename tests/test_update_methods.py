@@ -21,7 +21,6 @@ from monoprop import (
     MajoranaCircuit,
     MajoranaGate,
     MajoranaPropagator,
-    Term,
     jordan_wigner_basis_change,
 )
 from monoprop.majorana_data import MajoranaOperator
@@ -109,7 +108,7 @@ class TestUpdateMethods:
 
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
-        gate = MajoranaGate((Term((0, 1, 2, 3, 4, 5), 1.0),))
+        gate = MajoranaGate(MajoranaOperator.from_dict({(0, 1, 2, 3, 4, 5): 1.0}))
         mp.build_graph(MajoranaCircuit((gate,)))
         assert mp.size() > 0
 

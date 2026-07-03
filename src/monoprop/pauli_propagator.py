@@ -22,17 +22,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
-
-from .circuit import MajoranaGate, PauliCircuit, Term
-from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
+from .circuit import PauliCircuit
 from .majorana_propagator import MajoranaPropagator
 from .utils import jordan_wigner_basis_change
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    import numpy as np
     from mpi4py import MPI
 
-    from .circuit import Circuit
+    from .circuit import Circuit, PauliGate
     from .pauli_data import PauliOperator
 
 
@@ -80,6 +80,11 @@ class PauliPropagator(MajoranaPropagator):
             comm: Optional MPI communicator (must outlive the propagator).
         """
         num_qubits = initial_operator.num_qubits
+        if num_qubits is None:
+            raise ValueError(
+                "The initial PauliOperator has num_qubits=None; PauliPropagator needs the "
+                "qubit count. Construct the operator with an explicit num_qubits."
+            )
         self._num_qubits = num_qubits
         super().__init__(
             initial_operator.get_majorana_operator(),
@@ -118,29 +123,17 @@ class PauliPropagator(MajoranaPropagator):
         """
         return self._simulator.basis_change
 
-    def _majorana_gates(self, circuit: Circuit) -> list[MajoranaGate]:
-        """Map each qubit gate to one Majorana gate via Jordan-Wigner (1:1, mapping-preserving)."""
+    def _circuit_gates(self, circuit: Circuit) -> Sequence[PauliGate]:
+        """Accept a PauliCircuit; its gates are expanded by the shared pipeline.
+
+        The Jordan-Wigner mapping and antihermitian normalization live in
+        :func:`~monoprop.circuit.expand_monomials`, shared with
+        :class:`~monoprop.majorana_propagator.MajoranaPropagator`; the propagator's
+        ``num_qubits`` reaches the expander via the circuit's ``num_qubits``.
+        """
         if not isinstance(circuit, PauliCircuit):
             raise TypeError(
                 f"PauliPropagator requires a PauliCircuit; got {type(circuit).__name__}. "
                 "Use MajoranaPropagator for a MajoranaCircuit or FermiCircuit."
             )
-        majorana_gates: list[MajoranaGate] = []
-        for pauli_gate in circuit.gates:
-            terms: list[Term] = []
-            for pauli, coefficient in zip(
-                pauli_gate.paulis.strings,
-                pauli_gate.paulis.coefficients,
-                strict=True,
-            ):
-                extended = _extend_pauli_string(
-                    pauli.string, pauli_gate.qubits, self._num_qubits
-                )
-                majorana, fermi_coeff = _pauli_to_fermi(extended)
-                weight = len(majorana)
-                gen_coeff = (
-                    -coefficient * fermi_coeff / (1j) ** (weight * (weight - 1) / 2)
-                )
-                terms.append(Term(tuple(majorana), float(np.real(gen_coeff))))
-            majorana_gates.append(MajoranaGate(tuple(terms)))
-        return majorana_gates
+        return circuit.gates

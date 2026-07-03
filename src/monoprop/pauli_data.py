@@ -80,40 +80,51 @@ class PauliOperator:
         self,
         strings: list[str],
         coefficients: list[float] | np.ndarray,
+        num_qubits: int | None,
     ) -> None:
         """Initialize the Pauli operator.
 
         Args:
             strings: List of Pauli strings (characters must be I, X, Y, Z).
             coefficients: List of float coefficients, one per Pauli string.
+            num_qubits: Number of qubits the operator acts on. Every Pauli string must
+                have exactly this length. Passed explicitly rather than inferred from the
+                string length; ``None`` leaves it unspecified (the strings must then still
+                share a common length).
 
         Raises:
-            ValueError: If validation fails on characters, string lengths, or
-                the number of coefficients.
+            ValueError: If validation fails on characters, string lengths (against each
+                other or against ``num_qubits``), or the number of coefficients.
         """
-        pauli_strings = self._validate_inputs(strings, coefficients)
+        pauli_strings = self._validate_inputs(strings, coefficients, num_qubits)
 
         self.strings = pauli_strings
         self.coefficients = list(coefficients)
-        self.num_qubits = len(pauli_strings[0]) if len(pauli_strings) > 0 else None
+        self.num_qubits = num_qubits
 
     def _validate_inputs(
-        self, strings: list[str], coefficients: list[float] | np.ndarray
+        self,
+        strings: list[str],
+        coefficients: list[float] | np.ndarray,
+        num_qubits: int | None,
     ) -> list[PauliString]:
         if len(strings) != len(coefficients):
             raise ValueError(
                 f"Number of strings ({len(strings)}) must match "
                 f"number of coefficients ({len(coefficients)})."
             )
-        if len(strings) == 0:
-            return []
         pauli_strings = [PauliString(s) for s in strings]
-        expected_len = len(pauli_strings[0])
+        # Determine the common length the strings must share: num_qubits when given,
+        # otherwise the first string's length (never inferred *as* num_qubits).
+        expected_len = num_qubits if num_qubits is not None else None
+        if expected_len is None and pauli_strings:
+            expected_len = len(pauli_strings[0])
         for i, s in enumerate(pauli_strings):
             if len(s) != expected_len:
                 raise ValueError(
-                    f"All Pauli strings must have the same length ({expected_len}), "
-                    f"but string at index {i} has length {len(s)}."
+                    f"All Pauli strings must have the same length {expected_len} "
+                    f"(num_qubits={num_qubits}), but string at index {i} has length "
+                    f"{len(s)}."
                 )
         return pauli_strings
 
@@ -167,19 +178,26 @@ class PauliOperator:
         return True
 
     @classmethod
-    def from_dict(cls, operator: dict[str, float]) -> PauliOperator:
-        """Create a PauliOperator from a dictionary of Pauli strings and coefficients.
+    def from_dict(
+        cls, operator: dict[str, float], num_qubits: int | None = None
+    ) -> PauliOperator:
+        """Create a PauliOperator from a Pauli-string -> coefficient mapping.
+
+        Mirrors :meth:`~monoprop.majorana_data.MajoranaOperator.from_dict`: ``num_qubits``
+        may be omitted (``None``) when it is not needed, but is validated against the
+        string lengths when given.
 
         Args:
             operator: A dictionary mapping Pauli strings (composed of I, X, Y, Z)
                 to their corresponding float coefficients.
+            num_qubits: Number of qubits the operator acts on (see :meth:`__init__`).
 
         Returns:
             A PauliOperator instance representing the given operator.
         """
         strings = list(operator.keys())
         coefficients = list(operator.values())
-        return cls(strings, coefficients)
+        return cls(strings, coefficients, num_qubits)
 
     def to_dict(self) -> dict[str, float]:
         """Create a dictionary from PauliOperator."""

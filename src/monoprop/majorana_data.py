@@ -58,9 +58,13 @@ class MajoranaOperator:
 
     @classmethod
     def from_dict(
-        cls, terms_dict: dict[tuple[int, ...], complex], num_modes: int
+        cls, terms_dict: dict[tuple[int, ...], complex], num_modes: int | None = None
     ) -> MajoranaOperator:
-        """Construct a MajoranaOperator from a Majorana-index -> coefficient mapping."""
+        """Construct a MajoranaOperator from a Majorana-index -> coefficient mapping.
+
+        ``num_modes`` may be omitted (``None``) when the operator is used only as a gate
+        generator, where the mode count is supplied by the propagator.
+        """
         return cls(list(terms_dict.keys()), list(terms_dict.values()), num_modes)
 
     def get_majorana_operator(self) -> MajoranaOperator:

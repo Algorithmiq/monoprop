@@ -34,9 +34,9 @@ information, so evaluation takes only the parameter values. See
 Authoring gates
 ~~~~~~~~~~~~~~~
 
-A :class:`~monoprop.MajoranaGate` is a pure generator: it bundles the
-:class:`~monoprop.Term` monomials it generates and carries no parameter index
-(:class:`~monoprop.PauliGate` is the qubit analogue). A circuit bundles a sequence of these
+A :class:`~monoprop.Gate` (aliased :class:`~monoprop.MajoranaGate`) is a pure generator: it
+wraps the :class:`~monoprop.majorana_data.MajoranaOperator` it generates and carries no
+parameter index (:class:`~monoprop.PauliGate` is the qubit analogue). A circuit bundles a sequence of these
 gates with the angle *values* that drive them, the ``parameter_mapping`` wiring each gate to
 an angle (default: one distinct angle per gate; reusing an index across gates ties their
 angles), and the reference ``initial_state``. Circuits form a typed family —
