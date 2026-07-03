@@ -379,7 +379,7 @@ def _resolve_mapping(
 def expand_monomials(
     gates: Sequence[MajoranaGate],
     mapping: Sequence[int],
-) -> tuple[list[tuple[int, ...]], list[float], list[int]]:
+) -> tuple[list[tuple[int, ...]], list[float], list[int], list[int]]:
     """Flatten gates + an already-resolved per-gate mapping into per-monomial arrays.
 
     Args:
@@ -387,15 +387,19 @@ def expand_monomials(
         mapping: The angle index driving each gate (one entry per gate).
 
     Returns:
-        A tuple ``(majoranas, gen_coeffs, parameter_mapping)`` for the C++ engine, expanded
-        per monomial.
+        A tuple ``(majoranas, gen_coeffs, parameter_mapping, gate_indices)`` for the C++
+        engine, expanded per monomial. ``gate_indices[i]`` is the (local, 0-based) index of
+        the authoring gate monomial ``i`` came from, so the engine can recover gate
+        boundaries; monomials from a multi-term gate share one gate index.
     """
     majoranas: list[tuple[int, ...]] = []
     gen_coeffs: list[float] = []
     per_monomial: list[int] = []
-    for gate, param in zip(gates, mapping, strict=True):
+    gate_indices: list[int] = []
+    for gate_index, (gate, param) in enumerate(zip(gates, mapping, strict=True)):
         for term in gate.terms:
             majoranas.append(tuple(term.majorana))
             gen_coeffs.append(float(term.gen_coeff))
             per_monomial.append(param)
-    return majoranas, gen_coeffs, per_monomial
+            gate_indices.append(gate_index)
+    return majoranas, gen_coeffs, per_monomial, gate_indices

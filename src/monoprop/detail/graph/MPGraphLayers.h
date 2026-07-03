@@ -209,6 +209,7 @@ struct LayerTraversal final {
 
     auto param_index() const -> size_t { return storage_->param_index; }
     auto gen_coeff() const -> double { return storage_->gen_coeff; }
+    auto gate_index() const -> size_t { return storage_->gate_index; }
 
 private:
     auto local_cycle_position(size_t idx) const -> size_t {
@@ -336,9 +337,11 @@ struct Layer final {
     // appended during graph building; read by evaluation.
     auto param_index() const -> size_t { return storage_->param_index; }
     auto gen_coeff() const -> double { return storage_->gen_coeff; }
-    auto set_gate_info(size_t param_index, double gen_coeff) -> void {
+    auto gate_index() const -> size_t { return storage_->gate_index; }
+    auto set_gate_info(size_t param_index, double gen_coeff, size_t gate_index) -> void {
         storage_->param_index = param_index;
         storage_->gen_coeff = gen_coeff;
+        storage_->gate_index = gate_index;
     }
 
     auto empty() const -> bool {

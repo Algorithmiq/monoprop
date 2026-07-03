@@ -19,6 +19,7 @@
 #include <cmath>
 #include <format>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <string>
@@ -174,6 +175,18 @@ public:
     auto graph_layers() const -> size_t { return graph_.layers(); }
 
     /**
+     * @brief Number of gates ingested into the graph.
+     *
+     * Derived from the layers as max(gate_index) + 1 over the active layers (0 if empty),
+     * so it stays correct after prefix layers are consumed by contract_partially/propagate.
+     * A single-term gate expands to one layer; a multi-term gate expands to several layers
+     * that share one gate index, so n_gates() <= graph_layers().
+     *
+     * @return The number of distinct gate indices recorded across the graph's layers.
+     */
+    auto n_gates() const -> size_t;
+
+    /**
      * @brief The parameter mapping owned by the graph, in optimizer order.
      *
      * Entry i is the variational-parameter index driving the i-th graph layer (a generated
@@ -192,8 +205,16 @@ public:
      * created by expectation_value_functional() keep the mapping they captured at creation
      * (they snapshot it), so rebuild a functional to pick up the new mapping.
      *
-     * @param parameter_mapping New per-layer parameter index in optimizer order; its length
-     *        must equal graph_layers().
+     * The mapping may be given at either granularity: per-layer (length graph_layers(), in
+     * optimizer order) or per-gate (length n_gates(), indexed by absolute gate index). A
+     * per-gate mapping is expanded to per-layer via each layer's stored gate index, which is
+     * order-agnostic and correct in both pictures and across build_graph calls. When the two
+     * lengths coincide (every gate is single-term in a single build) the per-layer reading is
+     * used; note that across multiple Heisenberg builds optimizer order differs from gate
+     * order even for single-term gates, so pass a per-gate mapping when tying by gate.
+     *
+     * @param parameter_mapping New parameter index per layer (length graph_layers()) or per
+     *        gate (length n_gates()).
      */
     auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
@@ -403,6 +424,11 @@ public:
      * @param majoranas Majorana generators to apply (each a vector of indices).
      * @param parameter_mapping Per-generator index into the variational parameter vector.
      * @param gen_coeffs Per-generator coefficient g (angle = parameters[mapping[i]] * g).
+     * @param gate_indices Optional per-generator gate index (which ingested gate each
+     *        monomial belongs to), local and 0-based per call. Unlike parameter_mapping
+     *        these are offset internally by the gate count already in the graph, so callers
+     *        pass local indices and never track the running gate count. Omit (nullopt) for
+     *        one gate per generator (iota); required to be contiguous runs from 0.
      * @param parameters Optional. When the graph is already non-empty and coefficient
      *        information is needed for atol-based truncation while extending it, provide
      *        the full parameter vector covering the existing graph *and* these new gates;
@@ -420,6 +446,7 @@ public:
     auto build_graph(const std::vector<VecZ> &majoranas,
                      const VecZ &parameter_mapping,
                      const VecD &gen_coeffs,
+                     std::optional<VecZ> gate_indices = std::nullopt,
                      std::optional<VecD> parameters = std::nullopt,
                      int only_rotate_len_k = 0) -> void;
 
@@ -519,7 +546,8 @@ protected:
                                 SplitCycleResult &split,
                                 MPI_Comm comm,
                                 size_t param_index = 0,
-                                double gen_coeff = 0.0) -> void;
+                                double gen_coeff = 0.0,
+                                size_t gate_index = 0) -> void;
 
     static auto expected_num_params(const VecZ &parameter_mapping) -> size_t;
 
@@ -595,6 +623,7 @@ private:
     auto evolve_mode_build_graph_(const std::vector<VecZ> &majoranas,
                                   const VecZ &parameter_mapping,
                                   const VecD &gen_coeffs,
+                                  const VecZ &gate_indices,
                                   int only_rotate_len_k) -> void;
 
     // Graph build that also contracts into a running coeffs vector seeded by operator_coeffs
@@ -602,6 +631,7 @@ private:
     auto evolve_mode_graph_with_coeffs_(const std::vector<VecZ> &majoranas,
                                         const VecZ &parameter_mapping,
                                         const VecD &gen_coeffs,
+                                        const VecZ &gate_indices,
                                         const VecD &parameters,
                                         const VecD &operator_coeffs,
                                         int only_rotate_len_k) -> void;
@@ -636,7 +666,8 @@ private:
                         std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
                         std::optional<double> param = std::nullopt,
                         size_t param_index = 0,
-                        double gen_coeff = 0.0) -> void;
+                        double gen_coeff = 0.0,
+                        size_t gate_index = 0) -> void;
 
     /**
      * @brief Creates a functional (closure) for expectation value or gradient calculations.

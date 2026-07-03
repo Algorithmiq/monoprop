@@ -25,7 +25,8 @@ auto MonomialPropagator<NumModes>::append_to_graph(MPGraph &graph,
                                                    SplitCycleResult &split,
                                                    MPI_Comm comm,
                                                    size_t param_index,
-                                                   double gen_coeff) -> void {
+                                                   double gen_coeff,
+                                                   size_t gate_index) -> void {
     if (mpi::size(comm) > 1) {
         compressed_cos_data = detail::remove_incoming_cycle_targets_compressed(cos_inds, split);
         cos_inds.clear();
@@ -35,14 +36,16 @@ auto MonomialPropagator<NumModes>::append_to_graph(MPGraph &graph,
                      std::move(split.local_cycles),
                      std::move(split.cross_rank),
                      param_index,
-                     gen_coeff);
+                     gen_coeff,
+                     gate_index);
     }
     else {
         graph.append(std::move(cos_inds),
                      std::move(split.local_cycles),
                      std::move(split.cross_rank),
                      param_index,
-                     gen_coeff);
+                     gen_coeff,
+                     gate_index);
     }
 }
 

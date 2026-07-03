@@ -29,6 +29,7 @@ from monoprop import (
     PauliGate,
     Term,
 )
+from monoprop.majorana_data import MajoranaOperator
 from monoprop.pauli_data import PauliOperator
 from tests.cases import load_problem
 
@@ -220,10 +221,52 @@ def test_parameter_mapping_setter_validates() -> None:
     prop = _propagator(problem)
     prop.build_graph(circuit)
 
-    with pytest.raises(ValueError, match="layers"):
-        prop.parameter_mapping = [0]  # too short
+    with pytest.raises(ValueError, match=r"per graph layer.*per gate"):
+        prop.parameter_mapping = [0]  # length matches neither layers nor gates
     with pytest.raises(ValueError, match="contiguous"):
         prop.parameter_mapping = [i + 1 for i in range(prop.graph_layers)]  # no 0
+
+
+def _multi_term_gate_propagator():
+    """A propagator whose graph has a multi-term gate (n_gates < graph_layers)."""
+    op = MajoranaOperator.from_dict({(0, 1): 1.0j}, num_modes=2)
+    prop = MajoranaPropagator(op, [0, 1], cutoff=4)
+    g0 = MajoranaGate((Term((0,), 1.0), Term((1,), 1.0)))  # two monomials -> two layers
+    g1 = MajoranaGate((Term((2,), 1.0),))
+    prop.build_graph(MajoranaCircuit((g0, g1)))
+    return prop
+
+
+def test_n_gates_tracks_ingested_gates() -> None:
+    """n_gates counts authoring gates; a multi-term gate spans several layers."""
+    prop = _multi_term_gate_propagator()
+    assert prop.n_gates == 2
+    assert prop.graph_layers > prop.n_gates  # gate 0 expands to multiple layers
+
+
+def test_n_gates_accumulates_across_builds() -> None:
+    """Each build_graph call extends the gate count on the accumulated axis."""
+    op = MajoranaOperator.from_dict({(0, 1): 1.0j}, num_modes=2)
+    prop = MajoranaPropagator(op, [0, 1], cutoff=4)
+    prop.build_graph(MajoranaCircuit((MajoranaGate((Term((0,), 1.0),)),)))
+    assert prop.n_gates == 1
+    prop.build_graph(MajoranaCircuit((MajoranaGate((Term((1,), 1.0),)),)))
+    assert prop.n_gates == 2
+
+
+def test_parameter_mapping_setter_accepts_per_gate() -> None:
+    """A per-gate mapping (length n_gates) ties a multi-term gate's layers together."""
+    prop = _multi_term_gate_propagator()
+
+    # Per-gate mapping tying both gates to one angle: equals the per-layer-tied graph
+    # evaluated at the same broadcast angle.
+    prop.parameter_mapping = [0, 0]  # length == n_gates
+    assert prop.n_parameters == 1
+    tied_by_gate = prop.expectation_value([0.3])
+
+    prop.parameter_mapping = [0] * prop.graph_layers  # length == graph_layers
+    tied_by_layer = prop.expectation_value([0.3])
+    np.testing.assert_allclose(tied_by_gate, tied_by_layer)
 
 
 def test_majorana_propagator_rejects_pauli_circuit() -> None:

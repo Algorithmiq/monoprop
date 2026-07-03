@@ -241,13 +241,16 @@ class MajoranaPropagator:
         # Shift the circuit's local 0-based angle indices onto the accumulated axis.
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
         self._n_params += circuit.n_parameters
-        majoranas, gen_coeffs, per_monomial = expand_monomials(majorana_gates, mapping)
+        majoranas, gen_coeffs, per_monomial, gate_indices = expand_monomials(
+            majorana_gates, mapping
+        )
         seed = seed_parameters if seed_parameters is not None else circuit.parameters
         bound = self._bind(seed) if seed else None
         self._simulator.build_graph(
             majoranas,
             per_monomial,
             gen_coeffs,
+            gate_indices,
             bound,
             only_rotate_len_k,
         )
@@ -271,7 +274,7 @@ class MajoranaPropagator:
         """
         self._check_initial_state(circuit)
         majorana_gates = self._majorana_gates(circuit)
-        majoranas, gen_coeffs, mapping = expand_monomials(
+        majoranas, gen_coeffs, mapping, _gate_indices = expand_monomials(
             majorana_gates, circuit.resolved_mapping
         )
         self._simulator.propagate(
@@ -290,6 +293,16 @@ class MajoranaPropagator:
         return self._n_params
 
     @property
+    def n_gates(self) -> int:
+        """Number of authoring gates ingested into the graph.
+
+        A single-term gate expands to one graph layer; a multi-term gate expands to several
+        layers sharing one gate, so ``n_gates <= graph_layers``. Stays correct after a graph
+        prefix is consumed by :meth:`contract_partially` / :meth:`propagate`.
+        """
+        return self._simulator.n_gates()
+
+    @property
     def parameter_mapping(self) -> list[int]:
         """The parameter mapping owned by the graph, one entry per graph layer.
 
@@ -303,16 +316,34 @@ class MajoranaPropagator:
 
     @parameter_mapping.setter
     def parameter_mapping(self, mapping: Sequence[int]) -> None:
-        """Re-wire which parameter drives each graph layer, without rebuilding the graph.
+        """Re-wire which parameter drives each gate/layer, without rebuilding the graph.
 
         The graph structure depends only on the generators, not the parameter labels, so
         this is a cheap relabel -- use it to tie or untie parameters on an already-built
-        graph. The mapping must have one entry per graph layer (see :attr:`graph_layers`)
-        and be contiguous ``0..n-1``. Functionals created earlier keep the mapping they were
-        built with; rebuild a functional to pick up the new one.
+        graph. The mapping may be given at either granularity and must be contiguous
+        ``0..n-1``:
+
+        - **per graph layer** (length :attr:`graph_layers`, in the parameter-vector order):
+          relabels each layer directly.
+        - **per gate** (length :attr:`n_gates`, indexed by gate): expanded to per-layer via
+          each layer's gate, so a multi-term gate's layers stay tied. This is the
+          granularity of the authoring :class:`~monoprop.circuit.Circuit`'s mapping.
+
+        When the two lengths coincide the per-layer reading is used. Functionals created
+        earlier keep the mapping they were built with; rebuild a functional to pick up the
+        new one.
         """
         resolved = [int(m) for m in mapping]
-        validate_parameter_mapping(resolved, self.graph_layers, "graph layers")
+        n_layers, n_gates = self.graph_layers, self.n_gates
+        if len(resolved) == n_layers:
+            validate_parameter_mapping(resolved, n_layers, "graph layers")
+        elif len(resolved) == n_gates:
+            validate_parameter_mapping(resolved, n_gates, "gates")
+        else:
+            raise ValueError(
+                f"parameter_mapping has {len(resolved)} entries; expected {n_layers} "
+                f"(per graph layer) or {n_gates} (per gate)."
+            )
         self._simulator.parameter_mapping = resolved
         self._n_params = max(resolved, default=-1) + 1
 

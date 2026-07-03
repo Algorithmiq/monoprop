@@ -195,9 +195,11 @@ class TestFermiCircuit:
         # The original fermi gates remain available.
         assert circuit.fermi_gates == (gate_0, gate_1)
 
-        majoranas, gen_coeffs, per_monomial_mapping = expand_monomials(
+        majoranas, gen_coeffs, per_monomial_mapping, gate_indices = expand_monomials(
             circuit.gates, circuit.resolved_mapping
         )
+        # One gate per fermi gate; each generator here has two monomials.
+        assert gate_indices == [0, 0, 1, 1]
 
         np.testing.assert_array_equal(
             np.array(gen_coeffs), np.array([-1.0, 1.0, -1.0, 1.0])

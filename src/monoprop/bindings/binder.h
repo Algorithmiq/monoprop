@@ -101,6 +101,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "majoranas"_a,
             "parameter_mapping"_a,
             "gen_coeffs"_a,
+            "gate_indices"_a = std::nullopt,
             "parameters"_a = std::nullopt,
             "only_rotate_len_k"_a = 0,
             "Build the propagation graph, recording per-layer gate information");
@@ -209,6 +210,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
     cls.def("graph_data", &MonomialPropagator<NumModes>::graph_data);
 
     cls.def("graph_layers", &MonomialPropagator<NumModes>::graph_layers);
+    cls.def("n_gates", &MonomialPropagator<NumModes>::n_gates);
 
     cls.def_prop_rw("parameter_mapping",
                     &MonomialPropagator<NumModes>::parameter_mapping,

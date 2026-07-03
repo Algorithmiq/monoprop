@@ -61,14 +61,21 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::evolve_mode_build_graph_(const std::vector<VecZ> &majoranas,
                                                             const VecZ &parameter_mapping,
                                                             const VecD &gen_coeffs,
+                                                            const VecZ &gate_indices,
                                                             int only_rotate_len_k) -> void {
     const auto majoranas_size = majoranas.size();
     propagate_with_timing_(
         majoranas,
         only_rotate_len_k,
-        [this, &parameter_mapping, &gen_coeffs, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
+        [this, &parameter_mapping, &gen_coeffs, &gate_indices, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
             const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
-            propagate_one_(maj, rot_len, std::nullopt, std::nullopt, parameter_mapping[idx], gen_coeffs[idx]);
+            propagate_one_(maj,
+                           rot_len,
+                           std::nullopt,
+                           std::nullopt,
+                           parameter_mapping[idx],
+                           gen_coeffs[idx],
+                           gate_indices[idx]);
         });
 }
 
@@ -76,6 +83,7 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vector<VecZ> &majoranas,
                                                                   const VecZ &parameter_mapping,
                                                                   const VecD &gen_coeffs,
+                                                                  const VecZ &gate_indices,
                                                                   const VecD &parameters,
                                                                   const VecD &operator_coeffs,
                                                                   int only_rotate_len_k) -> void {
@@ -86,16 +94,18 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
     propagate_with_timing_(
         majoranas,
         only_rotate_len_k,
-        [this, &parameter_mapping, &gen_coeffs, &mapped_params, &coeffs, majoranas_size](const VecZ &maj,
-                                                                                         int only_rotate_len_k,
-                                                                                         size_t i) {
+        [this, &parameter_mapping, &gen_coeffs, &gate_indices, &mapped_params, &coeffs, majoranas_size](
+            const VecZ &maj,
+            int only_rotate_len_k,
+            size_t i) {
             const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
             propagate_one_(maj,
                            only_rotate_len_k,
                            std::cref(coeffs),
                            mapped_params[idx],
                            parameter_mapping[idx],
-                           gen_coeffs[idx]);
+                           gen_coeffs[idx],
+                           gate_indices[idx]);
             const auto param = schrodinger_ ? -mapped_params[idx] : mapped_params[idx];
             const auto graph_idx = schrodinger_ ? 0 : i;
             extend_coeffs_from_current_picture_if_needed_(coeffs);
@@ -133,6 +143,7 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majoranas,
                                                const VecZ &parameter_mapping,
                                                const VecD &gen_coeffs,
+                                               std::optional<VecZ> gate_indices,
                                                std::optional<VecD> parameters,
                                                int only_rotate_len_k) -> void {
     if (majoranas.empty()) {
@@ -140,9 +151,25 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
     }
     validate_coefficient_lengths(parameter_mapping, gen_coeffs);
 
+    // Resolve gate indices: default to one gate per generator (iota). These are local and
+    // 0-based per call; offset by the gate count already in the graph so they are absolute.
+    VecZ local_gates;
+    if (gate_indices.has_value()) {
+        local_gates = std::move(*gate_indices);
+    }
+    else {
+        local_gates.resize(majoranas.size());
+        std::iota(local_gates.begin(), local_gates.end(), size_t{0});
+    }
+    validate_gate_indices(local_gates, majoranas.size());
+    const size_t gate_offset = n_gates();
+    for (auto &g : local_gates) {
+        g += gate_offset;
+    }
+
     if (!parameters.has_value()) {
         // Pure structural build: append layers recording their gate information.
-        evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, only_rotate_len_k);
+        evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k);
     }
     else {
         // Coefficient-informed build: regenerate the seed by contracting the existing graph
@@ -161,7 +188,13 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
         else {
             seed = current_picture_coeffs_();
         }
-        evolve_mode_graph_with_coeffs_(majoranas, parameter_mapping, gen_coeffs, *parameters, seed, only_rotate_len_k);
+        evolve_mode_graph_with_coeffs_(majoranas,
+                                       parameter_mapping,
+                                       gen_coeffs,
+                                       local_gates,
+                                       *parameters,
+                                       seed,
+                                       only_rotate_len_k);
     }
 }
 
@@ -200,7 +233,8 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
                                                   std::optional<std::reference_wrapper<const VecD>> coeffs,
                                                   std::optional<double> param,
                                                   size_t param_index,
-                                                  double gen_coeff) -> void {
+                                                  double gen_coeff,
+                                                  size_t gate_index) -> void {
     const auto gen_maj = indices_to_bitset<NumModes>(gen_vec);
 
     auto evolve_result = evolve_maj<NumModes>(mp_op_,
@@ -229,24 +263,52 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
                     split,
                     comm_,
                     param_index,
-                    gen_coeff);
+                    gen_coeff,
+                    gate_index);
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::n_gates() const -> size_t {
+    const size_t count = graph_.layers();
+    size_t max_gate = 0;
+    bool any = false;
+    for (size_t layer = 0; layer < count; ++layer) {
+        const size_t g = graph_.get_layer_traversal(layer).gate_index();
+        max_gate = any ? std::max(max_gate, g) : g;
+        any = true;
+    }
+    return any ? max_gate + 1 : 0;
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_mapping) -> void {
     const size_t count = graph_.layers();
-    if (parameter_mapping.size() != count) {
-        throw std::runtime_error(std::format("parameter_mapping has {} entries but the graph "
-                                             "has {} layers.",
-                                             parameter_mapping.size(),
-                                             count));
+    const size_t gates = n_gates();
+
+    if (parameter_mapping.size() == count) {
+        // Per-layer mapping in optimizer order; layer `layer` holds optimizer index
+        // count-1-layer (see graph_gate_arrays_). Relabel in place, preserving each layer's
+        // generator coeff and gate index.
+        for (size_t layer = 0; layer < count; ++layer) {
+            const size_t optimizer_index = count - 1 - layer;
+            auto &target = graph_.get_layer(layer);
+            target.set_gate_info(parameter_mapping[optimizer_index], target.gen_coeff(), target.gate_index());
+        }
     }
-    // The input is in optimizer order; layer `layer` holds optimizer index count-1-layer
-    // (see graph_gate_arrays_). Relabel in place, preserving each layer's generator coeff.
-    for (size_t layer = 0; layer < count; ++layer) {
-        const size_t optimizer_index = count - 1 - layer;
-        auto &target = graph_.get_layer(layer);
-        target.set_gate_info(parameter_mapping[optimizer_index], target.gen_coeff());
+    else if (parameter_mapping.size() == gates) {
+        // Per-gate mapping indexed by absolute gate index: relabel each layer via its own
+        // stored gate index (order-agnostic, correct in both pictures and across builds).
+        for (size_t layer = 0; layer < count; ++layer) {
+            auto &target = graph_.get_layer(layer);
+            target.set_gate_info(parameter_mapping[target.gate_index()], target.gen_coeff(), target.gate_index());
+        }
+    }
+    else {
+        throw std::runtime_error(std::format("parameter_mapping has {} entries; expected {} (per graph "
+                                             "layer) or {} (per gate).",
+                                             parameter_mapping.size(),
+                                             count,
+                                             gates));
     }
 }
 

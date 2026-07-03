@@ -181,7 +181,8 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
     auto mp = build_simulator<n_modes>(data, cfg);
 
     // Coefficient-informed build: the seed is regenerated internally from the parameters.
-    mp.build_graph(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
+    // gate_indices defaults (nullopt -> one gate per generator).
+    mp.build_graph(data.majoranas, data.param_inds, data.gen_coeffs, std::nullopt, data.parameters);
 
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
     auto expval_fn = mp.expectation_value_functional(pare_threshold);

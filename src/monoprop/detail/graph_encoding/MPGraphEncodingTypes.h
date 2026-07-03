@@ -130,6 +130,10 @@ struct LayerStorage final {
     // parameter_mapping / gen_coeffs arrays through every call.
     size_t param_index = 0;
     double gen_coeff = 0.0;
+    // Index of the ingested gate this layer came from; layers expanded from the same
+    // multi-term gate share it. Absolute across build_graph calls (offset by the gate
+    // count already in the graph). Enables per-gate parameter_mapping relabelling.
+    size_t gate_index = 0;
 };
 
 } // namespace monoprop
