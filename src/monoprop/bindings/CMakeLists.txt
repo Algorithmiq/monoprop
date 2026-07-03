@@ -104,7 +104,6 @@ target_include_directories(
 )
 
 target_link_libraries(_core PRIVATE monoprop)
-target_link_libraries(_core PRIVATE quill::quill)
 
 file(
   RELATIVE_PATH
