@@ -46,6 +46,31 @@ parameter vector:
    expval_grad_fn = sim.expectation_value_and_gradient_functional()
    expval, grad = expval_grad_fn(parameters)
 
+Tying parameters on a built graph
+---------------------------------
+
+The graph owns the parameter mapping, so which angle drives each gate can be re-wired
+*after* building — without rebuilding the graph — through the
+:attr:`~monoprop.MajoranaPropagator.parameter_mapping` setter. This is a cheap relabel,
+useful to tie or untie angles between optimisation stages. The mapping may be given at
+either granularity and must be contiguous ``0..n-1``:
+
+.. code-block:: python
+
+   # Per gate (length sim.n_gates): tie every gate to a single shared angle.
+   sim.parameter_mapping = [0] * sim.n_gates
+   expval = sim.expectation_value([theta])          # one angle drives the whole circuit
+
+   # Back to one distinct angle per gate.
+   sim.parameter_mapping = list(range(sim.n_gates))
+
+A per-gate mapping (length :attr:`~monoprop.MajoranaPropagator.n_gates`) is the same
+granularity as the authoring circuit's ``parameter_mapping``, so a circuit's mapping is
+directly reusable here; a per-layer mapping (length
+:attr:`~monoprop.MajoranaPropagator.graph_layers`, finer when a gate bundles several
+monomials) is also accepted. Functionals snapshot the mapping when created, so rebuild a
+functional to pick up a new one.
+
 Paring
 ------
 
