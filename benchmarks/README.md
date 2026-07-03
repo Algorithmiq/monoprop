@@ -2,32 +2,31 @@
 
 Standalone benchmark scripts for [monoprop](https://github.com/Algorithmiq/monoprop).
 
-This directory is a **self-contained `uv` project**, completely isolated from the main monoprop development environment. It has its own `uv.lock`, its own virtual environment, and its own dependencies.
+This directory is a **self-contained `uv` project**, completely isolated from the main monoprop development environment.
+It has its own virtual environment and its own dependencies.
 
 
 ## Setup
-
 ```bash
 # Navigate to this directory
 cd benchmarks
 
-# Create the venv and install all dependencies
+# Create the venv and install all deps
 uv sync
 ```
 
+
 ## Running benchmark scripts
-
 ```bash
-# Run a script inside the isolated environment
-uv run python my_benchmark.py
+# Run script in the venv
+uv run python my_benchmark_run.py
 
-# Or activate the venv and run directly
-source .venv/bin/activate
-python my_benchmark.py
+# Plot final results
+uv run python my_benchmark_plot.py
 ```
 
-## Managing dependencies
 
+## Managing dependencies
 ```bash
 # Add a new dependency
 uv add <package>
@@ -35,6 +34,6 @@ uv add <package>
 # Remove a dependency
 uv remove <package>
 
-# Update all dependencies to their latest allowed versions
+# Update all deps to latest allowed versions
 uv lock --upgrade && uv sync
 ```
