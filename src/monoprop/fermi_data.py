@@ -271,17 +271,34 @@ class FermiCircuit(MajoranaCircuit):
 
         Raises:
             ValueError: If ``initial_state`` contains duplicate indices.
+
+        Note:
+            Gates whose generator is the identity (no Majorana terms, e.g. a
+            zero-coefficient generator) apply no rotation and are dropped. With the default
+            identity mapping the corresponding parameter is dropped too; pass an explicit
+            ``parameter_mapping`` to keep every gate.
         """
         occupied = sorted(int(i) for i in initial_state)
         if len(set(occupied)) != len(occupied):
             raise ValueError("Duplicate indices in initial state")
 
         fermi_gates = tuple(gates)
+        majorana_gates = tuple(_fermi_gate_to_majorana_gate(g) for g in fermi_gates)
+        parameters = tuple(parameters)
+
+        if parameter_mapping is None:
+            # Identity mapping: drop identity generators and their aligned parameter.
+            kept = [i for i, gate in enumerate(majorana_gates) if gate.terms]
+            fermi_gates = tuple(fermi_gates[i] for i in kept)
+            majorana_gates = tuple(majorana_gates[i] for i in kept)
+            if parameters:
+                parameters = tuple(parameters[i] for i in kept)
+
         object.__setattr__(self, "fermi_gates", fermi_gates)
         MajoranaCircuit.__init__(
             self,
-            gates=tuple(_fermi_gate_to_majorana_gate(g) for g in fermi_gates),
-            parameters=tuple(parameters),
+            gates=majorana_gates,
+            parameters=parameters,
             parameter_mapping=parameter_mapping,
             initial_state=tuple(occupied),
         )

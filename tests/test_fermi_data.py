@@ -213,6 +213,19 @@ class TestFermiCircuit:
         np.testing.assert_array_equal(majoranas[2], np.array([0, 1]))
         np.testing.assert_array_equal(majoranas[3], np.array([2, 3]))
 
+    def test_drops_identity_generators_and_aligned_parameters(self):
+        """An identity (zero-coefficient) generator and its parameter are dropped."""
+        real = MajoranaOperator(majoranas=[(0, 1)], coefficients=[1.0j], num_modes=1)
+        identity = MajoranaOperator(majoranas=[], coefficients=[], num_modes=1)
+        circuit = FermiCircuit(
+            gates=[FermiGate(real), FermiGate(identity), FermiGate(real)],
+            parameters=[0.1, 0.2, 0.3],
+            initial_state=[0],
+        )
+        assert len(circuit) == 2  # the identity gate is dropped
+        assert circuit.parameters == (0.1, 0.3)  # its aligned parameter goes with it
+        assert len(circuit.fermi_gates) == 2
+
     def test_validate_inputs_duplicate_initial_state_raises(self):
         generator = MajoranaOperator(
             majoranas=[(0, 1)], coefficients=[1.0], num_modes=1
