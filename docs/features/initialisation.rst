@@ -36,7 +36,7 @@ without rebuilding the simulator or the graph:
    # Keys are Majorana monomials (tuples of indices); values are the new
    # coefficients, which must keep each monomial Hermitian (real for length-4
    # terms, imaginary for length-2 — see the Notation page).
-   >>> sim.update_coeffs({(0, 1, 2, 3): 0.5})
+   >>> sim.update_initial_operator({(0, 1, 2, 3): 0.5})
 
 This is particularly useful in the Schrödinger picture: since the state is
 evolved independently of the observable, you can re-weight the observable and
@@ -61,7 +61,7 @@ without re-propagating.
 
    .. doctest::
 
-      >>> sim.update_coeffs({(1, 2, 3, 4): 0.5})  # This monomial doesn't exist
+      >>> sim.update_initial_operator({(1, 2, 3, 4): 0.5})  # This monomial doesn't exist
       Traceback (most recent call last):
          ...
       RuntimeError: ...

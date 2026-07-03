@@ -454,12 +454,16 @@ class MajoranaPropagator:
         """
         return self._simulator.evolved_operator(self._bind(parameters), atol)
 
-    def update_coeffs(self, new_operator: dict[tuple[int, ...], complex]) -> None:
-        """Replace the initial-operator coefficients (existing terms only).
+    def update_initial_operator(
+        self, new_operator: dict[tuple[int, ...], complex]
+    ) -> None:
+        """Replace coefficients of the *initial operator* (existing terms only).
 
-        Allows dynamic re-weighting of the initial operator without rebuilding the
-        simulator or the graph. Only Majorana terms already present in the operator can
-        be updated.
+        Re-weights the initial operator the graph is evaluated against, without touching
+        the evolution graph or rebuilding the simulator. Only the initial operator is
+        affected -- the gates and their generator coefficients are unchanged -- and only
+        Majorana terms already present in the initial operator can be updated (no new
+        terms are introduced).
 
         Args:
             new_operator: Mapping from Majorana-index tuples to their new complex
@@ -467,7 +471,7 @@ class MajoranaPropagator:
 
         Raises:
             RuntimeError: If a term in ``new_operator`` is not present in the current
-                operator.
+                initial operator.
         """
         self._simulator.update_initial_operator(new_operator)
 

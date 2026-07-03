@@ -91,7 +91,7 @@ def test_trivial_evolved_operator(serial_comm):
         ),
     ],
 )
-def test_update_coeffs(
+def test_update_initial_operator(
     init_op,
     new_op,
     cutoff,
@@ -114,12 +114,12 @@ def test_update_coeffs(
     if expval_check:
         expval_init = mp.expectation_value()
         assert expval_init == expval_check[0]
-        mp.update_coeffs(new_op)
+        mp.update_initial_operator(new_op)
         expval_new = mp.expectation_value()
         assert np.isclose(expval_new, expval_check[1])
     else:
         op_init = mp.contract_partially(inplace=False)
-        mp.update_coeffs(new_op)
+        mp.update_initial_operator(new_op)
         op_new = mp.contract_partially(inplace=False)
         assert np.array_equal(op_new, expected_new)
         assert not np.array_equal(op_init, op_new)
