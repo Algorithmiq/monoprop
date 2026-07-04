@@ -38,7 +38,7 @@ jobs:
     outputs:
       should-run: ${{ steps.check.outputs.should-run }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: changed-deploy-workflow
