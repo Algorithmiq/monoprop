@@ -18,8 +18,8 @@ import pytest
 from pytest_cases import parametrize_with_cases
 
 from monoprop import (
-    MajoranaCircuit,
-    MajoranaGate,
+    Circuit,
+    MajoranaExp,
     MajoranaPropagator,
     jordan_wigner_basis_change,
 )
@@ -33,9 +33,7 @@ class TestUpdateMethods:
     @pytest.fixture
     def mp(self, serial_comm):
         return MajoranaPropagator(
-            initial_operator=MajoranaOperator.from_dict(
-                terms_dict={(0, 1): 1.0j}, num_modes=4
-            ),
+            initial_operator=MajoranaOperator({(0, 1): 1.0j}, num_modes=4),
             initial_state=[],
             cutoff=4,
             lower_atol=1e-8,
@@ -108,8 +106,8 @@ class TestUpdateMethods:
 
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
-        gate = MajoranaGate(MajoranaOperator.from_dict({(0, 1, 2, 3, 4, 5): 1.0}))
-        mp.build_graph(MajoranaCircuit((gate,)))
+        gate = MajoranaExp(MajoranaOperator({(0, 1, 2, 3, 4, 5): 1.0}))
+        mp.build_graph(Circuit((gate,)))
         assert mp.size() > 0
 
     def test_update_cutoff_invalid(self, mp):
@@ -177,7 +175,7 @@ class TestUpdateMethods:
             mp.basis_change = invalid_basis
 
     def test_integration(self, serial_comm):
-        sequence = MajoranaCircuit.from_dense_arrays(
+        sequence = Circuit.from_dense_arrays(
             initial_state=[],
             majoranas=[(0, 2), (1, 3)],
             gen_coeffs=[0.0, 0.0],
@@ -185,9 +183,7 @@ class TestUpdateMethods:
             parameters=[1.0, 1.0],
         )
         mp = MajoranaPropagator(
-            initial_operator=MajoranaOperator.from_dict(
-                terms_dict={(0, 1): 1.0j}, num_modes=4
-            ),
+            initial_operator=MajoranaOperator({(0, 1): 1.0j}, num_modes=4),
             initial_state=sequence.initial_state,
             cutoff=4,
             comm=serial_comm,
@@ -284,9 +280,7 @@ def test_evolutions_after_updates(problem, test_type, serial_comm):
 @pytest.mark.parametrize("num_modes", [2, 4, 8, 16])
 def test_update_methods_different_modes(num_modes, serial_comm):
     mp = MajoranaPropagator(
-        initial_operator=MajoranaOperator.from_dict(
-            terms_dict={(0, 1): 1.0j}, num_modes=num_modes
-        ),
+        initial_operator=MajoranaOperator({(0, 1): 1.0j}, num_modes=num_modes),
         initial_state=[],
         cutoff=4,
         comm=serial_comm,
@@ -299,9 +293,7 @@ def test_update_methods_different_modes(num_modes, serial_comm):
 @pytest.mark.parametrize("num_modes", [4, 8, 16])
 def test_basis_change_invalid_dimensions(num_modes, serial_comm):
     mp = MajoranaPropagator(
-        initial_operator=MajoranaOperator.from_dict(
-            terms_dict={(0, 1): 1.0j}, num_modes=num_modes
-        ),
+        initial_operator=MajoranaOperator({(0, 1): 1.0j}, num_modes=num_modes),
         initial_state=[],
         cutoff=4,
         comm=serial_comm,

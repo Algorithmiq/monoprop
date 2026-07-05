@@ -30,9 +30,8 @@ from monoprop._dispatch import dispatch
 
 from .circuit import (
     Circuit,
-    Gate,
-    MajoranaCircuit,
-    PauliGate,
+    MajoranaExp,
+    PauliExp,
     expand_monomials,
     validate_parameter_mapping,
 )
@@ -141,6 +140,9 @@ class MajoranaPropagator:
 
         self._comm = comm
         self._n_params = 0
+        # System qubit count for expanding PauliExp gates; set by PauliPropagator from the
+        # observable. None for a native Majorana propagator (its gates need no qubit count).
+        self._num_qubits: int | None = None
         self._initial_state = list(initial_state)
         self._simulator = dispatch(num_modes)(
             initial_operator=majorana_operator.terms,
@@ -182,17 +184,18 @@ class MajoranaPropagator:
         propagator.build_graph(circuit)
         return propagator
 
-    def _circuit_gates(self, circuit: Circuit) -> Sequence[Gate | PauliGate]:
-        """Validate the circuit family and return its gates for expansion.
+    def _circuit_gates(self, circuit: Circuit) -> Sequence[MajoranaExp | PauliExp]:
+        """Validate the circuit's gate family and return its gates for expansion.
 
-        The gate-to-Majorana conversion itself is shared (see
-        :func:`~monoprop.circuit.expand_monomials`); subclasses override only to accept a
-        different circuit family.
+        There is a single :class:`~monoprop.circuit.Circuit` type; the family is carried by
+        the gates (see :attr:`~monoprop.circuit.Circuit.family`). A ``MajoranaPropagator``
+        rejects a qubit (``PauliExp``) circuit; the shared conversion lives in
+        :func:`~monoprop.circuit.expand_monomials`.
         """
-        if not isinstance(circuit, MajoranaCircuit):
+        if circuit.family == "pauli":
             raise TypeError(
-                f"MajoranaPropagator requires a MajoranaCircuit (or FermiCircuit); got "
-                f"{type(circuit).__name__}. Use PauliPropagator for a PauliCircuit."
+                "MajoranaPropagator cannot consume a qubit (PauliExp) circuit; its gates are "
+                "Pauli. Use PauliPropagator for qubit circuits."
             )
         return circuit.gates
 
@@ -244,7 +247,7 @@ class MajoranaPropagator:
         """
         self._check_initial_state(circuit)
         gates = self._circuit_gates(circuit)
-        num_qubits = getattr(circuit, "num_qubits", None)
+        num_qubits = self._num_qubits
         # Shift the circuit's local 0-based angle indices onto the accumulated axis.
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
         self._n_params += circuit.n_parameters
@@ -281,7 +284,7 @@ class MajoranaPropagator:
         """
         self._check_initial_state(circuit)
         gates = self._circuit_gates(circuit)
-        num_qubits = getattr(circuit, "num_qubits", None)
+        num_qubits = self._num_qubits
         majoranas, gen_coeffs, mapping, _gate_indices = expand_monomials(
             gates, circuit.resolved_mapping, num_qubits
         )

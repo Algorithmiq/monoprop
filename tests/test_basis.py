@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 
 from monoprop import (
-    MajoranaCircuit,
+    Circuit,
     MajoranaPropagator,
     jordan_wigner_basis_change,
 )
@@ -27,9 +27,9 @@ from monoprop.fermi_data import MajoranaOperator
 def test_basis_change(serial_comm):
     n_modes = 6
     cutoff = 3
-    initial_op = MajoranaOperator([(0,)], [1.0], n_modes)
+    initial_op = MajoranaOperator({(0,): 1.0}, n_modes)
 
-    sequence = MajoranaCircuit.from_dense_arrays(
+    sequence = Circuit.from_dense_arrays(
         initial_state=[],
         majoranas=[(5,)],
         parameters=[1.0],

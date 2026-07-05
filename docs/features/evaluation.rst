@@ -10,8 +10,9 @@ powerful feature for example in variational workflows, where the same circuit is
 evaluated repeatedly at many parameter values.
 
 The parameter values are given as a plain sequence of floats (a list or numpy array) in
-parameter-index order (``values[i]`` is the angle for gates mapped to index ``i`` by the
-circuit's ``parameter_mapping``), or as the :class:`~monoprop.Circuit` itself (its
+parameter-index order (``values[i]`` is the angle for gates carrying ``param == i``, i.e.
+mapped to index ``i`` by :attr:`~monoprop.Circuit.resolved_mapping`), or as the
+:class:`~monoprop.Circuit` itself (its
 :attr:`~monoprop.Circuit.parameters` are used). To evaluate two independently-authored
 circuit halves together, compose them with ``+`` and build the combined circuit in a single
 :meth:`~monoprop.MajoranaPropagator.build_graph` call.
@@ -65,8 +66,9 @@ either granularity and must be contiguous ``0..n-1``:
    sim.parameter_mapping = list(range(sim.n_gates))
 
 A per-gate mapping (length :attr:`~monoprop.MajoranaPropagator.n_gates`) is the same
-granularity as the authoring circuit's ``parameter_mapping``, so a circuit's mapping is
-directly reusable here; a per-layer mapping (length
+granularity as the authoring circuit's per-gate ``param`` indices
+(:attr:`~monoprop.Circuit.resolved_mapping`), so a circuit's mapping is directly reusable
+here; a per-layer mapping (length
 :attr:`~monoprop.MajoranaPropagator.graph_layers`, finer when a gate bundles several
 monomials) is also accepted. Functionals snapshot the mapping when created, so rebuild a
 functional to pick up a new one.

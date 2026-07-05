@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MajoranaCircuit, MajoranaPropagator
+from monoprop import Circuit, MajoranaPropagator
 from monoprop.fermi_data import MajoranaOperator
 from tests.cases import CasesFermionicProblem, FermionicProblem
 
@@ -54,9 +54,9 @@ def _check_dicts(d1, d2):
 
 def test_coeff_trunc(serial_comm):
     n_modes = 5
-    op = MajoranaOperator([(0, 1)], [1.0j], num_modes=n_modes)
+    op = MajoranaOperator({(0, 1): 1.0j}, num_modes=n_modes)
 
-    sequence = MajoranaCircuit.from_dense_arrays(
+    sequence = Circuit.from_dense_arrays(
         initial_state=[],
         majoranas=[(1, 2, 3, 4)],
         parameters=[np.pi / 6],
@@ -138,9 +138,9 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
     n_modes = 2
     p = np.pi / 16
 
-    init_op = MajoranaOperator([(0, 1), (0, 2)], [1.0j, 1.0j], num_modes=n_modes)
+    init_op = MajoranaOperator({(0, 1): 1.0j, (0, 2): 1.0j}, num_modes=n_modes)
 
-    sequence = MajoranaCircuit.from_dense_arrays(
+    sequence = Circuit.from_dense_arrays(
         initial_state=[],
         majoranas=[(1, 2)],
         parameters=[p],
@@ -175,9 +175,9 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
     n_modes = 2
     p = 1e-5
     init_op = {(0, 1): 1.0j, (0, 2): 1e-7j}
-    op = MajoranaOperator([(0, 1), (0, 2)], [1.0j, 1e-7j], num_modes=n_modes)
+    op = MajoranaOperator({(0, 1): 1.0j, (0, 2): 1e-7j}, num_modes=n_modes)
 
-    sequence = MajoranaCircuit.from_dense_arrays(
+    sequence = Circuit.from_dense_arrays(
         initial_state=[],
         majoranas=[(1, 2)],
         parameters=[p],

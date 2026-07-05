@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MajoranaCircuit, MajoranaPropagator
+from monoprop import Circuit, MajoranaExp, MajoranaPropagator
 from monoprop.majorana_data import MajoranaOperator
 from tests.cases import CasesFermionicProblemOrbitalRotations
 
@@ -45,8 +45,8 @@ def _split_orbital_gates(gates):
 def test_basic_orbital_rotation(serial_comm):
     n_modes = 4
 
-    operator = MajoranaOperator([], [], n_modes)
-    sequence = MajoranaCircuit.from_dense_arrays(
+    operator = MajoranaOperator({}, n_modes)
+    sequence = Circuit.from_dense_arrays(
         initial_state=[],
         majoranas=[(1, 2)],
         parameters=[np.pi / 4],
@@ -86,10 +86,16 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     non_orbital_gates, orbital_gates = _split_orbital_gates(gates)
     # Consecutive prefix/suffix split, so the (identity) parameter values split the same way.
     split = len(non_orbital_gates)
-    non_orbital = MajoranaCircuit(
-        non_orbital_gates, parameters=tuple(parameters[:split])
+    # Drop each sliced gate's original (non-zero-based) param so each sub-circuit gets the
+    # identity mapping (gate i -> angle i), rebasing the orbital tail's angles to start at 0.
+    non_orbital = Circuit(
+        tuple(MajoranaExp(gate.generator) for gate in non_orbital_gates),
+        parameters=tuple(parameters[:split]),
     )
-    orbital = MajoranaCircuit(orbital_gates, parameters=tuple(parameters[split:]))
+    orbital = Circuit(
+        tuple(MajoranaExp(gate.generator) for gate in orbital_gates),
+        parameters=tuple(parameters[split:]),
+    )
 
     mp_act = MajoranaPropagator(
         problem.operator, problem.monomial_circuit.initial_state, **serial_mp_kwargs

@@ -29,15 +29,14 @@ import numpy as np
 
 from monoprop import (
     Circuit,
-    MajoranaCircuit,
     MajoranaPropagator,
-    PauliCircuit,
-    PauliGate,
+    Pauli,
+    PauliExp,
     PauliPropagator,
 )
+from monoprop.circuit import expand_monomials
 from monoprop.fermi_data import (
-    FermiCircuit,
-    FermiGate,
+    FermiExp,
     FermiOperator,
     MajoranaOperator,
 )
@@ -85,18 +84,24 @@ class RandomProblem:
     """
 
     observable: MajoranaOperator
-    circuit: MajoranaCircuit
+    circuit: Circuit
     cutoff: int
 
     @property
     def parameter_mapping(self) -> np.ndarray:
-        """Return the circuit's parameter-index mapping."""
-        return np.asarray(self.circuit.param_inds, dtype=int)
+        """Return the circuit's per-monomial parameter-index mapping."""
+        _, _, mapping, _ = expand_monomials(
+            self.circuit.gates, self.circuit.resolved_mapping
+        )
+        return np.asarray(mapping, dtype=int)
 
     @property
     def gen_coeffs(self) -> np.ndarray:
-        """Return the circuit's generator coefficients."""
-        return np.asarray(self.circuit.gen_coeffs, dtype=float)
+        """Return the circuit's per-monomial generator coefficients."""
+        _, coeffs, _, _ = expand_monomials(
+            self.circuit.gates, self.circuit.resolved_mapping
+        )
+        return np.asarray(coeffs, dtype=float)
 
     @property
     def parameters(self) -> np.ndarray:
@@ -151,7 +156,7 @@ def make_random_problem(
 
     obs_majoranas = _random_terms(rng, obs_terms, gen_length, num_majorana_indices)
     obs_coeffs = rng.standard_normal(obs_terms).tolist()  # Hermitian -> real
-    observable = MajoranaOperator(obs_majoranas, obs_coeffs, num_modes)
+    observable = MajoranaOperator(dict(zip(obs_majoranas, obs_coeffs)), num_modes)
 
     gen_majoranas = _random_terms(rng, num_generators, gen_length, num_majorana_indices)
     gen_coeffs = rng.standard_normal(num_generators).tolist()
@@ -159,7 +164,7 @@ def make_random_problem(
     parameters = (0.1 * rng.standard_normal(num_generators)).tolist()
     param_inds = list(range(num_generators))
 
-    circuit = MajoranaCircuit.from_dense_arrays(
+    circuit = Circuit.from_dense_arrays(
         majoranas=gen_majoranas,
         gen_coeffs=gen_coeffs,
         param_inds=param_inds,
@@ -286,12 +291,10 @@ def build_hubbard_problem(
         ``(propagator, circuit)`` for one Trotter step, re-applied by the driver.
     """
     config = config or HubbardConfig()
-    fermi_gates = [FermiGate(generator=term) for term in _hubbard_fermion_terms(config)]
+    fermi_gates = [FermiExp(term) for term in _hubbard_fermion_terms(config)]
     parameters = [config.trotter_dt] * len(fermi_gates)
     occupied = _neel_occupied_modes(config.num_sites, config.neel_start_spin)
-    circuit = FermiCircuit(
-        gates=fermi_gates, parameters=parameters, initial_state=occupied
-    )
+    circuit = Circuit(gates=fermi_gates, parameters=parameters, initial_state=occupied)
 
     observable = FermiOperator(
         terms=[
@@ -478,21 +481,16 @@ class KickedIsingConfig:
     lower_atol: float = 1e-4
 
 
-def _xlayer(num_qubits: int, angle: float) -> list[tuple[PauliGate, float]]:
+def _xlayer(num_qubits: int, angle: float) -> list[tuple[PauliExp, float]]:
     """Single-qubit X rotations exp(-i·angle·X) on all qubits, with their angles."""
-    return [
-        (PauliGate((i,), PauliOperator(["X"], [1.0])), -angle)
-        for i in range(num_qubits)
-    ]
+    return [(PauliExp(Pauli("X", (i,))), -angle) for i in range(num_qubits)]
 
 
 def _zzlayer(
     angle: float, topology: list[tuple[int, int]]
-) -> list[tuple[PauliGate, float]]:
+) -> list[tuple[PauliExp, float]]:
     """Two-qubit ZZ interactions exp(-i·angle·ZZ) on every edge, with their angles."""
-    return [
-        (PauliGate((i, j), PauliOperator(["ZZ"], [1.0])), -angle) for i, j in topology
-    ]
+    return [(PauliExp(Pauli("ZZ", (i, j))), -angle) for i, j in topology]
 
 
 def build_kicked_ising_problem(
@@ -510,15 +508,14 @@ def build_kicked_ising_problem(
         ``(propagator, circuit)`` ready for in-place propagation.
     """
     config = config or KickedIsingConfig()
-    gate_angles: list[tuple[PauliGate, float]] = []
+    gate_angles: list[tuple[PauliExp, float]] = []
     for _ in range(config.num_layers):
         gate_angles.extend(_xlayer(config.num_qubits, config.theta / 2))
         gate_angles.extend(_zzlayer(config.coupling, HEAVY_HEX_TOPOLOGY))
-    circuit = PauliCircuit(
+    circuit = Circuit(
         gates=tuple(gate for gate, _ in gate_angles),
         parameters=tuple(angle for _, angle in gate_angles),
         initial_state=[],
-        num_qubits=config.num_qubits,
     )
 
     obs_str = (
@@ -526,7 +523,7 @@ def build_kicked_ising_problem(
         + "Z"
         + "I" * (config.num_qubits - config.observable_qubit - 1)
     )
-    observable = PauliOperator.from_dict({obs_str: 1.0})
+    observable = PauliOperator({obs_str: 1.0}, num_qubits=config.num_qubits)
 
     # PauliPropagator sets the Jordan-Wigner basis change automatically.
     propagator = PauliPropagator(
@@ -535,7 +532,6 @@ def build_kicked_ising_problem(
         cutoff=config.cutoff,
         lower_atol=config.lower_atol,
         upper_atol=None,
-        cutoff_type="support",
         comm=comm,
     )
     return propagator, circuit

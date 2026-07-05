@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .circuit import PauliCircuit
 from .majorana_propagator import MajoranaPropagator
 from .utils import jordan_wigner_basis_change
 
@@ -32,16 +31,17 @@ if TYPE_CHECKING:
     import numpy as np
     from mpi4py import MPI
 
-    from .circuit import Circuit, PauliGate
+    from .circuit import Circuit, PauliExp
     from .pauli_data import PauliOperator
 
 
 class PauliPropagator(MajoranaPropagator):
     """Propagator for qubit (Pauli) operators, mapped to Majoranas via Jordan-Wigner.
 
-    Accepts a :class:`~monoprop.pauli_data.PauliOperator` and
-    :class:`~monoprop.circuit.PauliGate` gates; the Jordan-Wigner basis change is set
-    automatically so cutoffs act on Pauli weight. Outputs remain in the Majorana basis.
+    Accepts a :class:`~monoprop.pauli_data.PauliOperator` observable and a
+    :class:`~monoprop.circuit.Circuit` of :class:`~monoprop.circuit.PauliExp` gates; the
+    Jordan-Wigner basis change is set automatically so cutoffs act on Pauli weight. Outputs
+    remain in the Majorana basis.
 
     The cutoff type is fixed to ``"support"`` -- i.e. the qubit Pauli weight -- since
     that is the meaningful structural measure for qubit operators; ``"length"`` is not
@@ -85,7 +85,6 @@ class PauliPropagator(MajoranaPropagator):
                 "The initial PauliOperator has num_qubits=None; PauliPropagator needs the "
                 "qubit count. Construct the operator with an explicit num_qubits."
             )
-        self._num_qubits = num_qubits
         super().__init__(
             initial_operator.get_majorana_operator(),
             initial_state,
@@ -97,6 +96,9 @@ class PauliPropagator(MajoranaPropagator):
             basis_change=jordan_wigner_basis_change(num_qubits),
             comm=comm,
         )
+        # Set after super().__init__ (which resets it to None); the qubit count comes from
+        # the observable and is carried into PauliExp gate expansion via build_graph.
+        self._num_qubits = num_qubits
 
     @property
     def num_qubits(self) -> int:
@@ -123,17 +125,18 @@ class PauliPropagator(MajoranaPropagator):
         """
         return self._simulator.basis_change
 
-    def _circuit_gates(self, circuit: Circuit) -> Sequence[PauliGate]:
-        """Accept a PauliCircuit; its gates are expanded by the shared pipeline.
+    def _circuit_gates(self, circuit: Circuit) -> Sequence[PauliExp]:
+        """Accept a qubit (PauliExp) circuit; its gates are expanded by the shared pipeline.
 
-        The Jordan-Wigner mapping and antihermitian normalization live in
-        :func:`~monoprop.circuit.expand_monomials`, shared with
-        :class:`~monoprop.majorana_propagator.MajoranaPropagator`; the propagator's
-        ``num_qubits`` reaches the expander via the circuit's ``num_qubits``.
+        There is a single :class:`~monoprop.circuit.Circuit` type; the family is carried by
+        the gates (see :attr:`~monoprop.circuit.Circuit.family`). A ``PauliPropagator`` rejects
+        a Majorana/fermionic circuit. The Jordan-Wigner mapping and antihermitian
+        normalization live in :func:`~monoprop.circuit.expand_monomials`; the propagator's
+        ``num_qubits`` (from the observable) reaches the expander via ``self._num_qubits``.
         """
-        if not isinstance(circuit, PauliCircuit):
+        if circuit.family == "majorana":
             raise TypeError(
-                f"PauliPropagator requires a PauliCircuit; got {type(circuit).__name__}. "
-                "Use MajoranaPropagator for a MajoranaCircuit or FermiCircuit."
+                "PauliPropagator requires a qubit (PauliExp) circuit; its gates are "
+                "Majorana/fermionic. Use MajoranaPropagator for those."
             )
         return circuit.gates

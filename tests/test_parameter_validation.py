@@ -18,20 +18,18 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import MajoranaCircuit, MajoranaGate, MajoranaPropagator
+from monoprop import Circuit, MajoranaExp, MajoranaPropagator
 from monoprop.majorana_data import MajoranaOperator
 
 
 def _two_gate_graph(serial_comm):
     """A propagator with a two-layer, two-parameter graph already built."""
-    operator = MajoranaOperator.from_dict(
-        terms_dict={(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2
-    )
+    operator = MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2)
     mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
-    circuit = MajoranaCircuit(
+    circuit = Circuit(
         (
-            MajoranaGate(MajoranaOperator.from_dict({(0,): 1.0})),
-            MajoranaGate(MajoranaOperator.from_dict({(1,): 1.0})),
+            MajoranaExp(MajoranaOperator({(0,): 1.0})),
+            MajoranaExp(MajoranaOperator({(1,): 1.0})),
         )
     )
     mp.build_graph(circuit)  # identity mapping -> two distinct angles
@@ -42,7 +40,7 @@ class TestConstructorValidation:
     """Validation performed at construction time."""
 
     def test_invalid_basis_change_length(self, serial_comm):
-        operator = MajoranaOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
+        operator = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
         with pytest.raises(ValueError, match="Basis change must have length 4"):
             MajoranaPropagator(
                 operator,
@@ -53,7 +51,7 @@ class TestConstructorValidation:
             )
 
     def test_invalid_tolerances(self, serial_comm):
-        operator = MajoranaOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
+        operator = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
         with pytest.raises(
             RuntimeError,
             match=r"upper_atol \(0\.1\) must be greater than or equal to lower_atol \(0\.5\)",
@@ -83,59 +81,52 @@ class TestGraphAndParameterValidation:
             mp.expectation_value(parameters)
 
     def test_non_contiguous_mapping_raises(self):
-        """A parameter_mapping with an index gap is rejected at circuit construction."""
+        """A param scheme with an index gap is rejected at circuit construction."""
         gates = (
-            MajoranaGate(MajoranaOperator.from_dict({(0,): 1.0})),
-            MajoranaGate(MajoranaOperator.from_dict({(1,): 1.0})),
+            MajoranaExp(MajoranaOperator({(0,): 1.0}), param=0),
+            MajoranaExp(MajoranaOperator({(1,): 1.0}), param=2),
         )
         with pytest.raises(ValueError, match="contiguous"):
-            MajoranaCircuit(gates, parameter_mapping=(0, 2))
+            Circuit(gates)
 
-    def test_mapping_length_must_match_gates(self):
-        """A parameter_mapping whose length differs from the gate count is rejected."""
+    def test_mixed_param_scheme_rejected(self):
+        """Setting `param` on some gates but not others is rejected as ambiguous."""
         gates = (
-            MajoranaGate(MajoranaOperator.from_dict({(0,): 1.0})),
-            MajoranaGate(MajoranaOperator.from_dict({(1,): 1.0})),
+            MajoranaExp(MajoranaOperator({(0,): 1.0}), param=0),
+            MajoranaExp(MajoranaOperator({(1,): 1.0})),
         )
-        with pytest.raises(ValueError, match="entries but there are 2 gates"):
-            MajoranaCircuit(gates, parameter_mapping=(0,))
+        with pytest.raises(ValueError, match="every gate must set"):
+            Circuit(gates)
 
     def test_shared_mapping_index_ties_gates(self, serial_comm):
         """Repeating an index in the mapping ties gates to one angle (one parameter)."""
-        operator = MajoranaOperator.from_dict(
-            terms_dict={(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2
-        )
+        operator = MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2)
         mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
-        circuit = MajoranaCircuit(
+        circuit = Circuit(
             (
-                MajoranaGate(MajoranaOperator.from_dict({(0,): 1.0})),
-                MajoranaGate(MajoranaOperator.from_dict({(1,): 1.0})),
+                MajoranaExp(MajoranaOperator({(0,): 1.0}), param=0),
+                MajoranaExp(MajoranaOperator({(1,): 1.0}), param=0),
             ),
-            parameter_mapping=(0, 0),
         )
         mp.build_graph(circuit)
         assert mp.graph_layers == 2
         assert mp.n_parameters == 1
 
     def test_functional_invalidated_after_graph_mutation(self, serial_comm):
-        operator = MajoranaOperator.from_dict(
-            terms_dict={(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2
-        )
+        operator = MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2)
         mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
         mp.build_graph(
-            MajoranaCircuit(
+            Circuit(
                 (
-                    MajoranaGate(MajoranaOperator.from_dict({(0,): 1.0})),
-                    MajoranaGate(MajoranaOperator.from_dict({(1,): 1.0})),
+                    MajoranaExp(MajoranaOperator({(0,): 1.0})),
+                    MajoranaExp(MajoranaOperator({(1,): 1.0})),
                 )
             )
         )
         functional = mp.expectation_value_functional()
         # Appending another layer mutates the graph, so the previously-built functional
         # must reject being called against the stale plan.
-        mp.build_graph(
-            MajoranaCircuit((MajoranaGate(MajoranaOperator.from_dict({(2,): 1.0})),))
-        )
+        mp.build_graph(Circuit((MajoranaExp(MajoranaOperator({(2,): 1.0})),)))
         # Call with the parameter count the functional was built with (2), so the
         # stale-graph guard fires rather than the parameter-length check.
         with pytest.raises(RuntimeError, match=r"MP object has been modified"):
@@ -146,7 +137,7 @@ class TestEvolvedOperatorBothPictures:
     """evolved_operator works in both pictures (no picture guard)."""
 
     def test_schrodinger_returns_state_dict(self, serial_comm):
-        operator = MajoranaOperator.from_dict(terms_dict={(0, 1): 1.0j}, num_modes=2)
+        operator = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
         mp = MajoranaPropagator(
             operator, [0, 1], cutoff=4, schrodinger_cutoff=2, comm=serial_comm
         )

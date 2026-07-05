@@ -31,7 +31,7 @@ without rebuilding the simulator or the graph:
 .. doctest::
    >>> from monoprop import MajoranaPropagator
    >>> from monoprop.fermi_data import MajoranaOperator
-   >>> observable = MajoranaOperator([(0, 1, 2, 3)], [1.0], 4)
+   >>> observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
    >>> sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
    # Keys are Majorana monomials (tuples of indices); values are the new
    # coefficients, which must keep each monomial Hermitian (real for length-4
@@ -56,7 +56,7 @@ without re-propagating.
       from monoprop import MajoranaPropagator
       from monoprop.fermi_data import MajoranaOperator
 
-      observable = MajoranaOperator([(0, 1, 2, 3)], [1.0], 4)
+      observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
       sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
 
    .. doctest::

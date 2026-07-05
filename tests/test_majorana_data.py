@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import MajoranaCircuit
+from monoprop import Circuit
 from monoprop.majorana_data import MajoranaOperator
 
 
 def test_from_dense_arrays_groups_by_param_ind():
     """Consecutive monomials sharing a param_ind group into one gate."""
-    circuit = MajoranaCircuit.from_dense_arrays(
+    circuit = Circuit.from_dense_arrays(
         majoranas=[(0, 1), (2, 3), (0, 3)],
         gen_coeffs=[0.5, -0.5, 1.0],
         param_inds=[0, 0, 1],
@@ -41,8 +41,7 @@ def test_from_dense_arrays_groups_by_param_ind():
 def test_majorana_operator_normalizes_terms():
     """Indices are sorted, duplicate monomials summed, tiny terms dropped."""
     op = MajoranaOperator(
-        majoranas=[(1, 0), (0, 1), (2, 3)],
-        coefficients=[1.0, 2.0, 1e-15],
+        {(1, 0): 1.0, (0, 1): 2.0, (2, 3): 1e-15},
         num_modes=4,
     )
     assert op.terms == {(0, 1): 3.0}  # (1,0) and (0,1) merge; (2,3) below threshold
@@ -52,13 +51,13 @@ def test_majorana_operator_normalizes_terms():
 
 
 def test_majorana_operator_from_dict_round_trips():
-    op = MajoranaOperator.from_dict({(0, 1): 1.0j, (2, 3): -0.5}, num_modes=4)
+    op = MajoranaOperator({(0, 1): 1.0j, (2, 3): -0.5}, num_modes=4)
     assert op.terms == {(0, 1): 1.0j, (2, 3): -0.5}
     assert op.get_majorana_operator() is op
 
 
 def test_majorana_operator_is_identity_when_empty():
-    assert MajoranaOperator([], [], num_modes=4).is_identity()
+    assert MajoranaOperator({}, num_modes=4).is_identity()
 
 
 @pytest.mark.parametrize(
@@ -70,7 +69,7 @@ def test_majorana_operator_is_identity_when_empty():
     ],
 )
 def test_str(majoranas, coefficients, num_modes):
-    op = MajoranaOperator(majoranas, coefficients, num_modes)
+    op = MajoranaOperator(dict(zip(majoranas, coefficients)), num_modes)
     r = str(op)
     assert r.startswith("MajoranaOperator(")
     assert f"{len(op.terms)} terms" in r

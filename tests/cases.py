@@ -21,7 +21,7 @@ import numpy as np
 from msgpack import unpackb
 from pytest_cases import case
 
-from monoprop.circuit import MajoranaCircuit
+from monoprop.circuit import Circuit
 from monoprop.majorana_data import MajoranaOperator
 
 if TYPE_CHECKING:
@@ -35,8 +35,8 @@ class DenseMajoranaArrays:
     """Flat per-monomial arrays for a Majorana gate sequence (test transport).
 
     Mirrors the on-disk msgpack-fixture layout; :meth:`to_circuit` groups it into a
-    :class:`~monoprop.circuit.MajoranaCircuit` via
-    :meth:`~monoprop.circuit.MajoranaCircuit.from_dense_arrays`.
+    :class:`~monoprop.circuit.Circuit` via
+    :meth:`~monoprop.circuit.Circuit.from_dense_arrays`.
     """
 
     initial_state: list[int] | ndarray
@@ -45,9 +45,9 @@ class DenseMajoranaArrays:
     gen_coeffs: list[float] | ndarray
     param_inds: list[int] | ndarray
 
-    def to_circuit(self) -> MajoranaCircuit:
-        """Group the dense arrays into a :class:`~monoprop.circuit.MajoranaCircuit`."""
-        return MajoranaCircuit.from_dense_arrays(
+    def to_circuit(self) -> Circuit:
+        """Group the dense arrays into a :class:`~monoprop.circuit.Circuit`."""
+        return Circuit.from_dense_arrays(
             majoranas=self.majoranas,
             gen_coeffs=self.gen_coeffs,
             param_inds=self.param_inds,
@@ -87,8 +87,8 @@ class FermionicProblem:
         self.n_modes = n_modes
 
     @property
-    def circuit(self) -> MajoranaCircuit:
-        """The gate sequence as a :class:`~monoprop.circuit.MajoranaCircuit`."""
+    def circuit(self) -> Circuit:
+        """The gate sequence as a :class:`~monoprop.circuit.Circuit`."""
         return self.monomial_circuit.to_circuit()
 
     def split_only_rotate_len_k(self) -> SplitOrbitalRotations:
@@ -145,7 +145,7 @@ def load_problem(path: Path) -> FermionicProblem:
         tuple(key): complex(real, imag)
         for key, real, imag in zip(ham["keys"], ham["real"], ham["imag"], strict=True)
     }
-    quantum_operator = MajoranaOperator.from_dict(terms, data["num_modes"])
+    quantum_operator = MajoranaOperator(terms, data["num_modes"])
 
     return FermionicProblem(
         monomial_circuit=monomial_circuit,

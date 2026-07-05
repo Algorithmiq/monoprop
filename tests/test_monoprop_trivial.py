@@ -17,17 +17,17 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from monoprop import MajoranaPropagator
-from monoprop.fermi_data import FermiCircuit, MajoranaOperator
+from monoprop import Circuit, MajoranaPropagator
+from monoprop.fermi_data import MajoranaOperator
 
 
 @pytest.mark.parametrize(
     ("initial_op", "cutoff", "schrodinger_cutoff", "expected"),
     [
-        (MajoranaOperator([(0, 1, 2, 4)], [1], 8), 16, None, {(0, 1, 2, 4): 1}),
-        (MajoranaOperator([()], [1], 8), 16, None, {(): 1}),
+        (MajoranaOperator({(0, 1, 2, 4): 1}, 8), 16, None, {(0, 1, 2, 4): 1}),
+        (MajoranaOperator({(): 1}, 8), 16, None, {(): 1}),
         (
-            MajoranaOperator([], [], 1),
+            MajoranaOperator({}, 1),
             2,
             2,
             {(): 1.0, (0, 1): -1.0j},
@@ -39,7 +39,7 @@ def test_trivial_evolved_operator_cases(
 ):
     """Test trivial evolved operator dict for various initial conditions."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
-    quantum_circuit = FermiCircuit(initial_state=[], gates=[])
+    quantum_circuit = Circuit(initial_state=[], gates=[])
     mp = MajoranaPropagator(
         initial_op,
         quantum_circuit.initial_state,
@@ -52,8 +52,8 @@ def test_trivial_evolved_operator_cases(
 
 
 def test_trivial_evolved_operator(serial_comm):
-    initial_op = MajoranaOperator([(0, 1, 2, 4)], [1], 8)
-    quantum_circuit = FermiCircuit(initial_state=[], gates=[])
+    initial_op = MajoranaOperator({(0, 1, 2, 4): 1}, 8)
+    quantum_circuit = Circuit(initial_state=[], gates=[])
     mp = MajoranaPropagator(
         initial_op, quantum_circuit.initial_state, cutoff=16, comm=serial_comm
     )
@@ -73,7 +73,7 @@ def test_trivial_evolved_operator(serial_comm):
     [
         # Regular picture: checks contract_partially (rank-local) → serial_comm
         (
-            MajoranaOperator([(0, 1, 2, 4)], [1], 8),
+            MajoranaOperator({(0, 1, 2, 4): 1}, 8),
             {(0, 1, 2, 4): 2.0 + 0j},
             16,
             None,
@@ -82,7 +82,7 @@ def test_trivial_evolved_operator(serial_comm):
         ),
         # Schrodinger picture: checks expectation value (allreduced) → but kept here for simplicity
         (
-            MajoranaOperator([(0, 3)], [1.0j], 4),
+            MajoranaOperator({(0, 3): 1.0j}, 4),
             {(0, 1): 2.0j},
             8,
             8,
@@ -102,7 +102,7 @@ def test_update_initial_operator(
 ):
     """Test updating coefficients in both regular and Schrodinger pictures."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
-    quantum_circuit = FermiCircuit(initial_state=[], gates=[])
+    quantum_circuit = Circuit(initial_state=[], gates=[])
     mp = MajoranaPropagator(
         init_op,
         quantum_circuit.initial_state,

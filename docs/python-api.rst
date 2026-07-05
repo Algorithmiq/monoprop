@@ -34,17 +34,18 @@ information, so evaluation takes only the parameter values. See
 Authoring gates
 ~~~~~~~~~~~~~~~
 
-A :class:`~monoprop.Gate` (aliased :class:`~monoprop.MajoranaGate`) is a pure generator: it
-wraps the :class:`~monoprop.majorana_data.MajoranaOperator` it generates and carries no
-parameter index (:class:`~monoprop.PauliGate` is the qubit analogue). A circuit bundles a sequence of these
-gates with the angle *values* that drive them, the ``parameter_mapping`` wiring each gate to
-an angle (default: one distinct angle per gate; reusing an index across gates ties their
-angles), and the reference ``initial_state``. Circuits form a typed family —
-:class:`~monoprop.MajoranaCircuit`, :class:`~monoprop.PauliCircuit`, and
-:class:`~monoprop.fermi_data.FermiCircuit` — each fed to the propagator directly (there is
-no separate conversion step), and two circuits of the same family compose temporally with
-``+``. The propagator consumes a circuit; evaluation accepts either a plain parameter vector
-or the circuit itself.
+A gate is the *exponential* of a generator: :class:`~monoprop.MajoranaExp` wraps a
+:class:`~monoprop.Majorana` term or a :class:`~monoprop.majorana_data.MajoranaOperator`,
+and :class:`~monoprop.PauliExp` is the qubit analogue (wrapping a :class:`~monoprop.Pauli`
+term or a :class:`~monoprop.pauli_data.PauliOperator`). Each gate is the unit of
+parameterization — one gate is driven by one angle, named by its ``param`` index (default:
+one distinct angle per gate, in order; reusing an index across gates ties their angles). A
+circuit bundles a sequence of these gates with the angle *values* that drive them and the
+reference ``initial_state``. There is a single :class:`~monoprop.Circuit` type: the gates
+carry the family, so a circuit is qubit *or* Majorana/fermionic (mixing is rejected), and the
+propagator dispatches on :attr:`~monoprop.Circuit.family`. Two
+circuits of the same family compose temporally with ``+``. The propagator consumes a circuit;
+evaluation accepts either a plain parameter vector or the circuit itself.
 
 .. automodule:: monoprop.circuit
    :members:
@@ -66,7 +67,7 @@ Fermionic and Majorana operators
 The natural starting point for quantum chemistry and lattice models: weighted
 sums of fermionic creation/annihilation operators (``FermiOperator``), or
 monomials given directly as sets of Majorana indices (``MajoranaOperator``).
-``FermiGate`` and ``FermiCircuit`` describe the evolution and the reference
+``FermiExp`` and ``Circuit`` describe the evolution and the reference
 state.
 
 .. automodule:: monoprop.fermi_data
@@ -78,8 +79,8 @@ Qubit (Pauli) operators
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The natural starting point when you already hold a qubit Hamiltonian:
-real-coefficient sums of Pauli strings (``PauliOperator``), with ``PauliGate``
-and ``PauliCircuit`` describing the circuit. Feed these to ``PauliPropagator``,
+real-coefficient sums of Paulis (``PauliOperator``), with ``PauliExp``
+and ``Circuit`` describing the circuit. Feed these to ``PauliPropagator``,
 which takes them directly and truncates by qubit Pauli weight (see
 :doc:`/features/cutoff`).
 

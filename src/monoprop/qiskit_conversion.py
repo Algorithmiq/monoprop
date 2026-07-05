@@ -27,8 +27,9 @@ except ImportError as e:
         "qiskit is required to use monoprop.qiskit_conversion. Install it with: pip install qiskit"
     ) from e
 
-from monoprop.circuit import PauliCircuit, PauliGate
-from monoprop.pauli_data import PauliOperator
+from monoprop.circuit import Circuit, PauliExp
+from monoprop.conversion_utils import _extend_pauli_string
+from monoprop.pauli_data import Pauli, PauliOperator
 
 PAULI_EVOLUTION_EQUIVALENT = {
     "rx",
@@ -68,9 +69,9 @@ def from_qiskit_operator(
         coeffs = np.real_if_close(coeffs)  # type: ignore
         if np.iscomplexobj(coeffs):
             raise ValueError("Operator has complex terms")
-    return PauliOperator(
-        strings=pauli_strings,
-        coefficients=coeffs,  # type: ignore[arg-type]
+    return PauliOperator._from_terms(
+        pauli_strings,
+        list(coeffs),  # type: ignore[arg-type]
         num_qubits=qiskit_op.num_qubits,
     )
 
@@ -90,14 +91,24 @@ def to_qiskit_operator(
     return SparsePauliOp.from_list([(k[::-1], v) for k, v in pauli_dict.items()])
 
 
+def _place_operator(local_op: PauliOperator, qubits: tuple[int, ...]) -> PauliOperator:
+    """Remap a local operator (on qubits ``0..len(qubits)-1``) onto global ``qubits``."""
+    return PauliOperator(
+        {
+            Pauli(pauli.string, tuple(qubits[q] for q in pauli.qubits)): coeff
+            for pauli, coeff in local_op.terms.items()
+        }
+    )
+
+
 def from_qiskit_circuit(
     circuit: QuantumCircuit,
     initial_state: list[int],
-) -> PauliCircuit:
-    """Convert a Qiskit circuit to a :class:`~monoprop.circuit.PauliCircuit`.
+) -> Circuit:
+    """Convert a Qiskit circuit to a :class:`~monoprop.circuit.Circuit`.
 
     Note that the qiskit circuit must be composed only by PauliEvolutionGates with commuting
-    operators. Each qiskit gate becomes one :class:`~monoprop.circuit.PauliGate` driven by
+    operators. Each qiskit gate becomes one :class:`~monoprop.circuit.PauliExp` driven by
     its own angle (the identity parameter mapping).
 
     Args:
@@ -105,9 +116,9 @@ def from_qiskit_circuit(
         initial_state: Initial quantum state as a list of integers.
 
     Returns:
-        A :class:`~monoprop.circuit.PauliCircuit` representing the given circuit.
+        A :class:`~monoprop.circuit.Circuit` representing the given circuit.
     """
-    gates: list[PauliGate] = []
+    gates: list[PauliExp] = []
     parameters: list[float] = []
     qregs = circuit.qregs[0]
     for gate in circuit.data:
@@ -121,46 +132,52 @@ def from_qiskit_circuit(
 
         if gate_name == "PauliEvolution":
             parameter = g_op.time
-            paulis = from_qiskit_operator(g_op.operator)
+            generator = _place_operator(from_qiskit_operator(g_op.operator), qubits)
         elif gate_name in PAULI_EVOLUTION_EQUIVALENT:
             parameter = g_op.params[0] * 0.5
             pauli_string = gate_name[1:].upper()  # Remove the leading 'R' and uppercase
-            paulis = PauliOperator([pauli_string], [1.0], num_qubits=len(qubits))
+            generator = PauliOperator({Pauli(pauli_string, qubits): 1.0})
         else:
             raise ValueError(
                 f"Unsupported gate {gate_name}. Only PauliEvolutionGate or equivalent gates are supported."
             )
 
-        gates.append(PauliGate(qubits, paulis))
+        gates.append(PauliExp(generator))
         parameters.append(float(parameter))
 
-    return PauliCircuit(
+    return Circuit(
         gates=tuple(gates),
         parameters=tuple(parameters),
         initial_state=tuple(initial_state),
-        num_qubits=len(qregs),
     )
 
 
-def to_qiskit_circuit(circuit: PauliCircuit) -> QuantumCircuit:
-    """Convert a :class:`~monoprop.circuit.PauliCircuit` to a Qiskit circuit.
+def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
+    """Convert a :class:`~monoprop.circuit.Circuit` to a Qiskit circuit.
 
     Note that the resulting qiskit circuit will be composed only by PauliEvolutionGates with
     commuting operators. Each gate's evolution time is taken from the circuit's
     ``parameters`` via its parameter mapping.
 
     Args:
-        circuit: A :class:`~monoprop.circuit.PauliCircuit` representing the given circuit.
+        circuit: A :class:`~monoprop.circuit.Circuit` representing the given circuit.
+        num_qubits: Total number of qubits (the circuit no longer carries it; supply the
+            observable's ``num_qubits``).
 
     Returns:
         A qiskit quantum circuit.
     """
-    qiskit_circuit = QuantumCircuit(circuit.num_qubits)
+    qiskit_circuit = QuantumCircuit(num_qubits)
     mapping = circuit.resolved_mapping
     for gate, param_index in zip(circuit.gates, mapping, strict=True):
-        qiskit_op = to_qiskit_operator(gate.paulis.to_dict())
+        pauli_dict = {
+            _extend_pauli_string(pauli.string, pauli.qubits, num_qubits): coeff
+            for pauli, coeff in gate.generator.terms.items()
+        }
         qiskit_circuit.append(
-            PauliEvolutionGate(qiskit_op, time=circuit.parameters[param_index]),
-            gate.qubits,
+            PauliEvolutionGate(
+                to_qiskit_operator(pauli_dict), time=circuit.parameters[param_index]
+            ),
+            range(num_qubits),
         )
     return qiskit_circuit
