@@ -76,12 +76,10 @@ test = [
   "pytest>=8.2.2,<8.3",
   "pytest-datadir",
   "pytest-mpi>=0.6",
-  "tabulate>=0.9",
 ]
 bench = [
   { include-group = "test" },
   "pytest-benchmark>=5",
-  "psutil>=7.2",
 ]
 
 

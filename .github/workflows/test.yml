@@ -393,6 +393,60 @@ jobs:
             ctest-*.xml
           retention-days: 1
 
+  cpp-checks-wide-index:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    # Keeps the >2^32-term configuration (64-bit TermIndex) compiling and passing: nothing else
+    # builds it, and index-width assumptions rot silently otherwise.
+    name: Check C++ with MONOPROP_WIDE_TERM_INDEX
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set gcc-14/g++-14 as default compilers
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
+          sudo update-alternatives --set g++ /usr/bin/g++-14
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
+          sudo update-alternatives --set c++ /usr/bin/g++-14
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
+          ./tools/install-deps.sh /opt/Software
+
+      - name: Configure (wide term index)
+        run: |
+          export CMAKE_PREFIX_PATH=/opt/Software
+          cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=g++ -DMONOPROP_WIDE_TERM_INDEX=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        env:
+          OMPI_MCA_rmaps_base_oversubscribe: "1"
+        run: |
+          ctest --test-dir build --output-junit ../ctest-wide-index.xml
+
+      - name: Upload Test Results as artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: test_results_cpp_wide_index
+          path: |
+            ctest-*.xml
+          retention-days: 1
+
   publish-test-results:
     name: "Publish Tests Results"
     needs:
@@ -400,6 +454,7 @@ jobs:
       - cpp-checks
       - sonarqube-analysis
       - cpp-checks-other
+      - cpp-checks-wide-index
     runs-on: ubuntu-latest
     permissions:
       checks: write
