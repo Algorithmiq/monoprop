@@ -38,9 +38,9 @@ import nbformat
 from nbconvert import MarkdownExporter
 from nbconvert.preprocessors import ExecutePreprocessor
 
-ROOT = Path(__file__).resolve().parent.parent
-NB_DIR = ROOT / "docs" / "notebooks"
-OUT_DIR = ROOT / "docs" / "content" / "docs" / "tutorials"
+DOCS_DIR = Path(__file__).resolve().parent.parent
+NB_DIR = DOCS_DIR / "notebooks"
+OUT_DIR = DOCS_DIR / "content" / "docs" / "tutorials"
 TIMEOUT = 600  # seconds per cell, matching the old `nb_execution_timeout`
 
 # Ordered tutorial metadata: (folder/stem, sidebar+page title, description).
@@ -164,7 +164,7 @@ def main() -> int:
     for stem, title, description in selected:
         print(f"Executing and converting {stem} …", flush=True)  # noqa: T201
         out = convert(stem, title, description)
-        print(f"  -> {out.relative_to(ROOT)}", flush=True)  # noqa: T201
+        print(f"  -> {out.relative_to(DOCS_DIR)}", flush=True)  # noqa: T201
 
     # Landing page for `/docs/tutorials`. fumadocs picks up `index.mdx` as the
     # folder's own index automatically, so the "Tutorials" sidebar/nav title

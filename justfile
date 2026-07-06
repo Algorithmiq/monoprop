@@ -96,7 +96,7 @@ bench-smoke:
 # Execute the tutorial notebooks and convert them to Markdown. Notebook
 # execution fails the build on any cell error -- this is the notebook doctest.
 gen-notebooks:
-    {{ docs_uv }} python tools/notebooks_to_mdx.py
+    {{ docs_uv }} python docs/scripts/notebooks_to_mdx.py
 
 # Generate the Python API reference MDX from docstrings (griffe -> JSON -> MDX).
 gen-api:
