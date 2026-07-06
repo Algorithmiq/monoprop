@@ -26,14 +26,23 @@ curl -fsSL https://install.julialang.org | sh
 julia --version
 ```
 
+Then install [`PauliPropagation.jl`](https://github.com/SparqleSim/PauliPropagation.jl) from the official Julia package manager:
+
+```bash
+julia -e 'using Pkg; Pkg.add(["PauliPropagation", "JSON"])'
+```
+
 
 ## Running benchmark scripts
 ```bash
-# Run script in the venv
-uv run python my_benchmark_run.py
+# Run python script in venv
+uv run python trotter_ising_run.py
+
+# Run Julia script
+julia trotter_ising_run.jl
 
 # Plot final results
-uv run python my_benchmark_plot.py
+uv run python trotter_ising_plot.py
 ```
 
 

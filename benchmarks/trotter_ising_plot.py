@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Plot results from `trotter_ising_run.py`."""
 
 from __future__ import annotations
 
@@ -24,6 +23,7 @@ colors = {
     "QuEra ppvm": "tab:orange",
     "Qiskit pauli-prop": "tab:blue",
     "cuPauliProp (GPU)": "tab:green",
+    "PauliProp (Julia)": "tab:red",
 }
 
 with open("trotter_ising_results.json") as file:
