@@ -17,10 +17,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from monoprop import Circuit
+from monoprop import Circuit, Exp
 from monoprop.circuit import expand_monomials
 from monoprop.fermi_data import (
-    FermiExp,
     FermiOperator,
     FermiString,
     MajoranaOperator,
@@ -145,36 +144,45 @@ class TestMajoranaOperator:
         assert expected_terms == terms
 
 
-class TestFermiExp:
+def _number_op(mode: int = 0, num_modes: int = 1) -> FermiOperator:
+    """The number operator n = c^+ c on ``mode``: a valid fermionic generator."""
+    return FermiOperator([[(mode, "+"), (mode, "-")]], [1.0], num_modes=num_modes)
+
+
+class TestExp:
     def test_creation_from_fermi_operator(self):
-        op = FermiOperator([FermiString([(0, "+"), (0, "-")])], [1.0], num_modes=1)
+        gate = Exp(generator=_number_op())
 
-        gate = FermiExp(generator=op)
-
+        assert gate.family == "fermi"
         assert gate.generator.num_modes == 1
+        # A fermionic gate holds its generator in raw Majorana form; it is
+        # antihermitian-normalized to a structural Majorana gate at Circuit construction.
         assert gate.generator.terms == {(): 0.5, (0, 1): 0.5j}
 
-    def test_creation_from_majorana_operator(self):
-        op = MajoranaOperator({(0, 1): 1.0j}, num_modes=1)
+    def test_majorana_operator_is_structural(self):
+        # A MajoranaOperator generator is taken as a *native* (structural) Majorana gate,
+        # never a fermionic one: its coefficients are used directly, unnormalized.
+        gate = Exp(generator=MajoranaOperator({(0, 1): -1.0}, num_modes=1))
 
-        gate = FermiExp(generator=op)
-
-        assert gate.generator.terms == {(0, 1): 1.0j}
+        assert gate.family == "majorana"
+        assert gate.generator.terms == {(0, 1): -1.0}
 
 
 class TestCircuit:
     def test_len(self):
-        generator = MajoranaOperator({(0, 1): 1.0j}, num_modes=1)
-        gates = [FermiExp(generator=generator), FermiExp(generator=generator)]
+        gates = [Exp(_number_op()), Exp(_number_op())]
 
         circuit = Circuit(gates=gates, parameters=[0.1, 0.2], initial_state=[0])
 
         assert len(circuit) == 2
 
-    def test_converts_generators_to_majorana_gates(self):
-        generator = MajoranaOperator({(0, 1): 1.0j, (2, 3): -1.0j}, num_modes=2)
-        gate_0 = FermiExp(generator=generator)
-        gate_1 = FermiExp(generator=generator)
+    def test_converts_fermi_gates_to_majorana(self):
+        # A hopping term c_0^+ c_1 + c_1^+ c_0 on two modes.
+        hop = FermiOperator(
+            [[(0, "+"), (1, "-")], [(1, "+"), (0, "-")]], [1.0, 1.0], num_modes=2
+        )
+        gate_0 = Exp(hop)
+        gate_1 = Exp(hop)
 
         circuit = Circuit(
             gates=[gate_0, gate_1], parameters=[0.3, -0.7], initial_state=[0, 1]
@@ -184,33 +192,29 @@ class TestCircuit:
         np.testing.assert_array_equal(list(circuit.parameters), np.array([0.3, -0.7]))
         # A Circuit converts one Majorana gate per fermi gate, identity mapping.
         assert list(circuit.resolved_mapping) == list(range(len(circuit)))
-        # The original fermi gates remain available.
+        # Each fermi gate is normalized to a structural Majorana gate ...
+        assert all(g.family == "majorana" for g in circuit.gates)
+        # ... while the original fermi gates remain available.
         assert circuit.fermi_generators == (gate_0, gate_1)
 
         majoranas, gen_coeffs, per_monomial_mapping, gate_indices = expand_monomials(
             circuit.gates, circuit.resolved_mapping
         )
         # One gate per fermi gate; each generator here has two monomials.
-        assert gate_indices == [0, 0, 1, 1]
-
-        np.testing.assert_array_equal(
-            np.array(gen_coeffs), np.array([-1.0, 1.0, -1.0, 1.0])
-        )
-        np.testing.assert_array_equal(
-            np.array(per_monomial_mapping), np.array([0, 0, 1, 1])
-        )
-
-        np.testing.assert_array_equal(majoranas[0], np.array([0, 1]))
-        np.testing.assert_array_equal(majoranas[1], np.array([2, 3]))
-        np.testing.assert_array_equal(majoranas[2], np.array([0, 1]))
-        np.testing.assert_array_equal(majoranas[3], np.array([2, 3]))
+        n_terms = len(gate_0.generator.terms)
+        assert gate_indices == [0] * n_terms + [1] * n_terms
+        assert per_monomial_mapping == [0] * n_terms + [1] * n_terms
+        # The expanded monomials are exactly the normalized gate's Majorana terms, repeated.
+        expected = [tuple(k) for k in circuit.gates[0].generator.terms]
+        assert majoranas == expected + expected
+        # Antihermitian normalization yielded real structural coefficients (no raise).
+        assert all(isinstance(c, float) for c in gen_coeffs)
 
     def test_drops_identity_generators_and_aligned_parameters(self):
-        """An identity (zero-coefficient) generator and its parameter are dropped."""
-        real = MajoranaOperator({(0, 1): 1.0j}, num_modes=1)
-        identity = MajoranaOperator({}, num_modes=1)
+        """An identity (empty) generator and its parameter are dropped."""
+        identity = FermiOperator([], [], num_modes=1)
         circuit = Circuit(
-            gates=[FermiExp(real), FermiExp(identity), FermiExp(real)],
+            gates=[Exp(_number_op()), Exp(identity), Exp(_number_op())],
             parameters=[0.1, 0.2, 0.3],
             initial_state=[0],
         )
@@ -219,8 +223,5 @@ class TestCircuit:
         assert len(circuit.fermi_generators) == 2
 
     def test_validate_inputs_duplicate_initial_state_raises(self):
-        generator = MajoranaOperator({(0, 1): 1.0j}, num_modes=1)
-        gate = FermiExp(generator=generator)
-
         with pytest.raises(ValueError, match="Duplicate indices in initial state"):
-            Circuit(gates=[gate], initial_state=[0, 0])
+            Circuit(gates=[Exp(_number_op())], initial_state=[0, 0])

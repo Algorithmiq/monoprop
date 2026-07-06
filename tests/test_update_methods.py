@@ -19,7 +19,7 @@ from pytest_cases import parametrize_with_cases
 
 from monoprop import (
     Circuit,
-    MajoranaExp,
+    Exp,
     MajoranaPropagator,
     jordan_wigner_basis_change,
 )
@@ -106,7 +106,7 @@ class TestUpdateMethods:
 
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
-        gate = MajoranaExp(MajoranaOperator({(0, 1, 2, 3, 4, 5): 1.0}))
+        gate = Exp(MajoranaOperator({(0, 1, 2, 3, 4, 5): 1.0}))
         mp.build_graph(Circuit((gate,)))
         assert mp.size() > 0
 

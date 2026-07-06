@@ -27,7 +27,7 @@ except ImportError as e:
         "qiskit is required to use monoprop.qiskit_conversion. Install it with: pip install qiskit"
     ) from e
 
-from monoprop.circuit import Circuit, PauliExp
+from monoprop.circuit import Circuit, Exp
 from monoprop.conversion_utils import _extend_pauli_string
 from monoprop.pauli_data import Pauli, PauliOperator
 
@@ -108,7 +108,7 @@ def from_qiskit_circuit(
     """Convert a Qiskit circuit to a :class:`~monoprop.circuit.Circuit`.
 
     Note that the qiskit circuit must be composed only by PauliEvolutionGates with commuting
-    operators. Each qiskit gate becomes one :class:`~monoprop.circuit.PauliExp` driven by
+    operators. Each qiskit gate becomes one qubit :class:`~monoprop.circuit.Exp` driven by
     its own angle (the identity parameter mapping).
 
     Args:
@@ -118,7 +118,7 @@ def from_qiskit_circuit(
     Returns:
         A :class:`~monoprop.circuit.Circuit` representing the given circuit.
     """
-    gates: list[PauliExp] = []
+    gates: list[Exp] = []
     parameters: list[float] = []
     qregs = circuit.qregs[0]
     for gate in circuit.data:
@@ -142,7 +142,7 @@ def from_qiskit_circuit(
                 f"Unsupported gate {gate_name}. Only PauliEvolutionGate or equivalent gates are supported."
             )
 
-        gates.append(PauliExp(generator))
+        gates.append(Exp(generator))
         parameters.append(float(parameter))
 
     return Circuit(

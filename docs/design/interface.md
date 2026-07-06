@@ -32,7 +32,7 @@ term  →  operator (Σ term·coeff)  →  Exp gate (exponentiate a generator)  
 |-------|-----------------|--------------|------------------|
 | term | `Majorana(*indices)` | `Pauli(string, qubits)` | *(fermionic string tuples)* |
 | operator | `MajoranaOperator({term: c}, num_modes)` | `PauliOperator({term: c}, num_qubits)` | `FermiOperator(...)` |
-| gate | `MajoranaExp(gen, param)` | `PauliExp(gen, param)` | `FermiExp(gen, param)` |
+| gate | `Exp(gen, param)` (single type — the generator carries the family) | | |
 | circuit | `Circuit` (single type — the gates carry the family) | | |
 | propagator | `MajoranaPropagator` | `PauliPropagator` | `MajoranaPropagator` |
 
@@ -70,17 +70,19 @@ that method is private.
 
 ### Layer 3 — exponential gates
 
-`MajoranaExp` / `PauliExp` / `FermiExp` wrap a generator (a bare term or an operator) and make
-the exponentiation `exp(-iθ/2·G)` explicit at the call site. This is the one deliberate piece
-of redundancy we kept over a "circuit holds bare operators" design (see decisions below).
+A single `Exp` type wraps a generator (a bare term or an operator) and makes the
+exponentiation `exp(-iθ/2·G)` explicit at the call site. Like `Circuit`, it abstracts over the
+family: the **generator type** it is handed selects the family and normalization convention
+(see the load-bearing rules below). This explicit `Exp` wrapper is the one deliberate piece of
+redundancy we kept over a "circuit holds bare operators" design (see decisions below).
 
 ### Layer 4 — circuits
 
 A single `Circuit`: an ordered sequence of gates plus angle `parameters` and an
 `initial_state`. No `parameter_mapping` argument and no `num_qubits` (see decisions). The gate
-types carry the family, so one `Circuit` type serves all families; it rejects a mix of qubit
-and Majorana/fermionic gates and normalizes any `FermiExp` to a structural `MajoranaExp` at
-construction (keeping the originals on `Circuit.fermi_generators`). The propagators check
+gates carry the family, so one `Circuit` type serves all families; it rejects a mix of qubit
+and Majorana/fermionic gates and normalizes any fermionic `Exp` to a structural Majorana `Exp`
+at construction (keeping the originals on `Circuit.fermi_generators`). The propagators check
 `Circuit.family` rather than the circuit's Python type.
 
 ## The parameter model
@@ -103,14 +105,18 @@ re-labelling of the built graph — is a different layer and is unchanged.)
 
 ## Two load-bearing rules
 
-1. **The `Exp` wrapper type carries the normalization rule.** `MajoranaExp` means the
-   coefficients are *structural* `g` (imaginary part rejected); `FermiExp` means
-   *antihermitian-normalize a raw Majorana-product coefficient*. This is exactly what
-   distinguished the old `Gate` from `FermiGate`. Because the wrapper — not the operator type —
-   decides, `MajoranaExp(MajoranaOperator({(0,1): 1j}))` correctly raises (non-Hermitian
-   structural coeff) while `FermiExp(MajoranaOperator({(0,1): 1j}))` correctly normalizes.
-   `Circuit` performs that normalization **at construction**, converting each `FermiExp`
-   into a structural `MajoranaExp`, so the expander only ever sees `MajoranaExp`/`PauliExp`.
+1. **The generator type carries the normalization rule.** A single `Exp` dispatches on the
+   generator it is handed: a `Majorana`/`MajoranaOperator` is a *native* generator whose
+   coefficients are the *structural* `g` used directly (imaginary part rejected as
+   non-Hermitian); a `Pauli`/`PauliOperator` is Jordan-Wigner mapped and
+   antihermitian-normalized; a `FermiOperator` is a fermionic generator, held in raw Majorana
+   form and antihermitian-normalized. So `Exp(MajoranaOperator({(0,1): 1j}))` is always
+   structural and correctly raises (non-Hermitian structural coeff), while
+   `Exp(FermiOperator(...))` normalizes. There is no raw-`MajoranaOperator`-as-fermionic path:
+   a `MajoranaOperator` means "structural", full stop — fermionic generators go through
+   `FermiOperator`. `Circuit` performs the fermionic normalization **at construction**,
+   converting each fermionic `Exp` into a structural Majorana `Exp`, so the expander only ever
+   sees Majorana and Pauli gates.
 
 2. **Width lives on the observable, and flows to gate expansion via the propagator.**
    `PauliPropagator` reads `num_qubits` from the observable and stores it as `self._num_qubits`;
@@ -127,12 +133,13 @@ re-labelling of the built graph — is a different layer and is unchanged.)
   (`MajoranaCircuit` / `PauliCircuit` / `FermiCircuit`) have been removed — there is only
   `Circuit`. The family guardrails are enforced in two places: `Circuit` rejects a mix of
   qubit and Majorana/fermionic gates, and each propagator rejects the wrong family.
-- **Explicit `Exp` wrappers, not bare operators in the circuit.** A circuit *could* hold bare
-  operators (exponentiation implied by position, as in `qiskit.QuantumCircuit`). We kept the
-  `Exp` wrapper so "this generator is exponentiated" is visible at the call site. Net change is
-  still a simplification: three parallel wrappers (`*Exp`) replace the old four.
+- **A single explicit `Exp` wrapper, not bare operators in the circuit.** A circuit *could*
+  hold bare operators (exponentiation implied by position, as in `qiskit.QuantumCircuit`). We
+  kept the `Exp` wrapper so "this generator is exponentiated" is visible at the call site, but
+  collapsed the three family-specific wrappers (`MajoranaExp`/`PauliExp`/`FermiExp`) into one
+  `Exp` that infers its family from the generator type — mirroring the single `Circuit`.
 - **`param` on the gate, not a circuit-level list.** Sharing an angle reads locally
-  (`MajoranaExp(op, param=k)` next to the other gates using `k`) and removes an aligned-array
+  (`Exp(op, param=k)` next to the other gates using `k`) and removes an aligned-array
   argument from the circuit. This reverses the earlier "gates carry no parameter index"
   decision at the authoring layer only.
 - **Single dict constructor.** Drops `from_dict` and positional lists from the public surface;
@@ -151,9 +158,10 @@ re-labelling of the built graph — is a different layer and is unchanged.)
 | `MajoranaOperator.from_dict(d, n)` | `MajoranaOperator(d, n)` |
 | `PauliOperator(["ZZ"], [c], num_qubits=n)` | `PauliOperator({"ZZ": c}, num_qubits=n)` |
 | `PauliOperator.from_dict(d, num_qubits=n)` | `PauliOperator(d, num_qubits=n)` |
-| `Gate(g)` / `MajoranaGate(g)` | `MajoranaExp(g)` |
-| `PauliGate((0,), PauliOperator(["X"],[1.0],num_qubits=1))` | `PauliExp(Pauli("X", 0))` |
-| `FermiGate(generator=g)` | `FermiExp(g)` |
+| `Gate(g)` / `MajoranaGate(g)` / `MajoranaExp(g)` | `Exp(g)` |
+| `PauliGate((0,), PauliOperator(["X"],[1.0],num_qubits=1))` / `PauliExp(Pauli("X", 0))` | `Exp(Pauli("X", 0))` |
+| `FermiGate(generator=fo)` / `FermiExp(fo)` (a `FermiOperator`) | `Exp(fo)` |
+| `FermiExp(MajoranaOperator({(0,1): 1j}))` (raw Majorana-as-fermionic) | `Exp(FermiOperator(...))` (removed — use a `FermiOperator`) |
 | `MajoranaCircuit(...)` / `PauliCircuit(...)` / `FermiCircuit(...)` | `Circuit(...)` |
 | `PauliCircuit(gates=..., num_qubits=n)` | `Circuit(gates=...)` |
 | `MajoranaCircuit(gates=[a,b,c], parameter_mapping=[0,1,0])` | `Circuit([Exp(a,param=0), Exp(b,param=1), Exp(c,param=0)])` |

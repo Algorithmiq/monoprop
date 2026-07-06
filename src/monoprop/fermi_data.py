@@ -18,11 +18,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .circuit import FermiExp
 from .conversion_utils import _n_product
 from .majorana_data import MajoranaOperator
 
-__all__ = ["FermiExp", "FermiOperator", "FermiString"]
+__all__ = ["FermiOperator", "FermiString"]
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -200,9 +199,3 @@ class FermiOperator:
                 majoranas.append(majorana)
                 coefficients.append(val * c)
         return MajoranaOperator._from_terms(majoranas, coefficients, self.num_modes)
-
-
-#: ``FermiExp`` is defined in :mod:`monoprop.circuit` (so the single :class:`~monoprop.Circuit`
-#: can normalize it without a circular import) and re-exported here for discoverability. A
-#: fermionic circuit is just a ``Circuit`` whose gates are ``FermiExp`` (each normalized to a
-#: structural ``MajoranaExp`` at construction).

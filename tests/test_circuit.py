@@ -23,9 +23,8 @@ import pytest
 
 from monoprop import (
     Circuit,
-    MajoranaExp,
+    Exp,
     MajoranaPropagator,
-    PauliExp,
 )
 from monoprop.majorana_data import MajoranaOperator
 from monoprop.pauli_data import PauliOperator
@@ -49,7 +48,7 @@ def _rebase(gates):
     Slicing a circuit's gates keeps their absolute ``param`` indices, which are no longer
     contiguous from 0 in a tail slice; re-basing to the identity restores a valid sub-circuit.
     """
-    return tuple(MajoranaExp(gate.generator) for gate in gates)
+    return tuple(Exp(gate.generator) for gate in gates)
 
 
 # -- the Circuit type -----------------------------------------------------------
@@ -75,8 +74,8 @@ def test_default_mapping_is_identity() -> None:
     """Omitting the mapping gives each gate its own distinct angle."""
     circuit = Circuit(
         (
-            MajoranaExp(MajoranaOperator({(0, 1): 1.0})),
-            MajoranaExp(MajoranaOperator({(2, 3): 1.0})),
+            Exp(MajoranaOperator({(0, 1): 1.0})),
+            Exp(MajoranaOperator({(2, 3): 1.0})),
         )
     )
     assert circuit.resolved_mapping == (0, 1)
@@ -86,9 +85,9 @@ def test_default_mapping_is_identity() -> None:
 def test_shared_mapping_index_ties_gates() -> None:
     """Reusing one index in the mapping ties gates to one angle."""
     gates = (
-        MajoranaExp(MajoranaOperator({(0, 1): 1.0}), param=0),
-        MajoranaExp(MajoranaOperator({(2, 3): 1.0}), param=1),
-        MajoranaExp(MajoranaOperator({(0, 3): 1.0}), param=0),  # ties to the first
+        Exp(MajoranaOperator({(0, 1): 1.0}), param=0),
+        Exp(MajoranaOperator({(2, 3): 1.0}), param=1),
+        Exp(MajoranaOperator({(0, 3): 1.0}), param=0),  # ties to the first
     )
     circuit = Circuit(gates)
     assert circuit.resolved_mapping == (0, 1, 0)
@@ -98,8 +97,8 @@ def test_shared_mapping_index_ties_gates() -> None:
 def test_circuit_rejects_non_contiguous_mapping() -> None:
     """A mapping with an index gap is rejected (it would invent a phantom parameter)."""
     gates = (
-        MajoranaExp(MajoranaOperator({(0, 1): 1.0}), param=0),
-        MajoranaExp(MajoranaOperator({(2, 3): 1.0}), param=2),
+        Exp(MajoranaOperator({(0, 1): 1.0}), param=0),
+        Exp(MajoranaOperator({(2, 3): 1.0}), param=2),
     )
     with pytest.raises(ValueError, match="contiguous"):
         Circuit(gates)
@@ -108,8 +107,8 @@ def test_circuit_rejects_non_contiguous_mapping() -> None:
 def test_circuit_rejects_mixed_param_scheme() -> None:
     """Setting `param` on some gates but not others is rejected as ambiguous."""
     gates = (
-        MajoranaExp(MajoranaOperator({(0, 1): 1.0}), param=0),
-        MajoranaExp(MajoranaOperator({(2, 3): 1.0})),
+        Exp(MajoranaOperator({(0, 1): 1.0}), param=0),
+        Exp(MajoranaOperator({(2, 3): 1.0})),
     )
     with pytest.raises(ValueError, match="every gate must set"):
         Circuit(gates)
@@ -117,7 +116,7 @@ def test_circuit_rejects_mixed_param_scheme() -> None:
 
 def test_circuit_rejects_wrong_parameter_length() -> None:
     """A bound circuit must supply exactly one value per distinct angle."""
-    gates = (MajoranaExp(MajoranaOperator({(0, 1): 1.0})),)
+    gates = (Exp(MajoranaOperator({(0, 1): 1.0})),)
     with pytest.raises(ValueError, match="1 parameters"):
         Circuit(gates, parameters=(0.1, 0.2))
 
@@ -126,12 +125,12 @@ def test_circuit_add_offsets_second_axis() -> None:
     """Concatenating circuits appends the second's angles on a fresh axis."""
     a = Circuit(
         (
-            MajoranaExp(MajoranaOperator({(0,): 1.0})),
-            MajoranaExp(MajoranaOperator({(1,): 1.0})),
+            Exp(MajoranaOperator({(0,): 1.0})),
+            Exp(MajoranaOperator({(1,): 1.0})),
         ),
         parameters=(0.1, 0.2),
     )
-    b = Circuit((MajoranaExp(MajoranaOperator({(2,): 1.0})),), parameters=(0.3,))
+    b = Circuit((Exp(MajoranaOperator({(2,): 1.0})),), parameters=(0.3,))
     combined = a + b
     assert combined.resolved_mapping == (0, 1, 2)
     assert combined.parameters == (0.1, 0.2, 0.3)
@@ -146,7 +145,7 @@ def test_non_hermitian_majorana_generator_rejected() -> None:
     """
     obs = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(obs, [0, 1], cutoff=4)
-    bad = Circuit((MajoranaExp(MajoranaOperator({(0, 1): 1.0j})),), parameters=(0.3,))
+    bad = Circuit((Exp(MajoranaOperator({(0, 1): 1.0j})),), parameters=(0.3,))
     with pytest.raises(ValueError, match="not Hermitian"):
         prop.propagate(bad)
 
@@ -197,14 +196,21 @@ def test_pared_functional_matches_unpared(fixture: str) -> None:
     )
 
 
-def test_from_circuit_matches_manual_build() -> None:
-    """from_circuit wires the initial state and graph in one step."""
+def test_from_circuit_propagates_in_place() -> None:
+    """from_circuit constructs and propagates in one step, in-place with no graph."""
     problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = MajoranaPropagator.from_circuit(
         circuit, problem.operator, cutoff=2 * problem.n_modes
     )
-    np.testing.assert_allclose(prop.expectation_value(circuit), problem.exact_expval)
+    # No graph is stored; the circuit's angles are already applied, so the value is read
+    # off with no parameters (and matches a manual construct + propagate).
+    assert prop.n_parameters == 0
+    np.testing.assert_allclose(prop.expectation_value(), problem.exact_expval)
+
+    manual = _propagator(problem)
+    manual.propagate(circuit)
+    np.testing.assert_allclose(prop.expectation_value(), manual.expectation_value())
 
 
 # -- the graph-owned parameter mapping ------------------------------------------
@@ -264,8 +270,8 @@ def _multi_term_gate_propagator():
     op = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(op, [0, 1], cutoff=4)
     # two monomials -> two layers
-    g0 = MajoranaExp(MajoranaOperator({(0,): 1.0, (1,): 1.0}))
-    g1 = MajoranaExp(MajoranaOperator({(2,): 1.0}))
+    g0 = Exp(MajoranaOperator({(0,): 1.0, (1,): 1.0}))
+    g1 = Exp(MajoranaOperator({(2,): 1.0}))
     prop.build_graph(Circuit((g0, g1)))
     return prop
 
@@ -281,9 +287,9 @@ def test_n_gates_accumulates_across_builds() -> None:
     """Each build_graph call extends the gate count on the accumulated axis."""
     op = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(op, [0, 1], cutoff=4)
-    prop.build_graph(Circuit((MajoranaExp(MajoranaOperator({(0,): 1.0})),)))
+    prop.build_graph(Circuit((Exp(MajoranaOperator({(0,): 1.0})),)))
     assert prop.n_gates == 1
-    prop.build_graph(Circuit((MajoranaExp(MajoranaOperator({(1,): 1.0})),)))
+    prop.build_graph(Circuit((Exp(MajoranaOperator({(1,): 1.0})),)))
     assert prop.n_gates == 2
 
 
@@ -307,10 +313,10 @@ def test_majorana_propagator_rejects_pauli_circuit() -> None:
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)
     circuit = Circuit(
-        gates=(PauliExp(PauliOperator({"Z": 1.0}, num_qubits=1)),),
+        gates=(Exp(PauliOperator({"Z": 1.0}, num_qubits=1)),),
     )
 
-    with pytest.raises(TypeError, match="PauliExp"):
+    with pytest.raises(TypeError, match="qubit"):
         prop.propagate(circuit)
 
 
@@ -318,7 +324,7 @@ def test_propagate_rejects_mismatched_initial_state() -> None:
     """A circuit whose initial_state disagrees with the propagator's raises ValueError."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)  # built with the fixture's initial state ([])
-    gate = MajoranaExp(MajoranaOperator({(0, 1): 1.0}))
+    gate = Exp(MajoranaOperator({(0, 1): 1.0}))
     circuit = Circuit((gate,), parameters=(0.1,), initial_state=(0, 1))
 
     with pytest.raises(ValueError, match="initial_state"):
@@ -329,7 +335,7 @@ def test_propagate_accepts_empty_initial_state() -> None:
     """An empty circuit.initial_state defers to the propagator's reference state."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)
-    gate = MajoranaExp(MajoranaOperator({(0, 1): 1.0}))
+    gate = Exp(MajoranaOperator({(0, 1): 1.0}))
     circuit = Circuit((gate,), parameters=(0.1,))  # empty initial_state
 
     prop.propagate(circuit)  # does not raise

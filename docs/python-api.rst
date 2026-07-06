@@ -34,10 +34,11 @@ information, so evaluation takes only the parameter values. See
 Authoring gates
 ~~~~~~~~~~~~~~~
 
-A gate is the *exponential* of a generator: :class:`~monoprop.MajoranaExp` wraps a
-:class:`~monoprop.Majorana` term or a :class:`~monoprop.majorana_data.MajoranaOperator`,
-and :class:`~monoprop.PauliExp` is the qubit analogue (wrapping a :class:`~monoprop.Pauli`
-term or a :class:`~monoprop.pauli_data.PauliOperator`). Each gate is the unit of
+A gate is the *exponential* of a generator: a single :class:`~monoprop.Exp` type wraps a
+:class:`~monoprop.Majorana` / :class:`~monoprop.majorana_data.MajoranaOperator`,
+:class:`~monoprop.Pauli` / :class:`~monoprop.pauli_data.PauliOperator`, or
+:class:`~monoprop.fermi_data.FermiOperator` generator, and infers its family from the
+generator type it is handed. Each gate is the unit of
 parameterization — one gate is driven by one angle, named by its ``param`` index (default:
 one distinct angle per gate, in order; reusing an index across gates ties their angles). A
 circuit bundles a sequence of these gates with the angle *values* that drive them and the
@@ -67,7 +68,7 @@ Fermionic and Majorana operators
 The natural starting point for quantum chemistry and lattice models: weighted
 sums of fermionic creation/annihilation operators (``FermiOperator``), or
 monomials given directly as sets of Majorana indices (``MajoranaOperator``).
-``FermiExp`` and ``Circuit`` describe the evolution and the reference
+``Exp`` and ``Circuit`` describe the evolution and the reference
 state.
 
 .. automodule:: monoprop.fermi_data
@@ -79,7 +80,7 @@ Qubit (Pauli) operators
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The natural starting point when you already hold a qubit Hamiltonian:
-real-coefficient sums of Paulis (``PauliOperator``), with ``PauliExp``
+real-coefficient sums of Paulis (``PauliOperator``), with ``Exp``
 and ``Circuit`` describing the circuit. Feed these to ``PauliPropagator``,
 which takes them directly and truncates by qubit Pauli weight (see
 :doc:`/features/cutoff`).

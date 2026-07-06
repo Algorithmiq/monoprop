@@ -35,8 +35,8 @@ _VALID_PAULI_CHARS = frozenset("IXYZ")
 class Pauli:
     """A single Pauli term: Pauli letters placed on specific qubits.
 
-    A term is the atom a :class:`PauliOperator` is built from and the generator a
-    :class:`~monoprop.circuit.PauliExp` gate exponentiates. The placement is *local* -- the
+    A term is the atom a :class:`PauliOperator` is built from and the generator an
+    :class:`~monoprop.circuit.Exp` gate exponentiates. The placement is *local* -- the
     string names only the qubits the term acts on -- so the same term can appear in operators
     of any width; the total ``num_qubits`` lives on the operator, not the term.
 

@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     import numpy as np
     from mpi4py import MPI
 
-    from .circuit import Circuit, PauliExp
+    from .circuit import Circuit, Exp
     from .pauli_data import PauliOperator
 
 
@@ -39,8 +39,8 @@ class PauliPropagator(MajoranaPropagator):
     """Propagator for qubit (Pauli) operators, mapped to Majoranas via Jordan-Wigner.
 
     Accepts a :class:`~monoprop.pauli_data.PauliOperator` observable and a
-    :class:`~monoprop.circuit.Circuit` of :class:`~monoprop.circuit.PauliExp` gates; the
-    Jordan-Wigner basis change is set automatically so cutoffs act on Pauli weight. Outputs
+    :class:`~monoprop.circuit.Circuit` of qubit (Pauli) :class:`~monoprop.circuit.Exp` gates;
+    the Jordan-Wigner basis change is set automatically so cutoffs act on Pauli weight. Outputs
     remain in the Majorana basis.
 
     The cutoff type is fixed to ``"support"`` -- i.e. the qubit Pauli weight -- since
@@ -97,7 +97,7 @@ class PauliPropagator(MajoranaPropagator):
             comm=comm,
         )
         # Set after super().__init__ (which resets it to None); the qubit count comes from
-        # the observable and is carried into PauliExp gate expansion via build_graph.
+        # the observable and is carried into Pauli gate expansion via build_graph.
         self._num_qubits = num_qubits
 
     @property
@@ -125,8 +125,8 @@ class PauliPropagator(MajoranaPropagator):
         """
         return self._simulator.basis_change
 
-    def _circuit_gates(self, circuit: Circuit) -> Sequence[PauliExp]:
-        """Accept a qubit (PauliExp) circuit; its gates are expanded by the shared pipeline.
+    def _circuit_gates(self, circuit: Circuit) -> Sequence[Exp]:
+        """Accept a qubit circuit; its gates are expanded by the shared pipeline.
 
         There is a single :class:`~monoprop.circuit.Circuit` type; the family is carried by
         the gates (see :attr:`~monoprop.circuit.Circuit.family`). A ``PauliPropagator`` rejects
@@ -136,7 +136,7 @@ class PauliPropagator(MajoranaPropagator):
         """
         if circuit.family == "majorana":
             raise TypeError(
-                "PauliPropagator requires a qubit (PauliExp) circuit; its gates are "
-                "Majorana/fermionic. Use MajoranaPropagator for those."
+                "PauliPropagator requires a qubit circuit; its gates are Majorana/fermionic. "
+                "Use MajoranaPropagator for those."
             )
         return circuit.gates

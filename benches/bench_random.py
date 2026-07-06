@@ -59,9 +59,7 @@ def test_random_energy(
     benchmark, built_graph, random_problem, bench_comm, bench_rounds
 ):
     """Benchmark evaluating the expectation-value functional."""
-    functional = built_graph.expectation_value_functional(
-        pare_threshold=PARE_THRESHOLD,
-    )
+    functional = built_graph.expectation_value_functional()
     result = benchmark.pedantic(
         barriered(functional, bench_comm),
         args=(random_problem.parameters,),
@@ -75,9 +73,7 @@ def test_random_gradient(
     benchmark, built_graph, random_problem, bench_comm, bench_rounds
 ):
     """Benchmark evaluating the expectation-value-and-gradient functional."""
-    functional = built_graph.expectation_value_and_gradient_functional(
-        pare_threshold=PARE_THRESHOLD,
-    )
+    functional = built_graph.expectation_value_and_gradient_functional()
     _value, gradient = benchmark.pedantic(
         barriered(functional, bench_comm),
         args=(random_problem.parameters,),

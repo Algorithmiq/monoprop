@@ -27,7 +27,7 @@ try:
     from qiskit.circuit.library import PauliEvolutionGate
     from qiskit.quantum_info import SparsePauliOp
 
-    from monoprop import Circuit, PauliExp
+    from monoprop import Circuit, Exp
     from monoprop.pauli_data import Pauli, PauliOperator
     from monoprop.qiskit_conversion import (
         from_qiskit_circuit,
@@ -187,7 +187,7 @@ class TestToQiskitOperator:
 class TestToQiskitCircuit:
     def test_single_gate(self):
         circuit = Circuit(
-            (PauliExp(Pauli("Z", 0)),),
+            (Exp(Pauli("Z", 0)),),
             parameters=(0.7,),
             initial_state=(),
         )
@@ -208,7 +208,7 @@ class QiskitCircuitsCases:
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         expected = Circuit(
-            gates=(PauliExp(Pauli("Z", 0)),),
+            gates=(Exp(Pauli("Z", 0)),),
             parameters=(0.7,),
             initial_state=(),
         )
@@ -222,8 +222,8 @@ class QiskitCircuitsCases:
         circuit.append(PauliEvolutionGate(operator2, time=0.5), [0, 1])
         expected = Circuit(
             gates=(
-                PauliExp(PauliOperator({Pauli("ZX", (0, 1)): 1.0})),
-                PauliExp(PauliOperator({Pauli("Y", 0): 0.5})),
+                Exp(PauliOperator({Pauli("ZX", (0, 1)): 1.0})),
+                Exp(PauliOperator({Pauli("Y", 0): 0.5})),
             ),
             parameters=(0.3, 0.5),
             initial_state=(),
@@ -237,9 +237,9 @@ class QiskitCircuitsCases:
         circuit.rz(0.7, 0)
         expected = Circuit(
             gates=(
-                PauliExp(Pauli("X", 0)),
-                PauliExp(Pauli("Y", 0)),
-                PauliExp(Pauli("Z", 0)),
+                Exp(Pauli("X", 0)),
+                Exp(Pauli("Y", 0)),
+                Exp(Pauli("Z", 0)),
             ),
             parameters=(0.25, 0.15, 0.35),
             initial_state=(),
@@ -252,7 +252,7 @@ class QiskitCircuitsCases:
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         circuit.barrier()
         expected = Circuit(
-            gates=(PauliExp(Pauli("Z", 0)),),
+            gates=(Exp(Pauli("Z", 0)),),
             parameters=(0.7,),
             initial_state=(),
         )

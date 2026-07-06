@@ -30,8 +30,7 @@ from monoprop._dispatch import dispatch
 
 from .circuit import (
     Circuit,
-    MajoranaExp,
-    PauliExp,
+    Exp,
     expand_monomials,
     validate_parameter_mapping,
 )
@@ -140,7 +139,7 @@ class MajoranaPropagator:
 
         self._comm = comm
         self._n_params = 0
-        # System qubit count for expanding PauliExp gates; set by PauliPropagator from the
+        # System qubit count for expanding Pauli gates; set by PauliPropagator from the
         # observable. None for a native Majorana propagator (its gates need no qubit count).
         self._num_qubits: int | None = None
         self._initial_state = list(initial_state)
@@ -165,12 +164,18 @@ class MajoranaPropagator:
         initial_operator: IQuantumOperator | MajoranaOperator,
         **config: object,
     ) -> Self:
-        """Construct a propagator from a circuit and build its graph in one step.
+        """Construct a propagator from a circuit and propagate it in one step.
 
-        Uses ``circuit.initial_state`` as the reference state and builds the full graph
-        from ``circuit``. The observable (``initial_operator``) and truncation settings
-        (``cutoff`` and the rest of ``config``) are supplied separately -- they are not part
-        of the circuit.
+        Uses ``circuit.initial_state`` as the reference state and evolves ``circuit`` *in
+        place* via :meth:`propagate` -- a one-shot contraction that stores **no** graph. The
+        observable (``initial_operator``) and truncation settings (``cutoff`` and the rest of
+        ``config``) are supplied separately -- they are not part of the circuit.
+
+        Read the result off the evolved operator/state with :meth:`evolved_operator` (or
+        :meth:`expectation_value`) taking **no** parameters -- the circuit's angles are already
+        applied. This is the memory-lean path for a single evaluation; if you instead need a
+        reusable graph to re-evaluate at many angles (or to take gradients), construct the
+        propagator directly and call :meth:`build_graph`.
 
         Args:
             circuit: The circuit whose gates and initial state define the evolution.
@@ -178,24 +183,24 @@ class MajoranaPropagator:
             **config: Keyword arguments forwarded to the constructor (``cutoff``, etc.).
 
         Returns:
-            A propagator with ``circuit`` already built into its graph.
+            A propagator with ``circuit`` already evolved into its state (no graph stored).
         """
         propagator = cls(initial_operator, list(circuit.initial_state), **config)  # type: ignore[arg-type]
-        propagator.build_graph(circuit)
+        propagator.propagate(circuit)
         return propagator
 
-    def _circuit_gates(self, circuit: Circuit) -> Sequence[MajoranaExp | PauliExp]:
+    def _circuit_gates(self, circuit: Circuit) -> Sequence[Exp]:
         """Validate the circuit's gate family and return its gates for expansion.
 
         There is a single :class:`~monoprop.circuit.Circuit` type; the family is carried by
         the gates (see :attr:`~monoprop.circuit.Circuit.family`). A ``MajoranaPropagator``
-        rejects a qubit (``PauliExp``) circuit; the shared conversion lives in
+        rejects a qubit circuit; the shared conversion lives in
         :func:`~monoprop.circuit.expand_monomials`.
         """
         if circuit.family == "pauli":
             raise TypeError(
-                "MajoranaPropagator cannot consume a qubit (PauliExp) circuit; its gates are "
-                "Pauli. Use PauliPropagator for qubit circuits."
+                "MajoranaPropagator cannot consume a qubit circuit; its gates are Pauli. "
+                "Use PauliPropagator for qubit circuits."
             )
         return circuit.gates
 

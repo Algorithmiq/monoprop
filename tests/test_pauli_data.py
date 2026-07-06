@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import Circuit, MajoranaExp, PauliExp, PauliPropagator
+from monoprop import Circuit, Exp, PauliPropagator
 from monoprop.majorana_data import MajoranaOperator
 from monoprop.pauli_data import Pauli, PauliOperator
 
@@ -53,9 +53,9 @@ class TestPauliPropagatorCutoff:
         assert mp.num_qubits == 2  # "ZZ" operator
 
     def test_non_hermitian_pauli_gate_rejected(self, serial_comm):
-        """A PauliExp with a complex (non-Hermitian) coefficient is rejected."""
+        """An Exp with a complex (non-Hermitian) Pauli coefficient is rejected."""
         circuit = Circuit(
-            (PauliExp(PauliOperator({Pauli("X", 0): 1.0j})),),
+            (Exp(PauliOperator({Pauli("X", 0): 1.0j})),),
             parameters=(0.3,),
         )
         with pytest.raises(ValueError, match="not Hermitian"):
@@ -224,7 +224,7 @@ class TestPauliOperator:
 
 class TestCircuit:
     def _make_gate(self):
-        return PauliExp(Pauli("X", 0))
+        return Exp(Pauli("X", 0))
 
     def test_basic_construction(self):
         gates = (self._make_gate(), self._make_gate())
@@ -242,16 +242,16 @@ class TestCircuit:
         assert circuit.n_parameters == 2
 
     def test_rejects_mixed_gate_families(self):
-        # A single circuit cannot mix qubit (PauliExp) and Majorana/fermionic gates.
+        # A single circuit cannot mix qubit and Majorana/fermionic gates.
         with pytest.raises(TypeError, match="mix"):
             Circuit(
                 (
-                    PauliExp(Pauli("X", 0)),
-                    MajoranaExp(MajoranaOperator({(0, 1): 1.0})),
+                    Exp(Pauli("X", 0)),
+                    Exp(MajoranaOperator({(0, 1): 1.0})),
                 )
             )
 
     def test_pauli_gate_equality(self):
         gen = PauliOperator({Pauli("X", 0): 1.0})
-        assert PauliExp(gen) == PauliExp(gen)
-        assert PauliExp(gen) != PauliExp(PauliOperator({Pauli("X", 1): 1.0}))
+        assert Exp(gen) == Exp(gen)
+        assert Exp(gen) != Exp(PauliOperator({Pauli("X", 1): 1.0}))

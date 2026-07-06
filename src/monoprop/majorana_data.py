@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 class Majorana:
     """A single Majorana monomial: the ordered product ``gamma_{i_1} ... gamma_{i_w}``.
 
-    A term is the atom a :class:`MajoranaOperator` is built from and the generator a
-    :class:`~monoprop.circuit.MajoranaExp` gate exponentiates. Indices are sorted on
+    A term is the atom a :class:`MajoranaOperator` is built from and the generator an
+    :class:`~monoprop.circuit.Exp` gate exponentiates. Indices are sorted on
     construction (matching the operator's canonicalization); repeated indices are rejected
     (``gamma_i^2 = 1`` would silently change the monomial's weight), as are negative indices.
 

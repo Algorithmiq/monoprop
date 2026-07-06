@@ -29,14 +29,13 @@ import numpy as np
 
 from monoprop import (
     Circuit,
+    Exp,
     MajoranaPropagator,
     Pauli,
-    PauliExp,
     PauliPropagator,
 )
 from monoprop.circuit import expand_monomials
 from monoprop.fermi_data import (
-    FermiExp,
     FermiOperator,
     MajoranaOperator,
 )
@@ -291,7 +290,7 @@ def build_hubbard_problem(
         ``(propagator, circuit)`` for one Trotter step, re-applied by the driver.
     """
     config = config or HubbardConfig()
-    fermi_gates = [FermiExp(term) for term in _hubbard_fermion_terms(config)]
+    fermi_gates = [Exp(term) for term in _hubbard_fermion_terms(config)]
     parameters = [config.trotter_dt] * len(fermi_gates)
     occupied = _neel_occupied_modes(config.num_sites, config.neel_start_spin)
     circuit = Circuit(gates=fermi_gates, parameters=parameters, initial_state=occupied)
@@ -481,16 +480,14 @@ class KickedIsingConfig:
     lower_atol: float = 1e-4
 
 
-def _xlayer(num_qubits: int, angle: float) -> list[tuple[PauliExp, float]]:
+def _xlayer(num_qubits: int, angle: float) -> list[tuple[Exp, float]]:
     """Single-qubit X rotations exp(-i·angle·X) on all qubits, with their angles."""
-    return [(PauliExp(Pauli("X", (i,))), -angle) for i in range(num_qubits)]
+    return [(Exp(Pauli("X", (i,))), -angle) for i in range(num_qubits)]
 
 
-def _zzlayer(
-    angle: float, topology: list[tuple[int, int]]
-) -> list[tuple[PauliExp, float]]:
+def _zzlayer(angle: float, topology: list[tuple[int, int]]) -> list[tuple[Exp, float]]:
     """Two-qubit ZZ interactions exp(-i·angle·ZZ) on every edge, with their angles."""
-    return [(PauliExp(Pauli("ZZ", (i, j))), -angle) for i, j in topology]
+    return [(Exp(Pauli("ZZ", (i, j))), -angle) for i, j in topology]
 
 
 def build_kicked_ising_problem(
@@ -508,7 +505,7 @@ def build_kicked_ising_problem(
         ``(propagator, circuit)`` ready for in-place propagation.
     """
     config = config or KickedIsingConfig()
-    gate_angles: list[tuple[PauliExp, float]] = []
+    gate_angles: list[tuple[Exp, float]] = []
     for _ in range(config.num_layers):
         gate_angles.extend(_xlayer(config.num_qubits, config.theta / 2))
         gate_angles.extend(_zzlayer(config.coupling, HEAVY_HEX_TOPOLOGY))
