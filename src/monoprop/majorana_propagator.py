@@ -71,7 +71,7 @@ class MajoranaPropagator:
     def __init__(
         self,
         initial_operator: IQuantumOperator | MajoranaOperator,
-        initial_state: list[int] | np.ndarray,
+        initial_state: Sequence[int] | np.ndarray,
         *,
         cutoff: int,
         schrodinger_cutoff: int | None = None,
