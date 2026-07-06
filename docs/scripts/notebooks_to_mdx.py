@@ -43,27 +43,30 @@ NB_DIR = DOCS_DIR / "notebooks"
 OUT_DIR = DOCS_DIR / "content" / "docs" / "tutorials"
 TIMEOUT = 600  # seconds per cell, matching the old `nb_execution_timeout`
 
-# Ordered tutorial metadata: (folder/stem, sidebar+page title, description).
-TUTORIALS: list[tuple[str, str, str]] = [
-    (
-        "kicked_ising",
-        "Kicked Ising on IBM Eagle",
-        "Reproduce the 127-qubit quantum-utility experiment in the Heisenberg picture.",
-    ),
-    (
-        "fermi_hubbard",
-        "Fermi-Hubbard model",
-        "Real-time dynamics of a 1D Fermi-Hubbard chain via Majorana propagation.",
-    ),
-    (
-        "chemistry",
-        "Quantum chemistry",
-        "Schrödinger vs Heisenberg picture for a chromium-dimer active space.",
-    ),
-]
-
 _IMG_REF = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
-_FIRST_H1 = re.compile(r"^\s*#\s+.*?$", re.MULTILINE)
+_H1 = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
+
+
+def discover_notebooks() -> list[str]:
+    """Return the stems of `docs/notebooks/<stem>/<stem>.ipynb`, alphabetically."""
+    return sorted(
+        p.name
+        for p in NB_DIR.iterdir()
+        if p.is_dir() and (p / f"{p.name}.ipynb").is_file()
+    )
+
+
+def _notebook_title(nb: nbformat.NotebookNode, stem: str) -> str:
+    """Extract the page title from the notebook's leading H1 heading."""
+    text = "\n".join(cell.source for cell in nb.cells if cell.cell_type == "markdown")
+    match = _H1.search(text)
+    return match.group(1).strip() if match else stem.replace("_", " ").title()
+
+
+def title_for(stem: str) -> str:
+    """Read a notebook's title without executing it."""
+    nb = nbformat.read(NB_DIR / stem / f"{stem}.ipynb", as_version=4)
+    return _notebook_title(nb, stem)
 
 
 def _data_uri(data: bytes, filename: str) -> str:
@@ -97,10 +100,11 @@ def _inline_images(body: str, resources: dict, nb_dir: Path) -> str:
     return _IMG_REF.sub(repl, body)
 
 
-def convert(stem: str, title: str, description: str) -> Path:
+def convert(stem: str) -> Path:
     """Execute one notebook and write its Markdown page; return the path."""
     nb_path = NB_DIR / stem / f"{stem}.ipynb"
     nb = nbformat.read(nb_path, as_version=4)
+    title = _notebook_title(nb, stem)
 
     # Execute with the notebook directory as cwd so relative data loads work.
     ExecutePreprocessor(timeout=TIMEOUT, allow_errors=False).preprocess(
@@ -112,19 +116,18 @@ def convert(stem: str, title: str, description: str) -> Path:
     body = _inline_images(body, resources, nb_path.parent)
 
     # The frontmatter title becomes the page H1; drop the notebook's own H1.
-    body = _FIRST_H1.sub("", body, count=1).lstrip()
+    body = _H1.sub("", body, count=1).lstrip()
 
-    fm = f"---\ntitle: {title}\ndescription: {description}\n---\n\n"
+    fm = f"---\ntitle: {title}\n---\n\n"
     out_path = OUT_DIR / f"{stem}.md"
     out_path.write_text(fm + body)
     return out_path
 
 
-def write_index() -> Path:
-    """Write the tutorials landing page (index.mdx) from the tutorial list."""
+def write_index(stems: list[str]) -> Path:
+    """Write the tutorials landing page (index.mdx) listing every notebook."""
     bullets = "\n".join(
-        f"- [{title}](/docs/tutorials/{stem}) — {description}"
-        for stem, title, description in TUTORIALS
+        f"- [{title_for(stem)}](/docs/tutorials/{stem})" for stem in stems
     )
     body = (
         "---\n"
@@ -155,29 +158,28 @@ def main() -> int:
     args = parser.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    stems = discover_notebooks()
     selected = (
-        [t for t in TUTORIALS if t[0] in set(args.notebooks)]
-        if args.notebooks
-        else TUTORIALS
+        [s for s in stems if s in set(args.notebooks)] if args.notebooks else stems
     )
 
-    for stem, title, description in selected:
+    for stem in selected:
         print(f"Executing and converting {stem} …", flush=True)  # noqa: T201
-        out = convert(stem, title, description)
+        out = convert(stem)
         print(f"  -> {out.relative_to(DOCS_DIR)}", flush=True)  # noqa: T201
 
     # Landing page for `/docs/tutorials`. fumadocs picks up `index.mdx` as the
     # folder's own index automatically, so the "Tutorials" sidebar/nav title
-    # links here. Always regenerated from the full list (independent of the
-    # `selected` subset) so every tutorial stays listed.
-    write_index()
+    # links here. Always regenerated from the full discovered list (independent
+    # of the `selected` subset) so every tutorial stays listed.
+    write_index(stems)
 
     # Sidebar ordering + section title for the tutorials folder. "index" is
     # deliberately *not* listed: fumadocs already treats `index.mdx` as the
     # folder index, so the folder title links to `/docs/tutorials`. Listing it
     # would add a redundant child entry duplicating the section title.
     meta = OUT_DIR / "meta.json"
-    pages = ", ".join(f'"{t[0]}"' for t in TUTORIALS)
+    pages = ", ".join(f'"{s}"' for s in stems)
     meta.write_text(f'{{\n  "title": "Tutorials",\n  "pages": [{pages}]\n}}\n')
     return 0
 
