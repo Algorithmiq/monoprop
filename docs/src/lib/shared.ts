@@ -6,5 +6,5 @@ export const docsContentRoute = '/llms.mdx/docs';
 export const gitConfig = {
   user: 'Algorithmiq',
   repo: 'monoprop',
-  branch: process.env.GITHUB_HEAD_REF ?? process.env.GITHUB_REF_NAME ?? 'main',
+  branch: 'main',
 };

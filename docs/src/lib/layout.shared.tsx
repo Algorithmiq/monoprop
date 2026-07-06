@@ -5,6 +5,7 @@ import { appName, gitConfig } from './shared';
 export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
+      // JSX supported
       title: <Logo name={appName} />,
     },
     githubUrl: `https://github.com/${gitConfig.user}/${gitConfig.repo}`,

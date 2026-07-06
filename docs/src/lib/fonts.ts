@@ -1,5 +1,8 @@
 import localFont from 'next/font/local';
 
+/**
+ * Algorithmiq's brand typeface, GT-Planar (self-hosted woff2).
+ */
 export const gtPlanar = localFont({
   src: [
     {
@@ -18,6 +21,7 @@ export const gtPlanar = localFont({
       style: 'normal',
     },
   ],
+  variable: '--font-gt-planar',
   display: 'swap',
-  fallback: ['system-ui', 'sans-serif'],
+  fallback: ['ui-sans-serif', 'system-ui', 'sans-serif'],
 });
