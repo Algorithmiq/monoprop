@@ -45,11 +45,6 @@ test-py-mpi-matrix:
 docs-install:
     cd {{ site }} && npm ci
 
-# Generate the Python API reference MDX from docstrings (griffe -> JSON -> MDX).
-gen-api:
-    {{ docs_uv }} {{ fumapy }} fumapy-generate monoprop -d {{ site }}
-    cd {{ site }} && node scripts/generate-api.mjs
-
 # Each LABEL is one column in results/REPORT.md, so serial / MPI / thread variants
 # sit side by side. Set the thread count with the monoprop_NUM_THREADS env var.
 # Uses `--no-sync` so a run never rebuilds monoprop with the default (MPI=OFF) and
@@ -97,10 +92,16 @@ bench-smoke:
         --benchmark-json="{{bench_results}}/time-smoke.json" \
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16
     uv run --no-sync python benches/report.py "{{bench_results}}"
+
 # Execute the tutorial notebooks and convert them to Markdown. Notebook
 # execution fails the build on any cell error -- this is the notebook doctest.
 gen-notebooks:
     {{ docs_uv }} python tools/notebooks_to_mdx.py
+
+# Generate the Python API reference MDX from docstrings (griffe -> JSON -> MDX).
+gen-api:
+    {{ docs_uv }} {{ fumapy }} fumapy-generate monoprop -d {{ site }}
+    cd {{ site }} && node scripts/generate-api.mjs
 
 # Run the runnable docstring examples (the docstring-level doctest check).
 doctest-py:
