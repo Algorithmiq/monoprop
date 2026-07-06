@@ -15,6 +15,17 @@ cd benchmarks
 uv sync
 ```
 
+### Julia
+Some benchmarks compare against a Julia implementation of the Pauli Propagation algorithm, so a Julia toolchain is also required. Install it via [`juliaup`](https://github.com/JuliaLang/juliaup), the official Julia version manager:
+
+```bash
+# Install juliaup and the latest stable Julia release
+curl -fsSL https://install.julialang.org | sh
+
+# Reload your shell, then verify the install
+julia --version
+```
+
 
 ## Running benchmark scripts
 ```bash
