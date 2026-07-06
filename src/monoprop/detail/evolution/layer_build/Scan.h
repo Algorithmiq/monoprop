@@ -42,28 +42,22 @@ namespace monoprop::detail {
 
 // ─── Even-parity scan + cutoff-state helpers ───────────────────────────────────
 // The cutoff state read by the fused scan and the even-parity generator-column scan it uses.
-struct MajoranaEvolutionCutoffState {
-    CutoffContext cutoff_ctx;
-};
-
 inline auto build_majorana_evolution_cutoff_state(const std::optional<double> &atol,
                                                   std::optional<std::reference_wrapper<const VecD>> local_coeffs,
                                                   const std::optional<double> &upper_atol,
-                                                  const std::optional<double> &param) -> MajoranaEvolutionCutoffState {
+                                                  const std::optional<double> &param) -> CutoffContext {
     const bool check_atol = atol.has_value() && local_coeffs.has_value() && param.has_value();
     const bool check_upper_atol = upper_atol.has_value() && local_coeffs.has_value();
     const double sin_val = param.has_value() ? std::sin(2 * param.value()) : 1.0;
     const double cos_val = param.has_value() ? std::cos(2 * param.value()) : 1.0;
 
-    return {
-        .cutoff_ctx = CutoffContext{.check_atol = check_atol,
-                                    .check_upper_atol = check_upper_atol,
-                                    .atol_value = atol.value_or(0.0),
-                                    .upper_atol_value = upper_atol.value_or(0.0),
-                                    .abs_sin_val = std::abs(sin_val),
-                                    .abs_cos_val = std::abs(cos_val),
-                                    .use_coeff_checks = check_atol || check_upper_atol},
-    };
+    return CutoffContext{.check_atol = check_atol,
+                         .check_upper_atol = check_upper_atol,
+                         .atol_value = atol.value_or(0.0),
+                         .upper_atol_value = upper_atol.value_or(0.0),
+                         .abs_sin_val = std::abs(sin_val),
+                         .abs_cos_val = std::abs(cos_val),
+                         .use_coeff_checks = check_atol || check_upper_atol};
 }
 
 template <size_t NumModes>
@@ -125,8 +119,7 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_data(pivot_col) : nullptr;
     std::vector<uint64_t> &blk = column_block_scratch();
     // Fold one word range [bb,be): combine G's columns, split leader/follower by the pivot bit, and
-    // record every nonzero-overlap word. Shared by the plain (1024-word) and the block-skip (64-word)
-    // block loops below.
+    // record every nonzero-overlap word. Driven by the single kColumnBlockWords block loop below.
     auto fold_range = [&](size_t bb, size_t be) {
         combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
         const uint64_t *pw; // pivot words for [bb,be), indexed [0, be-bb)
@@ -243,7 +236,7 @@ template <size_t NumModes>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const MajoranaSet<NumModes> &gen,
                             const CutoffEvaluator<NumModes> &cutoff_eval,
-                            const MajoranaEvolutionCutoffState &cut_st,
+                            const CutoffContext &cut_st,
                             const VecD &coeffs,
                             int only_rotate_len_k,
                             size_t rank_count,
@@ -261,7 +254,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     const uint8_t *const mag_ptr =
         (implicit && frame->mag.size() == coeffs.size()) ? frame->mag.data() : nullptr;
     const double mag_rt =
-        mag_reject_threshold(cut_st.cutoff_ctx.check_atol, cut_st.cutoff_ctx.abs_sin_val, cut_st.cutoff_ctx.atol_value);
+        mag_reject_threshold(cut_st.check_atol, cut_st.abs_sin_val, cut_st.atol_value);
 
     // Cutoff + emit for one anticommuting term. Writes only the per-chunk per-rank sinks passed in
     // (safe under for_each_chunk). The dynamic gate (depends only on |M|) runs BEFORE
@@ -280,7 +273,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     std::vector<VecZ> &fq,
                     std::vector<std::vector<size_t>> &fs,
                     std::vector<std::vector<double>> &fv) {
-        if (!rotation_dynamic_gate(only_rotate_len_k, maj_pop, cut_st.cutoff_ctx, abs_c)) {
+        if (!rotation_dynamic_gate(only_rotate_len_k, maj_pop, cut_st, abs_c)) {
             return;
         }
         MajoranaSet<NumModes> new_maj;
@@ -291,7 +284,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // Structural cutoff on the partner M⊕G — UNLESS upper_atol rescues it (its sine coefficient is
         // large enough to keep alive despite exceeding the cutoff). See CutoffContext::is_above_upper.
         const bool struct_pass = cutoff_eval.passes_with_popcount(new_maj, new_pop);
-        if (!struct_pass && !cut_st.cutoff_ctx.is_above_upper(abs_c)) {
+        if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
             return;
         }
         const int phase = interleave * hermitian_phase(maj_pop, gen_pop, overlap);
@@ -415,9 +408,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 }
                 if (capture_values) {
                     const double v_src = (i < coeffs.size()) ? coeffs[i] : 0.0;
-                    return {v_src, cut_st.cutoff_ctx.use_coeff_checks ? std::abs(v_src) : 0.0};
+                    return {v_src, cut_st.use_coeff_checks ? std::abs(v_src) : 0.0};
                 }
-                return {0.0, cut_st.cutoff_ctx.abs_coeff_for(i, coeffs)};
+                return {0.0, cut_st.abs_coeff_for(i, coeffs)};
             };
             const bool word_aligned_cos = only_rotate_len_k == 0;
             CosineWordBuilder cos_b;
@@ -442,7 +435,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             continue;
                         }
                         const auto [v_src, abs_c] = derive_coeff(i);
-                        if (cut_st.cutoff_ctx.is_below_sin(abs_c)) {
+                        if (cut_st.is_below_sin(abs_c)) {
                             continue;
                         }
                         const size_t maj_pop = op.store->popcount(i);

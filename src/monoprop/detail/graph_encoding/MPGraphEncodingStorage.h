@@ -246,18 +246,6 @@ inline auto build_layer_exchange_layout_impl(const std::vector<PartnerRangeLike>
     return layout;
 }
 
-inline auto build_layer_exchange_layout(const std::vector<CrossRankPartnerData> &data, int scale)
-    -> LayerExchangeLayout {
-    // Build temporary range-like objects with sin_send_count for the impl.
-    struct BCountOnly { uint32_t sin_send_count; };
-    std::vector<BCountOnly> ranges;
-    ranges.reserve(data.size());
-    for (const auto &partner : data) {
-        ranges.push_back({static_cast<uint32_t>(partner.sin_send_indices.size())});
-    }
-    return build_layer_exchange_layout_impl(ranges, scale);
-}
-
 // build_layer_storage_unified: stores C = all anticommuting, with local cycles folded
 // into the self-rank partner slot (my_rank).  The exchange layout zeroes counts[my_rank]
 // so MPI_Alltoallv never touches the self-rank slot; the replay handles it as a local

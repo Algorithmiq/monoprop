@@ -117,7 +117,7 @@ struct InvertedIndex {
         }
     }
     // Base pointer of the row_parity bitmap (for the hot fold loop). Valid only after ensure_row_parity().
-    const uint64_t *row_parity_word_ptr() const { return row_parity_.data(); }
+    auto row_parity_word_ptr() const -> const uint64_t * { return row_parity_.data(); }
 
     auto rows() const -> size_t { return row_count; }
     auto words() const -> size_t { return (row_count + 63) / 64; }

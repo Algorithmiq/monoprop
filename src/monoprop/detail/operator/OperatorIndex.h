@@ -287,7 +287,7 @@ public:
 
     // ---- index API ----------------------------------------------------------------------------
     // Returns the dense row index for `key`, or nullopt if absent. Usage: `if (auto i = find(k)) ...`.
-    std::optional<size_t> find(const key_type &key) const {
+    auto find(const key_type &key) const -> std::optional<size_t> {
         const uint32_t h = fold_hash(key);
         const size_t sp = spread(h);
         const Shard &shard = shards_[shard_of_spread(sp)];
@@ -312,7 +312,7 @@ public:
     // probes on the h prefilter and prefetches the candidate row, stage 3 confirms against the
     // row bytes. An h collision (wrong candidate) falls back to the exact single find.
     // MUST NOT run concurrently with inserts (the resolve phases are probe-only by construction).
-    void find_batch(const key_type *keys, size_t n, size_t *out) const {
+    auto find_batch(const key_type *keys, size_t n, size_t *out) const -> void {
         static constexpr size_t G = 16; // keys prefetched together per pipeline pass
         std::array<uint32_t, G> hh;
         std::array<size_t, G> sp;
@@ -363,7 +363,7 @@ public:
     }
 
     // Insert-or-no-op. Row at `value` MUST already be written (the confirm reads dense rows).
-    void emplace(const key_type &key, mapped_type value) {
+    auto emplace(const key_type &key, mapped_type value) -> void {
         check_index_fits(value);
         const uint32_t h = fold_hash(key);
         Shard &shard = shards_[shard_of(h)];
@@ -380,7 +380,7 @@ public:
     }
     // Insert n distinct rows with consecutive indices [base, base+n). Rows MUST already be written.
     template <typename KeyFn>
-    void bulk_insert(size_t n, mapped_type base, KeyFn &&key_at) {
+    auto bulk_insert(size_t n, mapped_type base, KeyFn &&key_at) -> void {
         if (n == 0) {
             return;
         }
@@ -493,7 +493,7 @@ public:
             }
         });
     }
-    size_t index_size() const {
+    auto index_size() const -> size_t {
         size_t total = 0;
         for (const Shard &shard : shards_) {
             total += shard.count;
@@ -503,7 +503,7 @@ public:
     // Test-support only: visits every indexed (row, index) pair. Production reads rows by index via
     // row()/popcount()/for_each_position(); this whole-index walk exists for simulator_copy_tests.
     template <typename Func>
-    void for_each(Func &&fn) const {
+    auto for_each(Func &&fn) const -> void {
         for (const Shard &shard : shards_) {
             for (const Slot &e : shard.slots) {
                 if (e.idx != kEmptySlot) {
@@ -512,7 +512,7 @@ public:
             }
         }
     }
-    size_t index_estimated_memory_bytes() const {
+    auto index_estimated_memory_bytes() const -> size_t {
         size_t slots = 0;
         for (const Shard &shard : shards_) {
             slots += shard.slots.capacity();
@@ -615,7 +615,7 @@ private:
             *out++ = static_cast<PosT>(b);
         }
     }
-    static void check_index_fits(size_t value) {
+    static auto check_index_fits(size_t value) -> void {
         if (would_overflow(value)) {
             throw std::runtime_error(
                 "OperatorIndex: operator index reached the TermIndex ceiling; rebuild with "

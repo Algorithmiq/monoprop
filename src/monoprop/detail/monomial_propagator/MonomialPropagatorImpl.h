@@ -208,8 +208,7 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
         const auto &gw = traversal.generator_words();
         if (!gw.empty()) {
             profiling::ScopedRegion prof_cos(profiling::Region::CosRecompute);
-            MajoranaSet<NumModes> gen{};
-            std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
+            const auto gen = detail::generator_from_words<NumModes>(gw);
             auto p = detail::make_fold_cache<NumModes>(mp_op_.inverted_index(), gen, traversal.scaled_count());
             cos_inds = detail::fold_to_indices<NumModes>(p);
         }

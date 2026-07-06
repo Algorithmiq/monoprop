@@ -275,10 +275,9 @@ struct CoeffFrame {
     // Ensure the per-term arrays cover `n` terms before a build pass. New entries only appear here at
     // frame start (nfirings == 0, just after a barrier/init), where stamp 0 is exact; the per-gate
     // extend path stamps fresh mid-frame terms itself (see extend_new_terms). mag grows lazily.
-    auto ensure_capacity(size_t n, const VecD &coeffs) -> void {
-        if (stamp.size() < n) {
-            stamp.resize(n, 0);
-        }
+    // Grow the magnitude-byte prefilter to cover [old, n) from coeffs. No-op if mag is unused (empty)
+    // or already large enough. Shared by ensure_capacity and extend_new_terms.
+    auto grow_mag(const VecD &coeffs, size_t n) -> void {
         if (!mag.empty() && mag.size() < n) {
             const size_t old = mag.size();
             mag.resize(n);
@@ -288,6 +287,13 @@ struct CoeffFrame {
         }
     }
 
+    auto ensure_capacity(size_t n, const VecD &coeffs) -> void {
+        if (stamp.size() < n) {
+            stamp.resize(n, 0);
+        }
+        grow_mag(coeffs, n);
+    }
+
     // Grow the per-term arrays to cover freshly-inserted terms [old, coeffs.size()) born this firing:
     // they are exact NOW, so stamp them at `nf` (post-append epoch) and take their byte from coeffs.
     auto extend_new_terms(const VecD &coeffs, uint32_t nf) -> void {
@@ -295,13 +301,7 @@ struct CoeffFrame {
         if (stamp.size() < n) {
             stamp.resize(n, nf);
         }
-        if (!mag.empty() && mag.size() < n) {
-            const size_t old = mag.size();
-            mag.resize(n);
-            for (size_t i = old; i < n; ++i) {
-                mag[i] = mag_byte(coeffs[i]);
-            }
-        }
+        grow_mag(coeffs, n);
     }
 
     // Record a rotation endpoint write: coeffs[i] now holds the true post-firing value, current

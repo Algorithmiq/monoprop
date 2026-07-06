@@ -192,8 +192,9 @@ struct LayerBuildEngine {
             std::vector<std::vector<double>> inc_val;
             qh.wait_into(inc_q);
             vh.wait_into(inc_val);
-            // Resolver: emit half-rotations into fused_ and return one VALUE per incoming query (v_tgt
-            // for a HIT, NaN for a freshly-inserted MISS).
+            // Resolver: emit half-rotations into fused_ and return one VALUE per incoming query — the
+            // real target coeff for a HIT and the freshly-computed insert coeff for a MISS, both in the
+            // SAME round. There is no NaN sentinel and no second exchange (see resolve_incoming_queries_fused).
             auto resp_val = resolve_incoming_queries_fused(inc_q,
                                                            inc_val,
                                                            local_op,

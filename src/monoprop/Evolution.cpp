@@ -27,8 +27,6 @@ struct TrigValues {
     double cos_val;
     double sin_val;
     double sec_val;
-    double der_cos_val;
-    double der_sin_val;
     double g_val;   // 2·gen_coeff
     double tan_val; // sin/cos
 
@@ -37,8 +35,6 @@ struct TrigValues {
         cos_val = std::cos(g * param);
         sin_val = std::sin(g * param);
         sec_val = 1.0 / cos_val;
-        der_cos_val = -g * sin_val;
-        der_sin_val = g * cos_val;
         g_val = g;
         tan_val = sin_val * sec_val;
     }
