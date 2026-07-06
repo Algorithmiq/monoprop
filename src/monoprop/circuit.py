@@ -364,7 +364,7 @@ class Circuit:
         )
         return Circuit(
             gates=left + right,
-            parameters=self.parameters + other.parameters,
+            parameters=tuple(self.parameters) + tuple(other.parameters),
             initial_state=self.initial_state or other.initial_state,
         )
 
