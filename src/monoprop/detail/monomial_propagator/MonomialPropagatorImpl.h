@@ -96,6 +96,11 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
     auto op = schrodinger_ ? generate_paired_op<NumModes>(sc / 2 + sc % 2, logical_num_modes_) : local_heisenberg_terms;
 
     const size_t expected_local_terms = std::max<size_t>(1, op.size() / std::max<size_t>(1, num_ranks));
+    // Build the cutoff function BEFORE the store: packed_inline_width_() derives the packed-row width
+    // from cutoff_fn_, so it must be populated first — otherwise the width silently falls back to the
+    // loose kMaxInlinePositions and the cutoff-adaptive row narrowing is dead. Inputs (cutoff_type_,
+    // cutoff_, basis_change_, logical_num_modes_) are all set by now; nothing below re-touches them.
+    regenerate_cutoff_fn_();
     // Re-init the store with this run's cutoff-adaptive packed-row width (terms with popcount <=
     // cutoff are the common case for length/mode cutoffs; longer fully-paired terms spill to
     // overflow losslessly, so a tight width only ever helps). Width is a construction invariant,
@@ -119,9 +124,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
     mp_op_.slater_determinant = slater_determinant;
     core_term_ = core_term;
 
-    // initialize the cutoff function
-    regenerate_cutoff_fn_();
-
+    // (cutoff function was built above, before the store, so packed_inline_width_ could use it)
     initialize_operator_caches_();
 }
 

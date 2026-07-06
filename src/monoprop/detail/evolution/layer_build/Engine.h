@@ -348,10 +348,13 @@ struct LayerBuildEngine {
         insert_deferred_self_misses();
         if (fused_ != nullptr) {
             // Fused (ContractImmediately, all ranks): the LayerCore is transient in this mode, so skip
-            // assemble_partners + build_layer_storage_unified entirely and return nullptr. Still append
-            // the inserted endpoints into cos (see append_inserted_endpoints_) so the immediate cos
-            // scale covers them, exactly as the non-fused evolve_step path expects.
-            if (out_cos != nullptr) {
+            // assemble_partners + build_layer_storage_unified entirely and return nullptr. In the EAGER
+            // fused path we append the inserted endpoints into cos (see append_inserted_endpoints_) so the
+            // immediate cos scale covers them, exactly as the non-fused evolve_step path expects. When the
+            // lazy frame is engaged (frame_ != nullptr) apply_fused_contract reconstructs cos from the
+            // frame and ignores *out_cos entirely, so building/moving the inserted-endpoint cos is dead
+            // work on the hot per-gate path — skip it and leave *out_cos empty.
+            if (out_cos != nullptr && frame_ == nullptr) {
                 append_inserted_endpoints_(cos_all);
                 *out_cos = std::move(cos_all);
             }
