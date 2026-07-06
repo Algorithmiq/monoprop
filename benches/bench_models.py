@@ -14,9 +14,15 @@
 
 """Fixed-model benchmarks: heavy, Heisenberg-only, in-place simulations.
 
-The 120-qubit Fermi-Hubbard trajectory and the 127-qubit Pauli-basis kicked-Ising
-circuit, at fixed sizes. The registry (config class, builder, steps-per-run) lives
-in ``_builders.MODELS``; each config field is overridable via ``--<model>-<field>``.
+Two concrete physical models -- the 120-qubit Fermi-Hubbard trajectory and the
+127-qubit Pauli-basis kicked-Ising circuit -- run at fixed (but per-field
+overridable) sizes. The model registry (config class, builder, steps-per-run)
+lives in ``_builders.MODELS``, and each config field is overridable via
+``--<model>-<field>`` (see ``conftest``).
+
+Operations are barrier-wrapped so the measured time is the makespan across MPI
+ranks. Timing uses ``pytest-benchmark``; peak memory is the per-test physical
+footprint (PSS), recorded by the ``record_memory`` fixture in ``conftest.py``.
 """
 
 from __future__ import annotations

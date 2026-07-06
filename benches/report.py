@@ -14,8 +14,10 @@
 
 """Merge benchmark results into a single side-by-side Markdown report.
 
-Each label writes ``<label>.json`` (metadata etc.) and pytest-benchmark writes
-``time-<label>.json``. This renders ``REPORT.md`` with one column per label, so
+For each run label the suite writes ``<label>.json`` (metadata, hyperparameters,
+per-operation peak memory, per-picture sizes/footprints, model configs) and
+pytest-benchmark writes ``time-<label>.json`` (timings). This reads every label
+in a results directory and renders ``REPORT.md`` with one column per label, so
 serial / MPI / thread variants sit side by side.
 
 Usage::
@@ -31,8 +33,6 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tabulate import tabulate
-
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -45,8 +45,8 @@ _PICTURE_NAMES = {"heisenberg": "Heisenberg", "schrodinger": "Schrödinger"}
 def _read_json(path: Path) -> Any:
     """Return the parsed JSON at ``path``, or ``None`` if empty/malformed.
 
-    Bad artifacts are skipped with a warning so one failed run doesn't poison the
-    report for the others.
+    A run that fails before populating its JSON must not poison the report for
+    the runs that did succeed, so bad artifacts are skipped with a warning.
     """
     text = path.read_text()
     if not text.strip():
@@ -113,18 +113,6 @@ def _fmt_config(value: object) -> str:
     return format(value, "g") if isinstance(value, float) else str(value)
 
 
-def _md_table(headers: list[str], rows: list[list[str]]) -> list[str]:
-    """Render a GitHub-flavoured Markdown table (cells are pre-formatted strings).
-
-    ``disable_numparse`` keeps tabulate from re-parsing/realigning our already
-    formatted cells (durations, MiB, thousands-separated counts).
-    """
-    return [
-        tabulate(rows, headers=headers, tablefmt="github", disable_numparse=True),
-        "",
-    ]
-
-
 def _table(
     first_col: str,
     rows: list[tuple[Any, str]],
@@ -136,11 +124,15 @@ def _table(
     ``rows`` are ``(row_id, display)`` pairs; ``cell(label, row_id)`` returns the
     formatted value for one cell.
     """
-    body = [
-        [display, *(cell(label, row_id) for label in labels)]
-        for row_id, display in rows
+    out = [
+        f"| {first_col} | " + " | ".join(labels) + " |",
+        "| --- | " + " | ".join(["---:"] * len(labels)) + " |",
     ]
-    return _md_table([first_col, *labels], body)
+    for row_id, display in rows:
+        cells = " | ".join(cell(label, row_id) for label in labels)
+        out.append(f"| {display} | {cells} |")
+    out.append("")
+    return out
 
 
 def _section(
@@ -188,37 +180,40 @@ def _display_op(op_key: str) -> str:
     return f"{group} / {op}"
 
 
-def _fmt_cpus(meta: dict) -> str:
-    """Render a run's CPU counts as ``logical/physical`` (``—`` when missing)."""
-    logical = meta.get("cpu_count_logical", "—")
-    physical = meta.get("cpu_count_physical", "—")
-    return f"{logical}/{physical}"
-
-
 def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
     """Render the run-configuration table (one row per run label)."""
     metas = {lbl: results.get(lbl, {}).get("meta", {}) for lbl in labels}
     if not any(metas.values()):
         return []
-    headers = ["Label", "Ranks", "monoprop threads", "CPUs (logical/physical)", "Host"]
-    rows = [
-        [
-            label,
-            str(metas[label].get("ranks", "—")),
-            str(metas[label].get("monoprop_threads", "default")),
-            _fmt_cpus(metas[label]),
-            str(metas[label].get("hostname", "—")),
-        ]
-        for label in labels
+    header = ["Label", "Ranks", "monoprop threads", "CPUs", "Host"]
+    lines = [
+        "## Configuration",
+        "",
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(["---"] * len(header)) + " |",
     ]
-    return ["## Configuration", "", *_md_table(headers, rows)]
+    for label in labels:
+        meta = metas[label]
+        cells = [
+            label,
+            str(meta.get("ranks", "—")),
+            str(meta.get("monoprop_threads", "default")),
+            str(meta.get("cpu_count", "—")),
+            str(meta.get("hostname", "—")),
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+    return lines
 
 
 def _model_config_section(labels: list[str], results: dict[str, dict]) -> list[str]:
     """Render the fixed-model configuration section (one sub-table per model)."""
     configs = {lbl: results.get(lbl, {}).get("configs", {}) for lbl in labels}
-    # Order-preserving dedup across labels (dict keys keep insertion order).
-    models = list(dict.fromkeys(model for cfg in configs.values() for model in cfg))
+    models: list[str] = []
+    for cfg in configs.values():
+        for model in cfg:
+            if model not in models:
+                models.append(model)
     if not models:
         return []
     lines = [
@@ -229,10 +224,11 @@ def _model_config_section(labels: list[str], results: dict[str, dict]) -> list[s
         "",
     ]
     for model in models:
-        fields = dict.fromkeys(
-            f for cfg in configs.values() for f in cfg.get(model, {})
-        )
-        rows = [(f, f) for f in fields]
+        rows: list[tuple[Any, str]] = []
+        for cfg in configs.values():
+            for field in cfg.get(model, {}):
+                if (field, field) not in rows:
+                    rows.append((field, field))
         lines += _section(
             model,
             "",
@@ -273,8 +269,8 @@ def build_report(results_dir: Path) -> str:
             "# monoprop benchmark report\n\nNo results found. Run `just bench` first.\n"
         )
 
-    # Hyperparameter keys come from the data, so there is no list to keep in sync
-    # with conftest.
+    # Hyperparameter keys come from the data (insertion order preserved), so there
+    # is no duplicated key list to keep in sync with conftest.
     param_keys = next((list(params[lbl]) for lbl in labels if params.get(lbl)), [])
     pictures = _pictures_present(opsize, labels)
     storage_rows = [
@@ -342,7 +338,7 @@ def build_report(results_dir: Path) -> str:
         *_section(
             "Operator resting footprint (PSS)",
             "Settled resident memory of the built operator + graph, after the "
-            "build's transient buffers are freed (`gc.collect()` + `heap_trim`).",
+            "build's transient buffers are freed (`gc.collect()` + `malloc_trim`).",
             "Picture",
             [(p, _PICTURE_NAMES[p]) for p in _pictures_present(memrest, labels)],
             labels,

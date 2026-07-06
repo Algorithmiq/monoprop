@@ -15,38 +15,43 @@
 """PSS-based memory-measurement primitives for the benchmark suite.
 
 Import-only (no pytest, no MPI) so the logic stays unit-testable. Provides the
-PSS readers, the resting-footprint reader, and the background :class:`PssSampler`
-+ :func:`merge_peak_of_sum` used for the job's peak-of-sum physical memory.
+proportional-set-size (PSS) readers, the resting-footprint reader, and the
+background :class:`PssSampler` + :func:`merge_peak_of_sum` used to compute the
+job's *peak-of-sum* physical memory.
 
-Two choices make the per-test peak honest under MPI:
+Two things make the per-test peak honest under MPI:
 
-- **PSS, not peak RSS.** PSS splits shared pages (libraries, MPI's shared-memory
-  transport segments) across their sharers, so summing across ranks counts them
-  once; peak RSS counts them at full size in every rank and has no PSS high-water
-  mark to correct from. Sampling PSS directly sidesteps that.
-- **Peak-of-sum, not sum-of-peaks.** The peak is ``max over time`` of the summed
-  PSS. Summing each rank's independently-timed peak counts transients that never
-  coexisted. Comparable wall-clock timestamps let :func:`merge_peak_of_sum`
-  recover the true peak-of-sum.
+- **PSS, not peak RSS.** PSS splits shared pages (libraries, and the shared-memory
+  segments MPI uses for intra-node transport) across their sharers, so summing it
+  across ranks counts them once. Peak RSS (``VmHWM``) counts those shared pages at
+  full size in *every* rank, and PSS has no kernel high-water mark to correct it
+  from -- a teardown-time correction misses the shared memory mapped at the peak and
+  overestimates (the larger error in practice). Sampling PSS directly sidesteps it.
+- **Peak-of-sum, not sum-of-peaks.** The per-test peak is ``max over time`` of the
+  PSS summed across ranks. Summing each rank's independently-timed peak instead
+  counts transients that never coexisted (worst when ranks peak at staggered times).
+  Comparable wall-clock timestamps let :func:`merge_peak_of_sum` recover the true
+  peak-of-sum after the fact.
 """
 
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import ctypes.util
 import gc
 import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import psutil
-
 if TYPE_CHECKING:
     from types import TracebackType
     from typing import Self
 
 # PSS sampling cadence. monoprop's heavy work runs in C++/TBB with the GIL
-# released, so the background sampler costs an idle core, not the timed thread.
+# released, so a background sampler at this interval costs an otherwise-idle core
+# rather than perturbing the timed main thread.
 SAMPLE_INTERVAL_S = 0.005
 
 
@@ -65,44 +70,50 @@ def proc_field(path: str, key: str) -> int:
 def pss_bytes() -> int:
     """Return this process's current proportional set size (PSS) in bytes.
 
-    PSS splits shared pages across their sharers, so summing it across ranks gives
-    the job's true footprint -- unlike RSS, which counts them fully in every rank.
+    PSS (shared pages split across their sharers) is the honest per-process share
+    of physical RAM, so summing it across MPI ranks gives the job's true footprint
+    -- unlike RSS, which counts shared library/code pages at full size in every rank.
     """
     return proc_field("/proc/self/smaps_rollup", "Pss:")
 
 
-def heap_trim() -> None:
-    """Ask the C allocator to return unused heap pages to the OS.
+def malloc_trim() -> None:
+    """Return free heap pages held by the C allocator to the OS (glibc only).
 
-    The allocator keeps freed pages in its per-arena heaps, so without trimming a
-    resting reading still includes transient build buffers. Best-effort: modern
-    allocators may decline, and the call is unsupported on some platforms.
+    ``malloc_trim`` is what makes a *resting* PSS reading meaningful: glibc keeps
+    freed pages in its per-arena heaps, so without trimming the resident footprint
+    still includes transient build buffers that are logically gone. A no-op (and
+    silently ignored) on non-glibc libc.
     """
-    with contextlib.suppress(Exception):  # unsupported platform / allocator
-        psutil.heap_trim()
+    with contextlib.suppress(Exception):  # non-glibc libc or no malloc_trim symbol
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
+        libc.malloc_trim(ctypes.c_size_t(0))
 
 
 def resting_pss_bytes() -> int:
     """Return current PSS after collecting garbage and trimming the C heap.
 
-    Unlike the per-operation peak (a mid-operation high-water mark), this is the
-    settled footprint once transients are freed -- the persistent-memory metric
-    the peak cannot see.
+    Unlike the per-operation peak (a high-water mark reached mid-operation while
+    transient build buffers are live), this is the *settled* footprint once those
+    transients are released -- the metric that reveals persistent-memory wins (a
+    smaller index, recomputed-vs-stored data) that the peak cannot see.
     """
     gc.collect()
-    heap_trim()
+    malloc_trim()
     return pss_bytes()
 
 
 class PssSampler:
     """Background thread sampling this process's live PSS over time.
 
-    Records ``(wall_clock, pss_bytes)`` pairs while active. Uses ``time.time``
-    (not ``time.monotonic``) so timestamps are comparable across ranks sharing a
-    node's clock, which :func:`merge_peak_of_sum` needs to correlate readings.
+    Records ``(wall_clock, pss_bytes)`` pairs while active. Wall-clock time
+    (``time.time``) is used rather than ``time.monotonic`` so timestamps are
+    comparable across MPI ranks sharing a node's clock, which
+    :func:`merge_peak_of_sum` needs to time-correlate the per-rank readings.
 
-    Use as a context manager around the operation; it samples on entry and exit,
-    so even a sub-interval operation yields a usable timeline.
+    Use as a context manager around the measured operation; a baseline sample is
+    taken on entry and a final sample on exit, so even an operation shorter than
+    one sampling interval yields a usable timeline.
     """
 
     def __init__(self, interval: float = SAMPLE_INTERVAL_S) -> None:
@@ -140,12 +151,14 @@ class PssSampler:
 def merge_peak_of_sum(per_rank: list[list[tuple[float, int]]]) -> int:
     """Return the peak of the summed live PSS across ranks, in bytes.
 
-    ``per_rank[i]`` is rank ``i``'s samples. Walks all samples in time order,
-    step-holding each rank's most recent reading, and tracks the maximum of the
-    running sum -- the largest summed footprint that actually coexisted. A serial
-    run passes one series and gets back its own peak.
+    ``per_rank[i]`` is rank ``i``'s ``(wall_clock, pss_bytes)`` samples. Walks all
+    samples in time order, step-holding each rank's most recent reading, and
+    tracks the maximum of the running sum -- the job's true *peak-of-sum*: the
+    largest summed footprint that actually coexisted. A serial run passes a
+    single series and gets back its own peak.
     """
-    # Seed each rank at its pre-op baseline sample; empty series contribute 0.
+    # Seed each rank at its first (pre-op baseline) sample; ranks with no samples
+    # contribute nothing.
     current = [series[0][1] if series else 0 for series in per_rank]
     running = sum(current)
     peak = running

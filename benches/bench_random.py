@@ -15,8 +15,13 @@
 """Random-problem benchmarks (time + peak memory), both physical pictures.
 
 Random fixed-length Majorana generators and a random Hermitian observable, run in
-the Heisenberg and Schrödinger pictures (``schrodinger_cutoff = cutoff + 2``).
-Configurable from the command line -- see ``benches/README.md``.
+the Heisenberg and Schrödinger pictures (the latter with
+``schrodinger_cutoff = cutoff + 2``). The problem is configurable from the command
+line -- see ``benches/README.md``.
+
+Operations are barrier-wrapped so the measured time is the makespan across MPI
+ranks. Timing uses ``pytest-benchmark``; peak memory is the per-test physical
+footprint (PSS), recorded by the ``record_memory`` fixture in ``conftest.py``.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from __future__ import annotations
 from _builders import barriered
 
 PARE_THRESHOLD = 1e-10
+# In-place random bench keeps its own truncation constant (see design non-goals).
 INPLACE_LOWER_ATOL = 1e-5
 
 

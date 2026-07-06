@@ -35,9 +35,7 @@ def test_random_default_sizes_are_meaningful() -> None:
     assert defaults["num_generators"] == 100
     assert defaults["num_modes"] == 128
     assert defaults["cutoff"] == 6
-    # The seed is left to the caller (``None`` draws fresh entropy); the bench
-    # CLI fixes it via ``--seed`` for reproducible recorded runs.
-    assert defaults["seed"] is None
+    assert defaults["seed"] == 0
 
 
 def test_built_graph_is_populated() -> None:

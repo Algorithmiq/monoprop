@@ -14,10 +14,12 @@
 
 """Model builders shared across the monoprop benchmark suite.
 
-Import-only (no pytest) so the builders are reusable from scripts or notebooks:
-:func:`make_random_problem` (configurable random benchmarks),
-:func:`build_hubbard_problem` (120-qubit Hubbard), and
-:func:`build_kicked_ising_problem` (127-qubit Pauli-basis).
+This module is import-only (no pytest dependency) so the builders can also be
+reused from scripts or notebooks. It provides:
+
+- :func:`make_random_problem` for the configurable random benchmarks,
+- :func:`build_hubbard_problem` for the fixed 120-qubit Hubbard model benchmark,
+- :func:`build_kicked_ising_problem` for the fixed 127-qubit Pauli-basis benchmark.
 """
 
 from __future__ import annotations
@@ -53,12 +55,17 @@ Built = tuple[MajoranaPropagator, Circuit]
 def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
     """Wrap ``fn`` so all MPI ranks enter and leave the call together.
 
-    The barriers make each rank's measured time reflect the makespan (the slowest
-    rank). A serial run returns ``fn`` unchanged, so there is no overhead.
+    Surrounding the measured operation with barriers means each rank's measured
+    time reflects the *makespan* (the slowest rank), which is the meaningful
+    figure for a collective benchmark. For a serial run (no communicator or a
+    single rank) the function is returned unchanged so there is no overhead.
 
     Args:
         fn: The callable to wrap.
         comm: An MPI communicator, or ``None`` for a serial run.
+
+    Returns:
+        Either ``fn`` (serial) or a barrier-wrapped version (multi-rank).
     """
     if comm is None or comm.Get_size() == 1:
         return fn
@@ -134,7 +141,7 @@ def make_random_problem(
     num_generators: int = 100,
     num_modes: int = 128,
     cutoff: int = 6,
-    seed: int | np.random.Generator | None = None,
+    seed: int = 0,
 ) -> RandomProblem:
     """Build a random observable and generator circuit for benchmarking.
 
@@ -144,8 +151,7 @@ def make_random_problem(
         num_generators: Number of random generators in the circuit.
         num_modes: Number of fermionic modes (Majorana indices = ``2 * num_modes``).
         cutoff: Truncation cutoff carried on the returned problem.
-        seed: Seed or ``Generator`` for the RNG; ``None`` (the default) draws
-            fresh entropy. Fix it for a reproducible problem.
+        seed: Seed for the random number generator (reproducibility).
 
     Returns:
         A :class:`RandomProblem` bundling the observable, circuit, and cutoff.
@@ -221,7 +227,7 @@ class HubbardConfig:
 
     @property
     def num_qubits(self) -> int:
-        """Return the number of spin orbitals (two per site)."""
+        """Return the number of interleaved spin orbitals (Majorana modes / 2... qubits)."""
         return 2 * self.num_sites
 
 
