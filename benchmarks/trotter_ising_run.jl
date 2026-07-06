@@ -47,7 +47,7 @@ runtimes = Float64[]
         append!(parameters, fill(theta_zz, nq - 1))
     end
 
-    observable = PauliSum(nq)
+    observable = VectorPauliSum(nq)
     for i in 1:nq
         add!(observable, :Z, i, 1.0)
     end
