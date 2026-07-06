@@ -23,7 +23,7 @@ colors = {
     "QuEra ppvm": "tab:orange",
     "Qiskit pauli-prop": "tab:blue",
     "cuPauliProp (GPU)": "tab:green",
-    "PauliProp (Julia)": "tab:red",
+    "PauliPropagation.jl": "tab:red",
 }
 
 with open("trotter_ising_results.json") as file:

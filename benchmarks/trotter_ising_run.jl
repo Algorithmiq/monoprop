@@ -27,7 +27,7 @@ qubit_range = 5:5:120
 max_pauli_weight = 8
 lower_atol = 1e-8
 
-label = "PauliProp (Julia)"
+label = "PauliPropagation.jl"
 results_file = joinpath(@__DIR__, "trotter_ising_results.json")
 ###############################################################
 
