@@ -106,7 +106,7 @@ class TestUpdateMethods:
 
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
-        gate = Exp(MajoranaOperator({(0, 1, 2, 3, 4, 5): 1.0}))
+        gate = Exp(MajoranaOperator({(0, 1, 2, 3, 4, 5): 1.0}, num_modes=4))
         mp.build_graph(Circuit((gate,)))
         assert mp.size() > 0
 

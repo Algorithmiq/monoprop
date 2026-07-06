@@ -75,8 +75,8 @@ def test_default_mapping_is_identity() -> None:
     """Omitting the mapping gives each gate its own distinct angle."""
     circuit = Circuit(
         (
-            Exp(MajoranaOperator({(0, 1): 1.0})),
-            Exp(MajoranaOperator({(2, 3): 1.0})),
+            Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),
+            Exp(MajoranaOperator({(2, 3): 1.0}, num_modes=2)),
         )
     )
     assert circuit.resolved_mapping == (0, 1)
@@ -86,9 +86,9 @@ def test_default_mapping_is_identity() -> None:
 def test_shared_mapping_index_ties_gates() -> None:
     """Reusing one index in the mapping ties gates to one angle."""
     gates = (
-        Exp(MajoranaOperator({(0, 1): 1.0}), param=0),
-        Exp(MajoranaOperator({(2, 3): 1.0}), param=1),
-        Exp(MajoranaOperator({(0, 3): 1.0}), param=0),  # ties to the first
+        Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2), param=0),
+        Exp(MajoranaOperator({(2, 3): 1.0}, num_modes=2), param=1),
+        Exp(MajoranaOperator({(0, 3): 1.0}, num_modes=2), param=0),  # ties to the first
     )
     circuit = Circuit(gates)
     assert circuit.resolved_mapping == (0, 1, 0)
@@ -98,8 +98,8 @@ def test_shared_mapping_index_ties_gates() -> None:
 def test_circuit_rejects_non_contiguous_mapping() -> None:
     """A mapping with an index gap is rejected (it would invent a phantom parameter)."""
     gates = (
-        Exp(MajoranaOperator({(0, 1): 1.0}), param=0),
-        Exp(MajoranaOperator({(2, 3): 1.0}), param=2),
+        Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2), param=0),
+        Exp(MajoranaOperator({(2, 3): 1.0}, num_modes=2), param=2),
     )
     with pytest.raises(ValueError, match="contiguous"):
         Circuit(gates)
@@ -108,8 +108,8 @@ def test_circuit_rejects_non_contiguous_mapping() -> None:
 def test_circuit_rejects_mixed_param_scheme() -> None:
     """Setting `param` on some gates but not others is rejected as ambiguous."""
     gates = (
-        Exp(MajoranaOperator({(0, 1): 1.0}), param=0),
-        Exp(MajoranaOperator({(2, 3): 1.0})),
+        Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2), param=0),
+        Exp(MajoranaOperator({(2, 3): 1.0}, num_modes=2)),
     )
     with pytest.raises(ValueError, match="every gate must set"):
         Circuit(gates)
@@ -117,7 +117,7 @@ def test_circuit_rejects_mixed_param_scheme() -> None:
 
 def test_circuit_rejects_wrong_parameter_length() -> None:
     """A bound circuit must supply exactly one value per distinct angle."""
-    gates = (Exp(MajoranaOperator({(0, 1): 1.0})),)
+    gates = (Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),)
     with pytest.raises(ValueError, match="1 parameters"):
         Circuit(gates, parameters=(0.1, 0.2))
 
@@ -126,12 +126,12 @@ def test_circuit_add_offsets_second_axis() -> None:
     """Concatenating circuits appends the second's angles on a fresh axis."""
     a = Circuit(
         (
-            Exp(MajoranaOperator({(0,): 1.0})),
-            Exp(MajoranaOperator({(1,): 1.0})),
+            Exp(MajoranaOperator({(0,): 1.0}, num_modes=2)),
+            Exp(MajoranaOperator({(1,): 1.0}, num_modes=2)),
         ),
         parameters=(0.1, 0.2),
     )
-    b = Circuit((Exp(MajoranaOperator({(2,): 1.0})),), parameters=(0.3,))
+    b = Circuit((Exp(MajoranaOperator({(2,): 1.0}, num_modes=2)),), parameters=(0.3,))
     combined = a + b
     assert combined.resolved_mapping == (0, 1, 2)
     assert combined.parameters == (0.1, 0.2, 0.3)
@@ -146,7 +146,9 @@ def test_non_hermitian_majorana_generator_rejected() -> None:
     """
     obs = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(obs, [0, 1], cutoff=4)
-    bad = Circuit((Exp(MajoranaOperator({(0, 1): 1.0j})),), parameters=(0.3,))
+    bad = Circuit(
+        (Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),), parameters=(0.3,)
+    )
     with pytest.raises(ValueError, match="not Hermitian"):
         prop.propagate(bad)
 
@@ -271,8 +273,8 @@ def _multi_term_gate_propagator():
     op = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(op, [0, 1], cutoff=4)
     # two monomials -> two layers
-    g0 = Exp(MajoranaOperator({(0,): 1.0, (1,): 1.0}))
-    g1 = Exp(MajoranaOperator({(2,): 1.0}))
+    g0 = Exp(MajoranaOperator({(0,): 1.0, (1,): 1.0}, num_modes=2))
+    g1 = Exp(MajoranaOperator({(2,): 1.0}, num_modes=2))
     prop.build_graph(Circuit((g0, g1)))
     return prop
 
@@ -288,9 +290,9 @@ def test_n_gates_accumulates_across_builds() -> None:
     """Each build_graph call extends the gate count on the accumulated axis."""
     op = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(op, [0, 1], cutoff=4)
-    prop.build_graph(Circuit((Exp(MajoranaOperator({(0,): 1.0})),)))
+    prop.build_graph(Circuit((Exp(MajoranaOperator({(0,): 1.0}, num_modes=2)),)))
     assert prop.n_gates == 1
-    prop.build_graph(Circuit((Exp(MajoranaOperator({(1,): 1.0})),)))
+    prop.build_graph(Circuit((Exp(MajoranaOperator({(1,): 1.0}, num_modes=2)),)))
     assert prop.n_gates == 2
 
 
@@ -325,7 +327,7 @@ def test_propagate_rejects_mismatched_initial_state() -> None:
     """A circuit whose initial_state disagrees with the propagator's raises ValueError."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)  # built with the fixture's initial state ([])
-    gate = Exp(MajoranaOperator({(0, 1): 1.0}))
+    gate = Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2))
     circuit = Circuit((gate,), parameters=(0.1,), initial_state=(0, 1))
 
     with pytest.raises(ValueError, match="initial_state"):
@@ -336,7 +338,7 @@ def test_propagate_accepts_empty_initial_state() -> None:
     """An empty circuit.initial_state defers to the propagator's reference state."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)
-    gate = Exp(MajoranaOperator({(0, 1): 1.0}))
+    gate = Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2))
     circuit = Circuit((gate,), parameters=(0.1,))  # empty initial_state
 
     prop.propagate(circuit)  # does not raise
@@ -462,8 +464,10 @@ def test_empty_default_mapping_gate_dropped_and_evaluable() -> None:
     aligned angle, so the circuit stays evaluable instead of carrying a phantom parameter."""
     circuit = Circuit(
         gates=(
-            Exp(MajoranaOperator({(4, 5): -1.0})),
-            Exp(MajoranaOperator({(6, 7): 0.0})),  # identity generator: dropped
+            Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),
+            Exp(
+                MajoranaOperator({(6, 7): 0.0}, num_modes=8)
+            ),  # identity generator: dropped
         ),
         parameters=(0.5, 0.3),
     )
@@ -481,9 +485,9 @@ def test_empty_gate_in_middle_builds_contiguously() -> None:
     """An identity gate between real gates is dropped, keeping the gate indices contiguous."""
     circuit = Circuit(
         gates=(
-            Exp(MajoranaOperator({(4, 5): -1.0})),
-            Exp(MajoranaOperator({(6, 7): 0.0})),  # identity in the middle
-            Exp(MajoranaOperator({(2, 3): -1.0})),
+            Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),
+            Exp(MajoranaOperator({(6, 7): 0.0}, num_modes=8)),  # identity in the middle
+            Exp(MajoranaOperator({(2, 3): -1.0}, num_modes=8)),
         ),
         parameters=(0.5, 0.3, 0.2),
     )
@@ -505,20 +509,24 @@ def test_surplus_parameters_raise_not_truncated() -> None:
 def test_non_commuting_pauli_generator_rejected() -> None:
     """A multi-term Pauli gate whose terms anticommute is rejected at construction."""
     with pytest.raises(ValueError, match="anticommute"):
-        Exp(PauliOperator({Pauli("X", 0): 1.0, Pauli("Z", 0): 1.0}))
+        Exp(PauliOperator({Pauli("X", 0): 1.0, Pauli("Z", 0): 1.0}, num_qubits=1))
 
 
 def test_commuting_pauli_generator_accepted() -> None:
     """A multi-term Pauli gate whose terms mutually commute is accepted."""
-    Exp(PauliOperator({Pauli("XX", (0, 1)): 1.0, Pauli("ZZ", (0, 1)): 1.0}))
+    Exp(
+        PauliOperator(
+            {Pauli("XX", (0, 1)): 1.0, Pauli("ZZ", (0, 1)): 1.0}, num_qubits=2
+        )
+    )
 
 
 def test_build_graph_seed_parameters_accepts_numpy() -> None:
     """seed_parameters may be a NumPy array (an accepted ParameterValues type)."""
     circuit = Circuit(
         gates=(
-            Exp(MajoranaOperator({(4, 5): -1.0})),
-            Exp(MajoranaOperator({(2, 3): -1.0})),
+            Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),
+            Exp(MajoranaOperator({(2, 3): -1.0}, num_modes=8)),
         ),
         parameters=(0.5, 0.3),
     )
@@ -530,8 +538,8 @@ def test_build_graph_rejects_too_short_seed() -> None:
     """A too-short explicit seed raises a clear length error, not an out-of-bounds read."""
     circuit = Circuit(
         gates=(
-            Exp(MajoranaOperator({(4, 5): -1.0})),
-            Exp(MajoranaOperator({(2, 3): -1.0})),
+            Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),
+            Exp(MajoranaOperator({(2, 3): -1.0}, num_modes=8)),
         ),
         parameters=(0.5, 0.3),
     )
@@ -544,8 +552,12 @@ def test_extend_without_seed_builds_structurally() -> None:
     """Extending a non-empty graph without a seed builds the new layers structurally (no
     raise, no silent corruption); the result matches a single-call build, and an explicit
     full-axis seed is still accepted."""
-    c1 = Circuit(gates=(Exp(MajoranaOperator({(4, 5): -1.0})),), parameters=(0.3,))
-    c2 = Circuit(gates=(Exp(MajoranaOperator({(2, 3): -1.0})),), parameters=(0.4,))
+    c1 = Circuit(
+        gates=(Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),), parameters=(0.3,)
+    )
+    c2 = Circuit(
+        gates=(Exp(MajoranaOperator({(2, 3): -1.0}, num_modes=8)),), parameters=(0.4,)
+    )
     params = [0.3, 0.4]
 
     single = _small_propagator(lower_atol=1e-15)
@@ -566,8 +578,12 @@ def test_extend_without_seed_builds_structurally() -> None:
 
 def test_propagate_after_build_graph_rejected() -> None:
     """propagate() on top of a build_graph() graph raises rather than corrupting it."""
-    c1 = Circuit(gates=(Exp(MajoranaOperator({(4, 5): -1.0})),), parameters=(0.3,))
-    c2 = Circuit(gates=(Exp(MajoranaOperator({(2, 3): -1.0})),), parameters=(0.4,))
+    c1 = Circuit(
+        gates=(Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),), parameters=(0.3,)
+    )
+    c2 = Circuit(
+        gates=(Exp(MajoranaOperator({(2, 3): -1.0}, num_modes=8)),), parameters=(0.4,)
+    )
     prop = _small_propagator()
     prop.build_graph(c1)
     with pytest.raises(RuntimeError, match="non-empty graph"):

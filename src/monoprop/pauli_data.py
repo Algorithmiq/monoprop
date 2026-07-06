@@ -98,15 +98,16 @@ class PauliOperator:
 
     Constructed from a ``{term: coefficient}`` mapping, where each key is a :class:`Pauli`
     term (or, equivalently, a raw full-width Pauli string like ``"ZZ"``, which is read as a
-    term on qubits ``0..len-1``). The total qubit count lives here, on the operator; for a
-    qubit propagation problem only the *observable* needs it (gate generators leave it
-    ``None`` and inherit it from the propagator).
+    term on qubits ``0..len-1``). The total qubit count lives here, on the operator, and is
+    required so a propagator can be built from it directly. Gate generators do *not* go
+    through this constructor -- author them count-free from bare :class:`Pauli` terms via
+    :class:`~monoprop.circuit.Exp`.
     """
 
     def __init__(
         self,
         terms: Mapping[Pauli | str, complex],
-        num_qubits: int | None = None,
+        num_qubits: int,
         threshold: float = 1e-12,
     ) -> None:
         """Initialize the Pauli operator from a term mapping.
@@ -114,9 +115,9 @@ class PauliOperator:
         Args:
             terms: Mapping from :class:`Pauli` terms (or raw full-width strings) to their
                 coefficients.
-            num_qubits: Total number of qubits the operator acts on, or ``None`` when the
-                operator is used only as a gate generator (the count is then supplied by the
-                propagator). Every term must act within ``0..num_qubits-1``.
+            num_qubits: Total number of qubits the operator acts on. Required: an operator
+                carries its own qubit count so a propagator can be built from it directly.
+                Every term must act within ``0..num_qubits-1``.
             threshold: Terms with ``|coefficient| < threshold`` are discarded.
 
         Raises:

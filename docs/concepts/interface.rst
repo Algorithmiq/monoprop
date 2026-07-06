@@ -77,7 +77,11 @@ operator is given as a real-coefficient sum of Pauli strings (tensor products of
    # One Pauli rotation exp(-i θ/2 · X_0) acting on qubit 0. Exp is the exponential of
    # the Pauli generator; its angle lives in the circuit's parameters. The Circuit takes
    # no num_qubits -- the propagator supplies it from the observable.
-   circuit = Circuit(gates=[Exp(Pauli("X", 0))], parameters=[0.3], initial_state=[])
+   circuit = Circuit(
+       gates=[Exp(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1))],
+       parameters=[0.3],
+       initial_state=[],
+   )
 
    # PauliPropagator is the qubit-native simulator: it takes a Circuit directly, and
    # its cutoff always counts Pauli weight — the qubits a term touches — rather than
@@ -115,7 +119,7 @@ length-2 (since :math:`M_\nu = i^{\binom{|\nu|}{2}} m_{i_1}\cdots m_{i_n}`, see
    # coefficients used directly. A Circuit bundles the gate with the angle value
    # driving it (each gate gets its own angle by default; see "Parameters" below).
    circuit = Circuit(
-       gates=[Exp(MajoranaOperator({(3, 4): -1.0}))], parameters=[0.3], initial_state=[0, 1]
+       gates=[Exp(MajoranaOperator({(3, 4): -1.0}, num_modes=4))], parameters=[0.3], initial_state=[0, 1]
    )
 
    mp = MajoranaPropagator.from_circuit(circuit, observable, cutoff=4)
@@ -171,11 +175,11 @@ The angle index lives on the gate, as its ``param``:
 
    from monoprop import Exp, Circuit, MajoranaOperator, Majorana
 
-   shared = MajoranaOperator({Majorana(0, 1): 1.0, Majorana(2, 3): 0.5})  # multi-term ⇒ ONE angle
+   shared = MajoranaOperator({Majorana(0, 1): 1.0, Majorana(2, 3): 0.5}, num_modes=4)  # multi-term ⇒ ONE angle
    circuit = Circuit(
        gates=[
            Exp(shared, param=0),          # ┐ gates 0 and 2 share angle 0
-           Exp(Majorana(4, 5), param=1),  # │
+           Exp(MajoranaOperator({Majorana(4, 5): 1.0}, num_modes=4), param=1),  # │
            Exp(shared, param=0),          # ┘
        ],
        parameters=[0.3, 0.7],

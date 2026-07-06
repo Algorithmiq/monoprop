@@ -482,12 +482,20 @@ class KickedIsingConfig:
 
 def _xlayer(num_qubits: int, angle: float) -> list[tuple[Exp, float]]:
     """Single-qubit X rotations exp(-i·angle·X) on all qubits, with their angles."""
-    return [(Exp(Pauli("X", (i,))), -angle) for i in range(num_qubits)]
+    return [
+        (Exp(PauliOperator({Pauli("X", (i,)): 1.0}, num_qubits=num_qubits)), -angle)
+        for i in range(num_qubits)
+    ]
 
 
-def _zzlayer(angle: float, topology: list[tuple[int, int]]) -> list[tuple[Exp, float]]:
+def _zzlayer(
+    angle: float, topology: list[tuple[int, int]], num_qubits: int
+) -> list[tuple[Exp, float]]:
     """Two-qubit ZZ interactions exp(-i·angle·ZZ) on every edge, with their angles."""
-    return [(Exp(Pauli("ZZ", (i, j))), -angle) for i, j in topology]
+    return [
+        (Exp(PauliOperator({Pauli("ZZ", (i, j)): 1.0}, num_qubits=num_qubits)), -angle)
+        for i, j in topology
+    ]
 
 
 def build_kicked_ising_problem(
@@ -508,7 +516,9 @@ def build_kicked_ising_problem(
     gate_angles: list[tuple[Exp, float]] = []
     for _ in range(config.num_layers):
         gate_angles.extend(_xlayer(config.num_qubits, config.theta / 2))
-        gate_angles.extend(_zzlayer(config.coupling, HEAVY_HEX_TOPOLOGY))
+        gate_angles.extend(
+            _zzlayer(config.coupling, HEAVY_HEX_TOPOLOGY, config.num_qubits)
+        )
     circuit = Circuit(
         gates=tuple(gate for gate, _ in gate_angles),
         parameters=tuple(angle for _, angle in gate_angles),
