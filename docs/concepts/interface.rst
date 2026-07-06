@@ -50,8 +50,10 @@ operators on numbered modes (for example :math:`c_0^\dagger c_1`).
    generator = FermiOperator([[(0, "+"), (0, "-")]], [1.0], num_modes=4)
    circuit = Circuit(gates=[Exp(generator)], parameters=[0.3], initial_state=[0, 1])
 
-   mp = MajoranaPropagator(observable, initial_state=circuit.initial_state, cutoff=4)
-   mp.propagate(circuit)
+   # from_circuit constructs the propagator and evolves the circuit in one step, taking the
+   # reference state from the circuit. The angles are applied in-place, so evolved_operator()
+   # is read with no parameters.
+   mp = MajoranaPropagator.from_circuit(circuit, observable, cutoff=4)
    print(sorted(mp.evolved_operator().items()))  # keyed by Majorana indices
 
 .. testoutput::
@@ -80,8 +82,7 @@ operator is given as a real-coefficient sum of Pauli strings (tensor products of
    # PauliPropagator is the qubit-native simulator: it takes a Circuit directly, and
    # its cutoff always counts Pauli weight — the qubits a term touches — rather than
    # Majorana modes (see the Notation and Cutoff pages).
-   mp = PauliPropagator(observable, circuit.initial_state, cutoff=4)
-   mp.propagate(circuit)
+   mp = PauliPropagator.from_circuit(circuit, observable, cutoff=4)
    print(sorted(mp.evolved_operator().items())) # WARNING: the keys are Majorana indices - not Pauli strings
 
 .. testoutput::
@@ -113,10 +114,11 @@ length-2 (since :math:`M_\nu = i^{\binom{|\nu|}{2}} m_{i_1}\cdots m_{i_n}`, see
    # MajoranaOperator generator; its coefficients are the *structural* generator
    # coefficients used directly. A Circuit bundles the gate with the angle value
    # driving it (each gate gets its own angle by default; see "Parameters" below).
-   circuit = Circuit(gates=[Exp(MajoranaOperator({(3, 4): -1.0}))], parameters=[0.3])
+   circuit = Circuit(
+       gates=[Exp(MajoranaOperator({(3, 4): -1.0}))], parameters=[0.3], initial_state=[0, 1]
+   )
 
-   mp = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
-   mp.propagate(circuit)
+   mp = MajoranaPropagator.from_circuit(circuit, observable, cutoff=4)
    print(sorted(mp.evolved_operator().items())) # WARNING: the keys are Majorana indices - not fermionic
 
 .. testoutput::

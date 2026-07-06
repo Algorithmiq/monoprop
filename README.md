@@ -38,8 +38,7 @@ observable = MajoranaOperator({(0, 1, 2, 4): 1.0}, 8)
 gate = Exp(MajoranaOperator({(4, 5): -1.0}))  # gen_coeff folds M_γ's i prefactor
 circuit = Circuit(gates=[gate], parameters=[0.5])  # one angle value per gate
 
-mp = MajoranaPropagator(observable, initial_state=[], cutoff=16)
-mp.propagate(circuit)
+mp = MajoranaPropagator.from_circuit(circuit, observable, cutoff=16)
 print(mp.evolved_operator())  # the gate splits the monomial into two terms
 ```
 
@@ -54,8 +53,7 @@ observable = PauliOperator({"ZZ": 1.0}, num_qubits=2)  # num_qubits lives on the
 gate = Exp(Pauli("X", 0))  # exp(-i θ/2 · X_0)
 circuit = Circuit(gates=[gate], parameters=[0.5])  # one angle value per gate
 
-mp = PauliPropagator(observable, initial_state=[], cutoff=16)
-mp.propagate(circuit)
+mp = PauliPropagator.from_circuit(circuit, observable, cutoff=16)  # construct + evolve
 # WARNING: keys are Majorana indices, not Pauli strings
 print(mp.evolved_operator())  # the gate splits Z ⊗ Z into two terms
 ```

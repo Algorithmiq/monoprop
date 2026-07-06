@@ -69,10 +69,10 @@ generator must be Hermitian, so a non-real coefficient is rejected (see below):
    # Circuit: the gates, the angle values driving them, and the reference state.
    circuit = Circuit(gates, parameters=(0.3, 0.7), initial_state=(0, 1))
 
-   # Initialise the simulator, then propagate: a one-shot evolve-and-contract that
-   # stores no graph (see "Driving the simulator" for the reusable-graph patterns).
-   sim = MajoranaPropagator(observable, initial_state=(0, 1), cutoff=4)
-   sim.propagate(circuit)
+   # from_circuit constructs the simulator and evolves the circuit in one step: a one-shot
+   # evolve-and-contract that stores no graph, taking the reference state from the circuit
+   # (see "Driving the simulator" for the reusable-graph patterns).
+   sim = MajoranaPropagator.from_circuit(circuit, observable, cutoff=4)
 
 .. note::
 
@@ -127,8 +127,8 @@ the Majorana basis is applied for you:
    circuit = Circuit(gates, parameters=(0.3, 0.7))
 
    # PauliPropagator fixes the cutoff to Pauli weight and sets the JW basis change.
-   sim = PauliPropagator(observable, initial_state=(), cutoff=2)
-   sim.propagate(circuit)
+   # from_circuit constructs and evolves in one step (in-place, no graph).
+   sim = PauliPropagator.from_circuit(circuit, observable, cutoff=2)
 
 The differences from the Majorana simulator are exactly:
 

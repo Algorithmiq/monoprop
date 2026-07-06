@@ -62,9 +62,8 @@ rotation; see more in :doc:`concepts/algorithm`:
    >>> # generator coefficient. A Circuit pairs the gate with its angle.
    >>> gate = Exp(MajoranaOperator({(4, 5): -1.0}))
    >>> circuit = Circuit(gates=[gate], parameters=[0.5])  # gate angle θ = 0.5
-   >>> mbs = MajoranaPropagator(observable, initial_state=[], cutoff=16)
-   >>> mbs.propagate(circuit)
-   >>> result = mbs.evolved_operator()
+   >>> mbs = MajoranaPropagator.from_circuit(circuit, observable, cutoff=16)
+   >>> result = mbs.evolved_operator()  # angles already applied in-place
    >>> sorted(result)  # original (cosine) term plus the new (sine) term
    [(0, 1, 2, 4), (0, 1, 2, 5)]
    >>> bool(np.isclose(result[(0, 1, 2, 4)].real, np.cos(2 * 0.5)))  # cosine branch
@@ -84,8 +83,7 @@ Majorana basis (see :doc:`concepts/notation`), so the gate likewise splits
    >>> observable = PauliOperator({"ZZ": 1.0}, num_qubits=2)
    >>> gate = Exp(Pauli("X", 0))  # exp(-i θ/2 · X_0)
    >>> circuit = Circuit(gates=[gate], parameters=[0.5])
-   >>> mbs = PauliPropagator(observable, initial_state=[], cutoff=16)
-   >>> mbs.propagate(circuit)  # PauliPropagator maps X_0 to Majoranas
+   >>> mbs = PauliPropagator.from_circuit(circuit, observable, cutoff=16)  # maps X_0 to Majoranas
    >>> result = mbs.evolved_operator()  # WARNING: keys are Majorana indices, not Pauli strings
    >>> sorted(result)
    [(0, 1, 2, 3), (1, 2, 3)]
