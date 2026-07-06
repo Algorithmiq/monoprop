@@ -50,6 +50,7 @@ circuit, :class:`~monoprop.pauli_propagator.PauliPropagator` a qubit circuit.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -120,6 +121,8 @@ class Exp:
                 f"Exp generator must be a Majorana/MajoranaOperator, Pauli/PauliOperator, or "
                 f"FermiOperator; got {type(generator).__name__}."
             )
+        if family == "pauli":
+            _validate_commuting_pauli_generator(generator)
         object.__setattr__(self, "generator", generator)
         object.__setattr__(self, "param", None if param is None else int(param))
         object.__setattr__(self, "family", family)
@@ -191,9 +194,8 @@ class Circuit:
     initial_state: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
-        """Normalize fermionic gates, validate the family, mapping, and params."""
+        """Normalize fermionic gates, drop identity gates, and validate family/mapping/params."""
         raw = tuple(self.gates)
-        contains_fermi = any(getattr(gate, "family", None) == "fermi" for gate in raw)
         gates = tuple(
             _fermi_exp_to_majorana_exp(gate)
             if getattr(gate, "family", None) == "fermi"
@@ -205,17 +207,30 @@ class Circuit:
         if len(set(initial_state)) != len(initial_state):
             raise ValueError("Duplicate indices in initial state")
 
-        fermi_generators: tuple[Exp, ...] = ()
-        if contains_fermi and all(gate.param is None for gate in gates):
-            # Fermionic convenience: under the default mapping, drop identity generators
-            # (e.g. a zero chemical potential) and their aligned parameter.
+        # An empty-generator gate is exp(theta * 0) = identity: it drives no rotation and emits
+        # no graph layer. Under the *default* mapping (each gate its own angle, in order),
+        # keeping it would inflate the parameter count with a phantom angle no layer references
+        # (an unevaluable circuit) or leave a gap in the per-monomial gate indices the engine
+        # rejects, so drop it for every family together with its aligned parameter (a fermionic
+        # zero chemical potential normalizes to one such gate). Under an *explicit* mapping the
+        # gate carries a caller-chosen index, so leave the circuit untouched rather than silently
+        # renumbering the caller's angles.
+        default_mapping = all(gate.param is None for gate in gates)
+        if default_mapping and any(not gate.generator.terms for gate in gates):
             kept = [i for i, gate in enumerate(gates) if gate.generator.terms]
-            gates = tuple(gates[i] for i in kept)
+            if parameters and len(parameters) != len(gates):
+                raise ValueError(
+                    f"parameters has {len(parameters)} values but the circuit has "
+                    f"{len(gates)} gates."
+                )
             if parameters:
                 parameters = tuple(parameters[i] for i in kept)
-            fermi_generators = tuple(raw[i] for i in kept if raw[i].family == "fermi")
-        elif contains_fermi:
-            fermi_generators = tuple(g for g in raw if g.family == "fermi")
+            gates = tuple(gates[i] for i in kept)
+            raw = tuple(raw[i] for i in kept)
+
+        fermi_generators = tuple(
+            gate for gate in raw if getattr(gate, "family", None) == "fermi"
+        )
 
         object.__setattr__(self, "gates", gates)
         object.__setattr__(self, "parameters", parameters)
@@ -452,6 +467,40 @@ def _antihermitian_gen_coeff(majorana: Sequence[int], coeff: complex) -> float:
     weight = len(majorana)
     gen = -coeff / (1j) ** (weight * (weight - 1) / 2)
     return _real_generator_coefficient(majorana, gen)
+
+
+def _paulis_commute(p1: Pauli, p2: Pauli) -> bool:
+    """Whether two Pauli terms commute as operators.
+
+    Two Paulis anticommute iff they act with *different* non-identity letters on an odd number
+    of shared qubits (:class:`~monoprop.pauli_data.Pauli` drops identity letters on
+    construction, so every letter here is non-trivial).
+    """
+    op1 = dict(zip(p1.qubits, p1.string, strict=True))
+    op2 = dict(zip(p2.qubits, p2.string, strict=True))
+    anticommuting = sum(1 for q in op1.keys() & op2.keys() if op1[q] != op2[q])
+    return anticommuting % 2 == 0
+
+
+def _validate_commuting_pauli_generator(generator: PauliOperator) -> None:
+    """Reject a multi-term Pauli generator whose terms do not pairwise commute.
+
+    A gate is a single exponential of its generator, but :func:`_gate_layers` realizes a
+    multi-term generator as a *product* of one rotation per term
+    (``exp(theta*g_1*P_1) * exp(theta*g_2*P_2) * ...``). That product equals
+    ``exp(theta * sum_i g_i*P_i)`` only when the Pauli terms mutually commute; otherwise the
+    evolution would be silently Trotterized. Fail loudly instead (mirroring the check the old
+    ``PauliEvGate`` enforced).
+
+    Raises:
+        ValueError: If any two terms of ``generator`` anticommute.
+    """
+    for p1, p2 in itertools.combinations(generator.terms, 2):
+        if not _paulis_commute(p1, p2):
+            raise ValueError(
+                "A multi-term Pauli gate generator must have mutually commuting terms so the "
+                f"gate is a single exponential of their sum; {p1} and {p2} anticommute."
+            )
 
 
 def _gate_layers(

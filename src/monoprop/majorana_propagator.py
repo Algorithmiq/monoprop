@@ -240,17 +240,35 @@ class MajoranaPropagator:
 
         Args:
             circuit: Gates to append, as a :class:`~monoprop.circuit.Circuit`.
-            seed_parameters: Only needed when extending a non-empty graph *with*
-                coefficient-informed truncation: the full parameter vector covering the whole
-                accumulated graph, used to regenerate the coefficient seed by contracting the
-                existing graph. Defaults to the circuit's own parameters (correct for the
-                first, or a single, call).
+            seed_parameters: The full parameter vector covering the whole accumulated graph,
+                used to regenerate the coefficient seed (by contracting the existing graph) so
+                coefficient truncation sees realistic coefficients when extending. Only needed
+                when extending a non-empty graph *with* coefficient-informed truncation; on the
+                first (or a single) call it defaults to the circuit's own parameters. When
+                omitted while extending, the new layers are built structurally (coefficient
+                truncation is skipped for them); the engine validates the length of an explicit
+                seed.
             only_rotate_len_k: If > 0, apply gates to monomials of length <= k in the
                 evolved operator even if they anticommute. Useful when many free-fermionic
                 gates (generators that are length-2 Majorana monomials) are applied before
                 expectation-value estimation in Schrodinger-picture simulations.
         """
         self._check_initial_state(circuit)
+        # Resolve the coefficient seed handed to the engine (the operator coefficients the new
+        # layers are contracted against while the graph is built, informing coefficient
+        # truncation). The engine validates its length against the accumulated parameter axis.
+        #  - An explicit seed_parameters is honored as given.
+        #  - On the first build (empty graph) the circuit's own parameters are the whole axis.
+        #  - When extending a non-empty graph without a seed the circuit's parameters cover only
+        #    its local angles, not the accumulated axis, so there is no seed to give: build the
+        #    new layers structurally (coefficient truncation applies only when a seed is
+        #    supplied; pass seed_parameters to truncate an incremental extension).
+        if seed_parameters is not None:
+            seed = seed_parameters
+        elif self.graph_layers == 0:
+            seed = circuit.parameters
+        else:
+            seed = None
         gates = self._circuit_gates(circuit)
         num_qubits = self._num_qubits
         # Shift the circuit's local 0-based angle indices onto the accumulated axis.
@@ -259,8 +277,9 @@ class MajoranaPropagator:
         majoranas, gen_coeffs, per_monomial, gate_indices = expand_monomials(
             gates, mapping, num_qubits
         )
-        seed = seed_parameters if seed_parameters is not None else circuit.parameters
-        bound = self._bind(seed) if seed else None
+        # `seed` may be a NumPy array (an accepted ParameterValues type), so resolve to a list
+        # first and treat an empty vector as "no seed" -- `if seed` would raise on an ndarray.
+        bound = self._bind(seed) or None
         self._simulator.build_graph(
             majoranas,
             per_monomial,

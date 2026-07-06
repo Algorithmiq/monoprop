@@ -275,3 +275,22 @@ class TestFromQiskitCircuit:
 
         with pytest.raises(ValueError, match="Unsupported gate"):
             from_qiskit_circuit(circuit, [])
+
+    def test_non_commuting_generator_rejected(self):
+        """A PauliEvolution gate with non-commuting terms is rejected on conversion."""
+        circuit = QuantumCircuit(1)
+        # X and Z on the same qubit anticommute, so this is not a single exponential.
+        operator = SparsePauliOp.from_list([("X", 0.5), ("Z", 0.5)])
+        circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
+
+        with pytest.raises(ValueError, match="anticommute"):
+            from_qiskit_circuit(circuit, [])
+
+
+@requires_qiskit
+@pytest.mark.qiskit
+def test_to_qiskit_circuit_rejects_unbound() -> None:
+    """to_qiskit_circuit on an unbound circuit raises a clear error, not an IndexError."""
+    circuit = Circuit(gates=(Exp(Pauli("X", 0)),))  # no parameter values
+    with pytest.raises(ValueError, match="bound circuit"):
+        to_qiskit_circuit(circuit, num_qubits=1)

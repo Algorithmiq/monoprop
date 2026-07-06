@@ -172,6 +172,10 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
         evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k);
     }
     else {
+        // Guard the coefficient-informed path the same way propagate() guards its parameters:
+        // evolve_mode_graph_with_coeffs_ -> map_params()/fill_mapped_params() index
+        // `parameters` by parameter_mapping, so a too-short vector reads out of bounds.
+        validate_parameters_length(*parameters, parameter_mapping);
         // Coefficient-informed build: regenerate the seed by contracting the existing graph
         // (replacing the former operator_coeffs input), then build+contract the new layers into it
         // so atol truncation sees realistic coefficients. The existing graph references the
@@ -209,6 +213,18 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
     }
     validate_coefficient_lengths(parameter_mapping, gen_coeffs);
     validate_parameters_length(parameters, parameter_mapping);
+    // propagate() evolves and contracts in place assuming no stored graph: its contract loop
+    // slices and consumes graph layers from the front (see evolve_mode_contract_immediately_),
+    // so running it on a graph built by build_graph() would consume those pre-existing layers
+    // and silently corrupt the result. Reject it -- build_graph() is the extend path, and
+    // contract_partially() folds an existing graph.
+    if (graph_layers() > 0) {
+        throw std::runtime_error(std::format("Cannot propagate() on top of a non-empty graph of {} layer(s): "
+                                             "propagate() evolves and contracts in place and assumes no stored graph. "
+                                             "Call contract_partially() to fold the existing graph first, or use "
+                                             "build_graph() to extend it.",
+                                             graph_layers()));
+    }
     evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
 }
 
