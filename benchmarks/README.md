@@ -11,7 +11,7 @@ It has its own virtual environment and its own dependencies.
 # Navigate to this directory
 cd benchmarks
 
-# Create the venv and install all deps
+# Create venv and install all deps
 uv sync
 ```
 
@@ -22,7 +22,7 @@ Some benchmarks compare against a Julia implementation of the Pauli Propagation 
 # Install juliaup and the latest stable Julia release
 curl -fsSL https://install.julialang.org | sh
 
-# Reload your shell, then verify the install
+# Reload your shell and verify the install
 julia --version
 ```
 
@@ -35,7 +35,7 @@ julia -e 'using Pkg; Pkg.add(["PauliPropagation", "JSON", "ProgressMeter"])'
 
 ## Running benchmark scripts
 ```bash
-# Run python script in venv
+# Run Python script in venv
 uv run python trotter_ising_run.py
 
 # Run Julia script
@@ -43,17 +43,4 @@ julia trotter_ising_run.jl
 
 # Plot final results
 uv run python trotter_ising_plot.py
-```
-
-
-## Managing dependencies
-```bash
-# Add a new dependency
-uv add <package>
-
-# Remove a dependency
-uv remove <package>
-
-# Update all deps to latest allowed versions
-uv lock --upgrade && uv sync
 ```
