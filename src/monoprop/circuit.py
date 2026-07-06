@@ -204,15 +204,15 @@ class Circuit:
             normalization to a structural Majorana :class:`Exp`).
     """
 
-    gates: tuple[Exp, ...] = ()
-    parameters: tuple[float, ...] = ()
-    initial_state: tuple[int, ...] = ()
+    gates: Sequence[Exp] = ()
+    parameters: Sequence[float] = ()
+    initial_state: Sequence[int] = ()
     # Derived at construction (see __post_init__); excluded from equality/repr as they follow
     # from `gates`. Declared as fields so they are typed attributes rather than dynamic ones.
     family: CircuitFamily = field(
         init=False, compare=False, repr=False, default="empty"
     )
-    fermi_generators: tuple[Exp, ...] = field(
+    fermi_generators: Sequence[Exp] = field(
         init=False, compare=False, repr=False, default=()
     )
 

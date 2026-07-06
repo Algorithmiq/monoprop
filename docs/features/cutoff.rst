@@ -63,14 +63,8 @@ distinct modes touched). This is the natural choice for fermionic problems.
 **Qubit (Pauli) operators —** ``PauliPropagator``. For a qubit Hamiltonian you
 usually want to bound the **Pauli weight** instead. ``PauliPropagator`` accepts
 Pauli operators and gates directly and always measures the cutoff as a qubit
-operator, so ``support`` counts the qubits a term touches — its Pauli weight. Its
-cutoff type is fixed to ``support`` (there is no ``cutoff_type`` argument, and
-setting it to anything else raises). Reach for it whenever your problem is naturally
-expressed in qubits; use ``MajoranaPropagator`` for native Majorana or fermionic
-problems. Pauli weight does not track Majorana length (fermion-to-qubit mappings are
-non-local — see the Pauli representation in
-:doc:`/concepts/notation`), which is exactly why the qubit case has its own
-simulator.
+operator, so ``support`` counts the qubits a term touches — its Pauli weight.
+Reach for it whenever your problem is naturally expressed in qubits.
 
 Coefficient tolerance filtering
 -------------------------------
