@@ -6,7 +6,7 @@ This directory is a self-contained `uv` project, completely isolated from the ma
 It has its own virtual environment and its own external dependencies.
 
 
-### Setup Python
+### Setup Python environment
 ```bash
 # Navigate to this directory
 cd benchmarks
@@ -15,24 +15,21 @@ cd benchmarks
 uv sync
 ```
 
-### Install Julia
-Some benchmarks compare against a Julia implementation of the Pauli Propagation algorithm,
-so a Julia toolchain is also required. Install it via [`juliaup`](https://github.com/JuliaLang/juliaup),
-the official Julia version manager:
-
+### Install Julia package
+Some benchmarks compare against a Julia implementation of Pauli Propagation:
 ```bash
 # Install juliaup and the latest stable Julia release
 curl -fsSL https://install.julialang.org | sh
-
-# Reload your shell and verify the install
-julia --version
 ```
 
-Then install [`PauliPropagation.jl`](https://github.com/SparqleSim/PauliPropagation.jl) and some utils
-from the official Julia package manager:
-
+Once Julia has been installed, add some utils:
 ```bash
-julia -e 'using Pkg; Pkg.add(["PauliPropagation", "JSON", "ProgressMeter"])'
+julia -e 'using Pkg; Pkg.add(["JSON", "ProgressMeter"])'
+```
+
+Finally, install the package [`PauliPropagation.jl`](https://github.com/SparqleSim/PauliPropagation.jl) v0.7.3:
+```bash
+julia -e 'using Pkg; Pkg.add(Pkg.PackageSpec(name="PauliPropagation", version="0.7.3"))'
 ```
 
 
