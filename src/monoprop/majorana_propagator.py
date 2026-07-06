@@ -160,6 +160,21 @@ class MajoranaPropagator:
             comm=comm,
         )
 
+    def __deepcopy__(self, memo: dict) -> "MajoranaPropagator":
+        """Deep-copy the propagator into an independent instance.
+
+        The heavy state (the dispatched simulator adapter and its C++ operator store) is
+        deep-copied; the MPI communicator is shared as-is, which is correct both with MPI (the
+        live mpi4py communicator) and without (``None``).
+        """
+        import copy as _copy
+
+        new = type(self).__new__(type(self))
+        memo[id(self)] = new
+        for key, value in self.__dict__.items():
+            new.__dict__[key] = value if key == "_comm" else _copy.deepcopy(value, memo)
+        return new
+
     # -- gate ingestion ---------------------------------------------------------
 
     @classmethod

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <map>
 #include <numeric>
@@ -27,19 +28,30 @@
 #include <tuple>
 #include <vector>
 
+#include <tbb/task_arena.h>
+
 #include "monoprop/Evolution.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
+#include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 #include "monoprop/Validation.h"
+#include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/profiling/RegionProfiler.h"
 #include "monoprop/logging/QuillWrapper.h"
 #include "monoprop/logging/Utils.h"
 
 namespace monoprop {
+namespace detail {
+// Fused-contraction record sink (defined in layer_build/Common.h). build_evolve_result_ only takes a
+// pointer, so a forward declaration keeps this header decoupled from the layer-build internals.
+struct FusedContract;
+} // namespace detail
+
 template <size_t NumModes>
 class MonomialPropagator {
 public:
@@ -52,84 +64,15 @@ public:
                        std::optional<double> upper_atol = std::nullopt,
                        CutoffType cutoff_type = CutoffType::Length,
                        std::optional<std::vector<VecZ>> basis_change = std::nullopt,
-                       size_t logical_num_modes = NumModes)
-        : schrodinger_{schrodinger_cutoff.has_value()},
-          comm_{comm},
-          mp_op_{},
-          graph_(schrodinger_cutoff.has_value()),
-          cutoff_{cutoff},
-          lower_atol_{lower_atol},
-          upper_atol_{upper_atol},
-          logical_num_modes_{logical_num_modes},
-          cutoff_type_{cutoff_type},
-          basis_change_{basis_change} {
-        if (logical_num_modes_ == 0 || logical_num_modes_ > NumModes) {
-            throw std::runtime_error(
-                std::format("logical_num_modes ({}) must be in the range [1, {}].", logical_num_modes_, NumModes));
-        }
-
-        // Validate atol parameters
-        if (upper_atol.has_value() && lower_atol.has_value() && (upper_atol.value() < lower_atol.value())) {
-            throw std::runtime_error(std::format("upper_atol ({}) must be greater than or equal to lower_atol ({}).",
-                                                 upper_atol.value(),
-                                                 lower_atol.value()));
-        }
-
-        const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
-        const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
-        MajoranaVector<NumModes> local_heisenberg_terms;
-
-        // convert the operator to the internal format
-        double core_term = 0.0;
-        for (const auto &[indices, coefficient] : initial_operator) {
-            for (const auto &index : indices) {
-                if (index >= 2 * logical_num_modes_) {
-                    throw std::runtime_error(
-                        std::format("Operator term contains an index greater than {}", 2 * logical_num_modes_));
-                }
-            }
-            const auto majorana_bitset = indices_to_bitset<NumModes>(indices);
-            const auto encoded_coeff = encode_coeff<NumModes>(coefficient, majorana_bitset);
-
-            // Store the core term separately as it is orders of magnitude larger than the other terms
-            if (indices.empty()) {
-                core_term = encoded_coeff;
-                continue;
-            }
-            if (my_rank == find_rank<NumModes>(majorana_bitset, num_ranks)) {
-                mp_op_.init_op_map_[majorana_bitset] = encoded_coeff;
-                local_heisenberg_terms.push_back(majorana_bitset);
-            }
-        }
-
-        auto sc = schrodinger_cutoff.value_or(cutoff + 2);
-        sc = std::min(sc, static_cast<unsigned int>(2 * logical_num_modes_));
-        auto op =
-            schrodinger_ ? generate_paired_op<NumModes>(sc / 2 + sc % 2, logical_num_modes_) : local_heisenberg_terms;
-
-        const size_t expected_local_terms = std::max<size_t>(1, op.size() / std::max<size_t>(1, num_ranks));
-        mp_op_.indexing.reset(threading::effective_parallelism());
-        mp_op_.indexing.reserve(expected_local_terms);
-
-        auto i = 0;
-        for (const auto &maj : op) {
-            if (my_rank == find_rank<NumModes>(maj, num_ranks)) {
-                mp_op_.op.push_back(maj);
-                mp_op_.indexing[maj] = i++;
-            }
-        }
-
-        // Initialize this rank's MPOperator
-        mp_op_.slater_determinant_ = slater_determinant;
-        core_term_ = core_term;
-
-        // initialize the cutoff function
-        regenerate_cutoff_fn_();
-
-        initialize_operator_caches_();
-    }
+                       size_t logical_num_modes = NumModes);
 
     virtual ~MonomialPropagator() = default;
+
+    // The simulator is an independent deep-copyable value. The implicit copy constructor does the
+    // right thing: it deep-clones the per-rank operator store (MPOperator's copy ctor repairs the
+    // index back-pointer) and shares the immutable graph layer cores via shared_ptr. The MPI
+    // communicator handle is copied as-is (shared, not MPI_Comm_dup'd). No special members are
+    // declared, so move stays implicit too; copy assignment is implicitly deleted (unique_ptr store).
 
     static constexpr auto num_modes{NumModes};
     static constexpr auto storage_num_modes{NumModes};
@@ -147,25 +90,50 @@ public:
     auto size() const -> size_t { return mp_op_.size(); }
 
     /**
+     * @brief Pre-reserve operator storage for an expected final (this-rank) term count.
+     *
+     * Purely an allocation hint — it changes no results. The operator vector and index-map shards
+     * otherwise grow by geometric doubling during evolution, so a run that ends at N terms pays a
+     * sequence of serial multi-GB reallocations/rehashes (an Amdahl anchor in deferred_self_inserts)
+     * and carries up to ~2× transient over-allocation at the largest doubling. Reserving once to a
+     * known scale removes both. For an R-rank run, pass the per-rank estimate (≈ global / R), since
+     * each rank stores only the terms it owns. Safe to call any time before/between evolution steps;
+     * a smaller value than the current size is a no-op.
+     */
+    auto reserve_operator(size_t expected_local_terms) -> void {
+        // Sizes BOTH the packed rows and the hash index to a known final per-rank count. Called on a
+        // non-empty store between steps, so it only ever reserves capacity (width was fixed at setup).
+        mp_op_.store->reserve(expected_local_terms);
+    }
+
+    /**
      * @brief Returns the size of the graph.
      * To get global size, use MPI allreduce.
      *
-     * @return the number of indices and cycles in the MP graph (local to this rank).
+     * @return the number of indices and cycles in the MBS graph (local to this rank).
      */
     auto graph_size() const -> std::pair<size_t, size_t> { return graph_.num_cos_inds_and_cycles(); }
 
     /**
-     * @brief Get the Monomial Propagator graph (local to this rank).
+     * @brief Get the Majorana Branch Simulator graph (local to this rank).
      *
      * @return The MPGraph object representing the simulation graph for this rank.
      */
     auto graph() const -> const MPGraph & { return graph_; }
 
+    // Direct access to this rank's MPOperator: the per-rank coefficient vectors (get_state /
+    // get_operator), the packed term store, and the persistent even-parity inverted index. Used by tests
+    // to drive get_pared_graph directly and fold the per-layer full cosine set.
+    auto mp_op() -> detail::MPOperator<NumModes> & { return mp_op_; }
+    auto mp_op() const -> const detail::MPOperator<NumModes> & { return mp_op_; }
+
     auto graph_memory_usage() const -> GraphMemoryBreakdown { return graph_.storage_memory_usage(); }
 
-    auto operator_memory_usage() const -> MPOperatorMemoryBreakdown<NumModes> { return estimate_memory_usage(mp_op_); }
+    auto operator_memory_usage() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
+        return detail::estimate_memory_usage(mp_op_);
+    }
 
-    auto print_object_memory_report(std::string_view label) const -> void { print_object_memory_report_(label); }
+    auto print_object_memory_report(std::string_view label) const { print_object_memory_report_(label); }
 
     /**
      * @brief Get the number of evolved Majoranas (graph layers).
@@ -224,8 +192,8 @@ public:
      * Returns the mapping from Majorana bitset terms to their coefficient indices
      * for this rank.
      */
-    auto indexing() -> ShardedIndexMap<NumModes> & { return mp_op_.indexing; }
-    auto indexing() const -> const ShardedIndexMap<NumModes> & { return mp_op_.indexing; }
+    auto indexing() -> detail::OperatorIndex<NumModes> & { return *mp_op_.store; }
+    auto indexing() const -> const detail::OperatorIndex<NumModes> & { return *mp_op_.store; }
 
     /**
      * @brief Return graph layer data in Python-friendly structures.
@@ -235,65 +203,14 @@ public:
      *
      * Storage format:
      * - local_cycles: Cycles (src, tgt, phase) where both indices are on this rank
-     * - cross_rank_out[rank]: (indices, phases) for outgoing cycles to that rank
-     * - cross_rank_in[rank]: (indices, phases) for incoming cycles from that rank
+     * - cross_rank_sin_send[rank]: (indices, dummy_phases) for the send recipe B^{(r')} on this rank
+     * - cross_rank_sin_recv[rank]: (indices, signed_phases) for the apply recipe D^{(r')} (D- then D+)
      */
     using LocalCycleData = std::tuple<size_t, size_t, int>;
     using CrossRankData = std::tuple<VecZ, VecI>; // (indices, phases)
     using LayerData =
         std::tuple<VecZ, std::vector<LocalCycleData>, std::vector<CrossRankData>, std::vector<CrossRankData>>;
-    auto graph_data() const -> std::vector<LayerData> {
-        std::vector<LayerData> layers;
-        const auto num_layers = graph_.layers();
-        layers.reserve(num_layers);
-        for (size_t i = 0; i < num_layers; ++i) {
-            const auto traversal = graph_.get_layer_traversal(i);
-            const size_t rank_count = traversal.cross_rank_rank_count();
-
-            std::vector<LocalCycleData> local_cyc_data;
-            local_cyc_data.reserve(traversal.local_cycle_count());
-            traversal.for_each_local_cycle_range(0,
-                                                 traversal.local_cycle_count(),
-                                                 [&local_cyc_data](size_t, size_t src, size_t tgt, int phase) {
-                                                     local_cyc_data.emplace_back(src, tgt, phase);
-                                                 });
-
-            std::vector<CrossRankData> out_data, in_data;
-            out_data.reserve(rank_count);
-            in_data.reserve(rank_count);
-            for (size_t rank = 0; rank < rank_count; ++rank) {
-                VecZ out_indices(traversal.cross_rank_out_size(rank));
-                VecI out_phases(traversal.cross_rank_out_size(rank));
-                VecZ in_indices(traversal.cross_rank_in_size(rank));
-                VecI in_phases(traversal.cross_rank_in_size(rank));
-
-                traversal.for_each_cross_rank_out_range(
-                    rank,
-                    0,
-                    traversal.cross_rank_out_size(rank),
-                    [&out_indices, &out_phases](size_t logical_idx, size_t value_idx, int phase) {
-                        out_indices[logical_idx] = value_idx;
-                        out_phases[logical_idx] = phase;
-                    });
-                traversal.for_each_cross_rank_in_range(
-                    rank,
-                    0,
-                    traversal.cross_rank_in_size(rank),
-                    [&in_indices, &in_phases](size_t logical_idx, size_t value_idx, int phase) {
-                        in_indices[logical_idx] = value_idx;
-                        in_phases[logical_idx] = phase;
-                    });
-
-                out_data.emplace_back(std::move(out_indices), std::move(out_phases));
-                in_data.emplace_back(std::move(in_indices), std::move(in_phases));
-            }
-            layers.emplace_back(detail::expand_compressed_cosine_data(traversal.cos_data()),
-                                std::move(local_cyc_data),
-                                std::move(out_data),
-                                std::move(in_data));
-        }
-        return layers;
-    }
+    auto graph_data() const -> std::vector<LayerData>;
 
     /**
      * @brief Updates the lower absolute tolerance.
@@ -414,6 +331,13 @@ public:
     auto basis_change() const -> std::optional<std::vector<VecZ>> { return basis_change_; }
 
     /**
+     * @brief Get the MPI communicator used by this simulator.
+     *
+     * @return The MPI_Comm associated with this simulator instance.
+     */
+    auto comm() const -> MPI_Comm { return comm_; }
+
+    /**
      * @brief Build the propagation graph from a sequence of Majorana generators.
      *
      * Appends one graph layer per Majorana generator, recording each layer's gate
@@ -516,7 +440,16 @@ public:
     virtual auto update_initial_operator(const FermiOperatorMap &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
-    // Reusable evaluation callbacks for make_functional — also used by MonomialPropagatorExtra.
+    // FROZEN EXTENSION SURFACE. Everything in this `protected:` block (the ev/ev_and_grad callbacks,
+    // the static utilities, apply_initial_operator_, the data members, packed_inline_width_) plus the
+    // two `virtual` methods above exist for the out-of-tree subclass `MonomialPropagatorExtra` (no C++
+    // definition lives in this repo — only in a downstream/private repo that builds against this
+    // header). Do NOT change these signatures/layout without coordinating that repo; refactors must
+    // delegate underneath them.
+    // Reusable evaluation callbacks for make_functional_ / the pare functionals — also used by
+    // MonomialPropagatorExtra.
+    // The trailing cos_scale/cos_acc recompute the per-layer cosine set from the prepared fold; empty
+    // (default) callbacks select the stored-cos path (the pare functionals pass none).
     static inline const auto ev_fn = [](double e_core,
                                         const VecD &state,
                                         const VecD &op,
@@ -524,31 +457,29 @@ protected:
                                         const VecD &gen_coeffs,
                                         const auto &graph,
                                         const VecD &params,
-                                        MPI_Comm comm) -> double {
-        return ev(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
+                                        MPI_Comm comm,
+                                        const detail::LayerCosScale &cos_scale = {},
+                                        const detail::LayerCosAccumulate & = {}) -> double {
+        // cos_acc is unused for the energy path (no reverse sweep); accepted so both functionals share
+        // the same call arity in make_functional_.
+        return ev(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale);
     };
 
-    static inline const auto ev_and_grad_fn = [](double e_core,
-                                                 const VecD &state,
-                                                 const VecD &op,
-                                                 const VecZ &parameter_mapping,
-                                                 const VecD &gen_coeffs,
-                                                 const auto &graph,
-                                                 const VecD &params,
-                                                 MPI_Comm comm) -> std::pair<double, VecD> {
-        return ev_and_grad(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
+    static inline const auto ev_and_grad_fn =
+        [](double e_core,
+           const VecD &state,
+           const VecD &op,
+           const VecZ &parameter_mapping,
+           const VecD &gen_coeffs,
+           const auto &graph,
+           const VecD &params,
+           MPI_Comm comm,
+           const detail::LayerCosScale &cos_scale = {},
+           const detail::LayerCosAccumulate &cos_acc = {}) -> std::pair<double, VecD> {
+        return ev_and_grad(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale, cos_acc);
     };
 
     // Static utility methods also needed by MonomialPropagatorExtra.
-    static auto append_to_graph(MPGraph &graph,
-                                VecZ &cos_inds,
-                                std::optional<CompressedCosineData> &compressed_cos_data,
-                                SplitCycleResult &split,
-                                MPI_Comm comm,
-                                size_t param_index = 0,
-                                double gen_coeff = 0.0,
-                                size_t gate_index = 0) -> void;
-
     static auto expected_num_params(const VecZ &parameter_mapping) -> size_t;
 
     template <typename Fn, typename R = std::invoke_result_t<Fn, const VecD &>>
@@ -562,35 +493,30 @@ protected:
      * for this rank as a (Majorana terms, encoded coefficients) pair, so overrides that maintain
      * caches keyed on the initial operator can refresh them from the return value.
      */
-    auto apply_initial_operator_(const FermiOperatorMap &op_dict) -> std::pair<MajoranaVector<NumModes>, VecD> {
-        const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
-        const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
-
-        // Convert the input operator to the internal format and distribute terms to ranks
-        FermiOperatorMap new_op;
-        for (const auto &[ind, coeff] : op_dict) {
-            const auto maj = indices_to_bitset<NumModes>(ind);
-            if (ind.empty()) { // Core term, store in all
-                core_term_ = encode_coeff<NumModes>(coeff, maj);
-                continue;
-            }
-            if (my_rank == find_rank<NumModes>(maj, num_ranks)) {
-                const auto maj_indices = bitset_to_indices<NumModes>(maj);
-                new_op[maj_indices] = coeff;
-            }
-        }
-
-        // Update this rank's operator
-        auto res = mp_op_.update_initial_operator(new_op, schrodinger_);
-        return std::move(std::get<2>(res));
-    }
+    auto apply_initial_operator_(const FermiOperatorMap &op_dict) -> std::pair<MajoranaVector<NumModes>, VecD>;
 
     // Data members also needed by MonomialPropagatorExtra.
     bool schrodinger_;
     MPI_Comm comm_; // MPI communicator
     CutoffFn<NumModes> cutoff_fn_;
-    MPOperator<NumModes> mp_op_; // Single MPOperator for this MPI rank
+    detail::MPOperator<NumModes> mp_op_; // Single MPOperator for this MPI rank
     MPGraph graph_;              // Single MPGraph for this MPI rank
+    // Persistent matched-follower scratch for the per-gate layer build (see MatchedEpochSet):
+    // reused across gates so no per-gate O(operator) allocate+memset. Pure scratch — carries no
+    // state between gates (each build bumps the epoch), so copies may share or reset it freely.
+    detail::MatchedEpochSet matched_scratch_;
+
+    // Inline-width hint for the packed operator rows. The store reserves this many Majorana
+    // positions per row inline; terms with more positions spill losslessly into the overflow
+    // arena, so this is purely a memory/perf hint and never a correctness constraint. When the
+    // cutoff structurally bounds a surviving term's position count, we size rows to that bound
+    // instead of the maximum; CutoffEvaluator owns the cutoff -> bound mapping (max_positions_bound,
+    // which reports a bound only for the structural length/mode cutoffs and std::nullopt for an
+    // arbitrary cutoff_fn — including a basis-changed cutoff, whose bound is on the mapped term,
+    // not the stored one). In the Schrodinger picture the operator grows under a rule the cutoff
+    // does not bound, so we keep the full width.
+    // Protected so derived classes (MonomialPropagatorExtra) can size their operator identically.
+    auto packed_inline_width_() const -> size_t;
 
 private:
     unsigned int cutoff_;
@@ -626,7 +552,18 @@ private:
                                   const VecZ &gate_indices,
                                   int only_rotate_len_k) -> void;
 
-    // Graph build that also contracts into a running coeffs vector seeded by operator_coeffs
+    // Per-gate replay index + rotation angle, shared by the graph-with-coeffs and contract-immediately
+    // drivers so the picture-direction logic lives in one place: Heisenberg replays gates in reverse
+    // (majoranas_size-1-i), Schrödinger forward (i); the applied angle is negated in the Schrödinger
+    // picture. Returns {build_angle (fed to the layer build), apply_angle (fed to the apply — the
+    // build angle, negated in the Schrödinger picture)}.
+    auto gate_angle_(const VecD &mapped_params, size_t i, size_t majoranas_size) const -> std::pair<double, double> {
+        const size_t idx = schrodinger_ ? i : majoranas_size - 1 - i;
+        const double build_angle = mapped_params[idx];
+        return {build_angle, schrodinger_ ? -build_angle : build_angle};
+    }
+
+    // Graph build that also contracts into a running coeffs vector seeded by the regenerated seed
     // (used to inform atol truncation while extending a non-empty graph).
     auto evolve_mode_graph_with_coeffs_(const std::vector<VecZ> &majoranas,
                                         const VecZ &parameter_mapping,
@@ -669,6 +606,13 @@ private:
                         double gen_coeff = 0.0,
                         size_t gate_index = 0) -> void;
 
+    auto build_evolve_result_(const VecZ &gen_vec,
+                              int only_rotate_len_k,
+                              std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
+                              std::optional<double> param = std::nullopt,
+                              CosMask *out_cos = nullptr,
+                              detail::FusedContract *fused_contract = nullptr) -> std::shared_ptr<LayerCore>;
+
     /**
      * @brief Creates a functional (closure) for expectation value or gradient calculations.
      *
@@ -695,6 +639,10 @@ private:
     // information owned by the graph layers. Provably identical to the arrays that used to be
     // supplied by callers, for both Heisenberg and Schrodinger pictures.
     auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;
+
+    // Replay `graph` over `coeffs` recomputing each layer's cosine set from the persistent inverted index
+    // fold (main-built layers no longer store the cos bitmap). Used by contract_partially.
+    auto evolve_operator_with_recompute_(VecD &&coeffs, const MPGraphView &graph, const VecD &params) -> VecD;
 };
 
 } // namespace monoprop

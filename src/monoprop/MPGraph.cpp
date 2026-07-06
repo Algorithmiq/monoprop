@@ -15,10 +15,13 @@
 #include "monoprop/MPGraph.h"
 
 #include <algorithm>
-#include <format>
+#include <array>
 #include <stdexcept>
 #include <unordered_set>
 #include <vector>
+
+#include <format>
+#include "monoprop/detail/print_compat.h"
 
 #include "monoprop/TypeAliases.h"
 
@@ -26,6 +29,8 @@ namespace monoprop {
 
 namespace {
 
+// Consumed front layers are tracked by front_offset rather than erased eagerly; physically drop them
+// only once the dead prefix is both large and at least half the vector, to bound the amortized cost.
 auto maybe_compact_layers(std::vector<Layer> &layers, size_t &front_offset) -> void {
     if (front_offset == 0) {
         return;
@@ -43,38 +48,11 @@ auto maybe_compact_layers(std::vector<Layer> &layers, size_t &front_offset) -> v
     }
 }
 
-auto layer_storage_memory_usage(const LayerStorage &storage) -> GraphMemoryBreakdown {
+auto layer_storage_memory_usage(const LayerCore &storage) -> GraphMemoryBreakdown {
     GraphMemoryBreakdown breakdown;
-    breakdown.layer_storage_object_bytes = sizeof(LayerStorage);
-    breakdown.cos_data_bytes = detail::compressed_cosine_data_storage_bytes(storage.cos_data);
-    breakdown.local_cycle_bytes = detail::local_cycle_storage_bytes(storage.local_cycles);
+    breakdown.layer_storage_object_bytes = sizeof(LayerCore);
     breakdown.cross_rank_bytes = detail::cross_rank_storage_bytes(storage.cross_rank);
     breakdown.exchange_layout_bytes = detail::layer_exchange_layout_storage_bytes(storage.evolution_exchange_layout);
-    return breakdown;
-}
-
-auto execution_storage_memory_breakdown(const detail::ExecutionPlanStorage &storage) -> GraphMemoryBreakdown {
-    GraphMemoryBreakdown breakdown;
-    breakdown.execution_plan_overhead_bytes =
-        sizeof(detail::ExecutionPlanStorage) + storage.cos_data_blocks.capacity() * sizeof(CompressedCosineData)
-        + storage.local_cycle_position_blocks.capacity() * sizeof(CompressedPositionData)
-        + storage.cross_rank_out_position_blocks.capacity() * sizeof(CompressedPositionData)
-        + storage.cross_rank_in_position_blocks.capacity() * sizeof(CompressedPositionData);
-    for (const auto &block : storage.cos_data_blocks) {
-        breakdown.execution_plan_cos_data_bytes += detail::compressed_cosine_data_storage_bytes(block);
-    }
-    for (const auto &block : storage.local_cycle_position_blocks) {
-        breakdown.execution_plan_local_cycle_position_bytes += detail::compressed_position_data_storage_bytes(block);
-    }
-    for (const auto &block : storage.cross_rank_out_position_blocks) {
-        breakdown.execution_plan_cross_rank_position_bytes += detail::compressed_position_data_storage_bytes(block);
-    }
-    for (const auto &block : storage.cross_rank_in_position_blocks) {
-        breakdown.execution_plan_cross_rank_position_bytes += detail::compressed_position_data_storage_bytes(block);
-    }
-    breakdown.execution_plan_bytes = breakdown.execution_plan_overhead_bytes + breakdown.execution_plan_cos_data_bytes
-                                     + breakdown.execution_plan_local_cycle_position_bytes
-                                     + breakdown.execution_plan_cross_rank_position_bytes;
     return breakdown;
 }
 
@@ -82,14 +60,8 @@ auto add_breakdown(GraphMemoryBreakdown &target, const GraphMemoryBreakdown &sou
     target.layer_descriptor_bytes += source.layer_descriptor_bytes;
     target.layer_storage_object_bytes += source.layer_storage_object_bytes;
     target.cos_data_bytes += source.cos_data_bytes;
-    target.local_cycle_bytes += source.local_cycle_bytes;
     target.cross_rank_bytes += source.cross_rank_bytes;
     target.exchange_layout_bytes += source.exchange_layout_bytes;
-    target.execution_plan_overhead_bytes += source.execution_plan_overhead_bytes;
-    target.execution_plan_cos_data_bytes += source.execution_plan_cos_data_bytes;
-    target.execution_plan_local_cycle_position_bytes += source.execution_plan_local_cycle_position_bytes;
-    target.execution_plan_cross_rank_position_bytes += source.execution_plan_cross_rank_position_bytes;
-    target.execution_plan_bytes += source.execution_plan_bytes;
 }
 
 } // namespace
@@ -176,7 +148,12 @@ auto MPGraph::num_cos_inds_and_cycles() const -> std::pair<size_t, size_t> {
     for (auto it = active_begin_iterator(); it != active_end_iterator(); ++it) {
         const auto &layer = *it;
         total_cy += layer.total_cycles();
-        total_ci += layer.num_cos_inds();
+        // cos_data now holds ALL anticommuting endpoints (sources + rotation targets); the historical
+        // num_cos_inds semantics is the cosine-ONLY count (terms cos-scaled but NOT part of a
+        // rotation), i.e. total minus the rotation endpoints. Saturate to guard the unsigned subtract.
+        const size_t cos_total = layer.num_cos_inds();
+        const size_t endpoints = layer.total_rotation_endpoints();
+        total_ci += (cos_total > endpoints) ? (cos_total - endpoints) : 0;
     }
 
     return {total_ci, total_cy};
@@ -186,33 +163,16 @@ auto MPGraph::storage_memory_usage() const -> GraphMemoryBreakdown {
     GraphMemoryBreakdown breakdown;
     breakdown.layer_descriptor_bytes = layers_.capacity() * sizeof(Layer);
 
-    std::unordered_set<const LayerStorage *> seen_storage;
+    std::unordered_set<const LayerCore *> seen_storage;
     for (auto it = active_begin_iterator(); it != active_end_iterator(); ++it) {
-        const auto storage = it->shared_storage();
-        if (storage == nullptr || !seen_storage.insert(storage.get()).second) {
-            continue;
-        }
-        add_breakdown(breakdown, layer_storage_memory_usage(*storage));
-    }
-
-    return breakdown;
-}
-
-auto MPExecutionPlan::storage_memory_usage() const -> GraphMemoryBreakdown {
-    GraphMemoryBreakdown breakdown;
-    breakdown.layer_descriptor_bytes = layers_.capacity() * sizeof(LayerExecutionPlan);
-
-    std::unordered_set<const LayerStorage *> seen_storage;
-    std::unordered_set<const detail::ExecutionPlanStorage *> seen_execution_storage;
-    for (const auto &layer : layers_) {
-        const auto storage = layer.shared_storage();
+        const auto storage = it->shared_core();
         if (storage != nullptr && seen_storage.insert(storage.get()).second) {
             add_breakdown(breakdown, layer_storage_memory_usage(*storage));
         }
-
-        const auto execution_storage = layer.shared_execution_storage();
-        if (execution_storage != nullptr && seen_execution_storage.insert(execution_storage.get()).second) {
-            add_breakdown(breakdown, execution_storage_memory_breakdown(*execution_storage));
+        // Pruned cos is stored per-layer (on PrunedLayer), not on the shared core, so accumulate it
+        // per active layer without the shared-core dedup. FoldLayer stores no cos.
+        if (const CosMask *cos = it->pruned_cos(); cos != nullptr) {
+            breakdown.cos_data_bytes += cos->blocks.capacity() * sizeof(std::pair<size_t, uint64_t>);
         }
     }
 

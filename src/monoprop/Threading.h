@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <optional>
 #include <utility>
 
 #include <tbb/blocked_range.h>
@@ -26,8 +25,14 @@
 #include <tbb/parallel_reduce.h>
 #include <tbb/partitioner.h>
 
+#include "monoprop/detail/profiling/RegionProfiler.h"
 #include "monoprop/monopropExport.h"
 
+// These grain-scheduled parallel_for_* / parallel_reduce_* primitives (profiler-wired) are for loops
+// that write into PRE-SIZED disjoint slots or reduce commutatively — where output order does not affect
+// the result. When a parallel loop must BUILD an ordered output whose byte layout is thread-count
+// invariant (the build path's bit-exactness guarantee), use the order-preserving chunk helpers in
+// detail/evolution/layer_build/Parallel.h (for_each_chunk / append_gathered_chunks) instead.
 namespace monoprop::threading {
 
 inline constexpr size_t kSmallLoopThreshold = 1024;
@@ -35,25 +40,22 @@ inline constexpr size_t kDefaultGrainSize = 256;
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
-// Configure oneTBB's maximum parallelism for the current process.
-// Controlled by environment variable monoprop_NUM_THREADS.
-// If it is not set (or invalid), this is a no-op.
+/// @brief Configure oneTBB's maximum parallelism from the `monoprop_NUM_THREADS` environment variable.
+/// Runs at most once per process (later calls are no-ops); also a no-op if the variable is unset or
+/// invalid.
 monoprop_EXPORT auto init_from_env() -> void;
 
-// Programmatic override for the current process. If called multiple times,
-// the last call wins.
-monoprop_EXPORT auto set_num_threads(int threads) -> void;
-
-// Returns the last value successfully applied via monoprop threading helpers.
-monoprop_EXPORT auto configured_num_threads() -> std::optional<int>;
-
-// Returns the current TBB max parallelism (at least 1).
+/// @brief The current oneTBB maximum parallelism, clamped to at least 1.
 inline auto effective_parallelism() -> size_t {
     const auto active = tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism);
     return std::max<size_t>(1, static_cast<size_t>(active));
 }
 
-// Returns a coarse grain size for range-based work partitioning.
+/// @brief Grain size (elements per task) for partitioning a `count`-element range: more workers yield
+/// finer tasks (count / (4·workers)), but the grain never drops below `min_grain`.
+/// @param count     Total elements to partition.
+/// @param min_grain Floor on the returned grain size.
+/// @return The grain size, at least `min_grain`.
 monoprop_EXPORT auto range_grain_size(size_t count, size_t min_grain = kDefaultGrainSize) -> size_t;
 
 // ─── 1-D parallel primitives ────────────────────────────────────────────────
@@ -64,7 +66,9 @@ inline auto parallel_for_indices(size_t count, Func &&func, size_t grain_size = 
     if (count == 0) {
         return;
     }
+    const profiling::Region prof_r = profiling::capture();
     if (count < kSmallLoopThreshold) {
+        profiling::TaskScope prof_ts(prof_r);
         for (size_t idx = 0; idx < count; ++idx) {
             func(idx);
         }
@@ -73,7 +77,8 @@ inline auto parallel_for_indices(size_t count, Func &&func, size_t grain_size = 
     tbb::affinity_partitioner ap;
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, count, grain_size),
-        [&func](const tbb::blocked_range<size_t> &range) {
+        [&func, prof_r](const tbb::blocked_range<size_t> &range) {
+            profiling::TaskScope prof_ts(prof_r);
             for (size_t idx = range.begin(); idx < range.end(); ++idx) {
                 func(idx);
             }
@@ -92,7 +97,9 @@ inline Value parallel_reduce_indices(size_t count,
         return identity;
     }
     const size_t effective_grain = std::max<size_t>(1, grain_size);
+    const profiling::Region prof_r = profiling::capture();
     if (count < std::max(kSmallLoopThreshold, effective_grain)) {
+        profiling::TaskScope prof_ts(prof_r);
         Value local = identity;
         for (size_t idx = 0; idx < count; ++idx) {
             body(idx, local);
@@ -103,7 +110,8 @@ inline Value parallel_reduce_indices(size_t count,
     return tbb::parallel_reduce(
         tbb::blocked_range<size_t>(0, count, effective_grain),
         identity,
-        [&body](const tbb::blocked_range<size_t> &range, Value local) {
+        [&body, prof_r](const tbb::blocked_range<size_t> &range, Value local) {
+            profiling::TaskScope prof_ts(prof_r);
             for (size_t idx = range.begin(); idx < range.end(); ++idx) {
                 body(idx, local);
             }
@@ -120,7 +128,9 @@ inline auto parallel_for_ranges(size_t count, Func &&func, size_t grain_size = 0
     }
 
     const size_t grain = grain_size == 0 ? range_grain_size(count) : std::max<size_t>(1, grain_size);
+    const profiling::Region prof_r = profiling::capture();
     if (count < std::max(kSmallLoopThreshold, grain)) {
+        profiling::TaskScope prof_ts(prof_r);
         func(0, count);
         return;
     }
@@ -128,7 +138,10 @@ inline auto parallel_for_ranges(size_t count, Func &&func, size_t grain_size = 0
     tbb::affinity_partitioner ap;
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, count, grain),
-        [&func](const tbb::blocked_range<size_t> &range) { func(range.begin(), range.end()); },
+        [&func, prof_r](const tbb::blocked_range<size_t> &range) {
+            profiling::TaskScope prof_ts(prof_r);
+            func(range.begin(), range.end());
+        },
         ap);
 }
 
@@ -143,7 +156,9 @@ inline Value parallel_reduce_ranges(size_t count,
     }
 
     const size_t grain = grain_size == 0 ? range_grain_size(count) : std::max<size_t>(1, grain_size);
+    const profiling::Region prof_r = profiling::capture();
     if (count < std::max(kSmallLoopThreshold, grain)) {
+        profiling::TaskScope prof_ts(prof_r);
         return body(0, count, std::move(identity));
     }
 
@@ -151,7 +166,8 @@ inline Value parallel_reduce_ranges(size_t count,
     return tbb::parallel_reduce(
         tbb::blocked_range<size_t>(0, count, grain),
         std::move(identity),
-        [&body](const tbb::blocked_range<size_t> &range, Value local) {
+        [&body, prof_r](const tbb::blocked_range<size_t> &range, Value local) {
+            profiling::TaskScope prof_ts(prof_r);
             return body(range.begin(), range.end(), std::move(local));
         },
         std::forward<ReduceOp>(reduce),
@@ -206,7 +222,9 @@ inline auto parallel_for_rank_ranges(size_t num_ranks, int my_rank, SizeFunc &&s
     if (max_extent == 0) {
         return;
     }
+    const profiling::Region prof_r = profiling::capture();
     if (num_ranks * max_extent < kSmallLoopThreshold) {
+        profiling::TaskScope prof_ts(prof_r);
         detail_threading::for_each_rank_range_window(0, num_ranks, 0, max_extent, my_rank, sf, fn);
         return;
     }
@@ -215,7 +233,8 @@ inline auto parallel_for_rank_ranges(size_t num_ranks, int my_rank, SizeFunc &&s
     tbb::affinity_partitioner ap;
     tbb::parallel_for(
         tbb::blocked_range2d<size_t>(0, num_ranks, 1, 0, max_extent, grain),
-        [&sf, &fn, my_rank](const auto &ranges) {
+        [&sf, &fn, my_rank, prof_r](const auto &ranges) {
+            profiling::TaskScope prof_ts(prof_r);
             detail_threading::for_each_rank_range_window(ranges.rows().begin(),
                                                          ranges.rows().end(),
                                                          ranges.cols().begin(),
@@ -240,7 +259,9 @@ inline Value parallel_reduce_rank_ranges(size_t num_ranks,
     if (max_extent == 0) {
         return identity;
     }
+    const profiling::Region prof_r = profiling::capture();
     if (num_ranks * max_extent < kSmallLoopThreshold) {
+        profiling::TaskScope prof_ts(prof_r);
         Value local = std::move(identity);
         detail_threading::for_each_rank_range_window(
             0,
@@ -258,7 +279,8 @@ inline Value parallel_reduce_rank_ranges(size_t num_ranks,
     return tbb::parallel_reduce(
         tbb::blocked_range2d<size_t>(0, num_ranks, 1, 0, max_extent, grain),
         std::move(identity),
-        [&sf, &fn, my_rank](const auto &ranges, Value local) {
+        [&sf, &fn, my_rank, prof_r](const auto &ranges, Value local) {
+            profiling::TaskScope prof_ts(prof_r);
             detail_threading::for_each_rank_range_window(ranges.rows().begin(),
                                                          ranges.rows().end(),
                                                          ranges.cols().begin(),
@@ -275,29 +297,33 @@ inline Value parallel_reduce_rank_ranges(size_t num_ranks,
 }
 
 template <typename LayerLike, typename Body>
-inline auto parallel_for_cross_rank_ranges(const LayerLike &layer, int my_rank, bool outgoing, Body &&body) -> void {
+inline void parallel_for_cross_rank_sin_send_ranges(const LayerLike &layer, int my_rank, Body &&body) {
     parallel_for_rank_ranges(
         layer.cross_rank_rank_count(),
         my_rank,
-        [&layer, outgoing](size_t rank) {
-            return outgoing ? layer.cross_rank_out_size(rank) : layer.cross_rank_in_size(rank);
-        },
+        [&](size_t rank) { return layer.cross_rank_sin_send_size(rank); },
+        std::forward<Body>(body));
+}
+
+template <typename LayerLike, typename Body>
+inline void parallel_for_cross_rank_sin_recv_ranges(const LayerLike &layer, int my_rank, Body &&body) {
+    parallel_for_rank_ranges(
+        layer.cross_rank_rank_count(),
+        my_rank,
+        [&](size_t rank) { return layer.cross_rank_sin_recv_size(rank); },
         std::forward<Body>(body));
 }
 
 template <typename LayerLike, typename Value, typename Body, typename ReduceOp>
-inline Value parallel_reduce_cross_rank_ranges(const LayerLike &layer,
-                                               int my_rank,
-                                               bool outgoing,
-                                               Value identity,
-                                               Body &&body,
-                                               ReduceOp &&reduce) {
+inline Value parallel_reduce_cross_rank_sin_recv_ranges(const LayerLike &layer,
+                                                 int my_rank,
+                                                 Value identity,
+                                                 Body &&body,
+                                                 ReduceOp &&reduce) {
     return parallel_reduce_rank_ranges(
         layer.cross_rank_rank_count(),
         my_rank,
-        [&layer, outgoing](size_t rank) {
-            return outgoing ? layer.cross_rank_out_size(rank) : layer.cross_rank_in_size(rank);
-        },
+        [&](size_t rank) { return layer.cross_rank_sin_recv_size(rank); },
         std::move(identity),
         std::forward<Body>(body),
         std::forward<ReduceOp>(reduce));

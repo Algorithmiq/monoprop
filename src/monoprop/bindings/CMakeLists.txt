@@ -105,6 +105,11 @@ target_include_directories(
 
 target_link_libraries(_core PRIVATE monoprop)
 
+# The hot MonomialPropagator<N> kernels are header templates instantiated in this
+# target's TUs, so ARCH_FLAG must be applied here too: on the library alone it never
+# reached them and they compiled to scalar x86-64 (see docs/benchmarks.rst).
+target_compile_options(_core BEFORE PRIVATE "${ARCH_FLAG}")
+
 file(
   RELATIVE_PATH
   _rel

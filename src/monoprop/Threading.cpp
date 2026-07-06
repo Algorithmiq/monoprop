@@ -15,44 +15,35 @@
 #include "monoprop/Threading.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <optional>
 
 #include <tbb/global_control.h>
 
+#include "monoprop/detail/EnvConfig.h"
+
 namespace monoprop::threading {
 namespace {
 
-auto parse_positive_int(const char* text) -> std::optional<int> {
-    if (text == nullptr) {
-        return std::nullopt;
-    }
-    char* end = nullptr;
-    const long value = std::strtol(text, &end, 10);
-    if (end == text || *end != '\0') {
-        return std::nullopt;
-    }
-    if (value <= 0 || value > 1'000'000) {
-        return std::nullopt;
-    }
-    return static_cast<int>(value);
-}
-
 auto get_env_threads() -> std::optional<int> {
-    if (const char* v = std::getenv("monoprop_NUM_THREADS")) {
-        if (auto parsed = parse_positive_int(v)) {
-            return parsed;
-        }
-    }
-    return std::nullopt;
+    return config::get().num_threads;
 }
 
 std::mutex g_mutex;
 std::unique_ptr<tbb::global_control> g_tbb_control;
-std::optional<int> g_configured_threads;
 std::once_flag g_init_once;
+
+// Set oneTBB's maximum parallelism for the current process. File-local: the sole entry point is
+// init_from_env reading monoprop_NUM_THREADS. Thread-safe; the last call wins; threads <= 0 ignored.
+auto set_num_threads(int threads) -> void {
+    if (threads <= 0) {
+        return;
+    }
+    std::lock_guard lock(g_mutex);
+    g_tbb_control = std::make_unique<tbb::global_control>(tbb::global_control::max_allowed_parallelism,
+                                                          static_cast<std::size_t>(threads));
+}
 
 } // namespace
 
@@ -63,21 +54,6 @@ auto init_from_env() -> void {
             set_num_threads(*threads);
         }
     });
-}
-
-auto set_num_threads(int threads) -> void {
-    if (threads <= 0) {
-        return;
-    }
-    std::lock_guard lock(g_mutex);
-    g_tbb_control = std::make_unique<tbb::global_control>(tbb::global_control::max_allowed_parallelism,
-                                                          static_cast<std::size_t>(threads));
-    g_configured_threads = threads;
-}
-
-auto configured_num_threads() -> std::optional<int> {
-    std::lock_guard lock(g_mutex);
-    return g_configured_threads;
 }
 
 auto range_grain_size(size_t count, size_t min_grain) -> size_t {

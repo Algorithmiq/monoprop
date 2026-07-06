@@ -249,10 +249,16 @@ def test_evolutions_after_updates(problem, test_type, serial_comm):
 
     circuit = problem.monomial_circuit.to_circuit()
 
+    # upper_atol RESCUES over-cutoff partner terms (keeps |sin·c| >= upper_atol ones alive); it can
+    # only ADD terms, never drop. At cutoff 6 this molecule produces no over-cutoff partners, so the
+    # rescue has nothing to act on and the size is unchanged. Use a low cutoff where partners do
+    # exceed the cutoff, so the rescue is actually exercised and observably changes the size.
+    cutoff = 2 if test_type == "upper_atol" else 6
+
     mp = MajoranaPropagator(
         problem.operator,
         problem.monomial_circuit.initial_state,
-        cutoff=6,
+        cutoff=cutoff,
         comm=serial_comm,
     )
     mp.propagate(circuit)
@@ -261,7 +267,7 @@ def test_evolutions_after_updates(problem, test_type, serial_comm):
     mp_tes = MajoranaPropagator(
         problem.operator,
         problem.monomial_circuit.initial_state,
-        cutoff=6,
+        cutoff=cutoff,
         comm=serial_comm,
     )
     if test_type == "lower_atol":

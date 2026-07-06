@@ -106,6 +106,13 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "only_rotate_len_k"_a = 0,
             "Build the propagation graph, recording per-layer gate information");
 
+    // Deep copy (the operator store is deep-cloned; immutable graph layer cores are shared). Only
+    // __deepcopy__ is exposed.
+    cls.def(
+        "__deepcopy__",
+        [](const MonomialPropagator<NumModes> &self, nb::handle) { return MonomialPropagator<NumModes>(self); },
+        "memo"_a = nb::none());
+
     cls.def("propagate",
             &MonomialPropagator<NumModes>::propagate,
             "majoranas"_a,
@@ -163,6 +170,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                     &MonomialPropagator<NumModes>::schrodinger,
                     "Whether the propagator uses Schrodinger picture");
 
+    // Contract the graph, then decode every above-atol term back into a Python {indices: coeff} dict.
     cls.def(
         "evolved_operator",
         [](MonomialPropagator<NumModes> &self, const VecD &parameters, double atol) -> nb::dict {
