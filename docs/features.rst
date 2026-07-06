@@ -8,11 +8,9 @@ arguments see :doc:`/python-api`.
 
 The pages below group the features by stage of a workflow:
 
-- :doc:`/features/simulators` — the two simulators (``MajoranaPropagator`` and
-  ``PauliPropagator``), the operator/gate/circuit layers they share, and how to
-  construct and drive each one.
-- :doc:`/features/initialisation` — constructing the simulator, choosing the
-  Heisenberg or Schrödinger picture, and updating the Hamiltonian in place.
+- :doc:`/features/initialisation` — constructing a simulator (``MajoranaPropagator``
+  or ``PauliPropagator``), choosing the Heisenberg or Schrödinger picture, and
+  updating the Hamiltonian in place.
 - :doc:`/features/cutoff` — controlling operator growth: the structural cutoff
   strategies and coefficient-tolerance filtering.
 - :doc:`/features/evaluation` — replaying the propagated graph to evaluate
@@ -24,7 +22,6 @@ The pages below group the features by stage of a workflow:
    :hidden:
    :maxdepth: 1
 
-   features/simulators
    features/initialisation
    features/cutoff
    features/evaluation

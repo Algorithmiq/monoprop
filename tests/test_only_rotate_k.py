@@ -88,12 +88,14 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     split = len(non_orbital_gates)
     # Drop each sliced gate's original (non-zero-based) param so each sub-circuit gets the
     # identity mapping (gate i -> angle i), rebasing the orbital tail's angles to start at 0.
+    # _with_param preserves each gate's _structural flag (these come from a from_dense_arrays
+    # circuit, so a plain Exp(gate.generator) would re-normalize their structural coefficients).
     non_orbital = Circuit(
-        tuple(Exp(gate.generator) for gate in non_orbital_gates),
+        tuple(Exp._with_param(gate, None) for gate in non_orbital_gates),
         parameters=tuple(parameters[:split]),
     )
     orbital = Circuit(
-        tuple(Exp(gate.generator) for gate in orbital_gates),
+        tuple(Exp._with_param(gate, None) for gate in orbital_gates),
         parameters=tuple(parameters[split:]),
     )
 

@@ -4,7 +4,8 @@ monoprop Documentation
 
 monoprop is a high-performance C++ library with Python bindings for Majorana and Pauli propagation that provides a backend for simulating and variationally optimising quantum circuits.
 It provides support for large scale simulations through multithreading and multi-node support on HPC clusters through MPI and shared-memory parallelism.
-The simulator backend represents quantum operators and states in the Majorana basis. Two front-ends build on it: ``MajoranaPropagator`` for native Majorana and fermionic problems, and ``PauliPropagator`` for qubit (Pauli) problems, which it takes directly and truncates by Pauli weight.
+The simulator backend represents quantum operators and states in the Majorana basis.
+Two front-ends build on it: ``MajoranaPropagator`` for native Majorana and fermionic problems, and ``PauliPropagator`` for qubit (Pauli) problems.
 
 New here? Install monoprop and run the minimal example in
 :doc:`getting-started`, then read :doc:`concepts` to understand how propagation

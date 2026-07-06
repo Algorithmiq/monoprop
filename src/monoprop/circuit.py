@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Authoring types for Majorana/qubit circuits.
+r"""Authoring types for Majorana/qubit circuits.
 
 The authoring model is four layers: a **term** (:class:`~monoprop.majorana_data.Majorana` /
 :class:`~monoprop.pauli_data.Pauli`) is the atom; an **operator**
@@ -26,14 +26,15 @@ operator objects (never a bare term), because those carry the system size. There
 **single** :class:`Exp` gate type; it *abstracts over the family* the same way :class:`Circuit`
 does -- the **generator type** it is handed decides how it is normalized:
 
-- a :class:`~monoprop.majorana_data.MajoranaOperator` is a native Majorana generator whose
-  coefficients are the *structural* generator coefficients ``g`` used directly (the layer
-  angle is ``parameters[param] * g``);
+- a :class:`~monoprop.majorana_data.MajoranaOperator` is a native Majorana generator carrying
+  the *Hermitian* operator (same coefficient convention as an observable: imaginary for a
+  weight-2 monomial, real for weight-4); each term is antihermitian-normalized when the circuit
+  is ingested, dividing out the Hermitian phase to the structural coefficient the engine rotates
+  by;
 - a :class:`~monoprop.pauli_data.PauliOperator` is a qubit generator; each term is
   Jordan-Wigner mapped and antihermitian-normalized when the circuit is ingested;
-- a :class:`~monoprop.fermi_data.FermiOperator` is a fermionic generator; it is
-  antihermitian-normalized into a structural Majorana :class:`Exp` at :class:`Circuit`
-  construction.
+- a :class:`~monoprop.fermi_data.FermiOperator` is a fermionic generator; it is converted to
+  its (Hermitian) Majorana form in :class:`Exp`.
 
 There is likewise a **single** :class:`Circuit` type. The gate objects carry the family, so
 one circuit can be authored from Majorana/fermionic gates *or* qubit gates, and the circuit
@@ -64,42 +65,58 @@ if TYPE_CHECKING:
     from .fermi_data import FermiOperator
 
 
-#: The family a gate's generator belongs to, inferred from its generator type.
-GateFamily = Literal["pauli", "majorana", "fermi"]
+#: The family a gate's generator belongs to, inferred from its generator type. A
+#: :class:`~monoprop.fermi_data.FermiOperator` generator is converted to its Majorana form in
+#: :meth:`Exp.__init__`, so it becomes a ``"majorana"`` gate -- there is no ``"fermi"`` family.
+GateFamily = Literal["pauli", "majorana"]
 #: The family of a circuit; ``"empty"`` when it has no gates.
 CircuitFamily = Literal["pauli", "majorana", "empty"]
 
 
 @dataclass(frozen=True, slots=True, init=False)
 class Exp:
-    """The exponential of a generator: one variational gate, abstract over the family.
+    r"""The exponential of a generator: one variational gate, abstract over the family.
 
     A single gate type serves every family; the generator must be an *operator object* (it
     carries the system size), and its **type** decides how it is normalized (mirroring how a
     single :class:`Circuit` dispatches on its gates):
 
-    - :class:`~monoprop.majorana_data.MajoranaOperator` -- a native Majorana generator; its
-      coefficients are the *structural* generator coefficients ``g`` (the layer angle is
-      ``parameters[param] * g``), and a non-negligible imaginary part is rejected as
-      non-Hermitian.
+    - :class:`~monoprop.majorana_data.MajoranaOperator` -- a Majorana generator carrying the
+      *Hermitian* operator (its coefficients follow the same convention as an observable:
+      imaginary for a weight-2 monomial, real for weight-4); it is antihermitian-normalized --
+      the Hermitian phase :math:`i^{\binom{w}{2}}` divided out -- by :func:`_gate_layers` when
+      the circuit is ingested. A coefficient that leaves a non-negligible imaginary residue
+      after normalization is rejected as non-Hermitian.
     - :class:`~monoprop.pauli_data.PauliOperator` -- a qubit generator; each Pauli term is
       Jordan-Wigner mapped and antihermitian-normalized by :func:`expand_monomials` when the
       circuit is ingested, using the propagator's qubit count.
-    - :class:`~monoprop.fermi_data.FermiOperator` -- a fermionic generator; held in raw Majorana
-      form and antihermitian-normalized into a structural Majorana ``Exp`` at :class:`Circuit`
-      construction, so a circuit's ``gates`` never contain a ``"fermi"``-family gate.
+    - :class:`~monoprop.fermi_data.FermiOperator` -- a fermionic generator; converted to its
+      (Hermitian) Majorana form by :meth:`get_majorana_operator` right here in ``__init__``, so
+      the gate *is* a ``"majorana"`` gate from then on. The fermionic-to-Majorana mapping already
+      carries the factors of :math:`\tfrac12` and the phases, so the resulting coefficients are
+      exactly the Hermitian convention above -- no separate fermionic normalization is needed.
+
+    All three families thus take the **Hermitian** generator and normalize it identically; the
+    only exception is the internal wire/dense format (:meth:`Circuit.from_dense_arrays`), whose
+    coefficients are *already* the real structural ``g`` and are flagged so :func:`_gate_layers`
+    passes them through unchanged.
 
     Attributes:
-        generator: The generator operator (a ``MajoranaOperator`` or ``PauliOperator``).
+        generator: The generator operator (a ``MajoranaOperator`` or ``PauliOperator``; a
+            ``FermiOperator`` is stored in its converted ``MajoranaOperator`` form).
         param: The variational-angle index driving this gate, or ``None`` for the identity
             mapping (see :class:`Circuit`).
-        family: The generator family -- ``"pauli"``, ``"majorana"``, or ``"fermi"`` -- inferred
-            from the generator type at construction.
+        family: The generator family -- ``"pauli"`` or ``"majorana"`` -- inferred from the
+            generator type at construction (a fermionic generator becomes ``"majorana"``).
     """
 
     generator: MajoranaOperator | PauliOperator
     param: int | None
     family: GateFamily
+    #: True when ``generator`` already carries the real *structural* coefficients ``g`` (the
+    #: wire/dense format); False for an authored Hermitian generator (including a converted
+    #: fermionic one) that :func:`_gate_layers` antihermitian-normalizes. Internal.
+    _structural: bool
 
     def __init__(
         self,
@@ -114,18 +131,21 @@ class Exp:
         :class:`~monoprop.fermi_data.FermiOperator` -- because those carry the system
         ``num_modes`` / ``num_qubits``. A bare :class:`~monoprop.majorana_data.Majorana` /
         :class:`~monoprop.pauli_data.Pauli` term is *not* accepted; wrap it in the
-        corresponding operator (e.g. ``MajoranaOperator({(0, 1): 1.0}, num_modes)``).
+        corresponding operator (e.g. ``MajoranaOperator({(0, 1): 1j}, num_modes)`` -- a Majorana
+        generator carries the Hermitian operator, so a weight-2 coefficient is imaginary).
         """
         if isinstance(generator, PauliOperator):
             family = "pauli"
         elif isinstance(generator, MajoranaOperator):
             family = "majorana"
         elif hasattr(generator, "get_majorana_operator"):
-            # A fermionic generator (e.g. FermiOperator): raw Majorana-product coefficients,
-            # antihermitian-normalized to structural Majorana coefficients at Circuit
-            # construction. Duck-typed to avoid a circular import of FermiOperator.
+            # A fermionic generator (e.g. FermiOperator): convert to its Majorana form now. The
+            # mapping already carries the factors of 1/2 and the phases, so the coefficients come
+            # out in the Hermitian convention -- from here it is just a native Majorana gate that
+            # _gate_layers antihermitian-normalizes like any other. Duck-typed to avoid a circular
+            # import of FermiOperator.
             generator = generator.get_majorana_operator()
-            family = "fermi"
+            family = "majorana"
         else:
             raise TypeError(
                 f"Exp generator must be a MajoranaOperator, PauliOperator, or FermiOperator "
@@ -137,30 +157,32 @@ class Exp:
         object.__setattr__(self, "generator", generator)
         object.__setattr__(self, "param", None if param is None else int(param))
         object.__setattr__(self, "family", family)
+        # Authored generators (including converted fermionic ones) carry the Hermitian operator;
+        # _gate_layers normalizes them. Only the wire/dense path flips this via _structural_gate.
+        object.__setattr__(self, "_structural", False)
 
+    @classmethod
+    def _structural_gate(cls, generator: MajoranaOperator, param: int | None) -> Exp:
+        """Build a Majorana gate whose coefficients are *already* structural ``g``.
 
-def _fermi_exp_to_majorana_exp(gate: Exp) -> Exp:
-    """Normalize a ``"fermi"``-family :class:`Exp` into a structural Majorana :class:`Exp`.
+        For the wire/dense format (:meth:`Circuit.from_dense_arrays`) the generator's
+        coefficients are already the real structural generator coefficients, so
+        :func:`_gate_layers` must pass them through rather than antihermitian-normalize them.
+        """
+        gate = cls(generator, param=param)
+        object.__setattr__(gate, "_structural", True)
+        return gate
 
-    The generator's monomials are antihermitian-normalized to real structural coefficients
-    and packed into a :class:`~monoprop.majorana_data.MajoranaOperator`; zero-coefficient
-    (identity) monomials are dropped by the operator's construction threshold. The gate's
-    ``param`` is preserved.
-    """
-    # A ``"fermi"``-family gate always holds a MajoranaOperator (see :meth:`Exp.__init__`).
-    generator = gate.generator
-    if not isinstance(generator, MajoranaOperator):
-        raise TypeError("A fermionic gate's generator must be a MajoranaOperator.")
-    majoranas: list[tuple[int, ...]] = []
-    coefficients: list[complex] = []
-    for monomial, coefficient in generator.terms.items():
-        # Validates the fermionic generator is Hermitian (raises otherwise).
-        majoranas.append(tuple(monomial))
-        coefficients.append(complex(_antihermitian_gen_coeff(monomial, coefficient)))
-    return Exp(
-        MajoranaOperator._from_terms(majoranas, coefficients, generator.num_modes),
-        param=gate.param,
-    )
+    @classmethod
+    def _with_param(cls, gate: Exp, param: int | None) -> Exp:
+        """Clone ``gate`` with a new ``param``, preserving its family and ``_structural`` flag.
+
+        Used by :meth:`Circuit.__add__`; a plain ``Exp(gate.generator, param)`` would reset
+        ``_structural`` to ``False`` and re-normalize an already-structural (dense) generator.
+        """
+        clone = cls(gate.generator, param=param)
+        object.__setattr__(clone, "_structural", gate._structural)
+        return clone
 
 
 @dataclass(frozen=True)
@@ -168,14 +190,12 @@ class Circuit:
     """A variational circuit: an ordered sequence of exponential gates, angles, and a state.
 
     A **single** circuit type serves every gate family, built from the single :class:`Exp`
-    gate. The gates carry the family: a Majorana or fermionic :class:`Exp` for
-    Majorana/fermionic problems (consumed by
-    :class:`~monoprop.majorana_propagator.MajoranaPropagator`) and a Pauli :class:`Exp` for
-    qubit problems (consumed by :class:`~monoprop.pauli_propagator.PauliPropagator`). The two
-    families cannot be mixed in one circuit -- construction rejects it. A ``"fermi"``-family
-    :class:`Exp` gate is normalized into a structural Majorana :class:`Exp` at construction, so
-    :attr:`gates` never contains a fermionic gate; the originals are kept on
-    :attr:`fermi_generators`.
+    gate. The gates carry the family: a Majorana :class:`Exp` for Majorana/fermionic problems
+    (consumed by :class:`~monoprop.majorana_propagator.MajoranaPropagator`) and a Pauli
+    :class:`Exp` for qubit problems (consumed by
+    :class:`~monoprop.pauli_propagator.PauliPropagator`). The two families cannot be mixed in one
+    circuit -- construction rejects it. A fermionic generator is converted to its Majorana form
+    in :meth:`Exp.__init__`, so every gate is already ``"pauli"`` or ``"majorana"``.
 
     Bundles everything the propagator needs to build or evaluate an evolution:
 
@@ -194,37 +214,25 @@ class Circuit:
     ``parameters`` is non-empty its length must equal :attr:`n_parameters`.
 
     Attributes:
-        gates: The ordered exponential gates (fermionic gates normalized to structural
-            Majorana :class:`Exp`).
+        gates: The ordered exponential gates.
         parameters: The angle values, or empty for an unbound circuit.
         initial_state: The reference state (occupied mode / qubit indices).
         family: The gate family -- ``"pauli"``, ``"majorana"``, or ``"empty"`` -- computed at
             construction; the propagators dispatch on it.
-        fermi_generators: The original fermionic :class:`Exp` gates, if any were given (before
-            normalization to a structural Majorana :class:`Exp`).
     """
 
     gates: Sequence[Exp] = ()
     parameters: Sequence[float] = ()
     initial_state: Sequence[int] = ()
-    # Derived at construction (see __post_init__); excluded from equality/repr as they follow
-    # from `gates`. Declared as fields so they are typed attributes rather than dynamic ones.
+    # Derived at construction (see __post_init__); excluded from equality/repr as it follows
+    # from `gates`. Declared as a field so it is a typed attribute rather than a dynamic one.
     family: CircuitFamily = field(
         init=False, compare=False, repr=False, default="empty"
     )
-    fermi_generators: Sequence[Exp] = field(
-        init=False, compare=False, repr=False, default=()
-    )
 
     def __post_init__(self) -> None:
-        """Normalize fermionic gates, drop identity gates, and validate family/mapping/params."""
-        raw = tuple(self.gates)
-        gates = tuple(
-            _fermi_exp_to_majorana_exp(gate)
-            if getattr(gate, "family", None) == "fermi"
-            else gate
-            for gate in raw
-        )
+        """Drop identity gates and validate family/mapping/params."""
+        gates = tuple(self.gates)
         parameters = tuple(float(v) for v in self.parameters)
         initial_state = tuple(int(i) for i in self.initial_state)
         if len(set(initial_state)) != len(initial_state):
@@ -235,9 +243,9 @@ class Circuit:
         # keeping it would inflate the parameter count with a phantom angle no layer references
         # (an unevaluable circuit) or leave a gap in the per-monomial gate indices the engine
         # rejects, so drop it for every family together with its aligned parameter (a fermionic
-        # zero chemical potential normalizes to one such gate). Under an *explicit* mapping the
-        # gate carries a caller-chosen index, so leave the circuit untouched rather than silently
-        # renumbering the caller's angles.
+        # identity converts to one such empty gate). Under an *explicit* mapping the gate carries
+        # a caller-chosen index, so leave the circuit untouched rather than silently renumbering
+        # the caller's angles.
         default_mapping = all(gate.param is None for gate in gates)
         if default_mapping and any(not gate.generator.terms for gate in gates):
             kept = [i for i, gate in enumerate(gates) if gate.generator.terms]
@@ -249,16 +257,10 @@ class Circuit:
             if parameters:
                 parameters = tuple(parameters[i] for i in kept)
             gates = tuple(gates[i] for i in kept)
-            raw = tuple(raw[i] for i in kept)
-
-        fermi_generators = tuple(
-            gate for gate in raw if getattr(gate, "family", None) == "fermi"
-        )
 
         object.__setattr__(self, "gates", gates)
         object.__setattr__(self, "parameters", parameters)
         object.__setattr__(self, "initial_state", initial_state)
-        object.__setattr__(self, "fermi_generators", fermi_generators)
         object.__setattr__(self, "family", self._resolve_family(gates))
 
         self.resolved_mapping  # validates the per-gate param scheme
@@ -274,7 +276,7 @@ class Circuit:
 
         Rejects non-:class:`Exp` gates and any mix of qubit and Majorana/fermionic gates.
         Computed once at construction and stored on :attr:`family`; the propagators dispatch
-        on it (a ``"fermi"``-family gate is normalized to a ``"majorana"`` one before this runs).
+        on it (a fermionic generator is already in Majorana form, converted in :meth:`Exp`).
         """
         for gate in gates:
             if not isinstance(gate, Exp):
@@ -350,12 +352,14 @@ class Circuit:
                 "Cannot concatenate circuits with different initial states."
             )
         offset = self.n_parameters
+        # Preserve each gate's _structural flag: a dense (wire-format) gate carries structural
+        # coefficients that must not be antihermitian-normalized again.
         left = tuple(
-            Exp(gate.generator, param=index)
+            Exp._with_param(gate, index)
             for gate, index in zip(self.gates, self.resolved_mapping, strict=True)
         )
         right = tuple(
-            Exp(gate.generator, param=index + offset)
+            Exp._with_param(gate, index + offset)
             for gate, index in zip(other.gates, other.resolved_mapping, strict=True)
         )
         return Circuit(
@@ -400,8 +404,10 @@ class Circuit:
         current_coeffs: list[complex] = []
 
         def _flush() -> None:
+            # Dense arrays are the wire format: the coefficients are already the structural
+            # generator coefficients g, so build a structural gate that skips normalization.
             gates.append(
-                Exp(
+                Exp._structural_gate(
                     MajoranaOperator._from_terms(
                         current_majoranas, current_coeffs, num_modes=None
                     ),
@@ -471,10 +477,11 @@ def _real_generator_coefficient(majorana: Sequence[int], value: complex) -> floa
     value = complex(value)
     if abs(value.imag) > _GENERATOR_HERMITICITY_ATOL:
         raise ValueError(
-            f"Gate generator is not Hermitian: monomial {tuple(majorana)} contributes the "
-            f"generator coefficient {value}, whose imaginary part is not negligible. A "
-            f"Majorana gate generator must carry real (structural) coefficients, and a "
-            f"Pauli gate generator must be a Hermitian Pauli operator (real coefficients)."
+            f"Gate generator is not Hermitian: monomial {tuple(majorana)} yields the "
+            f"structural generator coefficient {value}, whose imaginary part is not "
+            f"negligible. A Majorana generator must be Hermitian -- a weight-2 monomial takes "
+            f"an imaginary coefficient, weight-4 real -- and a Pauli generator must be a "
+            f"Hermitian Pauli operator (real coefficients)."
         )
     return float(value.real)
 
@@ -533,9 +540,11 @@ def _gate_layers(
 
     A ``"pauli"``-family :class:`Exp` places each :class:`~monoprop.pauli_data.Pauli` term on
     its qubits within the ``num_qubits``-wide system, Jordan-Wigner maps it, and
-    antihermitian-normalizes (one layer per term). A ``"majorana"``-family :class:`Exp`
-    contributes its :class:`~monoprop.majorana_data.MajoranaOperator` terms directly -- the
-    coefficients are already the structural generator coefficients.
+    antihermitian-normalizes (one layer per term). A ``"majorana"``-family :class:`Exp` carries
+    the Hermitian generator, so its :class:`~monoprop.majorana_data.MajoranaOperator` terms are
+    antihermitian-normalized the same way (the ``i^{binom(w, 2)}`` phase divided out) -- unless
+    the gate is flagged :attr:`Exp._structural` (the wire/dense format), whose coefficients are
+    already the structural ``g`` and are used directly.
     """
     # A Pauli-family gate holds a PauliOperator; every other family a MajoranaOperator (so the
     # ``isinstance`` narrows the fall-through arm to MajoranaOperator).
@@ -552,8 +561,13 @@ def _gate_layers(
             )
         return layers
 
+    if gate._structural:
+        return [
+            (maj, _real_generator_coefficient(maj, c))
+            for maj, c in generator.terms.items()
+        ]
     return [
-        (maj, _real_generator_coefficient(maj, c)) for maj, c in generator.terms.items()
+        (maj, _antihermitian_gen_coeff(maj, c)) for maj, c in generator.terms.items()
     ]
 
 

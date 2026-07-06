@@ -3,9 +3,7 @@ Expectation values and gradients
 
 Once the circuit has been propagated with
 :meth:`~monoprop.MajoranaPropagator.build_graph`, the stored graph can be
-replayed at any parameter vector without re-running the Majorana algebra. The graph
-owns the gate information (which parameter drives each layer and its generator
-coefficient), so evaluation takes **only the parameter values**. This is a very
+replayed at any parameter vector without re-running the Majorana algebra. This is a very
 powerful feature for example in variational workflows, where the same circuit is
 evaluated repeatedly at many parameter values.
 
@@ -47,31 +45,6 @@ parameter vector:
    expval_grad_fn = sim.expectation_value_and_gradient_functional()
    expval, grad = expval_grad_fn(parameters)
 
-Tying parameters on a built graph
----------------------------------
-
-The graph owns the parameter mapping, so which angle drives each gate can be re-wired
-*after* building — without rebuilding the graph — through the
-:attr:`~monoprop.MajoranaPropagator.parameter_mapping` setter. This is a cheap relabel,
-useful to tie or untie angles between optimisation stages. The mapping may be given at
-either granularity and must be contiguous ``0..n-1``:
-
-.. code-block:: python
-
-   # Per gate (length sim.n_gates): tie every gate to a single shared angle.
-   sim.parameter_mapping = [0] * sim.n_gates
-   expval = sim.expectation_value([theta])          # one angle drives the whole circuit
-
-   # Back to one distinct angle per gate.
-   sim.parameter_mapping = list(range(sim.n_gates))
-
-A per-gate mapping (length :attr:`~monoprop.MajoranaPropagator.n_gates`) is the same
-granularity as the authoring circuit's per-gate ``param`` indices
-(:attr:`~monoprop.Circuit.resolved_mapping`), so a circuit's mapping is directly reusable
-here; a per-layer mapping (length
-:attr:`~monoprop.MajoranaPropagator.graph_layers`, finer when a gate bundles several
-monomials) is also accepted. Functionals snapshot the mapping when created, so rebuild a
-functional to pick up a new one.
 
 Paring
 ------
@@ -80,7 +53,7 @@ Both functionals accept an optional ``pare_threshold`` — an optional speed-up:
 whose contribution to the expectation value falls below the threshold are *pared*
 away, so they no longer have to be tracked through the graph during replay. The
 stored graph itself is unchanged, only the replay skips the negligible terms, so this
-can dramatically speed up replay cost for sparse graphs (at the expense of some memory
+can dramatically speed up replay cost (at the expense of some memory
 and accuracy):
 
 .. code-block:: python

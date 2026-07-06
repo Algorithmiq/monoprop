@@ -11,13 +11,11 @@ The simulator
 -------------
 
 Two propagators are the entry point: ``MajoranaPropagator`` for native Majorana
-(and fermionic) operators, and ``PauliPropagator`` for qubit (Pauli) operators,
-which it takes directly and truncates by Pauli weight. Construct one from an
-operator, a reference state, and a cutoff, then
+(and fermionic) operators, and ``PauliPropagator`` for qubit (Pauli) operators.
+Construct one from an operator, a reference state, and a cutoff, then
 :py:meth:`~monoprop.MajoranaPropagator.propagate` (or
 :py:meth:`~monoprop.MajoranaPropagator.build_graph` to store a reusable
-graph) and read off expectation values and gradients. The graph owns the gate
-information, so evaluation takes only the parameter values. See
+graph) and read off expectation values and gradients. See
 :doc:`/features/initialisation`, :doc:`/features/cutoff`, and
 :doc:`/features/evaluation`.
 
@@ -30,23 +28,6 @@ information, so evaluation takes only the parameter values. See
    :members:
    :undoc-members:
    :show-inheritance:
-
-Authoring gates
-~~~~~~~~~~~~~~~
-
-A gate is the *exponential* of a generator: a single :class:`~monoprop.Exp` type wraps a
-:class:`~monoprop.Majorana` / :class:`~monoprop.majorana_data.MajoranaOperator`,
-:class:`~monoprop.Pauli` / :class:`~monoprop.pauli_data.PauliOperator`, or
-:class:`~monoprop.fermi_data.FermiOperator` generator, and infers its family from the
-generator type it is handed. Each gate is the unit of
-parameterization — one gate is driven by one angle, named by its ``param`` index (default:
-one distinct angle per gate, in order; reusing an index across gates ties their angles). A
-circuit bundles a sequence of these gates with the angle *values* that drive them and the
-reference ``initial_state``. There is a single :class:`~monoprop.Circuit` type: the gates
-carry the family, so a circuit is qubit *or* Majorana/fermionic (mixing is rejected), and the
-propagator dispatches on :attr:`~monoprop.Circuit.family`. Two
-circuits of the same family compose temporally with ``+``. The propagator consumes a circuit;
-evaluation accepts either a plain parameter vector or the circuit itself.
 
 .. automodule:: monoprop.circuit
    :members:

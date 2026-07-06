@@ -62,8 +62,7 @@ distinct modes touched). This is the natural choice for fermionic problems.
 
 **Qubit (Pauli) operators —** ``PauliPropagator``. For a qubit Hamiltonian you
 usually want to bound the **Pauli weight** instead. ``PauliPropagator`` accepts
-Pauli operators and gates directly and always measures the cutoff as a qubit
-operator, so ``support`` counts the qubits a term touches — its Pauli weight.
+Pauli operators and gates directly and the ``cutoff`` parameter bounds the Pauli-weight.
 Reach for it whenever your problem is naturally expressed in qubits.
 
 Coefficient tolerance filtering

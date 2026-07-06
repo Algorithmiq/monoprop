@@ -48,8 +48,12 @@ def _rebase(gates):
 
     Slicing a circuit's gates keeps their absolute ``param`` indices, which are no longer
     contiguous from 0 in a tail slice; re-basing to the identity restores a valid sub-circuit.
+    ``_with_param`` preserves each gate's ``_structural`` flag -- these gates come from a
+    ``from_dense_arrays`` circuit (already-structural coefficients), so a plain
+    ``Exp(gate.generator)`` would re-antihermitian-normalize them and reject the structural
+    real coefficients of weight-2 monomials.
     """
-    return tuple(Exp(gate.generator) for gate in gates)
+    return tuple(Exp._with_param(gate, None) for gate in gates)
 
 
 # -- the Circuit type -----------------------------------------------------------
@@ -75,8 +79,8 @@ def test_default_mapping_is_identity() -> None:
     """Omitting the mapping gives each gate its own distinct angle."""
     circuit = Circuit(
         (
-            Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),
-            Exp(MajoranaOperator({(2, 3): 1.0}, num_modes=2)),
+            Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),
+            Exp(MajoranaOperator({(2, 3): 1.0j}, num_modes=2)),
         )
     )
     assert circuit.resolved_mapping == (0, 1)
@@ -86,9 +90,11 @@ def test_default_mapping_is_identity() -> None:
 def test_shared_mapping_index_ties_gates() -> None:
     """Reusing one index in the mapping ties gates to one angle."""
     gates = (
-        Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2), param=0),
-        Exp(MajoranaOperator({(2, 3): 1.0}, num_modes=2), param=1),
-        Exp(MajoranaOperator({(0, 3): 1.0}, num_modes=2), param=0),  # ties to the first
+        Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), param=0),
+        Exp(MajoranaOperator({(2, 3): 1.0j}, num_modes=2), param=1),
+        Exp(
+            MajoranaOperator({(0, 3): 1.0j}, num_modes=2), param=0
+        ),  # ties to the first
     )
     circuit = Circuit(gates)
     assert circuit.resolved_mapping == (0, 1, 0)
@@ -98,8 +104,8 @@ def test_shared_mapping_index_ties_gates() -> None:
 def test_circuit_rejects_non_contiguous_mapping() -> None:
     """A mapping with an index gap is rejected (it would invent a phantom parameter)."""
     gates = (
-        Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2), param=0),
-        Exp(MajoranaOperator({(2, 3): 1.0}, num_modes=2), param=2),
+        Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), param=0),
+        Exp(MajoranaOperator({(2, 3): 1.0j}, num_modes=2), param=2),
     )
     with pytest.raises(ValueError, match="contiguous"):
         Circuit(gates)
@@ -108,8 +114,8 @@ def test_circuit_rejects_non_contiguous_mapping() -> None:
 def test_circuit_rejects_mixed_param_scheme() -> None:
     """Setting `param` on some gates but not others is rejected as ambiguous."""
     gates = (
-        Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2), param=0),
-        Exp(MajoranaOperator({(2, 3): 1.0}, num_modes=2)),
+        Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), param=0),
+        Exp(MajoranaOperator({(2, 3): 1.0j}, num_modes=2)),
     )
     with pytest.raises(ValueError, match="every gate must set"):
         Circuit(gates)
@@ -117,7 +123,7 @@ def test_circuit_rejects_mixed_param_scheme() -> None:
 
 def test_circuit_rejects_wrong_parameter_length() -> None:
     """A bound circuit must supply exactly one value per distinct angle."""
-    gates = (Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),)
+    gates = (Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),)
     with pytest.raises(ValueError, match="1 parameters"):
         Circuit(gates, parameters=(0.1, 0.2))
 
@@ -141,16 +147,43 @@ def test_circuit_add_offsets_second_axis() -> None:
 def test_non_hermitian_majorana_generator_rejected() -> None:
     """A Majorana gate whose generator is not Hermitian is rejected on ingestion.
 
-    A length-2 monomial carries a *real* structural generator coefficient; an imaginary
-    one (the Hermitian-observable convention) would silently vanish, so it is rejected.
+    A Majorana generator carries the *Hermitian* operator (the same convention as an
+    observable): a weight-2 monomial takes an imaginary coefficient. A *real* weight-2
+    coefficient is not Hermitian, so it is rejected rather than silently normalized.
     """
     obs = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(obs, [0, 1], cutoff=4)
     bad = Circuit(
-        (Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),), parameters=(0.3,)
+        (Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),), parameters=(0.3,)
     )
     with pytest.raises(ValueError, match="not Hermitian"):
         prop.propagate(bad)
+
+
+def test_hermitian_majorana_generator_matches_structural() -> None:
+    """A Hermitian Majorana generator reproduces the equivalent structural (dense) gate.
+
+    The Hermitian generator ``i·m_4 m_5`` (coefficient ``1j`` on the bare product) is
+    antihermitian-normalized to the structural coefficient ``g = -1.0``, so
+    ``Exp(MajoranaOperator({(4, 5): 1j}))`` must evolve an observable identically to the
+    dense/wire gate carrying ``g = -1.0`` directly.
+    """
+    obs = MajoranaOperator({(0, 1, 2, 4): 1.0}, 8)
+    hermitian = Circuit(
+        gates=(Exp(MajoranaOperator({(4, 5): 1j}, num_modes=8)),), parameters=(0.5,)
+    )
+    structural = Circuit.from_dense_arrays([[4, 5]], [-1.0], [0], parameters=[0.5])
+
+    from_hermitian = MajoranaPropagator.from_circuit(
+        hermitian, obs, cutoff=16
+    ).evolved_operator()
+    from_structural = MajoranaPropagator.from_circuit(
+        structural, obs, cutoff=16
+    ).evolved_operator()
+
+    assert from_hermitian.keys() == from_structural.keys()
+    for key, value in from_hermitian.items():
+        np.testing.assert_allclose(value, from_structural[key])
 
 
 # -- evaluation contracts -------------------------------------------------------
@@ -327,7 +360,7 @@ def test_propagate_rejects_mismatched_initial_state() -> None:
     """A circuit whose initial_state disagrees with the propagator's raises ValueError."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)  # built with the fixture's initial state ([])
-    gate = Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2))
+    gate = Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2))
     circuit = Circuit((gate,), parameters=(0.1,), initial_state=(0, 1))
 
     with pytest.raises(ValueError, match="initial_state"):
@@ -338,7 +371,7 @@ def test_propagate_accepts_empty_initial_state() -> None:
     """An empty circuit.initial_state defers to the propagator's reference state."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)
-    gate = Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2))
+    gate = Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2))
     circuit = Circuit((gate,), parameters=(0.1,))  # empty initial_state
 
     prop.propagate(circuit)  # does not raise
@@ -464,7 +497,7 @@ def test_empty_default_mapping_gate_dropped_and_evaluable() -> None:
     aligned angle, so the circuit stays evaluable instead of carrying a phantom parameter."""
     circuit = Circuit(
         gates=(
-            Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),
+            Exp(MajoranaOperator({(4, 5): -1.0j}, num_modes=8)),
             Exp(
                 MajoranaOperator({(6, 7): 0.0}, num_modes=8)
             ),  # identity generator: dropped
@@ -485,9 +518,9 @@ def test_empty_gate_in_middle_builds_contiguously() -> None:
     """An identity gate between real gates is dropped, keeping the gate indices contiguous."""
     circuit = Circuit(
         gates=(
-            Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),
+            Exp(MajoranaOperator({(4, 5): -1.0j}, num_modes=8)),
             Exp(MajoranaOperator({(6, 7): 0.0}, num_modes=8)),  # identity in the middle
-            Exp(MajoranaOperator({(2, 3): -1.0}, num_modes=8)),
+            Exp(MajoranaOperator({(2, 3): -1.0j}, num_modes=8)),
         ),
         parameters=(0.5, 0.3, 0.2),
     )
@@ -525,8 +558,8 @@ def test_build_graph_seed_parameters_accepts_numpy() -> None:
     """seed_parameters may be a NumPy array (an accepted ParameterValues type)."""
     circuit = Circuit(
         gates=(
-            Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),
-            Exp(MajoranaOperator({(2, 3): -1.0}, num_modes=8)),
+            Exp(MajoranaOperator({(4, 5): -1.0j}, num_modes=8)),
+            Exp(MajoranaOperator({(2, 3): -1.0j}, num_modes=8)),
         ),
         parameters=(0.5, 0.3),
     )
@@ -538,8 +571,8 @@ def test_build_graph_rejects_too_short_seed() -> None:
     """A too-short explicit seed raises a clear length error, not an out-of-bounds read."""
     circuit = Circuit(
         gates=(
-            Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),
-            Exp(MajoranaOperator({(2, 3): -1.0}, num_modes=8)),
+            Exp(MajoranaOperator({(4, 5): -1.0j}, num_modes=8)),
+            Exp(MajoranaOperator({(2, 3): -1.0j}, num_modes=8)),
         ),
         parameters=(0.5, 0.3),
     )
@@ -553,10 +586,10 @@ def test_extend_without_seed_builds_structurally() -> None:
     raise, no silent corruption); the result matches a single-call build, and an explicit
     full-axis seed is still accepted."""
     c1 = Circuit(
-        gates=(Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),), parameters=(0.3,)
+        gates=(Exp(MajoranaOperator({(4, 5): -1.0j}, num_modes=8)),), parameters=(0.3,)
     )
     c2 = Circuit(
-        gates=(Exp(MajoranaOperator({(2, 3): -1.0}, num_modes=8)),), parameters=(0.4,)
+        gates=(Exp(MajoranaOperator({(2, 3): -1.0j}, num_modes=8)),), parameters=(0.4,)
     )
     params = [0.3, 0.4]
 
@@ -579,10 +612,10 @@ def test_extend_without_seed_builds_structurally() -> None:
 def test_propagate_after_build_graph_rejected() -> None:
     """propagate() on top of a build_graph() graph raises rather than corrupting it."""
     c1 = Circuit(
-        gates=(Exp(MajoranaOperator({(4, 5): -1.0}, num_modes=8)),), parameters=(0.3,)
+        gates=(Exp(MajoranaOperator({(4, 5): -1.0j}, num_modes=8)),), parameters=(0.3,)
     )
     c2 = Circuit(
-        gates=(Exp(MajoranaOperator({(2, 3): -1.0}, num_modes=8)),), parameters=(0.4,)
+        gates=(Exp(MajoranaOperator({(2, 3): -1.0j}, num_modes=8)),), parameters=(0.4,)
     )
     prop = _small_propagator()
     prop.build_graph(c1)

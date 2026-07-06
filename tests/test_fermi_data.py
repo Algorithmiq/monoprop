@@ -153,10 +153,11 @@ class TestExp:
     def test_creation_from_fermi_operator(self):
         gate = Exp(generator=_number_op())
 
-        assert gate.family == "fermi"
+        # A fermionic generator is converted to its (Hermitian) Majorana form in Exp, so the
+        # gate is a native "majorana" gate carrying the raw-product coefficients (imaginary for
+        # the weight-2 term); _gate_layers antihermitian-normalizes it like any Majorana gate.
+        assert gate.family == "majorana"
         assert gate.generator.num_modes == 1
-        # A fermionic gate holds its generator in raw Majorana form; it is
-        # antihermitian-normalized to a structural Majorana gate at Circuit construction.
         assert gate.generator.terms == {(): 0.5, (0, 1): 0.5j}
 
     def test_majorana_operator_is_structural(self):
@@ -190,12 +191,10 @@ class TestCircuit:
 
         np.testing.assert_array_equal(circuit.initial_state, np.array([0, 1]))
         np.testing.assert_array_equal(list(circuit.parameters), np.array([0.3, -0.7]))
-        # A Circuit converts one Majorana gate per fermi gate, identity mapping.
+        # One gate per fermi gate, identity mapping.
         assert list(circuit.resolved_mapping) == list(range(len(circuit)))
-        # Each fermi gate is normalized to a structural Majorana gate ...
+        # A fermionic generator is converted to a native Majorana gate in Exp.
         assert all(g.family == "majorana" for g in circuit.gates)
-        # ... while the original fermi gates remain available.
-        assert circuit.fermi_generators == (gate_0, gate_1)
 
         majoranas, gen_coeffs, per_monomial_mapping, gate_indices = expand_monomials(
             circuit.gates, circuit.resolved_mapping
@@ -220,7 +219,6 @@ class TestCircuit:
         )
         assert len(circuit) == 2  # the identity gate is dropped
         assert circuit.parameters == (0.1, 0.3)  # its aligned parameter goes with it
-        assert len(circuit.fermi_generators) == 2
 
     def test_validate_inputs_duplicate_initial_state_raises(self):
         with pytest.raises(ValueError, match="Duplicate indices in initial state"):
