@@ -91,13 +91,21 @@ def to_qiskit_operator(
     return SparsePauliOp.from_list([(k[::-1], v) for k, v in pauli_dict.items()])
 
 
-def _place_operator(local_op: PauliOperator, qubits: tuple[int, ...]) -> PauliOperator:
-    """Remap a local operator (on qubits ``0..len(qubits)-1``) onto global ``qubits``."""
-    return PauliOperator(
-        {
-            Pauli(pauli.string, tuple(qubits[q] for q in pauli.qubits)): coeff
-            for pauli, coeff in local_op.terms.items()
-        }
+def _place_operator(
+    local_op: PauliOperator, qubits: tuple[int, ...], num_qubits: int
+) -> PauliOperator:
+    """Remap a local operator (on qubits ``0..len(qubits)-1``) onto global ``qubits``.
+
+    The result is a gate generator carrying the full-circuit ``num_qubits`` (an operator
+    carries its own qubit count).
+    """
+    return PauliOperator._from_terms(
+        [
+            Pauli(pauli.string, tuple(qubits[q] for q in pauli.qubits))
+            for pauli in local_op.terms
+        ],
+        list(local_op.terms.values()),
+        num_qubits=num_qubits,
     )
 
 
@@ -121,6 +129,7 @@ def from_qiskit_circuit(
     gates: list[Exp] = []
     parameters: list[float] = []
     qregs = circuit.qregs[0]
+    num_qubits = len(qregs)
     for gate in circuit.data:
         g_op = gate.operation
         gate_name = g_op.name
@@ -132,11 +141,15 @@ def from_qiskit_circuit(
 
         if gate_name == "PauliEvolution":
             parameter = g_op.time
-            generator = _place_operator(from_qiskit_operator(g_op.operator), qubits)
+            generator = _place_operator(
+                from_qiskit_operator(g_op.operator), qubits, num_qubits
+            )
         elif gate_name in PAULI_EVOLUTION_EQUIVALENT:
             parameter = g_op.params[0] * 0.5
             pauli_string = gate_name[1:].upper()  # Remove the leading 'R' and uppercase
-            generator = PauliOperator({Pauli(pauli_string, qubits): 1.0})
+            generator = PauliOperator._from_terms(
+                [Pauli(pauli_string, qubits)], [1.0], num_qubits=num_qubits
+            )
         else:
             raise ValueError(
                 f"Unsupported gate {gate_name}. Only PauliEvolutionGate or equivalent gates are supported."
@@ -176,9 +189,15 @@ def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
     qiskit_circuit = QuantumCircuit(num_qubits)
     mapping = circuit.resolved_mapping
     for gate, param_index in zip(circuit.gates, mapping, strict=True):
+        generator = gate.generator
+        if not isinstance(generator, PauliOperator):
+            raise TypeError(
+                "to_qiskit_circuit requires a qubit (Pauli) circuit; got a "
+                f"{circuit.family}-family gate."
+            )
         pauli_dict = {
             _extend_pauli_string(pauli.string, pauli.qubits, num_qubits): coeff
-            for pauli, coeff in gate.generator.terms.items()
+            for pauli, coeff in generator.terms.items()
         }
         qiskit_circuit.append(
             PauliEvolutionGate(

@@ -55,7 +55,7 @@ class TestPauliPropagatorCutoff:
     def test_non_hermitian_pauli_gate_rejected(self, serial_comm):
         """An Exp with a complex (non-Hermitian) Pauli coefficient is rejected."""
         circuit = Circuit(
-            (Exp(PauliOperator({Pauli("X", 0): 1.0j})),),
+            (Exp(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=1)),),
             parameters=(0.3,),
         )
         with pytest.raises(ValueError, match="not Hermitian"):
@@ -127,7 +127,7 @@ class TestPauliOperator:
 
     def test_invalid_character_raises(self):
         with pytest.raises(ValueError, match="Invalid characters"):
-            PauliOperator({"XA": 1.0})
+            PauliOperator({"XA": 1.0}, num_qubits=2)
 
     def test_all_valid_pauli_chars(self):
         op = PauliOperator({"XYIZ": 1.0}, num_qubits=4)
@@ -152,10 +152,10 @@ class TestPauliOperator:
         assert list(op.terms.values()) == [1.0, 0.5]
         assert op.num_qubits == 2
 
-    def test_num_qubits_optional(self):
-        op = PauliOperator({"IXYZ": 2.0})  # num_qubits left unspecified
-        assert len(op) == 1
-        assert op.num_qubits is None
+    def test_num_qubits_required(self):
+        # The qubit count is a required constructor argument; omitting it is an error.
+        with pytest.raises(TypeError):
+            PauliOperator({"IXYZ": 2.0})  # type: ignore[call-arg]
 
     def test_get_majorana_operator_identity(self):
         op = PauliOperator({"I": 2.5}, num_qubits=1)
@@ -224,7 +224,7 @@ class TestPauliOperator:
 
 class TestCircuit:
     def _make_gate(self):
-        return Exp(Pauli("X", 0))
+        return Exp(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1))
 
     def test_basic_construction(self):
         gates = (self._make_gate(), self._make_gate())
@@ -246,12 +246,12 @@ class TestCircuit:
         with pytest.raises(TypeError, match="mix"):
             Circuit(
                 (
-                    Exp(Pauli("X", 0)),
-                    Exp(MajoranaOperator({(0, 1): 1.0})),
+                    Exp(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),
+                    Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),
                 )
             )
 
     def test_pauli_gate_equality(self):
-        gen = PauliOperator({Pauli("X", 0): 1.0})
+        gen = PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)
         assert Exp(gen) == Exp(gen)
-        assert Exp(gen) != Exp(PauliOperator({Pauli("X", 1): 1.0}))
+        assert Exp(gen) != Exp(PauliOperator({Pauli("X", 1): 1.0}, num_qubits=2))

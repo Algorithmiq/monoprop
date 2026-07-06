@@ -128,6 +128,8 @@ class MajoranaPropagator:
             if isinstance(initial_operator, MajoranaOperator)
             else initial_operator.get_majorana_operator()
         )
+        # The operator carries its own mode count (a required constructor argument), so the
+        # propagator reads it directly rather than validating it here.
         num_modes = majorana_operator.num_modes
         logger.debug(
             "__init__. num_modes=%d, cutoff=%d, schrodinger_cutoff=%s",
@@ -143,7 +145,10 @@ class MajoranaPropagator:
         # observable. None for a native Majorana propagator (its gates need no qubit count).
         self._num_qubits: int | None = None
         self._initial_state = list(initial_state)
-        self._simulator = dispatch(num_modes)(
+        # dispatch() is typed to return the base `type[_SimulatorAdapter]`, whose __init__ takes
+        # extra positional args the generated per-mode subclasses fill in; the kwargs below match
+        # the subclass __init__ that is actually returned.
+        self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,
             slater_determinant=list(initial_state),

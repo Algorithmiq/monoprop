@@ -79,12 +79,9 @@ class PauliPropagator(MajoranaPropagator):
             upper_atol: Optional upper coefficient-retention tolerance.
             comm: Optional MPI communicator (must outlive the propagator).
         """
+        # The PauliOperator carries its own qubit count (a required constructor argument), so
+        # the propagator reads it directly rather than validating it here.
         num_qubits = initial_operator.num_qubits
-        if num_qubits is None:
-            raise ValueError(
-                "The initial PauliOperator has num_qubits=None; PauliPropagator needs the "
-                "qubit count. Construct the operator with an explicit num_qubits."
-            )
         super().__init__(
             initial_operator.get_majorana_operator(),
             initial_state,
@@ -103,6 +100,10 @@ class PauliPropagator(MajoranaPropagator):
     @property
     def num_qubits(self) -> int:
         """Number of qubits the propagator acts on."""
+        # Always set in __init__ (which raises if the observable has no qubit count); the base
+        # declares it Optional for the native Majorana propagator.
+        if self._num_qubits is None:
+            raise RuntimeError("PauliPropagator has no qubit count set.")
         return self._num_qubits
 
     @property

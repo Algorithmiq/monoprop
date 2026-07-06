@@ -77,15 +77,17 @@ class MajoranaOperator:
     def __init__(
         self,
         terms: Mapping[Majorana | Sequence[int], complex],
-        num_modes: int | None = None,
+        num_modes: int,
         threshold: float = 1e-12,
     ) -> None:
         """Initialize the Majorana operator from a term mapping.
 
         Args:
             terms: Mapping from :class:`Majorana` terms (or raw index tuples) to coefficients.
-            num_modes: Number of modes in the system, or ``None`` when the operator is used
-                only as a gate generator (the mode count is then supplied by the propagator).
+            num_modes: Number of modes in the system. Required: an operator carries its own
+                mode count so a propagator can be built from it directly. Gate generators do
+                *not* go through this constructor -- author them count-free from bare
+                :class:`Majorana` terms via :class:`~monoprop.circuit.Exp`.
             threshold: Terms with ``|coefficient| < threshold`` are discarded.
         """
         majoranas = [key.indices if isinstance(key, Majorana) else key for key in terms]

@@ -187,7 +187,7 @@ class TestToQiskitOperator:
 class TestToQiskitCircuit:
     def test_single_gate(self):
         circuit = Circuit(
-            (Exp(Pauli("Z", 0)),),
+            (Exp(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
             parameters=(0.7,),
             initial_state=(),
         )
@@ -208,7 +208,7 @@ class QiskitCircuitsCases:
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         expected = Circuit(
-            gates=(Exp(Pauli("Z", 0)),),
+            gates=(Exp(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
             parameters=(0.7,),
             initial_state=(),
         )
@@ -222,8 +222,8 @@ class QiskitCircuitsCases:
         circuit.append(PauliEvolutionGate(operator2, time=0.5), [0, 1])
         expected = Circuit(
             gates=(
-                Exp(PauliOperator({Pauli("ZX", (0, 1)): 1.0})),
-                Exp(PauliOperator({Pauli("Y", 0): 0.5})),
+                Exp(PauliOperator({Pauli("ZX", (0, 1)): 1.0}, num_qubits=2)),
+                Exp(PauliOperator({Pauli("Y", 0): 0.5}, num_qubits=2)),
             ),
             parameters=(0.3, 0.5),
             initial_state=(),
@@ -237,9 +237,9 @@ class QiskitCircuitsCases:
         circuit.rz(0.7, 0)
         expected = Circuit(
             gates=(
-                Exp(Pauli("X", 0)),
-                Exp(Pauli("Y", 0)),
-                Exp(Pauli("Z", 0)),
+                Exp(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),
+                Exp(PauliOperator({Pauli("Y", 0): 1.0}, num_qubits=1)),
+                Exp(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),
             ),
             parameters=(0.25, 0.15, 0.35),
             initial_state=(),
@@ -252,7 +252,7 @@ class QiskitCircuitsCases:
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         circuit.barrier()
         expected = Circuit(
-            gates=(Exp(Pauli("Z", 0)),),
+            gates=(Exp(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
             parameters=(0.7,),
             initial_state=(),
         )
@@ -291,6 +291,8 @@ class TestFromQiskitCircuit:
 @pytest.mark.qiskit
 def test_to_qiskit_circuit_rejects_unbound() -> None:
     """to_qiskit_circuit on an unbound circuit raises a clear error, not an IndexError."""
-    circuit = Circuit(gates=(Exp(Pauli("X", 0)),))  # no parameter values
+    circuit = Circuit(
+        gates=(Exp(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),)
+    )  # no parameter values
     with pytest.raises(ValueError, match="bound circuit"):
         to_qiskit_circuit(circuit, num_qubits=1)

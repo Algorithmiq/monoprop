@@ -28,8 +28,8 @@ def _two_gate_graph(serial_comm):
     mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
     circuit = Circuit(
         (
-            Exp(MajoranaOperator({(0,): 1.0})),
-            Exp(MajoranaOperator({(1,): 1.0})),
+            Exp(MajoranaOperator({(0,): 1.0}, num_modes=2)),
+            Exp(MajoranaOperator({(1,): 1.0}, num_modes=2)),
         )
     )
     mp.build_graph(circuit)  # identity mapping -> two distinct angles
@@ -83,8 +83,8 @@ class TestGraphAndParameterValidation:
     def test_non_contiguous_mapping_raises(self):
         """A param scheme with an index gap is rejected at circuit construction."""
         gates = (
-            Exp(MajoranaOperator({(0,): 1.0}), param=0),
-            Exp(MajoranaOperator({(1,): 1.0}), param=2),
+            Exp(MajoranaOperator({(0,): 1.0}, num_modes=2), param=0),
+            Exp(MajoranaOperator({(1,): 1.0}, num_modes=2), param=2),
         )
         with pytest.raises(ValueError, match="contiguous"):
             Circuit(gates)
@@ -92,8 +92,8 @@ class TestGraphAndParameterValidation:
     def test_mixed_param_scheme_rejected(self):
         """Setting `param` on some gates but not others is rejected as ambiguous."""
         gates = (
-            Exp(MajoranaOperator({(0,): 1.0}), param=0),
-            Exp(MajoranaOperator({(1,): 1.0})),
+            Exp(MajoranaOperator({(0,): 1.0}, num_modes=2), param=0),
+            Exp(MajoranaOperator({(1,): 1.0}, num_modes=2)),
         )
         with pytest.raises(ValueError, match="every gate must set"):
             Circuit(gates)
@@ -104,8 +104,8 @@ class TestGraphAndParameterValidation:
         mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
         circuit = Circuit(
             (
-                Exp(MajoranaOperator({(0,): 1.0}), param=0),
-                Exp(MajoranaOperator({(1,): 1.0}), param=0),
+                Exp(MajoranaOperator({(0,): 1.0}, num_modes=2), param=0),
+                Exp(MajoranaOperator({(1,): 1.0}, num_modes=2), param=0),
             ),
         )
         mp.build_graph(circuit)
@@ -118,15 +118,15 @@ class TestGraphAndParameterValidation:
         mp.build_graph(
             Circuit(
                 (
-                    Exp(MajoranaOperator({(0,): 1.0})),
-                    Exp(MajoranaOperator({(1,): 1.0})),
+                    Exp(MajoranaOperator({(0,): 1.0}, num_modes=2)),
+                    Exp(MajoranaOperator({(1,): 1.0}, num_modes=2)),
                 )
             )
         )
         functional = mp.expectation_value_functional()
         # Appending another layer mutates the graph, so the previously-built functional
         # must reject being called against the stale plan.
-        mp.build_graph(Circuit((Exp(MajoranaOperator({(2,): 1.0})),)))
+        mp.build_graph(Circuit((Exp(MajoranaOperator({(2,): 1.0}, num_modes=2)),)))
         # Call with the parameter count the functional was built with (2), so the
         # stale-graph guard fires rather than the parameter-length check.
         with pytest.raises(RuntimeError, match=r"MP object has been modified"):
