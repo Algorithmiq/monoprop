@@ -368,16 +368,15 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
         only_rotate_len_k,
         [this, &mapped_params, op_coeffs, framep, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
             const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
-            // Lazy cosine runs only at k==0 and once the operator outgrows the last-level cache — the SAME
-            // cache gate build_layer applies (op_coeffs->size() here is the pre-gate size), so the two
-            // decisions agree per gate. k>0 or a cache-resident operator falls back to eager.
-            const bool implicit = framep != nullptr && rot_len == 0
-                               && detail::engage_lazy_frame<NumModes>(op_coeffs->size());
             // build_evolve_result_ performs the self-rank operator inserts that grow the operator;
             // extend_coeffs must run AFTER that grow and BEFORE the apply.
             CosMask cos;
             detail::FusedContract fc;
-            build_evolve_result_(maj, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc);
+            // Lazy cosine engages only at k==0 once the operator outgrows the last-level cache. build_layer
+            // owns that decision (and the frame setup) and reports it back through `implicit`, so the apply
+            // below drives frozen-vs-eager coeffs from the SAME decision the build used — they cannot disagree.
+            bool implicit = false;
+            build_evolve_result_(maj, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc, &implicit);
             // In the lazy frame build_layer already appended this firing to the log; nfirings is its
             // post-append size (the epoch freshly-touched/inserted terms stamp at).
             const uint32_t nf = implicit ? static_cast<uint32_t>(framep->nfirings) : 0;
@@ -531,7 +530,8 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                                         std::optional<std::reference_wrapper<const VecD>> coeffs,
                                                         std::optional<double> param,
                                                         CosMask *out_cos,
-                                                        detail::FusedContract *fused_contract)
+                                                        detail::FusedContract *fused_contract,
+                                                        bool *engaged_frame)
     -> std::shared_ptr<LayerCore> {
     const auto gen_maj = indices_to_bitset<NumModes>(gen_vec);
 
@@ -552,7 +552,8 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                                      comm_,
                                                      out_cos,
                                                      fused_contract,
-                                                     schrodinger_);
+                                                     schrodinger_,
+                                                     engaged_frame);
 }
 
 template <size_t NumModes>

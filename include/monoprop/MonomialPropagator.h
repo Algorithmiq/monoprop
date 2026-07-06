@@ -71,8 +71,14 @@ public:
     // The simulator is an independent deep-copyable value. The implicit copy constructor does the
     // right thing: it deep-clones the per-rank operator store (MPOperator's copy ctor repairs the
     // index back-pointer) and shares the immutable graph layer cores via shared_ptr. The MPI
-    // communicator handle is copied as-is (shared, not MPI_Comm_dup'd). No special members are
-    // declared, so move stays implicit too; copy assignment is implicitly deleted (unique_ptr store).
+    // communicator handle is copied as-is (shared, not MPI_Comm_dup'd). Copy assignment is implicitly
+    // deleted (unique_ptr store).
+    // NOTE: the user-declared virtual destructor above suppresses the implicit move constructor and
+    // move assignment, so `MonomialPropagator x = std::move(y);` selects the (deep-cloning) COPY
+    // constructor — a "move" is a full deep copy of the operator store, not a pointer steal. This is
+    // fine today (nothing moves a whole propagator); to make moves O(1), default the move members
+    // AFTER confirming MPOperator's move ctor repairs the index back-pointer the same way its copy
+    // ctor does (defaulting a move ctor would also delete the copy ctor, so declare all four).
 
     static constexpr auto num_modes{NumModes};
     static constexpr auto storage_num_modes{NumModes};
@@ -612,7 +618,8 @@ private:
                               std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
                               std::optional<double> param = std::nullopt,
                               CosMask *out_cos = nullptr,
-                              detail::FusedContract *fused_contract = nullptr) -> std::shared_ptr<LayerCore>;
+                              detail::FusedContract *fused_contract = nullptr,
+                              bool *engaged_frame = nullptr) -> std::shared_ptr<LayerCore>;
 
     /**
      * @brief Creates a functional (closure) for expectation value or gradient calculations.

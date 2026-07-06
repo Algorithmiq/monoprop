@@ -513,7 +513,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                              MPI_Comm comm,
                              CosMask *out_cos = nullptr,
                              FusedContract *fused_contract = nullptr,
-                             bool schrodinger = false) -> std::shared_ptr<LayerCore> {
+                             bool schrodinger = false,
+                             bool *engaged_frame = nullptr) -> std::shared_ptr<LayerCore> {
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
     // Fused contraction: the caller (evolve_mode_contract_immediately_) passes a non-null sink for the
@@ -537,6 +538,12 @@ auto build_layer(MPOperator<NumModes> &local_op,
     // size — the SAME value Impl uses to decide, so the two agree per gate.
     const bool implicit =
         use_fused && only_rotate_len_k == 0 && engage_lazy_frame<NumModes>(coeffs.size());
+    // build_layer is the single authority for the engage decision; report it so the fused caller
+    // (evolve_mode_contract_immediately_) drives the apply from the SAME decision instead of
+    // recomputing engage_lazy_frame and risking a build/apply disagreement over frozen-vs-eager coeffs.
+    if (engaged_frame != nullptr) {
+        *engaged_frame = implicit;
+    }
     CoeffFrame<NumModes> *frame = nullptr;
     if (implicit) {
         frame = schrodinger ? &local_op.state_frame : &local_op.op_frame;
