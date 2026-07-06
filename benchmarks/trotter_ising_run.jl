@@ -14,6 +14,7 @@
 
 using PauliPropagation
 using JSON
+using ProgressMeter
 
 ########################### SETTINGS ##########################
 h = 1.0
@@ -36,7 +37,7 @@ theta_zz = dt * j
 
 runtimes = Float64[]
 
-for nq in qubit_range
+@showprogress for nq in qubit_range
     topology = staircasetopology(nq)
     circuit = tfitrottercircuit(nq, num_steps; topology=topology, start_with_ZZ=false)
 

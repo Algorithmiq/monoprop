@@ -26,10 +26,10 @@ curl -fsSL https://install.julialang.org | sh
 julia --version
 ```
 
-Then install [`PauliPropagation.jl`](https://github.com/SparqleSim/PauliPropagation.jl) from the official Julia package manager:
+Then install [`PauliPropagation.jl`](https://github.com/SparqleSim/PauliPropagation.jl) and some utils from the official Julia package manager:
 
 ```bash
-julia -e 'using Pkg; Pkg.add(["PauliPropagation", "JSON"])'
+julia -e 'using Pkg; Pkg.add(["PauliPropagation", "JSON", "ProgressMeter"])'
 ```
 
 
