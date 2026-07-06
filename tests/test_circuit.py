@@ -26,8 +26,9 @@ from monoprop import (
     Exp,
     MajoranaPropagator,
 )
+from monoprop.fermi_data import FermiOperator
 from monoprop.majorana_data import MajoranaOperator
-from monoprop.pauli_data import PauliOperator
+from monoprop.pauli_data import Pauli, PauliOperator
 from tests.cases import load_problem
 
 DATA = Path(__file__).parent / "data"
@@ -445,3 +446,129 @@ def test_build_graph_twice_with_seed_regeneration(fixture: str) -> None:
     prop.build_graph(Circuit(_rebase(gates[split:])), seed_parameters=params)
 
     np.testing.assert_allclose(prop.expectation_value(params), problem.exact_expval)
+
+
+# --- Regression tests for the interface-refactor review ---------------------------------
+
+_OBS = MajoranaOperator({(0, 1, 2, 4): 1.0}, 8)
+
+
+def _small_propagator(**kwargs: object) -> MajoranaPropagator:
+    return MajoranaPropagator(_OBS, initial_state=[], cutoff=16, **kwargs)  # type: ignore[arg-type]
+
+
+def test_empty_default_mapping_gate_dropped_and_evaluable() -> None:
+    """A zero-coefficient (identity) gate under the default mapping is dropped with its
+    aligned angle, so the circuit stays evaluable instead of carrying a phantom parameter."""
+    circuit = Circuit(
+        gates=(
+            Exp(MajoranaOperator({(4, 5): -1.0})),
+            Exp(MajoranaOperator({(6, 7): 0.0})),  # identity generator: dropped
+        ),
+        parameters=(0.5, 0.3),
+    )
+    assert len(circuit.gates) == 1
+    assert circuit.n_parameters == 1
+    assert circuit.parameters == (0.5,)
+
+    prop = _small_propagator()
+    prop.build_graph(circuit)
+    assert prop.graph_layers == 1
+    prop.expectation_value(circuit.parameters)  # previously raised a length mismatch
+
+
+def test_empty_gate_in_middle_builds_contiguously() -> None:
+    """An identity gate between real gates is dropped, keeping the gate indices contiguous."""
+    circuit = Circuit(
+        gates=(
+            Exp(MajoranaOperator({(4, 5): -1.0})),
+            Exp(MajoranaOperator({(6, 7): 0.0})),  # identity in the middle
+            Exp(MajoranaOperator({(2, 3): -1.0})),
+        ),
+        parameters=(0.5, 0.3, 0.2),
+    )
+    assert len(circuit.gates) == 2
+    prop = _small_propagator()
+    prop.build_graph(circuit)  # previously raised "gate_indices must be contiguous"
+    assert prop.graph_layers == 2
+
+
+def test_surplus_parameters_raise_not_truncated() -> None:
+    """More angle values than gates raises rather than silently truncating (fermi path)."""
+    generator = FermiOperator(
+        [[(0, "+"), (1, "-")], [(1, "+"), (0, "-")]], [1.0, 1.0], num_modes=4
+    )
+    with pytest.raises(ValueError, match="1 parameter"):
+        Circuit(gates=(Exp(generator),), parameters=(1.0, 2.0))
+
+
+def test_non_commuting_pauli_generator_rejected() -> None:
+    """A multi-term Pauli gate whose terms anticommute is rejected at construction."""
+    with pytest.raises(ValueError, match="anticommute"):
+        Exp(PauliOperator({Pauli("X", 0): 1.0, Pauli("Z", 0): 1.0}))
+
+
+def test_commuting_pauli_generator_accepted() -> None:
+    """A multi-term Pauli gate whose terms mutually commute is accepted."""
+    Exp(PauliOperator({Pauli("XX", (0, 1)): 1.0, Pauli("ZZ", (0, 1)): 1.0}))
+
+
+def test_build_graph_seed_parameters_accepts_numpy() -> None:
+    """seed_parameters may be a NumPy array (an accepted ParameterValues type)."""
+    circuit = Circuit(
+        gates=(
+            Exp(MajoranaOperator({(4, 5): -1.0})),
+            Exp(MajoranaOperator({(2, 3): -1.0})),
+        ),
+        parameters=(0.5, 0.3),
+    )
+    prop = _small_propagator(lower_atol=1e-12)
+    prop.build_graph(circuit, seed_parameters=np.array([0.5, 0.3]))
+
+
+def test_build_graph_rejects_too_short_seed() -> None:
+    """A too-short explicit seed raises a clear length error, not an out-of-bounds read."""
+    circuit = Circuit(
+        gates=(
+            Exp(MajoranaOperator({(4, 5): -1.0})),
+            Exp(MajoranaOperator({(2, 3): -1.0})),
+        ),
+        parameters=(0.5, 0.3),
+    )
+    prop = _small_propagator()
+    with pytest.raises(RuntimeError, match="length of parameters"):
+        prop.build_graph(circuit, seed_parameters=[0.5])
+
+
+def test_extend_without_seed_builds_structurally() -> None:
+    """Extending a non-empty graph without a seed builds the new layers structurally (no
+    raise, no silent corruption); the result matches a single-call build, and an explicit
+    full-axis seed is still accepted."""
+    c1 = Circuit(gates=(Exp(MajoranaOperator({(4, 5): -1.0})),), parameters=(0.3,))
+    c2 = Circuit(gates=(Exp(MajoranaOperator({(2, 3): -1.0})),), parameters=(0.4,))
+    params = [0.3, 0.4]
+
+    single = _small_propagator(lower_atol=1e-15)
+    single.build_graph(c1 + c2)
+    reference = single.expectation_value(params)
+
+    extended = _small_propagator(lower_atol=1e-15)
+    extended.build_graph(c1)
+    extended.build_graph(c2)  # no seed_parameters: structural extension, no raise
+    assert extended.n_parameters == 2
+    np.testing.assert_allclose(extended.expectation_value(params), reference)
+
+    seeded = _small_propagator(lower_atol=1e-15)
+    seeded.build_graph(c1)
+    seeded.build_graph(c2, seed_parameters=params)  # explicit full-axis seed
+    np.testing.assert_allclose(seeded.expectation_value(params), reference)
+
+
+def test_propagate_after_build_graph_rejected() -> None:
+    """propagate() on top of a build_graph() graph raises rather than corrupting it."""
+    c1 = Circuit(gates=(Exp(MajoranaOperator({(4, 5): -1.0})),), parameters=(0.3,))
+    c2 = Circuit(gates=(Exp(MajoranaOperator({(2, 3): -1.0})),), parameters=(0.4,))
+    prop = _small_propagator()
+    prop.build_graph(c1)
+    with pytest.raises(RuntimeError, match="non-empty graph"):
+        prop.propagate(c2)

@@ -167,6 +167,12 @@ def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
     Returns:
         A qiskit quantum circuit.
     """
+    if len(circuit.parameters) != circuit.n_parameters:
+        raise ValueError(
+            f"to_qiskit_circuit needs a bound circuit: it has {circuit.n_parameters} "
+            f"parameter(s) but {len(circuit.parameters)} angle value(s). Supply the angles, "
+            "e.g. Circuit(..., parameters=...)."
+        )
     qiskit_circuit = QuantumCircuit(num_qubits)
     mapping = circuit.resolved_mapping
     for gate, param_index in zip(circuit.gates, mapping, strict=True):
