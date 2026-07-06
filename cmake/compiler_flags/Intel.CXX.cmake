@@ -1,5 +1,8 @@
 if(CMAKE_CXX_COMPILER_ID MATCHES Intel)
-  set(monoprop_CXX_FLAGS "-Wno-unknown-pragmas -Wall")
+  set(
+    monoprop_CXX_FLAGS
+    "-Wno-unknown-pragmas -Wall -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer"
+  )
   set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
   set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -debug -DNDEBUG")
   set(CMAKE_CXX_FLAGS_DEBUG "-O0 -debug -DDEBUG")
