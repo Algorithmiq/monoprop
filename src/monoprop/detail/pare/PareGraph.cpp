@@ -276,7 +276,10 @@ auto propagate_cross_rank_d(const Layer &layer,
                             const BuilderExchangeLayout &selection_layout,
                             VecI &selected_incoming_flags,
                             std::vector<char> &nodes_to_keep) -> void {
-    selected_incoming_flags.assign(selection_layout.total_send, 0);
+    // Keep the buffer sized >= 1 so execute_builder_exchange can post a non-null send pointer even
+    // when this rank has outgoing-only cross-rank edges (total_send == 0); the padding slot is never
+    // indexed by a real edge nor sent (send_counts sum to total_send). Mirrors resize_builder_exchange_buffers.
+    selected_incoming_flags.assign(std::max<size_t>(1, selection_layout.total_send), 0);
     for_each_remote_rank(layer, my_rank, [&](size_t rank) {
         const size_t remote_base = static_cast<size_t>(source_keep_layout.recv_displs[rank]);
         const size_t notify_base = static_cast<size_t>(selection_layout.send_displs[rank]);

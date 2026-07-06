@@ -37,7 +37,10 @@ monoprop_EXPORT auto map_params(const VecD &parameters,
                                 bool reverse = false) -> VecD;
 
 // The forward (cos_scale) and reverse (cos_acc) callbacks recompute each layer's cosine set from the
-// prepared fold; passing default-constructed (empty) std::function selects the stored-cos path.
+// prepared fold and are REQUIRED for any run with parameters: no layer stores its cosine bitmap
+// anymore, so the old "stored-cos" fallback is gone. The `= {}` defaults exist only so the
+// energy-only `ev` overload can omit the unused reverse callback; ev_and_grad throws if a callback it
+// consumes is empty (rather than faulting with std::bad_function_call).
 monoprop_EXPORT auto ev(double e_core,
                         const VecD &state,
                         const VecD &op,

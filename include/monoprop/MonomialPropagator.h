@@ -448,8 +448,9 @@ protected:
     // delegate underneath them.
     // Reusable evaluation callbacks for make_functional_ / the pare functionals — also used by
     // MonomialPropagatorExtra.
-    // The trailing cos_scale/cos_acc recompute the per-layer cosine set from the prepared fold; empty
-    // (default) callbacks select the stored-cos path (the pare functionals pass none).
+    // The trailing cos_scale/cos_acc recompute the per-layer cosine set from the prepared fold and are
+    // required for any evolving path (the "stored-cos" fallback no longer exists — no layer keeps its
+    // cosine bitmap). ev_fn ignores cos_acc because the energy path has no reverse sweep.
     static inline const auto ev_fn = [](double e_core,
                                         const VecD &state,
                                         const VecD &op,

@@ -106,6 +106,15 @@ auto ev_and_grad_impl(double e_core,
         return {e_core + mpi::allreduce_sum(inner_product(state, op), comm), VecD(0)};
     }
 
+    // The stored-cos fallback was removed: both callbacks are consumed on the with-parameters path
+    // (cos_scale in the forward prepare, cos_acc in the reverse sweep). Fail loudly rather than with a
+    // cryptic std::bad_function_call if a caller relied on the old empty-callback default.
+    if (!cos_scale || !cos_acc) {
+        throw std::invalid_argument(
+            "ev_and_grad requires both cos_scale (forward) and cos_acc (reverse) callbacks; "
+            "the stored-cos fallback no longer exists.");
+    }
+
     auto &scratch = eval_scratch();
     scratch.state = state;
     prepare_evolved_operator(scratch, op, params, parameter_mapping, gen_coeffs, graph, comm, cos_scale);

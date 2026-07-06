@@ -117,9 +117,9 @@ struct CrossRankPartnerData {
 };
 
 struct CrossRankPartnerRange final {
-    TermIndex sin_send_offset = 0; // into sin_send_indices
+    size_t    sin_send_offset = 0; // into sin_send_indices; cumulative across ranks, so size_t (a layer's total may exceed 2^32 even when each rank's term count does not)
     TermIndex sin_send_count  = 0; // == sin_recv_count (paper invariant); TermIndex-wide so one rank/layer can exceed 2^32
-    TermIndex sin_recv_offset = 0; // into sin_recv_phases (the D index list is derived from B, not stored)
+    size_t    sin_recv_offset = 0; // into sin_recv_phases; cumulative across ranks, so size_t (see sin_send_offset)
     // Single phased D list: former D- entries (sign baked as -phi) come first, former D+ entries
     // (+phi) second, but no consumer needs the boundary — the signed phase carries everything.
     TermIndex sin_recv_count = 0;

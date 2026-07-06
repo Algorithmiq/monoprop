@@ -131,9 +131,9 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         const auto &partner = data[rank];
         auto &range = storage.ranges[rank];
-        range.sin_send_offset = static_cast<TermIndex>(total_b);
+        range.sin_send_offset = total_b; // size_t; cumulative offset must not narrow (may exceed 2^32)
         range.sin_send_count  = static_cast<TermIndex>(partner.sin_send_indices.size());
-        range.sin_recv_offset = static_cast<TermIndex>(total_d);
+        range.sin_recv_offset = total_d; // size_t; cumulative offset must not narrow (may exceed 2^32)
         range.sin_recv_count  = static_cast<TermIndex>(partner.sin_recv_entries.size());
         range.in_count = static_cast<TermIndex>(partner.in_count);
         total_b += partner.sin_send_indices.size();
@@ -228,7 +228,7 @@ inline auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layou
 }
 
 // build_layer_exchange_layout_impl: sums sin_send_count * scale per rank.
-// PartnerRangeLike must have a uint32_t sin_send_count field.
+// PartnerRangeLike must have a sin_send_count field (full-width size_t so checked_mpi_int catches overflow).
 template <typename PartnerRangeLike>
 inline auto build_layer_exchange_layout_impl(const std::vector<PartnerRangeLike> &ranges, int scale)
     -> LayerExchangeLayout {
@@ -268,13 +268,13 @@ inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_pa
 
     // Build exchange layout excluding self-rank (counts[my_rank] = 0).
     {
-        struct BCountOnly { uint32_t sin_send_count; };
+        struct BCountOnly { size_t sin_send_count; };
         std::vector<BCountOnly> ranges;
         ranges.reserve(all_partners.size());
         for (size_t r = 0; r < all_partners.size(); ++r) {
-            // Self-rank slot: zero MPI count (handled locally by the replay).
-            const uint32_t cnt = (r == my_rank) ? 0u
-                                                 : static_cast<uint32_t>(all_partners[r].sin_send_indices.size());
+            // Self-rank slot: zero MPI count (handled locally by the replay). Full-width count so
+            // checked_mpi_int (in build_layer_exchange_layout_impl) throws on overflow instead of wrapping.
+            const size_t cnt = (r == my_rank) ? size_t{0} : all_partners[r].sin_send_indices.size();
             ranges.push_back({cnt});
         }
         storage->evolution_exchange_layout = build_layer_exchange_layout_impl(ranges, 1);
