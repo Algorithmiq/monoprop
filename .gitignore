@@ -16,9 +16,8 @@ eggs/
 .eggs/
 lib/
 lib64/
-# The Python `lib/` rule above also matches docs/lib/, which holds Fumadocs
-# source (layout, fonts, helpers) that must be tracked. Re-include it.
-!docs/lib/
+# The Python `lib/` rule above also matches the docs app's tracked helpers.
+!docs/src/lib/
 parts/
 sdist/
 var/

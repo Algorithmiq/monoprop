@@ -1,0 +1,38 @@
+import { docs } from 'collections/server';
+import { loader } from 'fumadocs-core/source';
+import { lucideIconsPlugin } from 'fumadocs-core/source/lucide-icons';
+import { docsContentRoute, docsImageRoute, docsRoute } from './shared';
+
+export const source = loader({
+  baseUrl: docsRoute,
+  source: docs.toFumadocsSource(),
+  plugins: [lucideIconsPlugin()],
+});
+
+type Page = (typeof source)['$inferPage'];
+
+export function getPageImage(page: Page) {
+  const segments = [...page.slugs, 'image.png'];
+
+  return {
+    segments,
+    url: `${docsImageRoute}/${segments.join('/')}`,
+  };
+}
+
+export function getPageMarkdownUrl(page: Page) {
+  const segments = [...page.slugs, 'content.md'];
+
+  return {
+    segments,
+    url: `${docsContentRoute}/${segments.join('/')}`,
+  };
+}
+
+export async function getLLMText(page: Page) {
+  const processed = await page.data.getText('processed');
+
+  return `# ${page.data.title} (${page.url})
+
+${processed}`;
+}
