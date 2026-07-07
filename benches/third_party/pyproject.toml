@@ -2,14 +2,14 @@
 name = "monoprop-benchmarks"
 version = "0.1.0"
 description = "Standalone benchmark scripts for monoprop"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "monoprop",
-    "qiskit",
-    "tqdm",
-    "ppvm",
-    "pauli-prop",
-    "cuquantum-python-cu12",
+    "qiskit==2.5.0",
+    "tqdm==4.68.3",
+    "ppvm==0.1.0",
+    "pauli-prop==0.2.0",
+    "cuquantum-python-cu12==26.6.0",
 ]
 
 [tool.uv]
@@ -23,4 +23,4 @@ RUSTFLAGS = "-C target-feature=+aes,+neon"
 
 [tool.uv.sources]
 monoprop = { path = "../.." }
-ppvm = { git = "https://github.com/QuEraComputing/ppvm.git", subdirectory = "ppvm-python" }
+ppvm = { git = "https://github.com/QuEraComputing/ppvm.git", subdirectory = "ppvm-python", rev = "2570637b145949aadc085871400fdac9322fff54" }
