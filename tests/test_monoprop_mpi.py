@@ -93,6 +93,19 @@ class TestMPISimulator:
             lih_fermionic_spin_exact.exact_expval,
         )
 
+    def test_immediate_contraction_schrodinger(self, lih_fermionic_spin_exact):
+        # Schrödinger IN-PLACE propagate at R>1: exercises the fused build's cross-rank half
+        # rotations, including the resolver-MISS insert arm that folds the gate cosine into a
+        # freshly inserted (HF-scored) slot. See HalfRotationRec.is_insert / apply_fused_contract.
+        mp, circuit = _make_mp(
+            lih_fermionic_spin_exact, MPI.COMM_WORLD, schrodinger=True
+        )
+        mp.propagate(circuit)
+        _assert_expval(
+            mp.expectation_value_functional(pare_threshold=1e-10)(),
+            lih_fermionic_spin_exact.exact_expval,
+        )
+
     def test_schrodinger_picture(self, lih_fermionic_spin_exact):
         mp, circuit = _make_mp(
             lih_fermionic_spin_exact, MPI.COMM_WORLD, schrodinger=True

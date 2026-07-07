@@ -1,3 +1,17 @@
+// Copyright 2026 Algorithmiq
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #pragma once
 
 #include <cstddef>
@@ -51,9 +65,9 @@ inline auto parse_positive_int(const char *text) -> std::optional<int> {
 } // namespace detail
 
 struct Settings {
-    std::optional<int> num_threads;              // monoprop_NUM_THREADS
-    std::size_t recompute_cache_max_mb = 2048;   // monoprop_RECOMPUTE_CACHE_MAX_MB
-    bool phase_timers = false;                    // monoprop_PHASE_TIMERS
+    std::optional<int> num_threads;            // monoprop_NUM_THREADS
+    std::size_t recompute_cache_max_mb = 2048; // monoprop_RECOMPUTE_CACHE_MAX_MB
+    bool phase_timers = false;                 // monoprop_PHASE_TIMERS
 };
 
 /// Parse the environment once and return the shared, immutable Settings. The first call reads every

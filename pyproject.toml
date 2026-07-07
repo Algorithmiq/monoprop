@@ -1,7 +1,11 @@
 [build-system]
 requires = [
-  "nanobind",
-  "scikit-build-core>=0.11",
+  # Pin the build backend: it is resolved in an isolated env that ignores
+  # uv.lock, so leaving it unpinned lets a reinstall silently jump versions.
+  # scikit-build-core 1.0.0 breaks the editable _core build; nanobind is
+  # pinned for the same reproducibility reason.
+  "nanobind==2.13.0",
+  "scikit-build-core>=0.11,<1.0",
   "setuptools-scm>=8",
   "mpi4py>=4.1.0",
 ]
@@ -97,6 +101,10 @@ cache-keys = [
   { file = "**/CMakeLists.txt" },
   { file = "cmake/**/*" },
   { file = "src/monoprop/bindings/bindings.cpp.in" },
+  # The codegen scripts drive the bindings and the install-time _dispatch.py;
+  # without these keys an edit to a generator leaves a stale build cached.
+  { file = "tools/generate-binders.py" },
+  { file = "tools/generate-dispatch.py" },
 ]
 
 [tool.uv.dependency-groups]

@@ -97,12 +97,14 @@ struct RotationRec {
 // v_partner is the PARTNER's pre-cos coefficient shipped over the wire (v_src on the query stream,
 // v_tgt on the response stream, or — for a Schrödinger cross-rank MISS — via a post-extension exchange).
 struct HalfRotationRec {
-    size_t local_idx = 0;      // slot THIS rank owns: T (resolver) or S (querier)
-    double v_partner = 0.0;    // partner's PRE-cos coeff: v_src (resolver) / v_tgt (querier)
-    double v_local = 0.0;      // lazy frame only: the local slot's OWN pre-firing (pre-cos) coeff, so
-                               // the apply writes cos·v_local + sin term (mirrors the full-rotation arm).
-                               // Reconstructed at resolve time — before the log append — so it is pre-firing.
-    int32_t phase_signed = 0;  // +φ (resolver) or −φ (querier), pre-signed to match Evolution.cpp:392
+    size_t local_idx = 0;     // slot THIS rank owns: T (resolver) or S (querier)
+    double v_partner = 0.0;   // partner's PRE-cos coeff: v_src (resolver) / v_tgt (querier)
+    int32_t phase_signed = 0; // +φ (resolver) or −φ (querier), pre-signed to match Evolution.cpp:392
+    // Resolver MISS halves write a slot INSERTED this gate (ip ≥ the pre-insert operator size). Fresh
+    // inserts are born AFTER the scan's fused cos sweep, so the apply must fold the gate's cos into the
+    // slot itself (c = cos·c + sin term) instead of the plain add that pre-scaled slots get. False for
+    // hit halves and all querier halves (their local slot is a pre-gate term the sweep covered).
+    bool is_insert = false;
 };
 
 // Sink threaded through build_layer's fused branch. Self-routed rotations (both endpoints local) are
@@ -122,17 +124,6 @@ struct FusedContract {
     std::vector<HalfRotationRec> cross_half; // R>1: one half per cross-rank query (resolver +φ, querier −φ)
 };
 
-// Non-templated view of the active picture's lazy-cosine frame, passed to apply_fused_contract (which
-// operates on FusedContract + op_coeffs and so cannot name CoeffFrame<NumModes>). Non-null ⇒ the lazy
-// frame is active for this gate: the apply SKIPS the eager cos pass and instead writes each touched
-// endpoint's post-firing true value directly (cos·v + sin term) and re-stamps it to `nfirings`. `stamp`
-// parallels op_coeffs; `mag` (may be null) is the per-term magnitude byte refreshed on each endpoint write.
-struct FrameRefs {
-    uint32_t *stamp = nullptr;
-    uint8_t *mag = nullptr;
-    uint32_t nfirings = 0;
-};
-
 // ─── Query serialization ──────────────────────────────────────────────────────
 // Queries are exchanged as flat VecZ buffers: every kQueryWords elements = one query — the W
 // monomial words plus one trailing phase word (±1). The querier's source index is NOT in the
@@ -144,8 +135,12 @@ inline constexpr size_t kQueryWords = mpi_detail::kWords<NumModes> + 1;
 // Phase ↔ word codec for the trailing phase word. Only ±1 is ever stored; the unsigned-int
 // intermediate normalizes the sign bit into a fixed 32-bit pattern so the ±1 round-trip is exact
 // no matter how wide VecZ's element is. encode/decode are inverses — edit them as a pair.
-inline auto encode_phase(int phase) -> size_t { return static_cast<size_t>(static_cast<unsigned int>(phase)); }
-inline auto decode_phase(size_t word) -> int { return static_cast<int>(static_cast<unsigned int>(word)); }
+inline auto encode_phase(int phase) -> size_t {
+    return static_cast<size_t>(static_cast<unsigned int>(phase));
+}
+inline auto decode_phase(size_t word) -> int {
+    return static_cast<int>(static_cast<unsigned int>(word));
+}
 
 template <size_t NumModes>
 inline auto query_push(VecZ &buf, const MajoranaSet<NumModes> &maj, int phase) -> void {

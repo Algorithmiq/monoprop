@@ -48,8 +48,8 @@ serve-docs:
 # Each LABEL is one column in results/REPORT.md, so serial / MPI / thread variants
 # sit side by side. Set the thread count with the monoprop_NUM_THREADS env var.
 # Uses `--no-sync` so a run never rebuilds monoprop with the default (MPI=OFF) and
-# clobbers an MPI build; sync deps once first with `uv sync --all-groups
-# --all-extras` (or `just bench-build-mpi` for MPI). Examples:
+# clobbers an MPI build; sync deps once first with `uv sync --all-extras --group
+# bench` (or `just bench-build-mpi` for MPI). Examples:
 #   just bench serial
 #   monoprop_NUM_THREADS=10 just bench serial-t10 --num-modes 64 --bench-rounds 10
 # Run the suite (timing + memory) for one LABEL; extra args go to pytest.

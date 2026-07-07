@@ -516,7 +516,7 @@ protected:
     MPI_Comm comm_; // MPI communicator
     CutoffFn<NumModes> cutoff_fn_;
     detail::MPOperator<NumModes> mp_op_; // Single MPOperator for this MPI rank
-    MPGraph graph_;              // Single MPGraph for this MPI rank
+    MPGraph graph_;                      // Single MPGraph for this MPI rank
     // Persistent matched-follower scratch for the per-gate layer build (see MatchedEpochSet):
     // reused across gates so no per-gate O(operator) allocate+memset. Pure scratch — carries no
     // state between gates (each build bumps the epoch), so copies may share or reset it freely.
@@ -627,13 +627,17 @@ private:
                         double gen_coeff = 0.0,
                         size_t gate_index = 0) -> void;
 
+    // fused_scale_coeffs (ContractImmediately only): the picture's MUTABLE coeff vector — hands the
+    // build write access for the k==0 fused cos sweep; the taken decision is reported via fused_scale
+    // so the apply acts on the same choice. See build_layer.
     auto build_evolve_result_(const VecZ &gen_vec,
                               int only_rotate_len_k,
                               std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
                               std::optional<double> param = std::nullopt,
                               CosMask *out_cos = nullptr,
                               detail::FusedContract *fused_contract = nullptr,
-                              bool *engaged_frame = nullptr) -> std::shared_ptr<LayerCore>;
+                              VecD *fused_scale_coeffs = nullptr,
+                              bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
 
     /**
      * @brief Creates a functional (closure) for expectation value or gradient calculations.

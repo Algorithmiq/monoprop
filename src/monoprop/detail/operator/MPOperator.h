@@ -1,3 +1,17 @@
+// Copyright 2026 Algorithmiq
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #pragma once
 
 #include <algorithm>
@@ -18,9 +32,8 @@
 #include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
-#include "monoprop/detail/evolution/CoeffFrame.h"
-#include "monoprop/detail/operator/OperatorIndex.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
+#include "monoprop/detail/operator/OperatorIndex.h"
 
 // Forward declarations of MajoranaAlgebra.h helpers (namespace monoprop) so this header need not
 // include it. `Rows` is either the generic MajoranaVector (plain vector) or the packed operator-row
@@ -64,14 +77,6 @@ struct MPOperator {
     std::unique_ptr<OperatorIndex<NumModes>> store = std::make_unique<OperatorIndex<NumModes>>();
     VecD op_coeffs = {};
     VecD state_coeffs = {};
-    // Lazy-cosine frames (one per picture): the ContractImmediately build freezes coefficients and
-    // records firings in an append-only log, reconstructing true values on demand — instead of the
-    // eager per-gate cos sweep over all terms. When a frame is active its picture's coeff vector holds
-    // the FROZEN value at each term's stamp; the true value is frame.true_value(store, stored, stamp, i).
-    // A barrier (initialize_operator_caches_) materializes and empties it, so frames are empty at every
-    // public API boundary. Includes the per-term stamp + magnitude-byte arrays. See CoeffFrame.h.
-    CoeffFrame<NumModes> op_frame = {};
-    CoeffFrame<NumModes> state_frame = {};
     MajoranaOperator<NumModes> init_op_map = {};
     VecZ slater_determinant = {};
     // Operator basis: Majorana monomials (default) or native Pauli strings. Selects the coefficient
@@ -92,8 +97,6 @@ struct MPOperator {
         : store(other.store->clone()),
           op_coeffs(other.op_coeffs),
           state_coeffs(other.state_coeffs),
-          op_frame(other.op_frame),
-          state_frame(other.state_frame),
           init_op_map(other.init_op_map),
           slater_determinant(other.slater_determinant),
           basis(other.basis),
@@ -271,8 +274,7 @@ struct MPOperator {
                 }
                 else {
                     const auto term_repr = std::format("[{}]", join_with_separator(k, ", "));
-                    throw std::runtime_error(
-                        std::format("Operator term {} not found in the operator.", term_repr));
+                    throw std::runtime_error(std::format("Operator term {} not found in the operator.", term_repr));
                 }
             }
             // otherwise, in schrodinger picture, we can change the initial hamiltonian freely as the state has
@@ -292,10 +294,6 @@ struct MPOperator {
         // Update the internal state for the specified rank
         init_op_map = new_op_map;
         op_coeffs = new_op_coeffs;
-        // Wholesale coeff overwrite ⇒ both lazy frames are invalidated. The new coeffs are exact, so
-        // reset each frame fully (log + per-term stamp/byte arrays); the next build rebuilds them.
-        op_frame.clear();
-        state_frame.clear();
         return {std::move(new_op_map), std::move(new_op_coeffs), std::move(new_grad_op)};
     }
 };

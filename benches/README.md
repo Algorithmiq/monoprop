@@ -13,8 +13,11 @@ run; invoke it with `just bench`.
 **Prerequisite — install the `bench` dependency group once:**
 
 ```bash
-uv sync --group bench          # or: uv sync --all-groups --all-extras
+uv sync --all-extras --group bench
 ```
+
+(Prefer this over `--all-groups`: on the pinned Python 3.11 dev interpreter
+`--all-groups` drags in the `docs` group, which requires Python ≥3.12.)
 
 The recipes run with `uv run --no-sync` (so a run never rebuilds monoprop with
 the default `MPI=OFF` and clobbers an MPI build), which means they do **not**

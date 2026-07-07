@@ -17,6 +17,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <span>
@@ -30,14 +31,13 @@
 #include "monoprop/MajoranaAlgebra.h"
 #include "monoprop/PauliAlgebra.h"
 #include "monoprop/TypeAliases.h"
-#include "monoprop/detail/evolution/CoeffFrame.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Parallel.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
-#include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
+#include "monoprop/detail/operator/MPOperator.h"
 
 namespace monoprop::detail {
 
@@ -245,7 +245,7 @@ template <size_t NumModes, bool IsPauli>
 // term leader/follower (inverted index XOR-column fold + pivot bit), compress it into the cosine block, and
 // in the SAME walk apply the cutoffs and emit the surviving rotation query into its per-rank stream.
 struct FusedScanResult {
-    std::vector<CosMask> cos_blocks;        // ascending, disjoint, chunk order
+    std::vector<CosMask> cos_blocks;               // ascending, disjoint, chunk order
     std::vector<VecZ> leader_queries;              // size R: serialized leader queries per owner rank
     std::vector<std::vector<size_t>> leader_src;   // size R: parallel to leader_queries (source op idx)
     std::vector<VecZ> follower_queries;            // size R: serialized follower queries per owner rank
@@ -262,6 +262,13 @@ struct FusedScanResult {
 // `capture_values` (fused contraction, R==1): also collect the signed pre-cos source coefficient
 // (v_src) into leader_val/follower_val, parallel to leader_src/follower_src. Off by default so every
 // other path is byte-for-byte unchanged.
+// `fused_scale_coeffs` (ContractImmediately, k==0 only; must alias coeffs.data()): fold the gate's
+// cosine scale into this same pass — each anticommuting coefficient is loaded once (pre-cos, feeding
+// the atol gate and v_src exactly as before) and stored back multiplied by `fused_scale_cos` =
+// cos(2·build_angle). One coefficient sweep replaces the eager read-pass + CosMask + RMW-scale-pass,
+// so no cosine set is built (cos_blocks stay empty). Chunks own disjoint word ranges ⇒ the in-place
+// writes are race-free. Downstream, a hit partner's stored value is then POST-cos — resolve recovers
+// the pre-cos v_tgt via 1/cos (see LayerBuildEngine::inv_cos_).
 template <size_t NumModes, bool IsPauli = false>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const MajoranaSet<NumModes> &gen,
@@ -272,19 +279,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             size_t rank_count,
                             size_t my_rank,
                             bool capture_values = false,
-                            const CoeffFrame<NumModes> *frame = nullptr) -> FusedScanResult {
+                            double *fused_scale_coeffs = nullptr,
+                            double fused_scale_cos = 1.0) -> FusedScanResult {
     const size_t gen_pop = gen.count();
     const auto ectx = make_gen_emit_context<NumModes, IsPauli>(gen, gen_pop);
-    // Lazy-cosine frame: when `frame` is active the stored coeffs are frozen, so the gate reconstructs
-    // the true value on demand; no eager cosine set is built (cos stays empty). The frame also carries
-    // the magnitude byte prefilter: reject an anti term without reading its 8-byte coefficient when its
-    // 1-byte upper bound proves it fails the sin gate (survivors exact-confirm). See CoeffFrame.h.
-    const bool implicit = (frame != nullptr);
-    const uint32_t *const stamp = implicit ? frame->stamp.data() : nullptr;
-    const uint8_t *const mag_ptr =
-        (implicit && frame->mag.size() == coeffs.size()) ? frame->mag.data() : nullptr;
-    const double mag_rt =
-        mag_reject_threshold(cut_st.check_atol, cut_st.abs_sin_val, cut_st.atol_value);
 
     // Cutoff + emit for one anticommuting term. Writes only the per-chunk per-rank sinks passed in
     // (safe under for_each_chunk). The dynamic gate (depends only on |M|) runs BEFORE
@@ -384,6 +382,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         }
         const uint64_t *const row_parity_ptr = g_odd ? inverted_index.row_parity_word_ptr() : nullptr;
         const size_t n = op.store->size();
+        // The fused sweep writes fused_scale_coeffs[i] for every anticommuting index i < n, so the coeff
+        // vector must already cover the full operator and be the very array the reads come from. Both
+        // hold in ContractImmediately (entry sync + per-gate extend); a violation is a caller bug —
+        // assert, never a silent write-skip (a skipped scale would corrupt the 1/cos recovery later).
+        assert(fused_scale_coeffs == nullptr || (fused_scale_coeffs == coeffs.data() && coeffs.size() >= n));
 
         const size_t last_word = word_count - 1;
         const uint64_t last_word_mask = (n % 64 == 0) ? ~uint64_t{0} : ((uint64_t{1} << (n % 64)) - 1);
@@ -447,12 +450,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             // abs_coeff_for, so the non-capture (OFF) path is unchanged. Kept out of the arms so the
             // gate-before-popcount ordering in each arm stays explicit at the call site.
             auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
-                if (implicit) {
-                    // Reconstruct the true (lazily-cos-scaled) coefficient from the frozen store.
-                    const double v_src =
-                        frame->true_value(*op.store, (i < coeffs.size()) ? coeffs[i] : 0.0, stamp[i], i);
-                    return {v_src, std::abs(v_src)};
-                }
                 if (capture_values) {
                     const double v_src = (i < coeffs.size()) ? coeffs[i] : 0.0;
                     return {v_src, cut_st.use_coeff_checks ? std::abs(v_src) : 0.0};
@@ -462,25 +459,37 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             const bool word_aligned_cos = only_rotate_len_k == 0;
             CosineWordBuilder cos_b;
             for (const auto &w : nz) {
-                if (word_aligned_cos) {
+                if (word_aligned_cos && fused_scale_coeffs != nullptr) {
+                    // Fused cos sweep (ContractImmediately, k==0): every anticommuting coefficient is
+                    // loaded ONCE — the pre-cos value feeds the atol gate and v_src exactly as the eager
+                    // arm below — and stored back scaled, unconditionally and BEFORE any gate `continue`
+                    // (the sweep covers all anti terms; the gates only decide emission). No cosine set is
+                    // built: this store IS the gate's cos pass.
+                    for (uint64_t m = w.overlap; m; m &= m - 1) {
+                        const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                        const size_t i = w.base + tz;
+                        const double v_src = fused_scale_coeffs[i];
+                        fused_scale_coeffs[i] = v_src * fused_scale_cos;
+                        const double abs_c = std::abs(v_src);
+                        if (cut_st.is_below_sin(abs_c)) {
+                            continue;
+                        }
+                        const size_t maj_pop = op.store->popcount(i);
+                        const bool is_follower = (w.foll >> tz) & 1u;
+                        emit(maj_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
+                    }
+                }
+                else if (word_aligned_cos) {
                     // No orbital gate: cosine-scale the whole word (all anticommuting terms), then per
                     // bit apply the ATOL coefficient gate BEFORE the popcount ROW read. ~90–97% of
                     // anticommuting terms fail this gate (their coefficient is below the sine cutoff),
                     // and the gate needs only |coeff[i]| — not the row — so deferring popcount until a
                     // term passes eliminates that many random packed-row cacheline loads (the dominant
                     // pass-2 memory traffic). Bit-identical: same emitted set/order, same cos word.
-                    // Implicit frame: no eager cosine set — the firing log carries the cos factor.
-                    if (!implicit) {
-                        cos_b.push_word(w.base, w.overlap);
-                    }
+                    cos_b.push_word(w.base, w.overlap);
                     for (uint64_t m = w.overlap; m; m &= m - 1) {
                         const size_t tz = static_cast<size_t>(std::countr_zero(m));
                         const size_t i = w.base + tz;
-                        // Byte prefilter: skip the coefficient read for terms the 1-byte upper bound
-                        // already proves are below the sin cutoff (bit-exact — survivors exact-confirm).
-                        if (mag_ptr != nullptr && static_cast<double>(mag_ptr[i]) <= mag_rt) {
-                            continue;
-                        }
                         const auto [v_src, abs_c] = derive_coeff(i);
                         if (cut_st.is_below_sin(abs_c)) {
                             continue;

@@ -16,6 +16,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -23,8 +25,6 @@
 #include <vector>
 
 #include "monoprop/MajoranaAlgebra.h"
-#include "monoprop/detail/EnvConfig.h"
-#include "monoprop/detail/evolution/CoeffFrame.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Parallel.h"
@@ -85,9 +85,11 @@ struct LayerBuildEngine {
     const VecD *op_coeffs_ = nullptr;
     std::vector<std::vector<double>> src_val_r;
 
-    // Lazy-cosine frame: when set, resolve reconstructs a hit partner's true value (v_tgt) from the
-    // frozen store instead of reading op_coeffs directly. nullptr ⇒ eager.
-    const CoeffFrame<NumModes> *frame_ = nullptr;
+    // Fused cos sweep (ContractImmediately k==0): the scan already multiplied every anticommuting
+    // coefficient by cos(2θ) in its own pass, so a hit partner's stored value is POST-cos here; resolve
+    // recovers the pre-cos v_tgt as stored·inv_cos_ (one extra rounding, ≤1 ulp — see build_layer).
+    bool fused_scale_ = false;
+    double inv_cos_ = 1.0;
 
     LayerBuildEngine(MPOperator<NumModes> &local_op_,
                      MPI_Comm comm_,
@@ -208,14 +210,14 @@ struct LayerBuildEngine {
                                                            *op_coeffs_,
                                                            schrodinger_,
                                                            *fused_,
-                                                           frame_,
+                                                           fused_scale_,
+                                                           inv_cos_,
                                                            basis_);
             // Round 2: value responses B→A, using the known transpose recv counts (see response_recv_counts).
             std::vector<int> resp_recv = response_recv_counts();
             std::vector<std::vector<double>> inc_rval;
             mpi::begin_alltoallv(resp_val, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_rval);
-            process_query_responses_fused<NumModes>(
-                inc_rval, src_idx_r, queries_r, R, my_rank, *fused_, local_op, *op_coeffs_, frame_);
+            process_query_responses_fused<NumModes>(inc_rval, src_idx_r, queries_r, R, my_rank, *fused_);
             return;
         }
         // ── Non-fused R>1 exchange (graph build / replay) — unchanged ──
@@ -353,13 +355,13 @@ struct LayerBuildEngine {
         insert_deferred_self_misses();
         if (fused_ != nullptr) {
             // Fused (ContractImmediately, all ranks): the LayerCore is transient in this mode, so skip
-            // assemble_partners + build_layer_storage_unified entirely and return nullptr. In the EAGER
-            // fused path we append the inserted endpoints into cos (see append_inserted_endpoints_) so the
-            // immediate cos scale covers them, exactly as the non-fused evolve_step path expects. When the
-            // lazy frame is engaged (frame_ != nullptr) apply_fused_contract reconstructs cos from the
-            // frame and ignores *out_cos entirely, so building/moving the inserted-endpoint cos is dead
-            // work on the hot per-gate path — skip it and leave *out_cos empty.
-            if (out_cos != nullptr && frame_ == nullptr) {
+            // assemble_partners + build_layer_storage_unified entirely and return nullptr. In the two-pass
+            // fused path (k>0 / cos==0 fallback) we append the inserted endpoints into cos (see
+            // append_inserted_endpoints_) so the immediate cos scale covers them, exactly as the non-fused
+            // evolve_step path expects. Under the fused cos sweep the scan applied cos in place and built
+            // no cosine set; the apply covers inserts via its in-place insert arm and never reads *out_cos
+            // — building/moving it would be dead work on the hot per-gate path, so leave it empty.
+            if (out_cos != nullptr && !fused_scale_) {
                 append_inserted_endpoints_(cos_all);
                 *out_cos = std::move(cos_all);
             }
@@ -469,21 +471,15 @@ private:
                         matched.mark(found[j]); // distinct leaders → distinct found → no atomics
                     }
                     if (fused) {
-                        // op_coeffs_[found] is pre-cos here and stays so (found < combined_size; extend
-                        // only appends, cos runs after build) — capture v_tgt now. In the lazy frame the
-                        // stored value is frozen, so reconstruct the partner's true pre-firing value.
+                        // Capture the partner's PRE-cos v_tgt now. Under the fused cos sweep the scan
+                        // already scaled op_coeffs_[found] (found < combined_size, anticommuting ⇒ swept),
+                        // so recover the pre-cos value with the inverse factor; without the sweep (k>0 /
+                        // cos==0 fallback) the stored value is still pre-cos and stays so (extend only
+                        // appends, the mask scale runs after build).
                         const double v_tgt =
-                            (frame_ != nullptr)
-                                ? frame_->true_value(*local_op.store,
-                                                     (*op_coeffs_)[found[j]],
-                                                     frame_->stamp[found[j]],
-                                                     found[j])
-                                : (*op_coeffs_)[found[j]];
-                        hit_sink->push_back(RotationRec{srcs[j],
-                                                        found[j],
-                                                        vals[j],
-                                                        v_tgt,
-                                                        static_cast<int32_t>(phases[j])});
+                            fused_scale_ ? (*op_coeffs_)[found[j]] * inv_cos_ : (*op_coeffs_)[found[j]];
+                        hit_sink->push_back(
+                            RotationRec{srcs[j], found[j], vals[j], v_tgt, static_cast<int32_t>(phases[j])});
                     }
                     else {
                         in_sink.push_back({found[j], phases[j]});
@@ -507,20 +503,21 @@ private:
 // AFTER both resolves), the per-rank CrossRankPartnerData is assembled, and a LayerCore is built.
 template <size_t NumModes>
 auto build_layer(MPOperator<NumModes> &local_op,
-                             const MajoranaSet<NumModes> &gen,
-                             const CutoffFn<NumModes> &cutoff_fn,
-                             const std::optional<double> &atol,
-                             std::optional<std::reference_wrapper<const VecD>> local_coeffs,
-                             const std::optional<double> &upper_atol,
-                             const std::optional<double> &param,
-                             int only_rotate_len_k,
-                             MatchedEpochSet &matched_scratch,
-                             MPI_Comm comm,
-                             CosMask *out_cos = nullptr,
-                             FusedContract *fused_contract = nullptr,
-                             bool schrodinger = false,
-                             bool *engaged_frame = nullptr,
-                             Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
+                 const MajoranaSet<NumModes> &gen,
+                 const CutoffFn<NumModes> &cutoff_fn,
+                 const std::optional<double> &atol,
+                 std::optional<std::reference_wrapper<const VecD>> local_coeffs,
+                 const std::optional<double> &upper_atol,
+                 const std::optional<double> &param,
+                 int only_rotate_len_k,
+                 MatchedEpochSet &matched_scratch,
+                 MPI_Comm comm,
+                 CosMask *out_cos = nullptr,
+                 FusedContract *fused_contract = nullptr,
+                 bool schrodinger = false,
+                 VecD *fused_scale_coeffs = nullptr,
+                 bool *fused_scale_out = nullptr,
+                 Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
     // Fused contraction: the caller (evolve_mode_contract_immediately_) passes a non-null sink for the
@@ -531,46 +528,56 @@ auto build_layer(MPOperator<NumModes> &local_op,
     const auto &coeffs = local_coeffs ? local_coeffs->get() : empty_coeffs();
     const CutoffEvaluator<NumModes> cut_eval{cutoff_fn};
 
-    // Lazy-cosine frame: the ContractImmediately mode's cos implementation (use_fused == that mode).
-    // k==0 only — the orbital gate makes the cos set popcount-dependent, not a pure function of the
-    // anti-signature, so only_rotate_len_k>0 falls back to eager (a barrier brackets every call, so
-    // those calls always start with an empty frame). The frame owns the per-term stamp + magnitude byte
-    // arrays parallel to coeffs; ensure_capacity syncs them (grows only at frame start). See CoeffFrame.h.
-    // Runs at every rank count: self-rank hits reconstruct in resolve_range_, cross-rank halves in the
-    // fused resolver / response handlers (all before the log append ⇒ pre-firing), so the wire still
-    // carries true pre-cos values exactly as the eager path shipped them. Cache-gated: the frame engages
-    // only once the operator's working set outgrows the last-level cache (the win is large-operator only);
-    // engage_lazy_frame reads the machine, no magic term count. coeffs.size() here is the pre-gate operator
-    // size — the SAME value Impl uses to decide, so the two agree per gate.
-    const bool implicit =
-        use_fused && only_rotate_len_k == 0 && engage_lazy_frame<NumModes>(coeffs.size());
-    // build_layer is the single authority for the engage decision; report it so the fused caller
-    // (evolve_mode_contract_immediately_) drives the apply from the SAME decision instead of
-    // recomputing engage_lazy_frame and risking a build/apply disagreement over frozen-vs-eager coeffs.
-    if (engaged_frame != nullptr) {
-        *engaged_frame = implicit;
+    // Fused cos sweep: the ContractImmediately mode's cos implementation (use_fused == that mode, and the
+    // caller hands the picture's MUTABLE coeff vector through fused_scale_coeffs). The scan folds the
+    // per-gate cosine scale into its own coefficient pass — one sweep instead of the eager read-pass +
+    // CosMask round-trip + RMW-scale-pass, which restreamed every anticommuting coefficient from DRAM
+    // twice per gate. k==0 only: a hit target with popcount>k is outside the k>0 per-index cos set, so
+    // the 1/cos recovery in resolve would be wrong for it — only_rotate_len_k>0 keeps the two-pass eager.
+    // cos(2·param)==0.0 exactly would make the recovery impossible; fall back to two-pass (unreachable
+    // for real angles — no double has cosine exactly 0 — defensive only). cos is even, so the sweep's
+    // cos(2·build_angle) equals the apply's cos(2·apply_angle) bit-for-bit (apply_angle = ±build_angle).
+    const double cos_build = (use_fused && param.has_value()) ? std::cos(2.0 * param.value()) : 1.0;
+    const bool fused_scale =
+        use_fused && only_rotate_len_k == 0 && fused_scale_coeffs != nullptr && param.has_value() && cos_build != 0.0;
+    // build_layer is the single authority for this decision; report it so the fused caller
+    // (evolve_mode_contract_immediately_) drives the apply (skip-the-mask-scale, in-place insert arm)
+    // from the SAME decision instead of recomputing it and risking a build/apply disagreement.
+    if (fused_scale_out != nullptr) {
+        *fused_scale_out = fused_scale;
     }
-    CoeffFrame<NumModes> *frame = nullptr;
-    if (implicit) {
-        frame = schrodinger ? &local_op.state_frame : &local_op.op_frame;
-        if (frame->mag.empty() && kFrameUseMagByte) {
-            frame->rebuild_mag(coeffs); // (re)build the byte prefilter at frame start / after a reset
-        }
-        frame->ensure_capacity(coeffs.size(), coeffs);
-    }
+    assert(fused_scale_coeffs == nullptr || (local_coeffs && &local_coeffs->get() == fused_scale_coeffs));
 
     FusedScanResult fused = [&] {
         profiling::ScopedRegion prof_find(profiling::Region::Find);
         // Dispatch the scan on the basis at compile time (Pauli emit-sign kernel + J(G) fold vs the
-        // Majorana interleave/hermitian phase). Every other argument is basis-agnostic.
+        // Majorana interleave/hermitian phase). Every other argument — including the fused cos sweep,
+        // which scales the same anticommuting set the fold finds — is basis-agnostic.
+        double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
         if (basis == Basis::Pauli) {
-            return fused_find_and_collect<NumModes, true>(
-                local_op, gen, cut_eval, cut_st, coeffs, only_rotate_len_k, R, my_rank,
-                /*capture_values=*/use_fused, frame);
+            return fused_find_and_collect<NumModes, true>(local_op,
+                                                          gen,
+                                                          cut_eval,
+                                                          cut_st,
+                                                          coeffs,
+                                                          only_rotate_len_k,
+                                                          R,
+                                                          my_rank,
+                                                          /*capture_values=*/use_fused,
+                                                          sweep_ptr,
+                                                          cos_build);
         }
-        return fused_find_and_collect<NumModes, false>(
-            local_op, gen, cut_eval, cut_st, coeffs, only_rotate_len_k, R, my_rank,
-            /*capture_values=*/use_fused, frame);
+        return fused_find_and_collect<NumModes, false>(local_op,
+                                                       gen,
+                                                       cut_eval,
+                                                       cut_st,
+                                                       coeffs,
+                                                       only_rotate_len_k,
+                                                       R,
+                                                       my_rank,
+                                                       /*capture_values=*/use_fused,
+                                                       sweep_ptr,
+                                                       cos_build);
     }();
     CosMask cos_all;
     {
@@ -595,10 +602,11 @@ auto build_layer(MPOperator<NumModes> &local_op,
     eng.basis_ = basis;
     if (use_fused) {
         eng.fused_ = fused_contract;
-        eng.op_coeffs_ = &coeffs; // SAME array the scan read (= *op_coeffs); pre-cos throughout resolve
-    }
-    if (implicit) {
-        eng.frame_ = frame;
+        eng.op_coeffs_ = &coeffs; // SAME array the scan read (= *op_coeffs)
+        eng.fused_scale_ = fused_scale;
+        if (fused_scale) {
+            eng.inv_cos_ = 1.0 / cos_build; // pre-cos recovery factor for hit v_tgt (see resolve_range_)
+        }
     }
 
     eng.queries_r = std::move(fused.leader_queries);
@@ -617,22 +625,6 @@ auto build_layer(MPOperator<NumModes> &local_op,
         eng.drop_matched_cross_rank_followers();
     }
     eng.run_exchange(/*is_leader_pass=*/false);
-
-    // Lazy-cosine frame: append THIS firing to the log now that all pre-firing reconstructions
-    // (scan v_src, resolve v_tgt) are captured. cos is even, so cos(2·param) = cos(2·build_angle);
-    // build_layer's `param` is build_angle, which yields the same cosine the apply uses. Firings created
-    // after this point (partner inserts, extend) stamp at the post-append nfirings, so the gate f cos
-    // is applied to them exactly once — by the apply's explicit cos_val, not the log. See CoeffFrame.h.
-    if (implicit && param.has_value()) {
-        // Pass the FOLD generator (J(G) for Pauli) and its g_odd bit (false for Pauli) so the lazy
-        // reconstruct reproduces this firing's anticommutation parity — the scan folds the same columns.
-        if (basis == Basis::Pauli) {
-            frame->append_firing(2.0 * param.value(), pair_swap<NumModes>(gen), /*g_odd=*/false);
-        }
-        else {
-            frame->append_firing(2.0 * param.value(), gen, gen.count() % 2 != 0);
-        }
-    }
 
     auto storage = eng.finish(std::move(cos_all), out_cos);
 

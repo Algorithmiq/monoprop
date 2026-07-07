@@ -24,7 +24,6 @@
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/EnvConfig.h"
-#include "monoprop/detail/evolution/CoeffFrame.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/LayerBuilder.h"
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
@@ -96,8 +95,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
             }
         }
         const auto majorana_bitset = indices_to_bitset<NumModes>(indices);
-        const auto encoded_coeff =
-            (basis_ == Basis::Pauli) ? encode_pauli_coeff(coefficient) : encode_coeff<NumModes>(coefficient, majorana_bitset);
+        const auto encoded_coeff = (basis_ == Basis::Pauli) ? encode_pauli_coeff(coefficient)
+                                                            : encode_coeff<NumModes>(coefficient, majorana_bitset);
 
         // Store the core term separately as it is orders of magnitude larger than the other terms
         if (indices.empty()) {
@@ -216,12 +215,12 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
                 traversal.cross_rank_sin_send_size(rank),
                 [&](size_t logical_idx, size_t value_idx) { sin_send_indices[logical_idx] = value_idx; });
             traversal.for_each_cross_rank_sin_recv_range(rank,
-                                                  0,
-                                                  traversal.cross_rank_sin_recv_size(rank),
-                                                  [&](size_t logical_idx, size_t value_idx, int phase) {
-                                                      d_indices[logical_idx] = value_idx;
-                                                      sin_recv_phases[logical_idx] = phase;
-                                                  });
+                                                         0,
+                                                         traversal.cross_rank_sin_recv_size(rank),
+                                                         [&](size_t logical_idx, size_t value_idx, int phase) {
+                                                             d_indices[logical_idx] = value_idx;
+                                                             sin_recv_phases[logical_idx] = phase;
+                                                         });
 
             b_data.emplace_back(std::move(sin_send_indices), std::move(b_phases));
             d_data.emplace_back(std::move(d_indices), std::move(sin_recv_phases));
@@ -260,23 +259,6 @@ auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
-    // Lazy-cosine barrier: materialize the active picture's coefficients (replay the firing log, write
-    // back each term's true value, reset stamps), then empty the log so every external reader —
-    // expectation, get_operator, deepcopy — sees a plain eager coeff vector, and the next step's
-    // reconstruction windows restart at one Trotter step. This is the invariant that keeps the whole
-    // public API oblivious to the frame: frames are empty at every boundary. Runs BEFORE get_operator().
-    // materialize_all also rebuilds the magnitude byte from the now-exact coeffs (restores selectivity
-    // the shrinking cosines left loose). The coeff vector already has size mp_op_.size() here (grown by
-    // extend during the build); resize is a defensive no-op.
-    {
-        detail::CoeffFrame<NumModes> &frame = schrodinger_ ? mp_op_.state_frame : mp_op_.op_frame;
-        VecD &lazy = schrodinger_ ? mp_op_.state_coeffs : mp_op_.op_coeffs;
-        if (frame.active() || !frame.mag.empty()) {
-            lazy.resize(mp_op_.size(), 0.0);
-            frame.materialize_all(*mp_op_.store, lazy, detail::kFrameUseMagByte);
-        }
-    }
-
     // Pre-warm the lazy operator/state/inverted index caches (results discarded) so later eval-time
     // recompute hits them already built, then trim the now-stable coeff vectors' slack.
     (void)mp_op_.get_operator();
@@ -345,8 +327,9 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
     propagate_with_timing_(
         majoranas,
         only_rotate_len_k,
-        [this, &parameter_mapping, &gen_coeffs, &gate_indices, &mapped_params, &coeffs, majoranas_size](
-            const VecZ &maj, int rot_len, size_t i) {
+        [this, &parameter_mapping, &gen_coeffs, &gate_indices, &mapped_params, &coeffs, majoranas_size](const VecZ &maj,
+                                                                                                        int rot_len,
+                                                                                                        size_t i) {
             const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
             const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
             // The cos word list is no longer persisted on the layer; the builder MOVES it out transiently
@@ -378,57 +361,33 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
     auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0);
     VecD *op_coeffs = schrodinger_ ? &mp_op_.state_coeffs : &mp_op_.op_coeffs;
     *op_coeffs = current_picture_coeffs_();
-    // Lazy cosine IS this mode's cos implementation — the frame is the active picture's, no env gate,
-    // and it runs at every rank count (build_layer + the fused resolver reconstruct the cross-rank
-    // partner/local values before the log append; the wire still carries true pre-cos values as before).
-    detail::CoeffFrame<NumModes> *framep = schrodinger_ ? &mp_op_.state_frame : &mp_op_.op_frame;
     const auto majoranas_size = majoranas.size();
     // ContractImmediately is a SINGLE fused contraction path at all rank counts. build_evolve_result_
     // emits rotation records (self-rank full rotations + R>1 cross-rank half rotations, the latter
-    // carrying partner values via the build-time exchange) plus the inserted-endpoint cos directly — no
-    // transient LayerCore (storage is nullptr) — and apply_fused_contract applies them in place,
-    // replacing the old build_layer + evolve_step. cos is consumed synchronously, so a plain local suffices.
+    // carrying partner values via the build-time exchange) — no transient LayerCore (storage is
+    // nullptr) — and apply_fused_contract applies them in place, replacing the old build_layer +
+    // evolve_step. At k==0 the scan applies the gate's cos scale in place during its own coefficient
+    // pass (the fused cos sweep — one sweep instead of read-pass + CosMask + RMW-pass); build_layer
+    // owns that decision and reports it back through `fused_scale`, so the apply below drives its
+    // skip-the-mask-scale / in-place-insert arms from the SAME decision the build used — they cannot
+    // disagree. At k>0 (or the defensive cos==0 fallback) cos is the two-pass mask, consumed
+    // synchronously, so a plain local suffices.
     propagate_with_timing_(
         majoranas,
         only_rotate_len_k,
-        [this, &mapped_params, op_coeffs, framep, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
+        [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
             const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
             // build_evolve_result_ performs the self-rank operator inserts that grow the operator;
             // extend_coeffs must run AFTER that grow and BEFORE the apply.
             CosMask cos;
             detail::FusedContract fc;
-            // Lazy cosine engages only at k==0 once the operator outgrows the last-level cache. build_layer
-            // owns that decision (and the frame setup) and reports it back through `implicit`, so the apply
-            // below drives frozen-vs-eager coeffs from the SAME decision the build used — they cannot disagree.
-            bool implicit = false;
-            build_evolve_result_(maj, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc, &implicit);
-            // In the lazy frame build_layer already appended this firing to the log; nfirings is its
-            // post-append size (the epoch freshly-touched/inserted terms stamp at).
-            const uint32_t nf = implicit ? static_cast<uint32_t>(framep->nfirings) : 0;
+            bool fused_scale = false;
+            build_evolve_result_(maj, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc, op_coeffs, &fused_scale);
             {
                 profiling::ScopedRegion prof_ext(profiling::Region::Extend);
                 extend_coeffs_from_current_picture_if_needed_(*op_coeffs);
-                // Grow the frame's per-term arrays over the freshly-inserted terms: they are exact NOW
-                // (born this firing), so stamp them at nf and take their byte from the fresh coeff.
-                if (implicit) {
-                    framep->extend_new_terms(*op_coeffs, nf);
-                }
             }
-            detail::FrameRefs refs;
-            if (implicit) {
-                refs.stamp = framep->stamp.data();
-                refs.mag = framep->mag.empty() ? nullptr : framep->mag.data();
-                refs.nfirings = nf;
-            }
-            detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, schrodinger_, refs);
-            // Firing cap: bound the reconstruction window. A single propagate() with thousands of gates
-            // (e.g. Pauli/kicked-Ising, all layers in one call) would otherwise grow the log unboundedly,
-            // making per-gate reconstruction cost quadratic in the gate count. Flushing at the cap keeps
-            // windows short. Workloads that call propagate() per Trotter step (Hubbard, ~476 firings/call)
-            // never reach the cap before their per-step barrier, so their measured win is unaffected.
-            if (implicit && framep->nfirings >= detail::kFrameFlushFirings) {
-                framep->materialize_all(*mp_op_.store, *op_coeffs, detail::kFrameUseMagByte);
-            }
+            detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, schrodinger_, fused_scale);
         });
 }
 
@@ -465,8 +424,9 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
         // persistent, loop-scoped task arena so TBB workers stay attached across the (often many)
         // small per-gate parallel regions instead of parking/waking between them.
         tbb::task_arena arena(static_cast<int>(threading::effective_parallelism()));
-        arena.execute(
-            [&] { evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k); });
+        arena.execute([&] {
+            evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k);
+        });
     }
     else {
         // Guard the coefficient-informed path the same way propagate() guards its parameters:
@@ -530,8 +490,9 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
     // Contract inside a persistent, loop-scoped task arena so TBB workers stay attached across the
     // (often many) small per-gate parallel regions rather than parking/waking between them.
     tbb::task_arena arena(static_cast<int>(threading::effective_parallelism()));
-    arena.execute(
-        [&] { evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k); });
+    arena.execute([&] {
+        evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+    });
 }
 
 template <size_t NumModes>
@@ -556,8 +517,8 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                                         std::optional<double> param,
                                                         CosMask *out_cos,
                                                         detail::FusedContract *fused_contract,
-                                                        bool *engaged_frame)
-    -> std::shared_ptr<LayerCore> {
+                                                        VecD *fused_scale_coeffs,
+                                                        bool *fused_scale) -> std::shared_ptr<LayerCore> {
     const auto gen_maj = indices_to_bitset<NumModes>(gen_vec);
 
     // Unified build pass (paper Algorithm 2). Both parities go through the
@@ -566,20 +527,21 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
     // metadata (generator words + scaled_count) is written onto the returned LayerCore by the
     // builder, so it travels with the layer through every graph transform.
     return detail::build_layer<NumModes>(mp_op_,
-                                                     gen_maj,
-                                                     cutoff_fn_,
-                                                     lower_atol_,
-                                                     coeffs,
-                                                     upper_atol_,
-                                                     param,
-                                                     only_rotate_len_k,
-                                                     matched_scratch_,
-                                                     comm_,
-                                                     out_cos,
-                                                     fused_contract,
-                                                     schrodinger_,
-                                                     engaged_frame,
-                                                     basis_);
+                                         gen_maj,
+                                         cutoff_fn_,
+                                         lower_atol_,
+                                         coeffs,
+                                         upper_atol_,
+                                         param,
+                                         only_rotate_len_k,
+                                         matched_scratch_,
+                                         comm_,
+                                         out_cos,
+                                         fused_contract,
+                                         schrodinger_,
+                                         fused_scale_coeffs,
+                                         fused_scale,
+                                         basis_);
 }
 
 template <size_t NumModes>
@@ -602,8 +564,7 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
 template <size_t NumModes>
 auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
                          const MPGraphView &graph,
-                         Basis basis = Basis::Majorana)
-    -> std::pair<detail::LayerCosScale, detail::LayerCosAccumulate>;
+                         Basis basis = Basis::Majorana) -> std::pair<detail::LayerCosScale, detail::LayerCosAccumulate>;
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::evolve_operator_with_recompute_(VecD &&coeffs,
@@ -696,9 +657,7 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
 // The non-pare graph simply has no pruned layers. The returned closures capture only the cache +
 // inverted index pointer + recompute flag; the GRAPH's lifetime is owned by the caller's functional capture.
 template <size_t NumModes>
-auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
-                         const MPGraphView &graph,
-                         Basis basis)
+auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, const MPGraphView &graph, Basis basis)
     -> std::pair<detail::LayerCosScale, detail::LayerCosAccumulate> {
     // Memory-budget gate: Σ mask_words · 8 B for the fold layers. Below it caching is cheapest; above
     // it the cache is a multi-GB cold burden, so recompute each fold on the fly (bit-identical).
@@ -706,7 +665,8 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
     for (size_t i = 0; i < graph.layers(); ++i) {
         const auto &l = graph.get_layer(i);
         if (l.pruned_cos() == nullptr) {
-            recompute_cache_words += std::min(inverted_index.words(), static_cast<size_t>((l.scaled_count() + 63) / 64));
+            recompute_cache_words +=
+                std::min(inverted_index.words(), static_cast<size_t>((l.scaled_count() + 63) / 64));
         }
     }
     const bool recompute = recompute_cache_words * sizeof(uint64_t) > detail::recompute_cache_budget_bytes();
@@ -717,8 +677,8 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
     struct LayerCos {
         bool recomputes_cos = false;
         detail::FoldCache<NumModes> combined{}; // used iff recomputes_cos && !recompute
-        detail::LazyFold<NumModes> recipe{};   // used iff recomputes_cos && recompute
-        const CosMask *filtered = nullptr; // points into a pruned layer's stored cos
+        detail::LazyFold<NumModes> recipe{};    // used iff recomputes_cos && recompute
+        const CosMask *filtered = nullptr;      // points into a pruned layer's stored cos
     };
     auto cache = std::make_shared<std::vector<LayerCos>>();
     cache->reserve(graph.layers());

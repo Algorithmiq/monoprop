@@ -201,7 +201,8 @@ auto resolve_incoming_queries(const std::vector<VecZ> &incoming, // serialized, 
 // literally the same code), but instead of the acc in/out entries + a TermIndex response it emits one
 // half-rotation per query into `fc.cross_half` (the resolver's +φ half on the target it owns, v_src known
 // from the query) and returns a per-query VALUE stream = the querier half's v_partner (the target coeff):
-//   HIT  (target already local, ip < base): resp_val[s][q] = op_coeffs[ip] (the evolved coeff, pre-cos).
+//   HIT  (target already local, ip < base): resp_val[s][q] = the target's PRE-cos coeff — op_coeffs[ip]
+//        directly, or op_coeffs[ip]·inv_cos when the fused cos sweep already scaled it (fused_scale).
 //   MISS (target freshly inserted, ip = base+j): the fresh term's picture coeff, which is a pure function
 //        of the majorana — 0 in Heisenberg; is_paired ? hf_phase : 0 in Schrödinger (∈ {−1,0,+1}, exactly
 //        get_state's scoring). Computed here from the query's own majorana, so it flows back in THIS round
@@ -219,7 +220,8 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
                                     const VecD &op_coeffs,
                                     bool schrodinger,
                                     FusedContract &fc,
-                                    const CoeffFrame<NumModes> *frame = nullptr,
+                                    bool fused_scale = false,
+                                    double inv_cos = 1.0,
                                     Basis basis = Basis::Majorana) -> std::vector<std::vector<double>> {
     const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, rank_count);
     std::vector<std::vector<double>> resp_val(rank_count);
@@ -245,12 +247,11 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
         const size_t ip = pr.idx_of[g];
         double v_tgt;
         if (ip < pr.base) {
-            // HIT: the resolver's PRE-firing coeff for the target. In the lazy frame the stored value is
-            // frozen, so reconstruct its true pre-firing value (the log has not yet been appended for this
-            // firing at resolve time). The local slot the resolver half writes IS this target, so its own
-            // pre-firing coeff v_local equals v_tgt.
-            v_tgt = (frame != nullptr) ? frame->true_value(*op.store, op_coeffs[ip], frame->stamp[ip], ip)
-                                       : op_coeffs[ip];
+            // HIT: the target's PRE-cos coeff. Under the fused cos sweep the resolver's own scan already
+            // scaled this slot (an existing anticommuting term), so recover the pre-cos value with the
+            // inverse factor — the wire ships pre-cos values exactly as the two-pass path did. MISS values
+            // below are computed fresh (never swept) and must NOT be un-scaled.
+            v_tgt = fused_scale ? op_coeffs[ip] * inv_cos : op_coeffs[ip];
         }
         else if (schrodinger) {
             // Fresh Schrödinger insert coeff = ⟨b|P|b⟩ scoring, ±1/0. For a Z-only (is_paired) term the
@@ -264,8 +265,10 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
             v_tgt = 0.0; // Heisenberg fresh insert
         }
         resp_val[s][q] = v_tgt;
+        // A MISS half's local slot is a fresh insert (born after the sweep) — flag it so the apply folds
+        // the gate's cos into the slot itself; hit halves' slots were swept and take the plain add.
         fc.cross_half[cross_base + g] =
-            HalfRotationRec{ip, inc_val[s][q], /*v_local=*/v_tgt, static_cast<int32_t>(pr.phase_of[g])};
+            HalfRotationRec{ip, inc_val[s][q], static_cast<int32_t>(pr.phase_of[g]), /*is_insert=*/ip >= pr.base};
         if (is_leader_pass && ip < combined_size) {
             matched.mark(ip);
         }
@@ -308,8 +311,7 @@ auto process_query_responses(const std::vector<std::vector<TermIndex>> &response
         out.resize(base + nq);
         const size_t chunks = partition_chunk_count(nq);
         auto fill = [&](size_t q) {
-            assert(resp[q] != std::numeric_limits<TermIndex>::max()
-                   && "resolver must insert absent cross-rank terms");
+            assert(resp[q] != std::numeric_limits<TermIndex>::max() && "resolver must insert absent cross-rank terms");
             out[base + q] = {srcs[q], query_phase<NumModes>(qbuf, q)};
         };
         if (chunks <= 1) {
@@ -337,10 +339,7 @@ auto process_query_responses_fused(const std::vector<std::vector<double>> &inc_r
                                    const std::vector<VecZ> &queries,
                                    size_t rank_count,
                                    size_t my_rank,
-                                   FusedContract &fc,
-                                   const MPOperator<NumModes> &op,
-                                   const VecD &op_coeffs,
-                                   const CoeffFrame<NumModes> *frame = nullptr) -> void {
+                                   FusedContract &fc) -> void {
     // The resolver already resize()d cross_half to exact size; reserve the querier-half count (one per
     // incoming response) up front so these push_backs don't reallocate that block per rank.
     size_t incoming = 0;
@@ -360,13 +359,9 @@ auto process_query_responses_fused(const std::vector<std::vector<double>> &inc_r
         const size_t nq = rval.size();
         for (size_t q = 0; q < nq; ++q) {
             const auto nphase = static_cast<int32_t>(-query_phase<NumModes>(qbuf, q));
-            // The local slot this half writes is the querier's SOURCE. In the lazy frame reconstruct its
-            // pre-firing coeff (log not yet appended ⇒ pre-firing) for the apply's cos·v_local + sin term;
-            // eager leaves it 0 (unused). The source is an existing pre-gate term (< combined_size).
-            const double v_local = (frame != nullptr)
-                                       ? frame->true_value(*op.store, op_coeffs[srcs[q]], frame->stamp[srcs[q]], srcs[q])
-                                       : 0.0;
-            fc.cross_half.push_back(HalfRotationRec{srcs[q], rval[q], v_local, nphase});
+            // The local slot this half writes is the querier's SOURCE — an existing pre-gate term
+            // (< combined_size) the cos sweep covered, so it always takes the plain add (is_insert=false).
+            fc.cross_half.push_back(HalfRotationRec{srcs[q], rval[q], nphase, /*is_insert=*/false});
         }
     }
 }
