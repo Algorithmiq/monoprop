@@ -17,9 +17,12 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <numeric>
+#include <string_view>
 #include <utility>
 
 #include "monoprop/MonomialPropagator.h"
@@ -27,6 +30,7 @@
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/LayerBuilder.h"
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
+#include "monoprop/detail/shard/ShardGroup.h" // complete ShardGroup for the facade fan-out / lifetime
 
 namespace monoprop {
 
@@ -35,13 +39,14 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
                                                  unsigned int cutoff,
                                                  const VecZ &slater_determinant,
                                                  std::optional<unsigned int> schrodinger_cutoff,
-                                                 MPI_Comm comm,
+                                                 mpi::Comm comm,
                                                  std::optional<double> lower_atol,
                                                  std::optional<double> upper_atol,
                                                  CutoffType cutoff_type,
                                                  std::optional<std::vector<VecZ>> basis_change,
                                                  size_t logical_num_modes,
-                                                 Basis basis)
+                                                 Basis basis,
+                                                 size_t shards)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
       mp_op_{},
@@ -79,6 +84,33 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
         throw std::runtime_error(std::format("upper_atol ({}) must be greater than or equal to lower_atol ({}).",
                                              upper_atol.value(),
                                              lower_atol.value()));
+    }
+
+    // Sharding: shards>1 makes this a FACADE that owns S single-shard propagators (each a hash
+    // partition of the operator, built via a Kind::Shm comm on its own pinned master thread) and fans
+    // every operator method out to them. The facade's own mp_op_/graph_ stay empty and unused.
+    const size_t n_shards = resolve_shard_count_(shards, basis_, comm);
+    if (n_shards > 1) {
+        if (mpi::size(comm) > 1) {
+            throw std::runtime_error(
+                "shards>1 requires a single MPI rank (intra-node sharding does not nest with MPI yet).");
+        }
+        auto factory = [=](mpi::Comm shard_comm) {
+            return std::make_unique<MonomialPropagator<NumModes>>(initial_operator,
+                                                                  cutoff,
+                                                                  slater_determinant,
+                                                                  schrodinger_cutoff,
+                                                                  shard_comm,
+                                                                  lower_atol,
+                                                                  upper_atol,
+                                                                  cutoff_type,
+                                                                  basis_change,
+                                                                  logical_num_modes,
+                                                                  basis,
+                                                                  /*shards=*/1);
+        };
+        shard_group_ = std::make_unique<detail::shard::ShardGroup<NumModes>>(static_cast<int>(n_shards), factory);
+        return;
     }
 
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
@@ -146,6 +178,114 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
     initialize_operator_caches_();
 }
 
+// Out-of-line (needs the complete ShardGroup type): defaulted destructor.
+template <size_t NumModes>
+MonomialPropagator<NumModes>::~MonomialPropagator() = default;
+
+// Deep copy. Member-wise clone of every value member (MPOperator's copy ctor repairs the index
+// back-pointer; MPGraph shares immutable cores); a shard-backed source clones its whole group (fresh
+// threads + ShmComm). The init-list order matches declaration order to satisfy -Wreorder.
+template <size_t NumModes>
+MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other)
+    : schrodinger_(other.schrodinger_),
+      comm_(other.comm_),
+      cutoff_fn_(other.cutoff_fn_),
+      mp_op_(other.mp_op_),
+      graph_(other.graph_),
+      matched_scratch_(other.matched_scratch_),
+      gate_mode_ctl_(other.gate_mode_ctl_),
+      cutoff_(other.cutoff_),
+      lower_atol_(other.lower_atol_),
+      upper_atol_(other.upper_atol_),
+      core_term_(other.core_term_),
+      logical_num_modes_(other.logical_num_modes_),
+      cutoff_type_(other.cutoff_type_),
+      basis_change_(other.basis_change_),
+      basis_(other.basis_),
+      shard_group_(other.shard_group_
+                       ? std::make_unique<detail::shard::ShardGroup<NumModes>>(*other.shard_group_)
+                       : nullptr) {}
+
+// Resolve the effective shard count.
+//   • explicit ctor `shards` >= 1 wins;
+//   • else monoprop_SHARDS overrides: an integer, "auto" (the policy value), or "off" (force 1);
+//   • else the AUTO POLICY: native Pauli on a single MPI rank with an explicit monoprop_NUM_THREADS
+//     >= 2 shards one serial partition per requested thread, capped at the physical-core count.
+// The auto policy keys off an EXPLICIT thread budget (not effective_parallelism, whose unset value is
+// hardware concurrency) so that a user who never asked for parallelism keeps the single-partition
+// path — and one who set monoprop_NUM_THREADS>=2 (previously flat-scaling for Pauli) now gets the
+// shard speedup automatically. Majorana always defaults to 1 (it already scales; halving per-shard
+// work would hurt it).
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::resolve_shard_count_(size_t requested, Basis basis, mpi::Comm comm) -> size_t {
+    if (requested >= 1) {
+        return requested;
+    }
+    size_t auto_shards = 1;
+    const auto num_threads = config::get().num_threads;
+    if (basis == Basis::Pauli && mpi::size(comm) == 1 && num_threads.has_value() && *num_threads >= 2) {
+        size_t s = static_cast<size_t>(*num_threads);
+        const size_t cores = detail::shard::enumerate_physical_cores().size();
+        if (cores > 0) {
+            s = std::min(s, cores);
+        }
+        auto_shards = std::max<size_t>(1, s);
+    }
+    if (const char *env = std::getenv("monoprop_SHARDS")) {
+        const std::string_view v(env);
+        if (v == "auto") {
+            return auto_shards;
+        }
+        if (v == "off") {
+            return 1;
+        }
+        char *end = nullptr;
+        const long n = std::strtol(env, &end, 10);
+        if (end != env && *end == '\0' && n >= 1) {
+            return static_cast<size_t>(n);
+        }
+    }
+    return auto_shards;
+}
+
+// Sharded accessors. Pure reads (size, graph_size, graph_layers) run directly on the quiescent shard
+// propagators from the facade thread; the mutating reserve routes through the masters so the reserved
+// capacity is first-touched on the owning core.
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::sharded_size_() const -> size_t {
+    size_t total = 0;
+    for (int r = 0; r < shard_group_->shard_count(); ++r) {
+        total += shard_group_->shard(r).size();
+    }
+    return total;
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::sharded_graph_size_() const -> std::pair<size_t, size_t> {
+    size_t cos = 0;
+    size_t cyc = 0;
+    for (int r = 0; r < shard_group_->shard_count(); ++r) {
+        const auto [c, y] = shard_group_->shard(r).graph_size();
+        cos += c;
+        cyc += y;
+    }
+    return {cos, cyc};
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::sharded_graph_layers_() const -> size_t {
+    // The graph STRUCTURE is identical on every shard (same generator sequence), so shard 0 is
+    // authoritative for structural queries.
+    return shard_group_->shard(0).graph_layers();
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::sharded_reserve_operator_(size_t expected_local_terms) -> void {
+    const size_t per =
+        std::max<size_t>(1, expected_local_terms / static_cast<size_t>(shard_group_->shard_count()));
+    shard_group_->run_on_all([&](int r) { shard_group_->shard(r).reserve_operator(per); });
+}
+
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
     constexpr size_t kMax = detail::OperatorIndex<NumModes>::kMaxInlinePositions;
@@ -166,6 +306,13 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMap &op_dict)
     -> std::pair<MajoranaVector<NumModes>, VecD> {
+    if (shard_group_) {
+        // Each shard filters op_dict to its own hash partition. The facade holds no local terms, so
+        // the return (used by subclasses to refresh caches) is empty; subclasses aren't supported with
+        // shards>1 (see the frozen-surface note).
+        shard_group_->run_on_all([&](int r) { shard_group_->shard(r).update_initial_operator(op_dict); });
+        return {};
+    }
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
 
@@ -190,6 +337,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMa
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> {
+    require_unsharded_("graph_data()"); // per-shard layer data has no single facade value
     std::vector<LayerData> layers;
     const auto num_layers = graph_.layers();
     layers.reserve(num_layers);
@@ -398,6 +546,13 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                                std::optional<VecZ> gate_indices,
                                                std::optional<VecD> parameters,
                                                int only_rotate_len_k) -> void {
+    if (shard_group_) {
+        shard_group_->run_on_all([&](int r) {
+            shard_group_->shard(r).build_graph(
+                majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
+        });
+        return;
+    }
     if (majoranas.empty()) {
         return;
     }
@@ -470,6 +625,12 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              const VecD &gen_coeffs,
                                              const VecD &parameters,
                                              int only_rotate_len_k) -> void {
+    if (shard_group_) {
+        shard_group_->run_on_all([&](int r) {
+            shard_group_->shard(r).propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+        });
+        return;
+    }
     if (majoranas.empty()) {
         return;
     }
@@ -500,11 +661,36 @@ template <typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::propagate_with_timing_(const std::vector<VecZ> &majoranas,
                                                           int only_rotate_len_k,
                                                           EvolutionFunc evolution_func) -> void {
+    // Adaptive per-gate parallelism (see GateParallelController.h): the gate's scan decides, after
+    // its pass-1 fold has counted n_anti, whether the rest of the gate's pipeline runs parallel or
+    // serial — learned per n_anti size bucket from measured ns-per-anticommuting-term. Chunking-only:
+    // results are byte-identical in both modes. Controller state deliberately PERSISTS across
+    // gate-loop calls: multi-step drivers (e.g. Trotter loops calling propagate() per step) keep the
+    // learned modes instead of re-paying the bootstrap each step.
+    //
+    // PAULI ONLY: the negative thread scaling this fixes was measured on the native Pauli engine
+    // (kicked-Ising 3.9→5.2s at 16T, growing random-Pauli 3.0→4.7s), where per-gate-mutated
+    // L3-resident hot sets make cross-CCX parallelism net-negative. Fermionic workloads keep the
+    // static always-parallel policy: they were not regressing, and their gate streams mix sizes
+    // across 4 decades WITHIN one Trotter step (Hubbard), where per-size-bucket learning still pays
+    // a measured ~9-25% exploration/misprediction tax. Extending adaptivity to Majorana needs
+    // operator-scale-aware bucketing — future work, documented in PAULI_THREADS.md.
+    const bool adaptive = (basis_ == Basis::Pauli);
+    using clock = std::chrono::steady_clock;
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
         const auto &maj = majoranas[idx];
 
-        evolution_func(maj, only_rotate_len_k, i);
+        const bool serial = adaptive && gate_mode_ctl_.begin_gate();
+        const auto t0 = clock::now();
+        {
+            detail::GateModeScope mode_scope(serial);
+            evolution_func(maj, only_rotate_len_k, i);
+        }
+        if (adaptive) {
+            const auto wall_ns = std::chrono::duration<double, std::nano>(clock::now() - t0).count();
+            gate_mode_ctl_.end_gate(serial, wall_ns, detail::gate_scan_n_anti());
+        }
     }
 
     initialize_operator_caches_();
@@ -579,6 +765,9 @@ auto MonomialPropagator<NumModes>::evolve_operator_with_recompute_(VecD &&coeffs
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::n_gates() const -> size_t {
+    if (shard_group_) {
+        return shard_group_->shard(0).n_gates(); // graph structure is identical on every shard
+    }
     const size_t count = graph_.layers();
     size_t max_gate = 0;
     bool any = false;
@@ -592,6 +781,10 @@ auto MonomialPropagator<NumModes>::n_gates() const -> size_t {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_mapping) -> void {
+    if (shard_group_) {
+        shard_group_->run_on_all([&](int r) { shard_group_->shard(r).set_parameter_mapping(parameter_mapping); });
+        return;
+    }
     const size_t count = graph_.layers();
     const size_t gates = n_gates();
 
@@ -635,6 +828,9 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ, VecD> {
+    if (shard_group_) {
+        return shard_group_->shard(0).graph_gate_arrays_(); // structural: identical on every shard
+    }
     const size_t count = graph_.layers();
     VecZ parameter_mapping(count);
     VecD gen_coeffs(count);
@@ -800,27 +996,85 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<double> pare_threshold)
     -> std::function<double(const VecD &)> {
+    if (shard_group_) {
+        // Build one functional per shard (concurrently — a pared functional does a cross-shard
+        // exchange), then return a closure that invokes them all concurrently and returns shard 0's
+        // (global, via the allreduce inside each). Captures the group by raw pointer: like the
+        // single-rank functional, the returned callable must not outlive this propagator.
+        auto fns =
+            std::make_shared<std::vector<std::function<double(const VecD &)>>>(static_cast<size_t>(shard_group_->shard_count()));
+        shard_group_->run_on_all([&](int r) {
+            (*fns)[static_cast<size_t>(r)] = shard_group_->shard(r).expectation_value_functional(pare_threshold);
+        });
+        auto *grp = shard_group_.get();
+        return [grp, fns](const VecD &params) -> double {
+            std::vector<double> vals(fns->size());
+            grp->run_on_all([&](int r) { vals[static_cast<size_t>(r)] = (*fns)[static_cast<size_t>(r)](params); });
+            return vals[0];
+        };
+    }
     return make_functional_(ev_fn, pare_threshold);
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional(std::optional<double> pare_threshold)
     -> std::function<std::pair<double, VecD>(const VecD &)> {
+    if (shard_group_) {
+        auto fns = std::make_shared<std::vector<std::function<std::pair<double, VecD>(const VecD &)>>>(
+            static_cast<size_t>(shard_group_->shard_count()));
+        shard_group_->run_on_all([&](int r) {
+            (*fns)[static_cast<size_t>(r)] =
+                shard_group_->shard(r).expectation_value_and_gradient_functional(pare_threshold);
+        });
+        auto *grp = shard_group_.get();
+        return [grp, fns](const VecD &params) -> std::pair<double, VecD> {
+            std::vector<std::pair<double, VecD>> res(fns->size());
+            grp->run_on_all([&](int r) { res[static_cast<size_t>(r)] = (*fns)[static_cast<size_t>(r)](params); });
+            return res[0];
+        };
+    }
     return make_functional_(ev_and_grad_fn, pare_threshold);
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value(const VecD &parameters) -> double {
+    if (shard_group_) {
+        // Each shard's expectation_value runs the inner product over its partition then allreduces via
+        // the ShmComm, so every shard returns the GLOBAL value; shard 0 is representative.
+        std::vector<double> vals(static_cast<size_t>(shard_group_->shard_count()));
+        shard_group_->run_on_all(
+            [&](int r) { vals[static_cast<size_t>(r)] = shard_group_->shard(r).expectation_value(parameters); });
+        return vals[0];
+    }
     return expectation_value_functional(std::nullopt)(parameters);
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD> {
+    if (shard_group_) {
+        // Value AND gradient are allreduced inside each shard's pass, so every shard ends with the
+        // global pair; shard 0 is representative.
+        std::vector<std::pair<double, VecD>> res(static_cast<size_t>(shard_group_->shard_count()));
+        shard_group_->run_on_all([&](int r) {
+            res[static_cast<size_t>(r)] = shard_group_->shard(r).expectation_value_and_gradient(parameters);
+        });
+        return res[0];
+    }
     return expectation_value_and_gradient_functional(std::nullopt)(parameters);
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bool inplace) -> VecD {
+    if (shard_group_) {
+        // Contract every shard's partition (fanned out concurrently for the cross-shard exchange).
+        // Returns shard 0's LOCAL coefficients, mirroring the rank-local return under MPI; callers
+        // needing the full evolved operator gather across shards (see the binding's evolved_operator).
+        std::vector<VecD> res(static_cast<size_t>(shard_group_->shard_count()));
+        shard_group_->run_on_all([&](int r) {
+            res[static_cast<size_t>(r)] = shard_group_->shard(r).contract_partially(parameters, inplace);
+        });
+        return res[0];
+    }
     const auto gate_arrays = graph_gate_arrays_();
     const auto &parameter_mapping = gate_arrays.first;
     const auto &gen_coeffs = gate_arrays.second;

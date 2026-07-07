@@ -25,14 +25,10 @@
 #include <utility>
 #include <vector>
 
-#if defined(monoprop_ENABLE_MPI)
-#include <mpi.h>
-#else
-// Fallback MPI types for non-MPI builds.
-using MPI_Comm = int;
-constexpr MPI_Comm MPI_COMM_WORLD = 0;
-constexpr MPI_Comm MPI_COMM_SELF = 0;
-#endif
+// Comm.h owns the MPI_Comm typedef (real <mpi.h> or the int fallback) and the runtime-tagged
+// mpi::Comm handle; ShmComm.h is the in-process transport a Kind::Shm handle dispatches to.
+#include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/mpi/ShmComm.h"
 
 // These includes are here on purpose and should not be moved to the top
 #include "monoprop/detail/print_compat.h"
@@ -41,14 +37,13 @@ constexpr MPI_Comm MPI_COMM_SELF = 0;
 
 namespace monoprop::mpi {
 
-#ifdef monoprop_ENABLE_MPI
+// ─── lifecycle (MPI only; ShmComm needs no global init) ──────────────────────────
 
+#ifdef monoprop_ENABLE_MPI
 /**
- * @brief Initialize MPI environment
- *
- * Should be called once at program start. Safe to call multiple times.
+ * @brief Initialize MPI environment. Should be called once at program start. Safe to call repeatedly.
  */
-inline auto init(int* argc = nullptr, char*** argv = nullptr) -> void {
+inline auto init(int *argc = nullptr, char ***argv = nullptr) -> void {
     monoprop::threading::init_from_env();
     auto initialized = 0;
     MPI_Initialized(&initialized);
@@ -56,7 +51,6 @@ inline auto init(int* argc = nullptr, char*** argv = nullptr) -> void {
         auto required = MPI_THREAD_FUNNELED;
         auto provided = 0;
         MPI_Init_thread(argc, argv, required, &provided);
-
         if (provided < required) {
             auto comm = MPI_COMM_WORLD;
             std::print("Sorry, the MPI library does not provide MPI_THREAD_FUNNELED support, which is required by\n");
@@ -66,9 +60,7 @@ inline auto init(int* argc = nullptr, char*** argv = nullptr) -> void {
 }
 
 /**
- * @brief Finalize MPI environment
- *
- * Should be called once at program end. Safe to call multiple times.
+ * @brief Finalize MPI environment. Should be called once at program end. Safe to call repeatedly.
  */
 inline auto finalize() -> void {
     int finalized = 0;
@@ -78,29 +70,7 @@ inline auto finalize() -> void {
     }
 }
 
-/**
- * @brief Get the rank of the calling process in the given communicator
- */
-inline auto rank(MPI_Comm comm) -> int {
-    int r = 0;
-    if (MPI_Comm_rank(comm, &r) != MPI_SUCCESS) {
-        throw std::runtime_error("MPI_Comm_rank failed");
-    }
-    return r;
-}
-
-/**
- * @brief Get the total number of processes in the given communicator
- */
-inline auto size(MPI_Comm comm) -> int {
-    int s = 0;
-    if (MPI_Comm_size(comm, &s) != MPI_SUCCESS) {
-        throw std::runtime_error("MPI_Comm_size failed");
-    }
-    return s;
-}
-
-// Template for MPI datatypes
+// Template for MPI datatypes (only referenced in the Kind::Mpi transport arms below).
 namespace detail {
 template <class>
 inline constexpr bool unsupported_mpi_datatype_v = false;
@@ -140,30 +110,89 @@ struct datatype {
         }
     }
 };
+#else
+inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr) -> void {
+    monoprop::threading::init_from_env();
+}
+inline auto finalize() -> void {}
+#endif // monoprop_ENABLE_MPI
+
+// ─── rank / size ─────────────────────────────────────────────────────────────
+
+/// Rank of the caller in `comm`.
+inline auto rank(Comm comm) -> int {
+    if (comm.kind == Comm::Kind::Shm) {
+        return comm.shm_rank;
+    }
+#ifdef monoprop_ENABLE_MPI
+    int r = 0;
+    if (MPI_Comm_rank(comm.mpi, &r) != MPI_SUCCESS) {
+        throw std::runtime_error("MPI_Comm_rank failed");
+    }
+    return r;
+#else
+    return 0;
+#endif
+}
+
+/// Total number of participants in `comm`.
+inline auto size(Comm comm) -> int {
+    if (comm.kind == Comm::Kind::Shm) {
+        return comm.shm->size();
+    }
+#ifdef monoprop_ENABLE_MPI
+    int s = 0;
+    if (MPI_Comm_size(comm.mpi, &s) != MPI_SUCCESS) {
+        throw std::runtime_error("MPI_Comm_size failed");
+    }
+    return s;
+#else
+    return 1;
+#endif
+}
+
+// ─── allreduce ───────────────────────────────────────────────────────────────
 
 /**
- * @brief Allreduce sum for a single value
+ * @brief Allreduce sum for a single value.
  */
-
 template <class T>
-inline auto allreduce_sum(T local_val, MPI_Comm comm) -> T {
+inline auto allreduce_sum(T local_val, Comm comm) -> T {
+    if (comm.kind == Comm::Kind::Shm) {
+        return comm.shm->allreduce_sum<T>(comm.shm_rank, local_val);
+    }
+#ifdef monoprop_ENABLE_MPI
     T global_val{};
-    MPI_Allreduce(&local_val, &global_val, 1, datatype<T>::get(), MPI_SUM, comm);
+    MPI_Allreduce(&local_val, &global_val, 1, datatype<T>::get(), MPI_SUM, comm.mpi);
     return global_val;
+#else
+    return local_val;
+#endif
 }
 
 /**
- * @brief Allreduce sum for a vector of doubles (in-place)
+ * @brief Allreduce sum for a vector of doubles (in-place).
  */
-inline auto allreduce_sum_inplace(VecD& values, MPI_Comm comm) -> void {
-    MPI_Allreduce(MPI_IN_PLACE, values.data(), static_cast<int>(values.size()), MPI_DOUBLE, MPI_SUM, comm);
+inline auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
+    if (comm.kind == Comm::Kind::Shm) {
+        comm.shm->allreduce_sum_inplace(comm.shm_rank, values.data(), values.size());
+        return;
+    }
+#ifdef monoprop_ENABLE_MPI
+    MPI_Allreduce(MPI_IN_PLACE, values.data(), static_cast<int>(values.size()), MPI_DOUBLE, MPI_SUM, comm.mpi);
+#else
+    (void)values; // single participant: identity
+#endif
 }
+
+// ─── variable all-to-all (vector-of-vectors) ─────────────────────────────────
 
 /**
  * @brief In-flight variable-size all-to-all. Owns its send/recv buffers + layout so MULTIPLE
- * exchanges can be in flight at once (the former thread_local staging could not). The per-rank
- * COUNT exchange has already completed when a handle is returned from begin_alltoallv, so
- * recv_counts is valid immediately; wait_into completes the PAYLOAD transfer and unpacks by source.
+ * exchanges can be in flight at once. The per-rank COUNT exchange has already completed when a handle
+ * is returned from begin_alltoallv, so recv_counts is valid immediately; wait_into completes the
+ * PAYLOAD transfer (a no-op for the Shm and single-process paths, which transfer synchronously in
+ * begin_alltoallv) and unpacks by source.
  */
 template <class T>
 struct PendingAlltoallv {
@@ -171,13 +200,13 @@ struct PendingAlltoallv {
     std::vector<int> send_counts, send_displs, recv_counts, recv_displs;
     std::vector<T> send_buffer, recv_buffer;
 #ifdef monoprop_ENABLE_MPI
-    MPI_Request request = MPI_REQUEST_NULL;
+    MPI_Request request = MPI_REQUEST_NULL; // set only on the Kind::Mpi async path
 #endif
 
     // Per-source recv counts, known after begin_alltoallv (the transpose of the peers' send counts).
-    auto received_counts() const -> const std::vector<int>& { return recv_counts; }
+    auto received_counts() const -> const std::vector<int> & { return recv_counts; }
 
-    auto wait_into(std::vector<std::vector<T>>& recv_data) -> void {
+    auto wait_into(std::vector<std::vector<T>> &recv_data) -> void {
 #ifdef monoprop_ENABLE_MPI
         if (request != MPI_REQUEST_NULL) {
             MPI_Wait(&request, MPI_STATUS_IGNORE);
@@ -194,20 +223,22 @@ struct PendingAlltoallv {
 
 /**
  * @brief Post a variable-size all-to-all. The per-rank COUNT exchange runs eagerly (recv_counts is
- * known on return); the PAYLOAD is posted NON-BLOCKING (MPI_Ialltoallv) so the caller can compute
- * during the transfer, and PendingAlltoallv::wait_into completes it.
+ * known on return). On the Kind::Mpi path the PAYLOAD is posted NON-BLOCKING (MPI_Ialltoallv) so the
+ * caller can compute during the transfer, and PendingAlltoallv::wait_into completes it; on the
+ * Kind::Shm path (and the single-process build) the transfer runs synchronously here and wait_into
+ * just unpacks.
  *
  * @param send_data          Vectors indexed by target rank.
  * @param skip_self          Do not send the self slot (caller handles self inline): self send/recv=0.
- * @param known_recv_counts  Skip the count Alltoall — the recv counts are already known (E4: response
+ * @param known_recv_counts  Skip the count exchange — the recv counts are already known (e.g. response
  *                           counts are the transpose of the query counts). Self slot is zeroed here
  *                           too when skip_self is set.
  */
 template <class T>
-inline auto begin_alltoallv(const std::vector<std::vector<T>>& send_data,
-                            MPI_Comm comm,
+inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
+                            Comm comm,
                             bool skip_self = false,
-                            const std::vector<int>* known_recv_counts = nullptr) -> PendingAlltoallv<T> {
+                            const std::vector<int> *known_recv_counts = nullptr) -> PendingAlltoallv<T> {
     const int num_ranks = size(comm);
     if (static_cast<int>(send_data.size()) != num_ranks) {
         throw std::runtime_error(std::format("begin_alltoallv: send_data size ({}) must equal number of ranks ({})",
@@ -243,16 +274,26 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>>& send_data,
                   h.send_buffer.begin() + h.send_displs[static_cast<size_t>(i)]);
     }
 
+    // Resolve recv counts (known transpose, or one count exchange).
+    h.recv_counts.resize(static_cast<size_t>(num_ranks));
     if (known_recv_counts != nullptr) {
-        h.recv_counts = *known_recv_counts;
-        h.recv_counts.resize(static_cast<size_t>(num_ranks));
+        std::copy(known_recv_counts->begin(),
+                  known_recv_counts->begin()
+                      + std::min<size_t>(known_recv_counts->size(), static_cast<size_t>(num_ranks)),
+                  h.recv_counts.begin());
         if (self >= 0) {
             h.recv_counts[static_cast<size_t>(self)] = 0;
         }
     }
+    else if (comm.kind == Comm::Kind::Shm) {
+        comm.shm->alltoall_counts(comm.shm_rank, h.send_counts.data(), h.recv_counts.data());
+    }
     else {
-        h.recv_counts.resize(static_cast<size_t>(num_ranks));
-        MPI_Alltoall(h.send_counts.data(), 1, MPI_INT, h.recv_counts.data(), 1, MPI_INT, comm);
+#ifdef monoprop_ENABLE_MPI
+        MPI_Alltoall(h.send_counts.data(), 1, MPI_INT, h.recv_counts.data(), 1, MPI_INT, comm.mpi);
+#else
+        h.recv_counts = h.send_counts; // single participant: recv counts == send counts
+#endif
     }
 
     h.recv_displs[0] = 0;
@@ -260,67 +301,37 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>>& send_data,
         h.recv_displs[static_cast<size_t>(i)] =
             h.recv_displs[static_cast<size_t>(i - 1)] + h.recv_counts[static_cast<size_t>(i - 1)];
     }
-    const int total_recv = h.recv_displs[static_cast<size_t>(num_ranks - 1)]
-                           + h.recv_counts[static_cast<size_t>(num_ranks - 1)];
+    const int total_recv =
+        h.recv_displs[static_cast<size_t>(num_ranks - 1)] + h.recv_counts[static_cast<size_t>(num_ranks - 1)];
     h.recv_buffer.resize(static_cast<size_t>(total_recv));
 
-    MPI_Ialltoallv(h.send_buffer.data(),
-                   h.send_counts.data(),
-                   h.send_displs.data(),
-                   datatype<T>::get(),
-                   h.recv_buffer.data(),
-                   h.recv_counts.data(),
-                   h.recv_displs.data(),
-                   datatype<T>::get(),
-                   comm,
-                   &h.request);
+    // Transport.
+    if (comm.kind == Comm::Kind::Shm) {
+        comm.shm->alltoallv(comm.shm_rank,
+                            h.send_buffer.data(),
+                            h.send_displs.data(),
+                            h.recv_buffer.data(),
+                            h.recv_counts.data(),
+                            h.recv_displs.data(),
+                            sizeof(T));
+    }
+    else {
+#ifdef monoprop_ENABLE_MPI
+        MPI_Ialltoallv(h.send_buffer.data(),
+                       h.send_counts.data(),
+                       h.send_displs.data(),
+                       datatype<T>::get(),
+                       h.recv_buffer.data(),
+                       h.recv_counts.data(),
+                       h.recv_displs.data(),
+                       datatype<T>::get(),
+                       comm.mpi,
+                       &h.request);
+#else
+        h.recv_buffer = h.send_buffer; // single participant: self round-trip (layouts identical)
+#endif
+    }
     return h;
 }
 
-#else // monoprop_ENABLE_MPI is disabled
-// Stub implementations for non-MPI builds (single process)
-
-inline auto init(int* /*argc*/ = nullptr, char*** /*argv*/ = nullptr) -> void {
-    monoprop::threading::init_from_env();
-}
-inline auto rank(MPI_Comm /*comm*/ = MPI_COMM_WORLD) -> int {
-    return 0;
-}
-inline auto size(MPI_Comm /*comm*/ = MPI_COMM_WORLD) -> int {
-    return 1;
-}
-inline auto finalize() -> void {}
-
-template <class T>
-inline auto allreduce_sum(T local_val, MPI_Comm /*comm*/ = MPI_COMM_WORLD) -> T {
-    return local_val;
-}
-
-inline auto allreduce_sum_inplace(VecD& values, MPI_Comm comm = MPI_COMM_WORLD) -> void {
-    values = allreduce_sum(values, comm);
-}
-
-// Single-process stubs of the nonblocking primitive: the self slot round-trips to itself, so the
-// handle just holds the self data and wait_into returns it. Present so headers that call
-// begin_alltoallv (guarded by rank_count > 1) still COMPILE in a non-MPI build.
-template <class T>
-struct PendingAlltoallv {
-    std::vector<std::vector<T>> self_data;
-    std::vector<int> recv_counts;
-    auto received_counts() const -> const std::vector<int>& { return recv_counts; }
-    auto wait_into(std::vector<std::vector<T>>& recv_data) -> void { recv_data = std::move(self_data); }
-};
-
-template <class T>
-inline auto begin_alltoallv(const std::vector<std::vector<T>>& send_data,
-                            MPI_Comm /*comm*/ = MPI_COMM_WORLD,
-                            bool /*skip_self*/ = false,
-                            const std::vector<int>* /*known_recv_counts*/ = nullptr) -> PendingAlltoallv<T> {
-    PendingAlltoallv<T> h;
-    h.self_data = send_data.empty() ? std::vector<std::vector<T>>{{}} : std::vector<std::vector<T>>{send_data[0]};
-    h.recv_counts = {send_data.empty() ? 0 : static_cast<int>(send_data[0].size())};
-    return h;
-}
-
-#endif // monoprop_ENABLE_MPI
 } // namespace monoprop::mpi

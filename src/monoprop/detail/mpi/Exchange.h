@@ -18,14 +18,18 @@ namespace monoprop::mpi {
 
 // ─── count exchange ──────────────────────────────────────────────────────────
 
-/// Exchange per-rank send counts to obtain per-rank recv counts (MPI_Alltoall of one int per rank).
-/// Non-MPI build: identity copy (recv == send). `n` is the communicator size.
-inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, MPI_Comm comm) -> void {
+/// Exchange per-rank send counts to obtain per-rank recv counts (MPI_Alltoall of one int per rank,
+/// or the ShmComm transpose). Single-process Kind::Mpi build: identity copy (recv == send). `n` is the
+/// communicator size.
+inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void {
+    if (comm.kind == Comm::Kind::Shm) {
+        comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
+        return;
+    }
 #ifdef monoprop_ENABLE_MPI
     (void)n;
-    MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm);
+    MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
 #else
-    (void)comm;
     for (int i = 0; i < n; ++i) {
         recv_counts[i] = send_counts[i];
     }
@@ -40,7 +44,7 @@ inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, MPI
 ///   3. otherwise → one MPI_Alltoall via alltoall_counts.
 /// The resolved layout is stored in `cache` and returned by reference.
 inline auto resolve_recv(std::span<const int> send_counts,
-                         MPI_Comm comm,
+                         Comm comm,
                          RecvLayoutCache &cache,
                          std::span<const int> known = {}) -> const RecvLayout & {
     const int n = static_cast<int>(send_counts.size());
@@ -122,16 +126,20 @@ inline auto post_flat_alltoallv(const T *send,
                                 const int *recv_counts,
                                 const int *recv_displs,
                                 int num_ranks,
-                                MPI_Comm comm) -> Ticket {
+                                Comm comm) -> Ticket {
+    if (comm.kind == Comm::Kind::Shm) {
+        // Synchronous under the hood: the transfer completes here and the Ticket's wait() is a no-op.
+        comm.shm->alltoallv(comm.shm_rank, send, send_displs, recv, recv_counts, recv_displs, sizeof(T));
+        return Ticket{};
+    }
 #ifdef monoprop_ENABLE_MPI
     (void)num_ranks;
     MPI_Request request = MPI_REQUEST_NULL;
     MPI_Ialltoallv(send, send_counts, send_displs, datatype<T>::get(),
-                   recv, recv_counts, recv_displs, datatype<T>::get(), comm, &request);
+                   recv, recv_counts, recv_displs, datatype<T>::get(), comm.mpi, &request);
     return Ticket(request);
 #else
     (void)send_counts;
-    (void)comm;
     for (int i = 0; i < num_ranks; ++i) {
         const int c = recv_counts[i];
         for (int j = 0; j < c; ++j) {

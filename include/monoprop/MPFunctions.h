@@ -48,7 +48,7 @@ monoprop_EXPORT auto ev(double e_core,
                         const VecD &gen_coeffs,
                         const MPGraph &graph,
                         const VecD &params,
-                        MPI_Comm comm = MPI_COMM_WORLD,
+                        mpi::Comm comm = MPI_COMM_WORLD,
                         const detail::LayerCosScale &cos_scale = {}) -> double;
 
 monoprop_EXPORT auto ev_and_grad(double e_core,
@@ -58,7 +58,7 @@ monoprop_EXPORT auto ev_and_grad(double e_core,
                                  const VecD &gen_coeffs,
                                  const MPGraph &graph,
                                  const VecD &params,
-                                 MPI_Comm comm = MPI_COMM_WORLD,
+                                 mpi::Comm comm = MPI_COMM_WORLD,
                                  const detail::LayerCosScale &cos_scale = {},
                                  const detail::LayerCosAccumulate &cos_acc = {})
     -> std::pair<double, VecD>;
@@ -73,7 +73,7 @@ monoprop_EXPORT auto pare_graph(const MPGraph &graph,
                 const VecZ &nonzero_inds,
                 size_t local_index_count,
                 bool schrodinger,
-                MPI_Comm comm,
+                mpi::Comm comm,
                 const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph;
 
 monoprop_EXPORT auto get_pared_graph(const VecD &state,
@@ -81,6 +81,6 @@ monoprop_EXPORT auto get_pared_graph(const VecD &state,
                      double threshold,
                      const MPGraph &graph,
                      bool schrodinger,
-                     MPI_Comm comm,
+                     mpi::Comm comm,
                      const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph;
 } // namespace monoprop

@@ -22,6 +22,8 @@
 #include <tbb/parallel_for.h>
 #include <tbb/partitioner.h>
 
+#include "monoprop/Threading.h"
+#include "monoprop/detail/EnvConfig.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/profiling/RegionProfiler.h"
 
@@ -91,6 +93,8 @@ inline auto partition_chunk_count_words(size_t word_count) -> size_t {
 
 // Run body(chunk_idx, lo, hi) over `chunks` contiguous sub-ranges of [0, n) in parallel.
 // simple_partitioner + grain 1 forces one task per chunk so each writes a distinct slot.
+// (The adaptive gate-mode controller never reaches here with chunks > 1: under its serial override
+// effective_parallelism() reports 1, so every chunk_count() policy already returned 1.)
 template <typename Body>
 inline auto for_each_chunk(size_t n, size_t chunks, Body &&body) -> void {
     if (n == 0 || chunks == 0) {

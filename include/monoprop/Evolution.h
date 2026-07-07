@@ -39,7 +39,7 @@ struct LayerCore;
  * cos_scale (recompute fold / transient or filtered word list) performs the cosine scaling.
  * Used by the in-build contraction and replay.
  */
-monoprop_EXPORT auto evolve_step(VecD &op, const Layer &layer, double param, const detail::LayerCosScale &cos_scale, MPI_Comm comm)
+monoprop_EXPORT auto evolve_step(VecD &op, const Layer &layer, double param, const detail::LayerCosScale &cos_scale, mpi::Comm comm)
     -> void;
 
 /**
@@ -63,7 +63,7 @@ monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
                      const MPGraphView &graph,
                      const VecD &params,
                      const detail::LayerCosScale &cos_scale,
-                     MPI_Comm comm) -> VecD;
+                     mpi::Comm comm) -> VecD;
 
 // ── Recompute-routed reverse derivative (cos accumulation via the mandatory callback) ──
 // The cosine accumulate pass is performed by `cos_acc(layer_index, …)` (the prepared-fold recompute /
@@ -75,7 +75,7 @@ monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
                                      double gen_coeff,
                                      double param,
                                      const detail::LayerCosAccumulate &cos_acc,
-                                     MPI_Comm comm) -> double;
+                                     mpi::Comm comm) -> double;
 } // namespace monoprop
 
 #include "monoprop/detail/evolution/EvolutionHelpers.h"

@@ -57,6 +57,7 @@ def _simulator_adapter_source() -> str:
         cutoff_type: str = "length",
         basis_change: list[list[int]] | None = None,
         basis: str = "majorana",
+        shards: int = 0,
     ) -> None:
         object.__setattr__(self, "_logical_num_modes", logical_num_modes)
         object.__setattr__(
@@ -74,6 +75,7 @@ def _simulator_adapter_source() -> str:
                 basis_change=basis_change,
                 logical_num_modes=logical_num_modes,
                 basis=basis,
+                shards=shards,
             ),
         )
 
@@ -123,6 +125,7 @@ def _class_defs(
         cutoff_type: str = "length",
         basis_change: list[list[int]] | None = None,
         basis: str = "majorana",
+        shards: int = 0,
     ) -> None:
         super().__init__(
             {core_alias_prefix}{block:03d}Core,
@@ -137,6 +140,7 @@ def _class_defs(
             cutoff_type,
             basis_change,
             basis,
+            shards,
         )
 """
         )

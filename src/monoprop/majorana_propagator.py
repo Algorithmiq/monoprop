@@ -80,6 +80,7 @@ class MajoranaPropagator:
         upper_atol: None | float = None,
         basis_change: None | list[list[int]] = None,
         comm: MPI.Comm | None = None,
+        shards: int = 0,
     ) -> None:
         """Initialize the propagator.
 
@@ -122,6 +123,10 @@ class MajoranaPropagator:
                 lists, each giving one basis vector as a set of Majorana indices.
             comm: Optional MPI communicator. The communicator must remain valid for the
                 simulator's lifetime.
+            shards: Intra-process shard count (default 0 ⇒ ``monoprop_SHARDS`` env, else 1).
+                >1 partitions the operator across that many single-threaded shards pinned
+                one-per-core; results are deterministic per shard count but differ from a single
+                partition at the ULP level, as across MPI rank counts. Requires a single MPI rank.
         """
         majorana_operator: MajoranaOperator = (
             initial_operator
@@ -143,6 +148,7 @@ class MajoranaPropagator:
             basis_change=basis_change,
             comm=comm,
             engine_basis="majorana",
+            shards=shards,
         )
 
     def _init_engine(
@@ -159,6 +165,7 @@ class MajoranaPropagator:
         basis_change: list[list[int]] | None,
         comm: MPI.Comm | None,
         engine_basis: str = "majorana",
+        shards: int = 0,
     ) -> None:
         """Construct the dispatched C++ simulator and record the shared propagator state.
 
@@ -183,6 +190,11 @@ class MajoranaPropagator:
             basis_change: See :meth:`__init__`.
             comm: See :meth:`__init__`.
             engine_basis: The C++ operator basis (``"majorana"`` or ``"pauli"``).
+            shards: Intra-process shard count. 0 (default) reads the ``monoprop_SHARDS`` env var,
+                falling back to a single partition. >1 partitions the operator across that many
+                single-threaded shards pinned one-per-core (each an in-process ShmComm participant);
+                results are deterministic per shard count but differ from a single partition at the
+                ULP level, exactly as across MPI rank counts. Requires a single MPI rank.
         """
         logger.debug(
             "_init_engine. num_modes=%d, cutoff=%d, schrodinger_cutoff=%s, basis=%s",
@@ -214,6 +226,7 @@ class MajoranaPropagator:
             basis_change=basis_change,
             comm=comm,
             basis=engine_basis,
+            shards=shards,
         )
 
     def __deepcopy__(self, memo: dict) -> "MajoranaPropagator":

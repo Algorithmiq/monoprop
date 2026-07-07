@@ -30,6 +30,11 @@
 //   monoprop_NUM_THREADS          positive int (1..1e6); else ignored          → num_threads
 //   monoprop_RECOMPUTE_CACHE_MAX_MB  size in MB, default 2048 (0 ⇒ recompute)  → recompute_cache_max_mb
 //   monoprop_PHASE_TIMERS         bool, default OFF                            → phase_timers
+// Shard-runtime vars are parsed at their point of use (they need string forms beyond a plain field),
+// not cached here, but are listed for a single inventory:
+//   monoprop_SHARDS               int N | "auto" | "off"; overrides the shard-count policy
+//                                 (MonomialPropagator::resolve_shard_count_)
+//   monoprop_SHARD_PINNING        bool, default ON; 0/false disables per-core pinning (CpuTopology)
 // NOTE: the profiler's rank discovery (OMPI_COMM_WORLD_RANK/PMI_RANK/PMIX_RANK) is intentionally NOT
 // here — it is launcher-provided, not a monoprop knob.
 

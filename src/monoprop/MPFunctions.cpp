@@ -60,7 +60,7 @@ auto prepare_evolved_operator(EvalScratch &scratch,
                               const VecZ &parameter_mapping,
                               const VecD &gen_coeffs,
                               const MPGraphView &graph,
-                              MPI_Comm comm,
+                              mpi::Comm comm,
                               const detail::LayerCosScale &cos_scale) -> void {
     fill_mapped_params(scratch.mapped_params, params, parameter_mapping, gen_coeffs, 1.0, true);
     scratch.op = op;
@@ -78,7 +78,7 @@ auto ev_impl(double e_core,
              const VecD &gen_coeffs,
              const MPGraphView &graph,
              const VecD &params,
-             MPI_Comm comm,
+             mpi::Comm comm,
              const detail::LayerCosScale &cos_scale) -> double {
     if (params.empty()) {
         return e_core + mpi::allreduce_sum(inner_product(state, op), comm);
@@ -99,7 +99,7 @@ auto ev_and_grad_impl(double e_core,
                       const VecD &gen_coeffs,
                       const MPGraphView &graph,
                       const VecD &params,
-                      MPI_Comm comm,
+                      mpi::Comm comm,
                       const detail::LayerCosScale &cos_scale,
                       const detail::LayerCosAccumulate &cos_acc) -> std::pair<double, VecD> {
     if (params.empty()) {
@@ -166,7 +166,7 @@ auto ev(double e_core,
         const VecD &gen_coeffs,
         const MPGraph &graph,
         const VecD &params,
-        MPI_Comm comm,
+        mpi::Comm comm,
         const detail::LayerCosScale &cos_scale) -> double {
     return ev_impl(e_core, state, op, parameter_mapping, gen_coeffs, graph.replay_view(), params, comm, cos_scale);
 }
@@ -178,7 +178,7 @@ auto ev_and_grad(double e_core,
                  const VecD &gen_coeffs,
                  const MPGraph &graph,
                  const VecD &params,
-                 MPI_Comm comm,
+                 mpi::Comm comm,
                  const detail::LayerCosScale &cos_scale,
                  const detail::LayerCosAccumulate &cos_acc) -> std::pair<double, VecD> {
     return ev_and_grad_impl(

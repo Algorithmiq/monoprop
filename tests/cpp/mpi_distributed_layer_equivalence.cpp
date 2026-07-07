@@ -15,8 +15,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cmath>
+#include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
@@ -112,6 +114,78 @@ BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
             BOOST_TEST(near(g_serial[i], g_world[i]));
         }
     }
+}
+
+// ─── Test 3: NATIVE PAULI energy matches across rank counts ─────────────────────
+// First permanent multi-rank coverage of the native Pauli engine (basis == Pauli). The same owner
+// hash and cross-rank resolve path drive the intra-process shard runtime, so this guards both.
+
+constexpr size_t kPauliQ = 6;
+
+auto pauli_slots(const std::string& p) -> VecZ {
+    VecZ slots;
+    for (size_t q = 0; q < p.size(); ++q) {
+        if (p[q] == 'X') {
+            slots.push_back(2 * q);
+        }
+        else if (p[q] == 'Y') {
+            slots.push_back(2 * q + 1);
+        }
+        else if (p[q] == 'Z') {
+            slots.push_back(2 * q);
+            slots.push_back(2 * q + 1);
+        }
+    }
+    return slots;
+}
+
+auto run_pauli_energy(MPI_Comm comm) -> double {
+    FermiOperatorMap init;
+    init[pauli_slots("ZIIIII")] = std::complex<double>(1.0, 0.0);
+    init[pauli_slots("IIZZII")] = std::complex<double>(0.5, 0.0);
+    MonomialPropagator<kPauliQ> sim(init,
+                                    kPauliQ,
+                                    VecZ{},
+                                    std::nullopt,
+                                    comm,
+                                    1e-12,
+                                    std::nullopt,
+                                    CutoffType::Support,
+                                    std::nullopt,
+                                    kPauliQ,
+                                    Basis::Pauli);
+    std::vector<VecZ> gens;
+    VecZ pmap;
+    VecD gcoeffs;
+    size_t p = 0;
+    for (size_t q = 0; q < kPauliQ; ++q) {
+        std::string s(kPauliQ, 'I');
+        s[q] = 'X';
+        gens.push_back(pauli_slots(s));
+        pmap.push_back(p++);
+        gcoeffs.push_back(1.0);
+    }
+    for (size_t q = 0; q + 1 < kPauliQ; ++q) {
+        std::string s(kPauliQ, 'I');
+        s[q] = 'Z';
+        s[q + 1] = 'Z';
+        gens.push_back(pauli_slots(s));
+        pmap.push_back(p++);
+        gcoeffs.push_back(1.0);
+    }
+    sim.propagate(gens, pmap, gcoeffs, VecD(p, 0.3));
+    return sim.expectation_value({});
+}
+
+BOOST_AUTO_TEST_CASE(pauli_rank_count_energy_within_fp_tolerance) {
+    if (mpi::size(MPI_COMM_WORLD) < 2) {
+        BOOST_TEST_MESSAGE("Skipping Pauli cross-rank-count case: requires at least 2 ranks.");
+        return;
+    }
+    const double e_serial = run_pauli_energy(MPI_COMM_SELF);
+    const double e_world = run_pauli_energy(MPI_COMM_WORLD);
+    BOOST_TEST_MESSAGE("pauli serial=" << e_serial << " world=" << e_world);
+    BOOST_TEST(near(e_serial, e_world));
 }
 
 } // namespace

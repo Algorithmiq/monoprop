@@ -256,6 +256,11 @@ struct FusedScanResult {
     // leader_src / follower_src. Empty (never populated) when capture_values is false.
     std::vector<std::vector<double>> leader_val;
     std::vector<std::vector<double>> follower_val;
+    // Pass-1 totals over all chunks: anticommuting terms found and their follower subset. Exact and
+    // deterministic (chunk-wise sums of disjoint word ranges). n_anti is the pass-2 work measure —
+    // the actual number of per-term emit evaluations this scan performed.
+    size_t n_anti = 0;
+    size_t n_foll = 0;
 };
 
 // Streams are routed to the owner of each partner M' = M⊕G (hash%R; self for single-rank, skipping
@@ -412,6 +417,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 ch_fv[c].assign(rank_count, std::vector<double>{});
             }
         }
+        std::atomic<size_t> tot_anti{0};
+        std::atomic<size_t> tot_foll{0};
         for_each_chunk(word_count, chunks, [&](size_t c, size_t wlo, size_t whi) {
             auto &cos = ch_cos[c];
             auto &lq = ch_lq[c];
@@ -422,7 +429,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             auto &fv = ch_fv[c];
 
             // Pass 1: fold the inverted index to find anticommuting terms (see even_parity_scan_pass1).
-            // `nz` is thread_local to reuse capacity across chunks.
+            // `nz` is thread_local to reuse capacity across chunks. Pass 1 and pass 2 stay FUSED in one
+            // chunk task on purpose: a split (pass-1 all chunks, barrier, pass-2) was prototyped for the
+            // adaptive mode controller and measured +4-16% on the large fermionic workloads (nz spills
+            // out of L1 across the barrier) — the controller therefore decides per WHOLE gate instead.
             thread_local std::vector<EvenParityNzWord> nz;
             size_t n_anti = 0;
             size_t n_foll = 0;
@@ -438,6 +448,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                                              nz,
                                              n_anti,
                                              n_foll);
+            tot_anti.fetch_add(n_anti, std::memory_order_relaxed);
+            tot_foll.fetch_add(n_foll, std::memory_order_relaxed);
             if (rank_count == 1) {
                 lq[my_rank].reserve((n_anti - n_foll) * kQueryWords<NumModes>);
                 ls[my_rank].reserve(n_anti - n_foll);
@@ -520,6 +532,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
             cos = cos_b.finish();
         });
+        res.n_anti = tot_anti.load(std::memory_order_relaxed);
+        res.n_foll = tot_foll.load(std::memory_order_relaxed);
         res.cos_blocks = std::move(ch_cos);
         append_chunked_rank_vectors(res.leader_queries, ch_lq);
         append_chunked_rank_vectors(res.leader_src, ch_ls);

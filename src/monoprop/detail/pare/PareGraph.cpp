@@ -148,7 +148,7 @@ auto pack_source_keep_flags(const Layer &layer,
     });
 }
 
-auto execute_builder_exchange(const BuilderExchangeLayout &layout, BuilderExchangeBuffers &buffers, MPI_Comm comm)
+auto execute_builder_exchange(const BuilderExchangeLayout &layout, BuilderExchangeBuffers &buffers, mpi::Comm comm)
     -> void {
     // Blocking one-shot keep-flag exchange. Recv counts are known locally (the per-rank transpose of
     // the send counts), so no count round is needed — just post + wait via the facade, which also
@@ -337,7 +337,7 @@ auto pare_graph(const MPGraph &graph,
                 const VecZ &nonzero_inds,
                 size_t local_index_count,
                 bool schrodinger,
-                MPI_Comm comm,
+                mpi::Comm comm,
                 const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
     const size_t num_layers = graph.layers();
     const int num_ranks = mpi::size(comm);
@@ -455,7 +455,7 @@ auto get_pared_graph(const VecD &state,
                      double threshold,
                      const MPGraph &graph,
                      bool schrodinger,
-                     MPI_Comm comm,
+                     mpi::Comm comm,
                      const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
     const auto &source = schrodinger ? hamiltonian : state;
     VecZ nonzero_inds;

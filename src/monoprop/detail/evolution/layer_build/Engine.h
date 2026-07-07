@@ -26,6 +26,7 @@
 
 #include "monoprop/MajoranaAlgebra.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
+#include "monoprop/detail/evolution/GateParallelController.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Parallel.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
@@ -55,7 +56,7 @@ struct LayerBuildEngine {
     // scan and the metadata, not the resolve/exchange/finish machinery, so they are deliberately NOT
     // held here — the struct advertises exactly the surface its methods touch.
     MPOperator<NumModes> &local_op; // scanned, looked up, and grown by the inserts
-    MPI_Comm comm;
+    mpi::Comm comm;
     size_t R;
     size_t my_rank;
     // Picture flag (fused R>1 only): selects cross-rank MISS handling. A fresh cross-rank insert's
@@ -92,7 +93,7 @@ struct LayerBuildEngine {
     double inv_cos_ = 1.0;
 
     LayerBuildEngine(MPOperator<NumModes> &local_op_,
-                     MPI_Comm comm_,
+                     mpi::Comm comm_,
                      size_t R_,
                      size_t my_rank_,
                      MatchedEpochSet &matched_scratch,
@@ -511,7 +512,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  const std::optional<double> &param,
                  int only_rotate_len_k,
                  MatchedEpochSet &matched_scratch,
-                 MPI_Comm comm,
+                 mpi::Comm comm,
                  CosMask *out_cos = nullptr,
                  FusedContract *fused_contract = nullptr,
                  bool schrodinger = false,
@@ -579,6 +580,11 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                                        sweep_ptr,
                                                        cos_build);
     }();
+    // Report the scan's anticommuting-term count to the gate loop's adaptive mode controller (the
+    // per-gate work measure its cost EWMAs normalize by). Thread-local channel; same thread as the
+    // gate loop by construction (see GateParallelController.h).
+    gate_scan_n_anti() = fused.n_anti;
+
     CosMask cos_all;
     {
         // Per-chunk cosine blocks are disjoint and ascending; chunk-order concat (parallel for

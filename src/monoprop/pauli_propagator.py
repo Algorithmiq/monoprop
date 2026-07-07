@@ -78,6 +78,7 @@ class PauliPropagator(MajoranaPropagator):
         upper_atol: None | float = None,
         comm: MPI.Comm | None = None,
         engine_basis: Literal["pauli", "majorana-jw"] = "pauli",
+        shards: int = 0,
     ) -> None:
         """Initialize the qubit propagator.
 
@@ -100,6 +101,10 @@ class PauliPropagator(MajoranaPropagator):
             comm: Optional MPI communicator (must outlive the propagator).
             engine_basis: Engine backing. ``"pauli"`` (default) runs the native Pauli engine
                 (no Jordan-Wigner); ``"majorana-jw"`` uses the Jordan-Wigner Majorana fallback.
+            shards: Intra-process shard count (default 0 ⇒ ``monoprop_SHARDS`` env, else 1). >1
+                partitions the operator across that many single-threaded shards pinned one-per-core
+                for near-linear thread scaling; results are deterministic per shard count but differ
+                from a single partition at the ULP level. Requires a single MPI rank.
 
         Raises:
             ValueError: If ``engine_basis`` is not ``"pauli"`` or ``"majorana-jw"``.
@@ -127,6 +132,7 @@ class PauliPropagator(MajoranaPropagator):
                 basis_change=None,
                 comm=comm,
                 engine_basis="pauli",
+                shards=shards,
             )
         else:
             # Jordan-Wigner fallback (kept for A/B): map the observable to Majoranas and set the
@@ -147,6 +153,7 @@ class PauliPropagator(MajoranaPropagator):
                 basis_change=jordan_wigner_basis_change(num_qubits),
                 comm=comm,
                 engine_basis="majorana",
+                shards=shards,
             )
         # Set after engine init (which resets it to None); the qubit count comes from the
         # observable and is carried into Pauli gate expansion via build_graph / propagate.

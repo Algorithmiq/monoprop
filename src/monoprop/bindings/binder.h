@@ -76,7 +76,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
            const std::string &cutoff_type,
            std::optional<std::vector<std::vector<size_t>>> basis_change,
            size_t logical_num_modes,
-           const std::string &basis) {
+           const std::string &basis,
+           size_t shards) {
             new (t) MonomialPropagator<NumModes>(initial_operator,
                                                  cutoff,
                                                  slater_determinant,
@@ -87,7 +88,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                                  cutoff_type_str_2_enum(cutoff_type),
                                                  basis_change,
                                                  logical_num_modes,
-                                                 basis_str_2_enum(basis));
+                                                 basis_str_2_enum(basis),
+                                                 shards);
         },
         "initial_operator"_a,
         "cutoff"_a,
@@ -100,6 +102,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "basis_change"_a = std::nullopt,
         "logical_num_modes"_a = NumModes,
         "basis"_a = "majorana",
+        "shards"_a = 0,
         "Instantiate the simulator.");
 
     cls.def("build_graph",

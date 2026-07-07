@@ -70,7 +70,7 @@ void resize_flat_exchange_buffers(const LayerExchangeLayout &layout, FlatExchang
     buffers.recv_displs.clear();
 }
 
-auto active_evolution_exchange_layout(const LayerTraversal &layer, MPI_Comm comm) -> const LayerExchangeLayout * {
+auto active_evolution_exchange_layout(const LayerTraversal &layer, mpi::Comm comm) -> const LayerExchangeLayout * {
     if (mpi::size(comm) == 1) {
         return nullptr;
     }
@@ -93,7 +93,7 @@ struct CrossRankExchangeHandle {
 // payload transfer. All ranks must participate — never skip on zero counts (the facade owns that
 // deadlock discipline). The transfer is non-blocking; the returned handle's ticket completes it.
 // Buffers are always sized ≥ 1 (see resize_flat_exchange_buffers).
-inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers, MPI_Comm comm)
+inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers, mpi::Comm comm)
     -> CrossRankExchangeHandle {
     CrossRankExchangeHandle handle;
     handle.layout = &layout;
@@ -192,7 +192,7 @@ struct InFlightCrossRankDerivative {
 inline auto begin_cross_rank_derivative_exchange(const std::vector<VecD> &sin_send_state,
                                                  const std::vector<VecD> &sin_send_op,
                                                  const LayerTraversal &layer,
-                                                 MPI_Comm comm) -> InFlightCrossRankDerivative {
+                                                 mpi::Comm comm) -> InFlightCrossRankDerivative {
     InFlightCrossRankDerivative in_flight;
     // Single-rank (or no peer participating): nothing to exchange — the self slot covers everything.
     if (active_evolution_exchange_layout(layer, comm) == nullptr) {
@@ -280,7 +280,7 @@ struct InFlightCrossRankEvolution {
 
 inline auto begin_cross_rank_evolution_exchange(VecD &op,
                                                 const LayerTraversal &layer,
-                                                MPI_Comm comm) -> InFlightCrossRankEvolution {
+                                                mpi::Comm comm) -> InFlightCrossRankEvolution {
     InFlightCrossRankEvolution in_flight;
     const auto *layout = active_evolution_exchange_layout(layer, comm);
     if (layout == nullptr) {
@@ -445,7 +445,7 @@ auto state_operator_derivative_local_impl(VecD &state,
                                           size_t layer_idx,
                                           double gen_coeff,
                                           double param,
-                                          MPI_Comm comm,
+                                          mpi::Comm comm,
                                           const detail::LayerCosAccumulate &cos_acc) -> double {
     const TrigValues trig(param, gen_coeff);
     const auto layer = graph.get_layer_traversal(layer_idx);
@@ -504,7 +504,7 @@ auto state_operator_derivative_local(VecD &state,
                                      double gen_coeff,
                                      double param,
                                      const detail::LayerCosAccumulate &cos_acc,
-                                     MPI_Comm comm) -> double {
+                                     mpi::Comm comm) -> double {
     return state_operator_derivative_local_impl(
         state, op, graph, layer_idx, gen_coeff, param, comm, cos_acc);
 }
@@ -513,7 +513,7 @@ auto evolve_step_traversal_impl(VecD &op,
                                 const LayerTraversal &layer,
                                 double param,
                                 size_t layer_idx,
-                                MPI_Comm comm,
+                                mpi::Comm comm,
                                 const detail::LayerCosScale &cos_scale) -> void {
     profiling::ScopedRegion prof_evolve(profiling::Region::Evolve);
     const double cos_val = std::cos(2 * param), sin_val = std::sin(2 * param);
@@ -574,12 +574,12 @@ auto evolve_step_impl(VecD &op,
                       const MPGraphView &graph,
                       double param,
                       size_t layer_idx,
-                      MPI_Comm comm,
+                      mpi::Comm comm,
                       const detail::LayerCosScale &cos_scale) -> void {
     evolve_step_traversal_impl(op, graph.get_layer_traversal(layer_idx), param, layer_idx, comm, cos_scale);
 }
 
-auto evolve_step(VecD &op, const Layer &layer, double param, const detail::LayerCosScale &cos_scale, MPI_Comm comm)
+auto evolve_step(VecD &op, const Layer &layer, double param, const detail::LayerCosScale &cos_scale, mpi::Comm comm)
     -> void {
     evolve_step_traversal_impl(op, layer.traversal(), param, 0, comm, cos_scale);
 }
@@ -588,7 +588,7 @@ auto evolve_step(VecD &op, const Layer &layer, double param, const detail::Layer
 auto evolve_operator_impl(VecD coeffs,
                           const MPGraphView &graph,
                           const VecD &params,
-                          MPI_Comm comm,
+                          mpi::Comm comm,
                           const detail::LayerCosScale &cos_scale) -> VecD {
     for (size_t i = 0; i < graph.layers(); ++i) {
         evolve_step_impl(coeffs, graph, params[i], i, comm, cos_scale);
@@ -601,7 +601,7 @@ auto evolve_operator(VecD &&coeffs,
                      const MPGraphView &graph,
                      const VecD &params,
                      const detail::LayerCosScale &cos_scale,
-                     MPI_Comm comm) -> VecD {
+                     mpi::Comm comm) -> VecD {
     return evolve_operator_impl(std::move(coeffs), graph, params, comm, cos_scale);
 }
 

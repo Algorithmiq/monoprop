@@ -39,6 +39,7 @@
 #include "monoprop/Utilities.h"
 #include "monoprop/Validation.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
+#include "monoprop/detail/evolution/GateParallelController.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
@@ -51,6 +52,13 @@ namespace detail {
 // Fused-contraction record sink (defined in layer_build/Common.h). build_evolve_result_ only takes a
 // pointer, so a forward declaration keeps this header decoupled from the layer-build internals.
 struct FusedContract;
+namespace shard {
+// Intra-process shard runtime (defined in detail/shard/ShardGroup.h, included from the impl at the
+// bottom of this header). Held by unique_ptr, so a forward declaration suffices here; the ctor,
+// copy-ctor, and dtor that need the complete type are defined out-of-line in the impl.
+template <size_t NumModes>
+class ShardGroup;
+} // namespace shard
 } // namespace detail
 
 template <size_t NumModes>
@@ -60,21 +68,29 @@ public:
                        unsigned int cutoff,
                        const VecZ &slater_determinant,
                        std::optional<unsigned int> schrodinger_cutoff,
-                       MPI_Comm comm,
+                       mpi::Comm comm,
                        std::optional<double> lower_atol = std::nullopt,
                        std::optional<double> upper_atol = std::nullopt,
                        CutoffType cutoff_type = CutoffType::Length,
                        std::optional<std::vector<VecZ>> basis_change = std::nullopt,
                        size_t logical_num_modes = NumModes,
-                       Basis basis = Basis::Majorana);
+                       Basis basis = Basis::Majorana,
+                       size_t shards = 0);
 
-    virtual ~MonomialPropagator() = default;
+    // Declared (not defaulted inline) because the shard_group_ member is a unique_ptr to an incomplete
+    // type here; both are defined in the impl where ShardGroup is complete. Still virtual + effectively
+    // defaulted, so the downstream subclass and the move-suppression contract below are unchanged.
+    virtual ~MonomialPropagator();
 
-    // The simulator is an independent deep-copyable value. The implicit copy constructor does the
-    // right thing: it deep-clones the per-rank operator store (MPOperator's copy ctor repairs the
-    // index back-pointer) and shares the immutable graph layer cores via shared_ptr. The MPI
-    // communicator handle is copied as-is (shared, not MPI_Comm_dup'd). Copy assignment is implicitly
-    // deleted (unique_ptr store).
+    // The simulator is an independent deep-copyable value. This copy constructor (defined out-of-line
+    // in the impl) deep-clones the per-rank operator store (MPOperator's copy ctor repairs the index
+    // back-pointer) and shares the immutable graph layer cores via shared_ptr; the communicator handle
+    // is copied as-is. A shard-backed propagator (shards>1) is deep-copied by cloning its whole shard
+    // group (fresh threads + ShmComm). It is user-declared — rather than implicit — only because the
+    // shard_group_ unique_ptr member would otherwise delete it; the semantics are the same as the old
+    // implicit copy for the non-shard case. Copy assignment is implicitly deleted (unique_ptr store).
+    MonomialPropagator(const MonomialPropagator &other);
+    auto operator=(const MonomialPropagator &) -> MonomialPropagator & = delete;
     // NOTE: the user-declared virtual destructor above suppresses the implicit move constructor and
     // move assignment, so `MonomialPropagator x = std::move(y);` selects the (deep-cloning) COPY
     // constructor — a "move" is a full deep copy of the operator store, not a pointer steal. This is
@@ -95,7 +111,7 @@ public:
      *
      * @return Size of the Operator on this rank
      */
-    auto size() const -> size_t { return mp_op_.size(); }
+    auto size() const -> size_t { return shard_group_ ? sharded_size_() : mp_op_.size(); }
 
     /**
      * @brief Pre-reserve operator storage for an expected final (this-rank) term count.
@@ -109,6 +125,10 @@ public:
      * a smaller value than the current size is a no-op.
      */
     auto reserve_operator(size_t expected_local_terms) -> void {
+        if (shard_group_) {
+            sharded_reserve_operator_(expected_local_terms);
+            return;
+        }
         // Sizes BOTH the packed rows and the hash index to a known final per-rank count. Called on a
         // non-empty store between steps, so it only ever reserves capacity (width was fixed at setup).
         mp_op_.store->reserve(expected_local_terms);
@@ -120,24 +140,39 @@ public:
      *
      * @return the number of indices and cycles in the MBS graph (local to this rank).
      */
-    auto graph_size() const -> std::pair<size_t, size_t> { return graph_.num_cos_inds_and_cycles(); }
+    auto graph_size() const -> std::pair<size_t, size_t> {
+        return shard_group_ ? sharded_graph_size_() : graph_.num_cos_inds_and_cycles();
+    }
 
     /**
      * @brief Get the Majorana Branch Simulator graph (local to this rank).
      *
      * @return The MPGraph object representing the simulation graph for this rank.
      */
-    auto graph() const -> const MPGraph & { return graph_; }
+    auto graph() const -> const MPGraph & {
+        require_unsharded_("graph()");
+        return graph_;
+    }
 
     // Direct access to this rank's MPOperator: the per-rank coefficient vectors (get_state /
     // get_operator), the packed term store, and the persistent even-parity inverted index. Used by tests
     // to drive get_pared_graph directly and fold the per-layer full cosine set.
-    auto mp_op() -> detail::MPOperator<NumModes> & { return mp_op_; }
-    auto mp_op() const -> const detail::MPOperator<NumModes> & { return mp_op_; }
+    auto mp_op() -> detail::MPOperator<NumModes> & {
+        require_unsharded_("mp_op()");
+        return mp_op_;
+    }
+    auto mp_op() const -> const detail::MPOperator<NumModes> & {
+        require_unsharded_("mp_op()");
+        return mp_op_;
+    }
 
-    auto graph_memory_usage() const -> GraphMemoryBreakdown { return graph_.storage_memory_usage(); }
+    auto graph_memory_usage() const -> GraphMemoryBreakdown {
+        require_unsharded_("graph_memory_usage()");
+        return graph_.storage_memory_usage();
+    }
 
     auto operator_memory_usage() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
+        require_unsharded_("operator_memory_usage()");
         return detail::estimate_memory_usage(mp_op_);
     }
 
@@ -148,7 +183,7 @@ public:
      *
      * @return The number of Majorana operators that have been evolved (number of graph layers).
      */
-    auto graph_layers() const -> size_t { return graph_.layers(); }
+    auto graph_layers() const -> size_t { return shard_group_ ? sharded_graph_layers_() : graph_.layers(); }
 
     /**
      * @brief Number of gates ingested into the graph.
@@ -200,8 +235,14 @@ public:
      * Returns the mapping from Majorana bitset terms to their coefficient indices
      * for this rank.
      */
-    auto indexing() -> detail::OperatorIndex<NumModes> & { return *mp_op_.store; }
-    auto indexing() const -> const detail::OperatorIndex<NumModes> & { return *mp_op_.store; }
+    auto indexing() -> detail::OperatorIndex<NumModes> & {
+        require_unsharded_("indexing()");
+        return *mp_op_.store;
+    }
+    auto indexing() const -> const detail::OperatorIndex<NumModes> & {
+        require_unsharded_("indexing()");
+        return *mp_op_.store;
+    }
 
     /**
      * @brief Return graph layer data in Python-friendly structures.
@@ -348,9 +389,10 @@ public:
     /**
      * @brief Get the MPI communicator used by this simulator.
      *
-     * @return The MPI_Comm associated with this simulator instance.
+     * @return The MPI_Comm associated with this simulator instance (MPI_COMM_SELF for a shard-backed
+     *         propagator, whose cross-shard transport is an in-process ShmComm rather than MPI).
      */
-    auto comm() const -> MPI_Comm { return comm_; }
+    auto comm() const -> MPI_Comm { return comm_.mpi; }
 
     /**
      * @brief Build the propagation graph from a sequence of Majorana generators.
@@ -473,7 +515,7 @@ protected:
                                         const VecD &gen_coeffs,
                                         const auto &graph,
                                         const VecD &params,
-                                        MPI_Comm comm,
+                                        mpi::Comm comm,
                                         const detail::LayerCosScale &cos_scale = {},
                                         const detail::LayerCosAccumulate & = {}) -> double {
         // cos_acc is unused for the energy path (no reverse sweep); accepted so both functionals share
@@ -489,7 +531,7 @@ protected:
            const VecD &gen_coeffs,
            const auto &graph,
            const VecD &params,
-           MPI_Comm comm,
+           mpi::Comm comm,
            const detail::LayerCosScale &cos_scale = {},
            const detail::LayerCosAccumulate &cos_acc = {}) -> std::pair<double, VecD> {
         return ev_and_grad(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale, cos_acc);
@@ -513,7 +555,7 @@ protected:
 
     // Data members also needed by MonomialPropagatorExtra.
     bool schrodinger_;
-    MPI_Comm comm_; // MPI communicator
+    mpi::Comm comm_; // communicator handle (real MPI across nodes, or in-process ShmComm across shards)
     CutoffFn<NumModes> cutoff_fn_;
     detail::MPOperator<NumModes> mp_op_; // Single MPOperator for this MPI rank
     MPGraph graph_;                      // Single MPGraph for this MPI rank
@@ -521,6 +563,10 @@ protected:
     // reused across gates so no per-gate O(operator) allocate+memset. Pure scratch — carries no
     // state between gates (each build bumps the epoch), so copies may share or reset it freely.
     detail::MatchedEpochSet matched_scratch_;
+    // Adaptive per-gate serial/parallel mode controller (see GateParallelController.h): measures
+    // ns-per-anticommuting-term in both modes and locks onto the cheaper one. Reset per gate-loop
+    // call (propagate_with_timing_). Mode changes only chunking, never results.
+    detail::GateParallelController gate_mode_ctl_;
 
     // Inline-width hint for the packed operator rows. The store reserves this many Majorana
     // positions per row inline; terms with more positions spill losslessly into the overflow
@@ -551,6 +597,32 @@ private:
     // coefficient encoding, the ⟨b|·|b⟩ scoring, and the scan/fold basis dispatch. Kept in the private
     // block (below the frozen protected extension surface) so the downstream subclass layout is untouched.
     Basis basis_{Basis::Majorana};
+
+    // Intra-process shard runtime. Null ⇒ this is an ordinary single-partition propagator (the default
+    // and the state of every shard's own propagator). Non-null ⇒ this is a shard FACADE: its own
+    // mp_op_/graph_ are unused and every operator method fans out to the S shard propagators the group
+    // owns (see the sharded_* helpers and the shard branches in the impl). Constructed only when the
+    // resolved shard count exceeds 1; requires a single MPI rank (shards and MPI ranks don't nest yet).
+    std::unique_ptr<detail::shard::ShardGroup<NumModes>> shard_group_;
+    // ShardGroup rebinds a cloned shard's comm_ to its own ShmComm during a deep copy.
+    friend class detail::shard::ShardGroup<NumModes>;
+
+    // Resolve the effective shard count from the ctor `shards` arg (0 ⇒ env monoprop_SHARDS, else the
+    // auto policy), the basis, the thread budget, and the topology. Returns 1 for the ordinary path.
+    static auto resolve_shard_count_(size_t requested, Basis basis, mpi::Comm comm) -> size_t;
+    // Fan-out helpers for the inline accessors (defined in the impl, where ShardGroup is complete).
+    auto sharded_size_() const -> size_t;
+    auto sharded_graph_size_() const -> std::pair<size_t, size_t>;
+    auto sharded_graph_layers_() const -> size_t;
+    auto sharded_reserve_operator_(size_t expected_local_terms) -> void;
+    // Raw per-shard data has no single meaningful value on a facade; guard the accessors that expose
+    // it. Inline-safe: only tests the unique_ptr for null (no ShardGroup member access).
+    auto require_unsharded_(const char *what) const -> void {
+        if (shard_group_) {
+            throw std::runtime_error(std::string(what)
+                                     + " is unavailable on a shard-backed propagator; use per-shard access");
+        }
+    }
 
     static auto format_bytes_(size_t bytes) -> std::string;
 
@@ -658,7 +730,7 @@ private:
                                                 const VecD &,
                                                 const MPGraph &,
                                                 const VecD &,
-                                                MPI_Comm>>
+                                                mpi::Comm>>
     auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
 
     // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the gate
