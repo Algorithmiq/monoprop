@@ -137,9 +137,12 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
     expvals_dict["QuEra ppvm"].append(ppvm_expval)
 
     # ------------------------------- pauli-prop --------------------------------
+    # set max number of terms to be the actual number of terms in monoprop
+    max_terms = mp.size()
+
     t1 = time.perf_counter()
     evolved_obs, _ = propagate_through_circuit(
-        obs, circ, max_terms=10_000, atol=lower_atol, frame="h"
+        obs, circ, max_terms=max_terms, atol=lower_atol, frame="h"
     )
     expval = float(evolved_obs.coeffs[~evolved_obs.paulis.x.any(axis=1)].sum())
     t2 = time.perf_counter()
