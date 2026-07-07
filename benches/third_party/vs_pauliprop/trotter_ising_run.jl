@@ -36,6 +36,7 @@ theta_x = dt * h
 theta_zz = dt * j
 
 runtimes = Float64[]
+expvals = Float64[]
 
 @showprogress for nq in qubit_range
     topology = staircasetopology(nq)
@@ -61,10 +62,13 @@ runtimes = Float64[]
     t2 = time_ns()
 
     push!(runtimes, (t2 - t1) / 1e9)
+    push!(expvals, expval)
 end
 
 data = JSON.parsefile(results_file)
 data["runtimes"][label] = runtimes
+data["expvals"][label] = expvals
+
 open(results_file, "w") do file
     JSON.print(file, data, 4)
 end

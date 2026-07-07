@@ -76,11 +76,12 @@ labels = [
     "cuPauliProp (GPU)",
 ]
 runtimes_dict = {label: [] for label in labels}
+expvals_dict = {label: [] for label in labels}
 
 cupp_handle = LibraryHandle()
 
 for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
-    # -------------------------------- monoprop --------------------------------
+    # -------------------------------- monoprop ---------------------------------
     # define qiskit circuit
     circ = QuantumCircuit(nq)
     theta_x = dt * h
@@ -111,8 +112,9 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
     expval = mp.expectation_value()
     t2 = time.perf_counter()
     runtimes_dict["monoprop"].append(t2 - t1)
+    expvals_dict["monoprop"].append(expval)
 
-    # ---------------------------------- ppvm ----------------------------------
+    # ---------------------------------- ppvm -----------------------------------
     # define observable
     ppvm_obs = PauliSum.new(
         n_qubits=nq,
@@ -132,8 +134,9 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
     t2 = time.perf_counter()
 
     runtimes_dict["QuEra ppvm"].append(t2 - t1)
+    expvals_dict["QuEra ppvm"].append(ppvm_expval)
 
-    # ------------------------------- pauli-prop -------------------------------
+    # ------------------------------- pauli-prop --------------------------------
     t1 = time.perf_counter()
     evolved_obs, _ = propagate_through_circuit(
         obs, circ, max_terms=10_000, atol=lower_atol, frame="h"
@@ -141,6 +144,7 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
     expval = float(evolved_obs.coeffs[~evolved_obs.paulis.x.any(axis=1)].sum())
     t2 = time.perf_counter()
     runtimes_dict["Qiskit pauli-prop"].append(t2 - t1)
+    expvals_dict["Qiskit pauli-prop"].append(expval)
 
     # ------------------------------- cuPauliProp -------------------------------
     # define observable
@@ -151,18 +155,19 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
         cupp_xz[i] = cp.asarray(_pauli_string_to_packed_integers(["Z"], [i], nq))
 
     cupp_expansion = PauliExpansion(
-        cupp_handle,
-        nq,
-        nq,
-        cupp_xz,
-        cupp_coefs,
+        library_handle=cupp_handle,
+        num_qubits=nq,
+        num_terms=nq,
+        xz_bits=cupp_xz,
+        coeffs=cupp_coefs,
         options=PauliExpansionOptions(memory_limit="80%", blocking=True),
     )
     cupp_truncation = Truncation(
-        pauli_coeff_cutoff=lower_atol, pauli_weight_cutoff=max_pauli_weight
+        pauli_coeff_cutoff=lower_atol,
+        pauli_weight_cutoff=max_pauli_weight,
     )
 
-    # build the circuit (gate order matching application order to the state)
+    # build the circuit
     cupp_circuit = []
     for _ in range(num_steps):
         cupp_circuit.extend(PauliRotationGate(theta_x, ["X"], [i]) for i in range(nq))
@@ -170,7 +175,7 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
             PauliRotationGate(theta_zz, ["Z", "Z"], [i, i + 1]) for i in range(nq - 1)
         )
 
-    # back-propagate the observable through the adjoint circuit
+    # back-propagate the observable
     t1 = time.perf_counter()
     for gate_index in range(len(cupp_circuit) - 1, -1, -1):
         cupp_expansion = cupp_expansion.apply_gate(
@@ -184,9 +189,17 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
     cupp_expval = float(trace_significand * np.exp2(trace_exponent))
     t2 = time.perf_counter()
     runtimes_dict["cuPauliProp (GPU)"].append(t2 - t1)
+    expvals_dict["cuPauliProp (GPU)"].append(cupp_expval)
 
+    # ---------------------------------------------------------------------------
 
 with open("trotter_ising_results.json", "w") as file:
     json.dump(
-        {"qubit_range": list(qubit_range), "runtimes": runtimes_dict}, file, indent=4
+        {
+            "qubit_range": list(qubit_range),
+            "runtimes": runtimes_dict,
+            "expvals": expvals_dict,
+        },
+        file,
+        indent=4,
     )
