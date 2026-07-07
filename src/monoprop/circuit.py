@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING, Literal
 
 from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
 from .majorana_data import MajoranaOperator
-from .pauli_data import Pauli, PauliOperator
+from .pauli_data import _SLOTS_BY_LETTER, Pauli, PauliOperator
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -526,21 +526,50 @@ def _validate_commuting_pauli_generator(generator: PauliOperator) -> None:
             )
 
 
+def _pauli_native_layers(
+    generator: PauliOperator,
+) -> list[tuple[tuple[int, ...], float]]:
+    """Expand a Pauli generator into native gamma-slot ``(slots, gen_coeff)`` layers.
+
+    Each term is placed directly on its gamma slots via :data:`~monoprop.pauli_data.
+    _SLOTS_BY_LETTER` (``X_q -> slot 2q``, ``Y_q -> slot 2q+1``, ``Z_q -> both``), with **no**
+    Jordan-Wigner mapping and **no** antihermitian normalization: the layer's generator
+    coefficient is the RAW real coefficient (the native engine bakes in the matching emit
+    phase). The placement is local -- a term names only its own qubits -- so no system width
+    is needed.
+    """
+    layers: list[tuple[tuple[int, ...], float]] = []
+    for pauli, coeff in generator.terms.items():
+        slots = tuple(
+            sorted(
+                2 * q + o
+                for q, letter in zip(pauli.qubits, pauli.string, strict=True)
+                for o in _SLOTS_BY_LETTER[letter]
+            )
+        )
+        layers.append((slots, _real_generator_coefficient(slots, coeff)))
+    return layers
+
+
 def _gate_layers(
-    gate: Exp, num_qubits: int | None
+    gate: Exp, num_qubits: int | None, engine_basis: str = "majorana"
 ) -> list[tuple[tuple[int, ...], float]]:
     """Expand one gate into ``(majorana, gen_coeff)`` layers, in application order.
 
-    A ``"pauli"``-family :class:`Exp` places each :class:`~monoprop.pauli_data.Pauli` term on
-    its qubits within the ``num_qubits``-wide system, Jordan-Wigner maps it, and
-    antihermitian-normalizes (one layer per term). A ``"majorana"``-family :class:`Exp`
-    contributes its :class:`~monoprop.majorana_data.MajoranaOperator` terms directly -- the
-    coefficients are already the structural generator coefficients.
+    A ``"pauli"``-family :class:`Exp` is expanded per term. With ``engine_basis == "pauli"``
+    the term is placed on its native gamma slots with its RAW real coefficient (see
+    :func:`_pauli_native_layers`); with ``engine_basis == "majorana"`` (the default) it is
+    Jordan-Wigner mapped and antihermitian-normalized (which needs the system ``num_qubits``).
+    A ``"majorana"``-family :class:`Exp` contributes its
+    :class:`~monoprop.majorana_data.MajoranaOperator` terms directly -- the coefficients are
+    already the structural generator coefficients.
     """
     # A Pauli-family gate holds a PauliOperator; every other family a MajoranaOperator (so the
     # ``isinstance`` narrows the fall-through arm to MajoranaOperator).
     generator = gate.generator
     if isinstance(generator, PauliOperator):
+        if engine_basis == "pauli":
+            return _pauli_native_layers(generator)
         if num_qubits is None:
             raise ValueError("num_qubits is required to expand a Pauli gate.")
         layers: list[tuple[tuple[int, ...], float]] = []
@@ -561,6 +590,7 @@ def expand_monomials(
     gates: Sequence[Exp],
     mapping: Sequence[int],
     num_qubits: int | None = None,
+    engine_basis: str = "majorana",
 ) -> tuple[list[tuple[int, ...]], list[float], list[int], list[int]]:
     """Flatten gates + an already-resolved per-gate mapping into per-monomial arrays.
 
@@ -569,6 +599,9 @@ def expand_monomials(
         mapping: The angle index driving each gate (one entry per gate).
         num_qubits: System qubit count, required to place Pauli-family generators; unused for
             native Majorana generators.
+        engine_basis: The engine's operator basis. ``"majorana"`` (default) Jordan-Wigner maps
+            Pauli generators; ``"pauli"`` emits them as native gamma-slot layers with their raw
+            real coefficients.
 
     Returns:
         A tuple ``(majoranas, gen_coeffs, parameter_mapping, gate_indices)`` for the C++
@@ -581,7 +614,7 @@ def expand_monomials(
     per_monomial: list[int] = []
     gate_indices: list[int] = []
     for gate_index, (gate, param) in enumerate(zip(gates, mapping, strict=True)):
-        for majorana, gen_coeff in _gate_layers(gate, num_qubits):
+        for majorana, gen_coeff in _gate_layers(gate, num_qubits, engine_basis):
             majoranas.append(majorana)
             gen_coeffs.append(gen_coeff)
             per_monomial.append(param)

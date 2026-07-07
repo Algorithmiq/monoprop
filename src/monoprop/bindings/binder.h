@@ -47,6 +47,9 @@ auto get_mpi_comm(nb::object obj) -> MPI_Comm;
 auto cutoff_type_str_2_enum(const std::string &cutoff_type) -> CutoffType;
 auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string;
 
+auto basis_str_2_enum(const std::string &basis) -> Basis;
+auto basis_enum_2_str(Basis basis) -> std::string;
+
 /**
  * @brief Binds the MonomialPropagator class to Python.
  *
@@ -72,7 +75,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
            std::optional<double> upper_atol,
            const std::string &cutoff_type,
            std::optional<std::vector<std::vector<size_t>>> basis_change,
-           size_t logical_num_modes) {
+           size_t logical_num_modes,
+           const std::string &basis) {
             new (t) MonomialPropagator<NumModes>(initial_operator,
                                                  cutoff,
                                                  slater_determinant,
@@ -82,7 +86,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                                  upper_atol,
                                                  cutoff_type_str_2_enum(cutoff_type),
                                                  basis_change,
-                                                 logical_num_modes);
+                                                 logical_num_modes,
+                                                 basis_str_2_enum(basis));
         },
         "initial_operator"_a,
         "cutoff"_a,
@@ -94,6 +99,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "cutoff_type"_a = "length",
         "basis_change"_a = std::nullopt,
         "logical_num_modes"_a = NumModes,
+        "basis"_a = "majorana",
         "Instantiate the simulator.");
 
     cls.def("build_graph",
@@ -170,6 +176,11 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                     &MonomialPropagator<NumModes>::schrodinger,
                     "Whether the propagator uses Schrodinger picture");
 
+    cls.def_prop_ro(
+        "basis",
+        [](const MonomialPropagator<NumModes> &self) -> std::string { return basis_enum_2_str(self.basis()); },
+        "The operator basis: 'majorana' (default) or 'pauli'");
+
     // Contract the graph, then decode every above-atol term back into a Python {indices: coeff} dict.
     cls.def(
         "evolved_operator",
@@ -177,6 +188,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             // Evolve the operator representation (single rank in non-MPI Python bindings)
             const auto evolved_op = self.contract_partially(parameters, false);
             const auto &indexing = self.indexing();
+            const bool is_pauli = (self.basis() == Basis::Pauli);
 
             nb::dict py_result;
             indexing.for_each([&](const auto &maj, size_t idx) {
@@ -187,7 +199,10 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                         for (const auto &i : bitset_to_indices<NumModes>(maj)) {
                             key.append(i);
                         }
-                        auto decoded_coeff = decode_coeff<NumModes>(coeff, maj);
+                        // Pauli coefficients are already real (identity decode); Majorana un-applies the
+                        // Hermitian phase. Both keys are the stored gamma-slot / Majorana index lists.
+                        auto decoded_coeff =
+                            is_pauli ? decode_pauli_coeff(coeff) : decode_coeff<NumModes>(coeff, maj);
                         // Round to avoid anti-hermitian elements due to numerical noise
                         auto rounded_coeff = std::complex<double>(std::round(decoded_coeff.real() * 1e12) / 1e12,
                                                                   std::round(decoded_coeff.imag() * 1e12) / 1e12);

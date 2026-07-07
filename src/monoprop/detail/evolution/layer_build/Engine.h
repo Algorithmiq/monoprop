@@ -62,6 +62,9 @@ struct LayerBuildEngine {
     // coeff is 0 in Heisenberg (querier half is a no-op) but HF-scored non-zero in Schrödinger (querier
     // half's v_partner needs a post-extension exchange). Unused at R==1 and in the non-fused path.
     bool schrodinger_ = false;
+    // Operator basis (fused R>1 only): selects Pauli vs Majorana HF scoring of fresh cross-rank
+    // Schrödinger misses in the fused resolver. Set by build_layer; Majorana by default.
+    Basis basis_ = Basis::Majorana;
 
     // ── state (grows during the build) ──
     std::vector<PartnerAcc> acc;
@@ -205,7 +208,8 @@ struct LayerBuildEngine {
                                                            *op_coeffs_,
                                                            schrodinger_,
                                                            *fused_,
-                                                           frame_);
+                                                           frame_,
+                                                           basis_);
             // Round 2: value responses B→A, using the known transpose recv counts (see response_recv_counts).
             std::vector<int> resp_recv = response_recv_counts();
             std::vector<std::vector<double>> inc_rval;
@@ -515,7 +519,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                              CosMask *out_cos = nullptr,
                              FusedContract *fused_contract = nullptr,
                              bool schrodinger = false,
-                             bool *engaged_frame = nullptr) -> std::shared_ptr<LayerCore> {
+                             bool *engaged_frame = nullptr,
+                             Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
     // Fused contraction: the caller (evolve_mode_contract_immediately_) passes a non-null sink for the
@@ -556,16 +561,16 @@ auto build_layer(MPOperator<NumModes> &local_op,
 
     FusedScanResult fused = [&] {
         profiling::ScopedRegion prof_find(profiling::Region::Find);
-        return fused_find_and_collect<NumModes>(local_op,
-                                                gen,
-                                                cut_eval,
-                                                cut_st,
-                                                coeffs,
-                                                only_rotate_len_k,
-                                                R,
-                                                my_rank,
-                                                /*capture_values=*/use_fused,
-                                                frame);
+        // Dispatch the scan on the basis at compile time (Pauli emit-sign kernel + J(G) fold vs the
+        // Majorana interleave/hermitian phase). Every other argument is basis-agnostic.
+        if (basis == Basis::Pauli) {
+            return fused_find_and_collect<NumModes, true>(
+                local_op, gen, cut_eval, cut_st, coeffs, only_rotate_len_k, R, my_rank,
+                /*capture_values=*/use_fused, frame);
+        }
+        return fused_find_and_collect<NumModes, false>(
+            local_op, gen, cut_eval, cut_st, coeffs, only_rotate_len_k, R, my_rank,
+            /*capture_values=*/use_fused, frame);
     }();
     CosMask cos_all;
     {
@@ -587,6 +592,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                    matched_scratch,
                                    /*combined_size=*/local_op.store->size(),
                                    schrodinger);
+    eng.basis_ = basis;
     if (use_fused) {
         eng.fused_ = fused_contract;
         eng.op_coeffs_ = &coeffs; // SAME array the scan read (= *op_coeffs); pre-cos throughout resolve
@@ -618,7 +624,14 @@ auto build_layer(MPOperator<NumModes> &local_op,
     // after this point (partner inserts, extend) stamp at the post-append nfirings, so the gate f cos
     // is applied to them exactly once — by the apply's explicit cos_val, not the log. See CoeffFrame.h.
     if (implicit && param.has_value()) {
-        frame->append_firing(2.0 * param.value(), gen);
+        // Pass the FOLD generator (J(G) for Pauli) and its g_odd bit (false for Pauli) so the lazy
+        // reconstruct reproduces this firing's anticommutation parity — the scan folds the same columns.
+        if (basis == Basis::Pauli) {
+            frame->append_firing(2.0 * param.value(), pair_swap<NumModes>(gen), /*g_odd=*/false);
+        }
+        else {
+            frame->append_firing(2.0 * param.value(), gen, gen.count() % 2 != 0);
+        }
     }
 
     auto storage = eng.finish(std::move(cos_all), out_cos);

@@ -204,6 +204,9 @@ enum class CutoffType {
     Support // Keep if the orbital support (number of distinct orbitals) <= cutoff (or fully paired)
 };
 
+/// @brief Operator basis: Majorana monomials (default) or Pauli strings (native JW-image encoding).
+enum class Basis : uint8_t { Majorana, Pauli };
+
 } // namespace monoprop
 
 // Data classes extracted into focused detail headers. Included here so existing consumers

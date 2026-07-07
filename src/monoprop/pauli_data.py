@@ -30,6 +30,17 @@ if TYPE_CHECKING:
 
 _VALID_PAULI_CHARS = frozenset("IXYZ")
 
+#: The Pauli-native gamma-slot encoding, the single source of truth for placing a qubit's
+#: Pauli letter on its two gamma slots ``(2q, 2q+1)``: ``X_q -> slot 2q``, ``Y_q -> slot 2q+1``,
+#: ``Z_q -> both slots``. Used by both the observable ingest (:meth:`PauliOperator.
+#: get_symplectic_terms`) and the native gate expansion in :mod:`monoprop.circuit`.
+_SLOTS_BY_LETTER: dict[str, tuple[int, ...]] = {"X": (0,), "Y": (1,), "Z": (0, 1)}
+
+#: A coefficient with an imaginary part above this tolerance is rejected as non-Hermitian
+#: (a Pauli operator is Hermitian, so its coefficients are real). Mirrors the C++
+#: ``encode_pauli_coeff`` guard (1e-10).
+_PAULI_HERMITICITY_ATOL = 1e-10
+
 
 @dataclass(frozen=True, slots=True, init=False)
 class Pauli:
@@ -218,3 +229,40 @@ class PauliOperator:
             majoranas.append(majorana)
             coefficients.append(jw_coeff * coeff)
         return MajoranaOperator._from_terms(majoranas, coefficients, self.num_qubits)
+
+    def get_symplectic_terms(self) -> dict[tuple[int, ...], float]:
+        """Return the Pauli-native (symplectic) gamma-slot term mapping.
+
+        Each Pauli term is placed directly on its gamma slots via the encoding
+        ``X_q -> slot 2q``, ``Y_q -> slot 2q+1``, ``Z_q -> both slots`` (see
+        :data:`_SLOTS_BY_LETTER`), with **no** Jordan-Wigner phase: the term's real coefficient
+        is stored as-is. This is the surface the native Pauli engine ingests directly (its
+        ``indices_to_bitset`` consumes the same gamma-slot index lists as the Majorana path).
+
+        The identity term (a term acting on no qubits) maps to the empty key ``()``.
+
+        Returns:
+            A mapping from sorted gamma-slot index tuples to the real coefficient of each term.
+
+        Raises:
+            ValueError: If a term's coefficient has a non-negligible imaginary part (a Pauli
+                operator is Hermitian, so its coefficients must be real).
+        """
+        terms: dict[tuple[int, ...], float] = {}
+        for pauli, raw_coeff in self.terms.items():
+            coeff = complex(raw_coeff)
+            if abs(coeff.imag) > _PAULI_HERMITICITY_ATOL:
+                raise ValueError(
+                    f"Non-real Pauli coefficient detected: term {pauli} carries {coeff}, "
+                    f"whose imaginary part is not negligible. A Pauli operator is Hermitian, "
+                    f"so its coefficients must be real."
+                )
+            slots = tuple(
+                sorted(
+                    2 * q + o
+                    for q, letter in zip(pauli.qubits, pauli.string, strict=True)
+                    for o in _SLOTS_BY_LETTER[letter]
+                )
+            )
+            terms[slots] = coeff.real
+        return terms

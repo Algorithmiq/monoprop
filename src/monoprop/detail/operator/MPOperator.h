@@ -37,6 +37,17 @@ auto encode_coeff(const std::complex<double> &coeff, const MajoranaSet<NumModes>
 
 template <size_t NumModes>
 auto indices_to_bitset(const VecZ &arr) -> MajoranaSet<NumModes>;
+
+// Pauli-basis helpers (defined in PauliAlgebra.h). Forward-declared here so this header stays free of a
+// PauliAlgebra.h include (which would form a cycle through TypeAliases.h); every TU that instantiates the
+// MPOperator methods below also includes PauliAlgebra.h transitively (via CosineRecompute.h).
+template <size_t NumModes>
+auto get_hf_mask(const VecZ &hf) -> MajoranaSet<NumModes>;
+
+template <size_t NumModes>
+auto pauli_hf_phase(const MajoranaSet<NumModes> &maj, const MajoranaSet<NumModes> &hf_mask) -> double;
+
+auto encode_pauli_coeff(const std::complex<double> &coeff) -> double;
 } // namespace monoprop
 
 namespace monoprop::detail {
@@ -63,6 +74,10 @@ struct MPOperator {
     CoeffFrame<NumModes> state_frame = {};
     MajoranaOperator<NumModes> init_op_map = {};
     VecZ slater_determinant = {};
+    // Operator basis: Majorana monomials (default) or native Pauli strings. Selects the coefficient
+    // encoding (identity for Pauli) and the ⟨b|·|b⟩ scoring (pauli_hf_phase vs hf_phase) in get_state /
+    // the fused resolver. Set once at propagator construction (MonomialPropagator ctor).
+    Basis basis = Basis::Majorana;
     mutable std::optional<InvertedIndex<NumModes>> inverted_index_ = std::nullopt;
 
     MPOperator() noexcept = default;
@@ -81,6 +96,7 @@ struct MPOperator {
           state_frame(other.state_frame),
           init_op_map(other.init_op_map),
           slater_determinant(other.slater_determinant),
+          basis(other.basis),
           inverted_index_(other.inverted_index_) {}
 
     auto size() const -> size_t { return store->size(); }
@@ -193,6 +209,19 @@ struct MPOperator {
         std::iota(new_inds.begin(), new_inds.end(), cur_len);
 
         const auto paired_inds = is_fully_paired<NumModes>(new_inds, *store);
+
+        // A Z-only (paired) Pauli scores ⟨b|P|b⟩ = (−1)^{|Z∩occ|} with no Majorana pairing sign, so
+        // Pauli uses pauli_hf_phase rather than hf_phase. The occupancy mask marks slot 2q; for a paired
+        // term slots 2q and 2q+1 agree, so the same get_hf_mask feeds both phases (see pauli_hf_phase).
+        if (basis == Basis::Pauli) {
+            const auto hf_mask = get_hf_mask<NumModes>(slater_determinant);
+            tbb::parallel_for(size_t{0}, paired_inds.size(), [&](size_t i) {
+                const auto &row = materialize_row<NumModes>(*store, paired_inds[i]);
+                state_coeffs[paired_inds[i]] = pauli_hf_phase<NumModes>(row, hf_mask);
+            });
+            return state_coeffs;
+        }
+
         const auto hf_phases = get_hf_phases<NumModes>(paired_inds, slater_determinant, *store);
 
         tbb::parallel_for(size_t{0}, paired_inds.size(), [&](size_t i) {
@@ -229,7 +258,7 @@ struct MPOperator {
             const auto maj = indices_to_bitset<NumModes>(k);
             const auto rank_evolved_op = store->find(maj);
             const auto rank_init_op = init_op_map.find(maj);
-            const auto coeff = encode_coeff<NumModes>(v, maj);
+            const auto coeff = (basis == Basis::Pauli) ? encode_pauli_coeff(v) : encode_coeff<NumModes>(v, maj);
 
             // in heisenberg picture, we cannot change the initial hamiltonian if the majorana is not present
             // this is because these paths from new majoranas may not be present in the evolution graph

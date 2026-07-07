@@ -28,6 +28,7 @@
 #include <tbb/partitioner.h>
 
 #include "monoprop/MajoranaAlgebra.h"
+#include "monoprop/PauliAlgebra.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/CoeffFrame.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
@@ -66,10 +67,9 @@ struct EvenParityGeneratorColumns {
     size_t count = 0;
 };
 
-// Collect G's set columns (the modes it touches) in ASCENDING bit order. Because they are ascending,
-// indices[0] is the LOWEST set column = THE pivot — the column that splits each anticommuting pair
-// into leader (pivot clear) and follower (pivot set). even_parity_scan_pass1 and the emit path both
-// rely on gen_cols[0] being the pivot.
+// Collect a generator's set columns (the modes it touches) in ASCENDING bit order. indices[0] is the
+// LOWEST set column; ordinary (Majorana) callers pass it to even_parity_scan_pass1 as the pivot — the
+// column that splits each anticommuting pair into leader (pivot clear) and follower (pivot set).
 template <size_t NumModes>
 auto build_even_parity_generator_columns(const MajoranaSet<NumModes> &gen_maj) -> EvenParityGeneratorColumns<NumModes> {
     EvenParityGeneratorColumns<NumModes> columns;
@@ -94,14 +94,18 @@ struct EvenParityNzWord {
 // (L1-resident sub-blocks; see combine_columns_block) into a per-word overlap mask, keep nonzero
 // words in `nz`, and tally popcounts (n_anti, n_foll) so pass 2 reserves its
 // output runs once. Pass a thread_local `nz` to reuse its capacity across chunks. `gen_cols` is
-// the generator's full column list, pivot (leader/follower split column) FIRST — the fold includes
-// it, and the pivot's own bits come from its dense words directly or a per-block scatter if sparse.
+// the column list the fold XORs into the anticommutation parity; `pivot_col` is the leader/follower
+// split column and is read SEPARATELY (its bits come from its dense words directly or a per-block
+// scatter if sparse). `pivot_col` must be a set bit that flips between every anticommuting partner
+// pair; ordinary callers pass gen_cols[0]. Keeping it a distinct argument lets a caller fold one
+// column set (e.g. a transformed generator) while splitting on a bit of the untransformed generator.
 // `g_odd` carries the odd-|G| correction: the anticommutation bit is (|M∩G| mod 2) XOR (|M| mod 2),
 // so the per-row parity(|M|) bit (row_parity_ptr) is XORed in before foll/nonzero/pivot are derived.
 // Even |G| (g_odd==false) ignores row_parity_ptr and is byte-identical.
 template <size_t NumModes>
 inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                                    std::span<const size_t> gen_cols,
+                                   size_t pivot_col,
                                    size_t wlo,
                                    size_t whi,
                                    size_t last_word,
@@ -114,7 +118,6 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     nz.clear();
     n_anti = 0;
     n_foll = 0;
-    const size_t pivot_col = gen_cols[0];
     const bool pivot_dense = sc.column_is_dense(pivot_col);
     const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_data(pivot_col) : nullptr;
     std::vector<uint64_t> &blk = column_block_scratch();
@@ -170,9 +173,14 @@ inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t maj_pop, const C
 }
 
 // ─── Rebuild-then-word-kernels emit (packed survivor products) ────────────────
-// Per-generator context: the dense generator plus its popcount, built once per generator.
+// Per-generator context: the dense generator plus its popcount, built once per generator. Two flavours
+// selected at compile time by IsPauli — the Majorana arm caches the fixed-per-layer interleave mask, the
+// Pauli arm the emit-sign kernel context. `gen` is ALWAYS the real generator G (used for M⊕G / overlap).
+template <size_t NumModes, bool IsPauli>
+struct GenEmitContext;
+
 template <size_t NumModes>
-struct GenEmitContext {
+struct GenEmitContext<NumModes, false> {
     const MajoranaSet<NumModes> &gen;
     size_t gen_pop;
     // Fixed-per-layer interleave mask W: interleave_phase(M,G) == (M.parity_and(W) ? -1 : 1).
@@ -181,8 +189,22 @@ struct GenEmitContext {
 };
 
 template <size_t NumModes>
-inline auto make_gen_emit_context(const MajoranaSet<NumModes> &gen, size_t gen_pop) -> GenEmitContext<NumModes> {
-    return GenEmitContext<NumModes>{gen, gen_pop, interleave_phase_mask<NumModes>(gen)};
+struct GenEmitContext<NumModes, true> {
+    const MajoranaSet<NumModes> &gen;
+    size_t gen_pop;
+    // Precomputed per-generator context for the hot Pauli emit-sign kernel (pauli_emit_phase).
+    PauliGenContext<NumModes> pauli_ctx;
+};
+
+template <size_t NumModes, bool IsPauli>
+inline auto make_gen_emit_context(const MajoranaSet<NumModes> &gen, size_t gen_pop)
+    -> GenEmitContext<NumModes, IsPauli> {
+    if constexpr (IsPauli) {
+        return GenEmitContext<NumModes, true>{gen, gen_pop, make_pauli_gen_context<NumModes>(gen)};
+    }
+    else {
+        return GenEmitContext<NumModes, false>{gen, gen_pop, interleave_phase_mask<NumModes>(gen)};
+    }
 }
 
 // Compute the three per-survivor products the cutoff/phase emit needs for term i:
@@ -195,19 +217,27 @@ inline auto make_gen_emit_context(const MajoranaSet<NumModes> &gen, size_t gen_p
 // branch-free W-word kernels (XOR, AND-popcount, prefix-xor interleave). The dynamic rotation gate
 // (O(1) from the count byte) is applied by the caller BEFORE this kernel, so rejected terms cost
 // zero reconstruction.
-template <size_t NumModes>
+// The per-term phase_factor is the basis-specific multiplicative sign:
+//   Majorana: interleave_phase(maj, gen) via the fixed-per-layer mask (branch/scan-free);
+//   Pauli:    pauli_emit_phase(pauli_ctx, maj, new_maj) — the ±1 emit sign of the ordered product maj·G.
+// The caller folds in hermitian_phase (Majorana only) to obtain the final query phase (see the emit lambda).
+template <size_t NumModes, bool IsPauli>
 [[gnu::always_inline]] inline void emit_term_products(const OperatorIndex<NumModes> &ham,
                                                       size_t i,
-                                                      const GenEmitContext<NumModes> &ctx,
+                                                      const GenEmitContext<NumModes, IsPauli> &ctx,
                                                       MajoranaSet<NumModes> &new_maj,
                                                       size_t &overlap,
-                                                      int &interleave) {
+                                                      int &phase_factor) {
     MajoranaSet<NumModes> maj; // zero-init, W words, lives in registers
     ham.for_each_position(i, [&](size_t pos) { maj.set(pos); });
     new_maj = maj ^ ctx.gen;
     overlap = maj.count_and(ctx.gen);
-    // interleave_phase(maj, gen) via the fixed-per-layer mask (provably identical, branch/scan-free).
-    interleave = maj.parity_and(ctx.interleave_mask) ? -1 : 1;
+    if constexpr (IsPauli) {
+        phase_factor = pauli_emit_phase<NumModes>(ctx.pauli_ctx, maj, new_maj);
+    }
+    else {
+        phase_factor = maj.parity_and(ctx.interleave_mask) ? -1 : 1;
+    }
 }
 
 // ─── fused_find_and_collect (any rank count) ──────────────────────────────────
@@ -232,7 +262,7 @@ struct FusedScanResult {
 // `capture_values` (fused contraction, R==1): also collect the signed pre-cos source coefficient
 // (v_src) into leader_val/follower_val, parallel to leader_src/follower_src. Off by default so every
 // other path is byte-for-byte unchanged.
-template <size_t NumModes>
+template <size_t NumModes, bool IsPauli = false>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const MajoranaSet<NumModes> &gen,
                             const CutoffEvaluator<NumModes> &cutoff_eval,
@@ -244,7 +274,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             bool capture_values = false,
                             const CoeffFrame<NumModes> *frame = nullptr) -> FusedScanResult {
     const size_t gen_pop = gen.count();
-    const auto ectx = make_gen_emit_context<NumModes>(gen, gen_pop);
+    const auto ectx = make_gen_emit_context<NumModes, IsPauli>(gen, gen_pop);
     // Lazy-cosine frame: when `frame` is active the stored coeffs are frozen, so the gate reconstructs
     // the true value on demand; no eager cosine set is built (cos stays empty). The frame also carries
     // the magnitude byte prefilter: reject an anti term without reading its 8-byte coefficient when its
@@ -278,8 +308,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         }
         MajoranaSet<NumModes> new_maj;
         size_t overlap = 0;
-        int interleave = 0;
-        emit_term_products<NumModes>(*op.store, i, ectx, new_maj, overlap, interleave);
+        int phase_factor = 0;
+        emit_term_products<NumModes, IsPauli>(*op.store, i, ectx, new_maj, overlap, phase_factor);
         const size_t new_pop = maj_pop + gen_pop - 2 * overlap;
         // Structural cutoff on the partner M⊕G — UNLESS upper_atol rescues it (its sine coefficient is
         // large enough to keep alive despite exceeding the cutoff). See CutoffContext::is_above_upper.
@@ -287,7 +317,16 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
             return;
         }
-        const int phase = interleave * hermitian_phase(maj_pop, gen_pop, overlap);
+        // Pauli: pauli_emit_phase is the sign of maj·G; the rotation the apply implements (U=exp(iθG),
+        // O'=U†OU) needs the NEGATED sign so the Givens partner pair carries the correct off-diagonal
+        // (pinned by pauli_build_layer_dense_matrix_ground_truth / T7). Majorana folds in hermitian_phase.
+        int phase;
+        if constexpr (IsPauli) {
+            phase = -phase_factor;
+        }
+        else {
+            phase = phase_factor * hermitian_phase(maj_pop, gen_pop, overlap);
+        }
         // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
         const size_t r_prime = (rank_count == 1) ? my_rank : (majorana_hash<NumModes>(new_maj) % rank_count);
         const size_t source = i;
@@ -320,10 +359,17 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     }
 
     {
+        // The anticommutation fold runs over the generator's inverted-index columns. For Majorana that is
+        // G itself; for Pauli it is J(G) = pair_swap(G), since pauli_anticommutes(M,G) = parity(|M ∩ J(G)|).
+        // parity(|G ∩ J(G)|) = parity(2·#Z) = 0 ⇒ the self-commutation invariant holds and no odd-|G|
+        // row-parity correction is ever needed for Pauli (g_odd forced false). J is a bijection so
+        // J(G) ≠ 0 ⟺ G ≠ 0. The pivot that splits each anticommuting pair is a set bit of the REAL G
+        // (gen.find_first()), NOT of J(G) — A and A⊕G differ exactly on G's bits (see the pivot arg below).
+        const MajoranaSet<NumModes> fold_gen = IsPauli ? pair_swap<NumModes>(gen) : gen;
         // Odd |G| needs the per-row parity(|M|) correction (see even_parity_scan_pass1); even |G| is
-        // byte-identical with no parity bitmap.
-        const bool g_odd = (gen.count() % 2 != 0);
-        const auto gen_columns = build_even_parity_generator_columns<NumModes>(gen);
+        // byte-identical with no parity bitmap. Pauli never needs it (invariant above).
+        const bool g_odd = IsPauli ? false : (gen.count() % 2 != 0);
+        const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
         if (gen_columns.count == 0) {
             return res;
         }
@@ -377,6 +423,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             size_t n_foll = 0;
             even_parity_scan_pass1<NumModes>(inverted_index,
                                              gen_cols,
+                                             gen.find_first(),
                                              wlo,
                                              whi,
                                              last_word,

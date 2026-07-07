@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "monoprop/MajoranaAlgebra.h" // get_hf_mask, is_paired, hf_phase (fresh Schrödinger miss coeff)
+#include "monoprop/PauliAlgebra.h"    // pauli_hf_phase (Pauli fresh Schrödinger miss coeff)
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
@@ -218,7 +219,8 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
                                     const VecD &op_coeffs,
                                     bool schrodinger,
                                     FusedContract &fc,
-                                    const CoeffFrame<NumModes> *frame = nullptr) -> std::vector<std::vector<double>> {
+                                    const CoeffFrame<NumModes> *frame = nullptr,
+                                    Basis basis = Basis::Majorana) -> std::vector<std::vector<double>> {
     const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, rank_count);
     std::vector<std::vector<double>> resp_val(rank_count);
     for (size_t s = 0; s < rank_count; ++s) {
@@ -251,7 +253,12 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
                                        : op_coeffs[ip];
         }
         else if (schrodinger) {
-            v_tgt = is_paired<NumModes>(pr.maj[g]) ? hf_phase<NumModes>(pr.maj[g], hf_mask) : 0.0;
+            // Fresh Schrödinger insert coeff = ⟨b|P|b⟩ scoring, ±1/0. For a Z-only (is_paired) term the
+            // Pauli phase omits the Majorana pairing sign (see pauli_hf_phase); off-diagonal terms score 0.
+            v_tgt = is_paired<NumModes>(pr.maj[g])
+                        ? ((basis == Basis::Pauli) ? pauli_hf_phase<NumModes>(pr.maj[g], hf_mask)
+                                                   : hf_phase<NumModes>(pr.maj[g], hf_mask))
+                        : 0.0;
         }
         else {
             v_tgt = 0.0; // Heisenberg fresh insert

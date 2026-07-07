@@ -131,16 +131,71 @@ class MajoranaPropagator:
         # The operator carries its own mode count (a required constructor argument), so the
         # propagator reads it directly rather than validating it here.
         num_modes = majorana_operator.num_modes
+        self._init_engine(
+            majorana_operator.terms,
+            num_modes,
+            initial_state,
+            cutoff=cutoff,
+            schrodinger_cutoff=schrodinger_cutoff,
+            cutoff_type=cutoff_type,
+            lower_atol=lower_atol,
+            upper_atol=upper_atol,
+            basis_change=basis_change,
+            comm=comm,
+            engine_basis="majorana",
+        )
+
+    def _init_engine(
+        self,
+        terms: dict[tuple[int, ...], complex],
+        num_modes: int,
+        initial_state: Sequence[int] | np.ndarray,
+        *,
+        cutoff: int,
+        schrodinger_cutoff: int | None,
+        cutoff_type: str,
+        lower_atol: float | None,
+        upper_atol: float | None,
+        basis_change: list[list[int]] | None,
+        comm: MPI.Comm | None,
+        engine_basis: str = "majorana",
+    ) -> None:
+        """Construct the dispatched C++ simulator and record the shared propagator state.
+
+        Shared engine-init for both propagators: :class:`MajoranaPropagator` passes Majorana
+        terms with ``engine_basis="majorana"``, while
+        :class:`~monoprop.pauli_propagator.PauliPropagator` passes either JW-image Majorana
+        terms (``"majorana"``) or native gamma-slot terms (``"pauli"``). The ``engine_basis``
+        is stored on :attr:`_engine_basis` and threaded into gate expansion by
+        :meth:`build_graph` / :meth:`propagate`; it is also handed to the C++ core as its
+        operator ``basis``.
+
+        Args:
+            terms: The initial operator as an index-tuple -> coefficient mapping (Majorana or
+                native gamma-slot indices, per ``engine_basis``).
+            num_modes: The operator's mode / qubit-slot count (selects the C++ template).
+            initial_state: Slater determinant (occupied mode indices) for the initial state.
+            cutoff: See :meth:`__init__`.
+            schrodinger_cutoff: See :meth:`__init__`.
+            cutoff_type: See :meth:`__init__`.
+            lower_atol: See :meth:`__init__`.
+            upper_atol: See :meth:`__init__`.
+            basis_change: See :meth:`__init__`.
+            comm: See :meth:`__init__`.
+            engine_basis: The C++ operator basis (``"majorana"`` or ``"pauli"``).
+        """
         logger.debug(
-            "__init__. num_modes=%d, cutoff=%d, schrodinger_cutoff=%s",
+            "_init_engine. num_modes=%d, cutoff=%d, schrodinger_cutoff=%s, basis=%s",
             num_modes,
             cutoff,
             schrodinger_cutoff,
+            engine_basis,
         )
         validate_basis_change(basis_change, num_modes)
 
         self._comm = comm
         self._n_params = 0
+        self._engine_basis = engine_basis
         # System qubit count for expanding Pauli gates; set by PauliPropagator from the
         # observable. None for a native Majorana propagator (its gates need no qubit count).
         self._num_qubits: int | None = None
@@ -149,7 +204,7 @@ class MajoranaPropagator:
         # extra positional args the generated per-mode subclasses fill in; the kwargs below match
         # the subclass __init__ that is actually returned.
         self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
-            initial_operator=majorana_operator.terms,
+            initial_operator=terms,
             cutoff=cutoff,
             slater_determinant=list(initial_state),
             schrodinger_cutoff=schrodinger_cutoff,
@@ -158,6 +213,7 @@ class MajoranaPropagator:
             cutoff_type=cutoff_type,
             basis_change=basis_change,
             comm=comm,
+            basis=engine_basis,
         )
 
     def __deepcopy__(self, memo: dict) -> "MajoranaPropagator":
@@ -295,7 +351,7 @@ class MajoranaPropagator:
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
         self._n_params += circuit.n_parameters
         majoranas, gen_coeffs, per_monomial, gate_indices = expand_monomials(
-            gates, mapping, num_qubits
+            gates, mapping, num_qubits, self._engine_basis
         )
         # `seed` may be a NumPy array (an accepted ParameterValues type), so resolve to a list
         # first and treat an empty vector as "no seed" -- `if seed` would raise on an ndarray.
@@ -330,7 +386,7 @@ class MajoranaPropagator:
         gates = self._circuit_gates(circuit)
         num_qubits = self._num_qubits
         majoranas, gen_coeffs, mapping, _gate_indices = expand_monomials(
-            gates, circuit.resolved_mapping, num_qubits
+            gates, circuit.resolved_mapping, num_qubits, self._engine_basis
         )
         self._simulator.propagate(
             majoranas,
@@ -605,6 +661,16 @@ class MajoranaPropagator:
     def num_modes(self) -> int:
         """Number of fermionic modes for the simulator."""
         return self._simulator.num_modes
+
+    @property
+    def basis(self) -> str:
+        """The engine's operator basis: ``"majorana"`` (default) or ``"pauli"``.
+
+        A plain :class:`MajoranaPropagator` is always ``"majorana"``;
+        :class:`~monoprop.pauli_propagator.PauliPropagator` reports ``"pauli"`` in its native
+        mode and ``"majorana"`` in the Jordan-Wigner fallback.
+        """
+        return self._simulator.basis
 
     @property
     def graph_layers(self) -> int:

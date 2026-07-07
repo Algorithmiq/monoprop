@@ -41,7 +41,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
                                                  std::optional<double> upper_atol,
                                                  CutoffType cutoff_type,
                                                  std::optional<std::vector<VecZ>> basis_change,
-                                                 size_t logical_num_modes)
+                                                 size_t logical_num_modes,
+                                                 Basis basis)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
       mp_op_{},
@@ -51,11 +52,28 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
       upper_atol_{upper_atol},
       logical_num_modes_{logical_num_modes},
       cutoff_type_{cutoff_type},
-      basis_change_{basis_change} {
+      basis_change_{basis_change},
+      basis_{basis} {
     if (logical_num_modes_ == 0 || logical_num_modes_ > NumModes) {
         throw std::runtime_error(
             std::format("logical_num_modes ({}) must be in the range [1, {}].", logical_num_modes_, NumModes));
     }
+
+    // Native Pauli requires the support (orbital-weight) cutoff — length has no Pauli-weight meaning
+    // under this encoding — and forbids a Majorana basis change (the encoding IS the JW image already).
+    if (basis_ == Basis::Pauli) {
+        if (cutoff_type_ != CutoffType::Support) {
+            throw std::invalid_argument("Pauli basis requires cutoff_type == Support "
+                                        "(Length has no Pauli-weight meaning under the Pauli encoding).");
+        }
+        if (basis_change_.has_value()) {
+            throw std::invalid_argument("Pauli basis does not accept a basis_change "
+                                        "(the encoding is already the Jordan-Wigner image).");
+        }
+    }
+
+    // Record the basis on the operator so its coefficient encoding / HF scoring match this picture.
+    mp_op_.basis = basis_;
 
     // Validate atol parameters
     if (upper_atol.has_value() && lower_atol.has_value() && (upper_atol.value() < lower_atol.value())) {
@@ -78,7 +96,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
             }
         }
         const auto majorana_bitset = indices_to_bitset<NumModes>(indices);
-        const auto encoded_coeff = encode_coeff<NumModes>(coefficient, majorana_bitset);
+        const auto encoded_coeff =
+            (basis_ == Basis::Pauli) ? encode_pauli_coeff(coefficient) : encode_coeff<NumModes>(coefficient, majorana_bitset);
 
         // Store the core term separately as it is orders of magnitude larger than the other terms
         if (indices.empty()) {
@@ -135,7 +154,14 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
         return kMax;
     }
     const auto bound = detail::CutoffEvaluator<NumModes>(cutoff_fn_).max_positions_bound();
-    return bound ? std::min<size_t>(*bound, kMax) : kMax;
+    if (!bound) {
+        return kMax;
+    }
+    // A weight-w Pauli carries up to 2w set bits (a Z occupies both slots of its qubit), so the
+    // support-cutoff position bound must be doubled — otherwise every diagonal-heavy Pauli spills to the
+    // overflow arena. Majorana's bound already counts Majorana operators directly.
+    const size_t inline_bound = (basis_ == Basis::Pauli) ? 2 * (*bound) : *bound;
+    return std::min<size_t>(inline_bound, kMax);
 }
 
 template <size_t NumModes>
@@ -149,7 +175,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMa
     for (const auto &[ind, coeff] : op_dict) {
         const auto maj = indices_to_bitset<NumModes>(ind);
         if (ind.empty()) { // Core term, store in all
-            core_term_ = encode_coeff<NumModes>(coeff, maj);
+            core_term_ = (basis_ == Basis::Pauli) ? encode_pauli_coeff(coeff) : encode_coeff<NumModes>(coeff, maj);
             continue;
         }
         if (my_rank == find_rank<NumModes>(maj, num_ranks)) {
@@ -209,7 +235,7 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
         if (!gw.empty()) {
             profiling::ScopedRegion prof_cos(profiling::Region::CosRecompute);
             const auto gen = detail::generator_from_words<NumModes>(gw);
-            auto p = detail::make_fold_cache<NumModes>(mp_op_.inverted_index(), gen, traversal.scaled_count());
+            auto p = detail::make_fold_cache<NumModes>(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
             cos_inds = detail::fold_to_indices<NumModes>(p);
         }
         layers.emplace_back(std::move(cos_inds), std::move(local_cyc_data), std::move(b_data), std::move(d_data));
@@ -552,7 +578,8 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                                      out_cos,
                                                      fused_contract,
                                                      schrodinger_,
-                                                     engaged_frame);
+                                                     engaged_frame,
+                                                     basis_);
 }
 
 template <size_t NumModes>
@@ -573,7 +600,9 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
 // Defined below; forward-declared so the operator-evolution replay can build its scale callback
 // through the same budget-honoring path as the energy/gradient functionals.
 template <size_t NumModes>
-auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, const MPGraphView &graph)
+auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
+                         const MPGraphView &graph,
+                         Basis basis = Basis::Majorana)
     -> std::pair<detail::LayerCosScale, detail::LayerCosAccumulate>;
 
 template <size_t NumModes>
@@ -583,7 +612,7 @@ auto MonomialPropagator<NumModes>::evolve_operator_with_recompute_(VecD &&coeffs
     const auto &inverted_index = mp_op_.inverted_index();
     // Only the scale side is consumed (replay applies rotations to coeffs); build the pair through
     // the shared builder so the fold-cache budget gate is honored here too.
-    auto cos_scale = build_cos_callbacks<NumModes>(inverted_index, graph).first;
+    auto cos_scale = build_cos_callbacks<NumModes>(inverted_index, graph, basis_).first;
     return evolve_operator(std::move(coeffs), graph, params, cos_scale, comm_);
 }
 
@@ -667,7 +696,9 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
 // The non-pare graph simply has no pruned layers. The returned closures capture only the cache +
 // inverted index pointer + recompute flag; the GRAPH's lifetime is owned by the caller's functional capture.
 template <size_t NumModes>
-auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, const MPGraphView &graph)
+auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
+                         const MPGraphView &graph,
+                         Basis basis)
     -> std::pair<detail::LayerCosScale, detail::LayerCosAccumulate> {
     // Memory-budget gate: Σ mask_words · 8 B for the fold layers. Below it caching is cheapest; above
     // it the cache is a multi-GB cold burden, so recompute each fold on the fly (bit-identical).
@@ -702,10 +733,10 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
             entry.recomputes_cos = true;
             const auto gen = detail::generator_from_words<NumModes>(layer.generator_words());
             if (recompute) {
-                entry.recipe = detail::make_lazy_fold<NumModes>(inverted_index, gen, layer.scaled_count());
+                entry.recipe = detail::make_lazy_fold<NumModes>(inverted_index, gen, layer.scaled_count(), basis);
             }
             else {
-                entry.combined = detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count());
+                entry.combined = detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count(), basis);
             }
         }
         cache->push_back(std::move(entry));
@@ -770,7 +801,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
         auto full_cos_of_layer = [this, &inverted_index](size_t i) -> CosMask {
             const auto &layer = graph_.get_layer(i);
             const auto gen = detail::generator_from_words<NumModes>(layer.generator_words());
-            const auto combined = detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count());
+            const auto combined = detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count(), basis_);
             return detail::fold_to_cos_mask<NumModes>(combined);
         };
         graph = std::make_shared<const MPGraph>(
@@ -784,7 +815,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     // build_cos_callbacks). The inverted index is persistent (pre-warmed in initialize_operator_caches_)
     // and outlives this simulator; the folds reference its dense columns by pointer and own their sparse
     // columns, so they stay valid for the captured closure.
-    auto callbacks = build_cos_callbacks<NumModes>(inverted_index, graph->replay_view());
+    auto callbacks = build_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), basis_);
     detail::LayerCosScale cos_scale = std::move(callbacks.first);
     detail::LayerCosAccumulate cos_acc = std::move(callbacks.second);
 

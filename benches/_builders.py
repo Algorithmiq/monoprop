@@ -484,6 +484,7 @@ class KickedIsingConfig:
     coupling: float = np.pi / 4
     cutoff: int = 8
     lower_atol: float = 1e-4
+    engine_basis: str = "pauli"
 
 
 def _xlayer(num_qubits: int, angle: float) -> list[tuple[Exp, float]]:
@@ -538,7 +539,8 @@ def build_kicked_ising_problem(
     )
     observable = PauliOperator({obs_str: 1.0}, num_qubits=config.num_qubits)
 
-    # PauliPropagator sets the Jordan-Wigner basis change automatically.
+    # The native Pauli engine (engine_basis="pauli") is the default; "majorana-jw" selects the
+    # Jordan-Wigner fallback for A/B comparison.
     propagator = PauliPropagator(
         observable,
         circuit.initial_state,
@@ -546,6 +548,7 @@ def build_kicked_ising_problem(
         lower_atol=config.lower_atol,
         upper_atol=None,
         comm=comm,
+        engine_basis=config.engine_basis,
     )
     return propagator, circuit
 

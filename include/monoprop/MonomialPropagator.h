@@ -33,6 +33,7 @@
 #include "monoprop/Evolution.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
+#include "monoprop/PauliAlgebra.h"
 #include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
@@ -64,7 +65,8 @@ public:
                        std::optional<double> upper_atol = std::nullopt,
                        CutoffType cutoff_type = CutoffType::Length,
                        std::optional<std::vector<VecZ>> basis_change = std::nullopt,
-                       size_t logical_num_modes = NumModes);
+                       size_t logical_num_modes = NumModes,
+                       Basis basis = Basis::Majorana);
 
     virtual ~MonomialPropagator() = default;
 
@@ -293,6 +295,13 @@ public:
      * @return True if in Schrodinger picture, false if in Heisenberg picture.
      */
     auto schrodinger() const -> bool { return schrodinger_; }
+
+    /**
+     * @brief The operator basis: Majorana monomials (default) or native Pauli strings.
+     *
+     * @return The Basis this propagator was constructed with.
+     */
+    auto basis() const -> Basis { return basis_; }
 
     /**
      * @brief Get the core term of the operator.
@@ -537,6 +546,11 @@ private:
     // Store cutoff type and basis change for updating cutoff function
     CutoffType cutoff_type_;
     std::optional<std::vector<VecZ>> basis_change_;
+
+    // Operator basis (Majorana default / native Pauli). Immutable after construction; drives the
+    // coefficient encoding, the ⟨b|·|b⟩ scoring, and the scan/fold basis dispatch. Kept in the private
+    // block (below the frozen protected extension surface) so the downstream subclass layout is untouched.
+    Basis basis_{Basis::Majorana};
 
     static auto format_bytes_(size_t bytes) -> std::string;
 

@@ -72,6 +72,30 @@ auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string {
             throw std::invalid_argument("Unknown CutoffType enum value");
     }
 }
+
+auto basis_str_2_enum(const std::string &basis) -> Basis {
+    if (basis == "majorana") {
+        return monoprop::Basis::Majorana;
+    }
+    else if (basis == "pauli") {
+        return monoprop::Basis::Pauli;
+    }
+    else {
+        throw std::invalid_argument(
+            std::format("Unknown Basis string: '{}'. Valid options are: 'majorana', 'pauli'.", basis));
+    }
+}
+
+auto basis_enum_2_str(Basis basis) -> std::string {
+    switch (basis) {
+        case monoprop::Basis::Majorana:
+            return "majorana";
+        case monoprop::Basis::Pauli:
+            return "pauli";
+        default:
+            throw std::invalid_argument("Unknown Basis enum value");
+    }
+}
 } // namespace monoprop::bindings::detail
 
 NB_MODULE(_core, m) {

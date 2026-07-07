@@ -20,9 +20,11 @@ Pauli operators and gates, mapping them into the Majorana basis via Jordan-Wigne
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections import defaultdict
+from typing import TYPE_CHECKING, Literal
 
 from .majorana_propagator import MajoranaPropagator
+from .pauli_data import _SLOTS_BY_LETTER, Pauli, PauliOperator
 from .utils import jordan_wigner_basis_change
 
 if TYPE_CHECKING:
@@ -32,16 +34,33 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from .circuit import Circuit, Exp
-    from .pauli_data import PauliOperator
+
+    ParameterValues = Circuit | Sequence[float] | np.ndarray | None
+
+#: Inverse of :data:`~monoprop.pauli_data._SLOTS_BY_LETTER`: the set of per-qubit gamma-slot
+#: offsets present decodes back to the qubit's Pauli letter (``{0} -> X``, ``{1} -> Y``,
+#: ``{0, 1} -> Z``). Used to decode a native evolved operator into a :class:`PauliOperator`.
+_LETTER_BY_SLOTS: dict[frozenset[int], str] = {
+    frozenset(offsets): letter for letter, offsets in _SLOTS_BY_LETTER.items()
+}
 
 
 class PauliPropagator(MajoranaPropagator):
-    """Propagator for qubit (Pauli) operators, mapped to Majoranas via Jordan-Wigner.
+    """Propagator for qubit (Pauli) operators.
 
     Accepts a :class:`~monoprop.pauli_data.PauliOperator` observable and a
-    :class:`~monoprop.circuit.Circuit` of qubit (Pauli) :class:`~monoprop.circuit.Exp` gates;
-    the Jordan-Wigner basis change is set automatically so cutoffs act on Pauli weight. Outputs
-    remain in the Majorana basis.
+    :class:`~monoprop.circuit.Circuit` of qubit (Pauli) :class:`~monoprop.circuit.Exp` gates.
+    Two engine backings are available via ``engine_basis``:
+
+    - ``"pauli"`` (the default): the **native** Pauli engine. The observable and gates are
+      placed directly on gamma slots (``X_q -> slot 2q``, ``Y_q -> slot 2q+1``,
+      ``Z_q -> both``) with no Jordan-Wigner phase; the C++ core runs in its Pauli basis, so
+      no basis change is needed for the cutoff to measure Pauli weight. Use
+      :meth:`evolved_pauli_operator` to read the evolved operator back as a
+      :class:`~monoprop.pauli_data.PauliOperator`.
+    - ``"majorana-jw"``: the Jordan-Wigner fallback (kept for A/B comparison). The observable
+      is mapped to Majoranas and a Jordan-Wigner basis change is set automatically so cutoffs
+      still act on Pauli weight. Outputs remain in the Majorana basis.
 
     The cutoff type is fixed to ``"support"`` -- i.e. the qubit Pauli weight -- since
     that is the meaningful structural measure for qubit operators; ``"length"`` is not
@@ -58,6 +77,7 @@ class PauliPropagator(MajoranaPropagator):
         lower_atol: None | float = None,
         upper_atol: None | float = None,
         comm: MPI.Comm | None = None,
+        engine_basis: Literal["pauli", "majorana-jw"] = "pauli",
     ) -> None:
         """Initialize the qubit propagator.
 
@@ -78,23 +98,42 @@ class PauliPropagator(MajoranaPropagator):
             lower_atol: Optional lower coefficient-truncation tolerance.
             upper_atol: Optional upper coefficient-retention tolerance.
             comm: Optional MPI communicator (must outlive the propagator).
+            engine_basis: Engine backing. ``"pauli"`` (default) runs the native Pauli engine
+                (no Jordan-Wigner); ``"majorana-jw"`` uses the Jordan-Wigner Majorana fallback.
+
+        Raises:
+            ValueError: If ``engine_basis`` is not ``"pauli"`` or ``"majorana-jw"``.
         """
+        if engine_basis not in ("pauli", "majorana-jw"):
+            raise ValueError(
+                f"engine_basis must be 'pauli' or 'majorana-jw'; got {engine_basis!r}."
+            )
         # The PauliOperator carries its own qubit count (a required constructor argument), so
         # the propagator reads it directly rather than validating it here.
         num_qubits = initial_operator.num_qubits
-        super().__init__(
-            initial_operator.get_majorana_operator(),
-            initial_state,
-            cutoff=cutoff,
-            schrodinger_cutoff=schrodinger_cutoff,
-            cutoff_type="support",
-            lower_atol=lower_atol,
-            upper_atol=upper_atol,
-            basis_change=jordan_wigner_basis_change(num_qubits),
-            comm=comm,
-        )
-        # Set after super().__init__ (which resets it to None); the qubit count comes from
-        # the observable and is carried into Pauli gate expansion via build_graph.
+        if engine_basis == "pauli":
+            # Native Pauli path: place the observable directly on gamma slots (no Jordan-Wigner)
+            # and run the C++ core in its Pauli basis. No basis change is needed -- the Pauli
+            # "support" cutoff already measures qubit weight.
+            self._init_engine(
+                initial_operator.get_symplectic_terms(),
+                num_qubits,
+                initial_state,
+                cutoff=cutoff,
+                schrodinger_cutoff=schrodinger_cutoff,
+                cutoff_type="support",
+                lower_atol=lower_atol,
+                upper_atol=upper_atol,
+                basis_change=None,
+                comm=comm,
+                engine_basis="pauli",
+            )
+        else:
+            raise NotImplementedError(
+                "The 'majorana-jw' fallback is not implemented in PauliPropagator; use MajoranaPropagator instead."
+            )
+        # Set after engine init (which resets it to None); the qubit count comes from the
+        # observable and is carried into Pauli gate expansion via build_graph / propagate.
         self._num_qubits = num_qubits
 
     @property
@@ -118,13 +157,85 @@ class PauliPropagator(MajoranaPropagator):
 
     @property
     def basis_change(self) -> list[list[int]] | None:
-        """The Jordan-Wigner basis change, fixed at construction (read-only).
+        """The basis change fixed at construction (read-only).
 
-        A qubit propagator's cutoff acts on Pauli weight via a fixed Jordan-Wigner basis;
-        overwriting it would break that semantics, so unlike
-        :class:`~monoprop.majorana_propagator.MajoranaPropagator` the setter is not exposed.
+        In the native Pauli engine (``engine_basis="pauli"``) there is **no** basis change --
+        the Pauli-basis core measures qubit weight directly -- so this is ``None``. In the
+        Jordan-Wigner fallback (``engine_basis="majorana-jw"``) it is the fixed Jordan-Wigner
+        basis that makes the ``"support"`` cutoff act on Pauli weight. Either way it is
+        read-only: unlike :class:`~monoprop.majorana_propagator.MajoranaPropagator` the setter
+        is not exposed, since overwriting it would break the qubit-weight semantics.
         """
         return self._simulator.basis_change
+
+    def evolved_pauli_operator(
+        self, parameters: ParameterValues = None
+    ) -> PauliOperator:
+        """Return the evolved operator as a :class:`~monoprop.pauli_data.PauliOperator`.
+
+        Native mode only (``engine_basis="pauli"``). Contracts the graph at ``parameters`` and
+        decodes each stored gamma-slot term back to a qubit Pauli string: slots are grouped by
+        qubit ``q = slot // 2`` with per-qubit offset ``slot % 2``, and the offset set maps to
+        a letter via the inverse of the native encoding (``{0} -> X``, ``{1} -> Y``,
+        ``{0, 1} -> Z``). Coefficients are real (the engine's identity decode). Small terms are
+        dropped at the ``1e-12`` tolerance the binder rounds to.
+
+        Args:
+            parameters: Variational parameter values (see
+                :meth:`~monoprop.majorana_propagator.MajoranaPropagator.expectation_value`).
+
+        Returns:
+            The evolved operator as a :class:`~monoprop.pauli_data.PauliOperator` on
+            :attr:`num_qubits` qubits.
+
+        Raises:
+            NotImplementedError: In the ``"majorana-jw"`` fallback (the evolved operator is a
+                Majorana operator there; use
+                :meth:`~monoprop.majorana_propagator.MajoranaPropagator.evolved_operator`).
+        """
+        if self._engine_basis != "pauli":
+            raise NotImplementedError(
+                "evolved_pauli_operator is only available in the native Pauli engine "
+                "(engine_basis='pauli'); in the 'majorana-jw' fallback the evolved operator "
+                "is in the Majorana basis -- use evolved_operator instead."
+            )
+        evolved = self.evolved_operator(parameters)
+        terms: dict[Pauli, complex] = {}
+        for slots, coeff in evolved.items():
+            offsets_by_qubit: dict[int, set[int]] = defaultdict(set)
+            for slot in slots:
+                offsets_by_qubit[slot // 2].add(slot % 2)
+            qubits = sorted(offsets_by_qubit)
+            string = "".join(
+                _LETTER_BY_SLOTS[frozenset(offsets_by_qubit[q])] for q in qubits
+            )
+            terms[Pauli(string, tuple(qubits))] = complex(coeff).real
+        return PauliOperator(terms, num_qubits=self.num_qubits)
+
+    def update_initial_pauli_operator(self, op: PauliOperator) -> None:
+        """Replace coefficients of the initial Pauli operator (native mode, existing terms).
+
+        Re-weights the initial operator the graph is evaluated against, without touching the
+        evolution graph. Only terms already present can be updated (see
+        :meth:`~monoprop.majorana_propagator.MajoranaPropagator.update_initial_operator`); the
+        Pauli terms are placed on their gamma slots via
+        :meth:`~monoprop.pauli_data.PauliOperator.get_symplectic_terms`.
+
+        Args:
+            op: The new initial qubit operator.
+
+        Raises:
+            NotImplementedError: In the ``"majorana-jw"`` fallback (update the Majorana operator
+                directly via
+                :meth:`~monoprop.majorana_propagator.MajoranaPropagator.update_initial_operator`).
+        """
+        if self._engine_basis != "pauli":
+            raise NotImplementedError(
+                "update_initial_pauli_operator is only available in the native Pauli engine "
+                "(engine_basis='pauli'); use update_initial_operator in the 'majorana-jw' "
+                "fallback."
+            )
+        self._simulator.update_initial_operator(op.get_symplectic_terms())
 
     def _circuit_gates(self, circuit: Circuit) -> Sequence[Exp]:
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.

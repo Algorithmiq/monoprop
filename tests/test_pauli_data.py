@@ -23,43 +23,49 @@ from monoprop.majorana_data import MajoranaOperator
 from monoprop.pauli_data import Pauli, PauliOperator
 
 
+@pytest.mark.parametrize("engine_basis", ["pauli", "majorana-jw"])
 class TestPauliPropagatorCutoff:
-    """PauliPropagator fixes the cutoff to Pauli weight ('support')."""
+    """PauliPropagator fixes the cutoff to Pauli weight ('support'), both engine arms."""
 
-    def _propagator(self, serial_comm):
+    def _propagator(self, serial_comm, engine_basis):
         return PauliPropagator(
             PauliOperator({"ZZ": 1.0}, num_qubits=2),
             initial_state=[],
             cutoff=4,
             comm=serial_comm,
+            engine_basis=engine_basis,
         )
 
-    def test_cutoff_type_is_support(self, serial_comm):
-        assert self._propagator(serial_comm).cutoff_type == "support"
+    def test_cutoff_type_is_support(self, serial_comm, engine_basis):
+        assert self._propagator(serial_comm, engine_basis).cutoff_type == "support"
 
-    def test_cutoff_type_is_read_only(self, serial_comm):
-        mp = self._propagator(serial_comm)
+    def test_cutoff_type_is_read_only(self, serial_comm, engine_basis):
+        mp = self._propagator(serial_comm, engine_basis)
         with pytest.raises(AttributeError):
             mp.cutoff_type = "length"
 
-    def test_basis_change_is_read_only(self, serial_comm):
-        mp = self._propagator(serial_comm)
-        assert mp.basis_change is not None  # Jordan-Wigner basis set at construction
+    def test_basis_change_is_read_only(self, serial_comm, engine_basis):
+        mp = self._propagator(serial_comm, engine_basis)
+        # Native mode has no basis change (None); the JW fallback sets one at construction.
+        if engine_basis == "pauli":
+            assert mp.basis_change is None
+        else:
+            assert mp.basis_change is not None
         with pytest.raises(AttributeError):
             mp.basis_change = None
 
-    def test_num_qubits(self, serial_comm):
-        mp = self._propagator(serial_comm)
+    def test_num_qubits(self, serial_comm, engine_basis):
+        mp = self._propagator(serial_comm, engine_basis)
         assert mp.num_qubits == 2  # "ZZ" operator
 
-    def test_non_hermitian_pauli_gate_rejected(self, serial_comm):
+    def test_non_hermitian_pauli_gate_rejected(self, serial_comm, engine_basis):
         """An Exp with a complex (non-Hermitian) Pauli coefficient is rejected."""
         circuit = Circuit(
             (Exp(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=1)),),
             parameters=(0.3,),
         )
         with pytest.raises(ValueError, match="not Hermitian"):
-            self._propagator(serial_comm).propagate(circuit)
+            self._propagator(serial_comm, engine_basis).propagate(circuit)
 
 
 class TestPauli:

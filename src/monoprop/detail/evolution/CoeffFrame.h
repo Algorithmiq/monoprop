@@ -203,9 +203,11 @@ struct CoeffFrame {
         return m;
     }
 
-    // Append firing f = nfirings with generator `gen` and angle 2θ (`two_theta` = the SAME argument
-    // the eager path passes to std::cos/std::sin).
-    auto append_firing(double two_theta, const MajoranaSet<NumModes> &gen) -> void {
+    // Append firing f = nfirings, storing the fold columns `fold_gen` (the generator whose columns the
+    // reconstruct XOR-folds — G for Majorana, J(G)=pair_swap(G) for Pauli) and the odd-|G| row-parity bit
+    // `g_odd` (always false for Pauli). `two_theta` is the SAME argument the eager path passes to
+    // std::cos/std::sin. See the 2-arg Majorana overload below.
+    auto append_firing(double two_theta, const MajoranaSet<NumModes> &fold_gen, bool g_odd) -> void {
         const size_t f = nfirings;
         const size_t w = f >> 6;
         const uint64_t bit = uint64_t{1} << (f & 63U);
@@ -216,13 +218,18 @@ struct CoeffFrame {
             }
         }
         cosv.push_back(std::cos(two_theta));
-        if (gen.count() % 2 != 0) {
+        if (g_odd) {
             oddmask[w] |= bit;
         }
-        for (size_t b = gen.find_first(); b < gen.size(); b = gen.find_next(b)) {
+        for (size_t b = fold_gen.find_first(); b < fold_gen.size(); b = fold_gen.find_next(b)) {
             posmask[b][w] |= bit;
         }
         ++nfirings;
+    }
+
+    // Majorana convenience overload: fold columns = G, odd-|G| bit derived from popcount.
+    auto append_firing(double two_theta, const MajoranaSet<NumModes> &gen) -> void {
+        append_firing(two_theta, gen, gen.count() % 2 != 0);
     }
 
     // Reconstruct a term's true coefficient from `stored` (its frozen value at firing `stamp_`) by
