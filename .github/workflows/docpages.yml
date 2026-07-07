@@ -101,6 +101,16 @@ jobs:
         with:
           path: docs/out
 
+      # Separate from the Pages-specific artifact above (which only exists for
+      # main): the Cloudflare deploy job below needs `docs/out` for PR builds
+      # too, to publish a preview.
+      - name: Upload docs site artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: docs-site
+          path: docs/out
+          retention-days: 1
+
   deploy:
     if: ${{ github.ref == 'refs/heads/main' }}
     environment:
@@ -112,3 +122,61 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
+
+  deploy-cloudflare:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download docs site artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: docs-site
+          path: docs/out
+
+      # `monoprop-docs` is the Cloudflare Pages project created by `just
+      # build-docs && npx wrangler pages deploy docs/out
+      # --project-name=monoprop-docs` (see docs/public/_redirects for how
+      # `/monoprop/*` gets served correctly from this same export). Requires
+      # the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets.
+      - name: Deploy to Cloudflare Pages
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            pages deploy docs/out --project-name=monoprop-docs
+            --branch=${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'main' }}
+
+      - name: Comment preview link on PR
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const marker = '<!-- cloudflare-docs-preview -->';
+            const url = `${{ steps.deploy.outputs.pages-deployment-alias-url }}/monoprop/`;
+            const body = `${marker}\nDocs preview: ${url}`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
