@@ -370,22 +370,22 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
                     BOOST_TEST((sign == 1 || sign == -1));
                     // A*B = sign * i * R for anticommuting Hermitian Paulis.
                     BOOST_TEST(approx_equal(ab, scalar_mul(cd(0, static_cast<double>(sign)), mr)));
-                    // Hot kernel must agree with the reference emit sign.
+                    // Hot kernel returns the ROTATION sign = negated raw emit sign.
                     const auto ctx = make_pauli_gen_context<N>(b);
-                    BOOST_TEST(pauli_emit_phase<N>(ctx, a, r) == sign);
+                    BOOST_TEST(pauli_rotation_sign<N>(ctx, a, r) == -sign);
                 }
             }
         }
     }
 
-    // pauli_emit_phase == pauli_emit_sign_antic for ALL pairs, including multiword (N=40).
+    // pauli_rotation_sign == -pauli_emit_sign_antic for ALL pairs, including multiword (N=40).
     constexpr size_t NW = 40;
     std::mt19937 rng(0xBEEF01U);
     for (size_t trial = 0; trial < 3000; ++trial) {
         const auto a = native_bitset<NW>(random_string(rng, NW));
         const auto b = native_bitset<NW>(random_string(rng, NW));
         const auto ctx = make_pauli_gen_context<NW>(b);
-        BOOST_TEST(pauli_emit_phase<NW>(ctx, a, a ^ b) == pauli_emit_sign_antic<NW>(a, b));
+        BOOST_TEST(pauli_rotation_sign<NW>(ctx, a, a ^ b) == -pauli_emit_sign_antic<NW>(a, b));
     }
 }
 

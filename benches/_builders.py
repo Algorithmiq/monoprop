@@ -210,6 +210,127 @@ def build_random_propagator(
 
 
 @dataclass(frozen=True, slots=True)
+class RandomPauliProblem:
+    """A randomly generated Pauli observable and generator circuit for a propagator.
+
+    The Pauli analogue of :class:`RandomProblem`: it drives the native Pauli engine
+    (``engine_basis="pauli"``) the way the Majorana random problem drives the fermionic
+    engine, so the two random benchmarks measure the same operations on comparable inputs.
+
+    Attributes:
+        observable: Random Hermitian :class:`~monoprop.pauli_data.PauliOperator`.
+        circuit: Circuit of single-term random Pauli-rotation generators ``exp(-i·θ·P)``.
+        cutoff: Truncation cutoff (Pauli weight) to use when constructing the propagator.
+    """
+
+    observable: PauliOperator
+    circuit: Circuit
+    cutoff: int
+
+    @property
+    def parameters(self) -> np.ndarray:
+        """Return the circuit's parameter (rotation-angle) values."""
+        return np.asarray(self.circuit.parameters, dtype=float)
+
+
+def _random_pauli_terms(
+    rng: np.random.Generator,
+    num_terms: int,
+    weight: int,
+    num_qubits: int,
+) -> list[Pauli]:
+    """Return ``num_terms`` weight-``weight`` random Pauli terms on distinct qubits.
+
+    Each term places ``weight`` random non-identity letters (X/Y/Z) on ``weight`` distinct
+    qubits, mirroring :func:`_random_terms` for Majoranas (fixed-length, distinct indices).
+    """
+    if weight > num_qubits:
+        msg = f"Cannot draw {weight} distinct qubits from {num_qubits} available."
+        raise ValueError(msg)
+    letters = np.array(["X", "Y", "Z"])
+    terms: list[Pauli] = []
+    for _ in range(num_terms):
+        qubits = tuple(sorted(rng.choice(num_qubits, size=weight, replace=False)))
+        string = "".join(rng.choice(letters, size=weight))
+        terms.append(Pauli(string, qubits))
+    return terms
+
+
+def make_random_pauli_problem(
+    *,
+    gen_length: int = 4,
+    obs_terms: int = 10000,
+    num_generators: int = 100,
+    num_qubits: int = 64,
+    cutoff: int = 6,
+    seed: int = 0,
+) -> RandomPauliProblem:
+    """Build a random Pauli observable and generator circuit for benchmarking.
+
+    The Pauli counterpart of :func:`make_random_problem`. Generators are single-term Pauli
+    rotations ``exp(-i·θ·P)`` (coefficient 1, small random angle θ), matching the fixed-model
+    kicked-Ising convention; the observable is a random Hermitian (real-coefficient) sum.
+
+    Args:
+        gen_length: Pauli weight (number of qubits) of each generator and observable term.
+        obs_terms: Number of terms drawn for the random observable (duplicates collapse).
+        num_generators: Number of random Pauli-rotation generators (circuit gates).
+        num_qubits: Number of qubits.
+        cutoff: Truncation cutoff (Pauli weight) carried on the returned problem.
+        seed: Seed for the random number generator (reproducibility).
+
+    Returns:
+        A :class:`RandomPauliProblem` bundling the observable, circuit, and cutoff.
+    """
+    rng = np.random.default_rng(seed)
+
+    obs_paulis = _random_pauli_terms(rng, obs_terms, gen_length, num_qubits)
+    obs_coeffs = rng.standard_normal(len(obs_paulis)).tolist()  # Hermitian -> real
+    observable = PauliOperator(dict(zip(obs_paulis, obs_coeffs)), num_qubits=num_qubits)
+
+    gen_paulis = _random_pauli_terms(rng, num_generators, gen_length, num_qubits)
+    # One free parameter per generator; small angles keep the evolution stable.
+    parameters = (0.1 * rng.standard_normal(num_generators)).tolist()
+    gates = tuple(
+        Exp(PauliOperator({pauli: 1.0}, num_qubits=num_qubits)) for pauli in gen_paulis
+    )
+    circuit = Circuit(gates=gates, parameters=tuple(parameters), initial_state=[])
+    return RandomPauliProblem(observable=observable, circuit=circuit, cutoff=cutoff)
+
+
+def build_random_pauli_propagator(
+    problem: RandomPauliProblem,
+    *,
+    comm: Any | None = None,
+    lower_atol: float | None = None,
+    engine_basis: str = "pauli",
+) -> Built:
+    """Construct a native Pauli propagator + circuit for a random Pauli problem.
+
+    Heisenberg picture only (the native Pauli regime); ``engine_basis`` selects the native
+    engine (default) or the ``"majorana-jw"`` fallback for A/B comparison.
+
+    Args:
+        problem: The random Pauli observable/circuit problem.
+        comm: Optional MPI communicator (``None`` for a serial run).
+        lower_atol: Optional coefficient-truncation tolerance.
+        engine_basis: ``"pauli"`` (native) or ``"majorana-jw"`` (Jordan-Wigner fallback).
+
+    Returns:
+        ``(propagator, circuit)`` ready for build_graph / propagate.
+    """
+    propagator = PauliPropagator(
+        problem.observable,
+        problem.circuit.initial_state,
+        cutoff=problem.cutoff,
+        lower_atol=lower_atol,
+        comm=comm,
+        engine_basis=engine_basis,
+    )
+    return propagator, problem.circuit
+
+
+@dataclass(frozen=True, slots=True)
 class HubbardConfig:
     """Configuration for the static Hubbard benchmark (sandbox default input)."""
 

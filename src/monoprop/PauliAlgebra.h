@@ -55,6 +55,19 @@ template <size_t NumModes>
     return even_bits<2 * NumModes, LSb0>();
 }
 
+namespace detail {
+/// The (u,v) symplectic planes of one physical word of a Pauli bitset, with `e` the
+/// physical-even-bit mask (pauli_even_mask's word). `v` is the z-plane (even physical bits);
+/// `u` is the odd-bit plane shifted onto the even lane; the x-plane is `u ^ v`. Factors the
+/// per-word split shared by pauli_weight / pauli_y_count / product_phase_exponent /
+/// pauli_rotation_sign.
+struct PauliUv {
+    uint64_t v; ///< z-plane (even physical bits)
+    uint64_t u; ///< odd-bit plane, aligned onto the even lane
+};
+[[nodiscard]] inline auto pauli_uv(uint64_t word, uint64_t e) -> PauliUv { return {word & e, (word >> 1) & e}; }
+} // namespace detail
+
 /*!
  * @brief The pair-swap involution J: swap the two physical bits of every qubit pair.
  *
@@ -82,10 +95,7 @@ template <size_t NumModes>
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     size_t weight = 0;
     for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
-        const uint64_t word = p.word(w);
-        const uint64_t e = e_mask.word(w);
-        const uint64_t v = word & e;        // z-plane (even physical bits)
-        const uint64_t u = (word >> 1) & e; // u-plane (odd physical bits, aligned to even)
+        const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
         weight += static_cast<size_t>(std::popcount(v | u));
     }
     return weight;
@@ -99,10 +109,7 @@ template <size_t NumModes>
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     size_t y = 0;
     for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
-        const uint64_t word = p.word(w);
-        const uint64_t e = e_mask.word(w);
-        const uint64_t v = word & e;
-        const uint64_t u = (word >> 1) & e;
+        const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
         y += static_cast<size_t>(std::popcount(v & ~u));
     }
     return y;
@@ -136,10 +143,9 @@ template <size_t NumModes>
     long cross = 0; // zA . xB = popcount(v-plane(A) & x-plane(B))
     for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
         const uint64_t e = e_mask.word(w);
-        const uint64_t z_a = a.word(w) & e;             // v-plane of A
-        const uint64_t v_b = b.word(w) & e;             // v-plane of B
-        const uint64_t u_b = (b.word(w) >> 1) & e;      // u-plane of B
-        const uint64_t x_b = u_b ^ v_b;                 // x-plane of B
+        const uint64_t z_a = a.word(w) & e;    // v-plane of A
+        const auto [v_b, u_b] = detail::pauli_uv(b.word(w), e);
+        const uint64_t x_b = u_b ^ v_b;        // x-plane of B
         cross += std::popcount(z_a & x_b);
     }
     return mod4(y_a + y_b - y_r + 2 * cross);
@@ -165,6 +171,8 @@ template <size_t NumModes>
  *
  * A the LEFT operand. When A,B anticommute the exponent e is odd: e==1 -> phi=+i -> sign=+1,
  * e==3 -> phi=-i -> sign=-1. (Undefined for commuting operands, where the product is real.)
+ * This is the RAW product sign; the rotation O' = U†OU applies its negation -- see
+ * pauli_rotation_sign, which returns exactly -pauli_emit_sign_antic and is what the engine emits.
  */
 template <size_t NumModes>
 [[nodiscard]] auto pauli_emit_sign_antic(const MajoranaSet<NumModes> &a, const MajoranaSet<NumModes> &b) -> int {
@@ -175,7 +183,7 @@ template <size_t NumModes>
  * @brief Precomputed per-generator context for the hot emit-sign kernel.
  *
  * Caches the generator, its popcount, its Y count, and the indices of its nonzero physical
- * words so pauli_emit_phase() can skip words outside the generator's support.
+ * words so pauli_rotation_sign() can skip words outside the generator's support.
  */
 template <size_t NumModes>
 struct PauliGenContext final {
@@ -204,38 +212,37 @@ template <size_t NumModes>
 }
 
 /*!
- * @brief HOT kernel: emit sign +/-1 for the anticommuting product maj * gen, given new_maj = maj ^ gen.
+ * @brief HOT kernel: the ROTATION sign +/-1 for the anticommuting product maj * gen, given
+ * new_maj = maj ^ gen.
  *
- * Equivalent to pauli_emit_sign_antic(maj, ctx.gen) but loops ONLY over the generator's nonzero
- * words: outside gen's support maj and new_maj agree (so their per-word Y counts cancel in
- * yMaj - yNew) and x_gen = 0 (so the cross term contributes nothing), leaving the exponent
- * unchanged. e = g_y + sum_w(yMaj(w) - yNew(w)) + 2*sum_w(v_maj(w) & x_gen(w)).
+ * Returns the sign the rotation O' = U†OU (U = exp(iθ·gen)) needs on the off-diagonal partner
+ * term, i.e. the NEGATED raw product sign: pauli_rotation_sign == -pauli_emit_sign_antic(maj, gen)
+ * (pinned by pauli_build_layer_dense_matrix_ground_truth / T7), so the emit site needs no extra
+ * negation. Loops ONLY over the generator's nonzero words: outside gen's support maj and new_maj
+ * agree (their per-word Y counts cancel in yMaj - yNew) and x_gen = 0 (the cross term contributes
+ * nothing), leaving the exponent unchanged. e = g_y + sum_w(yMaj(w) - yNew(w)) +
+ * 2*sum_w(v_maj(w) & x_gen(w)); the raw sign is (e mod 4 == 1 ? +1 : -1), so the rotation sign is
+ * its negation, (e mod 4 == 1 ? -1 : +1).
  */
 template <size_t NumModes>
-[[gnu::always_inline]] inline auto pauli_emit_phase(const PauliGenContext<NumModes> &ctx,
-                                                    const MajoranaSet<NumModes> &maj,
-                                                    const MajoranaSet<NumModes> &new_maj) -> int {
+[[gnu::always_inline]] inline auto pauli_rotation_sign(const PauliGenContext<NumModes> &ctx,
+                                                       const MajoranaSet<NumModes> &maj,
+                                                       const MajoranaSet<NumModes> &new_maj) -> int {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     long delta = static_cast<long>(ctx.g_y); // + yGen
     long cross = 0;                           // zMaj . xGen
     for (size_t k = 0; k < ctx.nz_count; ++k) {
         const size_t w = ctx.nz_words[k];
         const uint64_t e = e_mask.word(w);
-        const uint64_t mw = maj.word(w);
-        const uint64_t nw = new_maj.word(w);
-        const uint64_t gw = ctx.gen.word(w);
-        const uint64_t v_m = mw & e;
-        const uint64_t u_m = (mw >> 1) & e;
-        const uint64_t v_n = nw & e;
-        const uint64_t u_n = (nw >> 1) & e;
+        const auto [v_m, u_m] = detail::pauli_uv(maj.word(w), e);
+        const auto [v_n, u_n] = detail::pauli_uv(new_maj.word(w), e);
+        const auto [v_g, u_g] = detail::pauli_uv(ctx.gen.word(w), e);
         delta += std::popcount(v_m & ~u_m); // + yMaj(w)
         delta -= std::popcount(v_n & ~u_n); // - yNew(w)
-        const uint64_t v_g = gw & e;
-        const uint64_t u_g = (gw >> 1) & e;
         const uint64_t x_g = u_g ^ v_g;
         cross += std::popcount(v_m & x_g);
     }
-    return detail::mod4(delta + 2 * cross) == 1 ? 1 : -1;
+    return detail::mod4(delta + 2 * cross) == 1 ? -1 : 1;
 }
 
 /*!

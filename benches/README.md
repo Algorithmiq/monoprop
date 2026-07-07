@@ -91,6 +91,20 @@ Operations: `build_graph`, `pare`, `energy`, `gradient` (graph-based), and
 | `--seed` | RNG seed | 0 |
 | `--bench-rounds` | fixed timing rounds (MPI-safe) | 1 |
 
+**Random Pauli** (`bench_random_pauli.py`; native Pauli engine, Heisenberg) — the Pauli
+counterpart of the random Majorana suite: random fixed-weight Pauli-rotation
+generators `exp(-i·θ·P)` and a random Hermitian Pauli observable, run through the
+native engine (`engine_basis="pauli"`). Unlike the fixed kicked-Ising model (a
+mostly-dead Clifford-point operator), a random Pauli operator is dense, so its
+find-scan carries genuinely thread-parallel per-gate work. Same operations
+(`build_graph`, `pare`, `energy`, `gradient`, `inplace`). It reuses the shared
+sizing options above (`--gen-length` = Pauli weight, `--obs-terms`,
+`--num-generators`, `--cutoff`, `--seed`) plus one Pauli-specific option:
+
+| Option | Meaning | Default |
+|---|---|---|
+| `--num-qubits` | qubits for the random-Pauli benchmark | 64 |
+
 **Models** (`bench_models.py`; fixed, in-place, Heisenberg only, marked `slow`):
 
 - `test_model[hubbard]` — 120-qubit Fermi-Hubbard (60 sites), 29-step Trotter.
@@ -114,5 +128,6 @@ operator-vs-graph storage breakdown, model configs, and a **Time** and
 ## Files
 
 `report.py` (report), `conftest.py` (fixtures, CLI options, memory + result
-recording), `_builders.py` (model construction), `bench_random.py` and
-`bench_models.py` (the two suites), `_mpi_check.py` (MPI preflight).
+recording), `_builders.py` (model construction), `bench_random.py`,
+`bench_random_pauli.py`, and `bench_models.py` (the suites), `_mpi_check.py`
+(MPI preflight).

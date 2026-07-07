@@ -48,8 +48,11 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from _builders import (
     MODELS,
+    RandomPauliProblem,
     RandomProblem,
+    build_random_pauli_propagator,
     build_random_propagator,
+    make_random_pauli_problem,
     make_random_problem,
 )
 from _memory import PssSampler, merge_peak_of_sum, resting_pss_bytes
@@ -59,7 +62,7 @@ if TYPE_CHECKING:
 
     from _builders import Built
 
-    from monoprop import MajoranaPropagator
+    from monoprop import MajoranaPropagator, PauliPropagator
 
 try:
     from mpi4py import MPI
@@ -180,6 +183,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     group.addoption(
         "--num-modes", type=int, default=128, help="Number of fermionic modes."
+    )
+    group.addoption(
+        "--num-qubits",
+        type=int,
+        default=64,
+        help="Number of qubits for the random-Pauli benchmark (bench_random_pauli).",
     )
     group.addoption("--cutoff", type=int, default=6, help="Truncation cutoff.")
     group.addoption(
@@ -419,5 +428,66 @@ def built_graph(
     resting, _ = _reduce_sum(bench_comm, resting_pss_bytes())
     if resting:  # 0 => /proc unavailable (non-Linux); skip rather than record 0 MiB
         _record("memrest", picture, resting)
+
+    return mp
+
+
+@pytest.fixture(scope="session")
+def random_pauli_problem(request: pytest.FixtureRequest) -> RandomPauliProblem:
+    """Build the random Pauli observable/circuit problem from the CLI options."""
+    opt = request.config.getoption
+    return make_random_pauli_problem(
+        gen_length=opt("--gen-length"),
+        obs_terms=opt("--obs-terms"),
+        num_generators=opt("--num-generators"),
+        num_qubits=opt("--num-qubits"),
+        cutoff=opt("--cutoff"),
+        seed=opt("--seed"),
+    )
+
+
+@pytest.fixture
+def make_random_pauli_propagator(
+    random_pauli_problem: RandomPauliProblem, bench_comm: Any
+) -> Callable[..., Built]:
+    """Return a factory building a fresh native-Pauli ``(propagator, circuit)`` (Heisenberg).
+
+    The Pauli counterpart of :func:`make_random_propagator`; the native Pauli engine runs the
+    Heisenberg picture only, so there is no ``picture`` wiring to parametrize.
+    """
+
+    def _make(*, lower_atol: float | None = None) -> Built:
+        return build_random_pauli_propagator(
+            random_pauli_problem, comm=bench_comm, lower_atol=lower_atol
+        )
+
+    return _make
+
+
+@pytest.fixture(scope="session")
+def built_pauli_graph(
+    random_pauli_problem: RandomPauliProblem, bench_comm: Any
+) -> PauliPropagator:
+    """Return a native-Pauli propagator whose graph has been built (Heisenberg picture).
+
+    The Pauli counterpart of :func:`built_graph`: session-scoped so the graph is built once
+    and shared across the graph-based Pauli benchmarks (``pare``, ``energy``, ``gradient``).
+    Records the operator size, operator-vs-graph storage breakdown, and resting footprint
+    under the ``"pauli"`` key.
+    """
+    mp, circuit = build_random_pauli_propagator(random_pauli_problem, comm=bench_comm)
+    mp.build_graph(circuit)
+
+    total, _ = _reduce_sum(bench_comm, mp.size())
+    _record("opsize", "pauli", {"terms": total})
+
+    sim = mp._simulator
+    operator_total, _ = _reduce_sum(bench_comm, sim.operator_memory_bytes())
+    graph_total, _ = _reduce_sum(bench_comm, sim.graph_memory_bytes())
+    _record("storage", "pauli", {"operator": operator_total, "graph": graph_total})
+
+    resting, _ = _reduce_sum(bench_comm, resting_pss_bytes())
+    if resting:  # 0 => /proc unavailable (non-Linux); skip rather than record 0 MiB
+        _record("memrest", "pauli", resting)
 
     return mp

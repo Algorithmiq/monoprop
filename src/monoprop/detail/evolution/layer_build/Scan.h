@@ -173,16 +173,16 @@ inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t maj_pop, const C
 }
 
 // ─── Rebuild-then-word-kernels emit (packed survivor products) ────────────────
-// Per-generator context: the dense generator plus its popcount, built once per generator. Two flavours
-// selected at compile time by IsPauli — the Majorana arm caches the fixed-per-layer interleave mask, the
-// Pauli arm the emit-sign kernel context. `gen` is ALWAYS the real generator G (used for M⊕G / overlap).
+// Per-generator context, built once per generator. Two flavours selected at compile time by IsPauli:
+// the Majorana arm caches the real generator G plus the fixed-per-layer interleave mask; the Pauli arm
+// caches the rotation-sign kernel context (PauliGenContext, which itself holds G and |G| — the single
+// source of truth). Either way emit_term_products reads the generator (for M⊕G / overlap) from here.
 template <size_t NumModes, bool IsPauli>
 struct GenEmitContext;
 
 template <size_t NumModes>
 struct GenEmitContext<NumModes, false> {
     const MajoranaSet<NumModes> &gen;
-    size_t gen_pop;
     // Fixed-per-layer interleave mask W: interleave_phase(M,G) == (M.parity_and(W) ? -1 : 1).
     // Replaces the per-term prefix-XOR scan with one masked parity (see interleave_phase_mask).
     MajoranaSet<NumModes> interleave_mask;
@@ -190,20 +190,18 @@ struct GenEmitContext<NumModes, false> {
 
 template <size_t NumModes>
 struct GenEmitContext<NumModes, true> {
-    const MajoranaSet<NumModes> &gen;
-    size_t gen_pop;
-    // Precomputed per-generator context for the hot Pauli emit-sign kernel (pauli_emit_phase).
+    // Precomputed context for the hot Pauli rotation-sign kernel (pauli_rotation_sign). It already
+    // carries the generator G and |G|, so no separate gen/gen_pop members are duplicated here.
     PauliGenContext<NumModes> pauli_ctx;
 };
 
 template <size_t NumModes, bool IsPauli>
-inline auto make_gen_emit_context(const MajoranaSet<NumModes> &gen, size_t gen_pop)
-    -> GenEmitContext<NumModes, IsPauli> {
+inline auto make_gen_emit_context(const MajoranaSet<NumModes> &gen) -> GenEmitContext<NumModes, IsPauli> {
     if constexpr (IsPauli) {
-        return GenEmitContext<NumModes, true>{gen, gen_pop, make_pauli_gen_context<NumModes>(gen)};
+        return GenEmitContext<NumModes, true>{make_pauli_gen_context<NumModes>(gen)};
     }
     else {
-        return GenEmitContext<NumModes, false>{gen, gen_pop, interleave_phase_mask<NumModes>(gen)};
+        return GenEmitContext<NumModes, false>{gen, interleave_phase_mask<NumModes>(gen)};
     }
 }
 
@@ -219,8 +217,9 @@ inline auto make_gen_emit_context(const MajoranaSet<NumModes> &gen, size_t gen_p
 // zero reconstruction.
 // The per-term phase_factor is the basis-specific multiplicative sign:
 //   Majorana: interleave_phase(maj, gen) via the fixed-per-layer mask (branch/scan-free);
-//   Pauli:    pauli_emit_phase(pauli_ctx, maj, new_maj) — the ±1 emit sign of the ordered product maj·G.
-// The caller folds in hermitian_phase (Majorana only) to obtain the final query phase (see the emit lambda).
+//   Pauli:    pauli_rotation_sign(pauli_ctx, maj, new_maj) — the ±1 ROTATION sign of maj·G (already
+//             negated relative to the raw product sign, so no extra flip at the emit site).
+// Majorana additionally folds in hermitian_phase to obtain the final query phase (see the emit lambda).
 template <size_t NumModes, bool IsPauli>
 [[gnu::always_inline]] inline void emit_term_products(const OperatorIndex<NumModes> &ham,
                                                       size_t i,
@@ -230,12 +229,15 @@ template <size_t NumModes, bool IsPauli>
                                                       int &phase_factor) {
     MajoranaSet<NumModes> maj; // zero-init, W words, lives in registers
     ham.for_each_position(i, [&](size_t pos) { maj.set(pos); });
-    new_maj = maj ^ ctx.gen;
-    overlap = maj.count_and(ctx.gen);
     if constexpr (IsPauli) {
-        phase_factor = pauli_emit_phase<NumModes>(ctx.pauli_ctx, maj, new_maj);
+        const MajoranaSet<NumModes> &gen = ctx.pauli_ctx.gen;
+        new_maj = maj ^ gen;
+        overlap = maj.count_and(gen);
+        phase_factor = pauli_rotation_sign<NumModes>(ctx.pauli_ctx, maj, new_maj);
     }
     else {
+        new_maj = maj ^ ctx.gen;
+        overlap = maj.count_and(ctx.gen);
         phase_factor = maj.parity_and(ctx.interleave_mask) ? -1 : 1;
     }
 }
@@ -282,7 +284,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult {
     const size_t gen_pop = gen.count();
-    const auto ectx = make_gen_emit_context<NumModes, IsPauli>(gen, gen_pop);
+    const auto ectx = make_gen_emit_context<NumModes, IsPauli>(gen);
 
     // Cutoff + emit for one anticommuting term. Writes only the per-chunk per-rank sinks passed in
     // (safe under for_each_chunk). The dynamic gate (depends only on |M|) runs BEFORE
@@ -315,12 +317,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
             return;
         }
-        // Pauli: pauli_emit_phase is the sign of maj·G; the rotation the apply implements (U=exp(iθG),
-        // O'=U†OU) needs the NEGATED sign so the Givens partner pair carries the correct off-diagonal
-        // (pinned by pauli_build_layer_dense_matrix_ground_truth / T7). Majorana folds in hermitian_phase.
+        // Pauli: pauli_rotation_sign already returns the rotation-ready sign for U=exp(iθG), O'=U†OU
+        // (the negated raw product sign of maj·G, pinned by pauli_build_layer_dense_matrix_ground_truth
+        // / T7), so it is emitted directly. Majorana folds in hermitian_phase.
         int phase;
         if constexpr (IsPauli) {
-            phase = -phase_factor;
+            phase = phase_factor;
         }
         else {
             phase = phase_factor * hermitian_phase(maj_pop, gen_pop, overlap);

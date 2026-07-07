@@ -129,8 +129,24 @@ class PauliPropagator(MajoranaPropagator):
                 engine_basis="pauli",
             )
         else:
-            raise NotImplementedError(
-                "The 'majorana-jw' fallback is not implemented in PauliPropagator; use MajoranaPropagator instead."
+            # Jordan-Wigner fallback (kept for A/B): map the observable to Majoranas and set the
+            # JW basis change so the "support" cutoff still measures Pauli weight. The C++ core
+            # runs in its Majorana basis (engine_basis="majorana", so `basis` reports "majorana");
+            # outputs stay in the Majorana basis, so evolved_pauli_operator /
+            # update_initial_pauli_operator raise -- read them via the MajoranaPropagator API.
+            majorana_operator = initial_operator.get_majorana_operator()
+            self._init_engine(
+                majorana_operator.terms,
+                majorana_operator.num_modes,
+                initial_state,
+                cutoff=cutoff,
+                schrodinger_cutoff=schrodinger_cutoff,
+                cutoff_type="support",
+                lower_atol=lower_atol,
+                upper_atol=upper_atol,
+                basis_change=jordan_wigner_basis_change(num_qubits),
+                comm=comm,
+                engine_basis="majorana",
             )
         # Set after engine init (which resets it to None); the qubit count comes from the
         # observable and is carried into Pauli gate expansion via build_graph / propagate.
