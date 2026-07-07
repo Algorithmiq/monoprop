@@ -85,10 +85,8 @@ bench = [
 [tool.uv]
 python-preference = "only-managed"
 keyring-provider = "subprocess"
-# Full dev environment by default. `docs` is intentionally excluded: its
-# toolchain (nbconvert, the griffe-based API docgen) targets Python 3.12 while
-# we develop against 3.11, so it is built separately (see `just build-docs`,
-# which uses --python 3.12).
+# Full dev environment by default. `docs` is intentionally excluded since it
+# is only needed when building the documentation site (see `just build-docs`).
 default-groups = ["dev", "test", "interactive"]
 cache-keys = [
   { file = "pyproject.toml" },
@@ -98,9 +96,6 @@ cache-keys = [
   { file = "cmake/**/*" },
   { file = "src/monoprop/bindings/bindings.cpp.in" },
 ]
-
-[tool.uv.dependency-groups]
-docs = { requires-python = ">=3.12" }
 
 
 [tool.scikit-build]

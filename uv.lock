@@ -1272,11 +1272,11 @@ dev = [
     { name = "ruff" },
 ]
 docs = [
-    { name = "ipykernel", marker = "python_full_version >= '3.12'" },
-    { name = "matplotlib", marker = "python_full_version >= '3.12'" },
-    { name = "monoprop", extra = ["openfermion", "pyscf", "qiskit"], marker = "python_full_version >= '3.12'" },
-    { name = "nbconvert", marker = "python_full_version >= '3.12'" },
-    { name = "pylatexenc", marker = "python_full_version >= '3.12'" },
+    { name = "ipykernel" },
+    { name = "matplotlib" },
+    { name = "monoprop", extra = ["openfermion", "pyscf", "qiskit"] },
+    { name = "nbconvert" },
+    { name = "pylatexenc" },
 ]
 interactive = [
     { name = "ipykernel" },
@@ -1320,11 +1320,11 @@ dev = [
     { name = "ruff", specifier = "==0.14.8" },
 ]
 docs = [
-    { name = "ipykernel", marker = "python_full_version >= '3.12'" },
-    { name = "matplotlib", marker = "python_full_version >= '3.12'" },
-    { name = "monoprop", extras = ["qiskit", "openfermion", "pyscf"], marker = "python_full_version >= '3.12'" },
-    { name = "nbconvert", marker = "python_full_version >= '3.12'" },
-    { name = "pylatexenc", marker = "python_full_version >= '3.12'" },
+    { name = "ipykernel" },
+    { name = "matplotlib" },
+    { name = "monoprop", extras = ["qiskit", "openfermion", "pyscf"] },
+    { name = "nbconvert" },
+    { name = "pylatexenc" },
 ]
 interactive = [
     { name = "ipykernel" },

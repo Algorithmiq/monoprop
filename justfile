@@ -14,9 +14,8 @@ bench_results := "benches/results"
 # is written to `docs/out`.
 site := "docs"
 
-# Run the Python docs toolchain in the synced docs environment (Python 3.12,
-# matching the documentation CI image).
-docs_uv := "uv run --no-dev --group docs --all-extras --python 3.12"
+# Run the Python docs toolchain in the synced docs environment.
+docs_uv := "uv run --no-dev --group docs --all-extras"
 # `fumapy` (the fumadocs Python docgen) ships inside the npm package; inject it
 # ephemerally and pin griffe to the 1.x line it targets (its newer
 # griffe-typingdoc dependency otherwise pulls an incompatible griffe).
