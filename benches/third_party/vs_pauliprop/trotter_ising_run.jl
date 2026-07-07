@@ -25,8 +25,8 @@ tot_time = 1.0 / h
 num_steps = trunc(Int, tot_time / dt)
 
 qubit_range = 5:5:120
-max_pauli_weight = 6
-lower_atol = 1e-6
+max_pauli_weight = 8
+lower_atol = 1e-8
 
 label = "PauliPropagation.jl"
 results_file = joinpath(@__DIR__, "trotter_ising_results.json")

@@ -62,8 +62,8 @@ tot_time = 1.0 / h
 num_steps = int(tot_time / dt)
 
 qubit_range = range(5, 121, 5)
-max_pauli_weight = 6
-lower_atol = 1e-6
+max_pauli_weight = 8
+lower_atol = 1e-8
 
 results_file = "trotter_ising_results.json"
 ###############################################################
@@ -78,7 +78,7 @@ expvals_dict = {label: [] for label in labels}
 
 cupp_handle = LibraryHandle()
 
-for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
+for nq in tqdm(qubit_range, desc="Running simulations"):
     # -------------------------------- monoprop ---------------------------------
     # define qiskit circuit
     circ = QuantumCircuit(nq)

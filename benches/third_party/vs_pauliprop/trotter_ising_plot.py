@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 
-import numpy as np
 import pylab as plt
 
 colors = {
@@ -41,15 +40,3 @@ ax1.set_ylabel("Runtime [s]")
 ax1.legend(fontsize=10)
 ax1.grid(which="both", alpha=0.3)
 plt.savefig("trotter_ising_runtime.png", dpi=150)
-
-fig2, ax2 = plt.subplots()
-mean_expvals = [np.mean(values) for values in zip(*expvals_dict.values())]
-for label, expvals in expvals_dict.items():
-    color = colors[label]
-    errors = [abs(expval - mean) for expval, mean in zip(expvals, mean_expvals)]
-    ax2.plot(qubit_range, errors, marker=".", color=color, label=label)
-ax2.set_xlabel("Num qubits")
-ax2.set_ylabel("Expval error")
-ax2.legend(fontsize=10)
-ax2.grid(which="both", alpha=0.3)
-plt.savefig("trotter_ising_error.png", dpi=150)
