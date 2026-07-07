@@ -62,7 +62,7 @@ expvals = Float64[]
     t2 = time_ns()
 
     push!(runtimes, (t2 - t1) / 1e9)
-    push!(expvals, expval)
+    push!(expvals, expval / nq)
 end
 
 data = JSON.parsefile(results_file)
