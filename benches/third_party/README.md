@@ -9,7 +9,7 @@ It has its own virtual environment and its own external dependencies.
 ### Setup Python environment
 ```bash
 # Navigate to this directory
-cd benchmarks
+cd benches/third_party
 
 # Create venv and install all deps
 uv sync
