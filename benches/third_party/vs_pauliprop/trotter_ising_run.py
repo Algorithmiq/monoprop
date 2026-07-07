@@ -112,7 +112,7 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
     expval = mp.expectation_value()
     t2 = time.perf_counter()
     runtimes_dict["monoprop"].append(t2 - t1)
-    expvals_dict["monoprop"].append(expval)
+    expvals_dict["monoprop"].append(expval / nq)
 
     # ---------------------------------- ppvm -----------------------------------
     # define observable
@@ -134,7 +134,7 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
     t2 = time.perf_counter()
 
     runtimes_dict["QuEra ppvm"].append(t2 - t1)
-    expvals_dict["QuEra ppvm"].append(ppvm_expval)
+    expvals_dict["QuEra ppvm"].append(ppvm_expval / nq)
 
     # ------------------------------- pauli-prop --------------------------------
     # set max number of terms to be the actual number of terms in monoprop
@@ -144,10 +144,10 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
     evolved_obs, _ = propagate_through_circuit(
         obs, circ, max_terms=max_terms, atol=lower_atol, frame="h"
     )
-    expval = float(evolved_obs.coeffs[~evolved_obs.paulis.x.any(axis=1)].sum())
+    pp_expval = float(evolved_obs.coeffs[~evolved_obs.paulis.x.any(axis=1)].sum())
     t2 = time.perf_counter()
     runtimes_dict["Qiskit pauli-prop"].append(t2 - t1)
-    expvals_dict["Qiskit pauli-prop"].append(expval)
+    expvals_dict["Qiskit pauli-prop"].append(pp_expval / nq)
 
     # ------------------------------- cuPauliProp -------------------------------
     # define observable
@@ -192,7 +192,7 @@ for nq in tqdm(qubit_range, desc="Running simulations", ncols=80):
     cupp_expval = float(trace_significand * np.exp2(trace_exponent))
     t2 = time.perf_counter()
     runtimes_dict["cuPauliProp (GPU)"].append(t2 - t1)
-    expvals_dict["cuPauliProp (GPU)"].append(cupp_expval)
+    expvals_dict["cuPauliProp (GPU)"].append(cupp_expval / nq)
 
     # ---------------------------------------------------------------------------
 
