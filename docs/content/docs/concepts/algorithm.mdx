@@ -7,7 +7,7 @@ This page explains how operator propagation works at a high level: how an
 operator is pushed through a circuit, how a single gate updates each
 monomial, how the growth of terms is controlled by truncation, and how
 expectation values and gradients are read off the result. It builds on the
-definitions in [Notation](/docs/concepts/notation), and the method is described in full in
+definitions in [Notation](/concepts/notation), and the method is described in full in
 [@Miller2025-aj].
 
 ## Overview
@@ -74,7 +74,7 @@ $$
 If $M_\nu$ **commutes** with the generator it passes through unchanged. If
 it **anticommutes** it *branches* into the original monomial (the **cosine**
 branch) and a single new monomial $M_{\gamma_j} M_\nu$ (the **sine**
-branch); recall from [Notation](/docs/concepts/notation) that the product of two
+branch); recall from [Notation](/concepts/notation) that the product of two
 anticommuting monomials is again a single monomial. When it is time to truncate,
 the sine branch may be discarded, in which case the truncation step discards it
 and only the cosine branch survives.
@@ -103,7 +103,7 @@ Two criteria are central.
 The primary control discards monomials whose length exceeds a cutoff
 $\omega$, with one important exception: a **fully paired** monomial - one
 whose support consists entirely of complete pairs
-$m_{2j-1}m_{2j}$ on a mode (see [Notation](/docs/concepts/notation)) - is always kept, no
+$m_{2j-1}m_{2j}$ on a mode (see [Notation](/concepts/notation)) - is always kept, no
 matter how long it is. Writing $\mathcal{P}$ for the set of paired
 monomials,
 
@@ -119,7 +119,7 @@ motivated in many
 scenarios [@Miller2025-aj]: short monomials tend to dominate expectation
 values, and in the Majorana setting length truncation comes with provable
 guarantees on the approximation error and cost for typical unstructured circuits.
-The same idea applies in the Pauli picture (see [Notation](/docs/concepts/notation)).
+The same idea applies in the Pauli picture (see [Notation](/concepts/notation)).
 
 Keeping the paired monomials is what makes this safe in the Heisenberg picture.
 As shown in *Reading off the expectation value* below, only paired monomials
@@ -151,7 +151,7 @@ $$
 
 Only monomials present in *both* the evolved observable and the reference state
 contribute. Since the reference state is a sum of paired monomials (see
-[Notation](/docs/concepts/notation)), the algorithm never sums over the exponentially many
+[Notation](/concepts/notation)), the algorithm never sums over the exponentially many
 terms of the full state - it only needs the handful of paired monomials that
 overlap with the surviving observable.
 
@@ -169,6 +169,6 @@ Note that storing the surrogate graph can be memory intensive for large circuits
 
 ## See also
 
-- [Notation](/docs/concepts/notation) - the Majorana basis, monomials, commutation rule, and pairing structure this page relies on.
-- [Interface](/docs/concepts/interface) - how to express operators and circuits as input.
-- [Python API](/docs/api) - the full API reference for driving a simulation.
+- [Notation](/concepts/notation) - the Majorana basis, monomials, commutation rule, and pairing structure this page relies on.
+- [Interface](/concepts/interface) - how to express operators and circuits as input.
+- [Python API](/api) - the full API reference for driving a simulation.

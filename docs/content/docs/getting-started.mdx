@@ -4,7 +4,7 @@ description: Install monoprop and run a minimal operator-propagation example.
 ---
 
 This page covers the installation and a minimal introduction to `monoprop`.
-For more detailed usage instructions, see the [Python API](/docs/api).
+For more detailed usage instructions, see the [Python API](/api).
 
 ## Installation
 
@@ -22,7 +22,7 @@ uv add monoprop
 
 These prebuilt wheels run on a single process — they are published *without*
 MPI. For a multi-rank / MPI-enabled build, or to build the C++ library and
-executables, build from source as described in [Building from source](/docs/building).
+executables, build from source as described in [Building from source](/building).
 
 ## Introduction
 
@@ -32,10 +32,10 @@ in the Majorana (or Pauli) basis and propagates it through a circuit, dropping
 terms that contribute little. Expectation values and gradients are then read off
 the propagated operator.
 
-The [Concepts](/docs/concepts) section explains how the
-method works — the [basis and notation](/docs/concepts/notation), the
-[propagation algorithm](/docs/concepts/algorithm), and the [Heisenberg and
-Schrödinger simulation modes](/docs/concepts/simulation_modes).
+The [Concepts](/concepts) section explains how the
+method works — the [basis and notation](/concepts/notation), the
+[propagation algorithm](/concepts/algorithm), and the [Heisenberg and
+Schrödinger simulation modes](/concepts/simulation_modes).
 
 ## Minimal Example
 
@@ -46,7 +46,7 @@ Since the generator anticommutes with the observable, the gate splits the single
 monomial into two terms — a **cosine** branch (the original monomial, scaled by
 $\cos\theta$) and a **sine** branch (a new monomial $M_\gamma M_\nu$,
 scaled by $i\sin\theta$). These are the real and imaginary parts of the
-rotation; see more in [Propagation Algorithm](/docs/concepts/algorithm):
+rotation; see more in [Propagation Algorithm](/concepts/algorithm):
 
 ```python
 >>> import numpy as np
@@ -67,7 +67,7 @@ True
 The same simulator works directly with qubit (Pauli) operators. The following
 example back-propagates the two-qubit observable $Z \otimes Z$ under a single
 qubit rotation $e^{-i\theta X_0/2}$. monoprop maps the Pauli operator into
-the Majorana basis (see [Notation](/docs/concepts/notation)), so the gate likewise splits
+the Majorana basis (see [Notation](/concepts/notation)), so the gate likewise splits
 $Z \otimes Z$ into two terms — keyed by Majorana indices:
 
 ```python

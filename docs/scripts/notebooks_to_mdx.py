@@ -126,9 +126,7 @@ def convert(stem: str) -> Path:
 
 def write_index(stems: list[str]) -> Path:
     """Write the tutorials landing page (index.mdx) listing every notebook."""
-    bullets = "\n".join(
-        f"- [{title_for(stem)}](/docs/tutorials/{stem})" for stem in stems
-    )
+    bullets = "\n".join(f"- [{title_for(stem)}](/tutorials/{stem})" for stem in stems)
     body = (
         "---\n"
         "title: Tutorials\n"
@@ -138,8 +136,8 @@ def write_index(stems: list[str]) -> Path:
         "These tutorials work through complete problems end to end, from setting "
         "up the operator and circuit to evaluating the propagated result. Each "
         "one is a runnable notebook — for the ideas behind the method see "
-        "[Concepts](/docs/concepts), and for the full constructors and arguments "
-        "see [Python API](/docs/api).\n\n"
+        "[Concepts](/concepts), and for the full constructors and arguments "
+        "see [Python API](/api).\n\n"
         f"{bullets}\n"
     )
     out_path = OUT_DIR / "index.mdx"
@@ -168,7 +166,7 @@ def main() -> int:
         out = convert(stem)
         print(f"  -> {out.relative_to(DOCS_DIR)}", flush=True)  # noqa: T201
 
-    # Landing page for `/docs/tutorials`. fumadocs picks up `index.mdx` as the
+    # Landing page for `/tutorials`. fumadocs picks up `index.mdx` as the
     # folder's own index automatically, so the "Tutorials" sidebar/nav title
     # links here. Always regenerated from the full discovered list (independent
     # of the `selected` subset) so every tutorial stays listed.
@@ -176,7 +174,7 @@ def main() -> int:
 
     # Sidebar ordering + section title for the tutorials folder. "index" is
     # deliberately *not* listed: fumadocs already treats `index.mdx` as the
-    # folder index, so the folder title links to `/docs/tutorials`. Listing it
+    # folder index, so the folder title links to `/tutorials`. Listing it
     # would add a redundant child entry duplicating the section title.
     meta = OUT_DIR / "meta.json"
     pages = ", ".join(f'"{s}"' for s in stems)

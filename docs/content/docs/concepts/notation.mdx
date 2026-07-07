@@ -8,7 +8,7 @@ section: the Majorana basis (the chosen basis with which the arithmetic driving 
 how monomials are indexed and made Hermitian, the
 expansion of operators and states, the commutation rule that drives propagation,
 and the dual interpretation of the same data as Pauli strings. The
-[Propagation Algorithm](/docs/concepts/algorithm) page builds directly on these definitions.
+[Propagation Algorithm](/concepts/algorithm) page builds directly on these definitions.
 
 ## Majorana operators
 
@@ -148,12 +148,12 @@ The encoding is *linear* in $\nu$ - a change of basis on the binary data,
 $\nu \mapsto \nu'$ over $\mathbb{F}_2$. Propagation is untouched; only
 the reading of $\nu$ changes. Other mappings, such as the ternary-tree
 constructions, are linear in the same way, so the choice of encoding is just a
-choice of how to read the data, and the [propagation algorithm](/docs/concepts/algorithm) is
+choice of how to read the data, and the [propagation algorithm](/concepts/algorithm) is
 unchanged.
 
 ### Support cutoff = Pauli weight
 
-The encoding is consulted only when truncation is applied (see [truncation](/docs/concepts/algorithm#truncation-controlling-growth)).
+The encoding is consulted only when truncation is applied (see [truncation](/concepts/algorithm#truncation-controlling-growth)).
 The `support` cutoff keeps a monomial acting on at most $\omega$ distinct *qubits*, which the
 engine measures on the transformed string $\nu'$, not the raw $\nu$:
 

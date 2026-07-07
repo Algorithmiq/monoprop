@@ -13,7 +13,7 @@ import { convert, write, frontmatter } from 'fumadocs-python';
 
 const JSON_PATH = path.resolve('monoprop.json');
 const OUT_DIR = path.resolve('content/docs/api');
-const BASE_URL = '/docs/api';
+const BASE_URL = '/api';
 
 // Public modules, in the order they should appear in the sidebar
 const MODULES = [
@@ -79,7 +79,7 @@ async function main() {
 
   // Sidebar ordering for the API section. `index.mdx` is intentionally omitted:
   // fumadocs treats it as the folder's own index (so the "Python API" title
-  // links to `/docs/api`); listing it would add a redundant child duplicating
+  // links to `/api`); listing it would add a redundant child duplicating
   // the section title in the sidebar.
   await fs.writeFile(
     path.join(OUT_DIR, 'meta.json'),

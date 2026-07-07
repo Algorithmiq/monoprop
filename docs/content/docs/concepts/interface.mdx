@@ -6,14 +6,14 @@ description: How a problem is expressed as input — operator formats, the refer
 This page describes, at a conceptual level, how a problem is expressed as input
 to monoprop: the operator formats you can start from, how they relate to the
 Majorana representation used internally, and how a full circuit is bundled for
-simulation. For the exact constructors and arguments, see [Python API](/docs/api).
+simulation. For the exact constructors and arguments, see [Python API](/api).
 
 ## Operator formats
 
 A problem is defined by an operator together
 with a reference state. monoprop accepts operators in three forms, each suited to
 a different starting point. Whatever form you choose, it is converted into the
-Majorana representation (see [Notation](/docs/concepts/notation)) before simulation.
+Majorana representation (see [Notation](/concepts/notation)) before simulation.
 
 ### Fermionic operators
 
@@ -78,7 +78,7 @@ mode indices.
 The coefficient is the one multiplying the *bare* Majorana product, so it
 must keep the monomial Hermitian: real for length-4 monomials, imaginary for
 length-2 (since $M_\nu = i^{\binom{|\nu|}{2}} m_{i_1}\cdots m_{i_n}$, see
-[Notation](/docs/concepts/notation)).
+[Notation](/concepts/notation)).
 
 ```python
 from monoprop import MonomialPropagator
@@ -134,4 +134,4 @@ The typical flow from a problem definition to a result is:
 
 Steps 1-2 happen once; steps 3-4 form the inner loop of a variational
 optimisation. The mechanics of steps 3-4 are covered in
-[Propagation Algorithm](/docs/concepts/algorithm), and the concrete API in [Python API](/docs/api).
+[Propagation Algorithm](/concepts/algorithm), and the concrete API in [Python API](/api).

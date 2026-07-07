@@ -10,11 +10,11 @@ f_L(\theta) = \mathrm{Tr}\!\left[\varrho\, C_L(\theta)^\dagger H\, C_L(\theta)\r
 $$
 
 for an observable $H$, a reference state $\varrho$, and a
-parameterised circuit $C_L(\theta)$ (see [Propagation Algorithm](/docs/concepts/algorithm)). What
+parameterised circuit $C_L(\theta)$ (see [Propagation Algorithm](/concepts/algorithm)). What
 differs between the two **simulation modes** is *which* object is expanded as a sum
 of Majorana monomials and pushed through the circuit: the observable
 (**Heisenberg picture**) or the state (**Schrödinger picture**). The mode is chosen
-at construction time — see [Initialisation and updates](/docs/features/initialisation).
+at construction time — see [Initialisation and updates](/features/initialisation).
 
 ## Heisenberg picture (default)
 
@@ -27,7 +27,7 @@ H_{j+1} = U_{L-j}^\dagger\, H_j\, U_{L-j}, \qquad H_0 = H,
 $$
 
 and the expectation value $\mathrm{Tr}[\varrho\, H_L]$ is read off at the end
-(see [Propagation Algorithm](/docs/concepts/algorithm)).
+(see [Propagation Algorithm](/concepts/algorithm)).
 
 ## Schrödinger picture
 
@@ -38,13 +38,13 @@ under common assumptions for fermionic circuits the results of length truncation
 are provably equivalent in both
 [@chakraborty2026scalablequantumcircuitgeneration]. In practice, matching the
 Heisenberg-picture result requires a slightly looser cutoff on the state; see
-[Initialisation and updates](/docs/features/initialisation) for the `schrodinger_cutoff` setting.
+[Initialisation and updates](/features/initialisation) for the `schrodinger_cutoff` setting.
 The Schrödinger picture is less common in practice, but can be useful when you
 need to compute the expectation value of many different observables against the
 same state.
 
 ## See also
 
-- [Propagation Algorithm](/docs/concepts/algorithm) — the back-propagation loop, gate application, and
+- [Propagation Algorithm](/concepts/algorithm) — the back-propagation loop, gate application, and
   truncation, written for the Heisenberg picture.
-- [Initialisation and updates](/docs/features/initialisation) — how to select the picture at construction time.
+- [Initialisation and updates](/features/initialisation) — how to select the picture at construction time.

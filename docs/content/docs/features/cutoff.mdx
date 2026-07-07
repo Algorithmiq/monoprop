@@ -23,7 +23,7 @@ complete pair $m_{2j-1}m_{2j}$ on some mode — is *always kept*,
 regardless of its size. Fully paired monomials are exactly the terms that can
 contribute to an expectation value against a computational-basis or Slater-determinant
 reference, so discarding them would throw away signal (see
-[Propagation Algorithm](/docs/concepts/algorithm)). The strategies differ only in how they measure the
+[Propagation Algorithm](/concepts/algorithm)). The strategies differ only in how they measure the
 remaining, partially paired monomials:
 
 **`length` (default).**
@@ -69,7 +69,7 @@ monomial under a fermion-to-qubit mapping before measuring it, so `support` then
 counts the qubits touched — the Pauli weight. The mapping must be
 applied before the cutoff because fermion-to-qubit mappings are non-local, so Pauli
 weight does not track Majorana length — see the Pauli representation in
-[Notation](/docs/concepts/notation) for the theory. The basis change is a list of $2N$
+[Notation](/concepts/notation) for the theory. The basis change is a list of $2N$
 entries, one per Majorana operator, each giving its image as a set of Majorana
 indices; `jordan_wigner_basis_change` builds it for Jordan–Wigner:
 
