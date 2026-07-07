@@ -45,8 +45,23 @@ inline constexpr size_t kDefaultGrainSize = 256;
 /// invalid.
 monoprop_EXPORT auto init_from_env() -> void;
 
-/// @brief The current oneTBB maximum parallelism, clamped to at least 1.
+/// @brief Thread-local whole-gate serial override, set per gate by the adaptive mode controller
+/// (detail::GateParallelController / GateModeScope). While true, every dispatch decision made on this
+/// thread — effective_parallelism(), the chunk-count policies, and the parallel_for_*/parallel_reduce_*
+/// small-loop fallbacks below — stays serial, keeping the gate's whole build+apply pipeline on the
+/// calling thread. Mode only changes chunking, never results (order-preserving merges are chunk-count
+/// invariant), so this is bit-exact.
+inline auto gate_serial_override() -> bool & {
+    thread_local bool serial = false;
+    return serial;
+}
+
+/// @brief The current oneTBB maximum parallelism, clamped to at least 1. Reports 1 while the
+/// calling thread's gate is in serial mode (see gate_serial_override).
 inline auto effective_parallelism() -> size_t {
+    if (gate_serial_override()) {
+        return 1;
+    }
     const auto active = tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism);
     return std::max<size_t>(1, static_cast<size_t>(active));
 }
@@ -67,7 +82,7 @@ inline auto parallel_for_indices(size_t count, Func &&func, size_t grain_size = 
         return;
     }
     const profiling::Region prof_r = profiling::capture();
-    if (count < kSmallLoopThreshold) {
+    if (count < kSmallLoopThreshold || gate_serial_override()) {
         profiling::TaskScope prof_ts(prof_r);
         for (size_t idx = 0; idx < count; ++idx) {
             func(idx);
@@ -98,7 +113,7 @@ inline Value parallel_reduce_indices(size_t count,
     }
     const size_t effective_grain = std::max<size_t>(1, grain_size);
     const profiling::Region prof_r = profiling::capture();
-    if (count < std::max(kSmallLoopThreshold, effective_grain)) {
+    if (count < std::max(kSmallLoopThreshold, effective_grain) || gate_serial_override()) {
         profiling::TaskScope prof_ts(prof_r);
         Value local = identity;
         for (size_t idx = 0; idx < count; ++idx) {
@@ -129,7 +144,7 @@ inline auto parallel_for_ranges(size_t count, Func &&func, size_t grain_size = 0
 
     const size_t grain = grain_size == 0 ? range_grain_size(count) : std::max<size_t>(1, grain_size);
     const profiling::Region prof_r = profiling::capture();
-    if (count < std::max(kSmallLoopThreshold, grain)) {
+    if (count < std::max(kSmallLoopThreshold, grain) || gate_serial_override()) {
         profiling::TaskScope prof_ts(prof_r);
         func(0, count);
         return;
@@ -157,7 +172,7 @@ inline Value parallel_reduce_ranges(size_t count,
 
     const size_t grain = grain_size == 0 ? range_grain_size(count) : std::max<size_t>(1, grain_size);
     const profiling::Region prof_r = profiling::capture();
-    if (count < std::max(kSmallLoopThreshold, grain)) {
+    if (count < std::max(kSmallLoopThreshold, grain) || gate_serial_override()) {
         profiling::TaskScope prof_ts(prof_r);
         return body(0, count, std::move(identity));
     }
@@ -223,7 +238,7 @@ inline auto parallel_for_rank_ranges(size_t num_ranks, int my_rank, SizeFunc &&s
         return;
     }
     const profiling::Region prof_r = profiling::capture();
-    if (num_ranks * max_extent < kSmallLoopThreshold) {
+    if (num_ranks * max_extent < kSmallLoopThreshold || gate_serial_override()) {
         profiling::TaskScope prof_ts(prof_r);
         detail_threading::for_each_rank_range_window(0, num_ranks, 0, max_extent, my_rank, sf, fn);
         return;
@@ -260,7 +275,7 @@ inline Value parallel_reduce_rank_ranges(size_t num_ranks,
         return identity;
     }
     const profiling::Region prof_r = profiling::capture();
-    if (num_ranks * max_extent < kSmallLoopThreshold) {
+    if (num_ranks * max_extent < kSmallLoopThreshold || gate_serial_override()) {
         profiling::TaskScope prof_ts(prof_r);
         Value local = std::move(identity);
         detail_threading::for_each_rank_range_window(
