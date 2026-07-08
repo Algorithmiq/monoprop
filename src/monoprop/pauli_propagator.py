@@ -101,10 +101,12 @@ class PauliPropagator(MajoranaPropagator):
             comm: Optional MPI communicator (must outlive the propagator).
             engine_basis: Engine backing. ``"pauli"`` (default) runs the native Pauli engine
                 (no Jordan-Wigner); ``"majorana-jw"`` uses the Jordan-Wigner Majorana fallback.
-            shards: Intra-process shard count (default 0 ⇒ ``monoprop_SHARDS`` env, else 1). >1
-                partitions the operator across that many single-threaded shards pinned one-per-core
-                for near-linear thread scaling; results are deterministic per shard count but differ
-                from a single partition at the ULP level. Requires a single MPI rank.
+            shards: Intra-process shard count. 0 (the default) auto-selects one single-threaded shard
+                per physical core — the default parallelism, capped by ``monoprop_NUM_THREADS`` if set,
+                so the thread count is the only knob. Pass 1 (or ``monoprop_SHARDS=off``) for a single
+                partition; pass N>1 to force exactly N. Sharding gives near-linear thread scaling;
+                results are deterministic per shard count but differ from a single partition at the ULP
+                level. Auto-sharding engages on a single MPI rank only.
 
         Raises:
             ValueError: If ``engine_basis`` is not ``"pauli"`` or ``"majorana-jw"``.

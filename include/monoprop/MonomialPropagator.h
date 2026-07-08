@@ -21,11 +21,14 @@
 #include <format>
 #include <map>
 #include <numeric>
+#include <complex>
+#include <functional>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <tbb/task_arena.h>
@@ -274,6 +277,9 @@ public:
                             upper_atol_.value()));
         }
         lower_atol_ = new_lower_atol;
+        if (shard_group_) {
+            for_each_shard_([&](MonomialPropagator &s) { s.update_lower_atol(new_lower_atol); });
+        }
     }
 
     /**
@@ -289,6 +295,9 @@ public:
                             lower_atol_.value()));
         }
         upper_atol_ = new_upper_atol;
+        if (shard_group_) {
+            for_each_shard_([&](MonomialPropagator &s) { s.update_upper_atol(new_upper_atol); });
+        }
     }
 
     /**
@@ -302,6 +311,9 @@ public:
     auto update_cutoff(unsigned int new_cutoff) -> void {
         cutoff_ = new_cutoff;
         regenerate_cutoff_fn_();
+        if (shard_group_) {
+            for_each_shard_([&](MonomialPropagator &s) { s.update_cutoff(new_cutoff); });
+        }
     }
 
     /**
@@ -315,6 +327,9 @@ public:
     auto update_cutoff_type(CutoffType new_cutoff_type) -> void {
         cutoff_type_ = new_cutoff_type;
         regenerate_cutoff_fn_();
+        if (shard_group_) {
+            for_each_shard_([&](MonomialPropagator &s) { s.update_cutoff_type(new_cutoff_type); });
+        }
     }
 
     /**
@@ -328,6 +343,9 @@ public:
     auto update_basis_change(std::optional<std::vector<VecZ>> new_basis_change) -> void {
         basis_change_ = new_basis_change;
         regenerate_cutoff_fn_();
+        if (shard_group_) {
+            for_each_shard_([&](MonomialPropagator &s) { s.update_basis_change(new_basis_change); });
+        }
     }
 
     /**
@@ -349,7 +367,7 @@ public:
      *
      * @return The core term as a float.
      */
-    auto core_term() const -> double { return core_term_; }
+    auto core_term() const -> double { return shard_group_ ? sharded_core_term_() : core_term_; }
 
     /**
      * @brief Get the current cutoff value.
@@ -494,6 +512,19 @@ public:
      */
     auto contract_partially(const VecD &parameters, bool inplace) -> VecD;
 
+    /**
+     * @brief The full evolved operator as decoded, rounded (indices, coefficient) terms.
+     *
+     * Contracts at `parameters` (non-inplace) and decodes every term whose stored-coefficient
+     * magnitude is >= `atol` back to (Majorana/Pauli index list, complex coefficient). When the
+     * propagator is shard-backed the terms are gathered from every shard's disjoint hash partition
+     * and concatenated, so the result is the whole operator regardless of the shard count. The core
+     * term is excluded (the Python binding adds it). This is the shard-transparent source for the
+     * `evolved_operator` binding, which cannot use the raw per-partition `indexing()`.
+     */
+    auto evolved_operator_terms(const VecD &parameters, double atol)
+        -> std::vector<std::pair<VecZ, std::complex<double>>>;
+
     virtual auto update_initial_operator(const FermiOperatorMap &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
@@ -609,12 +640,16 @@ private:
 
     // Resolve the effective shard count from the ctor `shards` arg (0 ⇒ env monoprop_SHARDS, else the
     // auto policy), the basis, the thread budget, and the topology. Returns 1 for the ordinary path.
-    static auto resolve_shard_count_(size_t requested, Basis basis, mpi::Comm comm) -> size_t;
+    static auto resolve_shard_count_(size_t requested, mpi::Comm comm) -> size_t;
     // Fan-out helpers for the inline accessors (defined in the impl, where ShardGroup is complete).
     auto sharded_size_() const -> size_t;
     auto sharded_graph_size_() const -> std::pair<size_t, size_t>;
     auto sharded_graph_layers_() const -> size_t;
     auto sharded_reserve_operator_(size_t expected_local_terms) -> void;
+    auto sharded_core_term_() const -> double; // core term is replicated on every shard; read shard 0
+    // Run `fn` on every shard's propagator concurrently (via the ShardGroup masters); the caller
+    // guards on shard_group_ being set. Out-of-line because ShardGroup is incomplete in this header.
+    auto for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void;
     // Raw per-shard data has no single meaningful value on a facade; guard the accessors that expose
     // it. Inline-safe: only tests the unique_ptr for null (no ShardGroup member access).
     auto require_unsharded_(const char *what) const -> void {

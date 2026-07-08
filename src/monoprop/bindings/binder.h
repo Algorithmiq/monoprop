@@ -185,34 +185,20 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "The operator basis: 'majorana' (default) or 'pauli'");
 
     // Contract the graph, then decode every above-atol term back into a Python {indices: coeff} dict.
+    // evolved_operator_terms is shard-transparent: it merges every shard's disjoint hash partition, so
+    // this works whether the propagator is single-partition or shard-backed (the raw per-partition
+    // indexing() is unavailable on a shard facade).
     cls.def(
         "evolved_operator",
         [](MonomialPropagator<NumModes> &self, const VecD &parameters, double atol) -> nb::dict {
-            // Evolve the operator representation (single rank in non-MPI Python bindings)
-            const auto evolved_op = self.contract_partially(parameters, false);
-            const auto &indexing = self.indexing();
-            const bool is_pauli = (self.basis() == Basis::Pauli);
-
             nb::dict py_result;
-            indexing.for_each([&](const auto &maj, size_t idx) {
-                if (idx < evolved_op.size()) {
-                    const auto coeff = evolved_op[idx];
-                    if (std::abs(coeff) >= atol) {
-                        nb::list key;
-                        for (const auto &i : bitset_to_indices<NumModes>(maj)) {
-                            key.append(i);
-                        }
-                        // Pauli coefficients are already real (identity decode); Majorana un-applies the
-                        // Hermitian phase. Both keys are the stored gamma-slot / Majorana index lists.
-                        auto decoded_coeff =
-                            is_pauli ? decode_pauli_coeff(coeff) : decode_coeff<NumModes>(coeff, maj);
-                        // Round to avoid anti-hermitian elements due to numerical noise
-                        auto rounded_coeff = std::complex<double>(std::round(decoded_coeff.real() * 1e12) / 1e12,
-                                                                  std::round(decoded_coeff.imag() * 1e12) / 1e12);
-                        py_result[nb::tuple(key)] = rounded_coeff;
-                    }
+            for (const auto &[indices, coeff] : self.evolved_operator_terms(parameters, atol)) {
+                nb::list key;
+                for (const auto &i : indices) {
+                    key.append(i);
                 }
-            });
+                py_result[nb::tuple(key)] = coeff;
+            }
 
             if (!self.schrodinger() && std::abs(self.core_term()) >= atol) {
                 // Add the core term if in Heisenberg picture

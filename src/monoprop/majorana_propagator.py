@@ -123,10 +123,13 @@ class MajoranaPropagator:
                 lists, each giving one basis vector as a set of Majorana indices.
             comm: Optional MPI communicator. The communicator must remain valid for the
                 simulator's lifetime.
-            shards: Intra-process shard count (default 0 ⇒ ``monoprop_SHARDS`` env, else 1).
-                >1 partitions the operator across that many single-threaded shards pinned
-                one-per-core; results are deterministic per shard count but differ from a single
-                partition at the ULP level, as across MPI rank counts. Requires a single MPI rank.
+            shards: Intra-process shard count. 0 (the default) auto-selects one single-threaded
+                shard per physical core — the default parallelism, capped by ``monoprop_NUM_THREADS``
+                if set, so the thread count is the only knob you need. Pass 1 (or set
+                ``monoprop_SHARDS=off``) for a single partition; pass N>1 to force exactly N. Sharding
+                partitions the operator across single-threaded core-pinned shards; results are
+                deterministic per shard count but differ from a single partition at the ULP level, as
+                across MPI rank counts. Auto-sharding engages on a single MPI rank only.
         """
         majorana_operator: MajoranaOperator = (
             initial_operator

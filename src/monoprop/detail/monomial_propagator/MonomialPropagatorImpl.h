@@ -18,11 +18,15 @@
 #include <bit>
 #include <cassert>
 #include <chrono>
+#include <cmath>
+#include <complex>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <numeric>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include "monoprop/MonomialPropagator.h"
@@ -89,7 +93,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
     // Sharding: shards>1 makes this a FACADE that owns S single-shard propagators (each a hash
     // partition of the operator, built via a Kind::Shm comm on its own pinned master thread) and fans
     // every operator method out to them. The facade's own mp_op_/graph_ stay empty and unused.
-    const size_t n_shards = resolve_shard_count_(shards, basis_, comm);
+    const size_t n_shards = resolve_shard_count_(shards, comm);
     if (n_shards > 1) {
         if (mpi::size(comm) > 1) {
             throw std::runtime_error(
@@ -217,24 +221,37 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
 // shard speedup automatically. Majorana always defaults to 1 (it already scales; halving per-shard
 // work would hurt it).
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::resolve_shard_count_(size_t requested, Basis basis, mpi::Comm comm) -> size_t {
+auto MonomialPropagator<NumModes>::resolve_shard_count_(size_t requested, mpi::Comm comm) -> size_t {
+    // Explicit ctor argument wins outright: 1 => single partition (no sharding), N>1 => exactly N.
     if (requested >= 1) {
         return requested;
     }
-    size_t auto_shards = 1;
-    const auto num_threads = config::get().num_threads;
-    if (basis == Basis::Pauli && mpi::size(comm) == 1 && num_threads.has_value() && *num_threads >= 2) {
-        size_t s = static_cast<size_t>(*num_threads);
-        const size_t cores = detail::shard::enumerate_physical_cores().size();
-        if (cores > 0) {
-            s = std::min(s, cores);
+    // AUTO policy: shards are the DEFAULT parallelism for BOTH bases (Phase-2 measured shards beat TBB
+    // on every workload — Pauli 6-9x, hubbard ~2x, random ~1.1x). One serial shard per physical core,
+    // capped by monoprop_NUM_THREADS when the user set it, so the sole user knob is the thread count.
+    // Engages only on a single MPI rank until the MPI-hybrid transport lands (Phase 5); a real MPI run
+    // keeps one partition per rank.
+    const auto compute_auto = [&]() -> size_t {
+        if (mpi::size(comm) != 1) {
+            return 1; // shards and real MPI ranks do not nest yet
         }
-        auto_shards = std::max<size_t>(1, s);
-    }
+        size_t cores = detail::shard::enumerate_physical_cores().size();
+        if (cores == 0) {
+            // Topology unreadable (non-Linux / restricted /sys): use half the hardware threads so SMT
+            // siblings are not miscounted as cores, floored at 1.
+            cores = std::max<size_t>(1, static_cast<size_t>(std::thread::hardware_concurrency()) / 2);
+        }
+        size_t s = cores;
+        if (const auto num_threads = config::get().num_threads; num_threads.has_value()) {
+            s = std::min(s, static_cast<size_t>(*num_threads));
+        }
+        return std::max<size_t>(1, s);
+    };
+    // Env override: integer N forces N, "auto" forces the policy above, "off" forces single-partition.
     if (const char *env = std::getenv("monoprop_SHARDS")) {
         const std::string_view v(env);
         if (v == "auto") {
-            return auto_shards;
+            return compute_auto();
         }
         if (v == "off") {
             return 1;
@@ -245,7 +262,7 @@ auto MonomialPropagator<NumModes>::resolve_shard_count_(size_t requested, Basis 
             return static_cast<size_t>(n);
         }
     }
-    return auto_shards;
+    return compute_auto();
 }
 
 // Sharded accessors. Pure reads (size, graph_size, graph_layers) run directly on the quiescent shard
@@ -284,6 +301,18 @@ auto MonomialPropagator<NumModes>::sharded_reserve_operator_(size_t expected_loc
     const size_t per =
         std::max<size_t>(1, expected_local_terms / static_cast<size_t>(shard_group_->shard_count()));
     shard_group_->run_on_all([&](int r) { shard_group_->shard(r).reserve_operator(per); });
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::sharded_core_term_() const -> double {
+    // The core (identity) term is stored on every shard, not hash-partitioned, so any shard's value
+    // is the full core term (see apply_initial_operator_'s "store in all" branch).
+    return shard_group_->shard(0).core_term();
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void {
+    shard_group_->run_on_all([&](int r) { fn(shard_group_->shard(r)); });
 }
 
 template <size_t NumModes>
@@ -1066,14 +1095,26 @@ auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &pa
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bool inplace) -> VecD {
     if (shard_group_) {
-        // Contract every shard's partition (fanned out concurrently for the cross-shard exchange).
-        // Returns shard 0's LOCAL coefficients, mirroring the rank-local return under MPI; callers
-        // needing the full evolved operator gather across shards (see the binding's evolved_operator).
+        // Contract every shard's partition (fanned out concurrently for the cross-shard exchange),
+        // then concatenate the per-shard coefficient vectors in shard order. The partitions are
+        // disjoint, so the concatenation is a valid enumeration of the whole operator's coefficients
+        // (the flat vector has no cross-shard canonical order beyond this, which is all callers need
+        // — evolved_operator_terms pairs coefficients with indices per shard). Deterministic for a
+        // fixed shard count. The core term is excluded here, exactly as on the single-partition path.
         std::vector<VecD> res(static_cast<size_t>(shard_group_->shard_count()));
         shard_group_->run_on_all([&](int r) {
             res[static_cast<size_t>(r)] = shard_group_->shard(r).contract_partially(parameters, inplace);
         });
-        return res[0];
+        VecD merged;
+        size_t total = 0;
+        for (const auto &v : res) {
+            total += v.size();
+        }
+        merged.reserve(total);
+        for (auto &v : res) {
+            merged.insert(merged.end(), v.begin(), v.end());
+        }
+        return merged;
     }
     const auto gate_arrays = graph_gate_arrays_();
     const auto &parameter_mapping = gate_arrays.first;
@@ -1118,6 +1159,53 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
         evolved_op = evolve_operator_with_recompute_(VecD(op), graph_.slice_view(num_majoranas), mapped_params);
     }
     return evolved_op;
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters, double atol)
+    -> std::vector<std::pair<VecZ, std::complex<double>>> {
+    using Term = std::pair<VecZ, std::complex<double>>;
+    const bool is_pauli = (basis_ == Basis::Pauli);
+    // Contract one propagator's partition and decode its above-atol terms. `p` is always an
+    // unsharded propagator here (a shard, or *this when unsharded), so indexing() is available.
+    const auto collect = [&](MonomialPropagator &p) -> std::vector<Term> {
+        std::vector<Term> terms;
+        const VecD evolved = p.contract_partially(parameters, false);
+        p.indexing().for_each([&](const auto &maj, size_t idx) {
+            if (idx >= evolved.size()) {
+                return;
+            }
+            const double coeff = evolved[idx];
+            if (std::abs(coeff) < atol) {
+                return;
+            }
+            // Pauli coefficients are already real (identity decode); Majorana un-applies the Hermitian
+            // phase from the stored gamma-slot list. Round to drop anti-hermitian numerical noise.
+            const auto decoded = is_pauli ? decode_pauli_coeff(coeff) : decode_coeff<NumModes>(coeff, maj);
+            const std::complex<double> rounded(std::round(decoded.real() * 1e12) / 1e12,
+                                               std::round(decoded.imag() * 1e12) / 1e12);
+            terms.emplace_back(bitset_to_indices<NumModes>(maj), rounded);
+        });
+        return terms;
+    };
+    if (!shard_group_) {
+        return collect(*this);
+    }
+    // Fan out: each shard decodes its own disjoint hash partition concurrently (the contract_partially
+    // inside collect is the cross-shard collective; the index walk is shard-local). Concatenate — the
+    // partitions never share a term, so the union is the whole operator with no dedup needed.
+    std::vector<std::vector<Term>> per(static_cast<size_t>(shard_group_->shard_count()));
+    shard_group_->run_on_all([&](int r) { per[static_cast<size_t>(r)] = collect(shard_group_->shard(r)); });
+    std::vector<Term> merged;
+    size_t total = 0;
+    for (const auto &v : per) {
+        total += v.size();
+    }
+    merged.reserve(total);
+    for (const auto &v : per) {
+        merged.insert(merged.end(), v.begin(), v.end());
+    }
+    return merged;
 }
 
 } // namespace monoprop

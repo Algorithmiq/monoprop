@@ -33,7 +33,10 @@
 // Shard-runtime vars are parsed at their point of use (they need string forms beyond a plain field),
 // not cached here, but are listed for a single inventory:
 //   monoprop_SHARDS               int N | "auto" | "off"; overrides the shard-count policy
-//                                 (MonomialPropagator::resolve_shard_count_)
+//                                 (MonomialPropagator::resolve_shard_count_). Default (unset) is
+//                                 "auto": one single-threaded shard per physical core — the default
+//                                 parallelism — capped by monoprop_NUM_THREADS when set. "off" ⇒ one
+//                                 partition (the pre-sharding behaviour); N ⇒ exactly N shards.
 //   monoprop_SHARD_PINNING        bool, default ON; 0/false disables per-core pinning (CpuTopology)
 // NOTE: the profiler's rank discovery (OMPI_COMM_WORLD_RANK/PMI_RANK/PMIX_RANK) is intentionally NOT
 // here — it is launcher-provided, not a monoprop knob.
