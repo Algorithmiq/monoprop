@@ -1,4 +1,11 @@
 if(CMAKE_CXX_COMPILER_ID MATCHES Clang)
+  if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 18)
+    message(
+      FATAL_ERROR
+      "monoprop requires Clang compiler version >= 18. Detected version: ${CMAKE_CXX_COMPILER_VERSION}"
+    )
+  endif()
+
   set(
     monoprop_CXX_FLAGS
     "-Wall -Wno-padded -Wno-unknown-pragmas -Woverloaded-virtual -Wwrite-strings -fcolor-diagnostics -Wno-c++98-compat -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer"
