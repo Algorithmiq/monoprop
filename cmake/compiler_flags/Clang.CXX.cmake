@@ -1,7 +1,15 @@
 # same flags are used for both Clang and AppleClang
 if(CMAKE_CXX_COMPILER_ID MATCHES Clang)
   # check version when compiler id is exactly Clang (valid for Linux)
-  if(CMAKE_CXX_COMPILER_ID STREQUAL Clang AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 18)
+  if(
+    CMAKE_CXX_COMPILER_ID
+      STREQUAL
+      Clang
+    AND
+      CMAKE_CXX_COMPILER_VERSION
+        VERSION_LESS
+        18
+  )
     message(
       FATAL_ERROR
       "monoprop requires Clang compiler version >= 18. Detected version: ${CMAKE_CXX_COMPILER_VERSION}"
