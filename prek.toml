@@ -52,9 +52,7 @@ hooks = [{ id = "uv-lock" }]
 [[repos]]
 repo = "https://github.com/scanaislop/aislop"
 rev = "v0.13.1"
-hooks = [{ id = "aislop", args = [
-    "--staged",
-] }]
+hooks = [{ id = "aislop" }]
 
 [[repos]]
 repo = "https://github.com/pre-commit/mirrors-clang-format"
