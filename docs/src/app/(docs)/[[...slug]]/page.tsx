@@ -31,7 +31,7 @@ export default async function Page(props: PageProps<'/[[...slug]]'>) {
           markdownUrl={markdownUrl}
           githubUrl={`https://github.com/${gitConfig.user}/${gitConfig.repo}/blob/${gitConfig.branch}/docs/content/docs/${page.path}`}
         />
-          
+
       </div>
       <DocsBody>
         <MDX
