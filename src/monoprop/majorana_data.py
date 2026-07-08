@@ -17,27 +17,29 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 
-@dataclass(frozen=True, slots=True, init=False)
 class Majorana:
     """A single Majorana monomial: the ordered product ``gamma_{i_1} ... gamma_{i_w}``.
 
     A term is the atom a :class:`MajoranaOperator` is built from and the generator an
-    :class:`~monoprop.circuit.Exp` gate exponentiates. Indices are sorted on
-    construction (matching the operator's canonicalization); repeated indices are rejected
-    (``gamma_i^2 = 1`` would silently change the monomial's weight), as are negative indices.
+    :class:`~monoprop.circuit.Exp` gate exponentiates. Indices are sorted on construction
+    (matching the operator's canonicalization) and must be distinct and non-negative. A
+    repeated index is rejected because ``gamma_i^2 = 1`` would silently change the monomial's
+    weight -- almost always a mistake rather than an intended simplification.
+
+    An immutable value object: equal indices compare equal and hash alike, so a term can be
+    used as a dictionary key (as :attr:`MajoranaOperator.terms` does).
 
     Attributes:
         indices: The sorted, distinct Majorana indices of the monomial.
     """
 
-    indices: tuple[int, ...]
+    __slots__ = ("indices",)
 
     def __init__(self, *indices: int) -> None:
         """Initialize the Majorana monomial from its indices.
@@ -52,11 +54,18 @@ class Majorana:
         if ordered and ordered[0] < 0:
             raise ValueError(f"Majorana indices must be non-negative; got {ordered}.")
         if len(set(ordered)) != len(ordered):
-            raise ValueError(
-                f"Majorana indices must be distinct; got {ordered}. A repeated index "
-                "(gamma_i^2 = 1) is almost always a mistake."
-            )
-        object.__setattr__(self, "indices", ordered)
+            raise ValueError(f"Majorana indices must be distinct; got {ordered}.")
+        self.indices = ordered
+
+    def __eq__(self, other: object) -> bool:
+        """Two Majorana terms are equal when their sorted indices match."""
+        if not isinstance(other, Majorana):
+            return NotImplemented
+        return self.indices == other.indices
+
+    def __hash__(self) -> int:
+        """Hash on the sorted indices so equal terms share a bucket."""
+        return hash(self.indices)
 
     def __repr__(self) -> str:
         """Return a string representation such as ``Majorana(4, 5)``."""
@@ -85,12 +94,18 @@ class MajoranaOperator:
         Args:
             terms: Mapping from :class:`Majorana` terms (or raw index tuples) to coefficients.
             num_modes: Number of modes in the system. Required: an operator carries its own
-                mode count so a propagator can be built from it directly. Gate generators do
-                *not* go through this constructor -- author them count-free from bare
-                :class:`Majorana` terms via :class:`~monoprop.circuit.Exp`.
+                mode count so a propagator can be built from it directly. A gate generator is
+                also authored as a :class:`MajoranaOperator` (wrapped in
+                :class:`~monoprop.circuit.Exp`) -- bare :class:`Majorana` terms are not accepted
+                by ``Exp``, since the operator is what carries the mode count.
             threshold: Terms with ``|coefficient| < threshold`` are discarded.
         """
-        majoranas = [key.indices if isinstance(key, Majorana) else key for key in terms]
+        # Route raw index tuples through Majorana so they get the same non-negative/distinct
+        # validation a Majorana key already carries (a bare tuple would otherwise slip past it).
+        majoranas = [
+            (key if isinstance(key, Majorana) else Majorana(*key)).indices
+            for key in terms
+        ]
         self.num_modes = num_modes
         self.terms = self._accumulate(majoranas, list(terms.values()), threshold)
 

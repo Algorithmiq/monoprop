@@ -184,9 +184,18 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
         if (graph_layers() > 0) {
             const auto existing = graph_gate_arrays_();
             const size_t m = expected_num_params(existing.first);
-            const VecD existing_params(
-                parameters->begin(),
-                parameters->begin() + static_cast<std::ptrdiff_t>(std::min(m, parameters->size())));
+            // contract_partially() replays the existing graph, whose layers reference the
+            // parameter prefix [0, m); it needs exactly m values. Require enough parameters up
+            // front rather than silently truncating to a too-short vector (min(m, size)) that
+            // would fail later with an opaque out-of-bounds/length error.
+            if (parameters->size() < m) {
+                throw std::runtime_error(
+                    std::format("Coefficient-informed build_graph needs at least {} parameter(s) to replay "
+                                "the existing graph, but only {} were given.",
+                                m,
+                                parameters->size()));
+            }
+            const VecD existing_params(parameters->begin(), parameters->begin() + static_cast<std::ptrdiff_t>(m));
             seed = contract_partially(existing_params, false);
         }
         else {

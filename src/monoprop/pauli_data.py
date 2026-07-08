@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -31,7 +30,6 @@ if TYPE_CHECKING:
 _VALID_PAULI_CHARS = frozenset("IXYZ")
 
 
-@dataclass(frozen=True, slots=True, init=False)
 class Pauli:
     """A single Pauli term: Pauli letters placed on specific qubits.
 
@@ -42,15 +40,15 @@ class Pauli:
 
     Terms are canonicalized on construction: identity (``I``) letters are dropped and the
     remaining ``(qubit, letter)`` pairs are sorted by qubit, so ``Pauli("XY", (1, 0))`` and
-    ``Pauli("YX", (0, 1))`` compare equal and hash alike.
+    ``Pauli("YX", (0, 1))`` compare equal and hash alike -- an immutable value object usable
+    as a dictionary key (as :attr:`PauliOperator.terms` does).
 
     Attributes:
         string: The non-identity Pauli letters, ordered to match :attr:`qubits`.
         qubits: The (sorted, distinct) qubit indices the letters act on.
     """
 
-    string: str
-    qubits: tuple[int, ...]
+    __slots__ = ("qubits", "string")
 
     def __init__(self, string: str, qubits: int | Sequence[int] | None = None) -> None:
         """Initialize the Pauli term.
@@ -85,8 +83,18 @@ class Pauli:
         pairs = sorted(
             (q, p) for q, p in zip(qubit_tuple, string, strict=True) if p != "I"
         )
-        object.__setattr__(self, "qubits", tuple(q for q, _ in pairs))
-        object.__setattr__(self, "string", "".join(p for _, p in pairs))
+        self.qubits = tuple(q for q, _ in pairs)
+        self.string = "".join(p for _, p in pairs)
+
+    def __eq__(self, other: object) -> bool:
+        """Two Pauli terms are equal when their letters and qubits match (post-canonicalization)."""
+        if not isinstance(other, Pauli):
+            return NotImplemented
+        return self.string == other.string and self.qubits == other.qubits
+
+    def __hash__(self) -> int:
+        """Hash on the canonical ``(string, qubits)`` so equal terms share a bucket."""
+        return hash((self.string, self.qubits))
 
     def __repr__(self) -> str:
         """Return a string representation such as ``Pauli('ZZ', (0, 1))``."""
@@ -99,9 +107,10 @@ class PauliOperator:
     Constructed from a ``{term: coefficient}`` mapping, where each key is a :class:`Pauli`
     term (or, equivalently, a raw full-width Pauli string like ``"ZZ"``, which is read as a
     term on qubits ``0..len-1``). The total qubit count lives here, on the operator, and is
-    required so a propagator can be built from it directly. Gate generators do *not* go
-    through this constructor -- author them count-free from bare :class:`Pauli` terms via
-    :class:`~monoprop.circuit.Exp`.
+    required so a propagator can be built from it directly. A gate generator is also authored
+    as a :class:`PauliOperator` (wrapped in :class:`~monoprop.circuit.Exp`) -- bare
+    :class:`Pauli` terms are not accepted by ``Exp``, since the operator is what carries the
+    qubit count.
     """
 
     def __init__(

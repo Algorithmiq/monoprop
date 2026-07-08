@@ -52,7 +52,6 @@ circuit, :class:`~monoprop.pauli_propagator.PauliPropagator` a qubit circuit.
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
@@ -73,7 +72,6 @@ GateFamily = Literal["pauli", "majorana"]
 CircuitFamily = Literal["pauli", "majorana", "empty"]
 
 
-@dataclass(frozen=True, slots=True, init=False)
 class Exp:
     r"""The exponential of a generator: one variational gate, abstract over the family.
 
@@ -110,18 +108,14 @@ class Exp:
             generator type at construction (a fermionic generator becomes ``"majorana"``).
     """
 
-    generator: MajoranaOperator | PauliOperator
-    param: int | None
-    family: GateFamily
-    #: True when ``generator`` already carries the real *structural* coefficients ``g`` (the
-    #: wire/dense format); False for an authored Hermitian generator (including a converted
-    #: fermionic one) that :func:`_gate_layers` antihermitian-normalizes. Internal.
-    _structural: bool
+    __slots__ = ("_structural", "family", "generator", "param")
 
     def __init__(
         self,
         generator: MajoranaOperator | PauliOperator | FermiOperator,
         param: int | None = None,
+        *,
+        _structural: bool = False,
     ) -> None:
         """Wrap a generator operator; its type selects the family and normalization convention.
 
@@ -133,9 +127,13 @@ class Exp:
         :class:`~monoprop.pauli_data.Pauli` term is *not* accepted; wrap it in the
         corresponding operator (e.g. ``MajoranaOperator({(0, 1): 1j}, num_modes)`` -- a Majorana
         generator carries the Hermitian operator, so a weight-2 coefficient is imaginary).
+
+        ``_structural`` is internal: :meth:`_structural_gate` sets it when the generator already
+        carries the real structural coefficients ``g`` (the wire/dense format), so
+        :func:`_gate_layers` passes them through rather than antihermitian-normalizes them.
         """
         if isinstance(generator, PauliOperator):
-            family = "pauli"
+            family: GateFamily = "pauli"
         elif isinstance(generator, MajoranaOperator):
             family = "majorana"
         elif hasattr(generator, "get_majorana_operator"):
@@ -154,12 +152,12 @@ class Exp:
             )
         if isinstance(generator, PauliOperator):
             _validate_commuting_pauli_generator(generator)
-        object.__setattr__(self, "generator", generator)
-        object.__setattr__(self, "param", None if param is None else int(param))
-        object.__setattr__(self, "family", family)
+        self.generator = generator
+        self.param = None if param is None else int(param)
+        self.family = family
         # Authored generators (including converted fermionic ones) carry the Hermitian operator;
-        # _gate_layers normalizes them. Only the wire/dense path flips this via _structural_gate.
-        object.__setattr__(self, "_structural", False)
+        # _gate_layers normalizes them. Only the wire/dense path sets _structural=True.
+        self._structural = _structural
 
     @classmethod
     def _structural_gate(cls, generator: MajoranaOperator, param: int | None) -> Exp:
@@ -169,9 +167,7 @@ class Exp:
         coefficients are already the real structural generator coefficients, so
         :func:`_gate_layers` must pass them through rather than antihermitian-normalize them.
         """
-        gate = cls(generator, param=param)
-        object.__setattr__(gate, "_structural", True)
-        return gate
+        return cls(generator, param=param, _structural=True)
 
     @classmethod
     def _with_param(cls, gate: Exp, param: int | None) -> Exp:
@@ -180,12 +176,26 @@ class Exp:
         Used by :meth:`Circuit.__add__`; a plain ``Exp(gate.generator, param)`` would reset
         ``_structural`` to ``False`` and re-normalize an already-structural (dense) generator.
         """
-        clone = cls(gate.generator, param=param)
-        object.__setattr__(clone, "_structural", gate._structural)
-        return clone
+        return cls(gate.generator, param=param, _structural=gate._structural)
+
+    def __eq__(self, other: object) -> bool:
+        """Equal when the generator, parameter index, family, and structural flag all match."""
+        if not isinstance(other, Exp):
+            return NotImplemented
+        return (
+            self.generator == other.generator
+            and self.param == other.param
+            and self.family == other.family
+            and self._structural == other._structural
+        )
+
+    __hash__ = None  # type: ignore[assignment]  # value-equal but not hashable (mutable generator)
+
+    def __repr__(self) -> str:
+        """Return a string representation such as ``Exp(<generator>, param=0)``."""
+        return f"{self.__class__.__name__}({self.generator}, param={self.param})"
 
 
-@dataclass(frozen=True)
 class Circuit:
     """A variational circuit: an ordered sequence of exponential gates, angles, and a state.
 
@@ -221,22 +231,38 @@ class Circuit:
             construction; the propagators dispatch on it.
     """
 
-    gates: Sequence[Exp] = ()
-    parameters: Sequence[float] = ()
-    initial_state: Sequence[int] = ()
-    # Derived at construction (see __post_init__); excluded from equality/repr as it follows
-    # from `gates`. Declared as a field so it is a typed attribute rather than a dynamic one.
-    family: CircuitFamily = field(
-        init=False, compare=False, repr=False, default="empty"
-    )
+    def __init__(
+        self,
+        gates: Sequence[Exp] = (),
+        parameters: Sequence[float] = (),
+        initial_state: Sequence[int] = (),
+    ) -> None:
+        """Build the circuit, dropping identity gates and validating family/mapping/params.
 
-    def __post_init__(self) -> None:
-        """Drop identity gates and validate family/mapping/params."""
-        gates = tuple(self.gates)
-        parameters = tuple(float(v) for v in self.parameters)
-        initial_state = tuple(int(i) for i in self.initial_state)
+        Args:
+            gates: The ordered exponential gates.
+            parameters: The angle values, or empty for an unbound circuit.
+            initial_state: The reference state (occupied mode / qubit indices).
+
+        Raises:
+            ValueError: On duplicate initial-state indices, a bad parameter mapping, or a
+                bound circuit whose parameter count does not match :attr:`n_parameters`.
+            TypeError: On a non-:class:`Exp` gate or a mix of qubit and Majorana gate families.
+        """
+        gates = tuple(gates)
+        parameters = tuple(float(v) for v in parameters)
+        initial_state = tuple(int(i) for i in initial_state)
         if len(set(initial_state)) != len(initial_state):
             raise ValueError("Duplicate indices in initial state")
+
+        # Validate gate types up front: the identity-drop below reads gate.param/.generator,
+        # so a non-Exp gate must be rejected with a clear TypeError first rather than crashing
+        # with an opaque AttributeError.
+        for gate in gates:
+            if not isinstance(gate, Exp):
+                raise TypeError(
+                    f"Circuit gates must be Exp; got {type(gate).__name__}."
+                )
 
         # An empty-generator gate is exp(theta * 0) = identity: it drives no rotation and emits
         # no graph layer. Under the *default* mapping (each gate its own angle, in order),
@@ -258,10 +284,11 @@ class Circuit:
                 parameters = tuple(parameters[i] for i in kept)
             gates = tuple(gates[i] for i in kept)
 
-        object.__setattr__(self, "gates", gates)
-        object.__setattr__(self, "parameters", parameters)
-        object.__setattr__(self, "initial_state", initial_state)
-        object.__setattr__(self, "family", self._resolve_family(gates))
+        self.gates = gates
+        self.parameters = parameters
+        self.initial_state = initial_state
+        #: The gate family, computed from the (validated) gates; the propagators dispatch on it.
+        self.family = self._resolve_family(gates)
 
         self.resolved_mapping  # validates the per-gate param scheme
         if self.parameters and len(self.parameters) != self.n_parameters:
@@ -270,19 +297,34 @@ class Circuit:
                 f"{self.n_parameters} parameters."
             )
 
+    def __eq__(self, other: object) -> bool:
+        """Equal when gates, parameters, and initial state match (``family`` is derived)."""
+        if not isinstance(other, Circuit):
+            return NotImplemented
+        return (
+            self.gates == other.gates
+            and self.parameters == other.parameters
+            and self.initial_state == other.initial_state
+        )
+
+    __hash__ = None  # type: ignore[assignment]  # value-equal but not hashable (mutable gates)
+
+    def __repr__(self) -> str:
+        """Return a string representation listing the gates, parameters, and initial state."""
+        return (
+            f"{self.__class__.__name__}(gates={self.gates!r}, "
+            f"parameters={self.parameters!r}, initial_state={self.initial_state!r})"
+        )
+
     @staticmethod
     def _resolve_family(gates: Sequence[Exp]) -> CircuitFamily:
-        """Validate the gates and return the family: ``"pauli"``/``"majorana"``/``"empty"``.
+        """Return the family ``"pauli"``/``"majorana"``/``"empty"`` and reject a mixed circuit.
 
-        Rejects non-:class:`Exp` gates and any mix of qubit and Majorana/fermionic gates.
-        Computed once at construction and stored on :attr:`family`; the propagators dispatch
-        on it (a fermionic generator is already in Majorana form, converted in :meth:`Exp`).
+        Gates are already known to be :class:`Exp` (:meth:`__init__` validates that first).
+        Rejects any mix of qubit and Majorana/fermionic gates. Computed once at construction
+        and stored on :attr:`family`; the propagators dispatch on it (a fermionic generator is
+        already in Majorana form, converted in :meth:`Exp`).
         """
-        for gate in gates:
-            if not isinstance(gate, Exp):
-                raise TypeError(
-                    f"Circuit gates must be Exp; got {type(gate).__name__}."
-                )
         has_pauli = any(gate.family == "pauli" for gate in gates)
         has_majorana = any(gate.family == "majorana" for gate in gates)
         if has_pauli and has_majorana:
