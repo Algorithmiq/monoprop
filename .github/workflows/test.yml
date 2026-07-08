@@ -326,14 +326,24 @@ jobs:
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
-    name: Check C++ on ${{ matrix.runner }}
+    name: Check C++ on ${{ matrix.runner }} (${{ matrix.compiler }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        runner:
-          - ubuntu-24.04-arm
-          - macos-15
+        include:
+          - runner: ubuntu-24.04-arm
+            compiler: gcc-14
+            cmake_cxx_compiler: g++
+          - runner: ubuntu-24.04-arm
+            compiler: clang-18
+            cmake_cxx_compiler: clang++
+          - runner: ubuntu-latest
+            compiler: clang-18
+            cmake_cxx_compiler: clang++
+          - runner: macos-15
+            compiler: apple-clang
+            cmake_cxx_compiler: g++
 
     steps:
       - uses: actions/checkout@v7
@@ -341,7 +351,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set gcc-14/g++-14 as default compilers
-        if: ${{ matrix.runner != 'macos-15' }}
+        if: ${{ matrix.compiler == 'gcc-14' }}
         run: |
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
           sudo update-alternatives --set gcc /usr/bin/gcc-14
@@ -351,6 +361,18 @@ jobs:
           sudo update-alternatives --set g++ /usr/bin/g++-14
           sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
           sudo update-alternatives --set c++ /usr/bin/g++-14
+
+      - name: Set clang-18/clang++-18 as default compilers
+        if: ${{ matrix.compiler == 'clang-18' }}
+        run: |
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 180
+          sudo update-alternatives --set clang /usr/bin/clang-18
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang-18 180
+          sudo update-alternatives --set cc /usr/bin/clang-18
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 180
+          sudo update-alternatives --set clang++ /usr/bin/clang++-18
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++-18 180
+          sudo update-alternatives --set c++ /usr/bin/clang++-18
 
       - name: Install dependencies
         if: ${{ matrix.runner != 'macos-15' }}
@@ -368,13 +390,13 @@ jobs:
         if: ${{ matrix.runner != 'macos-15' }}
         run: |
           export CMAKE_PREFIX_PATH=/opt/Software
-          cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=g++
+          cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=${{ matrix.cmake_cxx_compiler }}
 
       - name: Configure
         if: ${{ matrix.runner == 'macos-15' }}
         run: |
           export MACOSX_DEPLOYMENT_TARGET=15.0
-          cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=g++
+          cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=${{ matrix.cmake_cxx_compiler }}
 
       - name: Build
         run: cmake --build build
@@ -383,12 +405,12 @@ jobs:
         env:
           OMPI_MCA_rmaps_base_oversubscribe: "1"
         run: |
-          ctest --test-dir build --output-junit ../ctest-${{ matrix.runner }}.xml
+          ctest --test-dir build --output-junit ../ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
 
       - name: Upload Test Results as artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: test_results_cpp_${{ matrix.runner }}
+          name: test_results_cpp_${{ matrix.runner }}_${{ matrix.compiler }}
           path: |
             ctest-*.xml
           retention-days: 1
