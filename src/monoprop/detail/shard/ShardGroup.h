@@ -63,8 +63,10 @@ public:
     // P-partition comm and run the unchanged engine.
     ShardGroup(int n_shards, const Factory &factory, mpi::Comm parent)
         : n_(n_shards), parent_(parent), shards_(static_cast<size_t>(n_shards)),
-          errs_(static_cast<size_t>(n_shards)), cpusets_(topo_shard_cpusets(n_shards)) {
+          errs_(static_cast<size_t>(n_shards)) {
         make_transport_();
+        discover_node_peers_();
+        cpusets_ = topo_shard_cpusets(n_, node_rank_, node_size_);
         start_masters_();
         // First job: build each shard on its master (pinned, cache-warm on the owning core).
         run_on_all([&](int r) { shards_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
@@ -74,9 +76,10 @@ public:
     // same parent), deep-copy each of `src`'s shards on the new master, then rebind the copy's comm to
     // this group's transport (the copy inherited a handle to src's).
     ShardGroup(const ShardGroup &src)
-        : n_(src.n_), parent_(src.parent_), shards_(static_cast<size_t>(src.n_)),
-          errs_(static_cast<size_t>(src.n_)), cpusets_(topo_shard_cpusets(src.n_)) {
+        : n_(src.n_), parent_(src.parent_), node_rank_(src.node_rank_), node_size_(src.node_size_),
+          shards_(static_cast<size_t>(src.n_)), errs_(static_cast<size_t>(src.n_)) {
         make_transport_();
+        cpusets_ = topo_shard_cpusets(n_, node_rank_, node_size_);
         start_masters_();
         run_on_all([&](int r) {
             auto p = std::make_unique<MonomialPropagator<NumModes>>(*src.shards_[static_cast<size_t>(r)]);
@@ -131,8 +134,26 @@ public:
 
 private:
     // Free-function wrapper so the header compiles on non-Linux (where shard_cpusets returns {}).
-    static auto topo_shard_cpusets(int n) -> std::vector<cpu_set_t> {
-        return monoprop::detail::shard::shard_cpusets(static_cast<size_t>(n));
+    static auto topo_shard_cpusets(int n, int group_index, int group_count) -> std::vector<cpu_set_t> {
+        return monoprop::detail::shard::shard_cpusets(
+            static_cast<size_t>(n), static_cast<size_t>(group_index), static_cast<size_t>(group_count));
+    }
+
+    // Under an MPI parent, find how many ranks share this host and which one we are, so each
+    // co-located rank pins its shards to a DISJOINT block of cores (two ranks sharing a core is
+    // catastrophic: MPI's busy-polling collectives starve the sibling rank's barrier spins).
+    // Collective over `parent` — every rank constructs the facade propagator collectively already.
+    // Clones copy the result instead of re-running it, so cloning stays a rank-local operation.
+    auto discover_node_peers_() -> void {
+#ifdef monoprop_ENABLE_MPI
+        if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
+            MPI_Comm node = MPI_COMM_NULL;
+            MPI_Comm_split_type(parent_.mpi, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node);
+            MPI_Comm_rank(node, &node_rank_);
+            MPI_Comm_size(node, &node_size_);
+            MPI_Comm_free(&node);
+        }
+#endif
     }
 
     // Build the shared transport: an in-process ShmComm for a single-rank parent, or a HybridComm that
@@ -216,6 +237,8 @@ private:
 
     int n_;
     mpi::Comm parent_;                    // enclosing communicator (size R) — decides the transport
+    int node_rank_ = 0;                   // this rank's index among the ranks sharing the host
+    int node_size_ = 1;                   // how many parent ranks share the host (1 unless MPI R>1)
     std::unique_ptr<mpi::ShmComm> shm_;   // set iff R == 1
 #ifdef monoprop_ENABLE_MPI
     std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1

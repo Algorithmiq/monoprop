@@ -122,10 +122,20 @@ inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
 
 #if defined(__linux__)
 
-/// Build `n` shard cpusets, one physical core each, ordered round-robin across L3 domains so that a
-/// small shard count still spreads over all caches (domain0 core0, domain1 core0, …, then core1s).
-/// If `n` exceeds the physical-core count, cores are reused round-robin. Empty vector ⇒ pin disabled.
-inline auto shard_cpusets(size_t n) -> std::vector<cpu_set_t> {
+/// Build `n` shard cpusets, one physical core each. `group_index`/`group_count` place the shards of
+/// one MPI rank among `group_count` co-located ranks sharing this host (group_count == 1: the
+/// single-process case). Placement:
+///   - group_count == 1: cores ordered round-robin across L3 domains, so a small shard count spreads
+///     over all caches (domain0 core0, domain1 core0, …, then core1s).
+///   - group_count > 1: whole L3 domains are dealt to the co-located ranks round-robin and each rank
+///     interleaves across its own domains (falling back to a flat domain-major slice when there are
+///     more ranks than domains), so ranks get disjoint cores and maximally disjoint caches. Two ranks
+///     must never share a core: MPI's busy-polling collectives on one rank would contend with the
+///     other rank's barrier spins for the same timeslices, degrading lock-step progress
+///     catastrophically.
+/// If the host cannot supply group_count*n distinct physical cores, pinning is disabled (empty
+/// vector ⇒ shards run unpinned; the OS spreads them — still correct, and better than doubling up).
+inline auto shard_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1) -> std::vector<cpu_set_t> {
     // monoprop_SHARD_PINNING=0/false/n disables pinning (shards then run unpinned — still correct).
     if (const char *e = std::getenv("monoprop_SHARD_PINNING")) {
         const char c = e[0];
@@ -134,37 +144,62 @@ inline auto shard_cpusets(size_t n) -> std::vector<cpu_set_t> {
         }
     }
     const auto cores = enumerate_physical_cores();
-    if (cores.empty()) {
+    if (cores.empty() || group_count * n > cores.size()) {
         return {};
     }
     int max_domain = 0;
     for (const auto &c : cores) {
         max_domain = std::max(max_domain, c.l3_domain);
     }
-    // Bucket cores by domain, then interleave the buckets.
+    // Bucket cores by domain, then order: interleaved across domains for a lone process, contiguous
+    // per domain when co-located ranks each take a block.
     std::vector<std::vector<int>> by_domain(static_cast<size_t>(max_domain) + 1);
     for (const auto &c : cores) {
         by_domain[static_cast<size_t>(c.l3_domain)].push_back(c.cpu);
     }
-    std::vector<int> order;
-    order.reserve(cores.size());
-    for (size_t depth = 0;; ++depth) {
-        bool any = false;
-        for (auto &bucket : by_domain) {
-            if (depth < bucket.size()) {
-                order.push_back(bucket[depth]);
-                any = true;
+    // Interleave `buckets` depth-first: bucket0[0], bucket1[0], …, bucket0[1], bucket1[1], …
+    const auto interleave = [](const std::vector<std::vector<int>> &buckets) {
+        std::vector<int> out;
+        for (size_t depth = 0;; ++depth) {
+            bool any = false;
+            for (const auto &bucket : buckets) {
+                if (depth < bucket.size()) {
+                    out.push_back(bucket[depth]);
+                    any = true;
+                }
+            }
+            if (!any) {
+                return out;
             }
         }
-        if (!any) {
-            break;
+    };
+
+    std::vector<int> order;
+    size_t offset = 0;
+    if (group_count <= by_domain.size()) {
+        // This rank's cores: interleaved across the domains dealt to it (domains group_index,
+        // group_index + group_count, …). group_count == 1 degenerates to the all-domain interleave.
+        std::vector<std::vector<int>> mine;
+        for (size_t d = group_index; d < by_domain.size(); d += group_count) {
+            mine.push_back(by_domain[d]);
         }
+        order = interleave(mine);
+    }
+    else {
+        // More co-located ranks than L3 domains: flat domain-major order, one contiguous slice each.
+        for (const auto &bucket : by_domain) {
+            order.insert(order.end(), bucket.begin(), bucket.end());
+        }
+        offset = group_index * n;
+    }
+    if (offset + n > order.size()) {
+        return {};
     }
 
     std::vector<cpu_set_t> sets(n);
     for (size_t i = 0; i < n; ++i) {
         CPU_ZERO(&sets[i]);
-        CPU_SET(order[i % order.size()], &sets[i]);
+        CPU_SET(order[offset + i], &sets[i]);
     }
     return sets;
 }
@@ -179,7 +214,10 @@ inline auto pin_this_thread(const cpu_set_t &set) -> void {
 
 struct cpu_set_t_stub {};
 using cpu_set_t = cpu_set_t_stub;
-inline auto shard_cpusets(size_t /*n*/) -> std::vector<cpu_set_t> { return {}; }
+inline auto shard_cpusets(size_t /*n*/, size_t /*group_index*/ = 0, size_t /*group_count*/ = 1)
+    -> std::vector<cpu_set_t> {
+    return {};
+}
 inline auto pin_this_thread(const cpu_set_t & /*set*/) -> void {}
 
 #endif // __linux__
