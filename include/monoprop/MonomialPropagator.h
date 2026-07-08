@@ -42,7 +42,6 @@
 #include "monoprop/Utilities.h"
 #include "monoprop/Validation.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
-#include "monoprop/detail/evolution/GateParallelController.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
@@ -594,10 +593,6 @@ protected:
     // reused across gates so no per-gate O(operator) allocate+memset. Pure scratch — carries no
     // state between gates (each build bumps the epoch), so copies may share or reset it freely.
     detail::MatchedEpochSet matched_scratch_;
-    // Adaptive per-gate serial/parallel mode controller (see GateParallelController.h): measures
-    // ns-per-anticommuting-term in both modes and locks onto the cheaper one. Reset per gate-loop
-    // call (propagate_with_timing_). Mode changes only chunking, never results.
-    detail::GateParallelController gate_mode_ctl_;
 
     // Inline-width hint for the packed operator rows. The store reserves this many Majorana
     // positions per row inline; terms with more positions spill losslessly into the overflow
@@ -711,7 +706,7 @@ private:
      * @brief Common function to propagate majoranas with timing
      */
     template <typename EvolutionFunc>
-    auto propagate_with_timing_(const std::vector<VecZ> &majoranas, int only_rotate_len_k, EvolutionFunc evolution_func)
+    auto run_gate_loop_(const std::vector<VecZ> &majoranas, int only_rotate_len_k, EvolutionFunc evolution_func)
         -> void;
 
     /**

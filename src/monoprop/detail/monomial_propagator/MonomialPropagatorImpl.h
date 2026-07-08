@@ -197,7 +197,6 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       mp_op_(other.mp_op_),
       graph_(other.graph_),
       matched_scratch_(other.matched_scratch_),
-      gate_mode_ctl_(other.gate_mode_ctl_),
       cutoff_(other.cutoff_),
       lower_atol_(other.lower_atol_),
       upper_atol_(other.upper_atol_),
@@ -474,7 +473,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_build_graph_(const std::vector<Ve
                                                             const VecZ &gate_indices,
                                                             int only_rotate_len_k) -> void {
     const auto majoranas_size = majoranas.size();
-    propagate_with_timing_(
+    run_gate_loop_(
         majoranas,
         only_rotate_len_k,
         [this, &parameter_mapping, &gen_coeffs, &gate_indices, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
@@ -501,7 +500,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
     auto coeffs = operator_coeffs;
     const auto majoranas_size = majoranas.size();
 
-    propagate_with_timing_(
+    run_gate_loop_(
         majoranas,
         only_rotate_len_k,
         [this, &parameter_mapping, &gen_coeffs, &gate_indices, &mapped_params, &coeffs, majoranas_size](const VecZ &maj,
@@ -549,7 +548,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
     // skip-the-mask-scale / in-place-insert arms from the SAME decision the build used — they cannot
     // disagree. At k>0 (or the defensive cos==0 fallback) cos is the two-pass mask, consumed
     // synchronously, so a plain local suffices.
-    propagate_with_timing_(
+    run_gate_loop_(
         majoranas,
         only_rotate_len_k,
         [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
@@ -687,39 +686,17 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
 
 template <size_t NumModes>
 template <typename EvolutionFunc>
-auto MonomialPropagator<NumModes>::propagate_with_timing_(const std::vector<VecZ> &majoranas,
-                                                          int only_rotate_len_k,
-                                                          EvolutionFunc evolution_func) -> void {
-    // Adaptive per-gate parallelism (see GateParallelController.h): the gate's scan decides, after
-    // its pass-1 fold has counted n_anti, whether the rest of the gate's pipeline runs parallel or
-    // serial — learned per n_anti size bucket from measured ns-per-anticommuting-term. Chunking-only:
-    // results are byte-identical in both modes. Controller state deliberately PERSISTS across
-    // gate-loop calls: multi-step drivers (e.g. Trotter loops calling propagate() per step) keep the
-    // learned modes instead of re-paying the bootstrap each step.
-    //
-    // PAULI ONLY: the negative thread scaling this fixes was measured on the native Pauli engine
-    // (kicked-Ising 3.9→5.2s at 16T, growing random-Pauli 3.0→4.7s), where per-gate-mutated
-    // L3-resident hot sets make cross-CCX parallelism net-negative. Fermionic workloads keep the
-    // static always-parallel policy: they were not regressing, and their gate streams mix sizes
-    // across 4 decades WITHIN one Trotter step (Hubbard), where per-size-bucket learning still pays
-    // a measured ~9-25% exploration/misprediction tax. Extending adaptivity to Majorana needs
-    // operator-scale-aware bucketing — future work, documented in PAULI_THREADS.md.
-    const bool adaptive = (basis_ == Basis::Pauli);
-    using clock = std::chrono::steady_clock;
+auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
+                                                  int only_rotate_len_k,
+                                                  EvolutionFunc evolution_func) -> void {
+    // Apply each gate in evolution order (Heisenberg walks the sequence in reverse), then refresh the
+    // operator caches. The per-gate work uses the uniform word-parallel threading policy in
+    // Threading.h; under the shard default each shard runs this loop serially on its pinned core
+    // (gate_serial_override), which is where the thread scaling comes from — see PAULI_THREADS.md.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
         const auto &maj = majoranas[idx];
-
-        const bool serial = adaptive && gate_mode_ctl_.begin_gate();
-        const auto t0 = clock::now();
-        {
-            detail::GateModeScope mode_scope(serial);
-            evolution_func(maj, only_rotate_len_k, i);
-        }
-        if (adaptive) {
-            const auto wall_ns = std::chrono::duration<double, std::nano>(clock::now() - t0).count();
-            gate_mode_ctl_.end_gate(serial, wall_ns, detail::gate_scan_n_anti());
-        }
+        evolution_func(maj, only_rotate_len_k, i);
     }
 
     initialize_operator_caches_();

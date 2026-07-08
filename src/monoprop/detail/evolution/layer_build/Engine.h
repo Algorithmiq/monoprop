@@ -26,7 +26,6 @@
 
 #include "monoprop/MajoranaAlgebra.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
-#include "monoprop/detail/evolution/GateParallelController.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Parallel.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
@@ -580,10 +579,6 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                                        sweep_ptr,
                                                        cos_build);
     }();
-    // Report the scan's anticommuting-term count to the gate loop's adaptive mode controller (the
-    // per-gate work measure its cost EWMAs normalize by). Thread-local channel; same thread as the
-    // gate loop by construction (see GateParallelController.h).
-    gate_scan_n_anti() = fused.n_anti;
 
     CosMask cos_all;
     {

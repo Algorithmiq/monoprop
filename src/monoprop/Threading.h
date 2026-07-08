@@ -45,12 +45,13 @@ inline constexpr size_t kDefaultGrainSize = 256;
 /// invalid.
 monoprop_EXPORT auto init_from_env() -> void;
 
-/// @brief Thread-local whole-gate serial override, set per gate by the adaptive mode controller
-/// (detail::GateParallelController / GateModeScope). While true, every dispatch decision made on this
-/// thread — effective_parallelism(), the chunk-count policies, and the parallel_for_*/parallel_reduce_*
-/// small-loop fallbacks below — stays serial, keeping the gate's whole build+apply pipeline on the
-/// calling thread. Mode only changes chunking, never results (order-preserving merges are chunk-count
-/// invariant), so this is bit-exact.
+/// @brief Thread-local whole-gate serial override, set by each shard master thread (see
+/// detail::shard::ShardGroup) for the lifetime of its work. While true, every dispatch decision made
+/// on this thread — effective_parallelism(), the chunk-count policies, and the
+/// parallel_for_*/parallel_reduce_* small-loop fallbacks below — stays serial, keeping the whole
+/// build+apply pipeline on the calling core. This is what makes a shard run its partition entirely on
+/// its pinned core. Serial vs parallel only changes chunking, never results (order-preserving merges
+/// are chunk-count invariant), so it is bit-exact.
 inline auto gate_serial_override() -> bool & {
     thread_local bool serial = false;
     return serial;
