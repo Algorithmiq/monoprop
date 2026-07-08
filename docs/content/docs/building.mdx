@@ -38,12 +38,6 @@ the quickest route to a working environment.
 compiles the nanobind extension in editable mode. Re-run the sync command whenever
 the dependency graph or the C++ sources change.
 
-<Callout type="info">
-  These commands deliberately do not use `--all-groups`: the `docs` group
-  requires Python 3.12 (we develop against 3.11), so it is excluded from the
-  default environment and built separately via `just build-docs` (which uses
-  `--python 3.12`).
-</Callout>
 
 ### Without MPI (default)
 
