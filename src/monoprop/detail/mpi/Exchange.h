@@ -27,6 +27,10 @@ inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Com
         return;
     }
 #ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
+        return;
+    }
     (void)n;
     MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
 #else
@@ -133,6 +137,12 @@ inline auto post_flat_alltoallv(const T *send,
         return Ticket{};
     }
 #ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        // Synchronous (the MPI_Alltoallv runs inside); the Ticket's wait() is a no-op.
+        comm.hyb->alltoallv(
+            comm.shm_rank, send, send_counts, send_displs, recv, recv_counts, recv_displs, sizeof(T), datatype<T>::get());
+        return Ticket{};
+    }
     (void)num_ranks;
     MPI_Request request = MPI_REQUEST_NULL;
     MPI_Ialltoallv(send, send_counts, send_displs, datatype<T>::get(),

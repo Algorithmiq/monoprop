@@ -25,7 +25,11 @@
 
 #include "monoprop/Threading.h"
 #include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/mpi/MPICompat.h" // mpi::size for the transport choice
 #include "monoprop/detail/mpi/ShmComm.h"
+#ifdef monoprop_ENABLE_MPI
+#include "monoprop/detail/mpi/HybridComm.h"
+#endif
 #include "monoprop/detail/shard/CpuTopology.h"
 
 // Intra-process shard runtime. Owns S single-threaded "master" threads, each pinned to a physical
@@ -53,23 +57,30 @@ public:
     // sharding win). `factory` must build a single-shard (shards=1) propagator wired to the given comm.
     using Factory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
 
-    ShardGroup(int n_shards, const Factory &factory)
-        : n_(n_shards), comm_(n_shards), shards_(static_cast<size_t>(n_shards)),
+    // `parent` is the enclosing communicator (size R). R == 1 ⇒ the S shards trade over an in-process
+    // ShmComm (single node). R > 1 ⇒ they trade over a HybridComm that composes the R ranks x S shards
+    // into one flat P = R*S SPMD world (the MPI hybrid). Either way the shard propagators see a
+    // P-partition comm and run the unchanged engine.
+    ShardGroup(int n_shards, const Factory &factory, mpi::Comm parent)
+        : n_(n_shards), parent_(parent), shards_(static_cast<size_t>(n_shards)),
           errs_(static_cast<size_t>(n_shards)), cpusets_(topo_shard_cpusets(n_shards)) {
+        make_transport_();
         start_masters_();
         // First job: build each shard on its master (pinned, cache-warm on the owning core).
-        run_on_all([&](int r) { shards_[static_cast<size_t>(r)] = factory(mpi::Comm::make_shm(&comm_, r)); });
+        run_on_all([&](int r) { shards_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
     }
 
-    // Clone: build each shard as a deep copy of `src`'s shard on the new master (fresh comm/threads),
-    // then rebind the copy's comm to THIS group (the copy inherited a handle to src's ShmComm).
+    // Clone: rebuild the transport for THIS group (fresh threads + fresh ShmComm/HybridComm over the
+    // same parent), deep-copy each of `src`'s shards on the new master, then rebind the copy's comm to
+    // this group's transport (the copy inherited a handle to src's).
     ShardGroup(const ShardGroup &src)
-        : n_(src.n_), comm_(src.n_), shards_(static_cast<size_t>(src.n_)),
+        : n_(src.n_), parent_(src.parent_), shards_(static_cast<size_t>(src.n_)),
           errs_(static_cast<size_t>(src.n_)), cpusets_(topo_shard_cpusets(src.n_)) {
+        make_transport_();
         start_masters_();
         run_on_all([&](int r) {
             auto p = std::make_unique<MonomialPropagator<NumModes>>(*src.shards_[static_cast<size_t>(r)]);
-            p->comm_ = mpi::Comm::make_shm(&comm_, r); // ShardGroup is a friend of MonomialPropagator
+            p->comm_ = comm_for_(r); // ShardGroup is a friend of MonomialPropagator
             shards_[static_cast<size_t>(r)] = std::move(p);
         });
     }
@@ -98,7 +109,7 @@ public:
     auto run_on_all(const std::function<void(int)> &body) -> void {
         {
             std::lock_guard lk(m_);
-            comm_.reset(); // clear any poison/arrival state left by a previously aborted round
+            transport_reset_(); // clear any poison/arrival state left by a previously aborted round
             for (auto &e : errs_) {
                 e = nullptr;
             }
@@ -122,6 +133,44 @@ private:
     // Free-function wrapper so the header compiles on non-Linux (where shard_cpusets returns {}).
     static auto topo_shard_cpusets(int n) -> std::vector<cpu_set_t> {
         return monoprop::detail::shard::shard_cpusets(static_cast<size_t>(n));
+    }
+
+    // Build the shared transport: an in-process ShmComm for a single-rank parent, or a HybridComm that
+    // folds the R parent ranks x S shards into one flat world when the parent spans multiple MPI ranks.
+    auto make_transport_() -> void {
+#ifdef monoprop_ENABLE_MPI
+        if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
+            hyb_ = std::make_unique<mpi::HybridComm>(parent_.mpi, n_);
+            return;
+        }
+#endif
+        shm_ = std::make_unique<mpi::ShmComm>(n_);
+    }
+    auto comm_for_(int r) -> mpi::Comm {
+#ifdef monoprop_ENABLE_MPI
+        if (hyb_) {
+            return mpi::Comm::make_hybrid(hyb_.get(), r);
+        }
+#endif
+        return mpi::Comm::make_shm(shm_.get(), r);
+    }
+    auto transport_poison_() -> void {
+#ifdef monoprop_ENABLE_MPI
+        if (hyb_) {
+            hyb_->poison();
+            return;
+        }
+#endif
+        shm_->poison();
+    }
+    auto transport_reset_() -> void {
+#ifdef monoprop_ENABLE_MPI
+        if (hyb_) {
+            hyb_->reset();
+            return;
+        }
+#endif
+        shm_->reset();
     }
 
     auto start_masters_() -> void {
@@ -155,7 +204,7 @@ private:
             }
             catch (...) {
                 errs_[static_cast<size_t>(rank)] = std::current_exception();
-                comm_.poison(); // release peers waiting in a barrier so they don't hang
+                transport_poison_(); // release peers waiting in a barrier so they don't hang
             }
             {
                 std::lock_guard lk(m_);
@@ -166,7 +215,11 @@ private:
     }
 
     int n_;
-    mpi::ShmComm comm_;
+    mpi::Comm parent_;                    // enclosing communicator (size R) — decides the transport
+    std::unique_ptr<mpi::ShmComm> shm_;   // set iff R == 1
+#ifdef monoprop_ENABLE_MPI
+    std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1
+#endif
     std::vector<std::unique_ptr<MonomialPropagator<NumModes>>> shards_;
     std::vector<std::exception_ptr> errs_;
     std::vector<cpu_set_t> cpusets_;

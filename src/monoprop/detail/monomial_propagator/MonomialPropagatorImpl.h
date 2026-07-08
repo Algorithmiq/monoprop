@@ -94,11 +94,16 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
     // partition of the operator, built via a Kind::Shm comm on its own pinned master thread) and fans
     // every operator method out to them. The facade's own mp_op_/graph_ stay empty and unused.
     const size_t n_shards = resolve_shard_count_(shards, comm);
+    // Under MPI, every rank must resolve the SAME shard count: the R ranks x S shards form one flat
+    // P = R*S SPMD world, so a mismatch (heterogeneous nodes, un-propagated env) would deadlock at the
+    // first hybrid collective. Check with a matched collective (every rank reaches this ctor SPMD):
+    // sum(S) equals S*R on every rank iff all agree. Cheap and single-threaded (before any master).
+    if (comm.kind == mpi::Comm::Kind::Mpi && mpi::size(comm) > 1
+        && mpi::allreduce_sum<size_t>(n_shards, comm) != n_shards * static_cast<size_t>(mpi::size(comm))) {
+        throw std::runtime_error("Shard count differs across MPI ranks — every rank must resolve the same "
+                                 "shards= / monoprop_SHARDS / monoprop_NUM_THREADS so R*S is a consistent world.");
+    }
     if (n_shards > 1) {
-        if (mpi::size(comm) > 1) {
-            throw std::runtime_error(
-                "shards>1 requires a single MPI rank (intra-node sharding does not nest with MPI yet).");
-        }
         auto factory = [=](mpi::Comm shard_comm) {
             return std::make_unique<MonomialPropagator<NumModes>>(initial_operator,
                                                                   cutoff,
@@ -113,7 +118,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
                                                                   basis,
                                                                   /*shards=*/1);
         };
-        shard_group_ = std::make_unique<detail::shard::ShardGroup<NumModes>>(static_cast<int>(n_shards), factory);
+        shard_group_ =
+            std::make_unique<detail::shard::ShardGroup<NumModes>>(static_cast<int>(n_shards), factory, comm);
         return;
     }
 
@@ -228,23 +234,22 @@ auto MonomialPropagator<NumModes>::resolve_shard_count_(size_t requested, mpi::C
     // AUTO policy: shards are the DEFAULT parallelism for BOTH bases (Phase-2 measured shards beat TBB
     // on every workload — Pauli 6-9x, hubbard ~2x, random ~1.1x). One serial shard per physical core,
     // capped by monoprop_NUM_THREADS when the user set it, so the sole user knob is the thread count.
-    // Engages only on a single MPI rank until the MPI-hybrid transport lands (Phase 5); a real MPI run
-    // keeps one partition per rank.
+    // Under R>1 MPI ranks the shards compose with MPI into one flat R*S world (the hybrid): S is the
+    // per-rank shard count, so P = R*S. To avoid oversubscription, auto-sharding on a multi-rank comm
+    // engages ONLY when the thread count is set (an MPI user who has not asked for threads is doing
+    // pure MPI); a single rank always shards to the core count.
     const auto compute_auto = [&]() -> size_t {
-        if (mpi::size(comm) != 1) {
-            return 1; // shards and real MPI ranks do not nest yet
-        }
+        const int ranks = mpi::size(comm);
         size_t cores = detail::shard::enumerate_physical_cores().size();
         if (cores == 0) {
             // Topology unreadable (non-Linux / restricted /sys): use half the hardware threads so SMT
             // siblings are not miscounted as cores, floored at 1.
             cores = std::max<size_t>(1, static_cast<size_t>(std::thread::hardware_concurrency()) / 2);
         }
-        size_t s = cores;
-        if (const auto num_threads = config::get().num_threads; num_threads.has_value()) {
-            s = std::min(s, static_cast<size_t>(*num_threads));
-        }
-        return std::max<size_t>(1, s);
+        const auto num_threads = config::get().num_threads;
+        const size_t budget =
+            num_threads.has_value() ? static_cast<size_t>(*num_threads) : (ranks == 1 ? cores : size_t{1});
+        return std::max<size_t>(1, std::min(budget, cores));
     };
     // Env override: integer N forces N, "auto" forces the policy above, "off" forces single-partition.
     if (const char *env = std::getenv("monoprop_SHARDS")) {

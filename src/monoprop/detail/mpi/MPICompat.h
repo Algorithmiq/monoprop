@@ -29,6 +29,9 @@
 // mpi::Comm handle; ShmComm.h is the in-process transport a Kind::Shm handle dispatches to.
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/ShmComm.h"
+#ifdef monoprop_ENABLE_MPI
+#include "monoprop/detail/mpi/HybridComm.h" // Kind::Hybrid transport (R MPI ranks x S shards)
+#endif
 
 // These includes are here on purpose and should not be moved to the top
 #include "monoprop/detail/print_compat.h"
@@ -48,12 +51,16 @@ inline auto init(int *argc = nullptr, char ***argv = nullptr) -> void {
     auto initialized = 0;
     MPI_Initialized(&initialized);
     if (!initialized) {
-        auto required = MPI_THREAD_FUNNELED;
+        // SERIALIZED (not FUNNELED): under the MPI hybrid, each rank's shard-0 master thread — not the
+        // main thread — makes the MPI calls, always one-at-a-time (bracketed by the HybridComm
+        // barriers). mpi4py already requests MULTIPLE >= SERIALIZED, so Python is unaffected.
+        auto required = MPI_THREAD_SERIALIZED;
         auto provided = 0;
         MPI_Init_thread(argc, argv, required, &provided);
         if (provided < required) {
             auto comm = MPI_COMM_WORLD;
-            std::print("Sorry, the MPI library does not provide MPI_THREAD_FUNNELED support, which is required by\n");
+            std::print("Sorry, the MPI library does not provide MPI_THREAD_SERIALIZED support, which is required "
+                       "by the shard/MPI hybrid transport.\n");
             MPI_Abort(comm, 1);
         }
     }
@@ -125,6 +132,9 @@ inline auto rank(Comm comm) -> int {
         return comm.shm_rank;
     }
 #ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        return comm.hyb->global_rank(comm.shm_rank);
+    }
     int r = 0;
     if (MPI_Comm_rank(comm.mpi, &r) != MPI_SUCCESS) {
         throw std::runtime_error("MPI_Comm_rank failed");
@@ -141,6 +151,9 @@ inline auto size(Comm comm) -> int {
         return comm.shm->size();
     }
 #ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        return comm.hyb->size();
+    }
     int s = 0;
     if (MPI_Comm_size(comm.mpi, &s) != MPI_SUCCESS) {
         throw std::runtime_error("MPI_Comm_size failed");
@@ -162,6 +175,9 @@ inline auto allreduce_sum(T local_val, Comm comm) -> T {
         return comm.shm->allreduce_sum<T>(comm.shm_rank, local_val);
     }
 #ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        return comm.hyb->allreduce_sum<T>(comm.shm_rank, local_val);
+    }
     T global_val{};
     MPI_Allreduce(&local_val, &global_val, 1, datatype<T>::get(), MPI_SUM, comm.mpi);
     return global_val;
@@ -179,6 +195,10 @@ inline auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
         return;
     }
 #ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        comm.hyb->allreduce_sum_inplace(comm.shm_rank, values.data(), values.size());
+        return;
+    }
     MPI_Allreduce(MPI_IN_PLACE, values.data(), static_cast<int>(values.size()), MPI_DOUBLE, MPI_SUM, comm.mpi);
 #else
     (void)values; // single participant: identity
@@ -288,6 +308,11 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     else if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoall_counts(comm.shm_rank, h.send_counts.data(), h.recv_counts.data());
     }
+#ifdef monoprop_ENABLE_MPI
+    else if (comm.kind == Comm::Kind::Hybrid) {
+        comm.hyb->alltoall_counts(comm.shm_rank, h.send_counts.data(), h.recv_counts.data());
+    }
+#endif
     else {
 #ifdef monoprop_ENABLE_MPI
         MPI_Alltoall(h.send_counts.data(), 1, MPI_INT, h.recv_counts.data(), 1, MPI_INT, comm.mpi);
@@ -315,6 +340,19 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                             h.recv_displs.data(),
                             sizeof(T));
     }
+#ifdef monoprop_ENABLE_MPI
+    else if (comm.kind == Comm::Kind::Hybrid) {
+        comm.hyb->alltoallv(comm.shm_rank,
+                            h.send_buffer.data(),
+                            h.send_counts.data(),
+                            h.send_displs.data(),
+                            h.recv_buffer.data(),
+                            h.recv_counts.data(),
+                            h.recv_displs.data(),
+                            sizeof(T),
+                            datatype<T>::get());
+    }
+#endif
     else {
 #ifdef monoprop_ENABLE_MPI
         MPI_Ialltoallv(h.send_buffer.data(),
