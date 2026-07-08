@@ -83,10 +83,11 @@ def _parity(perm: Sequence[int]) -> int:
 
     Example:
         ```python
-        >>> parity([1, 2, 3, 4])
+        >>> _parity([1, 2, 3, 4])
         1
-        >>> parity([2, 1, 3])
+        >>> _parity([2, 1, 3])
         -1
+
         ```
 
     Notes:

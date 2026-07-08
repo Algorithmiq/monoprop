@@ -54,22 +54,19 @@ pyscf = ["pyscf"]
 
 [dependency-groups]
 dev = ["coverage", "prek>=0.4", "ruff==0.14.8", "gcovr"]
+# The documentation site is built with Fumadocs (Next.js); see `docs/`.
+# Python's only roles are converting the tutorial notebooks to Markdown
+# (`nbconvert`) and generating the API reference from docstrings (`griffe`,
+# injected via the `fumadocs-python` npm package in the `gen-api` recipe).
 docs = [
-  "myst-nb",
-  "myst-parser",
-  "sphinx>=9.0",
-  "sphinx-autobuild",
-  "sphinx-autodoc-typehints",
-  "sphinx-copybutton",
-  "sphinx-immaterial",
-  "sphinxcontrib-bibtex",
+  "nbconvert",
   { include-group = "interactive" },
 ]
 interactive = [
   "ipykernel",
   "matplotlib",
   "pylatexenc",
-  "monoprop[qiskit,openfermion]",
+  "monoprop[qiskit,openfermion,pyscf]",
 ]
 test = [
   "pytest-cases>=3.8.6,<4",
@@ -88,9 +85,8 @@ bench = [
 [tool.uv]
 python-preference = "only-managed"
 keyring-provider = "subprocess"
-# Full dev environment by default. `docs` is intentionally excluded: it requires
-# Python 3.12 (sphinx>=9) while we develop against 3.11, so it is built separately
-# (see `just build-docs`, which uses --python 3.12).
+# Full dev environment by default. `docs` is intentionally excluded since it
+# is only needed when building the documentation site (see `just build-docs`).
 default-groups = ["dev", "test", "interactive"]
 cache-keys = [
   { file = "pyproject.toml" },
@@ -100,9 +96,6 @@ cache-keys = [
   { file = "cmake/**/*" },
   { file = "src/monoprop/bindings/bindings.cpp.in" },
 ]
-
-[tool.uv.dependency-groups]
-docs = { requires-python = ">=3.12" }
 
 
 [tool.scikit-build]
