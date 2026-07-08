@@ -17,7 +17,45 @@ from __future__ import annotations
 import pytest
 
 from monoprop import Circuit
-from monoprop.majorana_data import MajoranaOperator
+from monoprop.majorana_data import Majorana, MajoranaOperator
+
+
+class TestMajorana:
+    """The Majorana monomial value object: sorting, validation, equality, hashing."""
+
+    def test_indices_are_sorted(self):
+        assert Majorana(5, 4, 1).indices == (1, 4, 5)
+
+    def test_empty_is_identity_monomial(self):
+        assert Majorana().indices == ()
+
+    def test_negative_index_raises(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            Majorana(0, -1)
+
+    def test_repeated_index_raises(self):
+        with pytest.raises(ValueError, match="distinct"):
+            Majorana(2, 2)
+
+    def test_equal_terms_compare_and_hash_alike(self):
+        assert Majorana(4, 5) == Majorana(5, 4)
+        assert hash(Majorana(4, 5)) == hash(Majorana(5, 4))
+        assert {Majorana(4, 5), Majorana(5, 4)} == {Majorana(4, 5)}
+
+    def test_eq_with_non_majorana_is_false(self):
+        assert (Majorana(0, 1) == (0, 1)) is False
+        assert Majorana(0, 1) != (0, 1)
+
+    def test_repr(self):
+        assert repr(Majorana(4, 5)) == "Majorana(4, 5)"
+
+
+def test_majorana_operator_validates_raw_tuple_keys():
+    """A raw index-tuple key is routed through Majorana, so it gets the same validation."""
+    with pytest.raises(ValueError, match="distinct"):
+        MajoranaOperator({(0, 0): 1.0}, num_modes=2)
+    with pytest.raises(ValueError, match="non-negative"):
+        MajoranaOperator({(-1, 0): 1.0}, num_modes=2)
 
 
 def test_from_dense_arrays_groups_by_param_ind():

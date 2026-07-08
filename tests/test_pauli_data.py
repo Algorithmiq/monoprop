@@ -101,6 +101,14 @@ class TestPauli:
         with pytest.raises(ValueError, match="Invalid characters"):
             Pauli("XA")
 
+    def test_string_qubits_length_mismatch_raises(self):
+        with pytest.raises(ValueError, match="same length"):
+            Pauli("XY", (0,))
+
+    def test_duplicate_qubits_raises(self):
+        with pytest.raises(ValueError, match="Duplicate qubit indices"):
+            Pauli("XY", (0, 0))
+
 
 class TestPauliOperator:
     def test_basic_construction(self):
@@ -132,6 +140,12 @@ class TestPauliOperator:
     def test_all_valid_pauli_chars(self):
         op = PauliOperator({"XYIZ": 1.0}, num_qubits=4)
         assert set(op.terms) == {Pauli("XYIZ")}
+
+    def test_get_majorana_operator_requires_num_qubits(self):
+        """Converting to Majorana without a qubit count raises a clear ValueError."""
+        op = PauliOperator._from_terms(["X"], [1.0], num_qubits=None)
+        with pytest.raises(ValueError, match="needs num_qubits"):
+            op.get_majorana_operator()
 
     def test_str_few_terms(self):
         op = PauliOperator({"XY": 1.0}, num_qubits=2)

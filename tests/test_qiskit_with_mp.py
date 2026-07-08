@@ -95,7 +95,7 @@ def test_qiskit_with_mp(
     simple_ev_circuit: QuantumCircuit,
     qiskit_result: list[complex],
 ):
-    """Integration test for circuits comming from Qiskit and running them with the PauliPropagator."""
+    """Integration test for circuits coming from Qiskit and running them with the PauliPropagator."""
 
     operator = from_qiskit_operator(hamiltonian_lih)
     circuit = from_qiskit_circuit(

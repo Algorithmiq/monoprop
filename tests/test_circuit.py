@@ -27,7 +27,7 @@ from monoprop import (
     MajoranaPropagator,
 )
 from monoprop.fermi_data import FermiOperator
-from monoprop.majorana_data import MajoranaOperator
+from monoprop.majorana_data import Majorana, MajoranaOperator
 from monoprop.pauli_data import Pauli, PauliOperator
 from tests.cases import load_problem
 
@@ -57,6 +57,46 @@ def _rebase(gates):
 
 
 # -- the Circuit type -----------------------------------------------------------
+
+
+def test_exp_rejects_bare_term() -> None:
+    """Exp accepts only operator objects; a bare Majorana/Pauli term is a clear TypeError."""
+    with pytest.raises(TypeError, match="not a bare term"):
+        Exp(Majorana(0, 1))  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="not a bare term"):
+        Exp(Pauli("X", 0))  # type: ignore[arg-type]
+
+
+def test_exp_equality_and_repr() -> None:
+    """Two Exp gates are equal when generator, param, family, and structural flag match."""
+    gen = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
+    assert Exp(gen, param=0) == Exp(gen, param=0)
+    assert Exp(gen, param=0) != Exp(gen, param=1)
+    assert Exp(gen) != "not an Exp"
+    assert repr(Exp(gen, param=0)).startswith("Exp(")
+
+
+def test_exp_from_fermi_generator_becomes_majorana() -> None:
+    """A FermiOperator generator is converted to its Majorana form and the gate is 'majorana'."""
+    gate = Exp(FermiOperator([[(0, "+"), (1, "-")]], [1.0], num_modes=2))
+    assert gate.family == "majorana"
+    assert isinstance(gate.generator, MajoranaOperator)
+
+
+def test_circuit_equality() -> None:
+    """Circuits are equal on gates/parameters/initial_state; family is derived, not compared."""
+    gen = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
+    a = Circuit((Exp(gen),), parameters=(0.3,), initial_state=(0,))
+    b = Circuit((Exp(gen),), parameters=(0.3,), initial_state=(0,))
+    assert a == b
+    assert a != Circuit((Exp(gen),), parameters=(0.9,), initial_state=(0,))
+    assert a != "not a circuit"
+
+
+def test_circuit_rejects_non_exp_gate() -> None:
+    """A gate that is not an Exp is rejected with a clear TypeError."""
+    with pytest.raises(TypeError, match="Circuit gates must be Exp"):
+        Circuit(("not a gate",))  # type: ignore[arg-type]
 
 
 def test_to_circuit_round_trips_sequence() -> None:
@@ -142,6 +182,32 @@ def test_circuit_add_offsets_second_axis() -> None:
     assert combined.resolved_mapping == (0, 1, 2)
     assert combined.parameters == (0.1, 0.2, 0.3)
     assert combined.n_parameters == 3
+
+
+def test_circuit_add_rejects_mixed_families() -> None:
+    """Concatenating a Majorana circuit with a qubit circuit raises a clear TypeError."""
+    maj = Circuit((Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),))
+    qubit = Circuit((Exp(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)),))
+    with pytest.raises(TypeError, match="gate families differ"):
+        _ = maj + qubit
+
+
+def test_circuit_add_rejects_different_initial_states() -> None:
+    """Concatenating circuits with conflicting initial states raises a ValueError."""
+    a = Circuit((Exp(MajoranaOperator({(0,): 1.0}, num_modes=2)),), initial_state=(0,))
+    b = Circuit((Exp(MajoranaOperator({(1,): 1.0}, num_modes=2)),), initial_state=(1,))
+    with pytest.raises(ValueError, match="different initial states"):
+        _ = a + b
+
+
+def test_bound_circuit_with_identity_gate_wrong_param_count_raises() -> None:
+    """Under the default mapping, a bound circuit's params must match the pre-drop gate count."""
+    gates = (
+        Exp(MajoranaOperator({}, num_modes=2)),  # identity gate (dropped)
+        Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),
+    )
+    with pytest.raises(ValueError, match="2 gates"):
+        Circuit(gates, parameters=(0.1,))  # 1 value, but 2 gates before the drop
 
 
 def test_non_hermitian_majorana_generator_rejected() -> None:

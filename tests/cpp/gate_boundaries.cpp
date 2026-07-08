@@ -119,3 +119,17 @@ BOOST_AUTO_TEST_CASE(build_graph_rejects_malformed_gate_indices) {
     // A jump from 0 to 2 is not a contiguous run.
     BOOST_CHECK_THROW(sim.build_graph(majs, VecZ{0, 1}, VecD{1.0, 1.0}, VecZ{0, 2}), std::runtime_error);
 }
+
+BOOST_AUTO_TEST_CASE(coeff_informed_build_graph_rejects_too_few_parameters) {
+    auto sim = make_sim();
+    // First build references parameters 0 and 1, so the stored graph expects two parameters.
+    sim.build_graph(std::vector<VecZ>{{0}, {1}}, VecZ{0, 1}, VecD{1.0, 1.0});
+
+    // A coefficient-informed second build must supply enough parameters to replay that graph
+    // (>= 2). Its own mapping references only parameter 0, so a length-1 vector passes the
+    // per-mapping length check but is too short to contract the existing graph -- the guard
+    // rejects it up front rather than reading out of bounds later.
+    BOOST_CHECK_THROW(
+        sim.build_graph(std::vector<VecZ>{{2}}, VecZ{0}, VecD{1.0}, std::nullopt, std::optional<VecD>{VecD{0.5}}),
+        std::runtime_error);
+}
