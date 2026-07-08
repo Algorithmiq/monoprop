@@ -1,8 +1,0 @@
-# `basePath: '/monoprop'` (next.config.mjs) makes every generated link and
-# asset point at `/monoprop/...`, but the static export still writes files at
-# the top level of `out/` (e.g. `out/index.html`, not `out/monoprop/index.html`).
-# GitHub Pages happens to line up because it already serves this repo's Pages
-# site under `/monoprop/` externally. Cloudflare Pages serves `out/` at the
-# domain root, so rewrite `/monoprop/*` back to the real, unprefixed files.
-/monoprop/*  /:splat  200
-/monoprop    /         200

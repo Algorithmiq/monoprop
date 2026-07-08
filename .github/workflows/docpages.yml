@@ -138,9 +138,8 @@ jobs:
 
       # `monoprop-docs` is the Cloudflare Pages project created by `just
       # build-docs && npx wrangler pages deploy docs/out
-      # --project-name=monoprop-docs` (see docs/public/_redirects for how
-      # `/monoprop/*` gets served correctly from this same export). Requires
-      # the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets.
+      # --project-name=monoprop-docs`. Requires the `CLOUDFLARE_API_TOKEN`
+      # and `CLOUDFLARE_ACCOUNT_ID` repo secrets.
       - name: Deploy to Cloudflare Pages
         id: deploy
         uses: cloudflare/wrangler-action@v3
@@ -156,4 +155,4 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           message: |
-            Docs preview: ${{ steps.deploy.outputs.pages-deployment-alias-url }}/monoprop/
+            Docs preview: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
