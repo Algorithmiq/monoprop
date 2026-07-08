@@ -84,8 +84,7 @@ while(_common_prop_idx LESS _common_prop_len)
     endif()
   else()
     list(
-      APPEND
-      common_properties
+      APPEND common_properties
       "${_common_prop_key}"
       "${_common_prop_value}"
     )
@@ -106,8 +105,7 @@ function(
 )
   set(_mpi_labels_list ${${BASE_LABELS_VAR}})
   list(
-    APPEND
-    _mpi_labels_list
+    APPEND _mpi_labels_list
     mpi
     "mpi-${MPI_RANK}"
   )
@@ -116,8 +114,7 @@ function(
 
   set(_mpi_env_list ${${BASE_ENV_VAR}})
   list(
-    APPEND
-    _mpi_env_list
+    APPEND _mpi_env_list
     "OMPI_ALLOW_RUN_AS_ROOT=1"
     "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1"
   )
@@ -128,8 +125,7 @@ function(
   if(_mpi_labels_value)
     set(_mpi_labels_arg "[==[${_mpi_labels_value}]==]")
     list(
-      APPEND
-      _mpi_properties
+      APPEND _mpi_properties
       "LABELS"
       "${_mpi_labels_arg}"
     )
@@ -137,8 +133,7 @@ function(
   if(_mpi_env_value)
     set(_mpi_env_arg "[==[${_mpi_env_value}]==]")
     list(
-      APPEND
-      _mpi_properties
+      APPEND _mpi_properties
       "ENVIRONMENT"
       "${_mpi_env_arg}"
     )
@@ -173,8 +168,7 @@ execute_process(
   COMMAND
     "${TEST_EXECUTABLE}" --list_content=HRF --report_sink=stdout
   OUTPUT_VARIABLE output
-  ERROR_VARIABLE
-    err # it prints to stderr...
+  ERROR_VARIABLE err # it prints to stderr...
   RESULT_VARIABLE result
   WORKING_DIRECTORY "${TEST_WORKING_DIR}"
 )
@@ -189,12 +183,22 @@ if(NOT ${result} EQUAL 0)
 endif()
 
 # Convert the raw output to a list of lines
-string(REPLACE "\n" ";" LINES "${output}")
+string(
+  REPLACE "\n"
+  ";"
+  LINES
+  "${output}"
+)
 
 # process each line
 foreach(LINE ${LINES})
   # Remove trailing asterisk
-  string(REGEX REPLACE "\\*$" "" CLEANED_LINE "${LINE}")
+  string(
+    REGEX REPLACE "\\*$"
+    ""
+    CLEANED_LINE
+    "${LINE}"
+  )
 
   # Trim whitespace
   string(STRIP "${CLEANED_LINE}" test)
@@ -219,8 +223,7 @@ foreach(LINE ${LINES})
     if(serial_labels_value)
       set(serial_labels_arg "[==[${serial_labels_value}]==]")
       list(
-        APPEND
-        serial_properties
+        APPEND serial_properties
         "LABELS"
         "${serial_labels_arg}"
       )
@@ -228,8 +231,7 @@ foreach(LINE ${LINES})
     if(serial_env_value)
       set(serial_env_arg "[==[${serial_env_value}]==]")
       list(
-        APPEND
-        serial_properties
+        APPEND serial_properties
         "ENVIRONMENT"
         "${serial_env_arg}"
       )
@@ -264,8 +266,7 @@ foreach(LINE ${LINES})
       foreach(_mpi_rank IN LISTS _mpi_ranks)
         set(mpi_cmd "${MPIEXEC_EXECUTABLE}")
         list(
-          APPEND
-          mpi_cmd
+          APPEND mpi_cmd
           "${MPIEXEC_NUMPROC_FLAG}"
           "${_mpi_rank}"
         )
@@ -273,8 +274,7 @@ foreach(LINE ${LINES})
           list(APPEND mpi_cmd ${MPIEXEC_PREFLAGS})
         endif()
         list(
-          APPEND
-          mpi_cmd
+          APPEND mpi_cmd
           "${TEST_EXECUTABLE}"
           "--run_test=${test}"
           "--report_level=detailed"
@@ -316,8 +316,7 @@ if(
   foreach(_mpi_rank IN LISTS _mpi_ranks)
     set(mpi_cmd "${MPIEXEC_EXECUTABLE}")
     list(
-      APPEND
-      mpi_cmd
+      APPEND mpi_cmd
       "${MPIEXEC_NUMPROC_FLAG}"
       "${_mpi_rank}"
     )
@@ -325,8 +324,7 @@ if(
       list(APPEND mpi_cmd ${MPIEXEC_PREFLAGS})
     endif()
     list(
-      APPEND
-      mpi_cmd
+      APPEND mpi_cmd
       "${TEST_EXECUTABLE}"
       "--report_level=detailed"
       "--catch_system_errors=yes"

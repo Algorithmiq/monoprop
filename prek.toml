@@ -68,7 +68,7 @@ hooks = [
 ]
 
 [[repos]]
-repo = "https://github.com/BlankSpruce/gersemi"
+repo = "https://github.com/BlankSpruce/gersemi-pre-commit"
 rev = "0.27.7"
 hooks = [{ id = "gersemi", exclude = "^(cmake/CPM\\.cmake$)" }]
 
