@@ -47,6 +47,7 @@ add!(pauli_sum, [:Z, :Z], collect(obs_qubits), 1.0)
 runtimes = Float64[]
 expvals = Float64[]
 num_terms = Int[]
+memory = Float64[]
 
 @showprogress for (step_idx, num_steps) in enumerate(step_range)
     t1 = time_ns()
@@ -62,6 +63,7 @@ num_terms = Int[]
     end
     push!(expvals, expval)
     push!(num_terms, length(pauli_sum))
+    push!(memory, Base.summarysize(pauli_sum) / 1024^2)
 end
 
 results_file = joinpath(@__DIR__, "results.json")
@@ -69,6 +71,7 @@ data = JSON.parsefile(results_file)
 data["runtimes"]["PauliPropagation.jl"] = runtimes
 data["expvals"]["PauliPropagation.jl"] = expvals
 data["num_terms"]["PauliPropagation.jl"] = num_terms
+data["memory"]["PauliPropagation.jl"] = memory
 
 open(results_file, "w") do file
     JSON.print(file, data, 4)

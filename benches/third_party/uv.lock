@@ -1550,6 +1550,7 @@ dependencies = [
     { name = "monoprop" },
     { name = "pauli-prop" },
     { name = "ppvm" },
+    { name = "psutil" },
     { name = "qiskit" },
     { name = "tqdm" },
 ]
@@ -1560,6 +1561,7 @@ requires-dist = [
     { name = "monoprop", editable = "../../" },
     { name = "pauli-prop", specifier = "==0.2.0" },
     { name = "ppvm", git = "https://github.com/QuEraComputing/ppvm.git?subdirectory=ppvm-python&rev=2570637b145949aadc085871400fdac9322fff54" },
+    { name = "psutil", specifier = ">=7.2" },
     { name = "qiskit", specifier = "==2.5.0" },
     { name = "tqdm", specifier = "==4.68.3" },
 ]

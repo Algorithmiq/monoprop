@@ -16,7 +16,7 @@ The end-to-end workflow is:
 2. [Set up the Python environment](#2-set-up-the-python-environment).
 3. [(Optional) install Julia and `PauliPropagation.jl`](#3-optional-install-julia-and-pauliPropagationjl).
 4. [Run the benchmarks](#4-run-the-benchmarks) to produce `results.json`.
-5. [Plot the results](#5-plot-the-results) to produce `runtime.png`.
+5. [Plot the results](#5-plot-the-results) to produce `runtime.png` and `memory.png`.
 
 ## 1. Choose the simulation settings
 
@@ -98,6 +98,11 @@ For every engine, `results.json` collects, indexed by Trotter step:
 - `runtimes`: wall-clock time per step, in seconds (excluding the first step, see the note above).
 - `expvals`: the `ZZ` expectation value on `obs_qubits`, for every step.
 - `num_terms`: the number of Pauli/Majorana terms kept in the evolving operator, for every step.
+- `memory`: the memory footprint of the evolving operator, in megabytes, for every step. Where an
+  engine exposes its own accounting this is exact (monoprop's C++ operator-memory accounting,
+  cuPauliProp's cupy device memory pool, `PauliPropagation.jl`'s `Base.summarysize` of the Pauli
+  sum); `QuEra ppvm` exposes no such accounting, so its footprint is reconstructed by accumulating
+  this process's host-memory growth across each of its own steps.
 
 ## 5. Plot the results
 
@@ -105,5 +110,6 @@ For every engine, `results.json` collects, indexed by Trotter step:
 uv run python plot_results.py
 ```
 
-This reads `results.json` and produces `runtime.png`: a log-scale plot of runtime per Trotter step
-for each engine present in the file (so it reflects whichever engines you actually ran in step 4).
+This reads `results.json` and produces two log-scale plots for each engine present in the file (so
+they reflect whichever engines you actually ran in step 4): `runtime.png` (runtime per Trotter
+step) and `memory.png` (operator memory footprint per Trotter step).

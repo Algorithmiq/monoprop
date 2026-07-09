@@ -20,6 +20,7 @@ from pathlib import Path
 
 import cupy as cp
 import numpy as np
+import psutil
 from cuquantum.pauliprop.experimental import (
     LibraryHandle,
     PauliExpansion,
@@ -90,6 +91,10 @@ labels = [
 runtimes_dict = {label: [] for label in labels}
 expvals_dict = {label: [] for label in labels}
 num_terms_dict = {label: [] for label in labels}
+memory_dict = {label: [] for label in labels}
+
+process = psutil.Process()
+ppvm_mem_bytes = 0
 
 theta_x = dt * hx
 theta_z = dt * hz
@@ -161,7 +166,9 @@ for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
         runtimes_dict["monoprop"].append(t2 - t1)
     expvals_dict["monoprop"].append(expval)
     num_terms_dict["monoprop"].append(mp.size())
+    memory_dict["monoprop"].append(mp._simulator.operator_memory_bytes() / 1024**2)
 
+    mem_before = process.memory_info().rss
     t1 = time.perf_counter()
     for i, k in grid_edges:
         ppvm_obs.rzz(i, k, theta_zz)
@@ -171,11 +178,13 @@ for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
         ppvm_obs.rx(i, theta_x)
     ppvm_expval = ppvm_obs.overlap_with_zero()
     t2 = time.perf_counter()
+    ppvm_mem_bytes += max(0, process.memory_info().rss - mem_before)
 
     if step_idx > 0:
         runtimes_dict["QuEra ppvm"].append(t2 - t1)
     expvals_dict["QuEra ppvm"].append(ppvm_expval)
     num_terms_dict["QuEra ppvm"].append(len(ppvm_obs))
+    memory_dict["QuEra ppvm"].append(ppvm_mem_bytes / 1024**2)
 
     t1 = time.perf_counter()
     for gate in reversed(cupp_step_gates):
@@ -193,6 +202,9 @@ for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
         runtimes_dict["cuPauliProp (GPU)"].append(t2 - t1)
     expvals_dict["cuPauliProp (GPU)"].append(cupp_expval)
     num_terms_dict["cuPauliProp (GPU)"].append(cupp_expansion.num_terms)
+    memory_dict["cuPauliProp (GPU)"].append(
+        cp.get_default_memory_pool().used_bytes() / 1024**2
+    )
 
 with open(Path(__file__).parent / "results.json", "w") as file:
     json.dump(
@@ -201,6 +213,7 @@ with open(Path(__file__).parent / "results.json", "w") as file:
             "runtimes": runtimes_dict,
             "expvals": expvals_dict,
             "num_terms": num_terms_dict,
+            "memory": memory_dict,
         },
         file,
         indent=4,

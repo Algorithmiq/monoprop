@@ -10,6 +10,7 @@ dependencies = [
     "ppvm==0.1.0",
     "pauli-prop==0.2.0",
     "cuquantum-python-cu12==26.6.0",
+    "psutil>=7.2",
 ]
 
 [tool.uv]
