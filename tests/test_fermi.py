@@ -138,7 +138,7 @@ class TestMajoranaOperator:
             coefficients=[1.0, -1.0],
             num_modes=2,
         )
-        expected_terms = {(0, 2): 0.5, (1, 3): 0.5}
+        expected_terms = {(0, 2): 0.5, (0, 3): 0j, (1, 2): 0j, (1, 3): 0.5}
         terms = operator.get_majorana_operator().terms
 
         assert expected_terms == terms

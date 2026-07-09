@@ -266,17 +266,12 @@ class Circuit:
                     f"Circuit gates must be ExpGate; got {type(gate).__name__}."
                 )
 
-        # An empty-generator gate is exp(theta * 0) = identity: it drives no rotation and emits
-        # no graph layer. Under the *default* mapping (each gate its own angle, in order),
-        # keeping it would inflate the parameter count with a phantom angle no layer references
-        # (an unevaluable circuit) or leave a gap in the per-monomial gate indices the engine
-        # rejects, so drop it for every family together with its aligned parameter (a fermionic
-        # identity converts to one such empty gate). Under an *explicit* mapping the gate carries
-        # a caller-chosen index, so leave the circuit untouched rather than silently renumbering
-        # the caller's angles.
+        def _is_identity_gate(gate: ExpGate) -> bool:
+            return all(coeff == 0 for coeff in gate.generator.terms.values())
+
         default_mapping = all(gate.index is None for gate in gates)
-        if default_mapping and any(not gate.generator.terms for gate in gates):
-            kept = [i for i, gate in enumerate(gates) if gate.generator.terms]
+        if default_mapping and any(_is_identity_gate(gate) for gate in gates):
+            kept = [i for i, gate in enumerate(gates) if not _is_identity_gate(gate)]
             if parameters and len(parameters) != len(gates):
                 raise ValueError(
                     f"parameters has {len(parameters)} values but the circuit has "

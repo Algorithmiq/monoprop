@@ -117,7 +117,6 @@ class PauliOperator:
         self,
         terms: Mapping[Pauli | str, complex],
         num_qubits: int | None,
-        threshold: float = 1e-12,
     ) -> None:
         """Initialize the Pauli operator from a term mapping.
 
@@ -129,7 +128,6 @@ class PauliOperator:
                 act within ``0..num_qubits-1``. ``None`` defers the qubit count (only reachable
                 via :meth:`_from_terms`, e.g. while building a generator whose width is not yet
                 known); :meth:`get_majorana_operator` then raises.
-            threshold: Terms with ``|coefficient| < threshold`` are discarded.
 
         Raises:
             ValueError: If a term acts on a qubit index ``>= num_qubits``.
@@ -138,9 +136,7 @@ class PauliOperator:
         for key, coeff in terms.items():
             pauli = key if isinstance(key, Pauli) else Pauli(key)
             accumulated[pauli] += coeff
-        self.terms: dict[Pauli, complex] = {
-            pauli: coef for pauli, coef in accumulated.items() if abs(coef) >= threshold
-        }
+        self.terms: dict[Pauli, complex] = dict(accumulated)
         self.num_qubits = num_qubits
         if num_qubits is not None:
             for pauli in self.terms:
@@ -156,14 +152,13 @@ class PauliOperator:
         strings: Sequence[Pauli | str],
         coefficients: Sequence[complex],
         num_qubits: int | None = None,
-        threshold: float = 1e-12,
     ) -> PauliOperator:
         """Build from parallel ``strings``/``coefficients`` lists (internal)."""
         accumulated: dict[Pauli, complex] = defaultdict(complex)
         for string, coeff in zip(strings, coefficients, strict=True):
             pauli = string if isinstance(string, Pauli) else Pauli(string)
             accumulated[pauli] += coeff
-        return cls(accumulated, num_qubits, threshold)
+        return cls(accumulated, num_qubits)
 
     def __len__(self) -> int:
         """Number of terms in the operator."""

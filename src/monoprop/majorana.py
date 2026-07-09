@@ -77,17 +77,15 @@ class MajoranaOperator:
 
     Constructed from a ``{term: coefficient}`` mapping, where each key is a
     :class:`Majorana` term (or, equivalently, a raw index tuple). Terms are normalized:
-    indices within each monomial are sorted, duplicate monomials are summed, and terms whose
-    ``|coefficient|`` falls below ``threshold`` are dropped. The resulting :attr:`terms`
-    mapping (Majorana-index tuple to complex coefficient) is what the propagator hands to the
-    C++ engine.
+    indices within each monomial are sorted and duplicate monomials are summed. The resulting
+    :attr:`terms` mapping (Majorana-index tuple to complex coefficient) is what the propagator
+    hands to the C++ engine.
     """
 
     def __init__(
         self,
         terms: Mapping[Majorana | Sequence[int], complex],
         num_modes: int,
-        threshold: float = 1e-12,
     ) -> None:
         """Initialize the Majorana operator from a term mapping.
 
@@ -98,7 +96,6 @@ class MajoranaOperator:
                 also authored as a :class:`MajoranaOperator` (wrapped in
                 :class:`~monoprop.circuit.ExpGate`) -- bare :class:`Majorana` terms are not accepted
                 by ``ExpGate``, since the operator is what carries the mode count.
-            threshold: Terms with ``|coefficient| < threshold`` are discarded.
         """
         # Route raw index tuples through Majorana so they get the same non-negative/distinct
         # validation a Majorana key already carries (a bare tuple would otherwise slip past it).
@@ -107,7 +104,7 @@ class MajoranaOperator:
             for key in terms
         ]
         self.num_modes = num_modes
-        self.terms = self._accumulate(majoranas, list(terms.values()), threshold)
+        self.terms = self._accumulate(majoranas, list(terms.values()))
 
     @classmethod
     def _from_terms(
@@ -115,7 +112,6 @@ class MajoranaOperator:
         majoranas: Sequence[Sequence[int]],
         coefficients: Sequence[complex],
         num_modes: int | None = None,
-        threshold: float = 1e-12,
     ) -> MajoranaOperator:
         """Build from parallel ``majoranas``/``coefficients`` lists (internal).
 
@@ -124,23 +120,20 @@ class MajoranaOperator:
         """
         obj = cls.__new__(cls)
         obj.num_modes = num_modes
-        obj.terms = cls._accumulate(majoranas, coefficients, threshold)
+        obj.terms = cls._accumulate(majoranas, coefficients)
         return obj
 
     @staticmethod
     def _accumulate(
         majoranas: Sequence[Sequence[int]],
         coefficients: Sequence[complex],
-        threshold: float,
     ) -> dict[tuple[int, ...], complex]:
-        """Sort, sum duplicates, and threshold a set of Majorana terms."""
+        """Sort and sum duplicates of a set of Majorana terms."""
         accumulated: dict[tuple[int, ...], complex] = defaultdict(complex)
         for majorana, coefficient in zip(majoranas, coefficients, strict=True):
             key = tuple(sorted(int(i) for i in majorana))
             accumulated[key] += coefficient
-        return {
-            key: coef for key, coef in accumulated.items() if abs(coef) >= threshold
-        }
+        return dict(accumulated)
 
     def get_majorana_operator(self) -> MajoranaOperator:
         """Return ``self`` (satisfies the operator-conversion protocol)."""
@@ -161,5 +154,5 @@ class MajoranaOperator:
         return out
 
     def is_identity(self) -> bool:
-        """Check if the operator is the identity (has no terms)."""
-        return len(self) == 0
+        """Check if the operator is the identity."""
+        return all(coef == 0 for coef in self.terms.values())

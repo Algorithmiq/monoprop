@@ -77,13 +77,13 @@ def test_from_dense_arrays_groups_by_param_ind():
 
 
 def test_majorana_operator_normalizes_terms():
-    """Indices are sorted, duplicate monomials summed, tiny terms dropped."""
+    """Indices are sorted and duplicate monomials summed."""
     op = MajoranaOperator(
         {(1, 0): 1.0, (0, 1): 2.0, (2, 3): 1e-15},
         num_modes=4,
     )
-    assert op.terms == {(0, 1): 3.0}  # (1,0) and (0,1) merge; (2,3) below threshold
-    assert len(op) == 1
+    assert op.terms == {(0, 1): 3.0, (2, 3): 1e-15}  # (1,0) and (0,1) merge
+    assert len(op) == 2
     assert op.num_modes == 4
     assert not op.is_identity()
 
