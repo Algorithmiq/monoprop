@@ -353,14 +353,13 @@ skip = ["*-musllinux_*"]
 test-command = "python -m pytest {package}/tests"
 test-groups = ["test"]
 test-extras = ["qiskit", "openfermion", "pyscf"]
-test-environment = { monoprop_LOG_LEVEL = "critical" }
 
 [tool.cibuildwheel.linux]
 before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
 environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
 
 [tool.cibuildwheel.macos]
-before-all = "brew install boost quill tbb"
+before-all = "brew install boost tbb"
 environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
 
 [[tool.cibuildwheel.overrides]]

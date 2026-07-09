@@ -17,12 +17,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include "monoprop/detail/mpi/MPICompat.h"
-#include "monoprop/logging/QuillWrapper.h"
-#include "monoprop/logging/Utils.h"
 
 static auto init() -> bool {
-    monoprop::logging::setup_quill();
-    monoprop_global_logger->set_log_level(monoprop::logging::log_level());
     return true;
 }
 
