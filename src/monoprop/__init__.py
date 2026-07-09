@@ -63,10 +63,14 @@ __all__ = [
     "__version__",
     "antihermitian_generator_correction",
     "expand_monomials",
+    "from_qiskit_circuit",
+    "from_qiskit_operator",
     "has_mpi",
     "integrals_to_fermion",
     "is_antihermitian",
     "jordan_wigner_basis_change",
+    "to_qiskit_circuit",
+    "to_qiskit_operator",
     "validate_parameter_mapping",
 ]
 
@@ -86,6 +90,7 @@ if TYPE_CHECKING:
         to_qiskit_circuit,
         to_qiskit_operator,
     )
+
 
 def __getattr__(name: str) -> object:
     """Lazily resolve the optional qiskit conversion helpers (PEP 562)."""
