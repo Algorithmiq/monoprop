@@ -116,7 +116,7 @@ class PauliOperator:
     def __init__(
         self,
         terms: Mapping[Pauli | str, complex],
-        num_qubits: int,
+        num_qubits: int | None,
         threshold: float = 1e-12,
     ) -> None:
         """Initialize the Pauli operator from a term mapping.
@@ -124,9 +124,11 @@ class PauliOperator:
         Args:
             terms: Mapping from :class:`Pauli` terms (or raw full-width strings) to their
                 coefficients.
-            num_qubits: Total number of qubits the operator acts on. Required: an operator
-                carries its own qubit count so a propagator can be built from it directly.
-                Every term must act within ``0..num_qubits-1``.
+            num_qubits: Total number of qubits the operator acts on. An operator carries its
+                own qubit count so a propagator can be built from it directly; every term must
+                act within ``0..num_qubits-1``. ``None`` defers the qubit count (only reachable
+                via :meth:`_from_terms`, e.g. while building a generator whose width is not yet
+                known); :meth:`get_majorana_operator` then raises.
             threshold: Terms with ``|coefficient| < threshold`` are discarded.
 
         Raises:

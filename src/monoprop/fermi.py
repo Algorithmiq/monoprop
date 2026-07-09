@@ -52,7 +52,7 @@ class FermiString:
         if invalid:
             raise ValueError(f"Invalid operator(s) {invalid!r}: must be '+' or '-'")
 
-    def _canonicalize(self) -> tuple(tuple, int):
+    def _canonicalize(self) -> tuple[tuple[tuple[int, str], ...], int]:
         """Return the FermiString in a predefined order and a permutation sign."""
         expr = list(self.expression)
 

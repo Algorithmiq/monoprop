@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 from msgpack import unpackb
@@ -56,19 +56,6 @@ class DenseMajoranaArrays:
         )
 
 
-class SplitOrbitalRotations(NamedTuple):
-    """Data class for Majorana propagator fermionic test data."""
-
-    majs: list[tuple[int, ...]]
-    param_inds: np.ndarray
-    gen_coeffs: np.ndarray
-    parameters: np.ndarray
-    majs_orb: list[tuple[int, ...]]
-    param_inds_orb: np.ndarray
-    gen_coeffs_orb: np.ndarray
-    parameters_orb: np.ndarray
-
-
 class FermionicProblem:
     """Data class for Fermionic problems."""
 
@@ -85,36 +72,6 @@ class FermionicProblem:
         self.exact_expval = exact_expval
         self.exact_gradient = exact_gradient
         self.n_modes = n_modes
-
-    @property
-    def circuit(self) -> Circuit:
-        """The gate sequence as a :class:`~monoprop.circuit.Circuit`."""
-        return self.monomial_circuit.to_circuit()
-
-    def split_only_rotate_len_k(self) -> SplitOrbitalRotations:
-        """Split the Majorana operators into non-orbital and orbital rotation parts."""
-        majoranas = self.monomial_circuit.majoranas
-        param_inds = self.monomial_circuit.param_inds
-        gen_coeffs = self.monomial_circuit.gen_coeffs
-        parameters = self.monomial_circuit.parameters
-
-        # Find split index
-        idx = None
-        lens = [len(maj) for maj in majoranas]
-        for i in range(len(lens)):
-            if all(length == 2 for length in lens[i:]):
-                idx = i
-                break
-
-        # Split the lists at the appropriate index
-        if idx is None:
-            raise ValueError("No single excitations found")
-
-        m1, m2 = majoranas[:idx], majoranas[idx:]
-        pi1, pi2 = param_inds[:idx], param_inds[idx:] - idx  # adjust indices
-        gc1, gc2 = gen_coeffs[:idx], gen_coeffs[idx:]
-        p1, p2 = parameters[: param_inds[idx]], parameters[param_inds[idx] :]
-        return SplitOrbitalRotations(m1, pi1, gc1, p1, m2, pi2, gc2, p2)
 
 
 def load_problem(path: Path) -> FermionicProblem:
