@@ -31,6 +31,7 @@ from cuquantum.pauliprop.experimental import (
 )
 from monoprop import MonomialPropagator, jordan_wigner_basis_change
 from monoprop.qiskit_conversion import from_qiskit_circuit, from_qiskit_operator
+from pauli_prop import propagate_through_circuit
 from ppvm import PauliSum
 from qiskit.circuit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
@@ -86,6 +87,7 @@ obs_qubits = tuple(settings["obs_qubits"])
 labels = [
     "monoprop",
     "QuEra ppvm",
+    "Qiskit pauli-prop",
     "cuPauliProp (GPU)",
 ]
 runtimes_dict = {label: [] for label in labels}
@@ -95,6 +97,7 @@ memory_dict = {label: [] for label in labels}
 
 process = psutil.Process()
 ppvm_mem_bytes = 0
+qiskit_mem_bytes = 0
 
 theta_x = dt * hx
 theta_z = dt * hz
@@ -128,6 +131,8 @@ ppvm_obs = PauliSum.new(
     min_abs_coeff=lower_atol,
     max_pauli_weight=max_pauli_weight,
 )
+
+qiskit_obs = obs
 
 cupp_handle = LibraryHandle()
 
@@ -185,6 +190,22 @@ for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
     expvals_dict["QuEra ppvm"].append(ppvm_expval)
     num_terms_dict["QuEra ppvm"].append(len(ppvm_obs))
     memory_dict["QuEra ppvm"].append(ppvm_mem_bytes / 1024**2)
+
+    mem_before = process.memory_info().rss
+    max_terms = mp.size()
+    t1 = time.perf_counter()
+    qiskit_obs, _ = propagate_through_circuit(
+        qiskit_obs, step_circ, max_terms=max_terms, atol=lower_atol, frame="h"
+    )
+    qiskit_expval = float(qiskit_obs.coeffs[~qiskit_obs.paulis.x.any(axis=1)].sum())
+    t2 = time.perf_counter()
+    qiskit_mem_bytes += max(0, process.memory_info().rss - mem_before)
+
+    if step_idx > 0:
+        runtimes_dict["Qiskit pauli-prop"].append(t2 - t1)
+    expvals_dict["Qiskit pauli-prop"].append(qiskit_expval)
+    num_terms_dict["Qiskit pauli-prop"].append(len(qiskit_obs))
+    memory_dict["Qiskit pauli-prop"].append(qiskit_mem_bytes / 1024**2)
 
     t1 = time.perf_counter()
     for gate in reversed(cupp_step_gates):

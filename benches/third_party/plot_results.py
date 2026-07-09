@@ -22,6 +22,7 @@ import pylab as plt
 colors = {
     "monoprop": "tab:purple",
     "QuEra ppvm": "tab:orange",
+    "Qiskit pauli-prop": "tab:blue",
     "cuPauliProp (GPU)": "tab:green",
     "PauliPropagation.jl": "tab:red",
 }
