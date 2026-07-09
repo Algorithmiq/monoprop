@@ -19,6 +19,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
@@ -143,7 +145,7 @@ class MajoranaOperator:
         """Number of distinct Majorana monomial terms."""
         return len(self.terms)
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         """Return a string representation of the operator."""
         n = len(self)
         out = f"{self.__class__.__name__}({n} terms, {self.num_modes} modes"
@@ -156,3 +158,28 @@ class MajoranaOperator:
     def is_identity(self) -> bool:
         """Check if the operator is the identity."""
         return all(coef == 0 for coef in self.terms.values())
+
+    def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1e-8) -> bool:
+        """Check if two MajoranaOperators are closely equal (same terms and coefficients).
+
+        Args:
+            other: Another MajoranaOperator to compare with.
+            rtol: Relative tolerance for coefficient comparison.
+            atol: Absolute tolerance for coefficient comparison.
+
+        Returns:
+            True if the operators have the same mode count and matching terms, else False.
+
+        Raises:
+            TypeError: If ``other`` is not a :class:`MajoranaOperator`.
+        """
+        if not isinstance(other, MajoranaOperator):
+            raise TypeError(
+                f"Cannot compare MajoranaOperator with {type(other).__name__}."
+            )
+        if self.num_modes != other.num_modes or self.terms.keys() != other.terms.keys():
+            return False
+        return all(
+            np.isclose(coef, other.terms[key], rtol=rtol, atol=atol)
+            for key, coef in self.terms.items()
+        )

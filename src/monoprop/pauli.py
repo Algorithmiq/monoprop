@@ -164,7 +164,7 @@ class PauliOperator:
         """Number of terms in the operator."""
         return len(self.terms)
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         """Return a string representation of the operator."""
         n = len(self)
         out = f"{self.__class__.__name__}({n} terms, {self.num_qubits} qubits"
@@ -173,6 +173,10 @@ class PauliOperator:
             out += f": {terms}"
         out += ")"
         return out
+
+    def is_identity(self) -> bool:
+        """Check if the operator is the identity."""
+        return all(coef == 0 for coef in self.terms.values())
 
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1e-8) -> bool:
         """Check if two PauliOperators are closely equal (same terms and coefficients).

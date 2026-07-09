@@ -145,7 +145,7 @@ class FermiOperator:
         """Number of terms in the operator."""
         return len(self.terms)
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         """Return a string representation of the fermionic operator."""
         n = len(self)
         out = f"{self.__class__.__name__}({n} terms, {self.num_modes} modes"
@@ -154,6 +154,10 @@ class FermiOperator:
             out += f": {terms}"
         out += ")"
         return out
+
+    def is_identity(self) -> bool:
+        """Check if the operator is the identity."""
+        return all(coef == 0 for coef in self.coefficients)
 
     def _as_dict(self) -> dict[tuple, complex]:
         """Return the operator as a dictionary."""
@@ -164,7 +168,7 @@ class FermiOperator:
         return result
 
     def isclose(
-        self, other: FermiOperator, rtol: float = 1e-05, atol: float = 1.0e-8
+        self, other: object, rtol: float = 1e-05, atol: float = 1.0e-8
     ) -> bool:
         """Check that two operators are almost equal, term-wise.
 
@@ -175,7 +179,12 @@ class FermiOperator:
 
         Returns:
             A boolean.
+
+        Raises:
+            TypeError: If ``other`` is not a :class:`FermiOperator`.
         """
+        if not isinstance(other, FermiOperator):
+            raise TypeError(f"Cannot compare FermiOperator with {type(other).__name__}.")
         if self.num_modes != other.num_modes:
             return False
 
