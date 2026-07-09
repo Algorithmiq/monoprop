@@ -167,9 +167,7 @@ class FermiOperator:
             result[cano] = coeff * sign
         return result
 
-    def isclose(
-        self, other: object, rtol: float = 1e-05, atol: float = 1.0e-8
-    ) -> bool:
+    def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1.0e-8) -> bool:
         """Check that two operators are almost equal, term-wise.
 
         Args:
@@ -184,7 +182,9 @@ class FermiOperator:
             TypeError: If ``other`` is not a :class:`FermiOperator`.
         """
         if not isinstance(other, FermiOperator):
-            raise TypeError(f"Cannot compare FermiOperator with {type(other).__name__}.")
+            raise TypeError(
+                f"Cannot compare FermiOperator with {type(other).__name__}."
+            )
         if self.num_modes != other.num_modes:
             return False
 
