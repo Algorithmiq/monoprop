@@ -29,30 +29,29 @@ lower_atol = 1e-8
 
 theta_x = dt * h
 theta_zz = dt * j
-topology = staircasetopology(nq)
+topology = bricklayertopology(nq)
+
+# gates and parameters for a single Trotter step
+step_circuit = tfitrottercircuit(nq, 1; topology=topology, start_with_ZZ=false)
+step_parameters = Float64[]
+append!(step_parameters, fill(theta_x, nq))
+append!(step_parameters, fill(theta_zz, nq - 1))
+
+pauli_sum = PauliSum(nq)
+for i in 1:nq
+    add!(pauli_sum, :Z, i, 1.0)
+end
 
 runtimes = Float64[]
 expvals = Float64[]
 
+# The state is built once, then advanced one identical Trotter step at a time
+# below, so that each recorded runtime is the cost of a single step rather
+# than the cumulative cost of all steps up to that point.
 @showprogress for num_steps in step_range
-    circuit = tfitrottercircuit(
-        nq, num_steps; topology=topology, start_with_ZZ=false
-    )
-
-    parameters = Float64[]
-    for _ in 1:num_steps
-        append!(parameters, fill(theta_x, nq))
-        append!(parameters, fill(theta_zz, nq - 1))
-    end
-
-    observable = PauliSum(nq)
-    for i in 1:nq
-        add!(observable, :Z, i, 1.0)
-    end
-
     t1 = time_ns()
-    pauli_sum = propagate(
-        circuit, observable, parameters;
+    global pauli_sum = propagate(
+        step_circuit, pauli_sum, step_parameters;
         max_weight=max_pauli_weight, min_abs_coeff=lower_atol,
     )
     expval = overlapwithzero(pauli_sum)

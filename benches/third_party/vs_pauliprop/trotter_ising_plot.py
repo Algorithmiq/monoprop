@@ -37,8 +37,8 @@ fig1, ax1 = plt.subplots()
 for label, runtimes in runtimes_dict.items():
     color = colors[label]
     ax1.plot(step_range, runtimes, marker=".", color=color, label=label)
-ax1.set_xlabel("Num Trotter steps")
-ax1.set_ylabel("Runtime [s]")
+ax1.set_xlabel("Trotter step")
+ax1.set_ylabel("Time per step")
 ax1.legend(fontsize=10)
 ax1.grid(which="both", alpha=0.3)
 plt.savefig(f"trotter_ising_{nq}qubits_runtime.png", dpi=150)

@@ -72,35 +72,78 @@ labels = [
 runtimes_dict = {label: [] for label in labels}
 expvals_dict = {label: [] for label in labels}
 
+theta_x = dt * h
+theta_zz = dt * j
+
+# Each method is set up once, then advanced one identical Trotter step at a
+# time inside the loop below, so that the recorded runtime for every entry in
+# step_range is the cost of a *single* step rather than the cumulative cost of
+# all steps up to that point.
+
+# -------------------------------- monoprop ----------------------------------
+# define a qiskit circuit for a single Trotter step
+step_circ = QuantumCircuit(nq)
+for i in range(nq):
+    step_circ.rx(theta_x, i)
+for i in range(nq - 1):
+    step_circ.rzz(theta_zz, i, i + 1)
+
+# define qiskit observable
+obs = SparsePauliOp.from_sparse_list(
+    [("Z", [i], 1.0) for i in range(nq)], num_qubits=nq
+)
+
+mp_circ = from_qiskit_circuit(step_circ, initial_state=[])
+mp_obs = from_qiskit_operator(obs)
+mp = MonomialPropagator(
+    initial_operator=mp_obs,
+    quantum_circuit=mp_circ,
+    cutoff_type="support",
+    cutoff=max_pauli_weight,
+    lower_atol=lower_atol,
+    basis_change=jordan_wigner_basis_change(nq),
+)
+
+# ---------------------------------- ppvm ------------------------------------
+# define observable
+ppvm_obs = PauliSum.new(
+    n_qubits=nq,
+    terms=[f"Z{i}" for i in range(nq)],
+    min_abs_coeff=lower_atol,
+    max_pauli_weight=max_pauli_weight,
+)
+
+# ------------------------------- cuPauliProp --------------------------------
 cupp_handle = LibraryHandle()
 
-for num_steps in tqdm(step_range, desc="Running simulations"):
+# define observable
+num_packed = get_num_packed_integers(nq)
+cupp_xz = cp.zeros((nq, 2 * num_packed), dtype=cp.uint64)
+cupp_coefs = cp.ones((nq,), dtype=cp.float64)
+for i in range(nq):
+    cupp_xz[i] = cp.asarray(_pauli_string_to_packed_integers(["Z"], [i], nq))
+
+cupp_expansion = PauliExpansion(
+    library_handle=cupp_handle,
+    num_qubits=nq,
+    num_terms=nq,
+    xz_bits=cupp_xz,
+    coeffs=cupp_coefs,
+    options=PauliExpansionOptions(memory_limit="80%", blocking=True),
+)
+cupp_truncation = Truncation(
+    pauli_coeff_cutoff=lower_atol,
+    pauli_weight_cutoff=max_pauli_weight,
+)
+
+# gates for a single Trotter step
+cupp_step_gates = [PauliRotationGate(theta_x, ["X"], [i]) for i in range(nq)]
+cupp_step_gates += [
+    PauliRotationGate(theta_zz, ["Z", "Z"], [i, i + 1]) for i in range(nq - 1)
+]
+
+for _ in tqdm(step_range, desc="Running simulations"):
     # -------------------------------- monoprop ---------------------------------
-    # define qiskit circuit
-    circ = QuantumCircuit(nq)
-    theta_x = dt * h
-    theta_zz = dt * j
-    for _ in range(num_steps):
-        for i in range(nq):
-            circ.rx(theta_x, i)
-        for i in range(nq - 1):
-            circ.rzz(theta_zz, i, i + 1)
-
-    # define qiskit observable
-    obs = SparsePauliOp.from_sparse_list(
-        [("Z", [i], 1.0) for i in range(nq)], num_qubits=nq
-    )
-
-    mp_circ = from_qiskit_circuit(circ, initial_state=[])
-    mp_obs = from_qiskit_operator(obs)
-    mp = MonomialPropagator(
-        initial_operator=mp_obs,
-        quantum_circuit=mp_circ,
-        cutoff_type="support",
-        cutoff=max_pauli_weight,
-        lower_atol=lower_atol,
-        basis_change=jordan_wigner_basis_change(nq),
-    )
     t1 = time.perf_counter()
     mp.propagate(evolve_with_coeffs=True)
     expval = mp.expectation_value()
@@ -109,21 +152,11 @@ for num_steps in tqdm(step_range, desc="Running simulations"):
     expvals_dict["monoprop"].append(expval)
 
     # ---------------------------------- ppvm -----------------------------------
-    # define observable
-    ppvm_obs = PauliSum.new(
-        n_qubits=nq,
-        terms=[f"Z{i}" for i in range(nq)],
-        min_abs_coeff=lower_atol,
-        max_pauli_weight=max_pauli_weight,
-    )
-
-    # evolve observable
     t1 = time.perf_counter()
-    for _ in range(num_steps):
-        for i in range(nq - 1):
-            ppvm_obs.rzz(i, i + 1, theta_zz)
-        for i in range(nq):
-            ppvm_obs.rx(i, theta_x)
+    for i in range(nq - 1):
+        ppvm_obs.rzz(i, i + 1, theta_zz)
+    for i in range(nq):
+        ppvm_obs.rx(i, theta_x)
     ppvm_expval = ppvm_obs.overlap_with_zero()
     t2 = time.perf_counter()
 
@@ -131,39 +164,11 @@ for num_steps in tqdm(step_range, desc="Running simulations"):
     expvals_dict["QuEra ppvm"].append(ppvm_expval)
 
     # ------------------------------- cuPauliProp -------------------------------
-    # define observable
-    num_packed = get_num_packed_integers(nq)
-    cupp_xz = cp.zeros((nq, 2 * num_packed), dtype=cp.uint64)
-    cupp_coefs = cp.ones((nq,), dtype=cp.float64)
-    for i in range(nq):
-        cupp_xz[i] = cp.asarray(_pauli_string_to_packed_integers(["Z"], [i], nq))
-
-    cupp_expansion = PauliExpansion(
-        library_handle=cupp_handle,
-        num_qubits=nq,
-        num_terms=nq,
-        xz_bits=cupp_xz,
-        coeffs=cupp_coefs,
-        options=PauliExpansionOptions(memory_limit="80%", blocking=True),
-    )
-    cupp_truncation = Truncation(
-        pauli_coeff_cutoff=lower_atol,
-        pauli_weight_cutoff=max_pauli_weight,
-    )
-
-    # build the circuit
-    cupp_circuit = []
-    for _ in range(num_steps):
-        cupp_circuit.extend(PauliRotationGate(theta_x, ["X"], [i]) for i in range(nq))
-        cupp_circuit.extend(
-            PauliRotationGate(theta_zz, ["Z", "Z"], [i, i + 1]) for i in range(nq - 1)
-        )
-
-    # back-propagate the observable
+    # back-propagate the observable by one more Trotter step
     t1 = time.perf_counter()
-    for gate_index in range(len(cupp_circuit) - 1, -1, -1):
+    for gate in reversed(cupp_step_gates):
         cupp_expansion = cupp_expansion.apply_gate(
-            cupp_circuit[gate_index],
+            gate,
             truncation=cupp_truncation,
             adjoint=True,
             sort_order=None,
