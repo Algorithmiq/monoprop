@@ -18,6 +18,8 @@ import json
 
 import pylab as plt
 
+nq = 30
+
 colors = {
     "monoprop": "tab:purple",
     "QuEra ppvm": "tab:orange",
@@ -25,18 +27,18 @@ colors = {
     "PauliPropagation.jl": "tab:red",
 }
 
-with open("trotter_ising_results.json") as file:
+with open(f"trotter_ising_{nq}qubits.json") as file:
     data = json.load(file)
-qubit_range = data["qubit_range"]
+step_range = data["step_range"]
 runtimes_dict = data["runtimes"]
 expvals_dict = data["expvals"]
 
 fig1, ax1 = plt.subplots()
 for label, runtimes in runtimes_dict.items():
     color = colors[label]
-    ax1.plot(qubit_range, runtimes, marker=".", color=color, label=label)
-ax1.set_xlabel("Num qubits")
+    ax1.plot(step_range, runtimes, marker=".", color=color, label=label)
+ax1.set_xlabel("Num Trotter steps")
 ax1.set_ylabel("Runtime [s]")
 ax1.legend(fontsize=10)
 ax1.grid(which="both", alpha=0.3)
-plt.savefig("trotter_ising_runtime.png", dpi=150)
+plt.savefig(f"trotter_ising_{nq}qubits_runtime.png", dpi=150)

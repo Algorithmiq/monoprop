@@ -54,18 +54,14 @@ def _pauli_string_to_packed_integers(
 
 
 ########################### SETTINGS ##########################
+nq = 30
 h = 1.0
 j = 1.5 * h
+dt = 0.1 / h
 
-dt = 0.002 / h
-tot_time = 1.0 / h
-num_steps = int(tot_time / dt)
-
-qubit_range = range(5, 121, 5)
+step_range = range(1, 31)
 max_pauli_weight = 8
 lower_atol = 1e-8
-
-results_file = "trotter_ising_results.json"
 ###############################################################
 
 labels = [
@@ -78,7 +74,7 @@ expvals_dict = {label: [] for label in labels}
 
 cupp_handle = LibraryHandle()
 
-for nq in tqdm(qubit_range, desc="Running simulations"):
+for num_steps in tqdm(step_range, desc="Running simulations"):
     # -------------------------------- monoprop ---------------------------------
     # define qiskit circuit
     circ = QuantumCircuit(nq)
@@ -181,10 +177,10 @@ for nq in tqdm(qubit_range, desc="Running simulations"):
 
     # ---------------------------------------------------------------------------
 
-with open("trotter_ising_results.json", "w") as file:
+with open(f"trotter_ising_{nq}qubits.json", "w") as file:
     json.dump(
         {
-            "qubit_range": list(qubit_range),
+            "step_range": list(step_range),
             "runtimes": runtimes_dict,
             "expvals": expvals_dict,
         },

@@ -17,30 +17,27 @@ using JSON
 using ProgressMeter
 
 ########################### SETTINGS ##########################
+nq = 30
 h = 1.0
 j = 1.5 * h
+dt = 0.1 / h
 
-dt = 0.002 / h
-tot_time = 1.0 / h
-num_steps = trunc(Int, tot_time / dt)
-
-qubit_range = 5:5:120
+step_range = 1:30
 max_pauli_weight = 8
 lower_atol = 1e-8
-
-label = "PauliPropagation.jl"
-results_file = joinpath(@__DIR__, "trotter_ising_results.json")
 ###############################################################
 
 theta_x = dt * h
 theta_zz = dt * j
+topology = staircasetopology(nq)
 
 runtimes = Float64[]
 expvals = Float64[]
 
-@showprogress for nq in qubit_range
-    topology = staircasetopology(nq)
-    circuit = tfitrottercircuit(nq, num_steps; topology=topology, start_with_ZZ=false)
+@showprogress for num_steps in step_range
+    circuit = tfitrottercircuit(
+        nq, num_steps; topology=topology, start_with_ZZ=false
+    )
 
     parameters = Float64[]
     for _ in 1:num_steps
@@ -65,9 +62,10 @@ expvals = Float64[]
     push!(expvals, expval)
 end
 
+results_file = joinpath(@__DIR__, "trotter_ising_$(nq)qubits.json")
 data = JSON.parsefile(results_file)
-data["runtimes"][label] = runtimes
-data["expvals"][label] = expvals
+data["runtimes"]["PauliPropagation.jl"] = runtimes
+data["expvals"]["PauliPropagation.jl"] = expvals
 
 open(results_file, "w") do file
     JSON.print(file, data, 4)
