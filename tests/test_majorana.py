@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from monoprop import Circuit
-from monoprop.majorana_data import Majorana, MajoranaOperator
+from monoprop.majorana import Majorana, MajoranaOperator
 
 
 class TestMajorana:

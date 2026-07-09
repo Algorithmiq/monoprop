@@ -28,7 +28,7 @@ try:
     from qiskit.quantum_info import SparsePauliOp
 
     from monoprop import Circuit, Exp
-    from monoprop.pauli_data import Pauli, PauliOperator
+    from monoprop.pauli import Pauli, PauliOperator
     from monoprop.qiskit_conversion import (
         from_qiskit_circuit,
         from_qiskit_operator,

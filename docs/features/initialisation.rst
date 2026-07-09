@@ -56,7 +56,7 @@ without re-propagating the circuit.
    .. testsetup::
 
       from monoprop import MajoranaPropagator
-      from monoprop.fermi_data import MajoranaOperator
+      from monoprop.fermi import MajoranaOperator
 
       observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
       sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)

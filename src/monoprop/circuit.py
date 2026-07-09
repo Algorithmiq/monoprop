@@ -14,9 +14,9 @@
 
 r"""Authoring types for Majorana/qubit circuits.
 
-The authoring model is four layers: a **term** (:class:`~monoprop.majorana_data.Majorana` /
-:class:`~monoprop.pauli_data.Pauli`) is the atom; an **operator**
-(:class:`~monoprop.majorana_data.MajoranaOperator` / :class:`~monoprop.pauli_data.PauliOperator`)
+The authoring model is four layers: a **term** (:class:`~monoprop.majorana.Majorana` /
+:class:`~monoprop.pauli.Pauli`) is the atom; an **operator**
+(:class:`~monoprop.majorana.MajoranaOperator` / :class:`~monoprop.pauli.PauliOperator`)
 is a weighted sum of terms that also carries the system ``num_modes`` / ``num_qubits``; an
 **exponential gate** wraps a generator *operator* that gets exponentiated; and a **circuit**
 is an ordered sequence of such gates.
@@ -26,14 +26,14 @@ operator objects (never a bare term), because those carry the system size. There
 **single** :class:`Exp` gate type; it *abstracts over the family* the same way :class:`Circuit`
 does -- the **generator type** it is handed decides how it is normalized:
 
-- a :class:`~monoprop.majorana_data.MajoranaOperator` is a native Majorana generator carrying
+- a :class:`~monoprop.majorana.MajoranaOperator` is a native Majorana generator carrying
   the *Hermitian* operator (same coefficient convention as an observable: imaginary for a
   weight-2 monomial, real for weight-4); each term is antihermitian-normalized when the circuit
   is ingested, dividing out the Hermitian phase to the structural coefficient the engine rotates
   by;
-- a :class:`~monoprop.pauli_data.PauliOperator` is a qubit generator; each term is
+- a :class:`~monoprop.pauli.PauliOperator` is a qubit generator; each term is
   Jordan-Wigner mapped and antihermitian-normalized when the circuit is ingested;
-- a :class:`~monoprop.fermi_data.FermiOperator` is a fermionic generator; it is converted to
+- a :class:`~monoprop.fermi.FermiOperator` is a fermionic generator; it is converted to
   its (Hermitian) Majorana form in :class:`Exp`.
 
 There is likewise a **single** :class:`Circuit` type. The gate objects carry the family, so
@@ -55,17 +55,17 @@ import itertools
 from typing import TYPE_CHECKING, Literal
 
 from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
-from .majorana_data import MajoranaOperator
-from .pauli_data import Pauli, PauliOperator
+from .majorana import MajoranaOperator
+from .pauli import Pauli, PauliOperator
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    from .fermi_data import FermiOperator
+    from .fermi import FermiOperator
 
 
 #: The family a gate's generator belongs to, inferred from its generator type. A
-#: :class:`~monoprop.fermi_data.FermiOperator` generator is converted to its Majorana form in
+#: :class:`~monoprop.fermi.FermiOperator` generator is converted to its Majorana form in
 #: :meth:`Exp.__init__`, so it becomes a ``"majorana"`` gate -- there is no ``"fermi"`` family.
 GateFamily = Literal["pauli", "majorana"]
 #: The family of a circuit; ``"empty"`` when it has no gates.
@@ -79,16 +79,16 @@ class Exp:
     carries the system size), and its **type** decides how it is normalized (mirroring how a
     single :class:`Circuit` dispatches on its gates):
 
-    - :class:`~monoprop.majorana_data.MajoranaOperator` -- a Majorana generator carrying the
+    - :class:`~monoprop.majorana.MajoranaOperator` -- a Majorana generator carrying the
       *Hermitian* operator (its coefficients follow the same convention as an observable:
       imaginary for a weight-2 monomial, real for weight-4); it is antihermitian-normalized --
       the Hermitian phase :math:`i^{\binom{w}{2}}` divided out -- by :func:`_gate_layers` when
       the circuit is ingested. A coefficient that leaves a non-negligible imaginary residue
       after normalization is rejected as non-Hermitian.
-    - :class:`~monoprop.pauli_data.PauliOperator` -- a qubit generator; each Pauli term is
+    - :class:`~monoprop.pauli.PauliOperator` -- a qubit generator; each Pauli term is
       Jordan-Wigner mapped and antihermitian-normalized by :func:`expand_monomials` when the
       circuit is ingested, using the propagator's qubit count.
-    - :class:`~monoprop.fermi_data.FermiOperator` -- a fermionic generator; converted to its
+    - :class:`~monoprop.fermi.FermiOperator` -- a fermionic generator; converted to its
       (Hermitian) Majorana form by :meth:`get_majorana_operator` right here in ``__init__``, so
       the gate *is* a ``"majorana"`` gate from then on. The fermionic-to-Majorana mapping already
       carries the factors of :math:`\tfrac12` and the phases, so the resulting coefficients are
@@ -120,11 +120,11 @@ class Exp:
         """Wrap a generator operator; its type selects the family and normalization convention.
 
         The generator must be an *operator object* -- a
-        :class:`~monoprop.majorana_data.MajoranaOperator`,
-        :class:`~monoprop.pauli_data.PauliOperator`, or
-        :class:`~monoprop.fermi_data.FermiOperator` -- because those carry the system
-        ``num_modes`` / ``num_qubits``. A bare :class:`~monoprop.majorana_data.Majorana` /
-        :class:`~monoprop.pauli_data.Pauli` term is *not* accepted; wrap it in the
+        :class:`~monoprop.majorana.MajoranaOperator`,
+        :class:`~monoprop.pauli.PauliOperator`, or
+        :class:`~monoprop.fermi.FermiOperator` -- because those carry the system
+        ``num_modes`` / ``num_qubits``. A bare :class:`~monoprop.majorana.Majorana` /
+        :class:`~monoprop.pauli.Pauli` term is *not* accepted; wrap it in the
         corresponding operator (e.g. ``MajoranaOperator({(0, 1): 1j}, num_modes)`` -- a Majorana
         generator carries the Hermitian operator, so a weight-2 coefficient is imaginary).
 
@@ -423,7 +423,7 @@ class Circuit:
 
         This is the native dense/wire format (also the on-disk msgpack-fixture layout):
         consecutive monomials sharing a ``param_ind`` become one Majorana :class:`Exp` whose
-        generator is a :class:`~monoprop.majorana_data.MajoranaOperator` carrying those
+        generator is a :class:`~monoprop.majorana.MajoranaOperator` carrying those
         monomials with their (structural) generator coefficients, and each gate's
         ``param_ind`` becomes that gate's ``param``, so weight-tying is preserved and the
         expanded engine arrays stay identical to the original.
@@ -545,7 +545,7 @@ def _paulis_commute(p1: Pauli, p2: Pauli) -> bool:
     """Whether two Pauli terms commute as operators.
 
     Two Paulis anticommute iff they act with *different* non-identity letters on an odd number
-    of shared qubits (:class:`~monoprop.pauli_data.Pauli` drops identity letters on
+    of shared qubits (:class:`~monoprop.pauli.Pauli` drops identity letters on
     construction, so every letter here is non-trivial).
     """
     op1 = dict(zip(p1.qubits, p1.string, strict=True))
@@ -580,10 +580,10 @@ def _gate_layers(
 ) -> list[tuple[tuple[int, ...], float]]:
     """Expand one gate into ``(majorana, gen_coeff)`` layers, in application order.
 
-    A ``"pauli"``-family :class:`Exp` places each :class:`~monoprop.pauli_data.Pauli` term on
+    A ``"pauli"``-family :class:`Exp` places each :class:`~monoprop.pauli.Pauli` term on
     its qubits within the ``num_qubits``-wide system, Jordan-Wigner maps it, and
     antihermitian-normalizes (one layer per term). A ``"majorana"``-family :class:`Exp` carries
-    the Hermitian generator, so its :class:`~monoprop.majorana_data.MajoranaOperator` terms are
+    the Hermitian generator, so its :class:`~monoprop.majorana.MajoranaOperator` terms are
     antihermitian-normalized the same way (the ``i^{binom(w, 2)}`` phase divided out) -- unless
     the gate is flagged :attr:`Exp._structural` (the wire/dense format), whose coefficients are
     already the structural ``g`` and are used directly.

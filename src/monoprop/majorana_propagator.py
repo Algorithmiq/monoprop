@@ -34,7 +34,7 @@ from .circuit import (
     expand_monomials,
     validate_parameter_mapping,
 )
-from .majorana_data import MajoranaOperator
+from .majorana import MajoranaOperator
 from .utils import validate_basis_change
 
 if TYPE_CHECKING:
@@ -90,7 +90,7 @@ class MajoranaPropagator:
 
         Args:
             initial_operator: Initial operator, either a
-                :class:`~monoprop.majorana_data.MajoranaOperator` or an object
+                :class:`~monoprop.majorana.MajoranaOperator` or an object
                 implementing ``get_majorana_operator()``.
             initial_state: Slater determinant (occupied mode indices) for the initial
                 state.

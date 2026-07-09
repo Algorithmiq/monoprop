@@ -22,7 +22,7 @@ from msgpack import unpackb
 from pytest_cases import case
 
 from monoprop.circuit import Circuit
-from monoprop.majorana_data import MajoranaOperator
+from monoprop.majorana import MajoranaOperator
 
 if TYPE_CHECKING:
     from pathlib import Path

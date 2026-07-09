@@ -32,13 +32,13 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from .circuit import Circuit, Exp
-    from .pauli_data import PauliOperator
+    from .pauli import PauliOperator
 
 
 class PauliPropagator(MajoranaPropagator):
     """Propagator for qubit (Pauli) operators, mapped to Majoranas via Jordan-Wigner.
 
-    Accepts a :class:`~monoprop.pauli_data.PauliOperator` observable and a
+    Accepts a :class:`~monoprop.pauli.PauliOperator` observable and a
     :class:`~monoprop.circuit.Circuit` of qubit (Pauli) :class:`~monoprop.circuit.Exp` gates;
     the Jordan-Wigner basis change is set automatically so cutoffs act on Pauli weight. Outputs
     remain in the Majorana basis.
@@ -68,7 +68,7 @@ class PauliPropagator(MajoranaPropagator):
 
         Args:
             initial_operator: Initial qubit operator as a
-                :class:`~monoprop.pauli_data.PauliOperator`.
+                :class:`~monoprop.pauli.PauliOperator`.
             initial_state: Computational-basis reference (indices of qubits set to 1).
             cutoff: Maximum Pauli weight (number of qubits touched) retained during
                 evolution. The fully-paired exception described in

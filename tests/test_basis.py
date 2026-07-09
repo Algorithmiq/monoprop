@@ -21,7 +21,7 @@ from monoprop import (
     MajoranaPropagator,
     jordan_wigner_basis_change,
 )
-from monoprop.fermi_data import MajoranaOperator
+from monoprop.fermi import MajoranaOperator
 
 
 def test_basis_change(serial_comm):

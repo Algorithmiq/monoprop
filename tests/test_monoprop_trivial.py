@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from monoprop import Circuit, MajoranaPropagator
-from monoprop.fermi_data import MajoranaOperator
+from monoprop.fermi import MajoranaOperator
 
 
 @pytest.mark.parametrize(

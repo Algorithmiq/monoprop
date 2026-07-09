@@ -35,11 +35,11 @@ from monoprop import (
     PauliPropagator,
 )
 from monoprop.circuit import expand_monomials
-from monoprop.fermi_data import (
+from monoprop.fermi import (
     FermiOperator,
     MajoranaOperator,
 )
-from monoprop.pauli_data import PauliOperator
+from monoprop.pauli import PauliOperator
 
 if TYPE_CHECKING:
     from collections.abc import Callable

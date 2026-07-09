@@ -19,7 +19,7 @@ import pytest
 
 from monoprop import Circuit, Exp
 from monoprop.circuit import expand_monomials
-from monoprop.fermi_data import (
+from monoprop.fermi import (
     FermiOperator,
     FermiString,
     MajoranaOperator,

@@ -26,9 +26,9 @@ from monoprop import (
     Exp,
     MajoranaPropagator,
 )
-from monoprop.fermi_data import FermiOperator
-from monoprop.majorana_data import Majorana, MajoranaOperator
-from monoprop.pauli_data import Pauli, PauliOperator
+from monoprop.fermi import FermiOperator
+from monoprop.majorana import Majorana, MajoranaOperator
+from monoprop.pauli import Pauli, PauliOperator
 from tests.cases import load_problem
 
 DATA = Path(__file__).parent / "data"

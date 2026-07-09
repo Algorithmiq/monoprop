@@ -15,7 +15,7 @@
 import numpy as np
 
 from monoprop import Circuit, MajoranaPropagator
-from monoprop.majorana_data import MajoranaOperator
+from monoprop.majorana import MajoranaOperator
 
 
 def test_nonfermi(serial_comm):

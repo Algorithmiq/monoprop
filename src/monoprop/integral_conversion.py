@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from monoprop.fermi_data import FermiOperator
+from monoprop.fermi import FermiOperator
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

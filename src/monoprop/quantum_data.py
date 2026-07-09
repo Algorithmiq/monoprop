@@ -20,7 +20,7 @@ from abc import abstractmethod
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from monoprop.majorana_data import MajoranaOperator
+    from monoprop.majorana import MajoranaOperator
 
 
 class IQuantumOperator(Protocol):

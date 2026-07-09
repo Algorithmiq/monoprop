@@ -29,7 +29,7 @@ except ImportError as e:
 
 from monoprop.circuit import Circuit, Exp
 from monoprop.conversion_utils import _extend_pauli_string
-from monoprop.pauli_data import Pauli, PauliOperator
+from monoprop.pauli import Pauli, PauliOperator
 
 PAULI_EVOLUTION_EQUIVALENT = {
     "rx",

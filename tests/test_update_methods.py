@@ -23,7 +23,7 @@ from monoprop import (
     MajoranaPropagator,
     jordan_wigner_basis_change,
 )
-from monoprop.majorana_data import MajoranaOperator
+from monoprop.majorana import MajoranaOperator
 from tests.cases import CasesFermionicProblem
 
 

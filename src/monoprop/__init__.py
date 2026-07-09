@@ -37,11 +37,11 @@ from .circuit import (
     validate_parameter_mapping,
 )
 from .exceptions import NumberOfModesInvalidError
-from .fermi_data import FermiOperator, FermiString
+from .fermi import FermiOperator, FermiString
 from .integral_conversion import integrals_to_fermion
-from .majorana_data import Majorana, MajoranaOperator
+from .majorana import Majorana, MajoranaOperator
 from .majorana_propagator import MajoranaPropagator
-from .pauli_data import Pauli, PauliOperator
+from .pauli import Pauli, PauliOperator
 from .pauli_propagator import PauliPropagator
 from .quantum_data import IQuantumOperator
 from .utils import jordan_wigner_basis_change

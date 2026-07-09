@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .conversion_utils import _n_product
-from .majorana_data import MajoranaOperator
+from .majorana import MajoranaOperator
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

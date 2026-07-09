@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
-from .majorana_data import MajoranaOperator
+from .majorana import MajoranaOperator
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

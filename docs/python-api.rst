@@ -52,7 +52,7 @@ monomials given directly as sets of Majorana indices (``MajoranaOperator``).
 ``Exp`` and ``Circuit`` describe the evolution and the reference
 state.
 
-.. automodule:: monoprop.fermi_data
+.. automodule:: monoprop.fermi
    :members:
    :undoc-members:
    :show-inheritance:
@@ -66,7 +66,7 @@ and ``Circuit`` describing the circuit. Feed these to ``PauliPropagator``,
 which takes them directly and truncates by qubit Pauli weight (see
 :doc:`/features/cutoff`).
 
-.. automodule:: monoprop.pauli_data
+.. automodule:: monoprop.pauli
    :members:
    :undoc-members:
    :show-inheritance:
@@ -113,7 +113,7 @@ Internal representations
 The canonical Majorana operator and dense circuit the builders above convert into, and
 the protocols a custom operator or circuit type must satisfy.
 
-.. automodule:: monoprop.majorana_data
+.. automodule:: monoprop.majorana
    :members:
    :undoc-members:
    :show-inheritance:

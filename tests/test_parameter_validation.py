@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from monoprop import Circuit, Exp, MajoranaPropagator
-from monoprop.majorana_data import MajoranaOperator
+from monoprop.majorana import MajoranaOperator
 
 
 def _two_gate_graph(serial_comm):

@@ -19,7 +19,7 @@ import pytest
 from pytest_cases import parametrize_with_cases
 
 from monoprop import Circuit, Exp, MajoranaPropagator
-from monoprop.majorana_data import MajoranaOperator
+from monoprop.majorana import MajoranaOperator
 from tests.cases import CasesFermionicProblemOrbitalRotations
 
 

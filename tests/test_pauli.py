@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for pauli_data module."""
+"""Unit tests for pauli module."""
 
 from __future__ import annotations
 
 import pytest
 
 from monoprop import Circuit, Exp, PauliPropagator
-from monoprop.majorana_data import MajoranaOperator
-from monoprop.pauli_data import Pauli, PauliOperator
+from monoprop.majorana import MajoranaOperator
+from monoprop.pauli import Pauli, PauliOperator
 
 
 class TestPauliPropagatorCutoff:

@@ -10,7 +10,7 @@ below it:
    (letters on named qubits).
 2. **Operators** -- a weighted sum of terms, written as a ``{term: coefficient}``
    dict. A :class:`~monoprop.MajoranaOperator`, a :class:`~monoprop.PauliOperator`,
-   or a :class:`~monoprop.fermi_data.FermiOperator`. *An operator contains terms.*
+   or a :class:`~monoprop.fermi.FermiOperator`. *An operator contains terms.*
 3. **Exponential gates** -- an *operator* that is *exponentiated* to drive one
    variational angle. A single :class:`~monoprop.Exp` type serves every family; the
    **generator type** it is handed decides how it is normalized. The generator must be
@@ -38,7 +38,7 @@ operators on numbered modes (for example :math:`c_0^\dagger c_1`).
 
    from monoprop import Circuit, MajoranaPropagator
    from monoprop import Exp
-   from monoprop.fermi_data import FermiOperator
+   from monoprop.fermi import FermiOperator
 
    # Observable: the hopping term c_0^† c_1 + c_1^† c_0 on 4 modes
    # ('+' = creation, '-' = annihilation).
