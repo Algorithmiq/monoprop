@@ -29,6 +29,14 @@ graph) and read off expectation values and gradients. See
    :undoc-members:
    :show-inheritance:
 
+Both propagators share a common base holding the graph-building, evaluation, and
+introspection surface.
+
+.. automodule:: monoprop.monomial_propagator
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: monoprop.circuit
    :members:
    :undoc-members:
