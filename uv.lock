@@ -1285,6 +1285,7 @@ interactive = [
     { name = "pylatexenc" },
 ]
 test = [
+    { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-cases" },
     { name = "pytest-datadir" },
@@ -1333,6 +1334,7 @@ interactive = [
     { name = "pylatexenc" },
 ]
 test = [
+    { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<8.3" },
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
     { name = "pytest-datadir" },
