@@ -10,6 +10,17 @@ docs_dir := "build/docs"
 html_dir := "build/docs/html"
 bench_results := "benches/results"
 
+# Fumadocs (Next.js) documentation site lives in `docs/`; the static export
+# is written to `docs/out`.
+site := "docs"
+
+# Run the Python docs toolchain in the synced docs environment.
+docs_uv := "uv run --no-dev --group docs --all-extras"
+# `fumapy` (the fumadocs Python docgen) ships inside the npm package; inject it
+# ephemerally and pin griffe to the 1.x line it targets (its newer
+# griffe-typingdoc dependency otherwise pulls an incompatible griffe).
+fumapy := "--with " + site + "/node_modules/fumadocs-python --with 'griffe<2' --with 'griffe-typingdoc==0.2.8'"
+
 default: build-docs
 
 test-py:
@@ -29,21 +40,9 @@ test-py-mpi-matrix:
     uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v; \
     ranks="${monoprop_MPI_TEST_PROCS:-1;2;4}"; for r in ${ranks//;/ }; do echo "Running MPI-marked Python tests with ${r} rank(s)"; mpiexec --allow-run-as-root -n "$r" uv run --no-sync python -m pytest tests --with-mpi -m mpi -v; done
 
-build-docs:
-    mkdir -p {{ docs_dir }}
-    uv run --no-dev --group docs --all-extras --python 3.12 \
-        sphinx-build -b html --define version="{{ version }}" docs {{ html_dir }}
-
-doctest-docs:
-    mkdir -p {{ docs_dir }}
-    uv run --no-dev --group docs --all-extras --python 3.12 \
-        tools/run_sphinx_build.py --reports-dir {{ html_dir }}/reports -- \
-        sphinx-build -b doctest -t notebook_test \
-            --define version="{{ version }}" docs {{ docs_dir }}/doctest
-
-serve-docs:
-    uv run --no-dev --group docs --all-extras --python 3.12 \
-        sphinx-autobuild -b html -D version="{{ version }}" docs {{ html_dir }}
+# Install the documentation site's JavaScript dependencies.
+docs-install:
+    cd {{ site }} && npm ci
 
 # Each LABEL is one column in results/REPORT.md, so serial / MPI / thread variants
 # sit side by side. Set the thread count with the monoprop_NUM_THREADS env var.
@@ -92,3 +91,25 @@ bench-smoke:
         --benchmark-json="{{bench_results}}/time-smoke.json" \
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16
     uv run --no-sync python benches/report.py "{{bench_results}}"
+
+# Execute the tutorial notebooks and convert them to Markdown. Notebook
+# execution fails the build on any cell error -- this is the notebook doctest.
+gen-notebooks:
+    {{ docs_uv }} python docs/scripts/notebooks_to_mdx.py
+
+# Generate the Python API reference MDX from docstrings (griffe -> JSON -> MDX).
+gen-api:
+    {{ docs_uv }} {{ fumapy }} fumapy-generate monoprop -d {{ site }}
+    cd {{ site }} && node scripts/generate-api.mjs
+
+# Run the runnable docstring examples (the docstring-level doctest check).
+doctest-py:
+    {{ docs_uv }} python -m pytest --doctest-modules src/monoprop
+
+# Build the static documentation site into `docs/out`.
+build-docs: docs-install gen-api doctest-py gen-notebooks
+    cd {{ site }} && npm run build
+
+# Serve the documentation locally with hot reloading.
+serve-docs: docs-install gen-api gen-notebooks
+    cd {{ site }} && npm run dev

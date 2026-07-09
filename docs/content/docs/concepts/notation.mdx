@@ -1,0 +1,166 @@
+---
+title: Notation
+description: The Majorana basis, monomials, the commutation rule, paired monomials, and the Pauli representation.
+---
+
+This page collects the notation and conventions used throughout the concepts
+section: the Majorana basis (the chosen basis with which the arithmetic driving the propagator is performed in),
+how monomials are indexed and made Hermitian, the
+expansion of operators and states, the commutation rule that drives propagation,
+and the dual interpretation of the same data as Pauli strings. The
+[Propagation Algorithm](/concepts/algorithm) page builds directly on these definitions.
+
+## Majorana operators
+
+Majorana operators $m_j$ are Hermitian ($m_j^\dagger = m_j$) and
+satisfy the anticommutation algebra
+
+$$
+\{m_i,\,m_j\} = 2\delta_{ij}\,\mathbb{I}.
+$$
+
+A system of $N$ fermionic modes is described by $2N$ Majorana
+operators $m_1, \ldots, m_{2N}$. They are related to the usual fermionic
+creation and annihilation operators by
+
+$$
+c_j = \tfrac{1}{2}(m_{2j-1} + i\,m_{2j}),
+\qquad
+c_j^\dagger = \tfrac{1}{2}(m_{2j-1} - i\,m_{2j}).
+$$
+
+Every operator on $N$ modes can be written as a polynomial in the
+$2N$ Majorana operators, so Hamiltonians, quantum states, and circuit
+generators can all be expressed in the same language. Through a fermion-to-qubit mapping,
+the same data can also be interpreted as Pauli strings.
+
+## Monomials and the Hermitian basis
+
+A Majorana **monomial** is indexed by a binary string
+$\nu \in \{0,1\}^{2N}$ and defined with a phase prefactor that makes it
+Hermitian:
+
+$$
+M_\nu = i^{\binom{|\nu|}{2}}\, m_1^{\nu_1} m_2^{\nu_2} \cdots m_{2N}^{\nu_{2N}}
+\;\propto\; \prod_{i=1}^{N} m_{2i-1}^{\nu_{2i-1}}\, m_{2i}^{\nu_{2i}}.
+$$
+
+The string $\nu$ records which Majorana operators are present (its set of
+ones is the monomial's **support**), and the **length** $|\nu|$ is the
+number of ones - i.e. how many Majorana operators the monomial contains.
+
+The phase $i^{\binom{|\nu|}{2}}$ makes $M_\nu$
+Hermitian. Taking the dagger reverses the order of the $n$ Majorana
+operators, and each of the $\binom{n}{2}$ transpositions needed to restore
+their order flips a sign, so a bare monomial of length $n$ satisfies
+$(m_{i_1}\cdots m_{i_n})^\dagger = (-1)^{n(n-1)/2}\,m_{i_1}\cdots m_{i_n}$.
+The compensating factor $i^{\binom{|\nu|}{2}}$ cancels this sign and
+restores $M_\nu^\dagger = M_\nu$:
+
+| Length $|\nu|$ | Phase $i^{\binom{|\nu|}{2}}$ | Example |
+| --- | --- | --- |
+| 1 | $1$ | $m_j$ |
+| 2 | $i$ | $i\,m_j m_k$ |
+| 4 | $-1$ | $-\,m_i m_j m_k m_l$ |
+
+Because every $M_\nu$ is Hermitian, any Hermitian operator $H$
+expands with purely **real** coefficients,
+
+$$
+H = \sum_\nu c_\nu\, M_\nu, \qquad c_\nu \in \mathbb{R}.
+$$
+
+## Commutation rule
+
+For two monomials $M_\nu$ and $M_\mu$, whether they commute or
+anticommute is fixed by their lengths and the parity of their overlap
+$|\nu \cap \mu|$:
+
+$$
+M_\nu M_\mu = (-1)^{\,|\nu|\,|\mu| \,+\, |\nu \cap \mu|}\, M_\mu M_\nu.
+$$
+
+The three resulting cases are:
+
+- two **even** monomials commute iff the overlap is even;
+- two **odd** monomials commute iff the overlap is odd;
+- an **even** and an **odd** monomial commute iff the overlap is even.
+
+Throughout propagation the generators and the propagated terms are even
+monomials, so the relevant case is the first: two even monomials **anticommute
+if and only if their overlap is odd**. When that happens, their product is again
+a single monomial, on the symmetric difference of the two supports:
+
+$$
+M_\nu M_\mu \;\propto\; M_{\nu \oplus \mu},
+\qquad
+|\nu \oplus \mu| = |\nu| + |\mu| - 2\,|\nu \cap \mu|.
+$$
+
+This one-to-one map, an anticommuting pair produces exactly one new monomial,
+is what makes gate application deterministic and sparse, and is the algebraic
+core of the propagation algorithm.
+
+## Reference states and paired monomials
+
+A Fock state $|n_1 \dots n_N\rangle$ (in particular a Hartree-Fock
+reference, or Slater determinant) has an especially simple Majorana expansion.
+Introducing the **paired** operator for each orbital,
+
+$$
+\overline{m}_j = -i\,m_{2j-1} m_{2j},
+$$
+
+the corresponding density operator factorises one orbital at a time,
+
+$$
+|n_1 \dots n_N\rangle\!\langle n_1 \dots n_N|
+= \frac{1}{2^N} \prod_{j=1}^{N}\bigl(1 + (-1)^{n_j}\,\overline{m}_j\bigr).
+$$
+
+Expanding the product, this is a sum of **paired monomials** -- products of the
+$\overline{m}_j$ -- with signs fixed by the occupation numbers.
+
+## The Pauli representation
+
+The engine always works in the Majorana basis: a qubit system enters as a
+*Majorana representation* - the binary strings $\nu$ above - and every gate,
+commutator, and product is evaluated there. Pauli strings never appear during
+propagation.
+
+To read out or truncate in the qubit picture, you supply a
+fermion-to-qubit encoding, which reinterprets the *same* $\nu$ as a Pauli
+string. Under the [Jordan-Wigner mapping](https://en.wikipedia.org/wiki/Jordan%E2%80%93Wigner_transformation), orbital $i$ maps to qubit $i$ and its two
+Majoranas become
+
+$$
+m_{2i-1} \;\mapsto\; \Bigl(\textstyle\prod_{k<i} Z_k\Bigr) X_i,
+\qquad
+m_{2i} \;\mapsto\; \Bigl(\textstyle\prod_{k<i} Z_k\Bigr) Y_i.
+$$
+
+Each Majorana terminates in an $X$ or $Y$ on its own qubit, preceded by
+a **parity string** of $Z$'s on every lower qubit. These tails make
+Jordan-Wigner **non-local**: a single Majorana on mode $i$ becomes a Pauli of
+weight $i$.
+
+The encoding is *linear* in $\nu$ - a change of basis on the binary data,
+$\nu \mapsto \nu'$ over $\mathbb{F}_2$. Propagation is untouched; only
+the reading of $\nu$ changes. Other mappings, such as the ternary-tree
+constructions, are linear in the same way, so the choice of encoding is just a
+choice of how to read the data, and the [propagation algorithm](/concepts/algorithm) is
+unchanged.
+
+### Support cutoff = Pauli weight
+
+The encoding is consulted only when truncation is applied (see [truncation](/concepts/algorithm#truncation-controlling-growth)).
+The `support` cutoff keeps a monomial acting on at most $\omega$ distinct *qubits*, which the
+engine measures on the transformed string $\nu'$, not the raw $\nu$:
+
+$$
+|P_\nu| \;=\; \operatorname{support}(\nu') \;\le\; \omega .
+$$
+
+The distinction matters because fermion-to-qubit mappings are non-local: the $Z$ parity
+tails fall on the qubits below each mode, so the Pauli weight generally *exceeds*
+the Majorana support of $\nu$ (the number of modes it touches).

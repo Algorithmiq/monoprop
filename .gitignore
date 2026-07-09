@@ -14,7 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# using lib/ would exclude the docs/src/lib directory used by next.js
+/lib/
 lib64/
 parts/
 sdist/
