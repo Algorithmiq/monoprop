@@ -39,17 +39,6 @@ def _two_gate_graph(serial_comm):
 class TestConstructorValidation:
     """Validation performed at construction time."""
 
-    def test_invalid_basis_change_length(self, serial_comm):
-        operator = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
-        with pytest.raises(ValueError, match="Basis change must have length 4"):
-            MajoranaPropagator(
-                operator,
-                [0, 1],
-                cutoff=4,
-                basis_change=[[0], [1], [2]],
-                comm=serial_comm,
-            )
-
     def test_invalid_tolerances(self, serial_comm):
         operator = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
         with pytest.raises(
@@ -83,16 +72,16 @@ class TestGraphAndParameterValidation:
     def test_non_contiguous_mapping_raises(self):
         """A param scheme with an index gap is rejected at circuit construction."""
         gates = (
-            Exp(MajoranaOperator({(0,): 1.0}, num_modes=2), param=0),
-            Exp(MajoranaOperator({(1,): 1.0}, num_modes=2), param=2),
+            Exp(MajoranaOperator({(0,): 1.0}, num_modes=2), index=0),
+            Exp(MajoranaOperator({(1,): 1.0}, num_modes=2), index=2),
         )
         with pytest.raises(ValueError, match="contiguous"):
             Circuit(gates)
 
     def test_mixed_param_scheme_rejected(self):
-        """Setting `param` on some gates but not others is rejected as ambiguous."""
+        """Setting `index` on some gates but not others is rejected as ambiguous."""
         gates = (
-            Exp(MajoranaOperator({(0,): 1.0}, num_modes=2), param=0),
+            Exp(MajoranaOperator({(0,): 1.0}, num_modes=2), index=0),
             Exp(MajoranaOperator({(1,): 1.0}, num_modes=2)),
         )
         with pytest.raises(ValueError, match="every gate must set"):
@@ -104,8 +93,8 @@ class TestGraphAndParameterValidation:
         mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
         circuit = Circuit(
             (
-                Exp(MajoranaOperator({(0,): 1.0}, num_modes=2), param=0),
-                Exp(MajoranaOperator({(1,): 1.0}, num_modes=2), param=0),
+                Exp(MajoranaOperator({(0,): 1.0}, num_modes=2), index=0),
+                Exp(MajoranaOperator({(1,): 1.0}, num_modes=2), index=0),
             ),
         )
         mp.build_graph(circuit)

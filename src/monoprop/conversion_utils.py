@@ -43,7 +43,9 @@ def _extend_pauli_string(pauli: str, qubits: Sequence[int], n_qubits: int) -> st
     return "".join(pauli_list)
 
 
-def _pauli_to_fermi(pauli: str) -> tuple[tuple[int, ...], complex]:
+def _pauli_to_majorana(pauli: str) -> tuple[tuple[int, ...], complex]:
+    # Jordan-Wigner map a full-width Pauli string to a Majorana monomial: returns the
+    # (Majorana index tuple, phase coefficient) pair, not a fermionic operator.
     # the algorithms starts with last qubit and checks it's Pauli. Knowing, that
     # JW Majoranas are Z...ZX or Z...ZY, we can determine Majorana to be added
     # by tracking if currently the Z should be applied and what we are seeing

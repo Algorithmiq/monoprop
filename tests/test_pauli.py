@@ -42,12 +42,6 @@ class TestPauliPropagatorCutoff:
         with pytest.raises(AttributeError):
             mp.cutoff_type = "length"
 
-    def test_basis_change_is_read_only(self, serial_comm):
-        mp = self._propagator(serial_comm)
-        assert mp.basis_change is not None  # Jordan-Wigner basis set at construction
-        with pytest.raises(AttributeError):
-            mp.basis_change = None
-
     def test_num_qubits(self, serial_comm):
         mp = self._propagator(serial_comm)
         assert mp.num_qubits == 2  # "ZZ" operator

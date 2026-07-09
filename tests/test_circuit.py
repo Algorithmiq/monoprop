@@ -44,16 +44,16 @@ def _propagator(problem):
 
 
 def _rebase(gates):
-    """Drop each gate's explicit ``param`` so a gate slice gets the default identity mapping.
+    """Drop each gate's explicit ``index`` so a gate slice gets the default identity mapping.
 
-    Slicing a circuit's gates keeps their absolute ``param`` indices, which are no longer
+    Slicing a circuit's gates keeps their absolute ``index`` indices, which are no longer
     contiguous from 0 in a tail slice; re-basing to the identity restores a valid sub-circuit.
-    ``_with_param`` preserves each gate's ``_structural`` flag -- these gates come from a
+    ``_with_index`` preserves each gate's ``_structural`` flag -- these gates come from a
     ``from_dense_arrays`` circuit (already-structural coefficients), so a plain
     ``Exp(gate.generator)`` would re-antihermitian-normalize them and reject the structural
     real coefficients of weight-2 monomials.
     """
-    return tuple(Exp._with_param(gate, None) for gate in gates)
+    return tuple(Exp._with_index(gate, None) for gate in gates)
 
 
 # -- the Circuit type -----------------------------------------------------------
@@ -70,10 +70,10 @@ def test_exp_rejects_bare_term() -> None:
 def test_exp_equality_and_repr() -> None:
     """Two Exp gates are equal when generator, param, family, and structural flag match."""
     gen = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
-    assert Exp(gen, param=0) == Exp(gen, param=0)
-    assert Exp(gen, param=0) != Exp(gen, param=1)
+    assert Exp(gen, index=0) == Exp(gen, index=0)
+    assert Exp(gen, index=0) != Exp(gen, index=1)
     assert Exp(gen) != "not an Exp"
-    assert repr(Exp(gen, param=0)).startswith("Exp(")
+    assert repr(Exp(gen, index=0)).startswith("Exp(")
 
 
 def test_exp_from_fermi_generator_becomes_majorana() -> None:
@@ -130,10 +130,10 @@ def test_default_mapping_is_identity() -> None:
 def test_shared_mapping_index_ties_gates() -> None:
     """Reusing one index in the mapping ties gates to one angle."""
     gates = (
-        Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), param=0),
-        Exp(MajoranaOperator({(2, 3): 1.0j}, num_modes=2), param=1),
+        Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), index=0),
+        Exp(MajoranaOperator({(2, 3): 1.0j}, num_modes=2), index=1),
         Exp(
-            MajoranaOperator({(0, 3): 1.0j}, num_modes=2), param=0
+            MajoranaOperator({(0, 3): 1.0j}, num_modes=2), index=0
         ),  # ties to the first
     )
     circuit = Circuit(gates)
@@ -144,17 +144,17 @@ def test_shared_mapping_index_ties_gates() -> None:
 def test_circuit_rejects_non_contiguous_mapping() -> None:
     """A mapping with an index gap is rejected (it would invent a phantom parameter)."""
     gates = (
-        Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), param=0),
-        Exp(MajoranaOperator({(2, 3): 1.0j}, num_modes=2), param=2),
+        Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), index=0),
+        Exp(MajoranaOperator({(2, 3): 1.0j}, num_modes=2), index=2),
     )
     with pytest.raises(ValueError, match="contiguous"):
         Circuit(gates)
 
 
 def test_circuit_rejects_mixed_param_scheme() -> None:
-    """Setting `param` on some gates but not others is rejected as ambiguous."""
+    """Setting `index` on some gates but not others is rejected as ambiguous."""
     gates = (
-        Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), param=0),
+        Exp(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), index=0),
         Exp(MajoranaOperator({(2, 3): 1.0j}, num_modes=2)),
     )
     with pytest.raises(ValueError, match="every gate must set"):

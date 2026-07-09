@@ -36,14 +36,13 @@ from .circuit import (
     expand_monomials,
     validate_parameter_mapping,
 )
-from .exceptions import NumberOfModesInvalidError
 from .fermi import FermiOperator, FermiString
 from .integral_conversion import integrals_to_fermion
 from .majorana import Majorana, MajoranaOperator
 from .majorana_propagator import MajoranaPropagator
+from .monomial_propagator import MonomialPropagator
 from .pauli import Pauli, PauliOperator
 from .pauli_propagator import PauliPropagator
-from .quantum_data import IQuantumOperator
 from .utils import jordan_wigner_basis_change
 
 __all__ = [
@@ -52,11 +51,10 @@ __all__ = [
     "Exp",
     "FermiOperator",
     "FermiString",
-    "IQuantumOperator",
     "Majorana",
     "MajoranaOperator",
     "MajoranaPropagator",
-    "NumberOfModesInvalidError",
+    "MonomialPropagator",
     "Pauli",
     "PauliOperator",
     "PauliPropagator",

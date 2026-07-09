@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
+from .conversion_utils import _extend_pauli_string, _pauli_to_majorana
 from .majorana import MajoranaOperator
 
 if TYPE_CHECKING:
@@ -223,7 +223,7 @@ class PauliOperator:
         coefficients: list[complex] = []
         for pauli, coeff in self.terms.items():
             extended = _extend_pauli_string(pauli.string, pauli.qubits, self.num_qubits)
-            majorana, jw_coeff = _pauli_to_fermi(extended)
+            majorana, jw_coeff = _pauli_to_majorana(extended)
             majoranas.append(majorana)
             coefficients.append(jw_coeff * coeff)
         return MajoranaOperator._from_terms(majoranas, coefficients, self.num_qubits)

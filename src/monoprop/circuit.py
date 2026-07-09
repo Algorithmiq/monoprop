@@ -40,7 +40,7 @@ There is likewise a **single** :class:`Circuit` type. The gate objects carry the
 one circuit can be authored from Majorana/fermionic gates *or* qubit gates, and the circuit
 validates that its gates are a single, consistent family (the two cannot be mixed). Each gate
 is the unit of parameterization: one gate is driven by exactly one variational angle, named
-by its ``param`` index (``None`` on every gate => each gate gets its own angle in order;
+by its ``index`` (``None`` on every gate => each gate gets its own angle in order;
 repeat an index to tie gates to a shared angle). A multi-term generator is a single
 exponential driven by a single angle.
 
@@ -54,7 +54,7 @@ from __future__ import annotations
 import itertools
 from typing import TYPE_CHECKING, Literal
 
-from .conversion_utils import _extend_pauli_string, _pauli_to_fermi
+from .conversion_utils import _extend_pauli_string, _pauli_to_majorana
 from .majorana import MajoranaOperator
 from .pauli import Pauli, PauliOperator
 
@@ -102,18 +102,18 @@ class Exp:
     Attributes:
         generator: The generator operator (a ``MajoranaOperator`` or ``PauliOperator``; a
             ``FermiOperator`` is stored in its converted ``MajoranaOperator`` form).
-        param: The variational-angle index driving this gate, or ``None`` for the identity
+        index: The variational-angle index driving this gate, or ``None`` for the identity
             mapping (see :class:`Circuit`).
         family: The generator family -- ``"pauli"`` or ``"majorana"`` -- inferred from the
             generator type at construction (a fermionic generator becomes ``"majorana"``).
     """
 
-    __slots__ = ("_structural", "family", "generator", "param")
+    __slots__ = ("_structural", "family", "generator", "index")
 
     def __init__(
         self,
         generator: MajoranaOperator | PauliOperator | FermiOperator,
-        param: int | None = None,
+        index: int | None = None,
         *,
         _structural: bool = False,
     ) -> None:
@@ -153,30 +153,30 @@ class Exp:
         if isinstance(generator, PauliOperator):
             _validate_commuting_pauli_generator(generator)
         self.generator = generator
-        self.param = None if param is None else int(param)
+        self.index = None if index is None else int(index)
         self.family = family
         # Authored generators (including converted fermionic ones) carry the Hermitian operator;
         # _gate_layers normalizes them. Only the wire/dense path sets _structural=True.
         self._structural = _structural
 
     @classmethod
-    def _structural_gate(cls, generator: MajoranaOperator, param: int | None) -> Exp:
+    def _structural_gate(cls, generator: MajoranaOperator, index: int | None) -> Exp:
         """Build a Majorana gate whose coefficients are *already* structural ``g``.
 
         For the wire/dense format (:meth:`Circuit.from_dense_arrays`) the generator's
         coefficients are already the real structural generator coefficients, so
         :func:`_gate_layers` must pass them through rather than antihermitian-normalize them.
         """
-        return cls(generator, param=param, _structural=True)
+        return cls(generator, index=index, _structural=True)
 
     @classmethod
-    def _with_param(cls, gate: Exp, param: int | None) -> Exp:
-        """Clone ``gate`` with a new ``param``, preserving its family and ``_structural`` flag.
+    def _with_index(cls, gate: Exp, index: int | None) -> Exp:
+        """Clone ``gate`` with a new ``index``, preserving its family and ``_structural`` flag.
 
-        Used by :meth:`Circuit.__add__`; a plain ``Exp(gate.generator, param)`` would reset
+        Used by :meth:`Circuit.__add__`; a plain ``Exp(gate.generator, index)`` would reset
         ``_structural`` to ``False`` and re-normalize an already-structural (dense) generator.
         """
-        return cls(gate.generator, param=param, _structural=gate._structural)
+        return cls(gate.generator, index=index, _structural=gate._structural)
 
     def __eq__(self, other: object) -> bool:
         """Equal when the generator, parameter index, family, and structural flag all match."""
@@ -184,7 +184,7 @@ class Exp:
             return NotImplemented
         return (
             self.generator == other.generator
-            and self.param == other.param
+            and self.index == other.index
             and self.family == other.family
             and self._structural == other._structural
         )
@@ -192,8 +192,8 @@ class Exp:
     __hash__ = None  # type: ignore[assignment]  # value-equal but not hashable (mutable generator)
 
     def __repr__(self) -> str:
-        """Return a string representation such as ``Exp(<generator>, param=0)``."""
-        return f"{self.__class__.__name__}({self.generator}, param={self.param})"
+        """Return a string representation such as ``Exp(<generator>, index=0)``."""
+        return f"{self.__class__.__name__}({self.generator}, index={self.index})"
 
 
 class Circuit:
@@ -255,7 +255,7 @@ class Circuit:
         if len(set(initial_state)) != len(initial_state):
             raise ValueError("Duplicate indices in initial state")
 
-        # Validate gate types up front: the identity-drop below reads gate.param/.generator,
+        # Validate gate types up front: the identity-drop below reads gate.index/.generator,
         # so a non-Exp gate must be rejected with a clear TypeError first rather than crashing
         # with an opaque AttributeError.
         for gate in gates:
@@ -272,7 +272,7 @@ class Circuit:
         # identity converts to one such empty gate). Under an *explicit* mapping the gate carries
         # a caller-chosen index, so leave the circuit untouched rather than silently renumbering
         # the caller's angles.
-        default_mapping = all(gate.param is None for gate in gates)
+        default_mapping = all(gate.index is None for gate in gates)
         if default_mapping and any(not gate.generator.terms for gate in gates):
             kept = [i for i, gate in enumerate(gates) if gate.generator.terms]
             if parameters and len(parameters) != len(gates):
@@ -336,20 +336,20 @@ class Circuit:
 
     @property
     def resolved_mapping(self) -> tuple[int, ...]:
-        """Per-gate angle index, derived from each gate's ``param``.
+        """Per-gate angle index, derived from each gate's ``index``.
 
-        With no gate setting ``param`` this is the identity ``0..n-1`` (each gate its own
-        angle). Otherwise every gate must set ``param`` and the indices must be contiguous.
+        With no gate setting ``index`` this is the identity ``0..n-1`` (each gate its own
+        angle). Otherwise every gate must set ``index`` and the indices must be contiguous.
         """
-        params = [gate.param for gate in self.gates]
-        if all(p is None for p in params):
+        indices = [gate.index for gate in self.gates]
+        if all(i is None for i in indices):
             return tuple(range(len(self.gates)))
-        if any(p is None for p in params):
+        if any(i is None for i in indices):
             raise ValueError(
-                "Either every gate must set `param`, or none of them must (mixing an "
+                "Either every gate must set `index`, or none of them must (mixing an "
                 "explicit index with the default would be ambiguous)."
             )
-        mapping = tuple(int(p) for p in params)  # type: ignore[arg-type]
+        mapping = tuple(int(i) for i in indices)  # type: ignore[arg-type]
         validate_parameter_mapping(mapping, len(self.gates), "gates")
         return mapping
 
@@ -397,11 +397,11 @@ class Circuit:
         # Preserve each gate's _structural flag: a dense (wire-format) gate carries structural
         # coefficients that must not be antihermitian-normalized again.
         left = tuple(
-            Exp._with_param(gate, index)
+            Exp._with_index(gate, index)
             for gate, index in zip(self.gates, self.resolved_mapping, strict=True)
         )
         right = tuple(
-            Exp._with_param(gate, index + offset)
+            Exp._with_index(gate, index + offset)
             for gate, index in zip(other.gates, other.resolved_mapping, strict=True)
         )
         return Circuit(
@@ -425,7 +425,7 @@ class Circuit:
         consecutive monomials sharing a ``param_ind`` become one Majorana :class:`Exp` whose
         generator is a :class:`~monoprop.majorana.MajoranaOperator` carrying those
         monomials with their (structural) generator coefficients, and each gate's
-        ``param_ind`` becomes that gate's ``param``, so weight-tying is preserved and the
+        ``param_ind`` becomes that gate's ``index``, so weight-tying is preserved and the
         expanded engine arrays stay identical to the original.
 
         Args:
@@ -453,7 +453,7 @@ class Circuit:
                     MajoranaOperator._from_terms(
                         current_majoranas, current_coeffs, num_modes=None
                     ),
-                    param=current_index,
+                    index=current_index,
                 )
             )
 
@@ -597,7 +597,7 @@ def _gate_layers(
         layers: list[tuple[tuple[int, ...], float]] = []
         for pauli, coeff in generator.terms.items():
             extended = _extend_pauli_string(pauli.string, pauli.qubits, num_qubits)
-            majorana, jw_coeff = _pauli_to_fermi(extended)
+            majorana, jw_coeff = _pauli_to_majorana(extended)
             layers.append(
                 (tuple(majorana), _antihermitian_gen_coeff(majorana, coeff * jw_coeff))
             )

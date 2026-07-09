@@ -151,9 +151,9 @@ The angle index lives on the gate, as its ``param``:
    shared = MajoranaOperator({Majorana(0, 1): 1j, Majorana(2, 3): 0.5j}, num_modes=4)  # multi-term ⇒ ONE angle
    circuit = Circuit(
        gates=[
-           Exp(shared, param=0),          # ┐ gates 0 and 2 share angle 0
-           Exp(MajoranaOperator({Majorana(4, 5): 1j}, num_modes=4), param=1),  # │
-           Exp(shared, param=0),          # ┘
+           Exp(shared, index=0),          # ┐ gates 0 and 2 share angle 0
+           Exp(MajoranaOperator({Majorana(4, 5): 1j}, num_modes=4), index=1),  # │
+           Exp(shared, index=0),          # ┘
        ],
        parameters=[0.3, 0.7],
    )

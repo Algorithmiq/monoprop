@@ -14,15 +14,15 @@
 
 """Pauli propagator.
 
-Thin wrapper over :class:`~monoprop.majorana_propagator.MajoranaPropagator` that accepts
-Pauli operators and gates, mapping them into the Majorana basis via Jordan-Wigner.
+Concrete :class:`~monoprop.monomial_propagator.MonomialPropagator` that accepts qubit (Pauli)
+operators and gates.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .majorana_propagator import MajoranaPropagator
+from .monomial_propagator import MonomialPropagator
 from .utils import jordan_wigner_basis_change
 
 if TYPE_CHECKING:
@@ -35,17 +35,16 @@ if TYPE_CHECKING:
     from .pauli import PauliOperator
 
 
-class PauliPropagator(MajoranaPropagator):
-    """Propagator for qubit (Pauli) operators, mapped to Majoranas via Jordan-Wigner.
+class PauliPropagator(MonomialPropagator):
+    """Classical simulator for qubit (Pauli) operators.
 
     Accepts a :class:`~monoprop.pauli.PauliOperator` observable and a
-    :class:`~monoprop.circuit.Circuit` of qubit (Pauli) :class:`~monoprop.circuit.Exp` gates;
-    the Jordan-Wigner basis change is set automatically so cutoffs act on Pauli weight. Outputs
-    remain in the Majorana basis.
+    :class:`~monoprop.circuit.Circuit` of qubit (Pauli) :class:`~monoprop.circuit.Exp` gates.
+    See :class:`~monoprop.monomial_propagator.MonomialPropagator` for the shared building,
+    evaluation, and introspection surface.
 
-    The cutoff type is fixed to ``"support"`` -- i.e. the qubit Pauli weight -- since
-    that is the meaningful structural measure for qubit operators; ``"length"`` is not
-    available on this class.
+    The cutoff is measured as qubit Pauli weight (the number of qubits a retained term
+    touches); ``cutoff_type`` is fixed and read-only on this class.
     """
 
     def __init__(
@@ -61,10 +60,9 @@ class PauliPropagator(MajoranaPropagator):
     ) -> None:
         """Initialize the qubit propagator.
 
-        See :class:`~monoprop.majorana_propagator.MajoranaPropagator` for the shared
-        arguments. The cutoff is always measured as Pauli weight
-        (``cutoff_type="support"``), so ``cutoff`` bounds the number of qubits a retained
-        term touches.
+        See :class:`~monoprop.monomial_propagator.MonomialPropagator` for the shared
+        arguments. The cutoff is always measured as Pauli weight, so ``cutoff`` bounds the
+        number of qubits a retained term touches.
 
         Args:
             initial_operator: Initial qubit operator as a
@@ -72,7 +70,7 @@ class PauliPropagator(MajoranaPropagator):
             initial_state: Computational-basis reference (indices of qubits set to 1).
             cutoff: Maximum Pauli weight (number of qubits touched) retained during
                 evolution. The fully-paired exception described in
-                :class:`~monoprop.majorana_propagator.MajoranaPropagator` still applies.
+                :class:`~monoprop.monomial_propagator.MonomialPropagator` still applies.
             schrodinger_cutoff: Optional Schrodinger-picture cutoff (enables that
                 picture).
             lower_atol: Optional lower coefficient-truncation tolerance.
@@ -82,7 +80,7 @@ class PauliPropagator(MajoranaPropagator):
         # The PauliOperator carries its own qubit count (a required constructor argument), so
         # the propagator reads it directly rather than validating it here.
         num_qubits = initial_operator.num_qubits
-        super().__init__(
+        self._init_simulator(
             initial_operator.get_majorana_operator(),
             initial_state,
             cutoff=cutoff,
@@ -93,8 +91,8 @@ class PauliPropagator(MajoranaPropagator):
             basis_change=jordan_wigner_basis_change(num_qubits),
             comm=comm,
         )
-        # Set after super().__init__ (which resets it to None); the qubit count comes from
-        # the observable and is carried into Pauli gate expansion via build_graph.
+        # The qubit count comes from the observable and is carried into Pauli gate expansion
+        # via build_graph (_init_simulator initializes it to None).
         self._num_qubits = num_qubits
 
     @property
@@ -106,34 +104,13 @@ class PauliPropagator(MajoranaPropagator):
             raise RuntimeError("PauliPropagator has no qubit count set.")
         return self._num_qubits
 
-    @property
-    def cutoff_type(self) -> str:
-        """Cutoff type, always ``"support"`` (Pauli weight) for a qubit propagator.
-
-        Read-only: a qubit propagator's cutoff is fixed to Pauli weight. Use
-        :class:`~monoprop.majorana_propagator.MajoranaPropagator` for length-based
-        truncation.
-        """
-        return self._simulator.cutoff_type
-
-    @property
-    def basis_change(self) -> list[list[int]] | None:
-        """The Jordan-Wigner basis change, fixed at construction (read-only).
-
-        A qubit propagator's cutoff acts on Pauli weight via a fixed Jordan-Wigner basis;
-        overwriting it would break that semantics, so unlike
-        :class:`~monoprop.majorana_propagator.MajoranaPropagator` the setter is not exposed.
-        """
-        return self._simulator.basis_change
-
     def _circuit_gates(self, circuit: Circuit) -> Sequence[Exp]:
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.
 
-        There is a single :class:`~monoprop.circuit.Circuit` type; the family is carried by
-        the gates (see :attr:`~monoprop.circuit.Circuit.family`). A ``PauliPropagator`` rejects
-        a Majorana/fermionic circuit. The Jordan-Wigner mapping and antihermitian
-        normalization live in :func:`~monoprop.circuit.expand_monomials`; the propagator's
-        ``num_qubits`` (from the observable) reaches the expander via ``self._num_qubits``.
+        A ``PauliPropagator`` rejects a Majorana/fermionic circuit. The Jordan-Wigner mapping
+        and antihermitian normalization live in :func:`~monoprop.circuit.expand_monomials`;
+        the propagator's ``num_qubits`` (from the observable) reaches the expander via
+        ``self._num_qubits``.
         """
         if circuit.family == "majorana":
             raise TypeError(
