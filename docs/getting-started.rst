@@ -54,13 +54,13 @@ rotation; see more in :doc:`concepts/algorithm`:
 
    >>> import numpy as np
    >>> from monoprop import (
-   ...     MajoranaPropagator, Exp, Circuit, MajoranaOperator
+   ...     MajoranaPropagator, ExpGate, Circuit, MajoranaOperator
    ... )
    >>> observable = MajoranaOperator({(0, 1, 2, 4): 1.0}, 8)
    >>> # A gate generator carries the Hermitian operator, the same convention as an observable:
    >>> # M_γ = i·m_4 m_5 is a length-2 monomial, so its coefficient is imaginary. monoprop
    >>> # divides out the Hermitian phase i for you when the circuit is ingested.
-   >>> gate = Exp(MajoranaOperator({(4, 5): 1j}, num_modes=8))  # exp(-i θ/2 · M_γ), M_γ = i·m_4 m_5
+   >>> gate = ExpGate(MajoranaOperator({(4, 5): 1j}, num_modes=8))  # exp(-i θ/2 · M_γ), M_γ = i·m_4 m_5
    >>> circuit = Circuit(gates=[gate], parameters=[0.5])
    >>> mbs = MajoranaPropagator.from_circuit(circuit, observable, cutoff=16)
    >>> result = mbs.evolved_operator()
@@ -79,9 +79,9 @@ Majorana basis (see :doc:`concepts/notation`), so the gate likewise splits
 .. doctest::
 
    >>> import numpy as np
-   >>> from monoprop import PauliPropagator, Exp, Circuit, PauliOperator, Pauli
+   >>> from monoprop import PauliPropagator, ExpGate, Circuit, PauliOperator, Pauli
    >>> observable = PauliOperator({"ZZ": 1.0}, num_qubits=2)
-   >>> gate = Exp(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2))  # exp(-i θ/2 · X_0)
+   >>> gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2))  # exp(-i θ/2 · X_0)
    >>> circuit = Circuit(gates=[gate], parameters=[0.5])
    >>> mbs = PauliPropagator.from_circuit(circuit, observable, cutoff=16)  # maps X_0 to Majoranas
    >>> result = mbs.evolved_operator()  # WARNING: keys are Majorana indices, not Pauli strings

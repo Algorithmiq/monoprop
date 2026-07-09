@@ -35,7 +35,7 @@ from monoprop._dispatch import dispatch
 
 from .circuit import (
     Circuit,
-    Exp,
+    ExpGate,
     expand_monomials,
     validate_parameter_mapping,
 )
@@ -166,7 +166,7 @@ class MonomialPropagator(ABC):
         return propagator
 
     @abstractmethod
-    def _circuit_gates(self, circuit: Circuit) -> Sequence[Exp]:
+    def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Validate the circuit's gate family and return its gates for expansion.
 
         There is a single :class:`~monoprop.circuit.Circuit` type; the family is carried by

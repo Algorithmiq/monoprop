@@ -21,9 +21,9 @@ is a weighted sum of terms that also carries the system ``num_modes`` / ``num_qu
 **exponential gate** wraps a generator *operator* that gets exponentiated; and a **circuit**
 is an ordered sequence of such gates.
 
-A gate is an explicit exponential of a generator *operator* -- :class:`Exp` accepts only
+A gate is an explicit exponential of a generator *operator* -- :class:`ExpGate` accepts only
 operator objects (never a bare term), because those carry the system size. There is a
-**single** :class:`Exp` gate type; it *abstracts over the family* the same way :class:`Circuit`
+**single** :class:`ExpGate` gate type; it *abstracts over the family* the same way :class:`Circuit`
 does -- the **generator type** it is handed decides how it is normalized:
 
 - a :class:`~monoprop.majorana.MajoranaOperator` is a native Majorana generator carrying
@@ -34,7 +34,7 @@ does -- the **generator type** it is handed decides how it is normalized:
 - a :class:`~monoprop.pauli.PauliOperator` is a qubit generator; each term is
   Jordan-Wigner mapped and antihermitian-normalized when the circuit is ingested;
 - a :class:`~monoprop.fermi.FermiOperator` is a fermionic generator; it is converted to
-  its (Hermitian) Majorana form in :class:`Exp`.
+  its (Hermitian) Majorana form in :class:`ExpGate`.
 
 There is likewise a **single** :class:`Circuit` type. The gate objects carry the family, so
 one circuit can be authored from Majorana/fermionic gates *or* qubit gates, and the circuit
@@ -66,13 +66,13 @@ if TYPE_CHECKING:
 
 #: The family a gate's generator belongs to, inferred from its generator type. A
 #: :class:`~monoprop.fermi.FermiOperator` generator is converted to its Majorana form in
-#: :meth:`Exp.__init__`, so it becomes a ``"majorana"`` gate -- there is no ``"fermi"`` family.
+#: :meth:`ExpGate.__init__`, so it becomes a ``"majorana"`` gate -- there is no ``"fermi"`` family.
 GateFamily = Literal["pauli", "majorana"]
 #: The family of a circuit; ``"empty"`` when it has no gates.
 CircuitFamily = Literal["pauli", "majorana", "empty"]
 
 
-class Exp:
+class ExpGate:
     r"""The exponential of a generator: one variational gate, abstract over the family.
 
     A single gate type serves every family; the generator must be an *operator object* (it
@@ -146,7 +146,7 @@ class Exp:
             family = "majorana"
         else:
             raise TypeError(
-                f"Exp generator must be a MajoranaOperator, PauliOperator, or FermiOperator "
+                f"ExpGate generator must be a MajoranaOperator, PauliOperator, or FermiOperator "
                 f"(an operator object carrying its mode/qubit count), not a bare term; got "
                 f"{type(generator).__name__}."
             )
@@ -160,7 +160,9 @@ class Exp:
         self._structural = _structural
 
     @classmethod
-    def _structural_gate(cls, generator: MajoranaOperator, index: int | None) -> Exp:
+    def _structural_gate(
+        cls, generator: MajoranaOperator, index: int | None
+    ) -> ExpGate:
         """Build a Majorana gate whose coefficients are *already* structural ``g``.
 
         For the wire/dense format (:meth:`Circuit.from_dense_arrays`) the generator's
@@ -170,17 +172,17 @@ class Exp:
         return cls(generator, index=index, _structural=True)
 
     @classmethod
-    def _with_index(cls, gate: Exp, index: int | None) -> Exp:
+    def _with_index(cls, gate: ExpGate, index: int | None) -> ExpGate:
         """Clone ``gate`` with a new ``index``, preserving its family and ``_structural`` flag.
 
-        Used by :meth:`Circuit.__add__`; a plain ``Exp(gate.generator, index)`` would reset
+        Used by :meth:`Circuit.__add__`; a plain ``ExpGate(gate.generator, index)`` would reset
         ``_structural`` to ``False`` and re-normalize an already-structural (dense) generator.
         """
         return cls(gate.generator, index=index, _structural=gate._structural)
 
     def __eq__(self, other: object) -> bool:
         """Equal when the generator, parameter index, family, and structural flag all match."""
-        if not isinstance(other, Exp):
+        if not isinstance(other, ExpGate):
             return NotImplemented
         return (
             self.generator == other.generator
@@ -192,20 +194,20 @@ class Exp:
     __hash__ = None  # type: ignore[assignment]  # value-equal but not hashable (mutable generator)
 
     def __repr__(self) -> str:
-        """Return a string representation such as ``Exp(<generator>, index=0)``."""
+        """Return a string representation such as ``ExpGate(<generator>, index=0)``."""
         return f"{self.__class__.__name__}({self.generator}, index={self.index})"
 
 
 class Circuit:
     """A variational circuit: an ordered sequence of exponential gates, angles, and a state.
 
-    A **single** circuit type serves every gate family, built from the single :class:`Exp`
-    gate. The gates carry the family: a Majorana :class:`Exp` for Majorana/fermionic problems
+    A **single** circuit type serves every gate family, built from the single :class:`ExpGate`
+    gate. The gates carry the family: a Majorana :class:`ExpGate` for Majorana/fermionic problems
     (consumed by :class:`~monoprop.majorana_propagator.MajoranaPropagator`) and a Pauli
-    :class:`Exp` for qubit problems (consumed by
+    :class:`ExpGate` for qubit problems (consumed by
     :class:`~monoprop.pauli_propagator.PauliPropagator`). The two families cannot be mixed in one
     circuit -- construction rejects it. A fermionic generator is converted to its Majorana form
-    in :meth:`Exp.__init__`, so every gate is already ``"pauli"`` or ``"majorana"``.
+    in :meth:`ExpGate.__init__`, so every gate is already ``"pauli"`` or ``"majorana"``.
 
     Bundles everything the propagator needs to build or evaluate an evolution:
 
@@ -233,7 +235,7 @@ class Circuit:
 
     def __init__(
         self,
-        gates: Sequence[Exp] = (),
+        gates: Sequence[ExpGate] = (),
         parameters: Sequence[float] = (),
         initial_state: Sequence[int] = (),
     ) -> None:
@@ -247,7 +249,7 @@ class Circuit:
         Raises:
             ValueError: On duplicate initial-state indices, a bad parameter mapping, or a
                 bound circuit whose parameter count does not match :attr:`n_parameters`.
-            TypeError: On a non-:class:`Exp` gate or a mix of qubit and Majorana gate families.
+            TypeError: On a non-:class:`ExpGate` gate or a mix of qubit and Majorana gate families.
         """
         gates = tuple(gates)
         parameters = tuple(float(v) for v in parameters)
@@ -256,12 +258,12 @@ class Circuit:
             raise ValueError("Duplicate indices in initial state")
 
         # Validate gate types up front: the identity-drop below reads gate.index/.generator,
-        # so a non-Exp gate must be rejected with a clear TypeError first rather than crashing
+        # so a non-ExpGate gate must be rejected with a clear TypeError first rather than crashing
         # with an opaque AttributeError.
         for gate in gates:
-            if not isinstance(gate, Exp):
+            if not isinstance(gate, ExpGate):
                 raise TypeError(
-                    f"Circuit gates must be Exp; got {type(gate).__name__}."
+                    f"Circuit gates must be ExpGate; got {type(gate).__name__}."
                 )
 
         # An empty-generator gate is exp(theta * 0) = identity: it drives no rotation and emits
@@ -317,13 +319,13 @@ class Circuit:
         )
 
     @staticmethod
-    def _resolve_family(gates: Sequence[Exp]) -> CircuitFamily:
+    def _resolve_family(gates: Sequence[ExpGate]) -> CircuitFamily:
         """Return the family ``"pauli"``/``"majorana"``/``"empty"`` and reject a mixed circuit.
 
-        Gates are already known to be :class:`Exp` (:meth:`__init__` validates that first).
+        Gates are already known to be :class:`ExpGate` (:meth:`__init__` validates that first).
         Rejects any mix of qubit and Majorana/fermionic gates. Computed once at construction
         and stored on :attr:`family`; the propagators dispatch on it (a fermionic generator is
-        already in Majorana form, converted in :meth:`Exp`).
+        already in Majorana form, converted in :meth:`ExpGate`).
         """
         has_pauli = any(gate.family == "pauli" for gate in gates)
         has_majorana = any(gate.family == "majorana" for gate in gates)
@@ -363,7 +365,7 @@ class Circuit:
         """Number of gates."""
         return len(self.gates)
 
-    def __iter__(self) -> Iterator[Exp]:
+    def __iter__(self) -> Iterator[ExpGate]:
         """Iterate over the gates in application order."""
         return iter(self.gates)
 
@@ -397,11 +399,11 @@ class Circuit:
         # Preserve each gate's _structural flag: a dense (wire-format) gate carries structural
         # coefficients that must not be antihermitian-normalized again.
         left = tuple(
-            Exp._with_index(gate, index)
+            ExpGate._with_index(gate, index)
             for gate, index in zip(self.gates, self.resolved_mapping, strict=True)
         )
         right = tuple(
-            Exp._with_index(gate, index + offset)
+            ExpGate._with_index(gate, index + offset)
             for gate, index in zip(other.gates, other.resolved_mapping, strict=True)
         )
         return Circuit(
@@ -422,7 +424,7 @@ class Circuit:
         """Build a Majorana circuit from flat, per-monomial dense arrays.
 
         This is the native dense/wire format (also the on-disk msgpack-fixture layout):
-        consecutive monomials sharing a ``param_ind`` become one Majorana :class:`Exp` whose
+        consecutive monomials sharing a ``param_ind`` become one Majorana :class:`ExpGate` whose
         generator is a :class:`~monoprop.majorana.MajoranaOperator` carrying those
         monomials with their (structural) generator coefficients, and each gate's
         ``param_ind`` becomes that gate's ``index``, so weight-tying is preserved and the
@@ -440,7 +442,7 @@ class Circuit:
             A :class:`Circuit` carrying the grouped gates, angle values, and initial state.
         """
         indices = [int(p) for p in param_inds]
-        gates: list[Exp] = []
+        gates: list[ExpGate] = []
         current_index: int | None = None
         current_majoranas: list[tuple[int, ...]] = []
         current_coeffs: list[complex] = []
@@ -449,7 +451,7 @@ class Circuit:
             # Dense arrays are the wire format: the coefficients are already the structural
             # generator coefficients g, so build a structural gate that skips normalization.
             gates.append(
-                Exp._structural_gate(
+                ExpGate._structural_gate(
                     MajoranaOperator._from_terms(
                         current_majoranas, current_coeffs, num_modes=None
                     ),
@@ -576,16 +578,16 @@ def _validate_commuting_pauli_generator(generator: PauliOperator) -> None:
 
 
 def _gate_layers(
-    gate: Exp, num_qubits: int | None
+    gate: ExpGate, num_qubits: int | None
 ) -> list[tuple[tuple[int, ...], float]]:
     """Expand one gate into ``(majorana, gen_coeff)`` layers, in application order.
 
-    A ``"pauli"``-family :class:`Exp` places each :class:`~monoprop.pauli.Pauli` term on
+    A ``"pauli"``-family :class:`ExpGate` places each :class:`~monoprop.pauli.Pauli` term on
     its qubits within the ``num_qubits``-wide system, Jordan-Wigner maps it, and
-    antihermitian-normalizes (one layer per term). A ``"majorana"``-family :class:`Exp` carries
+    antihermitian-normalizes (one layer per term). A ``"majorana"``-family :class:`ExpGate` carries
     the Hermitian generator, so its :class:`~monoprop.majorana.MajoranaOperator` terms are
     antihermitian-normalized the same way (the ``i^{binom(w, 2)}`` phase divided out) -- unless
-    the gate is flagged :attr:`Exp._structural` (the wire/dense format), whose coefficients are
+    the gate is flagged :attr:`ExpGate._structural` (the wire/dense format), whose coefficients are
     already the structural ``g`` and are used directly.
     """
     # A Pauli-family gate holds a PauliOperator; every other family a MajoranaOperator (so the
@@ -614,14 +616,14 @@ def _gate_layers(
 
 
 def expand_monomials(
-    gates: Sequence[Exp],
+    gates: Sequence[ExpGate],
     mapping: Sequence[int],
     num_qubits: int | None = None,
 ) -> tuple[list[tuple[int, ...]], list[float], list[int], list[int]]:
     """Flatten gates + an already-resolved per-gate mapping into per-monomial arrays.
 
     Args:
-        gates: :class:`Exp` gates, in application order.
+        gates: :class:`ExpGate` gates, in application order.
         mapping: The angle index driving each gate (one entry per gate).
         num_qubits: System qubit count, required to place Pauli-family generators; unused for
             native Majorana generators.

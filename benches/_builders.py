@@ -29,7 +29,7 @@ import numpy as np
 
 from monoprop import (
     Circuit,
-    Exp,
+    ExpGate,
     MajoranaPropagator,
     Pauli,
     PauliPropagator,
@@ -290,7 +290,7 @@ def build_hubbard_problem(
         ``(propagator, circuit)`` for one Trotter step, re-applied by the driver.
     """
     config = config or HubbardConfig()
-    fermi_gates = [Exp(term) for term in _hubbard_fermion_terms(config)]
+    fermi_gates = [ExpGate(term) for term in _hubbard_fermion_terms(config)]
     parameters = [config.trotter_dt] * len(fermi_gates)
     occupied = _neel_occupied_modes(config.num_sites, config.neel_start_spin)
     circuit = Circuit(gates=fermi_gates, parameters=parameters, initial_state=occupied)
@@ -480,20 +480,23 @@ class KickedIsingConfig:
     lower_atol: float = 1e-4
 
 
-def _xlayer(num_qubits: int, angle: float) -> list[tuple[Exp, float]]:
+def _xlayer(num_qubits: int, angle: float) -> list[tuple[ExpGate, float]]:
     """Single-qubit X rotations exp(-i·angle·X) on all qubits, with their angles."""
     return [
-        (Exp(PauliOperator({Pauli("X", (i,)): 1.0}, num_qubits=num_qubits)), -angle)
+        (ExpGate(PauliOperator({Pauli("X", (i,)): 1.0}, num_qubits=num_qubits)), -angle)
         for i in range(num_qubits)
     ]
 
 
 def _zzlayer(
     angle: float, topology: list[tuple[int, int]], num_qubits: int
-) -> list[tuple[Exp, float]]:
+) -> list[tuple[ExpGate, float]]:
     """Two-qubit ZZ interactions exp(-i·angle·ZZ) on every edge, with their angles."""
     return [
-        (Exp(PauliOperator({Pauli("ZZ", (i, j)): 1.0}, num_qubits=num_qubits)), -angle)
+        (
+            ExpGate(PauliOperator({Pauli("ZZ", (i, j)): 1.0}, num_qubits=num_qubits)),
+            -angle,
+        )
         for i, j in topology
     ]
 
@@ -513,7 +516,7 @@ def build_kicked_ising_problem(
         ``(propagator, circuit)`` ready for in-place propagation.
     """
     config = config or KickedIsingConfig()
-    gate_angles: list[tuple[Exp, float]] = []
+    gate_angles: list[tuple[ExpGate, float]] = []
     for _ in range(config.num_layers):
         gate_angles.extend(_xlayer(config.num_qubits, config.theta / 2))
         gate_angles.extend(

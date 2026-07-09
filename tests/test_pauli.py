@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import Circuit, Exp, PauliPropagator
+from monoprop import Circuit, ExpGate, PauliPropagator
 from monoprop.majorana import MajoranaOperator
 from monoprop.pauli import Pauli, PauliOperator
 
@@ -47,9 +47,9 @@ class TestPauliPropagatorCutoff:
         assert mp.num_qubits == 2  # "ZZ" operator
 
     def test_non_hermitian_pauli_gate_rejected(self, serial_comm):
-        """An Exp with a complex (non-Hermitian) Pauli coefficient is rejected."""
+        """An ExpGate with a complex (non-Hermitian) Pauli coefficient is rejected."""
         circuit = Circuit(
-            (Exp(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=1)),),
+            (ExpGate(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=1)),),
             parameters=(0.3,),
         )
         with pytest.raises(ValueError, match="not Hermitian"):
@@ -232,7 +232,7 @@ class TestPauliOperator:
 
 class TestCircuit:
     def _make_gate(self):
-        return Exp(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1))
+        return ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1))
 
     def test_basic_construction(self):
         gates = (self._make_gate(), self._make_gate())
@@ -254,12 +254,14 @@ class TestCircuit:
         with pytest.raises(TypeError, match="mix"):
             Circuit(
                 (
-                    Exp(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),
-                    Exp(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),
+                    ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),
+                    ExpGate(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),
                 )
             )
 
     def test_pauli_gate_equality(self):
         gen = PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)
-        assert Exp(gen) == Exp(gen)
-        assert Exp(gen) != Exp(PauliOperator({Pauli("X", 1): 1.0}, num_qubits=2))
+        assert ExpGate(gen) == ExpGate(gen)
+        assert ExpGate(gen) != ExpGate(
+            PauliOperator({Pauli("X", 1): 1.0}, num_qubits=2)
+        )

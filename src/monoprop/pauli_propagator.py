@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     import numpy as np
     from mpi4py import MPI
 
-    from .circuit import Circuit, Exp
+    from .circuit import Circuit, ExpGate
     from .pauli import PauliOperator
 
 
@@ -39,7 +39,7 @@ class PauliPropagator(MonomialPropagator):
     """Classical simulator for qubit (Pauli) operators.
 
     Accepts a :class:`~monoprop.pauli.PauliOperator` observable and a
-    :class:`~monoprop.circuit.Circuit` of qubit (Pauli) :class:`~monoprop.circuit.Exp` gates.
+    :class:`~monoprop.circuit.Circuit` of qubit (Pauli) :class:`~monoprop.circuit.ExpGate` gates.
     See :class:`~monoprop.monomial_propagator.MonomialPropagator` for the shared building,
     evaluation, and introspection surface.
 
@@ -104,7 +104,7 @@ class PauliPropagator(MonomialPropagator):
             raise RuntimeError("PauliPropagator has no qubit count set.")
         return self._num_qubits
 
-    def _circuit_gates(self, circuit: Circuit) -> Sequence[Exp]:
+    def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.
 
         A ``PauliPropagator`` rejects a Majorana/fermionic circuit. The Jordan-Wigner mapping

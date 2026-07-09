@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     import numpy as np
     from mpi4py import MPI
 
-    from .circuit import Circuit, Exp
+    from .circuit import Circuit, ExpGate
     from .quantum_data import IQuantumOperator
 
 
@@ -43,7 +43,7 @@ class MajoranaPropagator(MonomialPropagator):
     Accepts a :class:`~monoprop.majorana.MajoranaOperator` (or any object implementing
     ``get_majorana_operator()``, such as a :class:`~monoprop.fermi.FermiOperator`)
     observable and a :class:`~monoprop.circuit.Circuit` of Majorana/fermionic
-    :class:`~monoprop.circuit.Exp` gates. See
+    :class:`~monoprop.circuit.ExpGate` gates. See
     :class:`~monoprop.monomial_propagator.MonomialPropagator` for the shared building,
     evaluation, and introspection surface.
     """
@@ -115,7 +115,7 @@ class MajoranaPropagator(MonomialPropagator):
             comm=comm,
         )
 
-    def _circuit_gates(self, circuit: Circuit) -> Sequence[Exp]:
+    def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Validate the circuit's gate family and return its gates for expansion.
 
         A ``MajoranaPropagator`` rejects a qubit circuit; the shared conversion lives in

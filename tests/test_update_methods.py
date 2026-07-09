@@ -19,7 +19,7 @@ from pytest_cases import parametrize_with_cases
 
 from monoprop import (
     Circuit,
-    Exp,
+    ExpGate,
     MajoranaPropagator,
 )
 from monoprop.majorana import MajoranaOperator
@@ -106,7 +106,7 @@ class TestUpdateMethods:
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
         # A weight-6 monomial takes an imaginary Hermitian coefficient (like weight-2).
-        gate = Exp(MajoranaOperator({(0, 1, 2, 3, 4, 5): 1.0j}, num_modes=4))
+        gate = ExpGate(MajoranaOperator({(0, 1, 2, 3, 4, 5): 1.0j}, num_modes=4))
         mp.build_graph(Circuit((gate,)))
         assert mp.size() > 0
 

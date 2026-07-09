@@ -57,7 +57,7 @@ Fermionic and Majorana operators
 The natural starting point for quantum chemistry and lattice models: weighted
 sums of fermionic creation/annihilation operators (``FermiOperator``), or
 monomials given directly as sets of Majorana indices (``MajoranaOperator``).
-``Exp`` and ``Circuit`` describe the evolution and the reference
+``ExpGate`` and ``Circuit`` describe the evolution and the reference
 state.
 
 .. automodule:: monoprop.fermi
@@ -69,7 +69,7 @@ Qubit (Pauli) operators
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The natural starting point when you already hold a qubit Hamiltonian:
-real-coefficient sums of Paulis (``PauliOperator``), with ``Exp``
+real-coefficient sums of Paulis (``PauliOperator``), with ``ExpGate``
 and ``Circuit`` describing the circuit. Feed these to ``PauliPropagator``,
 which takes them directly and truncates by qubit Pauli weight (see
 :doc:`/features/cutoff`).
