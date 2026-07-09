@@ -70,11 +70,6 @@ __all__ = [
     "validate_parameter_mapping",
 ]
 
-# The qiskit conversion helpers live behind an optional dependency: importing
-# ``monoprop.qiskit_conversion`` raises if qiskit is absent. Expose them lazily so that
-# ``import monoprop`` never requires qiskit, while ``from monoprop import to_qiskit_circuit``
-# still works (raising the helpful ImportError only when actually accessed). They are kept out
-# of ``__all__`` so ``from monoprop import *`` stays qiskit-free for installs without the extra.
 _QISKIT_EXPORTS = frozenset(
     {
         "from_qiskit_circuit",
@@ -85,20 +80,12 @@ _QISKIT_EXPORTS = frozenset(
 )
 
 if TYPE_CHECKING:
-    # Re-exported for type checkers / IDEs; resolved at runtime by ``__getattr__`` below.
     from .qiskit_conversion import (
-        from_qiskit_circuit as from_qiskit_circuit,
+        from_qiskit_circuit,
+        from_qiskit_operator,
+        to_qiskit_circuit,
+        to_qiskit_operator,
     )
-    from .qiskit_conversion import (
-        from_qiskit_operator as from_qiskit_operator,
-    )
-    from .qiskit_conversion import (
-        to_qiskit_circuit as to_qiskit_circuit,
-    )
-    from .qiskit_conversion import (
-        to_qiskit_operator as to_qiskit_operator,
-    )
-
 
 def __getattr__(name: str) -> object:
     """Lazily resolve the optional qiskit conversion helpers (PEP 562)."""
