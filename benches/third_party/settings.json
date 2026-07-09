@@ -6,7 +6,7 @@
     "j": 1.5,
     "dt": 0.05,
     "step_min": 0,
-    "step_max": 15,
+    "step_max": 20,
     "lower_atol": 1e-6,
     "cutoff": null,
     "obs_qubits": [
