@@ -52,7 +52,7 @@ def _style_axes(ax: plt.Axes, ylabel: str) -> None:
     """Apply the shared log-scale styling used by both plots."""
     ax.set_xlabel("Trotter step")
     ax.set_ylabel(ylabel)
-    #ax.set_yscale("log")
+    ax.set_yscale("log")
     ax.legend(fontsize=10)
     ax.grid(which="both", alpha=0.3)
     ax.spines["top"].set_visible(False)
