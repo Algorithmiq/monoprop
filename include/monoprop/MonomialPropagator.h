@@ -36,8 +36,6 @@
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
-#include "monoprop/logging/QuillWrapper.h"
-#include "monoprop/logging/Utils.h"
 
 namespace monoprop {
 template <size_t NumModes>

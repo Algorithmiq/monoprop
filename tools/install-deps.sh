@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # Script to install dependencies for monoprop project
-# Usage: ./install-deps.sh [install_prefix] [--skip-tbb] [--skip-boost-unordered] [--skip-boost-test] [--skip-quill] [--skip-msgpack] [--help]
+# Usage: ./install-deps.sh [install_prefix] [--skip-tbb] [--skip-boost-unordered] [--skip-boost-test] [--skip-msgpack] [--help]
 
 show_help() {
     cat << EOF
@@ -11,7 +11,7 @@ Usage: $0 [INSTALL_PREFIX] [OPTIONS]
 
 Install C++ dependencies for monoprop project.
 
-This script can install Boost Unordered, Boost Test, TBB, quill, and msgpack-cxx.
+This script can install Boost Unordered, Boost Test, TBB, and msgpack-cxx.
 Each component can be skipped with the corresponding option.
 The default installation prefix is /usr/local.
 
@@ -24,7 +24,6 @@ Options:
     --skip-tbb          Skip installing TBB
     --skip-boost-unordered  Skip installing Boost unordered
     --skip-boost-test   Skip installing Boost Test library (only install unordered)
-    --skip-quill        Skip installing quill
     --skip-msgpack      Skip installing msgpack-cxx library
     --help, -h          Show this help message
 
@@ -43,7 +42,6 @@ INSTALL_PREFIX="$DEFAULT_PREFIX"
 INSTALL_TBB=true
 INSTALL_BOOST_UNORDERED=true
 INSTALL_BOOST_TEST=true
-INSTALL_QUILL=true
 INSTALL_MSGPACK=true
 
 # Parse arguments
@@ -59,10 +57,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-boost-test)
             INSTALL_BOOST_TEST=false
-            shift
-            ;;
-        --skip-quill)
-            INSTALL_QUILL=false
             shift
             ;;
         --skip-msgpack)
@@ -96,7 +90,6 @@ echo "Installing C++ dependencies to: $INSTALL_PREFIX"
 echo "TBB: $([ "$INSTALL_TBB" = true ] && echo "YES" || echo "SKIP")"
 echo "Boost unordered: $([ "$INSTALL_BOOST_UNORDERED" = true ] && echo "YES" || echo "SKIP")"
 echo "Boost Test: $([ "$INSTALL_BOOST_TEST" = true ] && echo "YES" || echo "SKIP")"
-echo "quill: $([ "$INSTALL_QUILL" = true ] && echo "YES" || echo "SKIP")"
 echo "msgpack-cxx: $([ "$INSTALL_MSGPACK" = true ] && echo "YES" || echo "SKIP")"
 echo
 
@@ -192,26 +185,6 @@ install_boost() {
     fi
 }
 
-install_quill() {
-    if [ "$INSTALL_QUILL" != true ]; then
-        echo "Skipping quill installation"
-        return 0
-    fi
-
-    local quill_version="v11.1.0"
-    echo "Installing quill $quill_version..."
-    git clone https://github.com/odygrd/quill.git -b $quill_version quill_src --depth 1
-    cd quill_src
-    cmake -S. -Bbuild \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX"
-    cmake --build build --target install --parallel
-    cleanup_build quill_src
-    if [[ "$INSTALL_PREFIX" == "$DEFAULT_PREFIX" ]]; then
-        echo "Remember to export quill_DIR=$INSTALL_PREFIX/lib/cmake/quill"
-    fi
-}
-
 install_msgpack() {
     if [ "$INSTALL_MSGPACK" != true ]; then
         echo "Skipping msgpack-cxx installation"
@@ -242,7 +215,6 @@ install_tbb
 
 install_boost
 
-install_quill
 
 install_msgpack
 
@@ -257,5 +229,4 @@ echo "Installed components:"
 [ "$INSTALL_TBB" = true ] && echo "  ✓ TBB" || echo "  ✗ TBB (skipped)"
 [ "$INSTALL_BOOST_UNORDERED" = true ] && echo "  ✓ Boost unordered" || echo "  ✗ Boost unordered (skipped)"
 [ "$INSTALL_BOOST_TEST" = true ] && echo "  ✓ Boost Test" || echo "  ✗ Boost Test (skipped)"
-[ "$INSTALL_QUILL" = true ] && echo "  ✓ quill" || echo "  ✗ quill (skipped)"
 [ "$INSTALL_MSGPACK" = true ] && echo "  ✓ msgpack-cxx" || echo "  ✗ msgpack-cxx (skipped)"

@@ -1,8 +1,6 @@
 find_package(Boost 1.85 CONFIG REQUIRED)
 message(STATUS "Using Boost: ${Boost_DIR} (version ${Boost_VERSION})")
 
-add_subdirectory(logging)
-
 add_library(
   monoprop
   SHARED
@@ -36,7 +34,6 @@ file(
   "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/*.h"
   "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/detail/*.h"
   "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/detail/**/*.h"
-  "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/logging/*.h"
 )
 
 list(
@@ -82,8 +79,6 @@ target_link_libraries(
     Boost::boost
     TBB::tbb
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
-  PRIVATE
-    $<LINK_LIBRARY:WHOLE_ARCHIVE,monoproplog>
 )
 
 target_compile_definitions(

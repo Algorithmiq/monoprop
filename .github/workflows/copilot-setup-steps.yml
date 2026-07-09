@@ -26,7 +26,7 @@ jobs:
       - name: Install dependencies from APT
         run: |
           sudo apt-get update
-          sudo apt-get install -y doxygen graphviz just libtbb-dev libopenmpi-dev openmpi-bin
+          sudo apt-get install -y just libtbb-dev libopenmpi-dev openmpi-bin
 
       - name: Set gcc-14/g++-14 as default compilers
         run: |
