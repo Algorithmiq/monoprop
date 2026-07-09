@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 import cupy as cp
 import numpy as np
@@ -53,16 +54,33 @@ def _pauli_string_to_packed_integers(
     return out
 
 
-########################### SETTINGS ##########################
-nq = 30
-h = 1.0
-j = 1.5 * h
-dt = 0.1 / h
+def _grid_edges(nx: int, ny: int) -> list[tuple[int, int]]:
+    """Nearest-neighbor edges of an nx-by-ny grid, row-major qubit indexing."""
+    edges = []
+    for row in range(ny):
+        for col in range(nx):
+            idx = row * nx + col
+            if col + 1 < nx:
+                edges.append((idx, idx + 1))
+            if row + 1 < ny:
+                edges.append((idx, idx + nx))
+    return edges
 
-step_range = range(1, 31)
-max_pauli_weight = 8
-lower_atol = 1e-8
-###############################################################
+
+with open(Path(__file__).parent / "settings.json") as settings_file:
+    settings = json.load(settings_file)
+
+nx, ny = settings["nx"], settings["ny"]
+nq = nx * ny
+hx = settings["hx"]
+hz = settings["hz"]
+j = settings["j"]
+dt = settings["dt"]
+
+step_range = range(settings["step_min"], settings["step_max"] + 1)
+lower_atol = settings["lower_atol"]
+max_pauli_weight = nq if settings["cutoff"] is None else settings["cutoff"]
+obs_qubits = tuple(settings["obs_qubits"])
 
 labels = [
     "monoprop",
@@ -71,27 +89,22 @@ labels = [
 ]
 runtimes_dict = {label: [] for label in labels}
 expvals_dict = {label: [] for label in labels}
+num_terms_dict = {label: [] for label in labels}
 
-theta_x = dt * h
+theta_x = dt * hx
+theta_z = dt * hz
 theta_zz = dt * j
+grid_edges = _grid_edges(nx, ny)
 
-# Each method is set up once, then advanced one identical Trotter step at a
-# time inside the loop below, so that the recorded runtime for every entry in
-# step_range is the cost of a *single* step rather than the cumulative cost of
-# all steps up to that point.
-
-# -------------------------------- monoprop ----------------------------------
-# define a qiskit circuit for a single Trotter step
 step_circ = QuantumCircuit(nq)
+for i, k in grid_edges:
+    step_circ.rzz(theta_zz, i, k)
+for i in range(nq):
+    step_circ.rz(theta_z, i)
 for i in range(nq):
     step_circ.rx(theta_x, i)
-for i in range(nq - 1):
-    step_circ.rzz(theta_zz, i, i + 1)
 
-# define qiskit observable
-obs = SparsePauliOp.from_sparse_list(
-    [("Z", [i], 1.0) for i in range(nq)], num_qubits=nq
-)
+obs = SparsePauliOp.from_sparse_list([("ZZ", list(obs_qubits), 1.0)], num_qubits=nq)
 
 mp_circ = from_qiskit_circuit(step_circ, initial_state=[])
 mp_obs = from_qiskit_operator(obs)
@@ -104,29 +117,26 @@ mp = MonomialPropagator(
     basis_change=jordan_wigner_basis_change(nq),
 )
 
-# ---------------------------------- ppvm ------------------------------------
-# define observable
 ppvm_obs = PauliSum.new(
     n_qubits=nq,
-    terms=[f"Z{i}" for i in range(nq)],
+    terms=[f"Z{obs_qubits[0]}Z{obs_qubits[1]}"],
     min_abs_coeff=lower_atol,
     max_pauli_weight=max_pauli_weight,
 )
 
-# ------------------------------- cuPauliProp --------------------------------
 cupp_handle = LibraryHandle()
 
-# define observable
 num_packed = get_num_packed_integers(nq)
-cupp_xz = cp.zeros((nq, 2 * num_packed), dtype=cp.uint64)
-cupp_coefs = cp.ones((nq,), dtype=cp.float64)
-for i in range(nq):
-    cupp_xz[i] = cp.asarray(_pauli_string_to_packed_integers(["Z"], [i], nq))
+cupp_xz = cp.zeros((1, 2 * num_packed), dtype=cp.uint64)
+cupp_coefs = cp.ones((1,), dtype=cp.float64)
+cupp_xz[0] = cp.asarray(
+    _pauli_string_to_packed_integers(["Z", "Z"], list(obs_qubits), nq)
+)
 
 cupp_expansion = PauliExpansion(
     library_handle=cupp_handle,
     num_qubits=nq,
-    num_terms=nq,
+    num_terms=1,
     xz_bits=cupp_xz,
     coeffs=cupp_coefs,
     options=PauliExpansionOptions(memory_limit="80%", blocking=True),
@@ -136,35 +146,37 @@ cupp_truncation = Truncation(
     pauli_weight_cutoff=max_pauli_weight,
 )
 
-# gates for a single Trotter step
-cupp_step_gates = [PauliRotationGate(theta_x, ["X"], [i]) for i in range(nq)]
-cupp_step_gates += [
-    PauliRotationGate(theta_zz, ["Z", "Z"], [i, i + 1]) for i in range(nq - 1)
+cupp_step_gates = [
+    PauliRotationGate(theta_zz, ["Z", "Z"], [i, k]) for i, k in grid_edges
 ]
+cupp_step_gates += [PauliRotationGate(theta_z, ["Z"], [i]) for i in range(nq)]
+cupp_step_gates += [PauliRotationGate(theta_x, ["X"], [i]) for i in range(nq)]
 
-for _ in tqdm(step_range, desc="Running simulations"):
-    # -------------------------------- monoprop ---------------------------------
+for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
     t1 = time.perf_counter()
     mp.propagate(evolve_with_coeffs=True)
     expval = mp.expectation_value()
     t2 = time.perf_counter()
-    runtimes_dict["monoprop"].append(t2 - t1)
+    if step_idx > 0:
+        runtimes_dict["monoprop"].append(t2 - t1)
     expvals_dict["monoprop"].append(expval)
+    num_terms_dict["monoprop"].append(mp.size())
 
-    # ---------------------------------- ppvm -----------------------------------
     t1 = time.perf_counter()
-    for i in range(nq - 1):
-        ppvm_obs.rzz(i, i + 1, theta_zz)
+    for i, k in grid_edges:
+        ppvm_obs.rzz(i, k, theta_zz)
+    for i in range(nq):
+        ppvm_obs.rz(i, theta_z)
     for i in range(nq):
         ppvm_obs.rx(i, theta_x)
     ppvm_expval = ppvm_obs.overlap_with_zero()
     t2 = time.perf_counter()
 
-    runtimes_dict["QuEra ppvm"].append(t2 - t1)
+    if step_idx > 0:
+        runtimes_dict["QuEra ppvm"].append(t2 - t1)
     expvals_dict["QuEra ppvm"].append(ppvm_expval)
+    num_terms_dict["QuEra ppvm"].append(len(ppvm_obs))
 
-    # ------------------------------- cuPauliProp -------------------------------
-    # back-propagate the observable by one more Trotter step
     t1 = time.perf_counter()
     for gate in reversed(cupp_step_gates):
         cupp_expansion = cupp_expansion.apply_gate(
@@ -177,17 +189,18 @@ for _ in tqdm(step_range, desc="Running simulations"):
     trace_significand, trace_exponent = cupp_expansion.trace_with_zero_state()
     cupp_expval = float(trace_significand * np.exp2(trace_exponent))
     t2 = time.perf_counter()
-    runtimes_dict["cuPauliProp (GPU)"].append(t2 - t1)
+    if step_idx > 0:
+        runtimes_dict["cuPauliProp (GPU)"].append(t2 - t1)
     expvals_dict["cuPauliProp (GPU)"].append(cupp_expval)
+    num_terms_dict["cuPauliProp (GPU)"].append(cupp_expansion.num_terms)
 
-    # ---------------------------------------------------------------------------
-
-with open(f"trotter_ising_{nq}qubits.json", "w") as file:
+with open(Path(__file__).parent / "results.json", "w") as file:
     json.dump(
         {
             "step_range": list(step_range),
             "runtimes": runtimes_dict,
             "expvals": expvals_dict,
+            "num_terms": num_terms_dict,
         },
         file,
         indent=4,

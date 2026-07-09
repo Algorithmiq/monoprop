@@ -1,0 +1,30 @@
+{
+    "nx": 6,
+    "ny": 6,
+    "hx": 1.0,
+    "hz": 1.0,
+    "j": 1.5,
+    "dt": 0.05,
+    "step_min": 0,
+    "step_max": 15,
+    "lower_atol": 1e-6,
+    "cutoff": null,
+    "obs_qubits": [
+        20,
+        21
+    ],
+    "_comments": {
+        "title": "2D Transverse Field Ising Model (TFIM) Benchmarks.",
+        "nx": "Number of qubits along the grid's x-direction (columns).",
+        "ny": "Number of qubits along the grid's y-direction (rows).",
+        "hx": "Transverse (X) field strength.",
+        "hz": "Longitudinal (Z) field strength, i.e. the Hamiltonian's tilt.",
+        "j": "ZZ coupling strength between nearest-neighbor qubits.",
+        "dt": "Trotter step size.",
+        "step_min": "First Trotter step number to simulate (exclusive).",
+        "step_max": "Last Trotter step number to simulate (inclusive).",
+        "lower_atol": "Coefficient magnitude below which Pauli terms are truncated.",
+        "cutoff": "Maximum Pauli weight to keep during propagation; null disables weight truncation.",
+        "obs_qubits": "Indexed qubit pair for the ZZ observable, row-major over the nx-by-ny grid."
+    }
+}

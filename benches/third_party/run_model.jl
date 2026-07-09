@@ -16,55 +16,59 @@ using PauliPropagation
 using JSON
 using ProgressMeter
 
-########################### SETTINGS ##########################
-nq = 30
-h = 1.0
-j = 1.5 * h
-dt = 0.1 / h
+settings = JSON.parsefile(joinpath(@__DIR__, "settings.json"))
 
-step_range = 1:30
-max_pauli_weight = 8
-lower_atol = 1e-8
-###############################################################
+nx, ny = settings["nx"], settings["ny"]
+nq = nx * ny
+hx = settings["hx"]
+hz = settings["hz"]
+j = settings["j"]
+dt = settings["dt"]
 
-theta_x = dt * h
+step_range = settings["step_min"]:settings["step_max"]
+lower_atol = settings["lower_atol"]
+max_pauli_weight = something(settings["cutoff"], Inf)
+obs_qubits = Tuple(q + 1 for q in settings["obs_qubits"])
+
+theta_x = dt * hx
+theta_z = dt * hz
 theta_zz = dt * j
-topology = bricklayertopology(nq)
+topology = rectangletopology(nx, ny)
 
-# gates and parameters for a single Trotter step
-step_circuit = tfitrottercircuit(nq, 1; topology=topology, start_with_ZZ=false)
+step_circuit = tiltedtfitrottercircuit(nq, 1; topology=topology)
 step_parameters = Float64[]
+append!(step_parameters, fill(theta_zz, length(topology)))
+append!(step_parameters, fill(theta_z, nq))
 append!(step_parameters, fill(theta_x, nq))
-append!(step_parameters, fill(theta_zz, nq - 1))
 
 pauli_sum = PauliSum(nq)
-for i in 1:nq
-    add!(pauli_sum, :Z, i, 1.0)
-end
+add!(pauli_sum, [:Z, :Z], collect(obs_qubits), 1.0)
 
 runtimes = Float64[]
 expvals = Float64[]
+num_terms = Int[]
 
-# The state is built once, then advanced one identical Trotter step at a time
-# below, so that each recorded runtime is the cost of a single step rather
-# than the cumulative cost of all steps up to that point.
-@showprogress for num_steps in step_range
+@showprogress for (step_idx, num_steps) in enumerate(step_range)
     t1 = time_ns()
     global pauli_sum = propagate(
         step_circuit, pauli_sum, step_parameters;
-        max_weight=max_pauli_weight, min_abs_coeff=lower_atol,
+        min_abs_coeff=lower_atol, max_weight=max_pauli_weight,
     )
     expval = overlapwithzero(pauli_sum)
     t2 = time_ns()
 
-    push!(runtimes, (t2 - t1) / 1e9)
+    if step_idx > 1
+        push!(runtimes, (t2 - t1) / 1e9)
+    end
     push!(expvals, expval)
+    push!(num_terms, length(pauli_sum))
 end
 
-results_file = joinpath(@__DIR__, "trotter_ising_$(nq)qubits.json")
+results_file = joinpath(@__DIR__, "results.json")
 data = JSON.parsefile(results_file)
 data["runtimes"]["PauliPropagation.jl"] = runtimes
 data["expvals"]["PauliPropagation.jl"] = expvals
+data["num_terms"]["PauliPropagation.jl"] = num_terms
 
 open(results_file, "w") do file
     JSON.print(file, data, 4)

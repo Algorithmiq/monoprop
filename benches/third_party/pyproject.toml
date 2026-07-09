@@ -22,5 +22,5 @@ RUSTFLAGS = "-C target-feature=+aes,+neon"
 "**/*.py" = ["INP001"]
 
 [tool.uv.sources]
-monoprop = { path = "../.." }
+monoprop = { path = "../..", editable = true }
 ppvm = { git = "https://github.com/QuEraComputing/ppvm.git", subdirectory = "ppvm-python", rev = "2570637b145949aadc085871400fdac9322fff54" }

@@ -36,11 +36,11 @@ julia -e 'using Pkg; Pkg.add(Pkg.PackageSpec(name="PauliPropagation", version="0
 ### Run benchmarks and plot results
 ```bash
 # Run Python script in venv
-uv run python trotter_ising_run.py
+uv run python run_model.py
 
 # Run Julia script
-julia trotter_ising_run.jl
+julia run_model.jl
 
 # Plot final results
-uv run python trotter_ising_plot.py
+uv run python plot_results.py
 ```
