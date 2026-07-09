@@ -91,7 +91,7 @@ labels = [
     "Qiskit pauli-prop",
     "cuPauliProp (GPU)",
 ]
-runtimes_dict = {label: [] for label in labels}
+runtime_dict = {label: [] for label in labels}
 expvals_dict = {label: [] for label in labels}
 num_terms_dict = {label: [] for label in labels}
 memory_dict = {label: [] for label in labels}
@@ -175,7 +175,7 @@ for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
     expval = mp.expectation_value()
     t2 = time.perf_counter()
     if step_idx > 0:
-        runtimes_dict["monoprop"].append(t2 - t1)
+        runtime_dict["monoprop"].append(t2 - t1)
     expvals_dict["monoprop"].append(expval)
     num_terms_dict["monoprop"].append(mp.size())
     memory_dict["monoprop"].append(mp._simulator.operator_memory_bytes() / 1024**2)
@@ -194,7 +194,7 @@ for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
     ppvm_mem_bytes += max(0, process.memory_info().rss - mem_before)
 
     if step_idx > 0:
-        runtimes_dict["QuEra ppvm"].append(t2 - t1)
+        runtime_dict["QuEra ppvm"].append(t2 - t1)
     expvals_dict["QuEra ppvm"].append(ppvm_expval)
     num_terms_dict["QuEra ppvm"].append(len(ppvm_obs))
     memory_dict["QuEra ppvm"].append(ppvm_mem_bytes / 1024**2)
@@ -212,7 +212,7 @@ for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
     qiskit_mem_bytes += max(0, process.memory_info().rss - mem_before)
 
     if step_idx > 0:
-        runtimes_dict["Qiskit pauli-prop"].append(t2 - t1)
+        runtime_dict["Qiskit pauli-prop"].append(t2 - t1)
     expvals_dict["Qiskit pauli-prop"].append(qiskit_expval)
     num_terms_dict["Qiskit pauli-prop"].append(len(qiskit_obs))
     memory_dict["Qiskit pauli-prop"].append(qiskit_mem_bytes / 1024**2)
@@ -231,7 +231,7 @@ for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
     cupp_expval = float(trace_significand * np.exp2(trace_exponent))
     t2 = time.perf_counter()
     if step_idx > 0:
-        runtimes_dict["cuPauliProp (GPU)"].append(t2 - t1)
+        runtime_dict["cuPauliProp (GPU)"].append(t2 - t1)
     expvals_dict["cuPauliProp (GPU)"].append(cupp_expval)
     num_terms_dict["cuPauliProp (GPU)"].append(cupp_expansion.num_terms)
     memory_dict["cuPauliProp (GPU)"].append(
@@ -242,10 +242,10 @@ with open(Path(__file__).parent / "results.json", "w") as file:
     json.dump(
         {
             "step_range": list(step_range),
-            "runtimes": runtimes_dict,
-            "expvals": expvals_dict,
             "num_terms": num_terms_dict,
+            "runtime": runtime_dict,
             "memory": memory_dict,
+            "expvals": expvals_dict,
         },
         file,
         indent=4,

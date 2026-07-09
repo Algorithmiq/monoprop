@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pylab as plt
 
-# Only entries whose step is >= min_step are plotted, to skip the early, noisy steps.
+# Only entries whose step is >= min_step are plotted to skip the early noisy steps
 min_step = 5
 
 colors = {
@@ -33,9 +33,9 @@ colors = {
 with open(Path(__file__).parent / "results.json") as file:
     data = json.load(file)
 step_range = data["step_range"]
-runtimes_dict = data["runtimes"]
-expvals_dict = data["expvals"]
+runtime_dict = data["runtime"]
 memory_dict = data["memory"]
+expvals_dict = data["expvals"]
 
 
 def _filter_from_min_step(
@@ -52,7 +52,7 @@ def _style_axes(ax: plt.Axes, ylabel: str) -> None:
     """Apply the shared log-scale styling used by both plots."""
     ax.set_xlabel("Trotter step")
     ax.set_ylabel(ylabel)
-    ax.set_yscale("log")
+    #ax.set_yscale("log")
     ax.legend(fontsize=10)
     ax.grid(which="both", alpha=0.3)
     ax.spines["top"].set_visible(False)
@@ -60,10 +60,8 @@ def _style_axes(ax: plt.Axes, ylabel: str) -> None:
 
 
 _, ax1 = plt.subplots()
-# First Trotter step is excluded from runtimes, see run_model.py.
-runtime_step_range = step_range[1:]
-for label, runtimes in runtimes_dict.items():
-    steps, values = _filter_from_min_step(runtime_step_range, runtimes)
+for label, runtime in runtime_dict.items():
+    steps, values = _filter_from_min_step(step_range, runtime)
     ax1.plot(steps, values, color=colors[label], label=label)
 _style_axes(ax1, "Time per step [s]")
 plt.savefig(Path(__file__).parent / "runtime.png", dpi=150)

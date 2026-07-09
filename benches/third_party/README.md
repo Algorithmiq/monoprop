@@ -100,14 +100,14 @@ re-running `run_model.py` afterwards overwrites the file and drops them again â€
 
 For every engine, `results.json` collects, indexed by Trotter step:
 
-- `runtimes`: wall-clock time per step, in seconds (excluding the first step, see the note above).
-- `expvals`: the `ZZ` expectation value on `obs_qubits`, for every step.
 - `num_terms`: the number of Pauli/Majorana terms kept in the evolving operator, for every step.
+- `runtime`: wall-clock time per step, in seconds (excluding the first step, see the note above).
 - `memory`: the memory footprint of the evolving operator, in megabytes, for every step. Where an
   engine exposes its own accounting this is exact (monoprop's C++ operator-memory accounting,
   cuPauliProp's cupy device memory pool, `PauliPropagation.jl`'s `Base.summarysize` of the Pauli
   sum); `QuEra ppvm` and `Qiskit pauli-prop` expose no such accounting, so their footprint is
   reconstructed by accumulating this process's host-memory growth across each of their own steps.
+- `expvals`: the `ZZ` expectation value on `obs_qubits`, for every step.
 
 ## 5. Plot the results
 
