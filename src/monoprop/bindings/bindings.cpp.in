@@ -20,8 +20,6 @@
 #endif
 
 #include "generated/bind.h"
-#include "monoprop/logging/QuillWrapper.h"
-#include "monoprop/logging/Utils.h"
 #include "monoprop/Info.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -99,9 +97,6 @@ NB_MODULE(_core, m) {
 #else
     m.attr("has_mpi") = false;
 #endif
-
-    logging::setup_quill();
-    monoprop_global_logger->set_log_level(monoprop::logging::log_level());
 
     m.def("is_antihermitian",
           &monoprop::is_antihermitian,

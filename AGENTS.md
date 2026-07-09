@@ -65,7 +65,6 @@ mp = MonomialPropagator(operator, num_modes=4, ...)
 - **scikit-build-core**: Modern build system replacing setuptools
 - **uv**: Package management
 - **fmt**: C++ formatting library
-- **quill**: High-performance C++ logging
 - **Boost**: Used for various utilities (unordered_map, unit tests)
 - **msgpack**: Serialization of the test-data fixtures only (`tests/data/*.msgpack`); consumed by the Python test loaders and the C++ test suite, not by the shipped library
 
