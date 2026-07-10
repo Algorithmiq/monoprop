@@ -343,7 +343,7 @@ jobs:
             cmake_cxx_compiler: clang++
           - runner: macos-15
             compiler: apple-clang
-            cmake_cxx_compiler: g++
+            cmake_cxx_compiler: clang++
 
     steps:
       - uses: actions/checkout@v7
