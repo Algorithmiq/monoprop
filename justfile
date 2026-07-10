@@ -106,8 +106,11 @@ gen-api:
 doctest-py:
     {{ docs_uv }} python -m pytest --doctest-modules src/monoprop
 
+doctest-docs:
+    {{ docs_uv }} python -m pytest --markdown-docs docs/content/docs --ignore=docs/content/docs/tutorials
+
 # Build the static documentation site into `docs/out`.
-build-docs: docs-install gen-api doctest-py gen-notebooks
+build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
     cd {{ site }} && npm run build
 
 # Serve the documentation locally with hot reloading.
