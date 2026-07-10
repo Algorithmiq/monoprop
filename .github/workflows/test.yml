@@ -365,6 +365,10 @@ jobs:
       - name: Set clang-18/clang++-18 as default compilers
         if: ${{ matrix.compiler == 'clang-18' }}
         run: |
+          if ! command -v clang-18 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y clang-18
+          fi
           sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 180
           sudo update-alternatives --set clang /usr/bin/clang-18
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang-18 180
