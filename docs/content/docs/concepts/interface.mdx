@@ -3,24 +3,22 @@ title: Interface
 description: How a problem is expressed as input — operator formats, the reference state, and the circuit.
 ---
 
-This page describes, at a conceptual level, how a problem is expressed as input
-to monoprop: the operator formats you can start from, how they relate to the
-Majorana representation used internally, and how a full circuit is bundled for
+This page describes how a problem is expressed as input to monoprop: the operator
+formats you can start from, the reference state, and how a circuit is bundled for
 simulation. For the exact constructors and arguments, see [Python API](/api).
 
 ## Operator formats
 
-A problem is defined by an operator together
-with a reference state. monoprop accepts operators in three forms, each suited to
-a different starting point. Whatever form you choose, it is converted into the
-Majorana representation (see [Notation](/concepts/notation)) before simulation.
+A problem is defined by an operator together with a reference state. monoprop
+accepts operators in three forms, each suited to a different starting point; see
+[Notation](/concepts/notation) for how they relate.
 
 ### Fermionic operators
 
 The natural starting point for quantum chemistry and lattice models. An operator
 is given as a weighted sum of products of fermionic creation and annihilation
-operators on numbered modes (for example $c_0^\dagger c_1$). monoprop maps
-these into the Majorana basis through the Jordan-Wigner transformation.
+operators on numbered modes (for example $c_0^\dagger c_1$); use
+`MajoranaPropagator`.
 
 ```python
 from monoprop import MajoranaPropagator, Circuit, ExpGate
@@ -60,12 +58,12 @@ gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2))
 circuit = Circuit(gates=[gate], parameters=[0.3])
 
 mp = PauliPropagator.from_circuit(circuit, observable, cutoff=4)
-print(sorted(mp.evolved_operator().items()))  # WARNING: the keys are Majorana indices - not Pauli strings
+print(sorted(mp.evolved_operator().items()))  # keys are Majorana indices
 ```
 
 ### Majorana operators
 
-The most direct form: the monomials are specified explicitly as sets of Majorana
+In this case the monomials are specified explicitly as sets of Majorana
 mode indices.
 The coefficient is the one multiplying the *bare* Majorana product, so it
 must keep the monomial Hermitian: real for length-4 monomials, imaginary for
@@ -83,45 +81,36 @@ generator = MajoranaOperator([(3, 4)], [1j], 4)
 circuit = Circuit(initial_state=[0, 1], gates=[ExpGate(generator)], parameters=[0.3])
 
 mp = MajoranaPropagator.from_circuit(circuit, observable, cutoff=4)
-print(sorted(mp.evolved_operator().items()))  # WARNING: the keys are Majorana indices - not fermionic
+print(sorted(mp.evolved_operator().items()))  # keys are Majorana indices
 ```
 
 ## The reference state
 
-Alongside the operator, a simulation needs a **reference state**, typically a
-Slater determinant given as the list of occupied orbitals, or computational basis state.
-Expectation values are computed against this state or in Schrödinger picture, the state is evolved from this reference.
+A simulation also needs a **reference state**, given either as a Slater
+determinant (a list of occupied orbitals) or a computational-basis state.
+Expectation values are computed against it; in the Schrödinger picture it is the
+state that is evolved.
 
 ## The circuit
 
-Finally, a circuit can be specified as a sequence of *gates*,
-each of which is a Majorana rotation. Each gate is described by
-three pieces of information:
+A circuit is a sequence of *gates*, each a Majorana rotation described by:
 
-- the **generator** - the Majorana monomial $M_\gamma$ that defines the
-  rotation $e^{-i\theta M_\gamma/2}$;
-- a **parameter** - the angle $\theta$ applied to that generator; and
-- a **parameter index** - which entry of the variational parameter vector the
-  gate draws its angle from, so that several gates can be tied to share one
-  parameter.
+- the **generator** — the Majorana monomial $M_\gamma$ defining the rotation
+  $e^{-i\theta M_\gamma/2}$;
+- a **parameter** — the angle $\theta$; and
+- a **parameter index** — which entry of the parameter vector supplies that
+  angle, so several gates can share one parameter.
 
-This structure enables the use of monoprop in variational workflows.
-This is the natural representation for algorithms such as ADAPT-VQE, QAOA, etc.
-where the circuit grows one generator at a time and is re-evaluated
-repeatedly as parameters are optimised.
 
 ## From input to result
 
-The typical flow from a problem definition to a result is:
-
-1. **Express** the operator in fermionic, qubit, or Majorana form, and choose a
+1. **Express** the operator (fermionic, qubit, or Majorana) and choose a
    reference state.
-2. **Construct** a simulator from the operator, the reference state, and truncation
-   settings (such as cutoff type and value).
+2. **Construct** a simulator from the operator, reference state, and truncation
+   settings.
 3. **Propagate** the circuit to build the reusable propagated operator.
-4. **Evaluate** expectation values or gradients, re-using that operator across
-   many parameter values.
+4. **Evaluate** expectation values or gradients across many parameter values.
 
 Steps 1-2 happen once; steps 3-4 form the inner loop of a variational
-optimisation. The mechanics of steps 3-4 are covered in
-[Propagation Algorithm](/concepts/algorithm), and the concrete API in [Python API](/api).
+optimisation, covered in [Propagation Algorithm](/concepts/algorithm) with the
+concrete API in [Python API](/api).

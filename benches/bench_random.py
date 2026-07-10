@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Random-problem benchmarks (time + peak memory), both physical pictures.
-
-Random fixed-length Majorana generators and a random Hermitian observable, run in
-the Heisenberg and Schrödinger pictures (``schrodinger_cutoff = cutoff + 2``).
-Configurable from the command line -- see ``benches/README.md``.
-"""
+"""Random-problem benchmarks (time + peak memory), both physical pictures."""
 
 from __future__ import annotations
 
@@ -45,7 +40,7 @@ def test_random_build_graph(
 
 
 def test_random_pare(benchmark, built_graph, bench_comm, bench_rounds):
-    """Benchmark paring the graph into a masked execution plan."""
+    """Benchmark paring the graph."""
 
     def pare():
         return built_graph.expectation_value_and_gradient_functional(

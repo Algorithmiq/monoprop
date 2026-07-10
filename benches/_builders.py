@@ -306,7 +306,6 @@ def build_hubbard_problem(
         num_modes=config.num_qubits,
     )
 
-    # CutoffType is Length | Support in the current API.
     propagator = MajoranaPropagator(
         observable,
         circuit.initial_state,
@@ -535,7 +534,6 @@ def build_kicked_ising_problem(
     )
     observable = PauliOperator({obs_str: 1.0}, num_qubits=config.num_qubits)
 
-    # PauliPropagator sets the Jordan-Wigner basis change automatically.
     propagator = PauliPropagator(
         observable,
         circuit.initial_state,
