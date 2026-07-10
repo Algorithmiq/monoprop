@@ -91,6 +91,26 @@ jobs:
         run: |
           just build-docs
 
+      - name: Check docs internal links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --config .lychee.toml --no-progress
+            --root-dir ${{ github.workspace }}/docs/content/docs
+            --fallback-extensions mdx,md --index-files index.mdx,index.md
+            'docs/content/docs/**/*.mdx' docs/README.md README.md
+          fail: true
+
+      - name: Check built docs links (including external)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --config .lychee.postbuild.toml --no-progress
+            --root-dir ${{ github.workspace }}/docs/out
+            --fallback-extensions html --index-files index.html
+            'docs/out/**/*.html'
+          fail: true
+
       - name: Setup Pages
         if: ${{ github.ref == 'refs/heads/main' }}
         uses: actions/configure-pages@v6
