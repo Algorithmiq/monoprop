@@ -58,7 +58,7 @@ dev = ["coverage", "prek>=0.4", "ruff==0.14.8", "gcovr"]
 # Python's only roles are converting the tutorial notebooks to Markdown
 # (`nbconvert`) and generating the API reference from docstrings (`griffe`,
 # injected via the `fumadocs-python` npm package in the `gen-api` recipe).
-docs = ["nbconvert", { include-group = "interactive" }]
+docs = ["nbconvert", "pytest-markdown-docs", { include-group = "interactive" }]
 interactive = [
   "ipykernel",
   "matplotlib",
