@@ -31,10 +31,11 @@ monomial Hermitian (real for length-4 terms, imaginary for length-2 — see the
 Notation page):
 
 ```python
->>> from monoprop import MajoranaPropagator, MajoranaOperator
->>> observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
->>> sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
->>> sim.update_initial_operator({(0, 1, 2, 3): 0.5})
+from monoprop import MajoranaPropagator, MajoranaOperator
+
+observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
+sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
+sim.update_initial_operator({(0, 1, 2, 3): 0.5})
 ```
 
 This lets you estimate several observables without re-propagating: in the
@@ -48,9 +49,12 @@ picture the same graph can be reused with different initial operators.
   `RuntimeError`:
 
   ```python
-    >>> sim.update_initial_operator({(1, 2, 3, 4): 0.5})  # This monomial doesn't exist
-  Traceback (most recent call last):
-     ...
-  RuntimeError: ...
+  import pytest
+  from monoprop import MajoranaPropagator, MajoranaOperator
+
+  observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
+  sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
+  with pytest.raises(RuntimeError):
+      sim.update_initial_operator({(1, 2, 3, 4): 0.5})  # This monomial doesn't exist
   ```
 </Callout>

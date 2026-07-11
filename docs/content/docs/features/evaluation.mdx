@@ -19,7 +19,7 @@ together, compose them with `+` and build the combined circuit in one
 
 The simplest path is to evaluate directly:
 
-```python
+```python notest
 expval = sim.expectation_value(parameters)
 expval, grad = sim.expectation_value_and_gradient(parameters)
 ```
@@ -35,7 +35,7 @@ and call it repeatedly. `expectation_value_functional` and
 `expectation_value_and_gradient_functional` return callables that accept a
 parameter vector:
 
-```python
+```python notest
 expval_fn = sim.expectation_value_functional()
 expval = expval_fn(parameters)
 
@@ -55,7 +55,7 @@ during replay. The stored graph itself is unchanged, only the replay skips the
 negligible terms, so this can dramatically speed up replay cost for sparse graphs
 (at the expense of some memory and accuracy):
 
-```python
+```python notest
 pared_expval_fn = sim.expectation_value_functional(pare_threshold=1e-7)
 ```
 
@@ -67,7 +67,7 @@ replayed. The gates are contracted into the initial operator (Heisenberg picture
 or into the reference state (Schrödinger picture), and by default the simulator's
 internal graph is updated in place:
 
-```python
+```python notest
 # Fold the graph evaluated at these parameters into the operator, in place.
 sim.contract_partially(parameters)
 ```
@@ -80,7 +80,7 @@ Pass `inplace=False` to leave the stored graph untouched and only return the
 contracted operator coefficients, so the same graph can be reused with different
 parameters:
 
-```python
+```python notest
 coeffs = sim.contract_partially(parameters, inplace=False)
 ```
 

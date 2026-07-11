@@ -61,7 +61,7 @@ independently of the structural cutoff:
 - `upper_atol`: accept terms with `|coeff| > upper_atol` regardless of the structural cutoff. Useful for
   keeping a few large terms that would otherwise be discarded by a tight cutoff.
 
-```python
+```python notest
 sim.lower_atol = 1e-9
 sim.upper_atol = 1e-3
 ```
