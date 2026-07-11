@@ -107,7 +107,7 @@ doctest-py:
     {{ docs_uv }} python -m pytest --doctest-modules src/monoprop
 
 doctest-docs:
-    {{ docs_uv }} python -m pytest --markdown-docs docs/content/docs --ignore=docs/content/docs/tutorials
+    {{ docs_uv }} python -m pytest --markdown-docs docs/content/docs --ignore=docs/content/docs/tutorials --ignore=docs/content/docs/api
 
 # Build the static documentation site into `docs/out`.
 build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
