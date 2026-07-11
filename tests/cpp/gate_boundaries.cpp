@@ -133,3 +133,32 @@ BOOST_AUTO_TEST_CASE(coeff_informed_build_graph_rejects_too_few_parameters) {
         sim.build_graph(std::vector<VecZ>{{2}}, VecZ{0}, VecD{1.0}, std::nullopt, std::optional<VecD>{VecD{0.5}}),
         std::runtime_error);
 }
+
+BOOST_AUTO_TEST_CASE(contract_partially_replays_existing_graph_and_supports_inplace) {
+    auto sim = make_sim();
+    sim.build_graph(std::vector<VecZ>{{0}, {1}}, VecZ{0, 1}, VecD{1.0, 1.0});
+    BOOST_TEST(sim.graph_layers() == 2u);
+
+    // Coefficient-informed extend on a non-empty graph: build_graph internally calls
+    // contract_partially(existing_params, /*inplace=*/false) to reseed atol truncation --
+    // this is the previously-uncovered call site. The new layer's own parameter index (2) must
+    // be >= the existing graph's max index (1), so `parameters` here can simultaneously satisfy
+    // this call's own length check (against its local mapping, {2}) and be long enough to replay
+    // the existing graph (which needs 2 values).
+    sim.build_graph(std::vector<VecZ>{{0}},
+                    VecZ{2},
+                    VecD{1.0},
+                    std::nullopt,
+                    std::optional<VecD>{VecD{0.5, 0.25, 0.1}});
+    BOOST_TEST(sim.graph_layers() == 3u);
+
+    // Direct call, inplace=false: returns coefficients, graph is left untouched.
+    const auto peeked = sim.contract_partially(VecD{0.5, 0.25, 0.1}, false);
+    BOOST_TEST(!peeked.empty());
+    BOOST_TEST(sim.graph_layers() == 3u);
+
+    // Direct call, inplace=true: consumes the (entire) graph into the operator.
+    const auto consumed = sim.contract_partially(VecD{0.5, 0.25, 0.1}, true);
+    BOOST_TEST(consumed.size() == peeked.size());
+    BOOST_TEST(sim.graph_layers() == 0u);
+}

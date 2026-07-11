@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <complex>
 #include <concepts>
@@ -190,6 +191,52 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
     BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare << " sch_cutoff="
                                   << (cfg.schrodinger_cutoff ? std::to_string(*cfg.schrodinger_cutoff) : "none")) {
         check_expval_close("Expectation Value Build Graph with coeffs", expval, exact_expval);
+    }
+}
+
+/// Test evolve with pre-computed coefficients, extending a non-empty graph across two calls.
+///
+/// The second build_graph call (on an already non-empty graph) exercises the
+/// contract_partially()-seeding branch inside build_graph, which the single-call version above
+/// never reaches. Only the Schrodinger picture is used here: splitting a majorana sequence across
+/// two calls is picture-dependent (Heisenberg consumes each call back-to-front, so a forward split
+/// is not equivalent to one call -- see build_graph's doc note), and a coefficient-informed extend
+/// additionally requires each call's own parameter_mapping to reference indices at least as high as
+/// the existing graph's, which only a forward (front-to-back) split guarantees; `cfg` must have
+/// `schrodinger_cutoff` set. Each call's `parameters` argument must be sized to exactly that call's
+/// own parameter_mapping (validate_parameters_length checks against it directly, not the graph's
+/// accumulated mapping), so it is sliced to the prefix of the full parameter vector that covers it.
+template <size_t n_modes>
+inline auto test_evolve_build_graph_with_coeffs_extend(const CaseData& data,
+                                                       const SimulatorConfig& cfg,
+                                                       bool pare,
+                                                       double exact_expval) -> void {
+    auto mp = build_simulator<n_modes>(data, cfg);
+
+    const size_t n = data.majoranas.size();
+    const size_t k = n / 2;
+    const std::vector<VecZ> majs1(data.majoranas.begin(), data.majoranas.begin() + k);
+    const std::vector<VecZ> majs2(data.majoranas.begin() + k, data.majoranas.end());
+    const VecZ pinds1(data.param_inds.begin(), data.param_inds.begin() + k);
+    const VecZ pinds2(data.param_inds.begin() + k, data.param_inds.end());
+    const VecD gc1(data.gen_coeffs.begin(), data.gen_coeffs.begin() + k);
+    const VecD gc2(data.gen_coeffs.begin() + k, data.gen_coeffs.end());
+
+    const auto params_for = [&data](const VecZ& mapping) -> VecD {
+        const size_t m = static_cast<size_t>(*std::ranges::max_element(mapping)) + 1;
+        return VecD(data.parameters.begin(), data.parameters.begin() + static_cast<std::ptrdiff_t>(m));
+    };
+
+    mp.build_graph(majs1, pinds1, gc1, std::nullopt, params_for(pinds1));
+    mp.build_graph(majs2, pinds2, gc2, std::nullopt, params_for(pinds2));
+
+    const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
+    auto expval_fn = mp.expectation_value_functional(pare_threshold);
+    double expval = expval_fn(data.parameters);
+    BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare) {
+        check_expval_close("Expectation Value Build Graph with coeffs (split build, schrodinger)",
+                           expval,
+                           exact_expval);
     }
 }
 
