@@ -329,7 +329,11 @@ class Circuit:
                 "A circuit cannot mix qubit and Majorana/fermionic gates; build separate "
                 "circuits per family."
             )
-        return "pauli" if has_pauli else "majorana" if has_majorana else "empty"
+        if has_pauli:
+            return "pauli"
+        if has_majorana:
+            return "majorana"
+        return "empty"
 
     @property
     def resolved_mapping(self) -> tuple[int, ...]:
