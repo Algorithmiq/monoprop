@@ -75,9 +75,9 @@ from monoprop import MajoranaPropagator, Circuit, ExpGate, MajoranaOperator
 
 # Observable given directly as the Hermitian Majorana monomial on indices
 # (0, 1, 2, 3) - a length-4 monomial, so a real coefficient.
-observable = MajoranaOperator([(0, 1, 2, 3)], [1.0], 4)
+observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
 # Generator i·m_3 m_4 - a length-2 monomial, so an imaginary coefficient.
-generator = MajoranaOperator([(3, 4)], [1j], 4)
+generator = MajoranaOperator({(3, 4): 1j}, 4)
 circuit = Circuit(initial_state=[0, 1], gates=[ExpGate(generator)], parameters=[0.3])
 
 mp = MajoranaPropagator.from_circuit(circuit, observable, cutoff=4)
