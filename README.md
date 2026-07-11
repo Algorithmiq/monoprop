@@ -3,6 +3,7 @@
 
 [![Documentation](https://github.com/Algorithmiq/monoprop/actions/workflows/docpages.yml/badge.svg)](https://docs.algorithmiq.fi/monoprop)
 [![Test monoprop](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml/badge.svg)](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml)
+[![CLA assistant](https://cla-assistant.io/readme/badge/Algorithmiq/monoprop)](https://cla-assistant.io/Algorithmiq/monoprop)
 
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Algorithmiq_monoprop&metric=alert_status&token=b8f15100fbda929efa33b226a723216e0163cfc9)](https://sonarcloud.io/summary/new_code?id=Algorithmiq_monoprop)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=Algorithmiq_monoprop&metric=coverage&token=b8f15100fbda929efa33b226a723216e0163cfc9)](https://sonarcloud.io/summary/new_code?id=Algorithmiq_monoprop)
@@ -106,8 +107,14 @@ git clone https://github.com/Algorithmiq/monoprop.git
 
 Without a DevContainer, install the prerequisites from the
 [building guide](https://docs.algorithmiq.fi/monoprop/docs/building#prerequisites)
-by hand. Contribution workflow and standards are in the
-[contributing guide](https://docs.algorithmiq.fi/monoprop/docs/how-to-contribute).
+by hand.
+
+## Contributing
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+All contributions require accepting the Individual CLA through CLA Assistant.
+If you are contributing on behalf of your employer, contact
+[cla@algorithmiq.fi](mailto:cla@algorithmiq.fi) to arrange a Corporate CLA.
 
 ## Documentation
 
