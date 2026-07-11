@@ -18,15 +18,9 @@ import numpy as np
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MonomialPropagator
-from monoprop.monomial_data import MonomialCircuit, MonomialOperator
+from monoprop import Circuit, ExpGate, MajoranaPropagator
+from monoprop.majorana import MajoranaOperator
 from tests.cases import CasesFermionicProblemOrbitalRotations
-
-
-@pytest.fixture
-def mp_kwargs(comm):
-    """Common MP constructor arguments — parametrized over comm_self / comm_world."""
-    return {"cutoff": 6, "schrodinger_cutoff": 8, "comm": comm}
 
 
 @pytest.fixture
@@ -35,41 +29,41 @@ def serial_mp_kwargs(serial_comm):
     return {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
 
 
-def _create_mp(operator, monomial_circuit, **kwargs):
-    return MonomialPropagator(operator, monomial_circuit, **kwargs)
+def _split_orbital_gates(gates):
+    """Split gates into (non-orbital, orbital), where orbital gates are the tail run
+    whose generated monomials are all length-2 (free-fermion rotations)."""
+
+    def is_orbital(gate):
+        return all(len(majorana) == 2 for majorana in gate.generator.terms)
+
+    for i in range(len(gates)):
+        if all(is_orbital(gate) for gate in gates[i:]):
+            return gates[:i], gates[i:]
+    return gates, []
 
 
 def test_basic_orbital_rotation(serial_comm):
     n_modes = 4
 
-    majs = [(1, 2)]
-    params = [np.pi / 4]
-    param_inds = [0]
-    gen_coeffs = [1.0]
-
-    kwargs = {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
-    operator = MonomialOperator({}, n_modes)
-    monomial_circuit = MonomialCircuit(
+    operator = MajoranaOperator({}, n_modes)
+    sequence = Circuit.from_dense_arrays(
         initial_state=[],
-        majoranas=majs,
-        parameters=params,
-        gen_coeffs=gen_coeffs,
-        param_inds=param_inds,
+        majoranas=[(1, 2)],
+        parameters=[np.pi / 4],
+        gen_coeffs=[1.0],
+        param_inds=[0],
     )
-    mp_act = _create_mp(operator, monomial_circuit, **kwargs)
-    initial_state = mp_act.evolved_operator_dict()
+    circuit = sequence
+    kwargs = {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
 
-    mp_act.propagate(
-        evolve_with_coeffs=True,
-    )
-    rotated_state = mp_act.evolved_operator_dict()
+    mp_act = MajoranaPropagator(operator, sequence.initial_state, **kwargs)
+    initial_state = mp_act.evolved_operator()
+    mp_act.propagate(circuit)
+    rotated_state = mp_act.evolved_operator()
 
-    mp_orb = _create_mp(operator, monomial_circuit, **kwargs)
-    mp_orb.propagate(
-        evolve_with_coeffs=True,
-        only_rotate_len_k=4,
-    )
-    orb_rotated_state = mp_orb.evolved_operator_dict()
+    mp_orb = MajoranaPropagator(operator, sequence.initial_state, **kwargs)
+    mp_orb.propagate(circuit, only_rotate_len_k=4)
+    orb_rotated_state = mp_orb.evolved_operator()
 
     for key in initial_state:
         if len(key) > 4:
@@ -86,39 +80,43 @@ def test_basic_orbital_rotation(serial_comm):
 @pytest.mark.parametrize("inplace", [False, True])
 def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     """Tests size/graph_size (rank-local) so uses serial_comm."""
+    circuit = problem.monomial_circuit.to_circuit()
+    gates = circuit.gates
+    parameters = problem.monomial_circuit.parameters
+    non_orbital_gates, orbital_gates = _split_orbital_gates(gates)
+    # Consecutive prefix/suffix split, so the (identity) parameter values split the same way.
+    split = len(non_orbital_gates)
+    # Drop each sliced gate's original (non-zero-based) param so each sub-circuit gets the
+    # identity mapping (gate i -> angle i), rebasing the orbital tail's angles to start at 0.
+    # _with_index preserves each gate's _structural flag (these come from a from_dense_arrays
+    # circuit, so a plain ExpGate(gate.generator) would re-normalize their structural coefficients).
+    non_orbital = Circuit(
+        tuple(ExpGate._with_index(gate, None) for gate in non_orbital_gates),
+        parameters=tuple(parameters[:split]),
+    )
+    orbital = Circuit(
+        tuple(ExpGate._with_index(gate, None) for gate in orbital_gates),
+        parameters=tuple(parameters[split:]),
+    )
 
-    mp = _create_mp(problem.operator, problem.monomial_circuit, **serial_mp_kwargs)
-    mp_act = _create_mp(problem.operator, problem.monomial_circuit, **serial_mp_kwargs)
-    mp_act.propagate()
-    act_ener = mp_act.expectation_value_functional(
-        use_coeffs=True,
-    )(problem.monomial_circuit.parameters)
+    mp_act = MajoranaPropagator(
+        problem.operator, problem.monomial_circuit.initial_state, **serial_mp_kwargs
+    )
+    mp_act.build_graph(circuit)
+    act_ener = mp_act.expectation_value_functional()(parameters)
 
-    orb = problem.split_only_rotate_len_k()
+    mp = MajoranaPropagator(
+        problem.operator, problem.monomial_circuit.initial_state, **serial_mp_kwargs
+    )
 
     if inplace:
-        mp.propagate(
-            parameter_mapping=orb.param_inds,
-            majoranas=orb.majs,
-            gen_coeffs=orb.gen_coeffs,
-            parameters=orb.parameters,
-        )
-        mp.propagate(
-            parameter_mapping=orb.param_inds_orb,
-            majoranas=orb.majs_orb,
-            gen_coeffs=orb.gen_coeffs_orb,
-            parameters=orb.parameters_orb,
-            only_rotate_len_k=4,
-        )
-        ener_fn = mp.expectation_value_functional(parameter_mapping=[], gen_coeffs=[])
-        test_expval = ener_fn([])
+        mp.propagate(non_orbital)
+        mp.propagate(orbital, only_rotate_len_k=4)
+        test_expval = mp.expectation_value()
     else:
-        mp.propagate(orb.majs)
-        mp.propagate(orb.majs_orb, only_rotate_len_k=4)
-        ener_fn = mp.expectation_value_functional(
-            use_coeffs=True,
-        )
-        test_expval = ener_fn(problem.monomial_circuit.parameters)
+        mp.build_graph(non_orbital)
+        mp.build_graph(orbital, only_rotate_len_k=4)
+        test_expval = mp.expectation_value_functional()(parameters)
         assert sum(mp.graph_size()) < sum(mp_act.graph_size())
 
     assert mp.size() < mp_act.size()

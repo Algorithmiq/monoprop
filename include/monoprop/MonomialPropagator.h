@@ -19,6 +19,7 @@
 #include <cmath>
 #include <format>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <string>
@@ -170,6 +171,50 @@ public:
      * @return The number of Majorana operators that have been evolved (number of graph layers).
      */
     auto graph_layers() const -> size_t { return graph_.layers(); }
+
+    /**
+     * @brief Number of gates ingested into the graph.
+     *
+     * Derived from the layers as max(gate_index) + 1 over the active layers (0 if empty),
+     * so it stays correct after prefix layers are consumed by contract_partially/propagate.
+     * A single-term gate expands to one layer; a multi-term gate expands to several layers
+     * that share one gate index, so n_gates() <= graph_layers().
+     *
+     * @return The number of distinct gate indices recorded across the graph's layers.
+     */
+    auto n_gates() const -> size_t;
+
+    /**
+     * @brief The parameter mapping owned by the graph, in optimizer order.
+     *
+     * Entry i is the variational-parameter index driving the i-th graph layer (a generated
+     * Majorana monomial); this is the mapping the graph uses when binding parameters.
+     *
+     * @return The per-layer parameter mapping (length equals graph_layers()).
+     */
+    auto parameter_mapping() const -> VecZ { return graph_gate_arrays_().first; }
+
+    /**
+     * @brief Re-wire which variational parameter drives each graph layer, in place.
+     *
+     * Relabels the graph layers' parameter indices without rebuilding the graph. The graph
+     * structure depends only on the generators, not on the parameter labels, so this is a
+     * cheap O(layers) relabel that changes only the parameter binding. Existing functionals
+     * created by expectation_value_functional() keep the mapping they captured at creation
+     * (they snapshot it), so rebuild a functional to pick up the new mapping.
+     *
+     * The mapping may be given at either granularity: per-layer (length graph_layers(), in
+     * optimizer order) or per-gate (length n_gates(), indexed by absolute gate index). A
+     * per-gate mapping is expanded to per-layer via each layer's stored gate index, which is
+     * order-agnostic and correct in both pictures and across build_graph calls. When the two
+     * lengths coincide (every gate is single-term in a single build) the per-layer reading is
+     * used; note that across multiple Heisenberg builds optimizer order differs from gate
+     * order even for single-term gates, so pass a per-gate mapping when tying by gate.
+     *
+     * @param parameter_mapping New parameter index per layer (length graph_layers()) or per
+     *        gate (length n_gates()).
+     */
+    auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
     /**
      * @brief Access this rank's indexing map.
@@ -367,165 +412,104 @@ public:
     auto basis_change() const -> std::optional<std::vector<VecZ>> { return basis_change_; }
 
     /**
-     * @brief Propagates the system by multiple Majorana operators.
+     * @brief Build the propagation graph from a sequence of Majorana generators.
      *
-     * Applies a sequence of Majorana propagations to the system. This method supports
-     * three main propagation strategies:
+     * Appends one graph layer per Majorana generator, recording each layer's gate
+     * information (parameter_mapping[i] and gen_coeffs[i]) on the layer itself so that
+     * evaluation later needs only the variational `parameters`. The graph accumulates
+     * across successive calls.
      *
-     * 1. Building the propagation graph only.
-     * - To use this mode, only provide the majoranas parameter.
+     * @param majoranas Majorana generators to apply (each a vector of indices).
+     * @param parameter_mapping Per-generator index into the variational parameter vector.
+     * @param gen_coeffs Per-generator coefficient g (angle = parameters[mapping[i]] * g).
+     * @param gate_indices Optional per-generator gate index (which ingested gate each
+     *        monomial belongs to), local and 0-based per call. Unlike parameter_mapping
+     *        these are offset internally by the gate count already in the graph, so callers
+     *        pass local indices and never track the running gate count. Omit (nullopt) for
+     *        one gate per generator (iota); required to be contiguous runs from 0.
+     * @param parameters Optional. When the graph is already non-empty and coefficient
+     *        information is needed for atol-based truncation while extending it, provide
+     *        the full parameter vector covering the existing graph *and* these new gates;
+     *        the seed coefficients are regenerated internally by contracting the existing
+     *        graph at `parameters` (there is no operator_coeffs input). Omit for a pure
+     *        structural build.
+     * @param only_rotate_len_k If > 0, apply gates to monomials of length <= k even if
+     *        they anticommute (see class docs).
      *
-     * 2. Building the propagation graph with coefficient information.
-     * - To use this mode, provide majoranas, parameter_mapping, gen_coeffs, parameters and operator_coeffs. Operator
-     * coefficients can be obtained from a prior call to contract_partially() with inplace set to false if you want to
-     * preserve the graph.
+     * @note In the Heisenberg picture gates are applied back-to-front, so each call
+     *       consumes its sequence in reverse; splitting a circuit into forward chunks
+     *       across calls is NOT equivalent to one call. In the Schrodinger picture gates
+     *       are applied front-to-back, so a forward split IS equivalent.
+     */
+    auto build_graph(const std::vector<VecZ> &majoranas,
+                     const VecZ &parameter_mapping,
+                     const VecD &gen_coeffs,
+                     std::optional<VecZ> gate_indices = std::nullopt,
+                     std::optional<VecD> parameters = std::nullopt,
+                     int only_rotate_len_k = 0) -> void;
+
+    /**
+     * @brief Evolve and contract immediately, without storing a propagation graph.
      *
-     * 3. Propagating and contracting immediately without building a graph.
-     * - To use this mode, provide majoranas, parameter_mapping, gen_coeffs, and parameters. Do not provide
-     * operator_coeffs. This mode is memory efficient as it does not store the propagation graph.
+     * Memory-efficient path: applies the gates with the given `parameters` directly to the
+     * operator (Heisenberg) or state (Schrodinger) without retaining a graph.
      *
-     * The only_rotate_len_k parameter, if > 0, applies gates to monomials of length <= k in the
-     * propagated operator even if they anticommute. This is useful for when you apply many free
-     * fermionic gates (ie: gates generated by length 2 majorana monomials) before expectation
-     * value estimation in schrodinger picture simulations. Note that one should not evolve
-     * again after applying length-filtered rotations.
-     *
-     * @param majoranas Vector of Majorana operators to apply, where each operator
-     *                  is represented as a vector of integer indices
-     * @param parameter_mapping Optional mapping from variational parameters to generator indices.
-     *                          Must be provided together with gen_coeffs and parameters
-     * @param gen_coeffs Optional generator coefficients corresponding to each parameter mapping.
-     *                   Must be provided together with parameter_mapping and parameters
-     * @param parameters Optional parameter values for immediate evolution.
-     *                   Must be provided together with parameter_mapping and gen_coeffs
-     * @param operator_coeffs Optional operator coefficients for the current state or Operator.
-     * @param only_rotate_len_k If > 0, apply gates to monomials of length <= k in the evolved operator
-     *                           even if they anticommute. 0 disables this filter.
-     *
-     * @throws std::runtime_error If parameter combinations are invalid or if trying to
-     *                            evolve without parameters when build_graph is false
+     * @param majoranas Majorana generators to apply.
+     * @param parameter_mapping Per-generator index into `parameters`.
+     * @param gen_coeffs Per-generator coefficient g.
+     * @param parameters Variational parameter values.
+     * @param only_rotate_len_k See build_graph.
      */
     auto propagate(const std::vector<VecZ> &majoranas,
-                   std::optional<VecZ> parameter_mapping = std::nullopt,
-                   std::optional<VecD> gen_coeffs = std::nullopt,
-                   std::optional<VecD> parameters = std::nullopt,
-                   std::optional<VecD> operator_coeffs = std::nullopt,
-                   int only_rotate_len_k = 0) -> void {
-        // Early return if no majoranas to evolve
-        if (majoranas.empty()) {
-            return;
-        }
-
-        // Validate parameter consistency
-        validate_evolution_parameters(parameter_mapping, gen_coeffs, parameters);
-        // Determine evolution mode
-        const auto mode = determine_evolution_mode(parameter_mapping, gen_coeffs, parameters, operator_coeffs);
-        // Check graph state constraints
-        validate_graph_state_for_mode(mode, parameter_mapping, gen_coeffs, parameters, graph_.layers());
-        // Execute the appropriate evolution mode
-        execute_evolution_mode_(mode,
-                                majoranas,
-                                parameter_mapping,
-                                gen_coeffs,
-                                parameters,
-                                operator_coeffs,
-                                only_rotate_len_k);
-    }
+                   const VecZ &parameter_mapping,
+                   const VecD &gen_coeffs,
+                   const VecD &parameters,
+                   int only_rotate_len_k = 0) -> void;
 
     /**
-     * @brief Creates a function object for expectation value evaluation.
+     * @brief Compute the expectation value at the given variational parameters.
      *
-     * Returns a callable that calculates the expectation value for given
-     * variational parameters using the current system state and evolution graph.
-     * The returned function can be used for optimization algorithms.
-     *
-     * @param parameter_mapping Mapping from variational parameters to generator indices
-     * @param gen_coeffs Generator coefficients corresponding to each parameter mapping
-     * @param pare_threshold Absolute value cutoff for retaining edges in the masked execution plan.
-     *             If std::nullopt, exact paring is disabled.
-     * @return Function object that takes parameter vector and returns expectation value as double
+     * Gate information (parameter mapping and generator coefficients) is owned by the
+     * graph, so only `parameters` is required.
      */
-    auto expectation_value_functional(const VecZ &parameter_mapping,
-                                      const VecD &gen_coeffs,
-                                      std::optional<double> pare_threshold = std::nullopt)
-        -> std::function<double(const VecD &)> {
-        return make_functional_(parameter_mapping, gen_coeffs, ev_fn, pare_threshold);
-    }
+    auto expectation_value(const VecD &parameters) -> double;
 
     /**
-     * @brief Creates a function object for expectation value and gradient evaluation.
-     *
-     * Returns a callable that calculates both the expectation value and its
-     * gradient with respect to variational parameters using the current system state
-     * and evolution graph. The returned function is useful for gradient-based optimization.
-     *
-     * @param parameter_mapping Mapping from variational parameters to generator indices
-     * @param gen_coeffs Generator coefficients corresponding to each parameter mapping
-     * @param pare_threshold Absolute value cutoff for retaining edges in the masked execution plan.
-     *             If std::nullopt, exact paring is disabled.
-     * @return Function object that takes parameter vector and returns pair of (expectation_value, gradient)
+     * @brief Compute the expectation value and its gradient at the given parameters.
      */
-    auto expectation_value_and_gradient_functional(const VecZ &parameter_mapping,
-                                                   const VecD &gen_coeffs,
-                                                   std::optional<double> pare_threshold = std::nullopt)
-        -> std::function<std::pair<double, VecD>(const VecD &)> {
-        return make_functional_(parameter_mapping, gen_coeffs, ev_and_grad_fn, pare_threshold);
-    }
+    auto expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD>;
 
     /**
-     * @brief Contracts evolution gates with parameters, optionally updating simulator state.
+     * @brief Return a reusable callable computing the expectation value from parameters.
      *
-     * This function applies the evolution gates with specified parameters by contracting
-     * them into the operator. It can either update the simulator's internal state (in-place)
-     * or return the evolved operator without modification (non-in-place).
-     *
-     * In Heisenberg picture: Gates are contracted into the Operator.
-     * In Schrödinger picture: Gates are contracted into the quantum state.
-     *
-     * @param parameters Variational parameter values for the gates to be contracted
-     * @param parameter_mapping Mapping from variational parameters to generator indices
-     * @param gen_coeffs Generator coefficients corresponding to each parameter mapping
-     * @param inplace If true, updates the simulator's internal state; if false,
-     *                returns evolved operator without modifying internal state
-     * @return The evolved operator coefficients. In Schrödinger picture returns evolved state,
-     *         in Heisenberg picture returns evolved Operator. Note: core term is not
-     *         included in the returned vector
-     *
-     * @throws std::runtime_error If parameter dimensions are inconsistent
+     * @param pare_threshold Absolute-value cutoff for retaining edges in a masked execution
+     *        plan built for this functional. std::nullopt disables paring (exact graph).
      */
-    auto contract_partially(const VecD &parameters, const VecZ &parameter_mapping, const VecD &gen_coeffs, bool inplace)
-        -> VecD {
-        validate_coefficient_lengths(parameter_mapping, gen_coeffs);
-        validate_propagation_contraction(parameter_mapping.size(), graph_layers());
-        validate_parameters_length(parameters, parameter_mapping);
+    auto expectation_value_functional(std::optional<double> pare_threshold = std::nullopt)
+        -> std::function<double(const VecD &)>;
 
-        if (parameters.empty()) {
-            return current_picture_coeffs_();
-        }
+    /**
+     * @brief Return a reusable callable computing (expectation value, gradient) from parameters.
+     *
+     * @param pare_threshold See expectation_value_functional.
+     */
+    auto expectation_value_and_gradient_functional(std::optional<double> pare_threshold = std::nullopt)
+        -> std::function<std::pair<double, VecD>(const VecD &)>;
 
-        const size_t num_majoranas = parameter_mapping.size();
-        if (schrodinger_) {
-            const auto &state = mp_op_.get_state();
-            const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, -1.0);
-            const auto evolved_state =
-                inplace ? evolve_operator(state, graph_.slice_graph(num_majoranas, true), mapped_params, comm_)
-                        : evolve_operator(state, graph_.slice_view(num_majoranas), mapped_params, comm_);
-            if (inplace) {
-                mp_op_.state_coeffs = evolved_state;
-            }
-            return evolved_state;
-        }
-
-        const auto &op = mp_op_.get_operator();
-        const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0, true);
-        const auto evolved_op = inplace
-                                    ? evolve_operator(op, graph_.slice_graph(num_majoranas, true), mapped_params, comm_)
-                                    : evolve_operator(op, graph_.slice_view(num_majoranas), mapped_params, comm_);
-        if (inplace) {
-            mp_op_.op_coeffs = evolved_op;
-        }
-        return evolved_op;
-    }
+    /**
+     * @brief Contract the evolution graph into the operator/state at the given parameters.
+     *
+     * Applies every gate in the current graph with the supplied `parameters` (gate mapping
+     * and generator coefficients are owned by the graph). In Heisenberg picture the gates are
+     * contracted into the operator; in Schrodinger picture into the state.
+     *
+     * @param parameters Variational parameter values.
+     * @param inplace If true, updates the simulator's internal state (consuming the graph);
+     *                if false, returns the evolved coefficients without modifying state.
+     * @return The evolved coefficients (evolved state in Schrodinger, evolved operator in
+     *         Heisenberg). The core term is not included in the returned vector.
+     */
+    auto contract_partially(const VecD &parameters, bool inplace) -> VecD;
 
     virtual auto update_initial_operator(const FermiOperatorMap &op_dict) -> void { apply_initial_operator_(op_dict); }
 
@@ -558,7 +542,10 @@ protected:
                                 VecZ &cos_inds,
                                 std::optional<CompressedCosineData> &compressed_cos_data,
                                 SplitCycleResult &split,
-                                MPI_Comm comm) -> void;
+                                MPI_Comm comm,
+                                size_t param_index = 0,
+                                double gen_coeff = 0.0,
+                                size_t gate_index = 0) -> void;
 
     static auto expected_num_params(const VecZ &parameter_mapping) -> size_t;
 
@@ -630,10 +617,19 @@ private:
 
     auto extend_coeffs_from_current_picture_if_needed_(VecD &coeffs) -> void;
 
-    auto evolve_mode_graph_only_(const std::vector<VecZ> &majoranas, int only_rotate_len_k) -> void;
+    // Structural graph build recording per-layer gate info (no contraction).
+    auto evolve_mode_build_graph_(const std::vector<VecZ> &majoranas,
+                                  const VecZ &parameter_mapping,
+                                  const VecD &gen_coeffs,
+                                  const VecZ &gate_indices,
+                                  int only_rotate_len_k) -> void;
+
+    // Graph build that also contracts into a running coeffs vector seeded by operator_coeffs
+    // (used to inform atol truncation while extending a non-empty graph).
     auto evolve_mode_graph_with_coeffs_(const std::vector<VecZ> &majoranas,
                                         const VecZ &parameter_mapping,
                                         const VecD &gen_coeffs,
+                                        const VecZ &gate_indices,
                                         const VecD &parameters,
                                         const VecD &operator_coeffs,
                                         int only_rotate_len_k) -> void;
@@ -643,17 +639,6 @@ private:
                                            const VecD &gen_coeffs,
                                            const VecD &parameters,
                                            int only_rotate_len_k) -> void;
-
-    /**
-     * @brief Executes the appropriate evolution mode
-     */
-    auto execute_evolution_mode_(EvolutionMode mode,
-                                 const std::vector<VecZ> &majoranas,
-                                 const std::optional<VecZ> &parameter_mapping,
-                                 const std::optional<VecD> &gen_coeffs,
-                                 const std::optional<VecD> &parameters,
-                                 const std::optional<VecD> &operator_coeffs,
-                                 int only_rotate_len_k) -> void;
 
     /**
      * @brief Common function to propagate majoranas with timing
@@ -677,20 +662,19 @@ private:
     auto propagate_one_(const VecZ &gen_vec,
                         int only_rotate_len_k,
                         std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
-                        std::optional<double> param = std::nullopt) -> void;
+                        std::optional<double> param = std::nullopt,
+                        size_t param_index = 0,
+                        double gen_coeff = 0.0,
+                        size_t gate_index = 0) -> void;
 
     /**
-     * @brief Creates a functional (closure) for expectation value or gradient calculations
+     * @brief Creates a functional (closure) for expectation value or gradient calculations.
      *
-     * Factory method that produces a function object to calculate energies or
-     * expectation_value+gradient pairs for given parameters.
+     * Derives the per-layer gate information (parameter mapping and generator coefficients)
+     * from the graph, and uses the cached pared plan when one is present (see pare()).
      *
      * @tparam Fn Function type for evaluation (ev or ev_and_grad)
-     * @param parameter_mapping Mapping from parameters to generators
-     * @param gen_coeffs Generator coefficients
      * @param func The function to use for evaluation (ev or ev_and_grad)
-     * @param pare_threshold Absolute value cutoff for retaining edges in the masked execution plan.
-     *        If std::nullopt, exact paring is disabled.
      * @return Function object that computes expectation value or expectation_value+gradient for parameters
      */
     template <typename Fn,
@@ -703,10 +687,12 @@ private:
                                                 const MPGraph &,
                                                 const VecD &,
                                                 MPI_Comm>>
-    auto make_functional_(const VecZ &parameter_mapping,
-                          const VecD &gen_coeffs,
-                          Fn &&func,
-                          std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
+    auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
+
+    // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the gate
+    // information owned by the graph layers. Provably identical to the arrays that used to be
+    // supplied by callers, for both Heisenberg and Schrodinger pictures.
+    auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;
 };
 
 } // namespace monoprop

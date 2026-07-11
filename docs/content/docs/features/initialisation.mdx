@@ -3,7 +3,7 @@ title: Initialisation and updates
 description: Constructing the simulator, choosing the Heisenberg or Schrödinger picture, and updating the operator in place.
 ---
 
-The top-level class is `MonomialPropagator` (Python) /
+The top-level classes are `MajoranaPropagator` and `PauliPropagator` (Python) /
 `MonomialPropagator<NumModes>` (C++). Every significant aspect of the
 simulation can be tuned at construction time and updated at runtime without
 rebuilding. The structural and coefficient cutoffs are covered separately in
@@ -25,40 +25,36 @@ on fermionic circuits when `schrodinger_cutoff = cutoff + 2`
 ## Operator updates
 
 The coefficients of the initial operator can be patched after construction
-without rebuilding the simulator or the graph:
+without rebuilding the simulator or the graph. The keys are Majorana monomials
+(tuples of indices); the values are the new coefficients, which must keep each
+monomial Hermitian (real for length-4 terms, imaginary for length-2 — see the
+Notation page):
 
 ```python
-from monoprop import MonomialPropagator
-from monoprop.fermi_data import MajoranaOperator, FermiCircuit
+from monoprop import MajoranaPropagator, MajoranaOperator
 
-observable = MajoranaOperator([(0, 1, 2, 3)], [1.0], 4)
-circuit = FermiCircuit(initial_state=[0, 1], gates=[])
-sim = MonomialPropagator(observable, circuit, cutoff=4)
-# Keys are Majorana monomials (tuples of indices); values are the new
-# coefficients, which must keep each monomial Hermitian (real for length-4
-# terms, imaginary for length-2 — see the Notation page).
-sim.update_coeffs({(0, 1, 2, 3): 0.5})
+observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
+sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
+sim.update_initial_operator({(0, 1, 2, 3): 0.5})
 ```
 
-This is particularly useful in the Schrödinger picture: since the state is
-evolved independently of the observable, you can re-weight the observable and
-read it off against the same evolved state, estimating several observables
-without re-propagating.
+This lets you estimate several observables without re-propagating: in the
+Schrödinger picture the state is evolved independently, so you can re-weight the
+observable and read it off against the same evolved state; in the Heisenberg
+picture the same graph can be reused with different initial operators.
 
 <Callout type="info">
-  Only terms that already exist in the initial operator can be updated; supplying a
+    Only terms that already exist in the initial operator can be updated; supplying a
   monomial that is not present (or a non-Hermitian coefficient) raises
   `RuntimeError`:
 
   ```python
   import pytest
-  from monoprop import MonomialPropagator
-  from monoprop.fermi_data import MajoranaOperator, FermiCircuit
+  from monoprop import MajoranaPropagator, MajoranaOperator
 
-  observable = MajoranaOperator([(0, 1, 2, 3)], [1.0], 4)
-  circuit = FermiCircuit(initial_state=[0, 1], gates=[])
-  sim = MonomialPropagator(observable, circuit, cutoff=4)
+  observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
+  sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
   with pytest.raises(RuntimeError):
-      sim.update_coeffs({(1, 2, 3, 4): 0.5})  # This monomial doesn't exist
+      sim.update_initial_operator({(1, 2, 3, 4): 0.5})  # This monomial doesn't exist
   ```
 </Callout>

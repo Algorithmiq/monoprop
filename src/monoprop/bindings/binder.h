@@ -96,34 +96,40 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "logical_num_modes"_a = NumModes,
         "Instantiate the simulator.");
 
+    cls.def("build_graph",
+            &MonomialPropagator<NumModes>::build_graph,
+            "majoranas"_a,
+            "parameter_mapping"_a,
+            "gen_coeffs"_a,
+            "gate_indices"_a = std::nullopt,
+            "parameters"_a = std::nullopt,
+            "only_rotate_len_k"_a = 0,
+            "Build the propagation graph, recording per-layer gate information");
+
     cls.def("propagate",
             &MonomialPropagator<NumModes>::propagate,
             "majoranas"_a,
-            "parameter_mapping"_a = std::nullopt,
-            "gen_coeffs"_a = std::nullopt,
-            "parameters"_a = std::nullopt,
-            "operator_coeffs"_a = std::nullopt,
+            "parameter_mapping"_a,
+            "gen_coeffs"_a,
+            "parameters"_a,
             "only_rotate_len_k"_a = 0,
-            "Evolve the system by multiple Majorana operators");
+            "Evolve and contract immediately without storing a graph");
+
+    cls.def("expectation_value", &MonomialPropagator<NumModes>::expectation_value, "parameters"_a);
+
+    cls.def("expectation_value_and_gradient",
+            &MonomialPropagator<NumModes>::expectation_value_and_gradient,
+            "parameters"_a);
 
     cls.def("expectation_value_functional",
             &MonomialPropagator<NumModes>::expectation_value_functional,
-            "parameter_mapping"_a,
-            "gen_coeffs"_a,
             "pare_threshold"_a = std::nullopt);
 
     cls.def("expectation_value_and_gradient_functional",
             &MonomialPropagator<NumModes>::expectation_value_and_gradient_functional,
-            "parameter_mapping"_a,
-            "gen_coeffs"_a,
             "pare_threshold"_a = std::nullopt);
 
-    cls.def("contract_partially",
-            &MonomialPropagator<NumModes>::contract_partially,
-            "parameters"_a,
-            "parameter_mapping"_a,
-            "gen_coeffs"_a,
-            "inplace"_a);
+    cls.def("contract_partially", &MonomialPropagator<NumModes>::contract_partially, "parameters"_a, "inplace"_a);
 
     cls.def("update_initial_operator", &MonomialPropagator<NumModes>::update_initial_operator, "op_dict"_a);
 
@@ -158,17 +164,10 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                     "Whether the propagator uses Schrodinger picture");
 
     cls.def(
-        "evolved_operator_dict",
-        [](MonomialPropagator<NumModes> &self,
-           const VecD &parameters,
-           const VecZ &parameter_mapping,
-           const VecD &gen_coeffs,
-           double atol) -> nb::dict {
-            // Validate parameters
-            validate_params(parameters, parameter_mapping, gen_coeffs);
-
+        "evolved_operator",
+        [](MonomialPropagator<NumModes> &self, const VecD &parameters, double atol) -> nb::dict {
             // Evolve the operator representation (single rank in non-MPI Python bindings)
-            const auto evolved_op = self.contract_partially(parameters, parameter_mapping, gen_coeffs, false);
+            const auto evolved_op = self.contract_partially(parameters, false);
             const auto &indexing = self.indexing();
 
             nb::dict py_result;
@@ -197,8 +196,6 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             return py_result;
         },
         "parameters"_a,
-        "parameter_mapping"_a,
-        "gen_coeffs"_a,
         "atol"_a);
 
     cls.def_prop_ro("num_modes", &MonomialPropagator<NumModes>::logical_num_modes);
@@ -213,6 +210,11 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
     cls.def("graph_data", &MonomialPropagator<NumModes>::graph_data);
 
     cls.def("graph_layers", &MonomialPropagator<NumModes>::graph_layers);
+    cls.def("n_gates", &MonomialPropagator<NumModes>::n_gates);
+
+    cls.def_prop_rw("parameter_mapping",
+                    &MonomialPropagator<NumModes>::parameter_mapping,
+                    &MonomialPropagator<NumModes>::set_parameter_mapping);
 
     cls.def("operator_memory_bytes",
             [](const MonomialPropagator<NumModes> &self) { return self.operator_memory_usage().total_bytes(); });
