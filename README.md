@@ -15,7 +15,7 @@ truncating terms that contribute little. It scales to large systems through
 shared-memory threading (oneTBB) and multi-node MPI.
 
 > [!WARNING]
-> This package is under active development. The public API may change without notice between minor versions until v1.0.0.
+> This package is under active development. This project follows [Semantic Versioning](https://semver.org/). While in `0.x.y`, breaking changes may occur in minor releases.
 > Pin your version if you depend on it. If you have feedback, please [open an issue](https://github.com/Algorithmiq/monoprop/issues/new).
 
 📖 **Full documentation:** <https://docs.algorithmiq.fi/monoprop>
