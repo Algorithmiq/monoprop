@@ -1,14 +1,13 @@
 ---
 title: Notation
-description: The Majorana basis, monomials, the commutation rule, paired monomials, and the Pauli representation.
+description: The Majorana basis, monomials, the commutation rule, paired monomials, and Pauli operators.
 ---
 
-This page collects the notation and conventions used throughout the concepts
-section: the Majorana basis (the chosen basis with which the arithmetic driving the propagator is performed in),
-how monomials are indexed and made Hermitian, the
-expansion of operators and states, the commutation rule that drives propagation,
-and the dual interpretation of the same data as Pauli strings. The
-[Propagation Algorithm](/concepts/algorithm) page builds directly on these definitions.
+This page collects the notation used throughout the concepts section: the
+Majorana basis, how monomials are indexed and made Hermitian, the expansion of
+operators and states, the commutation rule that drives propagation, and the Pauli
+operators used for qubit problems. The
+[Propagation Algorithm](/concepts/algorithm) page builds on these definitions.
 
 ## Majorana operators
 
@@ -31,8 +30,7 @@ $$
 
 Every operator on $N$ modes can be written as a polynomial in the
 $2N$ Majorana operators, so Hamiltonians, quantum states, and circuit
-generators can all be expressed in the same language. Through a fermion-to-qubit mapping,
-the same data can also be interpreted as Pauli strings.
+generators can all be expressed in the same language.
 
 ## Monomials and the Hermitian basis
 
@@ -121,46 +119,52 @@ $$
 Expanding the product, this is a sum of **paired monomials** -- products of the
 $\overline{m}_j$ -- with signs fixed by the occupation numbers.
 
-## The Pauli representation
+## Pauli operators
 
-The engine always works in the Majorana basis: a qubit system enters as a
-*Majorana representation* - the binary strings $\nu$ above - and every gate,
-commutator, and product is evaluated there. Pauli strings never appear during
-propagation.
-
-To read out or truncate in the qubit picture, you supply a
-fermion-to-qubit encoding, which reinterprets the *same* $\nu$ as a Pauli
-string. Under the [Jordan-Wigner mapping](https://en.wikipedia.org/wiki/Jordan%E2%80%93Wigner_transformation), orbital $i$ maps to qubit $i$ and its two
-Majoranas become
+For qubit problems monoprop works in the Pauli basis. The single-qubit Pauli
+operators $X, Y, Z$ are Hermitian and square to the identity,
 
 $$
-m_{2i-1} \;\mapsto\; \Bigl(\textstyle\prod_{k<i} Z_k\Bigr) X_i,
-\qquad
-m_{2i} \;\mapsto\; \Bigl(\textstyle\prod_{k<i} Z_k\Bigr) Y_i.
+X^2 = Y^2 = Z^2 = \mathbb{I}, \qquad P^\dagger = P.
 $$
 
-Each Majorana terminates in an $X$ or $Y$ on its own qubit, preceded by
-a **parity string** of $Z$'s on every lower qubit. These tails make
-Jordan-Wigner **non-local**: a single Majorana on mode $i$ becomes a Pauli of
-weight $i$.
-
-The encoding is *linear* in $\nu$ - a change of basis on the binary data,
-$\nu \mapsto \nu'$ over $\mathbb{F}_2$. Propagation is untouched; only
-the reading of $\nu$ changes. Other mappings, such as the ternary-tree
-constructions, are linear in the same way, so the choice of encoding is just a
-choice of how to read the data, and the [propagation algorithm](/concepts/algorithm) is
-unchanged.
-
-### Support cutoff = Pauli weight
-
-The encoding is consulted only when truncation is applied (see [truncation](/concepts/algorithm#truncation-controlling-growth)).
-The `support` cutoff keeps a monomial acting on at most $\omega$ distinct *qubits*, which the
-engine measures on the transformed string $\nu'$, not the raw $\nu$:
+On a single qubit two distinct Paulis anticommute,
 
 $$
-|P_\nu| \;=\; \operatorname{support}(\nu') \;\le\; \omega .
+XY = -YX, \qquad YZ = -ZY, \qquad ZX = -XZ,
 $$
 
-The distinction matters because fermion-to-qubit mappings are non-local: the $Z$ parity
-tails fall on the qubits below each mode, so the Pauli weight generally *exceeds*
-the Majorana support of $\nu$ (the number of modes it touches).
+and cyclically, while any two Paulis acting on different qubits commute. Two
+single-qubit Paulis therefore either commute (when they are equal, or one is the
+identity) or anticommute, and their product is again a single Pauli up to a
+phase.
+
+A **Pauli string** on $N$ qubits is a tensor product
+
+$$
+P = P_1 \otimes \cdots \otimes P_N, \qquad P_i \in \{I, X, Y, Z\},
+$$
+
+built from a single-qubit Pauli on each qubit. Every Pauli string is Hermitian
+and squares to the identity, and any operator on $N$ qubits can be written as a
+polynomial in the Pauli strings, so Hamiltonians, quantum states, and circuit
+generators are all expressed in the same language.
+
+Because every Pauli string is Hermitian, any Hermitian operator $H$ expands with
+purely **real** coefficients,
+
+$$
+H = \sum_P c_P\, P, \qquad c_P \in \mathbb{R}.
+$$
+
+Two Pauli strings either commute or anticommute: comparing them qubit by qubit,
+the product picks up one sign flip for each qubit on which they carry distinct,
+non-identity Paulis, so they anticommute exactly when the number of such qubits
+is odd. When that happens their product is again a single Pauli string (up to a
+phase), which is what makes gate application in the Pauli picture deterministic
+and sparse.
+
+The **Pauli weight** of a string is the number of qubits it acts on
+non-trivially — the count of its non-identity factors. It is the structural
+measure of a Pauli string, and `PauliPropagator` uses it to decide which terms to
+keep as the operator grows (see [Truncation and cutoffs](/features/cutoff)).

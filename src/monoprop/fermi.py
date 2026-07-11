@@ -18,10 +18,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
-
 from .conversion_utils import _n_product
-from .monomial_data import Monomial, MonomialCircuit, MonomialOperator
+from .majorana import MajoranaOperator
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -54,7 +52,7 @@ class FermiString:
         if invalid:
             raise ValueError(f"Invalid operator(s) {invalid!r}: must be '+' or '-'")
 
-    def _canonicalize(self) -> tuple(tuple, int):
+    def _canonicalize(self) -> tuple[tuple[tuple[int, str], ...], int]:
         """Return the FermiString in a predefined order and a permutation sign."""
         expr = list(self.expression)
 
@@ -92,15 +90,14 @@ class FermiString:
         return hash(self.expression)
 
 
-def _from_fermi_to_monomial(ferm_string: FermiString) -> list[Monomial]:
-    """Convert a fermi string to a list of Majorana operators."""
+def _fermi_string_to_majorana_terms(
+    ferm_string: FermiString,
+) -> list[tuple[Sequence[int], complex]]:
+    """Expand a fermi string into ``(majorana indices, coefficient)`` terms."""
     expr = list(ferm_string.expression)
     plus_inds = [i for i, (_, op) in enumerate(expr) if op == "+"]
     minus_inds = [i for i, (_, op) in enumerate(expr) if op == "-"]
-    return [
-        Monomial(np.array(key), val)
-        for key, val in _n_product(expr, plus_inds, minus_inds)
-    ]
+    return list(_n_product(expr, plus_inds, minus_inds))
 
 
 class FermiOperator:
@@ -148,7 +145,7 @@ class FermiOperator:
         """Number of terms in the operator."""
         return len(self.terms)
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         """Return a string representation of the fermionic operator."""
         n = len(self)
         out = f"{self.__class__.__name__}({n} terms, {self.num_modes} modes"
@@ -158,6 +155,10 @@ class FermiOperator:
         out += ")"
         return out
 
+    def is_identity(self) -> bool:
+        """Check if the operator is the identity."""
+        return all(coef == 0 for coef in self.coefficients)
+
     def _as_dict(self) -> dict[tuple, complex]:
         """Return the operator as a dictionary."""
         result = {}
@@ -166,9 +167,7 @@ class FermiOperator:
             result[cano] = coeff * sign
         return result
 
-    def isclose(
-        self, other: FermiOperator, rtol: float = 1e-05, atol: float = 1.0e-8
-    ) -> bool:
+    def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1.0e-8) -> bool:
         """Check that two operators are almost equal, term-wise.
 
         Args:
@@ -178,7 +177,14 @@ class FermiOperator:
 
         Returns:
             A boolean.
+
+        Raises:
+            TypeError: If ``other`` is not a :class:`FermiOperator`.
         """
+        if not isinstance(other, FermiOperator):
+            raise TypeError(
+                f"Cannot compare FermiOperator with {type(other).__name__}."
+            )
         if self.num_modes != other.num_modes:
             return False
 
@@ -191,146 +197,12 @@ class FermiOperator:
             for term in lhs.keys() | rhs.keys()
         )
 
-    def get_monomial_operator(self) -> MonomialOperator:
-        """Convert the fermi operator to a MonomialOperator."""
-        terms = [
-            Monomial(m.set_bits, m.coefficient * c)
-            for term, c in zip(self.terms, self.coefficients)
-            for m in _from_fermi_to_monomial(term)
-        ]
-        return MonomialOperator(terms, self.num_modes)
-
-
-class MajoranaOperator:
-    """Class representing a Majorana operator."""
-
-    def __init__(
-        self,
-        majoranas: list[tuple[int, ...]],
-        coefficients: list[complex],
-        num_modes: int | None,
-    ) -> None:
-        """Initialize the Majorana operator.
-
-        Args:
-            majoranas: List of tuples representing the indices of the Majorana operators.
-            coefficients: List of coefficients corresponding to the Majorana terms.
-            num_modes: Number of modes in the system.
-        """
-        self.majoranas = list(majoranas)
-        self.coefficients = list(coefficients)
-        self.num_modes = num_modes
-
-    def __len__(self) -> int:
-        """Number of terms in the operator."""
-        return len(self.majoranas)
-
-    def __str__(self) -> str:
-        """Return a string representation of the Majorana operator."""
-        n = len(self)
-        out = f"{self.__class__.__name__}({n} terms, {self.num_modes} modes"
-        if n <= 8:
-            terms = ", ".join(
-                f"{c}*{m!r}" for c, m in zip(self.coefficients, self.majoranas)
-            )
-            out += f": {terms}"
-        out += ")"
-        return out
-
-    def get_monomial_operator(self) -> MonomialOperator:
-        """Convert the Majorana operator to a MonomialOperator."""
-        terms = [
-            Monomial(np.array(m), c) for m, c in zip(self.majoranas, self.coefficients)
-        ]
-        return MonomialOperator(terms, self.num_modes)
-
-
-class FermiEvGate:
-    """Class representing a fermi evolution gate."""
-
-    def __init__(
-        self,
-        generator: FermiOperator | MajoranaOperator,
-        parameter: complex,
-    ) -> None:
-        """Initialize the fermi evolution gate.
-
-        Args:
-            generator: The generator of the evolution, either as a FermiOperator or a MajoranaOperator.
-            parameter: The parameter for the evolution.
-        """
-        self.generator: MonomialOperator = generator.get_monomial_operator()
-        self.parameter = parameter
-
-    def __len__(self) -> int:
-        """Number of terms in the generator."""
-        return len(self.generator)
-
-    def __repr__(self) -> str:
-        """Return a string representation of the gate."""
-        return (
-            f"{self.__class__.__name__}({len(self)} terms, parameter={self.parameter})"
-        )
-
-
-class FermiCircuit:
-    """Class representing a fermi circuit."""
-
-    def __init__(
-        self,
-        initial_state: list[int],
-        gates: list[FermiEvGate],
-    ) -> None:
-        """Initialize the fermi circuit.
-
-        Args:
-            initial_state: List of mode indices representing the initial state.
-            gates: List of FermiEvGate objects representing the gates in the circuit.
-        """
-        initial_state = sorted(initial_state)
-
-        self._validate_inputs(initial_state)
-
-        self.initial_state = initial_state
-        self.gates = [gate for gate in gates if not gate.generator.is_identity()]
-
-    @staticmethod
-    def _validate_inputs(initial_state: list[int]) -> None:
-        """Validate the inputs for the fermi circuit."""
-        set_initial = set(initial_state)
-        if len(set_initial) != len(initial_state):
-            raise ValueError("Duplicate indices in initial state")
-
-    def __len__(self) -> int:
-        """Number of gates in the circuit."""
-        return len(self.gates)
-
-    def __repr__(self) -> str:
-        """Return a string representation of the circuit."""
-        return (
-            f"{self.__class__.__name__}("
-            f"{len(self)} gates, "
-            f"initial_state={self.initial_state})"
-        )
-
-    def get_monomial_circuit(self) -> MonomialCircuit:
-        """Convert the fermi circuit to a MonomialCircuit."""
-        majoranas, gen_coeffs, parameters, param_inds = [], [], [], []
-        identical_params = np.arange(len(self))
-        for i, gate in enumerate(self.gates):
-            parameters.append(gate.parameter)
-            for monomial, coefficient in gate.generator.terms.items():
-                w = len(monomial)
-                antiherm = -coefficient / (1j) ** (w * (w - 1) / 2)
-                majoranas.append(monomial)
-                gen_coeffs.append(float(np.real(antiherm)))
-                param_inds.append(identical_params[i])
-
-        return MonomialCircuit(
-            initial_state=self.initial_state,
-            majoranas=majoranas,
-            parameters=parameters,
-            gen_coeffs=gen_coeffs,
-            param_inds=param_inds,
-            identical_params=identical_params,
-        )
+    def get_majorana_operator(self) -> MajoranaOperator:
+        """Convert the fermi operator to a MajoranaOperator."""
+        majoranas: list[Sequence[int]] = []
+        coefficients: list[complex] = []
+        for term, c in zip(self.terms, self.coefficients):
+            for majorana, val in _fermi_string_to_majorana_terms(term):
+                majoranas.append(majorana)
+                coefficients.append(val * c)
+        return MajoranaOperator._from_terms(majoranas, coefficients, self.num_modes)

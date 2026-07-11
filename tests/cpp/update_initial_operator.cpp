@@ -42,17 +42,15 @@ BOOST_AUTO_TEST_CASE(update_initial_operator_updates_core_expval) {
                                           CutoffType::Support,
                                           std::nullopt);
 
-    const VecZ empty_mapping;
     const VecD empty_params;
-    const VecD empty_gen_coeffs;
-    auto expval_fn = simulator.expectation_value_functional(empty_mapping, empty_gen_coeffs, std::nullopt);
+    auto expval_fn = simulator.expectation_value_functional(std::nullopt);
     BOOST_TEST(expval_fn(empty_params) == 1.0, tt::tolerance(1e-12));
 
     FermiOperatorMap updated;
     updated[VecZ{}] = std::complex<double>{2.75, 0.0};
     simulator.update_initial_operator(updated);
 
-    auto updated_fn = simulator.expectation_value_functional(empty_mapping, empty_gen_coeffs, std::nullopt);
+    auto updated_fn = simulator.expectation_value_functional(std::nullopt);
     BOOST_TEST(updated_fn(empty_params) == 2.75, tt::tolerance(1e-12));
 }
 

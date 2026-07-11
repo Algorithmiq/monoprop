@@ -25,7 +25,7 @@ Two communicator fixtures are available:
   (methods that internally do MPI allreduce).
 
 - ``serial_comm`` — always COMM_SELF.  Use for tests that inspect
-  rank-local state such as ``evolved_operator_dict``, ``contract_partially``,
+  rank-local state such as ``evolved_operator``, ``contract_partially``,
   ``size()``, or ``graph_size()``.
 """
 

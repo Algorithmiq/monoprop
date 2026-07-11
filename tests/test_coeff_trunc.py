@@ -18,25 +18,24 @@ import numpy as np
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MonomialPropagator
-from monoprop.fermi_data import MajoranaOperator
-from monoprop.monomial_data import MonomialCircuit
+from monoprop import Circuit, MajoranaPropagator
+from monoprop.fermi import MajoranaOperator
 from tests.cases import CasesFermionicProblem, FermionicProblem
 
 
 def _create_mp(
     op,
-    quantum_circuit,
+    initial_state,
     comm,
     upper_atol=None,
     lower_atol=None,
     cutoff=4,
     schrodinger_cutoff=None,
 ):
-    return MonomialPropagator(
+    return MajoranaPropagator(
         op,
-        quantum_circuit,
-        cutoff,
+        initial_state,
+        cutoff=cutoff,
         upper_atol=upper_atol,
         lower_atol=lower_atol,
         schrodinger_cutoff=schrodinger_cutoff,
@@ -55,16 +54,16 @@ def _check_dicts(d1, d2):
 
 def test_coeff_trunc(serial_comm):
     n_modes = 5
-    op = MajoranaOperator([(0, 1)], [1.0j], num_modes=n_modes)
+    op = MajoranaOperator({(0, 1): 1.0j}, num_modes=n_modes)
 
-    quantum_circuit = MonomialCircuit(
+    sequence = Circuit.from_dense_arrays(
         initial_state=[],
         majoranas=[(1, 2, 3, 4)],
         parameters=[np.pi / 6],
         gen_coeffs=[1.0],
         param_inds=[0],
-        identical_params=[0],
     )
+    circuit = sequence
 
     cos_pi6, sin_pi6 = (0.5, -0.8660254037844386)
     act_op = {(0, 1): 1j * cos_pi6, (0, 2, 3, 4): sin_pi6}
@@ -72,10 +71,10 @@ def test_coeff_trunc(serial_comm):
 
     def get_test_dict(upper_atol, lower_atol, cutoff):
         mp = _create_mp(
-            op, quantum_circuit, serial_comm, upper_atol, lower_atol, cutoff
+            op, sequence.initial_state, serial_comm, upper_atol, lower_atol, cutoff
         )
-        mp.propagate(evolve_with_coeffs=True)
-        return mp.evolved_operator_dict()
+        mp.propagate(circuit)
+        return mp.evolved_operator()
 
     test_scenarios = [
         (4, None, None, act_op),
@@ -103,34 +102,33 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
     fermionic_operator = problem.operator
     monomial_circuit = problem.monomial_circuit
     schrodinger_cutoff_val = 2 * n_modes if schrodinger else None
+    circuit = monomial_circuit.to_circuit()
+    parameters = monomial_circuit.parameters
 
     mp_inplace = _create_mp(
         fermionic_operator,
-        monomial_circuit,
+        monomial_circuit.initial_state,
         serial_comm,
         upper_atol,
         lower_atol,
         cutoff,
         schrodinger_cutoff_val,
     )
-    mp_inplace.propagate(evolve_with_coeffs=True)
+    mp_inplace.propagate(circuit)
     expval_inplace = mp_inplace.expectation_value()
 
     mp_build = _create_mp(
         fermionic_operator,
-        monomial_circuit,
+        monomial_circuit.initial_state,
         serial_comm,
         upper_atol,
         lower_atol,
         cutoff,
         schrodinger_cutoff_val,
     )
-    operator_coeffs = mp_build.contract_partially(inplace=False)
-    mp_build.propagate(
-        evolve_with_coeffs=True,
-        operator_coeffs=operator_coeffs,
-    )
-    expval_build = mp_build.expectation_value(use_coeffs=True)
+    # Coefficient-informed build: the seed is regenerated internally from parameters.
+    mp_build.build_graph(circuit)
+    expval_build = mp_build.expectation_value(parameters)
 
     assert mp_inplace.size() == mp_build.size()
     assert np.isclose(expval_inplace, expval_build, atol=1e-12)
@@ -140,16 +138,16 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
     n_modes = 2
     p = np.pi / 16
 
-    init_op = MajoranaOperator([(0, 1), (0, 2)], [1.0j, 1.0j], num_modes=n_modes)
+    init_op = MajoranaOperator({(0, 1): 1.0j, (0, 2): 1.0j}, num_modes=n_modes)
 
-    quantum_circuit = MonomialCircuit(
+    sequence = Circuit.from_dense_arrays(
         initial_state=[],
         majoranas=[(1, 2)],
         parameters=[p],
         gen_coeffs=[1.0],
         param_inds=[0],
-        identical_params=[0],
     )
+    circuit = sequence
 
     cutoff = 4
     final_operator = {
@@ -157,23 +155,19 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
         (0, 2): 1.0j * np.cos(2 * p) + 1.0j * np.sin(2 * p),
     }
 
-    mp = MonomialPropagator(
+    mp = MajoranaPropagator(
         init_op,
-        quantum_circuit,
+        sequence.initial_state,
         cutoff=cutoff,
         schrodinger_cutoff=None,
         comm=serial_comm,
     )
-    operator_coeffs = mp.contract_partially(inplace=False)
-    mp.propagate(
-        evolve_with_coeffs=True,
-        operator_coeffs=operator_coeffs,
-    )
+    mp.build_graph(circuit)
     assert mp.graph_size()[1] == 1
     assert mp.graph_size()[0] == 0
     assert mp.size() == 2
 
-    test_op = mp.evolved_operator_dict(evolve_with_coeffs=True)
+    test_op = mp.evolved_operator(sequence.parameters)
     _check_dicts(test_op, final_operator)
 
 
@@ -181,16 +175,16 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
     n_modes = 2
     p = 1e-5
     init_op = {(0, 1): 1.0j, (0, 2): 1e-7j}
-    op = MajoranaOperator([(0, 1), (0, 2)], [1.0j, 1e-7j], num_modes=n_modes)
+    op = MajoranaOperator({(0, 1): 1.0j, (0, 2): 1e-7j}, num_modes=n_modes)
 
-    quantum_circuit = MonomialCircuit(
+    sequence = Circuit.from_dense_arrays(
         initial_state=[],
         majoranas=[(1, 2)],
         parameters=[p],
         gen_coeffs=[1.0],
         param_inds=[0],
-        identical_params=[0],
     )
+    circuit = sequence
 
     cutoff = 4
     final_operator = {
@@ -211,15 +205,13 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
 
     for upper_atol, lower_atol in atol_combinations:
         mp = _create_mp(
-            op, quantum_circuit, serial_comm, upper_atol, lower_atol, cutoff
+            op, sequence.initial_state, serial_comm, upper_atol, lower_atol, cutoff
         )
-
-        operator_coeffs = mp.contract_partially(inplace=False)
-        mp.propagate(evolve_with_coeffs=True, operator_coeffs=operator_coeffs)
+        mp.build_graph(circuit)
 
         assert mp.graph_size()[1] == 1
         assert mp.graph_size()[0] == 0
         assert mp.size() == 2
 
-        test_op = mp.evolved_operator_dict(evolve_with_coeffs=True)
+        test_op = mp.evolved_operator(sequence.parameters)
         _check_dicts(test_op, final_operator)

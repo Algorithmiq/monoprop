@@ -27,7 +27,8 @@ try:
     from qiskit.circuit.library import PauliEvolutionGate
     from qiskit.quantum_info import SparsePauliOp
 
-    from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator
+    from monoprop import Circuit, ExpGate
+    from monoprop.pauli import Pauli, PauliOperator
     from monoprop.qiskit_conversion import (
         from_qiskit_circuit,
         from_qiskit_operator,
@@ -38,6 +39,21 @@ try:
     _qiskit_available = True
 except ImportError:
     _qiskit_available = False
+
+
+def _assert_pauli_circuits_close(converted, expected) -> None:
+    """Structurally compare two Circuits (PauliOperator has no ``__eq__``)."""
+    assert converted.initial_state == expected.initial_state
+    assert len(converted) == len(expected)
+    assert list(converted.resolved_mapping) == list(expected.resolved_mapping)
+    assert len(converted.parameters) == len(expected.parameters)
+    for got, exp in zip(converted.parameters, expected.parameters):
+        assert got == pytest.approx(exp)
+    for got_gate, exp_gate in zip(converted.gates, expected.gates):
+        # The generator's Pauli terms carry the qubit placement, so comparing
+        # generators also checks the gate acts on the right qubits.
+        assert got_gate.generator.isclose(exp_gate.generator)
+
 
 requires_qiskit = pytest.mark.skipif(
     not _qiskit_available, reason="qiskit not installed"
@@ -72,22 +88,20 @@ class TestFromQiskitOperator:
         result = from_qiskit_operator(op)
         assert isinstance(result, PauliOperator)
         assert len(result) == 1
-        assert result.strings[0].string == "ZX"  # qiskit ordering
-        assert result.coefficients[0] == pytest.approx(1.0)
+        assert result.terms[Pauli("ZX", (0, 1))] == pytest.approx(1.0)  # qiskit order
 
     def test_multiple_terms(self):
         op = SparsePauliOp.from_list([("XZ", 1.0), ("IY", 0.5)])
         result = from_qiskit_operator(op)
         assert len(result) == 2
-        terms = dict(zip((s.string for s in result.strings), result.coefficients))
-        assert terms["ZX"] == pytest.approx(1.0)  # qiskit ordering
-        assert terms["YI"] == pytest.approx(0.5)  # qiskit ordering
+        assert result.terms[Pauli("ZX", (0, 1))] == pytest.approx(1.0)  # qiskit order
+        assert result.terms[Pauli("Y", 0)] == pytest.approx(0.5)  # "YI" -> Y on qubit 0
 
     def test_atol_filters_small_terms(self):
         op = SparsePauliOp.from_list([("XZ", 1.0), ("IY", 1e-10)])
         result = from_qiskit_operator(op, atol=1e-8)
         assert len(result) == 1
-        assert result.strings[0].string == "ZX"  # qiskit ordering
+        assert Pauli("ZX", (0, 1)) in result.terms  # qiskit ordering
 
     def test_atol_default_keeps_large_terms(self):
         op = SparsePauliOp.from_list([("XZ", 1.0), ("IY", 0.1)])
@@ -97,7 +111,7 @@ class TestFromQiskitOperator:
     def test_force_real_with_real_coefficients(self):
         op = SparsePauliOp.from_list([("XZ", 2.0 + 0j)])
         result = from_qiskit_operator(op, force_real=True)
-        assert result.coefficients[0] == pytest.approx(2.0)
+        assert result.terms[Pauli("ZX", (0, 1))] == pytest.approx(2.0)
 
     def test_force_real_raises_for_complex_coefficients(self):
         op = SparsePauliOp.from_list([("XZ", 1.0 + 0.5j)])
@@ -107,17 +121,20 @@ class TestFromQiskitOperator:
     def test_preserves_coefficient_magnitude(self):
         op = SparsePauliOp.from_list([("IZ", 0.75 + 0j)])
         result = from_qiskit_operator(op)
-        assert result.coefficients[0] == pytest.approx(0.75)
+        assert result.terms[Pauli("Z", 0)] == pytest.approx(
+            0.75
+        )  # "ZI" -> Z on qubit 0
 
     def test_identity_string(self):
         op = SparsePauliOp.from_list([("II", 0.5)])
         result = from_qiskit_operator(op)
-        assert result.strings[0].string == "II"
+        assert len(result) == 1
+        assert Pauli("II") in result.terms  # identity term (no letters)
 
     def test_single_qubit_operator(self):
         op = SparsePauliOp.from_list([("Z", 1.0)])
         result = from_qiskit_operator(op)
-        assert result.strings[0].string == "Z"
+        assert Pauli("Z") in result.terms
         assert result.num_qubits == 1
 
 
@@ -169,13 +186,13 @@ class TestToQiskitOperator:
 @pytest.mark.qiskit
 class TestToQiskitCircuit:
     def test_single_gate(self):
-        circuit = PauliEvCircuit(
-            [PauliEvGate([0], PauliOperator(["Z"], [1.0]), 0.7)],
-            [],
-            num_qubits=1,
+        circuit = Circuit(
+            (ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
+            parameters=(0.7,),
+            initial_state=(),
         )
 
-        result = to_qiskit_circuit(circuit)
+        result = to_qiskit_circuit(circuit, 1)
 
         assert isinstance(result, QuantumCircuit)
         assert result.num_qubits == 1
@@ -190,14 +207,10 @@ class QiskitCircuitsCases:
         circuit = QuantumCircuit(1)
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
-        expected = PauliEvCircuit(
-            gates=[
-                PauliEvGate(
-                    qubits=[0], paulis=PauliOperator(["Z"], [1.0]), parameter=0.7
-                )
-            ],
-            initial_state=[],
-            num_qubits=1,
+        expected = Circuit(
+            gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
+            parameters=(0.7,),
+            initial_state=(),
         )
         return circuit, expected
 
@@ -207,17 +220,13 @@ class QiskitCircuitsCases:
         operator2 = SparsePauliOp.from_list([("IY", 0.5)])
         circuit.append(PauliEvolutionGate(operator1, time=0.3), [0, 1])
         circuit.append(PauliEvolutionGate(operator2, time=0.5), [0, 1])
-        expected = PauliEvCircuit(
-            gates=[
-                PauliEvGate(
-                    qubits=[0, 1], paulis=PauliOperator(["ZX"], [1.0]), parameter=0.3
-                ),
-                PauliEvGate(
-                    qubits=[0, 1], paulis=PauliOperator(["YI"], [0.5]), parameter=0.5
-                ),
-            ],
-            initial_state=[],
-            num_qubits=2,
+        expected = Circuit(
+            gates=(
+                ExpGate(PauliOperator({Pauli("ZX", (0, 1)): 1.0}, num_qubits=2)),
+                ExpGate(PauliOperator({Pauli("Y", 0): 0.5}, num_qubits=2)),
+            ),
+            parameters=(0.3, 0.5),
+            initial_state=(),
         )
         return circuit, expected
 
@@ -226,20 +235,14 @@ class QiskitCircuitsCases:
         circuit.rx(0.5, 0)
         circuit.ry(0.3, 0)
         circuit.rz(0.7, 0)
-        expected = PauliEvCircuit(
-            gates=[
-                PauliEvGate(
-                    qubits=[0], paulis=PauliOperator(["X"], [1.0]), parameter=0.25
-                ),
-                PauliEvGate(
-                    qubits=[0], paulis=PauliOperator(["Y"], [1.0]), parameter=0.15
-                ),
-                PauliEvGate(
-                    qubits=[0], paulis=PauliOperator(["Z"], [1.0]), parameter=0.35
-                ),
-            ],
-            initial_state=[],
-            num_qubits=1,
+        expected = Circuit(
+            gates=(
+                ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("Y", 0): 1.0}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),
+            ),
+            parameters=(0.25, 0.15, 0.35),
+            initial_state=(),
         )
         return circuit, expected
 
@@ -248,14 +251,10 @@ class QiskitCircuitsCases:
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         circuit.barrier()
-        expected = PauliEvCircuit(
-            gates=[
-                PauliEvGate(
-                    qubits=[0], paulis=PauliOperator(["Z"], [1.0]), parameter=0.7
-                )
-            ],
-            initial_state=[],
-            num_qubits=1,
+        expected = Circuit(
+            gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
+            parameters=(0.7,),
+            initial_state=(),
         )
         return circuit, expected
 
@@ -266,7 +265,7 @@ class TestFromQiskitCircuit:
     @parametrize_with_cases("circuit, expected", cases=QiskitCircuitsCases)
     def test_valid_circuits(self, circuit, expected):
         converted_circuit = from_qiskit_circuit(circuit, [])
-        assert converted_circuit.isclose(expected)
+        _assert_pauli_circuits_close(converted_circuit, expected)
 
     def test_unsupported_gate_raises(self):
         circuit = QuantumCircuit(1)
@@ -276,3 +275,24 @@ class TestFromQiskitCircuit:
 
         with pytest.raises(ValueError, match="Unsupported gate"):
             from_qiskit_circuit(circuit, [])
+
+    def test_non_commuting_generator_rejected(self):
+        """A PauliEvolution gate with non-commuting terms is rejected on conversion."""
+        circuit = QuantumCircuit(1)
+        # X and Z on the same qubit anticommute, so this is not a single exponential.
+        operator = SparsePauliOp.from_list([("X", 0.5), ("Z", 0.5)])
+        circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
+
+        with pytest.raises(ValueError, match="anticommute"):
+            from_qiskit_circuit(circuit, [])
+
+
+@requires_qiskit
+@pytest.mark.qiskit
+def test_to_qiskit_circuit_rejects_unbound() -> None:
+    """to_qiskit_circuit on an unbound circuit raises a clear error, not an IndexError."""
+    circuit = Circuit(
+        gates=(ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),)
+    )  # no parameter values
+    with pytest.raises(ValueError, match="bound circuit"):
+        to_qiskit_circuit(circuit, num_qubits=1)
