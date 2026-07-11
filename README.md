@@ -14,6 +14,10 @@ expands an operator in the Majorana basis and propagates it through a circuit,
 truncating terms that contribute little. It scales to large systems through
 shared-memory threading (oneTBB) and multi-node MPI.
 
+> [!WARNING]
+> This package is under active development. The public API may change without notice between minor versions until v1.0.0.
+> Pin your version if you depend on it. If you have feedback, please [open an issue](https://github.com/Algorithmiq/monoprop/issues/new).
+
 📖 **Full documentation:** <https://docs.algorithmiq.fi/monoprop>
 
 ## Installation
