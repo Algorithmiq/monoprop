@@ -81,6 +81,14 @@ target_link_libraries(
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
 )
 
+# Override the default allocator with mimalloc. The static library is linked
+# privately so its `malloc`/`free`/`new`/`delete` implementations are baked into
+# `libmonoprop` (and, transitively, the `_core` Python module) without leaking
+# into the installed CMake export set.
+if(monoprop_ENABLE_MIMALLOC AND TARGET mimalloc-static)
+  target_link_libraries(monoprop PRIVATE mimalloc-static)
+endif()
+
 target_compile_definitions(
   monoprop
   PUBLIC

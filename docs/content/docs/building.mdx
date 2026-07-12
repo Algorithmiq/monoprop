@@ -115,6 +115,25 @@ single target, pass `--target`:
 cmake --build --preset release-gcc --target example.x
 ```
 
+## Memory allocator (mimalloc)
+
+monoprop overrides the default C/C++ allocator with
+[mimalloc](https://github.com/microsoft/mimalloc), which typically improves
+throughput and multithreaded scalability for allocation-heavy workloads.
+mimalloc is fetched and built from source automatically (via CPM) as a
+position-independent static library with `MI_OVERRIDE` enabled, and linked into
+`libmonoprop`, so the `malloc`/`free`/`new`/`delete` entry points resolve to
+mimalloc for both the C++ library and the Python extension.
+
+The override is **on by default** and controlled by the
+`monoprop_ENABLE_MIMALLOC` option. To build against the system allocator
+instead, turn it off:
+
+| Build | Disable mimalloc with |
+| --- | --- |
+| Python bindings (scikit-build / `uv` / `pip`) | `--config-settings=cmake.define.monoprop_ENABLE_MIMALLOC=OFF` (or export `SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MIMALLOC=OFF"`) |
+| C++ (CMake) | `-Dmonoprop_ENABLE_MIMALLOC=OFF` |
+
 ## Running the tests
 
 ### Python tests

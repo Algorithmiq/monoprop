@@ -60,6 +60,11 @@ endmacro()
 
 option_with_default(monoprop_MAX_NUM_MODES "Maximum number of simulable Fermionic modes with Python bindings" 250)
 option_with_print(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
+option_with_print(monoprop_ENABLE_MIMALLOC "Override the default allocator with mimalloc" ON)
+
+if(monoprop_ENABLE_MIMALLOC)
+  include(${PROJECT_SOURCE_DIR}/cmake/mimalloc.cmake)
+endif()
 
 find_package(TBB REQUIRED)
 if(TARGET TBB::tbb)
@@ -106,6 +111,7 @@ message(
 )
 message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
+message(STATUS "   Allocator override     : ${monoprop_ENABLE_MIMALLOC}")
 
 include(GNUInstallDirs)
 
