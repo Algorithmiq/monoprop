@@ -20,10 +20,11 @@
 #endif
 
 #include "generated/bind.h"
+#include "monoprop/FunctionMultiversioning.h"
 #include "monoprop/Info.h"
 #include "monoprop/MPFunctions.h"
-#include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/Threading.h"
+#include "monoprop/detail/mpi/MPICompat.h"
 
 using namespace monoprop;
 using namespace nanobind::literals;
@@ -48,10 +49,10 @@ auto get_mpi_comm(nb::object obj) -> MPI_Comm {
 
 auto cutoff_type_str_2_enum(const std::string &cutoff_type) -> CutoffType {
     if (cutoff_type == "length") {
-        return monoprop::CutoffType::Length;
+        return CutoffType::Length;
     }
     else if (cutoff_type == "support") {
-        return monoprop::CutoffType::Support;
+        return CutoffType::Support;
     }
     else {
         throw std::invalid_argument(
@@ -62,9 +63,9 @@ auto cutoff_type_str_2_enum(const std::string &cutoff_type) -> CutoffType {
 
 auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string {
     switch (cutoff_type) {
-        case monoprop::CutoffType::Length:
+        case CutoffType::Length:
             return "length";
-        case monoprop::CutoffType::Support:
+        case CutoffType::Support:
             return "support";
         default:
             throw std::invalid_argument("Unknown CutoffType enum value");
@@ -85,13 +86,15 @@ NB_MODULE(_core, m) {
 #endif
 
     // initialize threading
-    monoprop::threading::init_from_env();
+    threading::init_from_env();
 
     // clang-format off
     m.attr("MAX_NUM_MODES") = static_cast<size_t>(@monoprop_MAX_NUM_MODES@);
     // clang-format on
     m.attr("__build_type__") = std::string(build_type());
     m.attr("__compiler_flags__") = compiler_flags();
+    m.attr("__variant__") = std::string(variant());
+
 #ifdef monoprop_ENABLE_MPI
     m.attr("has_mpi") = true;
 #else
@@ -99,11 +102,11 @@ NB_MODULE(_core, m) {
 #endif
 
     m.def("is_antihermitian",
-          &monoprop::is_antihermitian,
+          &is_antihermitian,
           "indices"_a,
           "Check if a Majorana operator (represented by indices) is antihermitian.");
     m.def("antihermitian_generator_correction",
-          &monoprop::antihermitian_generator_correction,
+          &antihermitian_generator_correction,
           "indices"_a,
           "Get the generator correction for a Majorana operator (represented by indices).");
     // clang-format off

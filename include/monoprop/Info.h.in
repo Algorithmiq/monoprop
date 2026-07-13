@@ -18,6 +18,8 @@
 #include <string>
 #include <string_view>
 
+#include "monoprop/FunctionMultiversioning.h"
+
 namespace monoprop {
 static constexpr auto version() noexcept -> std::string_view {
     return "@PROJECT_VERSION_FULL@";
@@ -35,7 +37,7 @@ static auto compiler_flags() noexcept -> std::map<std::string, std::string> {
     return {
         {"from-environment", "@CMAKE_CXX_FLAGS@"},
         {"build-type-flags", "@_cmake_build_type_specific_flags@"},
-        {"vectorization", "@ARCH_FLAG@"},
+        {"machine-flags", std::string(machine_flags())},
         {"project-defaults", "@CMAKE_CXX23_STANDARD_COMPILE_OPTION@ @monoprop_CXX_FLAGS@"},
         {"user-appended", "@EXTRA_CXXFLAGS@"},
     };

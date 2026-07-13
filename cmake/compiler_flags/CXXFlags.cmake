@@ -15,9 +15,7 @@
 # - ``CMAKE_CXX_FLAGS_<CONFIG>`` are build-type specific compiler flags.
 #   The defaults are compiler-dependent: have a look at the ``GNU.CXX.cmake``,
 #   ``Clang.CXX.cmake``, and ``Intel.CXX.cmake`` files.
-# - ``ARCH_FLAG`` is the architecture-dependent optimization flag, *e.g.*
-#   vectorization. Default is empty.
-# - ``monoprop_CXX_FLAGS`` are monoprop-specific flags to be used for all builds.
+# - ``monoprop_CXX_FLAGS`` are monorop-specific flags to be used for all builds.
 #   The defaults are compiler-dependent: have a look at the ``GNU.CXX.cmake``,
 #   ``Clang.CXX.cmake``, and ``Intel.CXX.cmake`` files.
 # - ``EXTRA_CXXFLAGS`` useful if you need to append certain flags to the full
@@ -26,7 +24,7 @@
 #
 # Variables used::
 #
-#   monoprop_ENABLE_ARCH_FLAGS
+#   monoprop_ENABLE_MULTIVERSIONING
 #   EXTRA_CXXFLAGS
 #
 # Variables modified::
@@ -37,7 +35,7 @@
 #
 #   CXXFLAGS
 
-option_with_print(monoprop_ENABLE_ARCH_FLAGS "Enable architecture-specific compiler flags" ON)
+option_with_print(monoprop_ENABLE_MULTIVERSIONING "Enable function multiversioning" ON)
 
 # code needs C++23 at least
 set(CMAKE_CXX_STANDARD 23)
@@ -52,18 +50,120 @@ set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
 set(CMAKE_CXX_VISIBILITY_PRESET "hidden")
 set(CMAKE_VISIBILITY_INLINES_HIDDEN TRUE)
 
-set(ARCH_FLAG "")
-if(monoprop_ENABLE_ARCH_FLAGS AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-  if(CMAKE_CXX_COMPILER_ID MATCHES GNU)
-    set(ARCH_FLAG "-march=native")
+# Query the machine-dependent flags for a given -march value and store the
+# cleaned, space-separated string in the variable named by OUTPUT_VARIABLE. A
+# MARCH of "default" queries the default target (no -march flag).
+#
+# Usage:
+#   _monoprop_query_machine_flags(MARCH <arch> OUTPUT_VARIABLE <var>)
+function(_monoprop_query_machine_flags)
+  set(_one_value_args MARCH OUTPUT_VARIABLE)
+  cmake_parse_arguments(PARSE_ARGV 0 _arg "" "${_one_value_args}" "")
+
+  if(NOT _arg_OUTPUT_VARIABLE)
+    message(FATAL_ERROR "_monoprop_query_machine_flags: OUTPUT_VARIABLE is required")
   endif()
-  if(CMAKE_CXX_COMPILER_ID MATCHES Clang)
-    set(ARCH_FLAG "-march=native")
+  if(NOT _arg_MARCH)
+    message(FATAL_ERROR "_monoprop_query_machine_flags: MARCH is required")
   endif()
-  if(CMAKE_CXX_COMPILER_ID MATCHES Intel)
-    set(ARCH_FLAG "-xHost")
+
+  if(_arg_MARCH STREQUAL "default")
+    set(_march_args "")
+  else()
+    set(_march_args "-march=${_arg_MARCH}")
+  endif()
+  execute_process(
+    COMMAND ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
+    COMMAND ${Python_EXECUTABLE} ${_machine_flags_cleaner}
+    OUTPUT_VARIABLE _flags
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE _result
+  )
+  if(NOT _result EQUAL 0)
+    message(
+      FATAL_ERROR
+      "Failed to query machine-dependent flags for '${_arg_MARCH}' (exit code ${_result})"
+    )
+  endif()
+  set(${_arg_OUTPUT_VARIABLE} "${_flags}" PARENT_SCOPE)
+endfunction()
+
+# Report the machine-dependent flags GCC uses for each target variant by
+# querying `gcc -march=<arch> -Q --help=target` and cleaning the output with
+# tools/gcc-target-help-clean.py.
+find_package(Python COMPONENTS Interpreter REQUIRED QUIET)
+set(_machine_flags_cleaner "${PROJECT_SOURCE_DIR}/tools/gcc-target-help-clean.py")
+
+set(monoprop_MACHINE_FLAGS_DEFAULT "")
+_monoprop_query_machine_flags(MARCH default OUTPUT_VARIABLE monoprop_MACHINE_FLAGS_DEFAULT)
+
+set(monoprop_TARGET_CLONES "")
+set(monoprop_VARIANTS "")
+set(monoprop_MACHINE_FLAGS_VARIANTS "")
+# function multiversioning is only enabled in release builds on x86_64 architectures
+if(
+  monoprop_ENABLE_MULTIVERSIONING
+  AND
+    NOT
+      CMAKE_BUILD_TYPE
+        STREQUAL
+        "Debug"
+  AND
+    CMAKE_HOST_SYSTEM_PROCESSOR
+      MATCHES
+      "x86_64"
+)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES GNU)
+    message(
+      FATAL_ERROR
+      "Multiversioning is only supported with GNU compilers. Please disable monoprop_ENABLE_MULTIVERSIONING or use a GNU compiler."
+    )
+  else()
+    list(
+      APPEND _targets
+      "x86-64-v2"
+      "x86-64-v3"
+      "x86-64-v4"
+      "icelake-server"
+      "sapphirerapids"
+      "graniterapids"
+      "znver3"
+      "znver4"
+      "znver5"
+    )
+
+    set(_targets_arch "")
+    foreach(_target IN LISTS _targets)
+      list(APPEND _targets_arch "\"arch=${_target}\"")
+    endforeach()
+    list(JOIN _targets_arch ", " TARGETS)
+
+    message(STATUS "Function multiversioning targets: \"default\", ${TARGETS}")
+    set(monoprop_TARGET_CLONES "[[using gnu: flatten, target_clones(\"default\", ${TARGETS})]]")
+    set(_variants "")
+    foreach(_target IN LISTS _targets)
+      string(APPEND _variants "monoprop_FMV_VARIANT(\"${_target}\")\n")
+    endforeach()
+    set(monoprop_VARIANTS "${_variants}")
+
+    set(_machine_flags_variants "")
+    foreach(_target IN LISTS _targets)
+      _monoprop_query_machine_flags(MARCH "${_target}" OUTPUT_VARIABLE _target_machine_flags)
+      string(
+        APPEND _machine_flags_variants
+        "monoprop_FMV_MACHINE_FLAGS(\"${_target}\", \"${_target_machine_flags}\")\n"
+      )
+    endforeach()
+    set(monoprop_MACHINE_FLAGS_VARIANTS "${_machine_flags_variants}")
   endif()
 endif()
+
+# generate a header file with a macro containing (or not) the function multiversioning attribute
+configure_file(
+  ${PROJECT_SOURCE_DIR}/include/monoprop/FunctionMultiversioning.h.in
+  ${PROJECT_BINARY_DIR}/include/monoprop/FunctionMultiversioning.h
+  @ONLY
+)
 
 set(monoprop_CXX_FLAGS "")
 include(${CMAKE_CURRENT_LIST_DIR}/GNU.CXX.cmake)
