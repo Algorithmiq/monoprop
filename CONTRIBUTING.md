@@ -1,14 +1,29 @@
 # Contributing to monoprop
 
-Thanks for your interest in contributing to `monoprop`.
+Thanks for your interest in contributing to `monoprop`!
+
+First time contributing in open source project? Use [this guide](https://opensource.guide/how-to-contribute/) to learn more.
 
 ## How to contribute
+
+
+You can contribute in various ways to all activities we’d like to get help with. Some examples of ways to contribute:
+
+
+- Report bugs
+- Suggest new features
+- Testing and providing feedback
+- Improving documentation
+
+If you would like to contribute directly to the codebase by opening a pull request, please follow the steps.
 
 1. Fork the repository and clone your fork.
 2. Create a branch from `main` for your change.
 3. Implement your change and add/update tests where relevant.
 4. Run the project checks locally (for example, `uv run pytest` and pre-commit checks).
 5. Open a pull request against `Algorithmiq/monoprop` and describe your change.
+
+For more detailed instructions, see [How to Contribute](https://docs.monoprop.algorithmiq.tech/how-to-contribute).
 
 ## Contributor License Agreement (CLA)
 
@@ -31,4 +46,4 @@ If you're contributing on behalf of your employer, contact
 
 ## Code of Conduct
 
-Please read and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+Please read and follow the [Code of Conduct](CODE_OF_CONDUCT.md), which applies for all interactions in this repository, including issues and PRs.
