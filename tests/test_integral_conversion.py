@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from monoprop.fermi_data import FermiOperator, FermiString
+from monoprop.fermi import FermiOperator, FermiString
 from monoprop.integral_conversion import integrals_to_fermion
 
 

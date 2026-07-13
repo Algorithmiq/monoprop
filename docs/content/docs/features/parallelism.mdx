@@ -11,18 +11,18 @@ than would fit in memory on a single node.
 
 ### Single-node (`MPI.COMM_SELF`)
 
-```python
+```python notest
 from mpi4py import MPI
-sim = MonomialPropagator(..., comm=MPI.COMM_SELF)
+sim = MajoranaPropagator(..., comm=MPI.COMM_SELF)
 ```
 
 ### Multi-node (`MPI.COMM_WORLD`)
 
 Replace the communicator and launch with `mpiexec`:
 
-```python
+```python notest
 from mpi4py import MPI
-sim = MonomialPropagator(..., comm=MPI.COMM_WORLD)
+sim = MajoranaPropagator(..., comm=MPI.COMM_WORLD)
 ```
 
 ```bash

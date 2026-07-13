@@ -207,6 +207,10 @@ struct LayerTraversal final {
 
     auto evolution_exchange_layout() const -> const LayerExchangeLayout & { return *evolution_exchange_layout_; }
 
+    auto param_index() const -> size_t { return storage_->param_index; }
+    auto gen_coeff() const -> double { return storage_->gen_coeff; }
+    auto gate_index() const -> size_t { return storage_->gate_index; }
+
 private:
     auto local_cycle_position(size_t idx) const -> size_t {
         return local_cycle_positions_ == nullptr ? idx : detail::compressed_position_at(*local_cycle_positions_, idx);
@@ -328,6 +332,17 @@ struct Layer final {
         return storage_->evolution_exchange_layout;
     }
     auto shared_storage() const -> std::shared_ptr<LayerStorage> { return storage_; }
+
+    // Gate information owned by this layer (see LayerStorage). Set when the layer is
+    // appended during graph building; read by evaluation.
+    auto param_index() const -> size_t { return storage_->param_index; }
+    auto gen_coeff() const -> double { return storage_->gen_coeff; }
+    auto gate_index() const -> size_t { return storage_->gate_index; }
+    auto set_gate_info(size_t param_index, double gen_coeff, size_t gate_index) -> void {
+        storage_->param_index = param_index;
+        storage_->gen_coeff = gen_coeff;
+        storage_->gate_index = gate_index;
+    }
 
     auto empty() const -> bool {
         if (num_cos_inds() != 0 || local_cycle_count() != 0) {

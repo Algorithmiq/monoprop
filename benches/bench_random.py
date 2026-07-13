@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Random-problem benchmarks (time + peak memory), both physical pictures.
-
-Random fixed-length Majorana generators and a random Hermitian observable, run in
-the Heisenberg and Schrödinger pictures (``schrodinger_cutoff = cutoff + 2``).
-Configurable from the command line -- see ``benches/README.md``.
-"""
+"""Random-problem benchmarks (time + peak memory), both physical pictures."""
 
 from __future__ import annotations
 
@@ -35,21 +30,20 @@ def test_random_build_graph(
     def setup():
         return (make_random_propagator(),), {}
 
-    def build(mp):
-        mp.propagate()
+    def build(built):
+        propagator, circuit = built
+        propagator.build_graph(circuit)
 
     benchmark.pedantic(
         barriered(build, bench_comm), setup=setup, rounds=bench_rounds, iterations=1
     )
 
 
-def test_random_pare(benchmark, built_graph, random_problem, bench_comm, bench_rounds):
-    """Benchmark paring the graph into a masked execution plan."""
+def test_random_pare(benchmark, built_graph, bench_comm, bench_rounds):
+    """Benchmark paring the graph."""
 
     def pare():
         return built_graph.expectation_value_and_gradient_functional(
-            parameter_mapping=random_problem.parameter_mapping,
-            gen_coeffs=random_problem.gen_coeffs,
             pare_threshold=PARE_THRESHOLD,
         )
 
@@ -60,11 +54,7 @@ def test_random_energy(
     benchmark, built_graph, random_problem, bench_comm, bench_rounds
 ):
     """Benchmark evaluating the expectation-value functional."""
-    functional = built_graph.expectation_value_functional(
-        parameter_mapping=random_problem.parameter_mapping,
-        gen_coeffs=random_problem.gen_coeffs,
-        pare_threshold=PARE_THRESHOLD,
-    )
+    functional = built_graph.expectation_value_functional()
     result = benchmark.pedantic(
         barriered(functional, bench_comm),
         args=(random_problem.parameters,),
@@ -78,11 +68,7 @@ def test_random_gradient(
     benchmark, built_graph, random_problem, bench_comm, bench_rounds
 ):
     """Benchmark evaluating the expectation-value-and-gradient functional."""
-    functional = built_graph.expectation_value_and_gradient_functional(
-        parameter_mapping=random_problem.parameter_mapping,
-        gen_coeffs=random_problem.gen_coeffs,
-        pare_threshold=PARE_THRESHOLD,
-    )
+    functional = built_graph.expectation_value_and_gradient_functional()
     _value, gradient = benchmark.pedantic(
         barriered(functional, bench_comm),
         args=(random_problem.parameters,),
@@ -98,9 +84,10 @@ def test_random_inplace(benchmark, make_random_propagator, bench_comm, bench_rou
     def setup():
         return (make_random_propagator(lower_atol=INPLACE_LOWER_ATOL),), {}
 
-    def run(mp):
-        mp.propagate(evolve_with_coeffs=True)
-        return mp.expectation_value()
+    def run(built):
+        propagator, circuit = built
+        propagator.propagate(circuit)
+        return propagator.expectation_value()
 
     result = benchmark.pedantic(
         barriered(run, bench_comm), setup=setup, rounds=bench_rounds, iterations=1

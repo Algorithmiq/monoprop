@@ -33,15 +33,13 @@ and the expectation value $\mathrm{Tr}[\varrho\, H_L]$ is read off at the end
 
 The roles are swapped: the state $\varrho$ is expanded in the Majorana basis
 and evolved *forwards* through the circuit, with the observable held fixed.
-The two pictures are not just cosmetic relabellings of the same computation, but
-under common assumptions for fermionic circuits the results of length truncation
-are provably equivalent in both
-[@chakraborty2026scalablequantumcircuitgeneration]. In practice, matching the
-Heisenberg-picture result requires a slightly looser cutoff on the state; see
-[Initialisation and updates](/features/initialisation) for the `schrodinger_cutoff` setting.
-The Schrödinger picture is less common in practice, but can be useful when you
-need to compute the expectation value of many different observables against the
-same state.
+Under common assumptions for fermionic circuits, length truncation is
+equivalent in both pictures [@chakraborty2026scalablequantumcircuitgeneration],
+though matching the Heisenberg-picture result requires a slightly looser cutoff
+on the state (the `schrodinger_cutoff` setting; see
+[Initialisation and updates](/features/initialisation)). The Schrödinger picture
+is less common, but useful for evaluating many observables against the same
+state.
 
 ## See also
 

@@ -101,6 +101,19 @@ monoprop_EXPORT auto validate_params(const VecD &params, const VecZ &parameter_m
 monoprop_EXPORT auto validate_coefficient_lengths(const VecZ &parameter_mapping, const VecD &gen_coeffs) -> void;
 
 /**
+ * @brief Validate per-monomial gate indices supplied to build_graph.
+ *
+ * Gate indices label which ingested gate each monomial belongs to. They must have one entry
+ * per monomial and form contiguous runs starting at 0 (each element equals the previous or
+ * previous+1), matching the shape produced by expanding gates into monomials.
+ *
+ * @param gate_indices Per-monomial gate index (local, 0-based).
+ * @param num_monomials Expected number of entries.
+ * @throws std::runtime_error if the length differs or the indices are not contiguous from 0.
+ */
+monoprop_EXPORT auto validate_gate_indices(const VecZ &gate_indices, size_t num_monomials) -> void;
+
+/**
  * @brief Validate that parameters length matches what's expected from parameter_mapping.
  *
  * @param params Parameter values

@@ -3,7 +3,7 @@
 //
 // fumadocs-python's `convert`/`write` do the heavy lifting; this script only
 //  1. prunes the griffe dump to the public surface (the modules that the old
-//     Sphinx `python-api.rst` documented, minus private `_`-prefixed members),
+//     docs reference documented, minus private `_`-prefixed members),
 //  2. fixes the package-name segment that `convert` puts in cross-links but
 //     `write` strips from file paths, and
 //  3. emits a `meta.json` so the API section is ordered like the old reference.
@@ -17,13 +17,16 @@ const BASE_URL = '/api';
 
 // Public modules, in the order they should appear in the sidebar
 const MODULES = [
-  ['monomial_propagator', 'Monomial Propagator'],
-  ['fermi_data', 'Fermionic & Majorana operators'],
-  ['pauli_data', 'Qubit (Pauli) operators'],
+  ['majorana_propagator', 'Majorana Propagator'],
+  ['pauli_propagator', 'Pauli Propagator'],
+  ['monomial_propagator', 'Shared propagator surface'],
+  ['circuit', 'Circuits and gates'],
+  ['fermi', 'Fermionic & Majorana operators'],
+  ['pauli', 'Qubit (Pauli) operators'],
   ['qiskit_conversion', 'Qiskit conversion'],
   ['integral_conversion', 'Integral conversion'],
   ['utils', 'Utilities'],
-  ['monomial_data', 'Internal representations'],
+  ['majorana', 'Internal representations'],
   ['quantum_data', 'Protocols'],
   ['exceptions', 'Exceptions'],
 ];

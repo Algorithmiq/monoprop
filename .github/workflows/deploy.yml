@@ -1,13 +1,7 @@
-name: Publish monoprop Python sdist and wheels to Algorithmiq PyPI
+name: Publish monoprop Python sdist and wheels to PyPI
 
 on:
   workflow_dispatch:
-    inputs:
-      force-upload:
-        description: 'Upload artifacts without a corresponding release'
-        required: false
-        default: false
-        type: boolean
   release:
     types:
       - published
@@ -162,17 +156,18 @@ jobs:
           name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: wheelhouse/*.whl
 
-  upload_codeartifact:
-    name: Upload to AWS CodeArtifact
+  upload_pypi:
+    name: Upload to PyPI
     needs:
       - build-sdist
       - build-wheels
-    if: (github.event_name == 'release' && github.event.action == 'published') || github.event.inputs.force-upload
+    if: github.event_name == 'release' && github.event.action == 'published'
 
     runs-on: ubuntu-latest
-
+    environment: pypi
     permissions:
       id-token: write
+      attestations: write
       contents: read
 
     steps:
@@ -183,14 +178,10 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - uses: aws-actions/configure-aws-credentials@v6
+      - name: Generate artifact attestations
+        uses: actions/attest-build-provenance@v4
         with:
-          role-to-assume: arn:aws:iam::406960181794:role/github-actions-codeartifact-write-access
-          aws-region: eu-west-1
+          subject-path: "dist/*"
 
-      - name: Publish
-        run: |
-          export TWINE_USERNAME=aws
-          export TWINE_PASSWORD="$(aws codeartifact get-authorization-token --domain algorithmiq --domain-owner 406960181794 --region eu-west-1 --query authorizationToken --output text)"
-          export TWINE_REPOSITORY_URL="$(aws codeartifact get-repository-endpoint --domain algorithmiq --domain-owner 406960181794 --repository pypi --region eu-west-1 --format pypi --query repositoryEndpoint --output text)"
-          pipx run twine upload dist/*
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

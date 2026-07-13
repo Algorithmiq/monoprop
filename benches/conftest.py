@@ -52,7 +52,9 @@ import monoprop
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from monoprop import MonomialPropagator
+    from _builders import Built
+
+    from monoprop import MajoranaPropagator
 
 try:
     from mpi4py import MPI
@@ -300,14 +302,14 @@ def random_problem(request: pytest.FixtureRequest) -> RandomProblem:
 @pytest.fixture
 def make_random_propagator(
     random_problem: RandomProblem, bench_comm: Any, picture: str
-) -> Callable[..., MonomialPropagator]:
-    """Return a factory building a fresh propagator for the current picture.
+) -> Callable[..., Built]:
+    """Return a factory building a fresh ``(propagator, circuit)`` tuple.
 
     Wraps the picture/communicator wiring so a benchmark ``setup`` can just call
-    ``make_random_propagator(lower_atol=...)`` for a fresh propagator each round.
+    ``make_random_propagator(lower_atol=...)`` for a fresh build each round.
     """
 
-    def _make(*, lower_atol: float | None = None) -> MonomialPropagator:
+    def _make(*, lower_atol: float | None = None) -> Built:
         return build_random_propagator(
             random_problem,
             comm=bench_comm,
@@ -321,7 +323,7 @@ def make_random_propagator(
 @pytest.fixture(scope="session")
 def built_graph(
     random_problem: RandomProblem, bench_comm: Any, picture: str
-) -> MonomialPropagator:
+) -> MajoranaPropagator:
     """Return a propagator whose graph has been built (no coefficients contracted).
 
     Session-scoped per picture so the graph is built once and shared across the
@@ -330,10 +332,10 @@ def built_graph(
     Also records the operator size, operator-vs-graph storage breakdown, and
     resting footprint for this picture while the graph is resident.
     """
-    mp = build_random_propagator(
+    mp, circuit = build_random_propagator(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
     )
-    mp.propagate()
+    mp.build_graph(circuit)
 
     # Under MPI the operator is partitioned, so sum the shards.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})

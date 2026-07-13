@@ -16,42 +16,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    import numpy as np
-
-
-def normalize_parameters(
-    parameters: list[float] | np.ndarray | None,
-    parameter_mapping: list[int] | np.ndarray | None,
-    gen_coeffs: list[float] | np.ndarray | None,
-) -> tuple[list[float] | np.ndarray, list[int] | np.ndarray, list[float] | np.ndarray]:
-    """Convert None parameters to empty lists."""
-    parameters = [] if parameters is None else parameters
-    parameter_mapping = [] if parameter_mapping is None else parameter_mapping
-    gen_coeffs = [] if gen_coeffs is None else gen_coeffs
-    return parameters, parameter_mapping, gen_coeffs
-
-
-def wrap_functional_call(
-    fn: Callable,
-    transform: Callable | None = None,
-) -> Callable:
-    """Wrap simulator functionals so ``None`` parameters map to empty lists."""
-
-    def _fn(
-        parameters: list[float] | np.ndarray | None = None,
-    ) -> float | tuple[float, np.ndarray] | np.ndarray:
-        result = fn([] if parameters is None else parameters)
-        if transform is None:
-            return result
-        return transform(result)
-
-    return _fn
-
 
 def jordan_wigner_basis_change(n_qubits: int) -> list[list[int]]:
     """Generate a basis change for Jordan-Wigner representation.

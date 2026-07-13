@@ -122,6 +122,29 @@ auto validate_coefficient_lengths(const VecZ &parameter_mapping, const VecD &gen
                          "The length of parameter_mapping and gen_coeffs must be the same.");
 }
 
+auto validate_gate_indices(const VecZ &gate_indices, size_t num_monomials) -> void {
+    if (gate_indices.size() != num_monomials) {
+        throw std::runtime_error(
+            std::format("gate_indices has {} entries but there are {} monomials.", gate_indices.size(), num_monomials));
+    }
+    if (gate_indices.empty()) {
+        return;
+    }
+    if (gate_indices.front() != 0) {
+        throw std::runtime_error(std::format("gate_indices must start at 0; got {}.", gate_indices.front()));
+    }
+    for (size_t i = 1; i < gate_indices.size(); ++i) {
+        if (gate_indices[i] != gate_indices[i - 1] && gate_indices[i] != gate_indices[i - 1] + 1) {
+            throw std::runtime_error(std::format("gate_indices must be contiguous runs from 0 (each entry "
+                                                 "equal to the previous or previous+1); got a jump from {} "
+                                                 "to {} at position {}.",
+                                                 gate_indices[i - 1],
+                                                 gate_indices[i],
+                                                 i));
+        }
+    }
+}
+
 auto validate_param_map_gen_coeffs_majoranas_match(size_t parameter_mapping_size,
                                                    size_t gen_coeffs_size,
                                                    size_t majoranas_size) -> void {
