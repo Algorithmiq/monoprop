@@ -64,12 +64,132 @@ ctest -S tools/ctest-mpi-matrix.cmake -VV
 
 ### Python tests
 
-Every test has to be added to test folder. The test folder follows the structure of the monoprop module folder. Therefore, tests needs to be added to the corresponding subfolder of the functionality they are testing.
+Place new test files under `tests/`, named `test_<module>.py`. We suggest following [pytest guidelines](https://docs.pytest.org/en/stable/index.html).
 
-It is recommended that you follow general (pytest guidelines)[https://docs.pytest.org/en/stable/index.html]:
+#### Simple unit test
 
+Use `pytest.mark.parametrize` for straightforward parametric tests:
+
+```python
+import pytest
+from monoprop.pauli import Pauli
+
+class TestPauli:
+    def test_default_qubits_are_range(self):
+        p = Pauli("XYZ")
+        assert p.string == "XYZ"
+        assert p.qubits == (0, 1, 2)
+
+    @pytest.mark.parametrize(
+        ("string", "expected"),
+        [
+            ("IZ", Pauli("Z", 1)),
+            ("ZI", Pauli("Z", 0)),
+        ],
+    )
+    def test_identity_letters_dropped(self, string, expected):
+        assert Pauli(string, (0, 1)) == expected
+```
+
+#### Data-driven integration test
+
+Use `parametrize_with_cases` to test against the reference msgpack fixtures. The `cases.py` module defines `CasesFermionicProblem`, which exposes all fixtures in `tests/data/`. The `serial_comm` and `comm` fixtures are provided by `conftest.py`.
+
+```python
+import pytest
+from pytest_cases import parametrize_with_cases
+
+from monoprop import MajoranaPropagator
+from tests.cases import CasesFermionicProblem
+
+
+@parametrize_with_cases("problem", cases=CasesFermionicProblem)
+def test_energy_matches_reference(problem, comm):
+    mp = MajoranaPropagator(
+        problem.operator,
+        problem.monomial_circuit.initial_state,
+        cutoff=2 * problem.n_modes,
+        comm=comm,
+    )
+    energy = mp.propagate(problem.monomial_circuit)
+    assert abs(energy - problem.actual_energy) < 1e-8
+```
+
+Tag filtering narrows which fixtures run in a given test:
+
+```python
+@parametrize_with_cases(
+    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
+)
+def test_only_commutator_cases(problem, serial_comm): ...
+```
+
+#### Adding a new msgpack fixture
+
+If your test requires a new reference problem, add a `.msgpack` file to `tests/data/` following the schema in `tests/data/README.md`, then register a new case in `tests/cases.py`:
+
+```python
+from pytest_cases import case
+
+class CasesFermionicProblem:
+    @case(id="my_new_problem", tags=["has_commutator_data"])
+    def case_my_new_problem(self, shared_datadir):
+        return load_problem(shared_datadir / "my_new_problem.msgpack")
+```
 
 ### C++ tests
+
+C++ tests live in `tests/cpp/` and use [Boost.Test](https://www.boost.org/doc/libs/release/libs/test/). They are registered automatically via CMake — add the new `.cpp` file to the `SOURCES` list in `tests/cpp/CMakeLists.txt`.
+
+#### Simple unit test
+
+```cpp
+#include <boost/test/unit_test.hpp>
+
+BOOST_AUTO_TEST_SUITE(MyFeatureSuite)
+
+BOOST_AUTO_TEST_CASE(my_basic_check) {
+    int result = 2 + 2;
+    BOOST_TEST(result == 4);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+```
+
+#### Data-driven test using reference fixtures
+
+Use the `ExampleDataFix` fixture class from `TestUtilities.h` to load the same msgpack data as Python tests, and `BOOST_DATA_TEST_CASE_F` to parametrize over it:
+
+```cpp
+#include <boost/test/data/monomorphic.hpp>
+#include <boost/test/data/test_case.hpp>
+#include <boost/test/unit_test.hpp>
+
+#include "TestUtilities.h"
+
+using namespace test_utils;
+namespace utf = boost::unit_test;
+namespace bdata = utf::data;
+
+BOOST_DATA_TEST_CASE_F(ExampleDataFix,
+                       my_new_test,
+                       bdata::make(ds_pare_values) ^ bdata::make(ds_schrodinger_enabled),
+                       pare,
+                       sch_enabled) {
+    const auto schrodinger_cutoff = make_schrodinger_cutoff(sch_enabled, cutoff);
+    SimulatorConfig cfg{
+        .schrodinger_cutoff = schrodinger_cutoff
+                                  ? std::optional<unsigned int>(*schrodinger_cutoff)
+                                  : std::nullopt,
+        .cutoff_type = cutoff_type,
+        .basis_change = basis_change,
+    };
+    // use data.actual_expval as the reference value
+    test_evolve_build_graph<n_modes>(data, cfg, pare, data.actual_expval);
+}
+```
+
+The `ExampleDataFix` fixture automatically resolves the test data path via the `monoprop_REF_DATA_PATH` environment variable or by walking up from the working directory to `tests/data/`.
 
 
 
