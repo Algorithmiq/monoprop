@@ -71,3 +71,8 @@ Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`)
 Each run writes `results/time-<label>.json` (pytest-benchmark) and
 `<label>.json` (everything else); `report.py` merges all labels into
 `results/REPORT.md`.
+
+
+## Third-party comparison
+
+You can find the detailed comparison of `monoprop` against other open-source Pauli propagation engines in [benches/third_party](benches/third_party). The benchmark suite includes memory and time performance metrics, providing insights into the efficiency of different propagation engines.
