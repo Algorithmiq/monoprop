@@ -38,8 +38,12 @@ Running the Python and C++ test suites --- with and without MPI --- is documente
 
 To build the documentation locally:
 
-The rendered site is written to `docs/out/`.
+```bash
+just serve-docs   # live-reloading dev server at http://localhost:3000
+just build-docs   # full static build → docs/out/
+```
 
+The rendered site is written to `docs/out/`. See [Documenting monoprop](/documenting) for guidelines on writing documentation pages, the API reference, and tutorial notebooks.
 
 ## To submit your contribution
 
