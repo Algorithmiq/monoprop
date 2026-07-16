@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pylab as plt
+import matplotlib.pyplot as plt
 
 # Only entries whose step is >= min_step are plotted to skip the early noisy steps
 min_step = 5
