@@ -1,0 +1,200 @@
+---
+title: Testing
+description: Running the test for the Python and C++ API, with or without MPI.
+---
+
+The monoprop test suits require installing the package from the source. If you follow the proper installation guide on how to [Building from source](/building) you should have all the tools to run the tests.
+
+
+## Running the tests
+
+### Python tests
+
+The Python tests run with `pytest`. Without MPI:
+
+```bash
+uv run python -m pytest -m "not mpi"   # or: just test-py
+```
+
+The MPI tests need an MPI-enabled build, which the default source build does not
+produce. The `just` recipes build an MPI-enabled extension and launch the suite
+under `mpiexec`:
+
+```bash
+just test-py-mpi          # full suite under MPI
+just test-py-mpi-matrix   # MPI-marked tests across a rank matrix
+```
+
+To do it by hand, build with MPI on, then run under `mpiexec` with `--no-sync`
+so each rank reuses that build. `--reinstall-package` and `--no-cache` force a
+genuine rebuild, since uv does not key its build cache on `SKBUILD_CMAKE_ARGS`:
+
+```bash
+SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON" \
+    uv sync --all-extras --reinstall-package monoprop --no-cache
+mpiexec --allow-run-as-root -n 2 uv run --no-sync python -m pytest tests --with-mpi
+```
+
+### C++ unit tests
+
+The C++ tests run through CTest, against whichever preset you built. Without MPI:
+
+```bash
+cmake --preset release-gcc
+cmake --build --preset release-gcc
+ctest --preset release-gcc
+```
+
+With MPI, use the `-mpi` preset, which also runs the multi-rank tests:
+
+```bash
+cmake --preset release-gcc-mpi
+cmake --build --preset release-gcc-mpi
+ctest --preset release-gcc-mpi
+```
+
+The full MPI rank matrix (several rank counts) is driven by a helper script:
+
+```bash
+ctest -S tools/ctest-mpi-matrix.cmake -VV
+```
+
+
+## Adding tests
+
+### Python tests
+
+Place new test files under `tests/`, named `test_<module>.py`. We suggest following [pytest guidelines](https://docs.pytest.org/en/stable/index.html).
+
+#### Simple unit test
+
+Use `pytest.mark.parametrize` for straightforward parametric tests:
+
+```python
+import pytest
+from monoprop.pauli import Pauli
+
+class TestPauli:
+    def test_default_qubits_are_range(self):
+        p = Pauli("XYZ")
+        assert p.string == "XYZ"
+        assert p.qubits == (0, 1, 2)
+
+    @pytest.mark.parametrize(
+        ("string", "expected"),
+        [
+            ("IZ", Pauli("Z", 1)),
+            ("ZI", Pauli("Z", 0)),
+        ],
+    )
+    def test_identity_letters_dropped(self, string, expected):
+        assert Pauli(string, (0, 1)) == expected
+```
+
+#### Data-driven integration test
+
+Use `parametrize_with_cases` to test against the reference msgpack fixtures. The `cases.py` module defines `CasesFermionicProblem`, which exposes all fixtures in `tests/data/`. The `serial_comm` and `comm` fixtures are provided by `conftest.py`.
+
+```python notest
+import pytest
+from pytest_cases import parametrize_with_cases
+
+from monoprop import MajoranaPropagator
+from tests.cases import CasesFermionicProblem
+
+
+@parametrize_with_cases("problem", cases=CasesFermionicProblem)
+def test_energy_matches_reference(problem, comm):
+    mp = MajoranaPropagator(
+        problem.operator,
+        problem.monomial_circuit.initial_state,
+        cutoff=2 * problem.n_modes,
+        comm=comm,
+    )
+    energy = mp.propagate(problem.monomial_circuit)
+    assert abs(energy - problem.actual_energy) < 1e-8
+```
+
+Tag filtering narrows which fixtures run in a given test:
+
+```python notest
+@parametrize_with_cases(
+    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
+)
+def test_only_commutator_cases(problem, serial_comm): ...
+```
+
+#### Adding a new msgpack fixture
+
+If your test requires a new reference problem, add a `.msgpack` file to `tests/data/` following the schema in `tests/data/README.md`, then register a new case in `tests/cases.py`:
+
+```python
+from pytest_cases import case
+
+class CasesFermionicProblem:
+    @case(id="my_new_problem", tags=["has_commutator_data"])
+    def case_my_new_problem(self, shared_datadir):
+        return load_problem(shared_datadir / "my_new_problem.msgpack")
+```
+
+### C++ tests
+
+C++ tests live in `tests/cpp/` and use [Boost.Test](https://www.boost.org/doc/libs/release/libs/test/). They are registered automatically via CMake — add the new `.cpp` file to the `SOURCES` list in `tests/cpp/CMakeLists.txt`.
+
+#### Simple unit test
+
+```cpp
+#include <boost/test/unit_test.hpp>
+
+BOOST_AUTO_TEST_SUITE(MyFeatureSuite)
+
+BOOST_AUTO_TEST_CASE(my_basic_check) {
+    int result = 2 + 2;
+    BOOST_TEST(result == 4);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+```
+
+#### Data-driven test using reference fixtures
+
+Use the `ExampleDataFix` fixture class from `TestUtilities.h` to load the same msgpack data as Python tests, and `BOOST_DATA_TEST_CASE_F` to parametrize over it:
+
+```cpp
+#include <boost/test/data/monomorphic.hpp>
+#include <boost/test/data/test_case.hpp>
+#include <boost/test/unit_test.hpp>
+
+#include "TestUtilities.h"
+
+using namespace test_utils;
+namespace utf = boost::unit_test;
+namespace bdata = utf::data;
+
+BOOST_DATA_TEST_CASE_F(ExampleDataFix,
+                       my_new_test,
+                       bdata::make(ds_pare_values) ^ bdata::make(ds_schrodinger_enabled),
+                       pare,
+                       sch_enabled) {
+    const auto schrodinger_cutoff = make_schrodinger_cutoff(sch_enabled, cutoff);
+    SimulatorConfig cfg{
+        .schrodinger_cutoff = schrodinger_cutoff
+                                  ? std::optional<unsigned int>(*schrodinger_cutoff)
+                                  : std::nullopt,
+        .cutoff_type = cutoff_type,
+        .basis_change = basis_change,
+    };
+    // use data.actual_expval as the reference value
+    test_evolve_build_graph<n_modes>(data, cfg, pare, data.actual_expval);
+}
+```
+
+The `ExampleDataFix` fixture automatically resolves the test data path via the `monoprop_REF_DATA_PATH` environment variable or by walking up from the working directory to `tests/data/`.
+
+
+
+## See also
+
+- [Getting Started](/getting-started) — installing a prebuilt release from PyPI.
+- [Parallelism and distribution](/features/parallelism) — running across MPI ranks and shared-memory threads.
+- [How to Contribute](/how-to-contribute) — the full test and documentation workflow.
