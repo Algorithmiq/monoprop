@@ -21,7 +21,6 @@ import os
 from time import perf_counter
 
 import numpy as np
-
 from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.fermi import FermiOperator
 
@@ -35,14 +34,22 @@ def mode(site, spin):
     return 2 * site if spin == "up" else 2 * site + 1
 
 
+def bricklayer_topology(num_sites):
+    """Return 0-indexed nearest-neighbour bonds in bricklayer order (even bonds, then odd bonds), matching PauliPropagation.jl's ``bricklayertopology`` for an open 1D chain."""
+    topology = [(i, i + 1) for i in range(0, num_sites - 1, 2)]
+    topology += [(i, i + 1) for i in range(1, num_sites - 1, 2)]
+    return topology
+
+
 def hubbard_fermion_terms(num_sites, hopping, interaction, chemical_potential):
     """Return the ordered list of local FermionOperator terms for the first-order Trotter decomposition of the 1D Hubbard model."""
     terms = []
+    topology = bricklayer_topology(num_sites)
 
-    # nearest-neighbour hopping (both spin species)
-    for site in range(num_sites - 1):
-        for spin in ("up", "down"):
-            left, right = mode(site, spin), mode(site + 1, spin)
+    # nearest-neighbour hopping: all spin-up bonds (bricklayer order), then all spin-down bonds
+    for spin in ("up", "down"):
+        for left_site, right_site in topology:
+            left, right = mode(left_site, spin), mode(right_site, spin)
             op_terms = [((left, "+"), (right, "-")), ((right, "+"), (left, "-"))]
             terms.append(
                 FermiOperator(terms=op_terms, coefficients=[-hopping, -hopping])
@@ -71,6 +78,7 @@ def hubbard_fermion_terms(num_sites, hopping, interaction, chemical_potential):
 
     return terms
 
+
 def build_trotter_gates(num_sites, hopping, interaction, chemical_potential):
     """Convert each local Hubbard term into a Majorana generator gate for the MP simulator."""
     ferm_ops = hubbard_fermion_terms(
@@ -80,7 +88,6 @@ def build_trotter_gates(num_sites, hopping, interaction, chemical_potential):
 
 
 def neel_occupied_modes(num_sites, start_spin="up"):
-
     """Return the list of occupied mode indices for the half-filled Néel state, alternating spin between even and odd sites."""
     other = "down" if start_spin == "up" else "up"
     return [
@@ -94,6 +101,7 @@ def number_operator_majorana(site, spin, num_qubits):
     return FermiOperator(
         terms=[((m, "+"), (m, "-"))], coefficients=[1.0], num_modes=num_qubits
     )
+
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark for 1D Hubbard model")
@@ -122,14 +130,13 @@ def main():
     max_cutoff = 10
     chemical_potential = 0
     # checkerboard state |up down up down ...> across spinful sites
-    intial_state = neel_occupied_modes(n_spinful_sites, start_spin="down")
+    intial_state = neel_occupied_modes(n_spinful_sites, start_spin="up")
     num_qubits = 2 * n_spinful_sites
 
-    # Majorana Operator
-    obs_site = n_spinful_sites // 2
+    # Majorana Operator (0-indexed equivalent of Julia's 1-indexed N // 2 site)
+    obs_site = n_spinful_sites // 2 - 1
     obs_spin = "up"
     observable = number_operator_majorana(obs_site, obs_spin, num_qubits)
-
 
     trotter_gates = build_trotter_gates(n_spinful_sites, t, u, chemical_potential)
     # each gate shares the same Trotter time step
@@ -144,11 +151,10 @@ def main():
     simulator = MajoranaPropagator(
         observable,
         fermi_circuit.initial_state,
-        cutoff=4,  # maximum Majorana monomial length kept
-        cutoff_type="length",
-        lower_atol=1e-4,
+        cutoff=max_cutoff,  # matches Julia's max_unpaired
+        cutoff_type="support",
+        lower_atol=min_abs,  # matches Julia's min_abs_coeff
     )
-
 
     values = np.empty(trotter_steps + 1)
     term_counts = np.empty(trotter_steps + 1, dtype=int)
@@ -164,7 +170,6 @@ def main():
     t_total = perf_counter() - t_start
 
     # rss0 = proc.memory_info().rss
-
 
     print(
         f"{n_spinful_sites} n_sites {n_layers} layers {simulator.size()} num_terms {values[-1]:.6f} final overlap {t_total:.6f} seconds"
