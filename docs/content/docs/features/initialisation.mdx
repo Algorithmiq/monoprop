@@ -19,7 +19,8 @@ picture they are applied to the observable.
 `schrodinger_cutoff` is the truncation applied to the initial state. It must be
 set higher than the regular `cutoff` for the Schrödinger-picture result to
 match the Heisenberg-picture one: under length truncation the two pictures agree
-on fermionic circuits when `schrodinger_cutoff = cutoff + 2`
+on fermionic circuits when `schrodinger_cutoff = cutoff + 2` and when the gates are
+generated 4-long Majorana monomials.
 (see Appendix of [@chakraborty2026scalablequantumcircuitgeneration]).
 
 ## Operator updates
@@ -39,9 +40,9 @@ sim.update_initial_operator({(0, 1, 2, 3): 0.5})
 ```
 
 This lets you estimate several observables without re-propagating: in the
-Schrödinger picture the state is evolved independently, so you can re-weight the
-observable and read it off against the same evolved state; in the Heisenberg
-picture the same graph can be reused with different initial operators.
+Schrödinger picture the state is evolved independently, so you can change the
+observable arbitrarily and read it off against the same evolved state; in the Heisenberg
+picture the observable can be re-weighted.
 
 <Callout type="info">
     Only terms that already exist in the initial operator can be updated; supplying a
