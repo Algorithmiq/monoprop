@@ -95,7 +95,7 @@ class TestPauli:
 
 Use `parametrize_with_cases` to test against the reference msgpack fixtures. The `cases.py` module defines `CasesFermionicProblem`, which exposes all fixtures in `tests/data/`. The `serial_comm` and `comm` fixtures are provided by `conftest.py`.
 
-```python
+```python notest
 import pytest
 from pytest_cases import parametrize_with_cases
 
@@ -117,7 +117,7 @@ def test_energy_matches_reference(problem, comm):
 
 Tag filtering narrows which fixtures run in a given test:
 
-```python
+```python notest
 @parametrize_with_cases(
     "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
 )
