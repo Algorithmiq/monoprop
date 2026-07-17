@@ -184,42 +184,44 @@ class TestToQiskitOperator:
 
 @requires_qiskit
 @pytest.mark.qiskit
-class TestToQiskitCircuit:
-    def test_single_gate(self):
+class ToQiskitCircuitCases:
+    @case(id="single_gate")
+    def case_single_gate(self):
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
             parameters=(0.7,),
             initial_state=(),
         )
+        expected_circuit = QuantumCircuit(1)
+        expected_circuit.append(
+            PauliEvolutionGate(SparsePauliOp.from_list([("Z", 1.0)]), time=0.7),
+            [0],
+        )
+        return circuit, 1, expected_circuit
 
-        result = to_qiskit_circuit(circuit, 1)
-
-        assert isinstance(result, QuantumCircuit)
-        assert result.num_qubits == 1
-        assert len(result.data) == 1
-        assert result.data[0].operation.name == "PauliEvolution"
-        assert result.data[0].operation.params[0] == pytest.approx(0.7)
-
-    def test_local_gate(self):
+    @case(id="local_gate")
+    def case_local_gate(self):
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("ZXY", (3, 1, 2)): 1.5}, num_qubits=5)),),
             parameters=(0.7,),
             initial_state=(),
         )
+        expected_circuit = QuantumCircuit(5)
+        # qiskit uses reversed Pauli string order and sorted gate qubit indices.
+        expected_circuit.append(
+            PauliEvolutionGate(SparsePauliOp.from_list([("ZYX", 1.5)]), time=0.7),
+            [1, 2, 3],
+        )
+        return circuit, 5, expected_circuit
 
-        result = to_qiskit_circuit(circuit, 5)
 
-        assert isinstance(result, QuantumCircuit)
-
-        assert result.num_qubits == 5
-        assert len(result.data) == 1
-        gate = result.data[0]
-        assert gate.operation.name == "PauliEvolution"
-        indices = tuple(result.qregs[0].index(qb) for qb in gate.qubits)
-        assert indices == (1, 2, 3)  # sorted order of qubits
-        assert gate.operation.time == 0.7
-        # reversed because of qiskit ordering
-        assert gate.operation.operator == SparsePauliOp.from_list([("ZYX", 1.5)])
+@requires_qiskit
+@pytest.mark.qiskit
+class TestToQiskitCircuit:
+    @parametrize_with_cases("circuit, num_qubits, expected", cases=ToQiskitCircuitCases)
+    def test_to_qiskit_circuit(self, circuit, num_qubits, expected):
+        converted = to_qiskit_circuit(circuit, num_qubits)
+        assert expected == converted
 
 
 class QiskitCircuitsCases:
