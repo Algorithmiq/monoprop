@@ -143,6 +143,56 @@ class TestMajoranaOperator:
 
         assert expected_terms == terms
 
+    @pytest.mark.parametrize(
+        ("left", "right", "expected"),
+        [
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0j, (1,): 0.5}, num_modes=2),
+                MajoranaOperator({(0, 1): 1.0j, (1,): 0.5}, num_modes=2),
+                True,
+                id="same",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+                MajoranaOperator({(0, 1): 1.0 + 1e-9}, num_modes=2),
+                True,
+                id="within_atol",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+                MajoranaOperator({(0, 1): 1.1}, num_modes=2),
+                False,
+                id="outside_atol",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1e-16}, num_modes=2),
+                MajoranaOperator({}, num_modes=2),
+                True,
+                id="negligible_vs_missing",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+                MajoranaOperator({(0, 2): 1.0}, num_modes=2),
+                False,
+                id="different_strings",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0, (1, 2): 0.5}, num_modes=2),
+                MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+                False,
+                id="different_num_terms",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+                MajoranaOperator({(0, 1): 1.0}, num_modes=3),
+                False,
+                id="different_num_qubits",
+            ),
+        ],
+    )
+    def test_is_closely_equal(self, left, right, expected):
+        assert left.isclose(right) is expected
+
 
 def _number_op(mode: int = 0, num_modes: int = 1) -> FermiOperator:
     """The number operator n = c^+ c on ``mode``: a valid fermionic generator."""

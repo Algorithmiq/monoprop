@@ -221,8 +221,8 @@ class TestPauliOperator:
                 id="different_num_terms",
             ),
             pytest.param(
-                PauliOperator({"X": 1.0}, num_qubits=1),
                 PauliOperator({"XY": 1.0}, num_qubits=2),
+                PauliOperator({"XYI": 1.0}, num_qubits=3),
                 False,
                 id="different_num_qubits",
             ),
