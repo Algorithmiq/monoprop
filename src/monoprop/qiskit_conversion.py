@@ -167,13 +167,13 @@ def from_qiskit_circuit(
 def _extend_generator_minimally(
     generator: PauliOperator,
 ) -> tuple[dict[str, float], list[int]]:
-    qubits = sorted(set.union(*(set(p.qubits) for p in generator.terms)))
+    qubits = sorted({q for p in generator.terms for q in p.qubits})
     localizing_qubit_map = {q: i for i, q in enumerate(qubits)}
     result = {}
     for pauli, coeff in generator.terms.items():
         default_term = ["I"] * len(qubits)
         for p, q in zip(pauli.string, pauli.qubits):
-            default_term[int(localizing_qubit_map[q])] = p
+            default_term[localizing_qubit_map[q]] = p
         result["".join(default_term)] = coeff
 
     return result, qubits
