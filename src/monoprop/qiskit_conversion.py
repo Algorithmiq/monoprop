@@ -127,6 +127,11 @@ def from_qiskit_circuit(
     Returns:
         A :class:`~monoprop.circuit.Circuit` representing the given circuit.
     """
+    if len(circuit.qregs) != 1:
+        raise ValueError(
+            f"from_qiskit_circuit only supports a single quantum register; got {len(circuit.qregs)}."
+        )
+
     gates: list[ExpGate] = []
     parameters: list[float] = []
     qregs = circuit.qregs[0]

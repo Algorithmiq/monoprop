@@ -24,6 +24,7 @@ from pytest_cases import case, parametrize_with_cases
 
 try:
     from qiskit import QuantumCircuit
+    from qiskit.circuit import QuantumRegister
     from qiskit.circuit.library import PauliEvolutionGate
     from qiskit.quantum_info import SparsePauliOp
 
@@ -339,3 +340,18 @@ def test_from_to_qiskit_circuit_roundtrip() -> None:
     assert circuit.gates[0].generator.isclose(
         circuit_test.gates[0].generator, atol=0.0, rtol=0.0
     )
+
+
+@requires_qiskit
+@pytest.mark.qiskit    
+def test_from_qiskit_circuit_rejects_multiple_registers() -> None:
+    """from_qiskit_circuit on a circuit with multiple registers raises a clear error."""
+    qreg1 = QuantumRegister(1)
+    qreg2 = QuantumRegister(1)
+    circuit = QuantumCircuit(qreg1, qreg2)
+
+    with pytest.raises(
+        ValueError,
+        match=r"from_qiskit_circuit only supports a single quantum register; got 2.",
+    ):
+        from_qiskit_circuit(circuit, [0, 1])
