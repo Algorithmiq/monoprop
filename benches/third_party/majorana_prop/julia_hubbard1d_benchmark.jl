@@ -9,7 +9,7 @@ function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_l
     min_abs_coeff = 1.e-8
     max_unpaired = 10
 
-    obs = MajoranaSum(N_spinful_sites, :nup, site_index)
+    obs = VectorMajoranaSum(MajoranaSum(N_spinful_sites, :nup, site_index))
 
     res = zeros(n_layers + 1)
     res[1] = overlapwithfock(obs, fock_state)
@@ -90,6 +90,8 @@ function main(args)
 
     # Warm-up run to trigger JIT compilation before timing
     experiment(N_spinful_sites, fock_state, circ_single, thetas_single, 1)
+
+    println("Number of threads: $(Threads.nthreads())")
 
     res, obs_length, loop_elapsed = experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
     final_res = res[end]

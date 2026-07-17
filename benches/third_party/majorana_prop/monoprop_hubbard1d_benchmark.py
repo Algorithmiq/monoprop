@@ -171,6 +171,8 @@ def main():
 
     # rss0 = proc.memory_info().rss
 
+    print(f"monoprop_NUM_THREADS: {os.environ.get('monoprop_NUM_THREADS', 'not set')}")
+
     print(
         f"{n_spinful_sites} n_sites {n_layers} layers {simulator.size()} num_terms {values[-1]:.6f} final overlap {t_total:.6f} seconds"
     )
