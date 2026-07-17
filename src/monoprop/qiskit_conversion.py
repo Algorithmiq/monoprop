@@ -28,7 +28,6 @@ except ImportError as e:
     ) from e
 
 from monoprop.circuit import Circuit, ExpGate
-from monoprop.conversion_utils import _extend_pauli_string
 from monoprop.pauli import Pauli, PauliOperator
 
 PAULI_EVOLUTION_EQUIVALENT = {
@@ -165,6 +164,21 @@ def from_qiskit_circuit(
     )
 
 
+def _extend_generator_minimally(
+    generator: PauliOperator,
+) -> tuple[dict[str, float], list[int]]:
+    qubits = sorted(set.union(*(set(p.qubits) for p in generator.terms)))
+    localizing_qubit_map = {q: i for i, q in enumerate(qubits)}
+    result = {}
+    for pauli, coeff in generator.terms.items():
+        default_term = ["I"] * len(qubits)
+        for p, q in zip(pauli.string, pauli.qubits):
+            default_term[int(localizing_qubit_map[q])] = p
+        result["".join(default_term)] = coeff
+
+    return result, qubits
+
+
 def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
     """Convert a :class:`~monoprop.circuit.Circuit` to a Qiskit circuit.
 
@@ -195,14 +209,11 @@ def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
                 "to_qiskit_circuit requires a qubit (Pauli) circuit; got a "
                 f"{circuit.family}-family gate."
             )
-        pauli_dict = {
-            _extend_pauli_string(pauli.string, pauli.qubits, num_qubits): coeff
-            for pauli, coeff in generator.terms.items()
-        }
+        pauli_dict, qubits = _extend_generator_minimally(generator)
         qiskit_circuit.append(
             PauliEvolutionGate(
                 to_qiskit_operator(pauli_dict), time=circuit.parameters[param_index]
             ),
-            range(num_qubits),
+            qubits,
         )
     return qiskit_circuit

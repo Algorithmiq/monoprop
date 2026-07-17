@@ -200,6 +200,28 @@ class TestToQiskitCircuit:
         assert result.data[0].operation.name == "PauliEvolution"
         assert result.data[0].operation.params[0] == pytest.approx(0.7)
 
+    def test_local_gate(self):
+        circuit = Circuit(
+            (ExpGate(PauliOperator({Pauli("ZXY", (3, 1, 2)): 1.5}, num_qubits=5)),),
+            parameters=(0.7,),
+            initial_state=(),
+        )
+
+        result = to_qiskit_circuit(circuit, 5)
+
+        assert isinstance(result, QuantumCircuit)
+
+        qreg = result.qregs[0]
+        assert result.num_qubits == 5
+        assert len(result.data) == 1
+        gate = result.data[0]
+        assert gate.operation.name == "PauliEvolution"
+        indices = tuple(qreg.index(qb) for qb in gate.qubits)
+        assert indices == (1, 2, 3)  # sorted order of qubits
+        assert gate.operation.time == 0.7
+        # reversed because of qiskit ordering
+        assert gate.operation.operator == SparsePauliOp.from_list([("ZYX", 1.5)])
+
 
 class QiskitCircuitsCases:
     @case(id="single_pauli_evolution_gate")
