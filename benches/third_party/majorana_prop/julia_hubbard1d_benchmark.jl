@@ -1,6 +1,7 @@
 using MajoranaPropagation
 using BenchmarkTools
 using ArgParse
+using JSON
 
 
 function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
@@ -24,6 +25,22 @@ function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_l
 
 end
 
+"""Append one benchmark result as a JSON line, creating the parent directory if needed."""
+function save_result(output_path, N_spinful_sites, n_layers, obs_length, final_res, loop_elapsed)
+    mkpath(dirname(output_path))
+    record = Dict(
+        "n_spinful_sites" => N_spinful_sites,
+        "n_layers" => n_layers,
+        "num_terms" => obs_length,
+        "final_overlap" => final_res,
+        "runtime_seconds" => loop_elapsed,
+    )
+    open(output_path, "a") do io
+        JSON.print(io, record)
+        println(io)
+    end
+end
+
 
 function main(args)
     # initialize the settings (the description is for the help screen)
@@ -34,14 +51,11 @@ function main(args)
         help = "Case pair to run."
         arg_type = Int
         default = 1
-        # "--num-sites", "-n"
-        # help = "Number of spinful sites in the 1D Hubbard model"
-        # arg_type = Int
-        # default = 30
-        # "--num-layers", "-l"
-        # help = "Number of layers in the bricklayer circuit"
-        # arg_type = Int
-        # default = 10
+        "--output", "-o"
+        help = "Path to the JSONL file results are appended to."
+        arg_type = String
+        default = joinpath(@__DIR__, "julia_hubbard1d_benchmark_results.jsonl")
+
     end
 
     parsed_args = parse_args(s) # the result is a Dict{String,Any}
@@ -96,6 +110,8 @@ function main(args)
     res, obs_length, loop_elapsed = experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
     final_res = res[end]
     println("$N_spinful_sites n_spin $n_layers layers $obs_length num_terms $final_res final overlap $loop_elapsed seconds")
+
+    save_result(parsed_args["output"], N_spinful_sites, n_layers, obs_length, final_res, loop_elapsed)
 
 end
 

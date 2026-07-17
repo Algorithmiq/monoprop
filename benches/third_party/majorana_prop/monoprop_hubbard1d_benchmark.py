@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+from pathlib import Path
 
 # import tracemalloc
 from time import perf_counter
@@ -103,15 +105,24 @@ def number_operator_majorana(site, spin, num_qubits):
     )
 
 
+def save_result(output_path, record):
+    """Append one benchmark result as a JSON line, creating the parent directory if needed."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("a") as f:
+        f.write(json.dumps(record) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark for 1D Hubbard model")
     parser.add_argument("--case", "-c", help="Case pair to run.", type=int, default=0)
-    # parser.add_argument(
-    #     "--num-layers",
-    #     type=int,
-    #     default=10,
-    #     help="Number of layers in the ansatz",
-    # )
+    parser.add_argument(
+        "--output",
+        "-o",
+        help="Path to the JSONL file results are appended to.",
+        default=Path(__file__).with_name("monoprop_hubbard1d_benchmark_results.jsonl"),
+    )
+
     args = parser.parse_args()
 
     spin_layer_cases = []
@@ -170,11 +181,20 @@ def main():
     t_total = perf_counter() - t_start
 
     # rss0 = proc.memory_info().rss
-
-    print(f"monoprop_NUM_THREADS: {os.environ.get('monoprop_NUM_THREADS', 'not set')}")
-
     print(
-        f"{n_spinful_sites} n_sites {n_layers} layers {simulator.size()} num_terms {values[-1]:.6f} final overlap {t_total:.6f} seconds"
+        f"{n_spinful_sites} spinful sites, {n_layers} layers, {trotter_steps} Trotter steps, runtime {t_total:.3f} seconds"
+    )
+    save_result(
+        args.output,
+        {
+            "n_spinful_sites": n_spinful_sites,
+            "n_layers": n_layers,
+            "trotter_steps": trotter_steps,
+            "num_threads": os.environ.get("monoprop_NUM_THREADS", "not set"),
+            "runtime_seconds": t_total,
+            "expectation_values": values.tolist(),
+            "term_counts": term_counts.tolist(),
+        },
     )
 
 
