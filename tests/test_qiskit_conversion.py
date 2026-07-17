@@ -343,7 +343,7 @@ def test_from_to_qiskit_circuit_roundtrip() -> None:
 
 
 @requires_qiskit
-@pytest.mark.qiskit    
+@pytest.mark.qiskit
 def test_from_qiskit_circuit_rejects_multiple_registers() -> None:
     """from_qiskit_circuit on a circuit with multiple registers raises a clear error."""
     qreg1 = QuantumRegister(1)
