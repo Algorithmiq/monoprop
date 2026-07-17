@@ -203,6 +203,12 @@ class TestPauliOperator:
                 id="outside_atol",
             ),
             pytest.param(
+                PauliOperator({"XX": 1e-16}, num_qubits=2),
+                PauliOperator({}, num_qubits=2),
+                True,
+                id="negligible_vs_missing",
+            ),
+            pytest.param(
                 PauliOperator({"XY": 1.0}, num_qubits=2),
                 PauliOperator({"XZ": 1.0}, num_qubits=2),
                 False,

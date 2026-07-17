@@ -196,14 +196,16 @@ class PauliOperator:
             raise TypeError(
                 f"Cannot compare PauliOperator with {type(other).__name__}."
             )
-        if (
-            self.num_qubits != other.num_qubits
-            or self.terms.keys() != other.terms.keys()
-        ):
+        if self.num_qubits != other.num_qubits:
             return False
         return all(
-            np.isclose(coef, other.terms[pauli], rtol=rtol, atol=atol)
-            for pauli, coef in self.terms.items()
+            np.isclose(
+                self.terms.get(pauli, 0.0),
+                other.terms.get(pauli, 0.0),
+                rtol=rtol,
+                atol=atol,
+            )
+            for pauli in self.terms | other.terms
         )
 
     def get_majorana_operator(self) -> MajoranaOperator:
