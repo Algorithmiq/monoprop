@@ -318,3 +318,23 @@ def test_to_qiskit_circuit_rejects_unbound() -> None:
     )  # no parameter values
     with pytest.raises(ValueError, match="bound circuit"):
         to_qiskit_circuit(circuit, num_qubits=1)
+
+
+@requires_qiskit
+@pytest.mark.qiskit
+def test_from_to_qiskit_circuit_roundtrip() -> None:
+    """Since in both to and from qiskit operator there are some qubit rewiring,
+    this test makes sure algebraically the operators represent the same matrix.
+
+    The test compares the first and final form on the monoprop side, since it is uniquely
+    representing circuits.
+    """
+    circuit = Circuit(
+        gates=(ExpGate(PauliOperator({Pauli("XYZ", (3, 1, 2)): 1.0}, num_qubits=4)),),
+        parameters=[-1.2],
+    )  # no parameter values
+    qcirc = to_qiskit_circuit(circuit, num_qubits=4)
+    circuit_test = from_qiskit_circuit(qcirc, initial_state=[])
+    assert circuit.gates[0].generator.isclose(
+        circuit_test.gates[0].generator, atol=0.0, rtol=0.0
+    )
