@@ -140,7 +140,7 @@ class PauliOperator:
         self.num_qubits = num_qubits
         if num_qubits is not None:
             for pauli in self.terms:
-                if pauli.qubits and max(pauli.qubits) >= num_qubits:
+                if pauli.qubits and pauli.qubits[-1] >= num_qubits:
                     raise ValueError(
                         f"Pauli term {pauli} acts on a qubit index >= num_qubits="
                         f"{num_qubits}."
