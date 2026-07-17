@@ -211,12 +211,11 @@ class TestToQiskitCircuit:
 
         assert isinstance(result, QuantumCircuit)
 
-        qreg = result.qregs[0]
         assert result.num_qubits == 5
         assert len(result.data) == 1
         gate = result.data[0]
         assert gate.operation.name == "PauliEvolution"
-        indices = tuple(qreg.index(qb) for qb in gate.qubits)
+        indices = tuple(result.qregs[0].index(qb) for qb in gate.qubits)
         assert indices == (1, 2, 3)  # sorted order of qubits
         assert gate.operation.time == 0.7
         # reversed because of qiskit ordering
