@@ -67,23 +67,37 @@ function convertSphinxMarkup(content) {
 }
 
 /**
- * Ensure proper formatting of docstring field blocks (Returns, Args, etc.)
- * to prevent truncation of multi-line descriptions in the rendered output.
+ * fumadocs-python renders only the first line of a docstring section item's
+ * description (Returns, Args, Raises, …). Collapse each item's description to
+ * a single line in the griffe JSON *before* passing it to `convert()` so the
+ * full text survives.
  */
-function improveDocstringFormatting(content) {
-  // Fumadocs-python uses <Callout> or similar components for docstring sections.
-  // Ensure multi-line field descriptions are wrapped to preserve formatting.
-  // This regex looks for field blocks and ensures they're properly structured.
+function normalizeDocstringDescriptions(node) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (const item of node) normalizeDocstringDescriptions(item);
+    return;
+  }
 
-  // The main issue is that some markdown renderers might truncate text in field blocks.
-  // Since we can't modify fumadocs-python's output directly, we ensure the content
-  // is properly escaped and formatted for MDX.
+  // Collapse multi-line item descriptions inside parsed docstring sections.
+  if (Array.isArray(node.docstring?.parsed)) {
+    for (const section of node.docstring.parsed) {
+      if (Array.isArray(section.value)) {
+        for (const item of section.value) {
+          if (typeof item.description === 'string') {
+            item.description = item.description.replace(/\n\s*/g, ' ').trim();
+          }
+        }
+      }
+    }
+  }
 
-  // Escape any unescaped backticks that might cause MDX issues
-  // but preserve code blocks and inline code within the content.
-  // This is a minimal fix to prevent common rendering issues.
-
-  return content;
+  // Recurse into classes, functions, and submodules.
+  for (const key of ['classes', 'functions', 'modules']) {
+    if (node[key] && typeof node[key] === 'object') {
+      for (const child of Object.values(node[key])) normalizeDocstringDescriptions(child);
+    }
+  }
 }
 
 async function main() {
@@ -96,14 +110,16 @@ async function main() {
   pkg.attributes = []; // drop the package-level __all__ dump
   pruneModule(pkg);
 
+  // Collapse wrapped descriptions in Returns/Args/… sections before convert()
+  // sees the JSON, so fumadocs-python renders the full text instead of only the
+  // first line of each item.
+  normalizeDocstringDescriptions(pkg);
+
   const files = convert(pkg, { baseUrl: BASE_URL });
 
   for (const file of files) {
     // Convert Sphinx-style markup to markdown before other processing
     file.content = convertSphinxMarkup(file.content);
-
-    // Improve docstring formatting for multi-line descriptions
-    file.content = improveDocstringFormatting(file.content);
 
     // `convert` keeps the package name ("monoprop") in hrefs, but `write`
     // strips that leading segment from file paths. Realign the links.
