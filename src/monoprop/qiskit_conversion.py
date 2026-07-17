@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from monoprop.conversion_utils import _extend_pauli_string
+
 try:
     from qiskit import QuantumCircuit
     from qiskit.circuit.library import PauliEvolutionGate
@@ -166,15 +168,17 @@ def from_qiskit_circuit(
 
 def _extend_generator_minimally(
     generator: PauliOperator,
-) -> tuple[dict[str, float], list[int]]:
+) -> tuple[dict[str, complex], list[int]]:
     qubits = sorted({q for p in generator.terms for q in p.qubits})
     localizing_qubit_map = {q: i for i, q in enumerate(qubits)}
-    result = {}
-    for pauli, coeff in generator.terms.items():
-        default_term = ["I"] * len(qubits)
-        for p, q in zip(pauli.string, pauli.qubits):
-            default_term[localizing_qubit_map[q]] = p
-        result["".join(default_term)] = coeff
+    result = {
+        _extend_pauli_string(
+            "".join(pauli.string),
+            [localizing_qubit_map[q] for q in pauli.qubits],
+            len(qubits),
+        ): coeff
+        for pauli, coeff in generator.terms.items()
+    }
 
     return result, qubits
 
