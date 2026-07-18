@@ -60,15 +60,13 @@ endmacro()
 
 option_with_default(monoprop_MAX_NUM_MODES "Maximum number of simulable Fermionic modes with Python bindings" 250)
 option_with_print(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
-
-find_package(TBB REQUIRED)
-if(TARGET TBB::tbb)
-  get_target_property(TBB_LOCATION TBB::tbb LOCATION)
-  message(
-    STATUS
-    "Found TBB: ${TBB_LOCATION} (found version \"${TBB_VERSION}\")"
-  )
+option_with_print(monoprop_WIDE_TERM_INDEX "Use 64-bit term indices (support > 2^32 local terms)" OFF)
+if(monoprop_WIDE_TERM_INDEX)
+  add_compile_definitions(monoprop_WIDE_TERM_INDEX)
 endif()
+
+# The in-repo thread pool (src/monoprop/Threading.cpp) uses std::thread.
+find_package(Threads REQUIRED)
 
 if(monoprop_ENABLE_MPI)
   find_package(MPI REQUIRED COMPONENTS CXX)

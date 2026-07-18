@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include <cstddef>
 #include <format>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -26,13 +28,13 @@
 namespace monoprop {
 
 /**
- * @brief Class for storing and manipulating the Monomial Propagator graph.
+ * @brief Ordered per-rank record of the evolution circuit, one Layer per gate.
  *
- * This class represents the graph for a single rank. Each layer contains:
- * - Cosine indices (local)
- * - Local cycles (both indices on this rank)
- * - Outgoing sources (source indices to send to each target rank)
- * - Incoming targets (target indices to update from each source rank)
+ * Represents the graph for a single rank. Each Layer holds a shared, immutable LayerCore — the
+ * generator words, the anticommuting cosine count, and the cross-rank exchange layout / packed
+ * partner storage used by the distributed apply — plus an optional pruned cosine word list. The
+ * per-layer cosine set is not stored: replay recomputes it from the operator's inverted index
+ * (truncated to scaled_count), except on pruned layers, which carry the filtered word list directly.
  */
 class monoprop_EXPORT MPGraph {
 private:
@@ -93,32 +95,22 @@ public:
           layers_(std::move(layers)) {}
 
     /**
-     * @brief Append a new layer to the graph with flattened cross-rank storage.
+     * @brief Append a new layer (shared immutable core) to the graph, recording its gate info.
      *
-     * @param cos_inds Cosine indices for this layer.
-     * @param local_cycles Local cycles (source, target, phase on this rank).
-     * @param cross_rank Cross-rank cycles indexed by remote rank.
+     * @param storage The layer's LayerCore. Gate info is written onto it here, while it is still
+     *   mutable, before it is frozen into the shared const core owned by the Layer.
+     * @param param_index Index into the variational parameter vector driving this layer's rotation.
+     * @param gen_coeff Generator coefficient g (angle = parameters[param_index] * g).
+     * @param gate_index Absolute index of the ingested gate this layer came from.
      */
-    auto append(VecZ cos_inds,
-                std::vector<LocalCycle> local_cycles,
-                std::vector<CrossRankCycles> cross_rank,
+    auto append(std::shared_ptr<LayerCore> storage,
                 size_t param_index = 0,
                 double gen_coeff = 0.0,
                 size_t gate_index = 0) -> void {
-        Layer layer(std::move(cos_inds), std::move(local_cycles), std::move(cross_rank));
-        layer.set_gate_info(param_index, gen_coeff, gate_index);
-        append_layer(std::move(layer));
-    }
-
-    auto append(CompressedCosineData cos_data,
-                std::vector<LocalCycle> local_cycles,
-                std::vector<CrossRankCycles> cross_rank,
-                size_t param_index = 0,
-                double gen_coeff = 0.0,
-                size_t gate_index = 0) -> void {
-        Layer layer(std::move(cos_data), std::move(local_cycles), std::move(cross_rank));
-        layer.set_gate_info(param_index, gen_coeff, gate_index);
-        append_layer(std::move(layer));
+        storage->param_index = param_index;
+        storage->gen_coeff = gen_coeff;
+        storage->gate_index = gate_index;
+        append_layer(Layer(std::move(storage)));
     }
 
     /**
@@ -130,8 +122,10 @@ public:
      */
     auto slice_graph(size_t key, bool contract = false) -> MPGraph;
 
+    // Non-owning view of the first `key` layers; shares layer cores, copies nothing.
     auto slice_view(size_t key) const -> MPGraphView;
 
+    // Drop the first `key` layers in place (advances the active-layer front offset).
     auto consume_prefix(size_t key) -> void;
 
     /**
@@ -162,6 +156,18 @@ public:
     auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
 
     /**
+     * @brief Non-owning replay view over the active layers, in build order.
+     *
+     * Reproduces get_layer(i) indexing exactly (window [front_offset_, end), no reversal). This is the
+     * single replay-facing handle: every forward/reverse replay consumer takes an MPGraphView, so a
+     * whole graph and its slices funnel through one type instead of duplicating each entry point for
+     * MPGraph and MPGraphView. Non-owning — this graph must outlive the returned view.
+     */
+    auto replay_view() const -> MPGraphView {
+        return MPGraphView(layers_, active_begin_index(), layers(), false);
+    }
+
+    /**
      * @brief Check if the graph is in Schrodinger picture.
      *
      * @return True if the graph is in Schrodinger picture, false otherwise.
@@ -184,17 +190,16 @@ struct formatter<monoprop::Layer> {
     constexpr auto parse(format_parse_context &ctx) { return ctx.begin(); }
     template <typename FormatContext>
     auto format(const monoprop::Layer &layer, FormatContext &ctx) const {
-        size_t outgoing_count = 0, incoming_count = 0;
+        size_t sin_send_count = 0, sin_recv_count = 0;
         for (size_t rank = 0; rank < layer.cross_rank_rank_count(); ++rank) {
-            outgoing_count += layer.cross_rank_out_size(rank);
-            incoming_count += layer.cross_rank_in_size(rank);
+            sin_send_count += layer.cross_rank_sin_send_size(rank);
+            sin_recv_count += layer.cross_rank_sin_recv_size(rank);
         }
         return std::format_to(ctx.out(),
-                              "Layer{{cos_inds={}, local={}, outgoing={}, incoming={}}}",
+                              "Layer{{cos_inds={}, sin_send={}, sin_recv={}}}",
                               layer.num_cos_inds(),
-                              layer.local_cycle_count(),
-                              outgoing_count,
-                              incoming_count);
+                              sin_send_count,
+                              sin_recv_count);
     }
 };
 } // namespace std

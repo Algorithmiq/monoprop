@@ -14,18 +14,16 @@
 
 #pragma once
 
-#include <tbb/blocked_range.h>
-#include <tbb/combinable.h>
-#include <tbb/parallel_for.h>
-
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <complex>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
+#include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 
@@ -48,6 +46,7 @@ auto hermitian_coefficient(const MajoranaSet<NumModes> &maj) -> std::complex<dou
 
 /**
  * @brief Check if a Majorana operator (represented by indices) is antihermitian
+ * @note Test-support only (tests/cpp/mpfunctions.cpp); not called by the shipped library.
  */
 inline auto is_antihermitian(const VecZ &indices) -> bool {
     // Check if the number of Majorana operators is odd/even
@@ -56,6 +55,7 @@ inline auto is_antihermitian(const VecZ &indices) -> bool {
 
 /**
  * @brief Get the generator correction for a Majorana product represented by indices.
+ * @note Test-support only (tests/cpp/mpfunctions.cpp); not called by the shipped library.
  */
 inline auto antihermitian_generator_correction(const VecZ &indices) -> std::complex<double> {
     return POWERS_OF_I[(n_choose_2(indices.size()) + 1) % 4];
@@ -68,7 +68,7 @@ template <size_t NumModes>
 auto indices_to_bitset(const VecZ &arr) -> MajoranaSet<NumModes> {
     MajoranaSet<NumModes> bs;
     for (const auto &bit_loc : arr) {
-        bs.set(2 * NumModes - 1 - bit_loc);
+        bs.set(2 * NumModes - 1 - bit_loc); // MSb0 index convention: index 0 maps to the top bit
     }
     return bs;
 }
@@ -90,6 +90,7 @@ auto bitset_to_indices(const MajoranaSet<NumModes> &bs) -> VecZ {
 
 /**
  * @brief Converts a fermionic operator from index representation to binary (bitset) representation
+ * @note Test-support only (tests/cpp/mpfunctions.cpp); not called by the shipped library.
  */
 template <size_t NumModes>
 auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MajoranaVector<NumModes> {
@@ -103,6 +104,8 @@ auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MajoranaVector
  */
 template <size_t NumModes>
 auto is_paired(const MajoranaSet<NumModes> &maj, const MajoranaSet<NumModes> &even_mask) -> bool {
+    // Paired = each mode's two Majoranas (adjacent bits) are both set or both clear, i.e. the
+    // even bit and its odd partner agree for every mode.
     const auto even_bits_masked = maj & even_mask;
     const auto odd_bits_masked = (maj >> 1) & even_mask;
     return (even_bits_masked ^ odd_bits_masked).none();
@@ -125,8 +128,8 @@ auto is_paired(const VecZ &maj) -> bool {
 /**
  * @brief Checks if a collection of Majorana operators are fully paired
  */
-template <size_t NumModes>
-auto is_fully_paired(const VecZ &inds, const MajoranaVector<NumModes> &op) -> VecZ {
+template <size_t NumModes, typename Rows>
+auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     VecZ result;
     const auto mask = even_bits<2 * NumModes, LSb0>();
 
@@ -134,22 +137,30 @@ auto is_fully_paired(const VecZ &inds, const MajoranaVector<NumModes> &op) -> Ve
         return result;
     }
 
+    // Hits are staged per CHUNK and concatenated in chunk order, so the result preserves the input
+    // order of `inds` deterministically at any thread count (the former per-thread merge returned a
+    // scheduling-dependent order; every caller scatters through the returned indices, so only the SET
+    // was ever observable).
     constexpr size_t grain_size = 512;
-    tbb::combinable<VecZ> local_results;
+    const size_t n = inds.size();
+    const size_t chunks = (n + grain_size - 1) / grain_size;
+    std::vector<VecZ> parts(chunks);
+    threading::run_static(chunks, [&](size_t c) {
+        auto &local = parts[c];
+        const size_t lo = c * grain_size;
+        const size_t hi = std::min(n, lo + grain_size);
+        for (size_t i = lo; i < hi; ++i) {
+            const auto index = inds[i];
+            const auto &op_row = materialize_row<NumModes>(op, index);
+            if (is_paired<NumModes>(op_row, mask)) {
+                local.push_back(index);
+            }
+        }
+    });
 
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, inds.size(), grain_size),
-                      [&local_results, &op, &mask, &inds](const tbb::blocked_range<size_t> &range) {
-                          auto &local = local_results.local();
-                          for (size_t i = range.begin(); i < range.end(); ++i) {
-                              const auto index = inds[i];
-                              if (is_paired<NumModes>(op[index], mask)) {
-                                  local.push_back(index);
-                              }
-                          }
-                      });
-
-    local_results.combine_each(
-        [&result](const VecZ &local) { result.insert(result.end(), local.begin(), local.end()); });
+    for (const auto &local : parts) {
+        result.insert(result.end(), local.begin(), local.end());
+    }
 
     return result;
 }
@@ -179,21 +190,22 @@ auto hf_phase(const MajoranaSet<NumModes> &maj, const MajoranaSet<NumModes> &hf_
 /**
  * @brief Calculates phases for paired Majorana operators with respect to a Hartree-Fock state
  */
-template <size_t NumModes>
-auto get_hf_phases(const VecZ &paired_inds, const VecZ &hf, const MajoranaVector<NumModes> &op) -> VecD {
+template <size_t NumModes, typename Rows>
+auto get_hf_phases(const VecZ &paired_inds, const VecZ &hf, const Rows &op) -> VecD {
     const auto hf_mask = get_hf_mask<NumModes>(hf);
     const auto size = paired_inds.size();
     auto result = std::vector(size, 0.0);
 
     if (size > 0) {
         constexpr size_t grain_size = 512;
-        tbb::parallel_for(tbb::blocked_range<size_t>(0, size, grain_size),
-                          [&paired_inds, &result, &hf_mask, &op](const tbb::blocked_range<size_t> &range) {
-                              for (size_t idx = range.begin(); idx < range.end(); ++idx) {
-                                  const auto op_idx = paired_inds[idx];
-                                  result[idx] = hf_phase<NumModes>(op[op_idx], hf_mask);
-                              }
-                          });
+        threading::parallel_for_indices(
+            size,
+            [&paired_inds, &result, &hf_mask, &op](size_t idx) {
+                const auto op_idx = paired_inds[idx];
+                const auto &op_row = materialize_row<NumModes>(op, op_idx);
+                result[idx] = hf_phase<NumModes>(op_row, hf_mask);
+            },
+            grain_size);
     }
     return result;
 }
@@ -213,7 +225,8 @@ auto get_hf_phases(const VecZ &paired_inds, const VecZ &hf, const MajoranaVector
  * discarding them would discard signal regardless of their length.
  */
 template <size_t NumModes>
-auto length_cutoff(const MajoranaSet<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes) -> bool {
+auto length_cutoff(const MajoranaSet<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes)
+    -> bool {
     const size_t inactive_mode_prefix = NumModes - logical_num_modes;
     const size_t active_bit_offset = 2 * inactive_mode_prefix;
 
@@ -323,6 +336,12 @@ public:
           length_cutoff_(cutoff_fn.template target<LengthCutoff<NumModes>>()),
           support_cutoff_(cutoff_fn.template target<SupportCutoff<NumModes>>()) {}
 
+    auto length_cutoff() const -> const LengthCutoff<NumModes> * {
+        return length_cutoff_;
+    }
+
+    auto support_cutoff() const -> const SupportCutoff<NumModes> * { return support_cutoff_; }
+
     auto operator()(const MajoranaSet<NumModes> &maj) const -> bool {
         if (length_cutoff_ != nullptr) {
             return (*length_cutoff_)(maj);
@@ -331,6 +350,42 @@ public:
             return (*support_cutoff_)(maj);
         }
         return cutoff_fn_(maj);
+    }
+
+    // Fast path: caller already knows popcount(maj). For length_pairing and mode cutoffs
+    // the predicate is `xor_sum == 0 || (popcount or or_sum) <= cutoff`; if the popcount
+    // alone is already <= cutoff we can return true without touching the bitset.
+    // For support_cutoff, or_sum <= popcount_sum so the same shortcut is safe.
+    auto passes_with_popcount(const MajoranaSet<NumModes> &maj, size_t popcount_sum) const -> bool {
+        if (length_cutoff_ != nullptr) {
+            if (popcount_sum <= length_cutoff_->cutoff) {
+                return true;
+            }
+            return (*length_cutoff_)(maj);
+        }
+        if (support_cutoff_ != nullptr) {
+            if (popcount_sum <= support_cutoff_->cutoff) {
+                return true;
+            }
+            return (*support_cutoff_)(maj);
+        }
+        return cutoff_fn_(maj);
+    }
+
+    // Upper bound on the number of Majorana positions a surviving term can carry, when the
+    // cutoff is one of the structural kinds whose predicate fails once popcount exceeds the
+    // cutoff (length-pairing-distance, mode). For an arbitrary user-supplied cutoff_fn no such
+    // bound exists and this returns std::nullopt. This is the same threshold passes_with_popcount
+    // short-circuits on; it lets the operator store size its packed inline rows from the cutoff
+    // instead of always reserving the maximum width.
+    auto max_positions_bound() const -> std::optional<size_t> {
+        if (length_cutoff_ != nullptr) {
+            return length_cutoff_->cutoff;
+        }
+        if (support_cutoff_ != nullptr) {
+            return support_cutoff_->cutoff;
+        }
+        return std::nullopt;
     }
 
 private:
@@ -343,6 +398,11 @@ private:
 
 /**
  * @brief Computes the ordering sign of the Majorana product maj * gen.
+ *
+ * Reference implementation. The build hot path does NOT call this per term: it precomputes the
+ * fixed-per-layer interleave mask W once and evaluates the identical sign as `maj.parity_and(W)`
+ * (see interleave_phase_mask + its use in Scan.h). Keep this as the branch-clear spec that the mask
+ * form is proven against; don't reintroduce it into the per-term scan.
  *
  * For each set bit in @p gen, the sign flips once for each set bit in @p maj
  * at strictly lower bit positions. The returned value is therefore
@@ -378,12 +438,37 @@ auto interleave_phase(const MajoranaSet<NumModes> &maj_bs, const MajoranaSet<Num
         }
 
         const uint64_t prefix_xor = prefix_xor_64(maj_word);
+        // Strict-lower-position parity: shift left by 1 to exclude the bit itself, fold in carry
+        // (-carry broadcasts the previous words' parity to all 64 bits).
         const uint64_t running_parity = (prefix_xor << 1) ^ (-carry);
         parity ^= static_cast<size_t>(std::popcount(running_parity & gen_word));
         carry ^= prefix_xor >> 63;
     }
 
     return (parity & 1) == 0 ? 1 : -1;
+}
+
+/**
+ * @brief Per-generator mask W that collapses the per-term interleave sign to one masked parity.
+ *
+ * IDENTITY (exact): with x = #{(m∈M, g∈G) : m<g} = Σ_{g∈G} rank_M(g),
+ *   interleave_phase(M,G) = (−1)^x  and  x ≡ |{m∈M : w(m)}| (mod 2),  w(c) = #{g∈G : g>c} (mod 2).
+ * Hence interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : w(c) odd}, FIXED for the layer.
+ * Building W is O(2N); the per-term sign then costs one `maj.parity_and(W)` instead of the
+ * latency-bound prefix-XOR scan of interleave_phase(). w(c) is computed by sweeping c high→low,
+ * tracking #{g>c} (each generator bit at position c contributes to all strictly-lower columns).
+ */
+template <size_t NumModes>
+auto interleave_phase_mask(const MajoranaSet<NumModes> &gen) -> MajoranaSet<NumModes> {
+    MajoranaSet<NumModes> w;
+    size_t above = 0; // #{g∈G : g>c}, maintained as c descends
+    for (size_t c = MajoranaSet<NumModes>::size(); c-- > 0;) {
+        if ((above & 1U) != 0U) {
+            w.set(c);
+        }
+        above += gen.test(c) ? 1U : 0U;
+    }
+    return w;
 }
 
 inline auto hermitian_phase(size_t maj_count, size_t gen_count, size_t overlap) -> int {
@@ -395,6 +480,7 @@ inline auto hermitian_phase(size_t maj_count, size_t gen_count, size_t overlap) 
 
 /**
  * @brief Calculates the multiplicative phase factor for Majorana operator evolution
+ * @note Test-support only (tests/cpp/mpfunctions.cpp); not called by the shipped library.
  */
 template <size_t NumModes>
 auto get_multiplicative_phase(const MajoranaSet<NumModes> &maj,
@@ -403,13 +489,6 @@ auto get_multiplicative_phase(const MajoranaSet<NumModes> &maj,
                               size_t gen_count,
                               size_t overlap) -> int {
     return interleave_phase<NumModes>(maj, gen_maj) * hermitian_phase(maj_count, gen_count, overlap);
-}
-
-/**
- * @brief Determines if two Majorana operators anticommute
- */
-inline auto majs_anticommute(size_t m1_count, size_t m2_count, size_t overlap) -> bool {
-    return (m1_count * m2_count - overlap) % 2 == 1;
 }
 
 /**
@@ -483,7 +562,7 @@ auto change_basis(const MajoranaSet<NumModes> &maj, const MajoranaVector<NumMode
 
     size_t pos = maj.find_first();
     while (pos < maj.size()) {
-        new_maj ^= basis[2 * NumModes - pos - 1];
+        new_maj ^= materialize_row<NumModes>(basis, 2 * NumModes - pos - 1);
         pos = maj.find_next(pos);
     }
 

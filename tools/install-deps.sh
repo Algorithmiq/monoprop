@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # Script to install dependencies for monoprop project
-# Usage: ./install-deps.sh [install_prefix] [--skip-tbb] [--skip-boost-unordered] [--skip-boost-test] [--skip-msgpack] [--help]
+# Usage: ./install-deps.sh [install_prefix] [--skip-boost-unordered] [--skip-boost-test] [--skip-msgpack] [--help]
 
 show_help() {
     cat << EOF
@@ -11,17 +11,14 @@ Usage: $0 [INSTALL_PREFIX] [OPTIONS]
 
 Install C++ dependencies for monoprop project.
 
-This script can install Boost Unordered, Boost Test, TBB, and msgpack-cxx.
+This script can install Boost Unordered, Boost Test, and msgpack-cxx.
 Each component can be skipped with the corresponding option.
 The default installation prefix is /usr/local.
-
-On x86_64, the Intel distribution of TBB is installed. On aarch64, it is compiled from source.
 
 Arguments:
     INSTALL_PREFIX      Directory to install dependencies (default: /usr/local)
 
 Options:
-    --skip-tbb          Skip installing TBB
     --skip-boost-unordered  Skip installing Boost unordered
     --skip-boost-test   Skip installing Boost Test library (only install unordered)
     --skip-msgpack      Skip installing msgpack-cxx library
@@ -39,7 +36,6 @@ EOF
 # Default values
 DEFAULT_PREFIX="/usr/local"
 INSTALL_PREFIX="$DEFAULT_PREFIX"
-INSTALL_TBB=true
 INSTALL_BOOST_UNORDERED=true
 INSTALL_BOOST_TEST=true
 INSTALL_MSGPACK=true
@@ -47,10 +43,6 @@ INSTALL_MSGPACK=true
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --skip-tbb)
-            INSTALL_TBB=false
-            shift
-            ;;
         --skip-boost-unordered)
             INSTALL_BOOST_UNORDERED=false
             shift
@@ -87,7 +79,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "Installing C++ dependencies to: $INSTALL_PREFIX"
-echo "TBB: $([ "$INSTALL_TBB" = true ] && echo "YES" || echo "SKIP")"
 echo "Boost unordered: $([ "$INSTALL_BOOST_UNORDERED" = true ] && echo "YES" || echo "SKIP")"
 echo "Boost Test: $([ "$INSTALL_BOOST_TEST" = true ] && echo "YES" || echo "SKIP")"
 echo "msgpack-cxx: $([ "$INSTALL_MSGPACK" = true ] && echo "YES" || echo "SKIP")"
@@ -102,52 +93,6 @@ cleanup_build() {
     echo "Cleaning up $src_dir..."
     cd -
     rm -rf "$src_dir" build
-}
-
-install_tbb() {
-    if [ "$INSTALL_TBB" != true ]; then
-        echo "Skipping TBB installation"
-        return 0
-    fi
-
-    if [ "$(uname -m)" = "x86_64" ]; then
-        echo "x86_64: installing Intel TBB package"
-        if [[ "$ID" != "ubuntu" ]]; then
-            tee > /etc/yum.repos.d/oneAPI.repo << EOF
-[oneAPI]
-name=Intel® oneAPI repository
-baseurl=https://yum.repos.intel.com/oneapi
-enabled=1
-gpgcheck=1
-repo_gpgcheck=1
-gpgkey=https://yum.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
-EOF
-
-            dnf install -y intel-oneapi-tbb-devel hwloc
-        else
-            sudo apt-get -y install wget gpg-agent
-            wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
-            echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list > /dev/null
-            sudo apt-get update
-            sudo apt-get -y install intel-oneapi-tbb-devel hwloc
-            sudo apt-get -y remove gpg-agent wget
-        fi
-        return 0
-    fi
-
-    echo "aarch64: installing TBB from source"
-    local tbb_version="v2023.0.0"
-
-    echo "Installing TBB $tbb_version..."
-
-    git clone https://github.com/oneapi-src/oneTBB.git tbb_src --depth 1 -b "$tbb_version"
-    cmake -S tbb_src -B tbb_src/build \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DTBB_TEST=OFF \
-      -DTBB_STRICT=OFF \
-      -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX"
-    cmake --build tbb_src/build --target install --parallel
-    rm -rf tbb_src
 }
 
 install_boost() {
@@ -211,8 +156,6 @@ install_msgpack() {
 # check that we're running on Ubuntu
 . /etc/os-release
 echo "Detected OS: $PRETTY_NAME"
-install_tbb
-
 install_boost
 
 
@@ -226,7 +169,6 @@ echo "Make sure to set CMAKE_PREFIX_PATH=$INSTALL_PREFIX when building monoprop"
 # Show what was installed
 echo
 echo "Installed components:"
-[ "$INSTALL_TBB" = true ] && echo "  ✓ TBB" || echo "  ✗ TBB (skipped)"
 [ "$INSTALL_BOOST_UNORDERED" = true ] && echo "  ✓ Boost unordered" || echo "  ✗ Boost unordered (skipped)"
 [ "$INSTALL_BOOST_TEST" = true ] && echo "  ✓ Boost Test" || echo "  ✗ Boost Test (skipped)"
 [ "$INSTALL_MSGPACK" = true ] && echo "  ✓ msgpack-cxx" || echo "  ✗ msgpack-cxx (skipped)"

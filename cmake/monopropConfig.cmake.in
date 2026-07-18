@@ -22,7 +22,6 @@
 include(CMakeFindDependencyMacro)
 
 find_dependency(Boost 1.85 CONFIG REQUIRED)
-find_dependency(TBB REQUIRED)
 
 set(monoprop_ENABLE_MPI "@monoprop_ENABLE_MPI@")
 if(monoprop_ENABLE_MPI)
