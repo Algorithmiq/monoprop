@@ -157,7 +157,7 @@ overlap with the surviving observable.
 
 In variational workflows one must evaluate $f_L(\theta)$ and its gradient
 $\nabla f_L(\theta)$ repeatedly, across many parameter updates, so quick
-re-evaluation is essential. To this end the evolution paths of the monomials in
+re-evaluation is essential. To this end, the evolution paths of the monomials in
 $H$ through the circuit are recorded as a **surrogate graph**. Once built,
 the graph is replayed to compute $f_L(\theta)$ and $\nabla
 f_L(\theta)$ at new parameter values *without re-propagating* the monomials -
