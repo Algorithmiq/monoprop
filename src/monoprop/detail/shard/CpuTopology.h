@@ -14,30 +14,47 @@
 
 #pragma once
 
-#include <algorithm>
 #include <cstddef>
+#include <vector>
+
+#include "monoprop/detail/EnvConfig.h" // config::get().shard_pinning
+
+#if defined(__linux__)
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <pthread.h>
+#include <sched.h>
 #include <set>
 #include <sstream>
 #include <string>
-#include <vector>
-
-#if defined(__linux__)
-#include <pthread.h>
-#include <sched.h>
+#elif defined(__APPLE__)
+#include <sys/sysctl.h>
 #endif
 
 // CPU-topology helpers for shard placement. Phase-0 result: the best config is one single-threaded
 // shard per PHYSICAL CORE, and small shard counts should spread across L3 (CCX) domains so each shard
-// owns a distinct last-level cache. This header parses /sys to build that placement and pins a shard
-// master to its core. All functions degrade gracefully: on a non-Linux host or an unreadable /sys they
-// return an empty placement / no-op pin, and the caller simply runs the shards unpinned (still correct,
-// just without the locality win).
+// owns a distinct last-level cache.
+//
+// This is the ONE platform-specific file in the engine. The Linux fast path parses /sys to build that
+// placement and pins each shard master to its core (intersected with the process's allowed-CPU mask,
+// so a cgroup-restricted / partial Slurm allocation reports and pins only its own cores). Everything
+// else runs the portable fallback: no topology, no pinning — the shards run unpinned, still correct,
+// just without the locality win. macOS supplies an accurate physical-core COUNT (via sysctl) for the
+// shard-count policy even though it cannot pin threads.
 
 namespace monoprop::detail::shard {
 
-// ─── portable /sys parsing (compiles everywhere; returns empty off Linux) ────────
+/// One physical core: a representative hardware-thread id to pin to, and its L3-domain id.
+struct PhysicalCore {
+    int cpu = 0;       // representative hardware thread (an allowed SMT sibling of the core)
+    int l3_domain = 0; // index of the shared-L3 group this core belongs to
+};
+
+#if defined(__linux__)
+
+// On Linux a shard cpuset is a real affinity mask.
+using CpuSet = cpu_set_t;
 
 namespace topo_detail {
 
@@ -73,19 +90,36 @@ inline auto read_line(const std::string &path) -> std::string {
     return line;
 }
 
+/// The CPUs this process/thread is allowed to run on (the cgroup / cpuset the launcher gave us).
+/// Empty ⇒ the query failed; callers then treat every CPU as allowed.
+inline auto allowed_cpus() -> std::set<int> {
+    std::set<int> allowed;
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    if (sched_getaffinity(0, sizeof(mask), &mask) == 0) {
+        for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+            if (CPU_ISSET(cpu, &mask)) {
+                allowed.insert(cpu);
+            }
+        }
+    }
+    return allowed;
+}
+
 } // namespace topo_detail
 
-/// One physical core: a representative hardware-thread id to pin to, and its L3-domain id.
-struct PhysicalCore {
-    int cpu = 0;      // representative hardware thread (the core's first SMT sibling)
-    int l3_domain = 0; // index of the shared-L3 group this core belongs to
-};
-
-/// Enumerate physical cores (one entry per SMT sibling group), each tagged with its L3 domain.
+/// Enumerate physical cores (one entry per SMT sibling group) whose CPUs the process is allowed to
+/// use, each tagged with its L3 domain. A core is included iff at least one of its SMT siblings is in
+/// the allowed mask, and its representative cpu is the smallest allowed sibling — so a partial
+/// allocation yields exactly its own cores (never oversubscribing) and never pins outside the mask.
 /// Empty if /sys cannot be read.
 inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
+    const std::set<int> allowed = topo_detail::allowed_cpus();
+    const bool filter = !allowed.empty(); // no mask readable ⇒ accept every CPU
+    const auto is_allowed = [&](int cpu) { return !filter || allowed.contains(cpu); };
+
     std::vector<PhysicalCore> cores;
-    std::set<int> seen_cores;                 // representative cpu of each SMT group already taken
+    std::set<int> seen_cores;                 // sibling-group key (min sibling) already recorded
     std::vector<std::vector<int>> l3_members; // cpu-set per distinct L3 domain, in discovery order
 
     for (int cpu = 0;; ++cpu) {
@@ -95,32 +129,45 @@ inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
             break; // no more CPUs
         }
         const auto siblings = topo_detail::parse_cpulist(sib);
-        const int rep = siblings.empty() ? cpu : *std::min_element(siblings.begin(), siblings.end());
-        if (seen_cores.contains(rep)) {
+        const int group_key = siblings.empty() ? cpu : *std::min_element(siblings.begin(), siblings.end());
+        if (seen_cores.contains(group_key)) {
             continue; // already recorded this physical core via another sibling
         }
-        seen_cores.insert(rep);
+        seen_cores.insert(group_key);
+
+        // Pin target = smallest ALLOWED sibling; skip the core entirely if none of its siblings is ours.
+        int rep = -1;
+        if (siblings.empty()) {
+            rep = is_allowed(cpu) ? cpu : -1;
+        }
+        else {
+            for (int s : siblings) { // parse_cpulist yields ascending order
+                if (is_allowed(s)) {
+                    rep = s;
+                    break;
+                }
+            }
+        }
+        if (rep < 0) {
+            continue;
+        }
 
         const auto l3 = topo_detail::parse_cpulist(topo_detail::read_line(base + "/cache/index3/shared_cpu_list"));
         int domain = -1;
         for (size_t d = 0; d < l3_members.size(); ++d) {
-            if (std::find(l3_members[d].begin(), l3_members[d].end(), rep) != l3_members[d].end()) {
+            if (std::find(l3_members[d].begin(), l3_members[d].end(), group_key) != l3_members[d].end()) {
                 domain = static_cast<int>(d);
                 break;
             }
         }
         if (domain < 0) {
             domain = static_cast<int>(l3_members.size());
-            l3_members.push_back(l3.empty() ? std::vector<int>{rep} : l3);
+            l3_members.push_back(l3.empty() ? std::vector<int>{group_key} : l3);
         }
         cores.push_back(PhysicalCore{rep, domain});
     }
     return cores;
 }
-
-// ─── Linux-only pinning (stubbed to no-ops elsewhere) ────────────────────────────
-
-#if defined(__linux__)
 
 /// Build `n` shard cpusets, one physical core each. `group_index`/`group_count` place the shards of
 /// one MPI rank among `group_count` co-located ranks sharing this host (group_count == 1: the
@@ -135,13 +182,10 @@ inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
 ///     catastrophically.
 /// If the host cannot supply group_count*n distinct physical cores, pinning is disabled (empty
 /// vector ⇒ shards run unpinned; the OS spreads them — still correct, and better than doubling up).
-inline auto shard_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1) -> std::vector<cpu_set_t> {
+inline auto shard_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1) -> std::vector<CpuSet> {
     // monoprop_SHARD_PINNING=0/false/n disables pinning (shards then run unpinned — still correct).
-    if (const char *e = std::getenv("monoprop_SHARD_PINNING")) {
-        const char c = e[0];
-        if (c == '0' || c == 'f' || c == 'F' || c == 'n' || c == 'N') {
-            return {};
-        }
+    if (!config::get().shard_pinning) {
+        return {};
     }
     const auto cores = enumerate_physical_cores();
     if (cores.empty() || group_count * n > cores.size()) {
@@ -196,7 +240,7 @@ inline auto shard_cpusets(size_t n, size_t group_index = 0, size_t group_count =
         return {};
     }
 
-    std::vector<cpu_set_t> sets(n);
+    std::vector<CpuSet> sets(n);
     for (size_t i = 0; i < n; ++i) {
         CPU_ZERO(&sets[i]);
         CPU_SET(order[offset + i], &sets[i]);
@@ -206,19 +250,35 @@ inline auto shard_cpusets(size_t n, size_t group_index = 0, size_t group_count =
 
 /// Pin the calling thread to `set`. No-op-safe: a failing pthread call is ignored (correctness does
 /// not depend on pinning, only performance).
-inline auto pin_this_thread(const cpu_set_t &set) -> void {
-    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &set);
+inline auto pin_this_thread(const CpuSet &set) -> void {
+    pthread_setaffinity_np(pthread_self(), sizeof(CpuSet), &set);
 }
 
-#else // non-Linux: no topology, no pinning
+#else // ─── portable fallback: no topology, no pinning ───────────────────────────
 
-struct cpu_set_t_stub {};
-using cpu_set_t = cpu_set_t_stub;
-inline auto shard_cpusets(size_t /*n*/, size_t /*group_index*/ = 0, size_t /*group_count*/ = 1)
-    -> std::vector<cpu_set_t> {
+// A placeholder cpuset type so ShardGroup's member/signatures are platform-independent.
+struct CpuSet {};
+
+/// No /sys to parse. macOS reports its physical-core COUNT so the shard-count policy is accurate even
+/// though threads cannot be pinned; every other platform returns empty (⇒ the shard-count policy falls
+/// back to std::thread::hardware_concurrency()/2). All returned cores carry a placeholder cpu/domain —
+/// they are only counted, never pinned.
+inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
+#if defined(__APPLE__)
+    int n = 0;
+    size_t sz = sizeof(n);
+    if (sysctlbyname("hw.physicalcpu", &n, &sz, nullptr, 0) == 0 && n > 0) {
+        return std::vector<PhysicalCore>(static_cast<size_t>(n));
+    }
+#endif
     return {};
 }
-inline auto pin_this_thread(const cpu_set_t & /*set*/) -> void {}
+
+inline auto shard_cpusets(size_t /*n*/, size_t /*group_index*/ = 0, size_t /*group_count*/ = 1)
+    -> std::vector<CpuSet> {
+    return {};
+}
+inline auto pin_this_thread(const CpuSet & /*set*/) -> void {}
 
 #endif // __linux__
 

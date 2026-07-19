@@ -133,7 +133,8 @@ public:
 
 private:
     // Free-function wrapper so the header compiles on non-Linux (where shard_cpusets returns {}).
-    static auto topo_shard_cpusets(int n, int group_index, int group_count) -> std::vector<cpu_set_t> {
+    static auto topo_shard_cpusets(int n, int group_index, int group_count)
+        -> std::vector<monoprop::detail::shard::CpuSet> {
         return monoprop::detail::shard::shard_cpusets(
             static_cast<size_t>(n), static_cast<size_t>(group_index), static_cast<size_t>(group_count));
     }
@@ -243,7 +244,7 @@ private:
 #endif
     std::vector<std::unique_ptr<MonomialPropagator<NumModes>>> shards_;
     std::vector<std::exception_ptr> errs_;
-    std::vector<cpu_set_t> cpusets_;
+    std::vector<monoprop::detail::shard::CpuSet> cpusets_;
     std::vector<std::thread> masters_;
 
     // Job dispatch: the facade thread publishes one job and waits for all masters to complete it.
