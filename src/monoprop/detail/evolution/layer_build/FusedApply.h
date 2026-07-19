@@ -16,7 +16,6 @@
 
 #include <cmath>
 
-#include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"    // scale_cos_mask, CosMask
 #include "monoprop/detail/evolution/layer_build/Common.h" // FusedContract, RotationRec

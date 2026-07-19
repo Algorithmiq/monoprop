@@ -9,7 +9,6 @@ add_library(
   detail/pare/PareGraph.cpp
   MPGraph.cpp
   Profiling.cpp
-  Threading.cpp
   Utilities.cpp
   Validation.cpp
 )

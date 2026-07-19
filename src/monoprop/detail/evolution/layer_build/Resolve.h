@@ -23,7 +23,6 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
-#include "monoprop/detail/evolution/layer_build/Parallel.h"
 #include "monoprop/detail/operator/MPOperator.h"
 
 namespace monoprop::detail {

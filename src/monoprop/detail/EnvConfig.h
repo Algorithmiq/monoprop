@@ -20,8 +20,7 @@
 
 // Single home for all runtime environment configuration. Every `monoprop_*` env var the library reads
 // is parsed here, exactly once (function-local static in config::get()), and exposed as a field of
-// config::Settings. Callers keep their own named accessors (e.g. threading::get_env_threads)
-// and delegate to config::get() so behaviour is unchanged.
+// config::Settings. Callers read config::get() directly (e.g. resolve_shard_count_ reads num_threads).
 //
 // Dependency-free by design (only <cstdlib>): this header is pulled into low-level, hot-path headers
 // (e.g. cosine recompute), so it must not depend on the threading layer, MPI, or any monoprop type.

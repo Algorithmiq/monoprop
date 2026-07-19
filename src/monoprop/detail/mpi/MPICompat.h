@@ -35,7 +35,6 @@
 
 // These includes are here on purpose and should not be moved to the top
 #include "monoprop/detail/print_compat.h"
-#include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 
 namespace monoprop::mpi {
@@ -47,7 +46,6 @@ namespace monoprop::mpi {
  * @brief Initialize MPI environment. Should be called once at program start. Safe to call repeatedly.
  */
 inline auto init(int *argc = nullptr, char ***argv = nullptr) -> void {
-    monoprop::threading::init_from_env();
     auto initialized = 0;
     MPI_Initialized(&initialized);
     if (!initialized) {
@@ -118,9 +116,7 @@ struct datatype {
     }
 };
 #else
-inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr) -> void {
-    monoprop::threading::init_from_env();
-}
+inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr) -> void {}
 inline auto finalize() -> void {}
 #endif // monoprop_ENABLE_MPI
 

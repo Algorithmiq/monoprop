@@ -23,7 +23,6 @@
 #include <utility>
 #include <vector>
 
-#include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 
 namespace monoprop::detail {

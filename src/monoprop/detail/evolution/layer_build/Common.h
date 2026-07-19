@@ -67,10 +67,10 @@ struct PhasedEntry {
 // two descriptions can't drift.
 struct PartnerAcc {
     // Default-init storage: PhasedEntry is a trivial aggregate, so resize-then-overwrite paths skip
-    // the serial zero-fill (better parallel scaling) AND the parallel gather's std::copy lowers to
-    // memmove. Load-bearing: every such path fully overwrites [base, base+n) before any read (see
-    // resolve_incoming_queries / insert_deferred_self_misses / append_parts_in_order), so the skipped
-    // init is never observed. push_back/emplace are unaffected.
+    // the serial zero-fill AND the gather's std::copy lowers to memmove. Load-bearing: every such path
+    // fully overwrites [base, base+n) before any read (see resolve_incoming_queries /
+    // insert_deferred_self_misses), so the skipped init is never observed. push_back/emplace are
+    // unaffected.
     DefaultInitVector<PhasedEntry> in_entries;  // (local_target_idx, phase)
     DefaultInitVector<PhasedEntry> out_entries; // (local_source_idx, phase)
 };

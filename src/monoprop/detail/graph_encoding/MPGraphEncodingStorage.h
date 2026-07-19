@@ -24,7 +24,6 @@
 #include <utility>
 #include <vector>
 
-#include "monoprop/Threading.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 
 namespace monoprop::detail {

@@ -52,7 +52,6 @@
 // Umbrella header: the implementation lives in the sibling layer_build/ headers, included below in
 // dependency order (Parallel → Common → Scan → Resolve → Engine). Include this for the full surface.
 
-#include "monoprop/detail/evolution/layer_build/Parallel.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"

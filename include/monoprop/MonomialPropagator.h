@@ -35,7 +35,6 @@
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
 #include "monoprop/PauliAlgebra.h"
-#include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 #include "monoprop/Validation.h"

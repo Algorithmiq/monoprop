@@ -23,7 +23,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 

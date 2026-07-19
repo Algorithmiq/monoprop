@@ -25,7 +25,6 @@
 #include <format>
 #include "monoprop/detail/print_compat.h"
 
-#include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
@@ -129,8 +128,8 @@ struct MPOperator {
      *
      * Resizes op_coeffs to the current term count and drains any pending terms from init_op_map into
      * it: each pending (term, coeff) is looked up in the store and written at its row index, then
-     * erased from init_op_map. The lookup runs in parallel; the erase is serialized (the flat_map is
-     * not iterable while mutating). A no-op once op_coeffs is already in sync with the store.
+     * erased from init_op_map (erase after the lookup loop — the flat_map is not iterable while
+     * mutating). A no-op once op_coeffs is already in sync with the store.
      *
      * @return Const reference to the row-indexed coefficient vector (valid until the operator grows).
      */

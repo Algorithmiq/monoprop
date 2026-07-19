@@ -15,7 +15,6 @@
 #include "monoprop/MPFunctions.h"
 
 #include "monoprop/Evolution.h"
-#include "monoprop/Threading.h"
 
 namespace monoprop {
 

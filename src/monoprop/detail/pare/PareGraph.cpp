@@ -20,7 +20,6 @@
 #include <utility>
 #include <vector>
 
-#include "monoprop/Threading.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/mpi/Exchange.h"
 #include "monoprop/detail/mpi/MPICompat.h"

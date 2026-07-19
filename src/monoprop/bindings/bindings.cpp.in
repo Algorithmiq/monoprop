@@ -23,7 +23,6 @@
 #include "monoprop/Info.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/detail/mpi/MPICompat.h"
-#include "monoprop/Threading.h"
 
 using namespace monoprop;
 using namespace nanobind::literals;
@@ -107,9 +106,6 @@ NB_MODULE(_core, m) {
         throw nb::python_error();
     }
 #endif
-
-    // initialize threading
-    monoprop::threading::init_from_env();
 
     // clang-format off
     m.attr("MAX_NUM_MODES") = static_cast<size_t>(@monoprop_MAX_NUM_MODES@);

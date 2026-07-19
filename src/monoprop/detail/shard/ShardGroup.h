@@ -23,7 +23,6 @@
 #include <thread>
 #include <vector>
 
-#include "monoprop/Threading.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPICompat.h" // mpi::size for the transport choice
 #include "monoprop/detail/mpi/ShmComm.h"
@@ -207,7 +206,6 @@ private:
         }
         // Each shard runs the engine fully serially: one shard per core is the Phase-0 optimum, and it
         // keeps all of a shard's mutable data owned by a single core (no cross-CCX coherence traffic).
-        threading::gate_serial_override() = true;
         unsigned seen = 0;
         for (;;) {
             const std::function<void(int)> *job = nullptr;

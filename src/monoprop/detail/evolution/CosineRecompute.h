@@ -54,7 +54,6 @@
 #include <vector>
 
 #include "monoprop/PauliAlgebra.h" // pair_swap (Pauli fold columns = J(G))
-#include "monoprop/Threading.h"
 #include "monoprop/detail/EnvConfig.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h" // LayerCosScale, LayerCosAccumulate
 #include "monoprop/detail/evolution/layer_build/Scan.h" // gen columns, inverted index, CosMask (only scan-side symbols used)

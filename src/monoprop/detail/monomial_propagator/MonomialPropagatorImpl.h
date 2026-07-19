@@ -220,8 +220,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
 //   • else monoprop_SHARDS overrides: an integer, "auto" (the policy value), or "off" (force 1);
 //   • else the AUTO POLICY: native Pauli on a single MPI rank with an explicit monoprop_NUM_THREADS
 //     >= 2 shards one serial partition per requested thread, capped at the physical-core count.
-// The auto policy keys off an EXPLICIT thread budget (not effective_parallelism, whose unset value is
-// hardware concurrency) so that a user who never asked for parallelism keeps the single-partition
+// The auto policy keys off an EXPLICIT thread budget (monoprop_NUM_THREADS, unset by default) so that
+// a user who never asked for parallelism keeps the single-partition
 // path — and one who set monoprop_NUM_THREADS>=2 (previously flat-scaling for Pauli) now gets the
 // shard speedup automatically. Majorana always defaults to 1 (it already scales; halving per-shard
 // work would hurt it).
@@ -683,9 +683,8 @@ auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &major
                                                   int only_rotate_len_k,
                                                   EvolutionFunc evolution_func) -> void {
     // Apply each gate in evolution order (Heisenberg walks the sequence in reverse), then refresh the
-    // operator caches. The per-gate work uses the uniform word-parallel threading policy in
-    // Threading.h; under the shard default each shard runs this loop serially on its pinned core
-    // (gate_serial_override), which is where the thread scaling comes from — see PAULI_THREADS.md.
+    // operator caches. Each shard runs this loop serially on its pinned core; parallelism comes from
+    // sharding the operator across cores (one serial shard per core) — see PAULI_THREADS.md.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
         const auto &maj = majoranas[idx];

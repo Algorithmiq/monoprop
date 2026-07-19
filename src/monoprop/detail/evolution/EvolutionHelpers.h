@@ -15,21 +15,11 @@
 #pragma once
 
 #include "monoprop/MajoranaAlgebra.h" // CutoffEvaluator, MajoranaSet
-#include "monoprop/Threading.h"
 #include "monoprop/TypeAliases.h"
 
 namespace monoprop::detail {
 
 inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
-
-template <typename Func>
-inline auto parallel_for_indices(size_t count, Func &&func, size_t grain_size = 256) -> void {
-    threading::parallel_for_indices(count, std::forward<Func>(func), grain_size);
-}
-
-inline auto effective_parallelism() -> size_t {
-    return threading::effective_parallelism();
-}
 
 inline auto empty_coeffs() -> const VecD & {
     static const VecD coeffs;
