@@ -323,12 +323,15 @@ auto MonomialPropagator<NumModes>::for_each_shard_(const std::function<void(Mono
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
     constexpr size_t kMax = detail::OperatorIndex<NumModes>::kMaxInlinePositions;
+    // No cutoff-derived bound (Schrödinger state rows, or an opaque cutoff fn): keep the historical
+    // default width so those stores are byte-identical to before this bound was introduced.
+    constexpr size_t kDefault = detail::OperatorIndex<NumModes>::kDefaultInlinePositions;
     if (schrodinger_) {
-        return kMax;
+        return kDefault;
     }
     const auto bound = detail::CutoffEvaluator<NumModes>(cutoff_fn_).max_positions_bound();
     if (!bound) {
-        return kMax;
+        return kDefault;
     }
     // A weight-w Pauli carries up to 2w set bits (a Z occupies both slots of its qubit), so the
     // support-cutoff position bound must be doubled — otherwise every diagonal-heavy Pauli spills to the

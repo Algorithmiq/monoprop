@@ -173,6 +173,109 @@ public:
         return detail::estimate_memory_usage(mp_op_);
     }
 
+    // Sharded-aware component breakdown: sums each MPOperatorMemoryBreakdown field across shards
+    // (each shard is itself unsharded, so its operator_memory_usage() is valid). Unlike
+    // operator_memory_bytes(), this never raises under sharding — it is the measurement hook the
+    // scaling study uses to attribute the operator footprint to rows / index / coeffs / inverted
+    // index. Pure accounting; no behavior change.
+    auto operator_memory_breakdown() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
+        if (!shard_group_) {
+            return detail::estimate_memory_usage(mp_op_);
+        }
+        detail::MPOperatorMemoryBreakdown<NumModes> total;
+        for (int r = 0; r < shard_group_->shard_count(); ++r) {
+            const auto b = shard_group_->shard(r).operator_memory_usage();
+            total.operator_terms_bytes += b.operator_terms_bytes;
+            total.op_coeffs_bytes += b.op_coeffs_bytes;
+            total.state_coeffs_bytes += b.state_coeffs_bytes;
+            total.indexing_bytes += b.indexing_bytes;
+            total.init_operator_bytes += b.init_operator_bytes;
+            total.slater_determinant_bytes += b.slater_determinant_bytes;
+            total.inverted_index_bytes += b.inverted_index_bytes;
+        }
+        return total;
+    }
+
+    // Diagnostic: merged popcount histogram of the evolved operator across shards, plus the packed
+    // inline width. Pure measurement for the scaling study (weight distribution → overflow cost).
+    auto operator_popcount_histogram() const -> std::vector<size_t> {
+        std::vector<size_t> hist;
+        auto merge = [&](const std::vector<size_t> &h) {
+            if (h.size() > hist.size()) {
+                hist.resize(h.size(), 0);
+            }
+            for (size_t i = 0; i < h.size(); ++i) {
+                hist[i] += h[i];
+            }
+        };
+        if (!shard_group_) {
+            if (mp_op_.store) {
+                merge(mp_op_.store->popcount_histogram());
+            }
+            return hist;
+        }
+        for (int r = 0; r < shard_group_->shard_count(); ++r) {
+            merge(shard_group_->shard(r).operator_popcount_histogram());
+        }
+        return hist;
+    }
+
+    auto operator_inline_width() const -> size_t {
+        if (!shard_group_) {
+            return mp_op_.store ? mp_op_.store->diag_inline_width() : 0;
+        }
+        return shard_group_->shard_count() > 0 ? shard_group_->shard(0).operator_inline_width() : 0;
+    }
+
+    // Diagnostic: merged support-window histogram across shards (see OperatorIndex::support_window_histogram).
+    auto operator_support_window_histogram() const -> std::vector<size_t> {
+        std::vector<size_t> hist;
+        auto merge = [&](const std::vector<size_t> &h) {
+            if (h.size() > hist.size()) {
+                hist.resize(h.size(), 0);
+            }
+            for (size_t i = 0; i < h.size(); ++i) {
+                hist[i] += h[i];
+            }
+        };
+        if (!shard_group_) {
+            if (mp_op_.store) {
+                merge(mp_op_.store->support_window_histogram());
+            }
+            return hist;
+        }
+        for (int r = 0; r < shard_group_->shard_count(); ++r) {
+            merge(shard_group_->shard(r).operator_support_window_histogram());
+        }
+        return hist;
+    }
+
+    // Diagnostic: total fully-paired (diagonal) rows across shards.
+    auto operator_diagonal_count() const -> size_t {
+        if (!shard_group_) {
+            return mp_op_.store ? mp_op_.store->diagonal_count() : 0;
+        }
+        size_t total = 0;
+        for (int r = 0; r < shard_group_->shard_count(); ++r) {
+            total += shard_group_->shard(r).operator_diagonal_count();
+        }
+        return total;
+    }
+
+    // Total overflow-arena rows (popcount exceeded the packed inline width), summed across shards.
+    // A high count at fixed cutoff signals the inline width is clamped below the term weight, forcing
+    // dense-bitset spill (an O(NumModes) per-term cost) — see packed_inline_width_.
+    auto operator_overflow_count() const -> size_t {
+        if (!shard_group_) {
+            return mp_op_.store ? mp_op_.store->overflow_count() : 0;
+        }
+        size_t total = 0;
+        for (int r = 0; r < shard_group_->shard_count(); ++r) {
+            total += shard_group_->shard(r).operator_overflow_count();
+        }
+        return total;
+    }
+
     auto print_object_memory_report(std::string_view label) const { print_object_memory_report_(label); }
 
     /**
