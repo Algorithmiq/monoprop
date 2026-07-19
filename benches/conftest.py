@@ -58,7 +58,9 @@ if TYPE_CHECKING:
 
 try:
     from mpi4py import MPI
-except ImportError:  # pragma: no cover - depends on optional MPI build
+except (ImportError, OSError, RuntimeError):  # pragma: no cover - optional MPI build
+    # mpi4py may be absent, or (the ABI wheel) present but unable to dlopen libmpi
+    # on a serial node with no MPI module loaded. Either way, run without MPI.
     MPI = None
 
 
@@ -97,9 +99,10 @@ _RESULTS: dict[str, Any] = {
     "meta": {},  # run configuration (ranks, threads, host, ...)
     "params": {},  # resolved random-problem hyperparameters
     "mem": {},  # node id -> peak PSS bytes (per operation)
-    "opsize": {},  # picture -> {"terms": n}
-    "memrest": {},  # picture -> resting PSS bytes
-    "storage": {},  # picture -> {"operator": bytes, "graph": bytes}
+    "opsize": {},  # picture / model -> {"terms": n}
+    "memrest": {},  # picture / model -> resting PSS bytes
+    "storage": {},  # picture / model -> {"operator": bytes, "graph": bytes}
+    "membase": {},  # fixed model -> resting PSS bytes before the model is built
     "configs": {},  # fixed model -> config dataclass fields
 }
 
@@ -255,6 +258,50 @@ def record_model_config() -> Callable[[str, Any], None]:
 
     def _do(model: str, config: Any) -> None:
         _record("configs", model, asdict(config))
+
+    return _do
+
+
+@pytest.fixture
+def record_model_stats(bench_comm: Any) -> Callable[..., None]:
+    """Return ``record(model, propagator, baseline_pss)`` for fixed-model runs.
+
+    Records, for one evolved model operator, the same non-timing quantities the
+    random benchmarks capture in :func:`built_graph` -- keyed by model name rather
+    than picture: the term count, the operator-vs-graph storage breakdown, and the
+    settled (resting) PSS -- plus ``membase``, the resting PSS sampled *before* the
+    model was built, so a consumer can isolate the operator's persistent footprint
+    as ``memrest - membase``. All reductions are collective; only rank 0 records.
+    """
+
+    def _do(model: str, propagator: Any, baseline_pss: int) -> None:
+        _record("opsize", model, {"terms": _reduce_sum(bench_comm, propagator.size())})
+
+        # operator_memory_bytes()/graph_memory_bytes() require an unsharded
+        # propagator and raise once it shards under multi-thread parallelism.
+        # The operator's byte count is thread-count-independent (same evolved
+        # operator, only partitioned across shards), so the serial run already
+        # captures the exact figure; skip it here rather than fail the point.
+        sim = propagator._simulator
+        try:
+            _record(
+                "storage",
+                model,
+                {
+                    "operator": _reduce_sum(bench_comm, sim.operator_memory_bytes()),
+                    "graph": _reduce_sum(bench_comm, sim.graph_memory_bytes()),
+                },
+            )
+        except RuntimeError:
+            pass
+
+        resting = _reduce_sum(bench_comm, resting_pss_bytes())
+        if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
+            _record("memrest", model, resting)
+
+        baseline = _reduce_sum(bench_comm, baseline_pss)
+        if baseline:
+            _record("membase", model, baseline)
 
     return _do
 

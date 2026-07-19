@@ -21,7 +21,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .conversion_utils import _extend_pauli_string, _pauli_to_majorana
+from .conversion_utils import (
+    _extend_pauli_string,
+    _pauli_to_local_slots,
+    _pauli_to_majorana,
+)
 from .majorana import MajoranaOperator
 
 if TYPE_CHECKING:
@@ -224,3 +228,29 @@ class PauliOperator:
             majoranas.append(majorana)
             coefficients.append(jw_coeff * coeff)
         return MajoranaOperator._from_terms(majoranas, coefficients, self.num_qubits)
+
+    def get_local_operator(self) -> MajoranaOperator:
+        """Pack the operator into the native local symplectic frame (no Jordan-Wigner).
+
+        Each term maps to its per-qubit gamma-slots -- ``X_q -> {2q}``, ``Y_q -> {2q+1}``,
+        ``Z_q -> {2q, 2q+1}`` (see :func:`~monoprop.conversion_utils._pauli_to_local_slots`) --
+        carrying its (real, Hermitian) coefficient. Unlike :meth:`get_majorana_operator` this
+        introduces no ``Z`` prefix string, so the packed popcount is ``O(weight)``, independent
+        of ``num_qubits``. The returned :class:`~monoprop.majorana.MajoranaOperator` is used only
+        as a term container: its index tuples are the engine's ``Basis::Pauli`` encoding, not
+        Jordan-Wigner Majorana indices.
+
+        Raises:
+            ValueError: If ``num_qubits`` is unset.
+        """
+        if self.num_qubits is None:
+            raise ValueError(
+                "PauliOperator.get_local_operator() needs num_qubits; construct the "
+                "operator with an explicit num_qubits."
+            )
+        slots_list: list[Sequence[int]] = []
+        coefficients: list[complex] = []
+        for pauli, coeff in self.terms.items():
+            slots_list.append(_pauli_to_local_slots(pauli.string, pauli.qubits))
+            coefficients.append(coeff)
+        return MajoranaOperator._from_terms(slots_list, coefficients, self.num_qubits)

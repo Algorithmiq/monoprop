@@ -56,6 +56,7 @@ def _simulator_adapter_source() -> str:
         upper_atol: float | None = None,
         cutoff_type: str = "length",
         basis_change: list[list[int]] | None = None,
+        basis: str = "majorana",
     ) -> None:
         object.__setattr__(self, "_logical_num_modes", logical_num_modes)
         object.__setattr__(
@@ -72,6 +73,7 @@ def _simulator_adapter_source() -> str:
                 cutoff_type=cutoff_type,
                 basis_change=basis_change,
                 logical_num_modes=logical_num_modes,
+                basis=basis,
             ),
         )
 
@@ -112,6 +114,7 @@ def _class_defs(
         upper_atol: float | None = None,
         cutoff_type: str = "length",
         basis_change: list[list[int]] | None = None,
+        basis: str = "majorana",
     ) -> None:
         super().__init__(
             {core_alias_prefix}{block:03d}Core,
@@ -125,6 +128,7 @@ def _class_defs(
             upper_atol,
             cutoff_type,
             basis_change,
+            basis,
         )
 """
         )

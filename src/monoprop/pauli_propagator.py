@@ -22,8 +22,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .conversion_utils import _local_slots_to_pauli
 from .monomial_propagator import MonomialPropagator
-from .utils import jordan_wigner_basis_change
+from .pauli import Pauli, PauliOperator
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
-    from .pauli import PauliOperator
+    from .monomial_propagator import ParameterValues
 
 
 class PauliPropagator(MonomialPropagator):
@@ -80,16 +81,22 @@ class PauliPropagator(MonomialPropagator):
         # The PauliOperator carries its own qubit count (a required constructor argument), so
         # the propagator reads it directly rather than validating it here.
         num_qubits = initial_operator.num_qubits
+        # Store and evolve in the engine's native local symplectic (Pauli) frame: each qubit
+        # occupies its own two gamma-slots, so a weight-w term has popcount <= 2w, independent of
+        # num_qubits. This replaces the Jordan-Wigner Majorana image (whose Z-string made a single
+        # X_q span O(num_qubits) slots). The native path requires cutoff_type="support" (the
+        # support cutoff then measures Pauli weight directly) and forbids a basis_change.
         self._init_simulator(
-            initial_operator.get_majorana_operator(),
+            initial_operator.get_local_operator(),
             initial_state,
             cutoff=cutoff,
             schrodinger_cutoff=schrodinger_cutoff,
             cutoff_type="support",
             lower_atol=lower_atol,
             upper_atol=upper_atol,
-            basis_change=jordan_wigner_basis_change(num_qubits),
+            basis_change=None,
             comm=comm,
+            basis="pauli",
         )
         # The qubit count comes from the observable and is carried into Pauli gate expansion
         # via build_graph (_init_simulator initializes it to None).
@@ -103,6 +110,35 @@ class PauliPropagator(MonomialPropagator):
         if self._num_qubits is None:
             raise RuntimeError("PauliPropagator has no qubit count set.")
         return self._num_qubits
+
+    def evolved_operator(  # type: ignore[override]
+        self,
+        parameters: ParameterValues = None,
+        *,
+        atol: float = 1e-12,
+    ) -> PauliOperator:
+        """Return the evolved operator as a :class:`~monoprop.pauli.PauliOperator`.
+
+        The engine stores terms in the native local symplectic frame; this decodes each stored
+        gamma-slot tuple back to its Pauli letters (``X_q`` from slot ``2q``, ``Y_q`` from slot
+        ``2q+1``, ``Z_q`` from both -- see
+        :func:`~monoprop.conversion_utils._local_slots_to_pauli`), so the result is a qubit
+        operator rather than raw slot indices. The identity (core) term, if present, decodes to
+        the empty Pauli. See :meth:`~monoprop.monomial_propagator.MonomialPropagator.evolved_operator`
+        for the ``parameters``/``atol`` semantics.
+
+        Args:
+            parameters: Variational parameter values.
+            atol: Absolute tolerance below which terms are dropped.
+
+        Returns:
+            The evolved qubit operator (Heisenberg picture) or evolved state (Schrodinger picture).
+        """
+        raw = super().evolved_operator(parameters, atol=atol)
+        terms: dict[Pauli, complex] = {
+            Pauli(*_local_slots_to_pauli(slots)): coeff for slots, coeff in raw.items()
+        }
+        return PauliOperator(terms, self.num_qubits)
 
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.

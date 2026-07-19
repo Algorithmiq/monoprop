@@ -54,7 +54,11 @@ from __future__ import annotations
 import itertools
 from typing import TYPE_CHECKING, Literal
 
-from .conversion_utils import _extend_pauli_string, _pauli_to_majorana
+from .conversion_utils import (
+    _extend_pauli_string,
+    _pauli_to_local_slots,
+    _pauli_to_majorana,
+)
 from .majorana import MajoranaOperator
 from .pauli import Pauli, PauliOperator
 
@@ -577,17 +581,22 @@ def _validate_commuting_pauli_generator(generator: PauliOperator) -> None:
 
 
 def _gate_layers(
-    gate: ExpGate, num_qubits: int | None
+    gate: ExpGate, num_qubits: int | None, *, native_pauli: bool = False
 ) -> list[tuple[tuple[int, ...], float]]:
     """Expand one gate into ``(majorana, gen_coeff)`` layers, in application order.
 
     A ``"pauli"``-family :class:`ExpGate` places each :class:`~monoprop.pauli.Pauli` term on
-    its qubits within the ``num_qubits``-wide system, Jordan-Wigner maps it, and
-    antihermitian-normalizes (one layer per term). A ``"majorana"``-family :class:`ExpGate` carries
-    the Hermitian generator, so its :class:`~monoprop.majorana.MajoranaOperator` terms are
-    antihermitian-normalized the same way (the ``i^{binom(w, 2)}`` phase divided out) -- unless
-    the gate is flagged :attr:`ExpGate._structural` (the wire/dense format), whose coefficients are
-    already the structural ``g`` and are used directly.
+    its qubits within the ``num_qubits``-wide system (one layer per term). When ``native_pauli``
+    is set the term is packed into the engine's native local symplectic frame
+    (:func:`~monoprop.conversion_utils._pauli_to_local_slots`) with its real generator
+    coefficient passed through directly -- the engine's Pauli rotation kernel does the phase
+    bookkeeping, so no Jordan-Wigner map or antihermitian normalization is applied. Otherwise the
+    term is Jordan-Wigner mapped and antihermitian-normalized (the legacy Majorana-frame path).
+    A ``"majorana"``-family :class:`ExpGate` carries the Hermitian generator, so its
+    :class:`~monoprop.majorana.MajoranaOperator` terms are antihermitian-normalized (the
+    ``i^{binom(w, 2)}`` phase divided out) -- unless the gate is flagged
+    :attr:`ExpGate._structural` (the wire/dense format), whose coefficients are already the
+    structural ``g`` and are used directly.
     """
     # A Pauli-family gate holds a PauliOperator; every other family a MajoranaOperator (so the
     # ``isinstance`` narrows the fall-through arm to MajoranaOperator).
@@ -597,6 +606,13 @@ def _gate_layers(
             raise ValueError("num_qubits is required to expand a Pauli gate.")
         layers: list[tuple[tuple[int, ...], float]] = []
         for pauli, coeff in generator.terms.items():
+            if native_pauli:
+                # Native local packing: generator = per-qubit slots, gen_coeff = the raw real
+                # coefficient (no jw_coeff, no antihermitian normalization). Matches
+                # native_gate_arrays in tests/cpp/pauli_build_layer_tests.cpp.
+                slots = _pauli_to_local_slots(pauli.string, pauli.qubits)
+                layers.append((slots, _real_generator_coefficient(slots, coeff)))
+                continue
             extended = _extend_pauli_string(pauli.string, pauli.qubits, num_qubits)
             majorana, jw_coeff = _pauli_to_majorana(extended)
             layers.append(
@@ -618,6 +634,8 @@ def expand_monomials(
     gates: Sequence[ExpGate],
     mapping: Sequence[int],
     num_qubits: int | None = None,
+    *,
+    native_pauli: bool = False,
 ) -> tuple[list[tuple[int, ...]], list[float], list[int], list[int]]:
     """Flatten gates + an already-resolved per-gate mapping into per-monomial arrays.
 
@@ -626,6 +644,9 @@ def expand_monomials(
         mapping: The angle index driving each gate (one entry per gate).
         num_qubits: System qubit count, required to place Pauli-family generators; unused for
             native Majorana generators.
+        native_pauli: When set, Pauli-family generators are packed into the engine's native
+            local symplectic frame (see :func:`_gate_layers`); otherwise the legacy
+            Jordan-Wigner Majorana frame is used.
 
     Returns:
         A tuple ``(majoranas, gen_coeffs, parameter_mapping, gate_indices)`` for the C++
@@ -638,7 +659,7 @@ def expand_monomials(
     per_monomial: list[int] = []
     gate_indices: list[int] = []
     for gate_index, (gate, param) in enumerate(zip(gates, mapping, strict=True)):
-        for majorana, gen_coeff in _gate_layers(gate, num_qubits):
+        for majorana, gen_coeff in _gate_layers(gate, num_qubits, native_pauli=native_pauli):
             majoranas.append(majorana)
             gen_coeffs.append(gen_coeff)
             per_monomial.append(param)
