@@ -1,13 +1,72 @@
 ---
 title: Parallelism and distribution
-description: Scaling across MPI ranks and shared-memory threads.
+description: Scaling by sharding the operator across cores and across MPI ranks.
 ---
 
-monoprop scales in two complementary ways: across MPI ranks (distributing the
-operator) and across threads within each rank (shared-memory parallelism).
-The MPI distribution shards both the operator and the graph across ranks,
-which can allow variational optimisation and simulation of larger systems
-than would fit in memory on a single node.
+monoprop scales the same way on one node and on many: it **shards the operator**
+into disjoint partitions and applies each gate to every shard in lock-step,
+exchanging only the terms that cross a shard boundary. Two axes compose:
+
+- **Across cores (default):** one single-threaded shard per physical core,
+  within a single process. This is on automatically — no configuration needed.
+- **Across nodes (opt-in):** MPI ranks, each of which shards further across its
+  own cores. Distributing the operator and its graph across ranks lets you
+  simulate and variationally optimise systems larger than one node's memory.
+
+## Operator sharding (single node)
+
+By default monoprop partitions the operator into one shard per physical core and
+gives each shard a pinned worker thread that runs its whole partition serially.
+Each shard keeps its own small, cache-resident term index; a gate is applied to
+all shards at once, synchronised by a lightweight barrier, and anticommuting
+terms whose partner lives on another shard are resolved through a per-gate
+exchange.
+
+This replaced an earlier oneTBB thread-pool design and was measured to be
+substantially faster — roughly **6–9× on native-Pauli** workloads and **~2× on
+Hubbard** — because each thin shard probes a cache-resident, lock-free index
+instead of contending on one shared table. TBB is no longer used or required.
+
+You normally do not configure anything. The knobs below exist for tuning and
+benchmarking.
+
+## Runtime environment variables
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `monoprop_NUM_THREADS` | one shard per physical core | Caps the number of shards. Set it to run fewer shards than cores. |
+| `monoprop_SHARDS` | `auto` | `auto` = one shard per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` shards; `off` = a single partition (no sharding). |
+| `monoprop_SHARD_PINNING` | `on` | `0`/`false`/`no` disables pinning each shard to a core. Has an effect only on Linux. |
+| `monoprop_PHASE_TIMERS` | `off` | `1`/`true` prints a per-phase wall-time breakdown to stderr at exit. |
+| `monoprop_RECOMPUTE_CACHE_MAX_MB` | `2048` | Cap (MB) on the per-layer cosine fold cache before the evaluator switches to on-the-fly recompute. `0` always recomputes. |
+
+```bash
+# Run 8 shards instead of one-per-core:
+export monoprop_NUM_THREADS=8
+```
+
+When the CPU topology cannot be read (non-Linux, or a restricted `/sys`), the
+shard count falls back to half the hardware threads and the shards run unpinned
+— still correct, just without the cache-locality win. On a partial allocation
+(for example a cgroup-restricted Slurm job) the shard count and pinning follow
+the CPUs the process is actually allowed to use.
+
+### Portability
+
+Core-count detection and thread pinning are a Linux fast path (parsed from
+`/sys`, applied with `pthread_setaffinity_np`). macOS reports its physical-core
+count for accurate auto-sharding but does not pin threads; other platforms run
+the identical sharding semantics unpinned. This is deliberately kept to one
+small in-repo shim rather than a hardware-locality dependency such as hwloc:
+hwloc would replace only the topology parse, cannot pin threads on macOS anyway,
+and would re-introduce a bundled C dependency the project has otherwise shed.
+
+## MPI distribution (multi-node)
+
+MPI shards the operator and graph across ranks, composing with per-rank
+sharding into one flat world of `R × S` partitions (`R` ranks, `S` shards each).
+MPI communication is serialised through each rank's first shard, bracketed by
+the intra-rank barriers.
 
 ### Single-node (`MPI.COMM_SELF`)
 
@@ -29,21 +88,11 @@ sim = MajoranaPropagator(..., comm=MPI.COMM_WORLD)
 mpiexec -n 8 uv run python your_script.py
 ```
 
+A pure-MPI rank shards to a single partition unless `monoprop_NUM_THREADS` is
+set, so an MPI user who has not asked for threads gets one partition per rank.
+
 ### Enabling MPI
 
 MPI is **off by default**, so the prebuilt PyPI wheels run single-rank and the
 communicators above only distribute work after a from-source build with MPI
 enabled. See [Building from source](/building) for the full build instructions.
-
-## Shared-memory parallelism
-
-Within each MPI rank, monoprop uses Intel oneTBB for shared-memory parallelism.
-The thread count is read from the `monoprop_NUM_THREADS` environment variable,
-for example:
-
-```bash
-export monoprop_NUM_THREADS=8
-```
-
-When the variable is unset, TBB falls back to its own hardware-concurrency
-detection.

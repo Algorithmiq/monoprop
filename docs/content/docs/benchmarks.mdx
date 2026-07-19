@@ -20,7 +20,7 @@ just bench serial                              # serial run, column "serial"
 just bench-smoke                               # quick sanity check (tiny sizes)
 just bench serial --num-modes 64 --bench-rounds 10
 
-monoprop_NUM_THREADS=10 just bench serial-t10  # set oneTBB worker count
+monoprop_NUM_THREADS=10 just bench serial-t10  # cap the shard count at 10
 
 uv run --group bench python benches/report.py  # rebuild report, no re-run
 ```
