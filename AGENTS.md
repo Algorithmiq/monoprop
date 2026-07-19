@@ -61,7 +61,6 @@ mp = MonomialPropagator(operator, num_modes=4, ...)
 ## Key Dependencies & Integration
 
 - **nanobind**: Modern Python-C++ binding (prefer over pybind11)
-- **oneTBB**: Parallel computation (required build dependency)
 - **scikit-build-core**: Modern build system replacing setuptools
 - **uv**: Package management
 - **fmt**: C++ formatting library

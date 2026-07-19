@@ -45,8 +45,8 @@ if TYPE_CHECKING:
     from types import TracebackType
     from typing import Self
 
-# PSS sampling cadence. monoprop's heavy work runs in C++/TBB with the GIL
-# released, so the background sampler costs an idle core, not the timed thread.
+# PSS sampling cadence. monoprop's heavy work runs in C++ (shard threads) with the
+# GIL released, so the background sampler costs an idle core, not the timed thread.
 SAMPLE_INTERVAL_S = 0.005
 
 

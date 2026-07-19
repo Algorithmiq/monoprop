@@ -66,10 +66,10 @@ jobs:
       - name: Install dependencies
         run: |
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            brew install boost tbb open-mpi
+            brew install boost open-mpi
           else
             sudo apt-get update
-            sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev
+            sudo apt-get install -y libopenmpi-dev openmpi-bin
             ./tools/install-deps.sh /opt/Software --skip-boost-test --skip-msgpack
           fi
 
@@ -175,7 +175,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
+          sudo apt-get install -y libopenmpi-dev openmpi-bin
           ./tools/install-deps.sh /opt/Software
 
       - name: Configure
@@ -291,7 +291,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
+          sudo apt-get install -y libopenmpi-dev openmpi-bin
           ./tools/install-deps.sh /opt/Software
 
       - name: Install matching Build Wrapper
@@ -382,13 +382,13 @@ jobs:
         if: ${{ matrix.runner != 'macos-15' }}
         run: |
           sudo apt-get update
-          sudo apt-get install libtbb-dev libopenmpi-dev openmpi-bin
+          sudo apt-get install libopenmpi-dev openmpi-bin
           ./tools/install-deps.sh /opt/Software
 
       - name: Install dependencies
         if: ${{ matrix.runner == 'macos-15' }}
         run: |
-          brew install boost msgpack-cxx tbb open-mpi
+          brew install boost msgpack-cxx open-mpi
 
       - name: Configure
         if: ${{ matrix.runner != 'macos-15' }}
