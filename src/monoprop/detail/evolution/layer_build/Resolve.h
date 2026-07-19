@@ -109,7 +109,7 @@ auto probe_incoming_keys(const std::vector<VecZ> &incoming, // serialized, one V
         pr.phase_of.resize(pr.nq_total);
     }
     pr.idx_of.resize(pr.nq_total);
-    parallel_for_indices(pr.nq_total, [&](size_t g) {
+    for (size_t g = 0; g < pr.nq_total; ++g) {
         const size_t s = pr.sender_of[g];
         const size_t q = g - pr.goff[s];
         if constexpr (WithPhase) {
@@ -122,18 +122,15 @@ auto probe_incoming_keys(const std::vector<VecZ> &incoming, // serialized, one V
         else {
             pr.maj[g] = mpi_detail::read_majorana_from_words<NumModes>(incoming[s], q * QW);
         }
-    });
+    }
     {
         const size_t op_size = op.store->size();
-        const size_t chunks = partition_chunk_count(pr.nq_total);
-        for_each_chunk(pr.nq_total, std::max<size_t>(chunks, 1), [&](size_t, size_t lo, size_t hi) {
-            op.store->find_batch(pr.maj.data() + lo, hi - lo, pr.idx_of.data() + lo);
-            for (size_t g = lo; g < hi; ++g) {
-                if (pr.idx_of[g] >= op_size) { // kNotFound is size_t max → also lands here
-                    pr.idx_of[g] = kMissingIndex;
-                }
+        op.store->find_batch(pr.maj.data(), pr.nq_total, pr.idx_of.data());
+        for (size_t g = 0; g < pr.nq_total; ++g) {
+            if (pr.idx_of[g] >= op_size) { // kNotFound is size_t max → also lands here
+                pr.idx_of[g] = kMissingIndex;
             }
-        });
+        }
     }
 
     // Phase 2 (serial prefix, (sender,query) order): each KEPT miss takes the next index base+j. miss_g[j]
@@ -225,7 +222,7 @@ auto resolve_incoming_queries(const std::vector<VecZ> &incoming, // serialized, 
         in_base[s] = acc[s].in_entries.size();
         acc[s].in_entries.resize(in_base[s] + responses[s].size());
     }
-    parallel_for_indices(pr.nq_total, [&](size_t g) {
+    for (size_t g = 0; g < pr.nq_total; ++g) {
         const size_t s = pr.sender_of[g];
         const size_t q = g - pr.goff[s];
         const size_t ip = pr.idx_of[g];
@@ -234,7 +231,7 @@ auto resolve_incoming_queries(const std::vector<VecZ> &incoming, // serialized, 
         if (is_leader_pass && ip < combined_size) {
             matched.mark(ip);
         }
-    });
+    }
 
     insert_incoming_misses<NumModes>(op, pr);
     return responses;
@@ -287,7 +284,7 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
     // push_back.
     const size_t cross_base = fc.cross_half.size();
     fc.cross_half.resize(cross_base + pr.nq_total);
-    parallel_for_indices(pr.nq_total, [&](size_t g) {
+    for (size_t g = 0; g < pr.nq_total; ++g) {
         const size_t s = pr.sender_of[g];
         const size_t q = g - pr.goff[s];
         const size_t ip = pr.idx_of[g];
@@ -313,13 +310,14 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
         resp_val[s][q] = v_tgt;
         // A MISS half's local slot is a fresh insert (born after the sweep) — flag it so the apply folds
         // the gate's cos into the slot itself; hit halves' slots were swept and take the plain add.
-        fc.cross_half[cross_base + g] = HalfRotationRec{
-            ip, query_value<NumModes>(incoming[s], q), static_cast<int32_t>(pr.phase_of[g]),
-            /*is_insert=*/ip >= pr.base};
+        fc.cross_half[cross_base + g] = HalfRotationRec{ip,
+                                                        query_value<NumModes>(incoming[s], q),
+                                                        static_cast<int32_t>(pr.phase_of[g]),
+                                                        /*is_insert=*/ip >= pr.base};
         if (is_leader_pass && ip < combined_size) {
             matched.mark(ip);
         }
-    });
+    }
 
     insert_incoming_misses<NumModes>(op, pr);
     return resp_val;
@@ -356,18 +354,9 @@ auto process_query_responses(const std::vector<std::vector<TermIndex>> &response
         auto &out = acc[r].out_entries;
         const size_t base = out.size();
         out.resize(base + nq);
-        const size_t chunks = partition_chunk_count(nq);
-        auto fill = [&](size_t q) {
+        for (size_t q = 0; q < nq; ++q) {
             assert(resp[q] != std::numeric_limits<TermIndex>::max() && "resolver must insert absent cross-rank terms");
             out[base + q] = {srcs[q], query_phase<NumModes>(qbuf, q)};
-        };
-        if (chunks <= 1) {
-            for (size_t q = 0; q < nq; ++q) {
-                fill(q);
-            }
-        }
-        else {
-            parallel_for_indices(nq, fill);
         }
     }
 }

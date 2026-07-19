@@ -121,50 +121,17 @@ struct LayerBuildEngine {
         std::vector<size_t> &ls = src_idx_r[my_rank];
         std::vector<double> *lv = fused_ ? &src_val_r[my_rank] : nullptr;
         const size_t nq = lq.empty() ? 0 : lq.size() / kQueryWords<NumModes>;
-        const size_t chunks = partition_chunk_count(nq);
-        if (chunks <= 1) {
-            // Serial (also the nq==0 case): append straight into the accumulator (or, fused, the record
-            // sinks), zero staging copy.
-            resolve_range_(lq,
-                           ls,
-                           lv,
-                           0,
-                           nq,
-                           is_leader_pass,
-                           acc[my_rank].in_entries,
-                           acc[my_rank].out_entries,
-                           deferred_self_misses,
-                           fused_ ? &fused_->hits : nullptr);
-        }
-        else {
-            // Probes run chunked in parallel (lock-free lookup, ≤1 writer per matched slot). The
-            // order-sensitive outputs are collected per-chunk and concatenated in chunk order, so the
-            // result (including deferred-miss / hit-record insertion order) matches the serial scan.
-            std::vector<DefaultInitVector<PhasedEntry>> in_parts(chunks);
-            std::vector<DefaultInitVector<PhasedEntry>> out_parts(chunks);
-            std::vector<std::vector<DeferredSelfMiss>> miss_parts(chunks);
-            std::vector<std::vector<RotationRec>> hit_parts(fused_ ? chunks : 0);
-            for_each_chunk(nq, chunks, [&](size_t c, size_t lo, size_t hi) {
-                resolve_range_(lq,
-                               ls,
-                               lv,
-                               lo,
-                               hi,
-                               is_leader_pass,
-                               in_parts[c],
-                               out_parts[c],
-                               miss_parts[c],
-                               fused_ ? &hit_parts[c] : nullptr);
-            });
-            if (!fused_) {
-                append_gathered_chunks(acc[my_rank].in_entries, in_parts);
-                append_gathered_chunks(acc[my_rank].out_entries, out_parts);
-            }
-            append_gathered_chunks(deferred_self_misses, miss_parts);
-            if (fused_) {
-                append_gathered_chunks(fused_->hits, hit_parts);
-            }
-        }
+        // Append straight into the accumulator (or, fused, the record sinks), zero staging copy.
+        resolve_range_(lq,
+                       ls,
+                       lv,
+                       0,
+                       nq,
+                       is_leader_pass,
+                       acc[my_rank].in_entries,
+                       acc[my_rank].out_entries,
+                       deferred_self_misses,
+                       fused_ ? &fused_->hits : nullptr);
         lq.clear();
         ls.clear();
         if (lv != nullptr) {
@@ -329,8 +296,8 @@ struct LayerBuildEngine {
             p.in_count = P; // boundary for deriving the D index list from B (D indices are not stored)
             p.sin_send_indices.resize(P + Q);
             p.sin_recv_entries.resize(P + Q);
-            // One parallel region over P+Q: k<P fills in-entry slots, k>=P fills out-entry slots.
-            parallel_for_indices(P + Q, [&](size_t k) {
+            // One pass over P+Q: k<P fills in-entry slots, k>=P fills out-entry slots.
+            for (size_t k = 0; k < P + Q; ++k) {
                 if (k < P) {
                     const auto &e = a.in_entries[k];
                     p.sin_send_indices[k] = e.idx;
@@ -342,7 +309,7 @@ struct LayerBuildEngine {
                     p.sin_send_indices[k] = e.idx;
                     p.sin_recv_entries[j] = {e.idx, -e.phase};
                 }
-            });
+            }
         }
         return partners;
     }
@@ -491,7 +458,6 @@ private:
             }
         }
     }
-
 };
 
 // ─── build_layer ─────────────────────────────────────────────────
@@ -574,15 +540,16 @@ auto build_layer(MPOperator<NumModes> &local_op,
     }();
 
     CosMask cos_all;
-    {
-        // Per-chunk cosine blocks are disjoint and ascending; chunk-order concat (parallel for
-        // large totals) reproduces the serial order exactly.
+    if (fused.cos_blocks.size() == 1) {
+        // The serial scan produces a single cosine block set — take it wholesale.
+        cos_all = std::move(fused.cos_blocks[0]);
+    }
+    else {
+        // Cosine block sets are disjoint and ascending; concatenate in order.
         for (const auto &block : fused.cos_blocks) {
             cos_all.total_count += block.total_count;
+            cos_all.blocks.insert(cos_all.blocks.end(), block.blocks.begin(), block.blocks.end());
         }
-        append_parts_in_order(cos_all.blocks, fused.cos_blocks.size(), [&](size_t c) -> auto & {
-            return fused.cos_blocks[c].blocks;
-        });
     }
     fused.cos_blocks = std::vector<CosMask>{};
 

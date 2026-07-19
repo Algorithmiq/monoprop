@@ -110,9 +110,8 @@ auto ev_and_grad_impl(double e_core,
     // (cos_scale in the forward prepare, cos_acc in the reverse sweep). Fail loudly rather than with a
     // cryptic std::bad_function_call if a caller relied on the old empty-callback default.
     if (!cos_scale || !cos_acc) {
-        throw std::invalid_argument(
-            "ev_and_grad requires both cos_scale (forward) and cos_acc (reverse) callbacks; "
-            "the stored-cos fallback no longer exists.");
+        throw std::invalid_argument("ev_and_grad requires both cos_scale (forward) and cos_acc (reverse) callbacks; "
+                                    "the stored-cos fallback no longer exists.");
     }
 
     auto &scratch = eval_scratch();
@@ -142,11 +141,11 @@ auto ev_and_grad_impl(double e_core,
 auto inner_product(const VecD &v, const VecD &w) -> double {
     const auto *v_data = v.data();
     const auto *w_data = w.data();
-    return threading::parallel_reduce_indices(
-        v.size(),
-        0.0,
-        [&v_data, &w_data](size_t i, double &local) { local += v_data[i] * w_data[i]; },
-        std::plus<>{});
+    double result = 0.0;
+    for (size_t i = 0; i < v.size(); ++i) {
+        result += v_data[i] * w_data[i];
+    }
+    return result;
 }
 
 auto map_params(const VecD &parameters,
@@ -181,8 +180,16 @@ auto ev_and_grad(double e_core,
                  mpi::Comm comm,
                  const detail::LayerCosScale &cos_scale,
                  const detail::LayerCosAccumulate &cos_acc) -> std::pair<double, VecD> {
-    return ev_and_grad_impl(
-        e_core, state, op, parameter_mapping, gen_coeffs, graph.replay_view(), params, comm, cos_scale, cos_acc);
+    return ev_and_grad_impl(e_core,
+                            state,
+                            op,
+                            parameter_mapping,
+                            gen_coeffs,
+                            graph.replay_view(),
+                            params,
+                            comm,
+                            cos_scale,
+                            cos_acc);
 }
 
 } // namespace monoprop

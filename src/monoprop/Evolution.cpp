@@ -93,8 +93,9 @@ struct CrossRankExchangeHandle {
 // payload transfer. All ranks must participate — never skip on zero counts (the facade owns that
 // deadlock discipline). The transfer is non-blocking; the returned handle's ticket completes it.
 // Buffers are always sized ≥ 1 (see resize_flat_exchange_buffers).
-inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers, mpi::Comm comm)
-    -> CrossRankExchangeHandle {
+inline auto begin_flat_exchange(const LayerExchangeLayout &layout,
+                                FlatExchangeBuffers &buffers,
+                                mpi::Comm comm) -> CrossRankExchangeHandle {
     CrossRankExchangeHandle handle;
     handle.layout = &layout;
     handle.buffers = &buffers;
@@ -113,7 +114,9 @@ inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeB
     return handle;
 }
 
-inline auto wait_flat_exchange(CrossRankExchangeHandle &handle) -> void { handle.ticket.wait(); }
+inline auto wait_flat_exchange(CrossRankExchangeHandle &handle) -> void {
+    handle.ticket.wait();
+}
 
 // ─── Cross-rank derivative helpers ──────────────────────────────────────────
 
@@ -126,15 +129,23 @@ void pack_cross_rank_derivative_payload_impl(const std::vector<VecD> &sin_send_s
                                              int my_rank,
                                              const LayerExchangeLayout &layout,
                                              VecD &send_buffer) {
-    threading::parallel_for_cross_rank_sin_send_ranges(layer, my_rank, [&](size_t rank, size_t begin, size_t end) {
+    const size_t num_ranks = layer.cross_rank_rank_count();
+    for (size_t rank = 0; rank < num_ranks; ++rank) {
+        if (static_cast<int>(rank) == my_rank) {
+            continue;
+        }
+        const size_t end = layer.cross_rank_sin_send_size(rank);
+        if (end == 0) {
+            continue;
+        }
         const size_t base = static_cast<size_t>(layout.displs[rank]);
         const auto &bs = sin_send_state[rank];
         const auto &bh = sin_send_op[rank];
-        layer.for_each_cross_rank_sin_send_range(rank, begin, end, [&](size_t k, size_t /*i*/) {
+        layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&](size_t k, size_t /*i*/) {
             send_buffer[base + 2 * k] = bs[k];
             send_buffer[base + 2 * k + 1] = bh[k];
         });
-    });
+    }
 }
 
 // Remote endpoint pass. Own pre-cos (s_old,h_old) come from sin_recv snapshots (cos pass clobbered
@@ -151,32 +162,36 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
                                                const VecD &recv_buffer,
                                                const std::vector<int> &recv_displs,
                                                int my_rank) -> EndpointContrib {
-    return threading::parallel_reduce_cross_rank_sin_recv_ranges(
-        layer,
-        my_rank,
-        EndpointContrib{},
-        [&](size_t rank, size_t begin, size_t end, EndpointContrib local) {
-            const auto *rv = recv_buffer.data() + recv_displs[rank];
-            const auto &ds = sin_recv_state[rank];
-            const auto &dh = sin_recv_op[rank];
-            layer.for_each_cross_rank_sin_recv_range(rank, begin, end, [&](size_t k, size_t i, int phi_signed) {
-                const double phi = static_cast<double>(phi_signed);
-                // INVERSE-rotation write-back (−sin): the reverse sweep un-evolves state/op one
-                // layer for the next iteration. cos_terms/b below use the recovered pre-cos values
-                // directly, so this sign only affects the values fed to the subsequent layer.
-                const double ps = -trig.sin_val * phi;
-                const double s_old = ds[k];
-                const double h_old = dh[k];
-                const double s_p = rv[2 * k];
-                const double h_p = rv[2 * k + 1];
-                local.cos_terms += s_old * h_old;
-                local.sin_terms += phi * s_old * h_p;
-                op[i] = (h_old * trig.cos_val) + (ps * h_p);
-                state[i] = (s_old * trig.cos_val) + (ps * s_p);
-            });
-            return local;
-        },
-        combine_endpoint_contrib);
+    const size_t num_ranks = layer.cross_rank_rank_count();
+    EndpointContrib local{};
+    for (size_t rank = 0; rank < num_ranks; ++rank) {
+        if (static_cast<int>(rank) == my_rank) {
+            continue;
+        }
+        const size_t end = layer.cross_rank_sin_recv_size(rank);
+        if (end == 0) {
+            continue;
+        }
+        const auto *rv = recv_buffer.data() + recv_displs[rank];
+        const auto &ds = sin_recv_state[rank];
+        const auto &dh = sin_recv_op[rank];
+        layer.for_each_cross_rank_sin_recv_range(rank, 0, end, [&](size_t k, size_t i, int phi_signed) {
+            const double phi = static_cast<double>(phi_signed);
+            // INVERSE-rotation write-back (−sin): the reverse sweep un-evolves state/op one
+            // layer for the next iteration. cos_terms/b below use the recovered pre-cos values
+            // directly, so this sign only affects the values fed to the subsequent layer.
+            const double ps = -trig.sin_val * phi;
+            const double s_old = ds[k];
+            const double h_old = dh[k];
+            const double s_p = rv[2 * k];
+            const double h_p = rv[2 * k + 1];
+            local.cos_terms += s_old * h_old;
+            local.sin_terms += phi * s_old * h_p;
+            op[i] = (h_old * trig.cos_val) + (ps * h_p);
+            state[i] = (s_old * trig.cos_val) + (ps * s_p);
+        });
+    }
+    return local;
 }
 
 // In-flight cross-rank DERIVATIVE exchange. Pack + Ialltoallv fire up front (from the pre-cos
@@ -206,7 +221,11 @@ inline auto begin_cross_rank_derivative_exchange(const std::vector<VecD> &sin_se
     resize_flat_exchange_buffers(layout, buffers);
     // Pack reads the PRE-COS sin_send snapshots, so it is safe to fire before the cos pass mutates
     // the live state/ham. The Ialltoallv only touches send/recv buffers, never state/ham.
-    pack_cross_rank_derivative_payload_impl(sin_send_state, sin_send_op, layer, in_flight.my_rank, layout,
+    pack_cross_rank_derivative_payload_impl(sin_send_state,
+                                            sin_send_op,
+                                            layer,
+                                            in_flight.my_rank,
+                                            layout,
                                             buffers.send_buffer);
     in_flight.handle = begin_flat_exchange(layout, buffers, comm);
     return in_flight;
@@ -245,10 +264,20 @@ void pack_cross_rank_evolution_payload_impl(VecD &op,
                                             const LayerExchangeLayout &layout,
                                             VecD &send_buffer) {
     // Pack B entries: each entry contributes one scalar.
-    threading::parallel_for_cross_rank_sin_send_ranges(layer, my_rank, [&](size_t rank, size_t begin, size_t end) {
+    const size_t num_ranks = layer.cross_rank_rank_count();
+    for (size_t rank = 0; rank < num_ranks; ++rank) {
+        if (static_cast<int>(rank) == my_rank) {
+            continue;
+        }
+        const size_t end = layer.cross_rank_sin_send_size(rank);
+        if (end == 0) {
+            continue;
+        }
         const size_t base = static_cast<size_t>(layout.displs[rank]);
-        layer.for_each_cross_rank_sin_send_range(rank, begin, end, [&](size_t k, size_t i) { send_buffer[base + k] = op[i]; });
-    });
+        layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&](size_t k, size_t i) {
+            send_buffer[base + k] = op[i];
+        });
+    }
 }
 
 void apply_cross_rank_evolution_exchange_impl(VecD &op,
@@ -261,12 +290,20 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
     // cos_data now includes the endpoints, so the cosine pass already scaled op[i] to cos·op_old[i];
     // this pass only ADDS the sine rotation. recv[k] holds the partner's pre-cos B-snapshot (packed
     // before any cos mutation), so op[i] = cos·op_old[i] + sin·φ·partner_old — identical to before.
-    threading::parallel_for_cross_rank_sin_recv_ranges(layer, my_rank, [&](size_t rank, size_t begin, size_t end) {
+    const size_t num_ranks = layer.cross_rank_rank_count();
+    for (size_t rank = 0; rank < num_ranks; ++rank) {
+        if (static_cast<int>(rank) == my_rank) {
+            continue;
+        }
+        const size_t end = layer.cross_rank_sin_recv_size(rank);
+        if (end == 0) {
+            continue;
+        }
         const auto *rv = recv_buffer.data() + recv_displs[rank];
-        layer.for_each_cross_rank_sin_recv_range(rank, begin, end, [&](size_t k, size_t i, int phi_signed) {
+        layer.for_each_cross_rank_sin_recv_range(rank, 0, end, [&](size_t k, size_t i, int phi_signed) {
             op[i] += sin_val * static_cast<double>(phi_signed) * rv[k];
         });
-    });
+    }
 }
 
 // In-flight cross-rank evolution exchange. Pack + Ialltoallv have already fired by the time
@@ -330,41 +367,34 @@ auto apply_self_slot_derivative_paired(VecD &state,
         return {};
     }
     const size_t pairs = self_d_count / 2; // == P; rotation k = (d[k], d[k+P])
-    return threading::parallel_reduce_ranges(
-        pairs,
-        EndpointContrib{},
-        [&](size_t begin, size_t end, EndpointContrib local) {
-            for (size_t k = begin; k < end; ++k) {
-                const size_t i1 = layer.cross_rank_sin_recv_index_at(my_rank, k);
-                const double phi1 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k));
-                const size_t i2 = layer.cross_rank_sin_recv_index_at(my_rank, k + pairs);
-                const double phi2 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k + pairs));
-                // Recover pre-cos values (read both endpoints before any write).
-                const double s1 = state[i1] * trig.sec_val;
-                const double h1 = op[i1] * trig.cos_val;
-                const double s2 = state[i2] * trig.sec_val;
-                const double h2 = op[i2] * trig.cos_val;
-                // i1's partner is i2 and vice-versa.
-                local.cos_terms += (s1 * h1) + (s2 * h2);
-                local.sin_terms += (phi1 * s1 * h2) + (phi2 * s2 * h1);
-                // INVERSE-rotation write-back (−sin); see apply_cross_rank_derivative_exchange_impl.
-                const double ps1 = -trig.sin_val * phi1;
-                const double ps2 = -trig.sin_val * phi2;
-                op[i1] = (h1 * trig.cos_val) + (ps1 * h2);
-                state[i1] = (s1 * trig.cos_val) + (ps1 * s2);
-                op[i2] = (h2 * trig.cos_val) + (ps2 * h1);
-                state[i2] = (s2 * trig.cos_val) + (ps2 * s1);
-            }
-            return local;
-        },
-        combine_endpoint_contrib,
-        threading::range_grain_size(pairs, 1));
+    EndpointContrib local{};
+    for (size_t k = 0; k < pairs; ++k) {
+        const size_t i1 = layer.cross_rank_sin_recv_index_at(my_rank, k);
+        const double phi1 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k));
+        const size_t i2 = layer.cross_rank_sin_recv_index_at(my_rank, k + pairs);
+        const double phi2 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k + pairs));
+        // Recover pre-cos values (read both endpoints before any write).
+        const double s1 = state[i1] * trig.sec_val;
+        const double h1 = op[i1] * trig.cos_val;
+        const double s2 = state[i2] * trig.sec_val;
+        const double h2 = op[i2] * trig.cos_val;
+        // i1's partner is i2 and vice-versa.
+        local.cos_terms += (s1 * h1) + (s2 * h2);
+        local.sin_terms += (phi1 * s1 * h2) + (phi2 * s2 * h1);
+        // INVERSE-rotation write-back (−sin); see apply_cross_rank_derivative_exchange_impl.
+        const double ps1 = -trig.sin_val * phi1;
+        const double ps2 = -trig.sin_val * phi2;
+        op[i1] = (h1 * trig.cos_val) + (ps1 * h2);
+        state[i1] = (s1 * trig.cos_val) + (ps1 * s2);
+        op[i2] = (h2 * trig.cos_val) + (ps2 * h1);
+        state[i2] = (s2 * trig.cos_val) + (ps2 * s1);
+    }
+    return local;
 }
 
 // Per-thread pool for the derivative's pre-cos snapshot buffers, reused across layers so the reverse
 // walk does not malloc/free four vector<VecD> per layer (resize keeps capacity; snapshot semantics
-// unchanged). thread_local + capture-by-reference is safe: the buffers are filled and read on the
-// calling thread and handed to pool workers by reference (workers never touch their own copy).
+// unchanged). thread_local keeps each shard master's scratch private to its own core.
 struct DerivativeSnapshotScratch {
     std::vector<VecD> sin_send_state;
     std::vector<VecD> sin_send_op;
@@ -382,7 +412,7 @@ auto derivative_snapshot_scratch() -> DerivativeSnapshotScratch & {
 // pre-cos value applied when the partner payload arrives. The self slot (r == my_rank) needs no
 // snapshot — apply_self_slot_derivative_paired recovers its pre-cos values live from the post-cos slots
 // (state[i]=s_old·cos, op[i]=h_old·sec) — so its four slots are cleared. Buffers are pooled per-thread
-// (bound by reference so pool workers read the calling thread's copy); each k writes its own slot.
+// (each shard master keeps its own); each k writes its own slot.
 void snapshot_remote_endpoints(const VecD &state,
                                const VecD &op,
                                const LayerTraversal &layer,
@@ -407,11 +437,9 @@ void snapshot_remote_endpoints(const VecD &state,
         if (bc > 0) {
             auto &bs = snap.sin_send_state[r];
             auto &bh = snap.sin_send_op[r];
-            threading::parallel_for_ranges(bc, [&](size_t begin, size_t end) {
-                layer.for_each_cross_rank_sin_send_range(r, begin, end, [&](size_t k, size_t i) {
-                    bs[k] = state[i];
-                    bh[k] = op[i];
-                });
+            layer.for_each_cross_rank_sin_send_range(r, 0, bc, [&](size_t k, size_t i) {
+                bs[k] = state[i];
+                bh[k] = op[i];
             });
         }
         const size_t dc = layer.cross_rank_sin_recv_size(r);
@@ -420,11 +448,9 @@ void snapshot_remote_endpoints(const VecD &state,
         if (dc > 0) {
             auto &ds = snap.sin_recv_state[r];
             auto &dh = snap.sin_recv_op[r];
-            threading::parallel_for_ranges(dc, [&](size_t begin, size_t end) {
-                layer.for_each_cross_rank_sin_recv_range(r, begin, end, [&](size_t k, size_t i, int /*phi*/) {
-                    ds[k] = state[i];
-                    dh[k] = op[i];
-                });
+            layer.for_each_cross_rank_sin_recv_range(r, 0, dc, [&](size_t k, size_t i, int /*phi*/) {
+                ds[k] = state[i];
+                dh[k] = op[i];
             });
         }
     }
@@ -480,8 +506,8 @@ auto state_operator_derivative_local_impl(VecD &state,
     }
     // Wait for the transfer and apply remote partner payloads (runs after the cos pass, so remote
     // D-endpoints are overwritten with snapshot-based values exactly as in the blocking order).
-    const auto remote = finish_cross_rank_derivative_exchange(
-        state, op, layer, sin_recv_state, sin_recv_op, trig, in_flight);
+    const auto remote =
+        finish_cross_rank_derivative_exchange(state, op, layer, sin_recv_state, sin_recv_op, trig, in_flight);
     ep = combine_endpoint_contrib(ep, remote);
 
     // Reverse-mode contribution of layer j: dE/dθ_j = g·(−sin·A_ep + cos·B), where A_ep and B are
@@ -505,8 +531,7 @@ auto state_operator_derivative_local(VecD &state,
                                      double param,
                                      const detail::LayerCosAccumulate &cos_acc,
                                      mpi::Comm comm) -> double {
-    return state_operator_derivative_local_impl(
-        state, op, graph, layer_idx, gen_coeff, param, comm, cos_acc);
+    return state_operator_derivative_local_impl(state, op, graph, layer_idx, gen_coeff, param, comm, cos_acc);
 }
 
 auto evolve_step_traversal_impl(VecD &op,
@@ -525,23 +550,14 @@ auto evolve_step_traversal_impl(VecD &op,
     // Snapshot self-B (cross_rank[my_rank] B-indices) BEFORE the cos pass.
     // This must run unconditionally (not gated on MPI size) so single-rank works.
     // The pack for remote ranks skips my_rank, so this is a separate local snapshot.
-    const size_t self_b_count = (my_rank < layer.cross_rank_rank_count())
-                                    ? layer.cross_rank_sin_send_size(my_rank)
-                                    : 0;
-    // NOTE: must NOT be thread_local — it is filled on the calling thread and then read
-    // from pool worker threads in the parallel self-apply below. A thread_local buffer would
-    // be empty on the workers (out-of-bounds → crash). A plain local is shared by reference.
+    const size_t self_b_count = (my_rank < layer.cross_rank_rank_count()) ? layer.cross_rank_sin_send_size(my_rank) : 0;
     VecD self_b_snapshot;
     self_b_snapshot.resize(self_b_count);
     if (self_b_count > 0) {
-        // Parallel gather: each k writes its own snapshot[k] (disjoint) and only reads op[i]. At R==1
-        // every rotation partner is self-rank, so self_b_count is the full rotation set — running this
-        // serially was an Amdahl anchor that capped the whole apply's scaling. Mirrors the parallel
-        // B-snapshot in state_operator_derivative_local_impl.
+        // Gather the pre-cos self-B values (each k reads op[i] into its own snapshot[k]).
         auto &snap = self_b_snapshot;
-        threading::parallel_for_ranges(self_b_count, [&](size_t begin, size_t end) {
-            layer.for_each_cross_rank_sin_send_range(my_rank, begin, end,
-                                              [&](size_t k, size_t i) { snap[k] = op[i]; });
+        layer.for_each_cross_rank_sin_send_range(my_rank, 0, self_b_count, [&](size_t k, size_t i) {
+            snap[k] = op[i];
         });
     }
 
@@ -559,13 +575,9 @@ auto evolve_step_traversal_impl(VecD &op,
     // the sine rotation: op[i] += sin·φ_signed·self_b_snapshot[k].
     if (self_b_count > 0) {
         const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);
-        threading::parallel_for_ranges(
-            self_d_count,
-            [&](size_t begin, size_t end) {
-                layer.for_each_cross_rank_sin_recv_range(my_rank, begin, end, [&](size_t k, size_t i, int phi_signed) {
-                    op[i] += sin_val * static_cast<double>(phi_signed) * self_b_snapshot[k];
-                });
-            });
+        layer.for_each_cross_rank_sin_recv_range(my_rank, 0, self_d_count, [&](size_t k, size_t i, int phi_signed) {
+            op[i] += sin_val * static_cast<double>(phi_signed) * self_b_snapshot[k];
+        });
     }
 }
 

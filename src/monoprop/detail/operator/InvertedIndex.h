@@ -82,12 +82,6 @@ struct InvertedIndex {
     std::array<Column, kNumColumns> cols{};
     size_t row_count = 0;
 
-    // Persistent scratch for the row-block-parallel fill (see fill_rows_parallel_): per-chunk sparse
-    // staging + the (chunk × column) counting-sort cursor matrix. Kept across gates so the fill does
-    // not allocate/free megabytes per gate (allocator page churn measurably taxed LATER phases).
-    std::vector<std::vector<std::pair<uint32_t, TermIndex>>> fill_stage_{};
-    std::vector<size_t> fill_cursors_{};
-
     // Lazily-built parity of |M| per row, packed 1 bit/row (word w, bit b == parity of row 64*w+b).
     // Empty until the first odd-parity generator requests it; even-parity workloads never allocate it.
     // mutable: a derived cache over the unchanged rows, populated lazily through a const inverted index.
@@ -147,23 +141,9 @@ struct InvertedIndex {
         col.is_dense = true;
     }
 
-    // Serial floor for the parallel fill (rows per batch). Small per-gate batches are cache-resident
-    // appends where task dispatch is pure overhead; the floor keeps the many-tiny-gate regimes serial.
-    static constexpr size_t kFillSerialMin = 16384;
-
-    // Scatter the set bits of new rows [base, base+n) of `op` into the tiered columns.
-    //
-    // Large batches run ROW-BLOCK-parallel: [base, base+n) is split into chunks whose interior
-    // boundaries are 512-row-aligned in ABSOLUTE row index, so each chunk owns disjoint whole words
-    // (512 rows = 8 words = one cacheline per dense column — no shared words, no false sharing, no
-    // atomics), and each row is read exactly once. Sparse hits are staged per chunk and scattered into
-    // each column's set_rows at counting-sort offsets in chunk order, which reproduces the ascending
-    // serial append order exactly (bit-identical result at any thread count; the fold-recompute path
-    // depends on ascending sparse rows — see ensure_sorted_columns).
-    //
-    // Row-block (not column-parallel) decomposition is deliberate: a column-parallel fill has every task
-    // re-scan all n rows and thrash the full dense column set. Row blocks avoid both failure modes —
-    // reads are shared streaming, writes are word-disjoint.
+    // Scatter the set bits of new rows [base, base+n) of `op` into the tiered columns: dense bits go
+    // straight to the word array, sparse rows append ascending (the fold-recompute path depends on
+    // ascending sparse rows — see ensure_sorted_columns).
     template <typename Rows>
     auto fill_rows(const Rows &op, size_t base, size_t n) -> void {
         if (n == 0) {
@@ -176,13 +156,7 @@ struct InvertedIndex {
                 col.words.resize(required_words, 0);
             }
         }
-        const size_t p = threading::effective_parallelism();
-        if (p <= 1 || n < kFillSerialMin) {
-            fill_rows_range_serial_(op, base, new_total_rows);
-        }
-        else {
-            fill_rows_parallel_(op, base, n, p);
-        }
+        fill_rows_range_serial_(op, base, new_total_rows);
         for (size_t c = 0; c < kNumColumns; ++c) {
             Column &col = cols[c];
             if (!col.is_dense && col.set_rows.size() * kPromoteDensityInv >= row_count) {
@@ -191,8 +165,8 @@ struct InvertedIndex {
         }
     }
 
-    // The serial fill kernel over absolute rows [lo, hi): dense bits go straight to the word array,
-    // sparse rows append ascending. Also the per-chunk kernel's shape (see fill_rows_parallel_).
+    // The fill kernel over absolute rows [lo, hi): dense bits go straight to the word array,
+    // sparse rows append ascending.
     template <typename Rows>
     auto fill_rows_range_serial_(const Rows &op, size_t lo, size_t hi) -> void {
         for (size_t row_idx = lo; row_idx < hi; ++row_idx) {
@@ -208,84 +182,6 @@ struct InvertedIndex {
                 }
             });
         }
-    }
-
-    // Row-block-parallel fill (see fill_rows). Three passes:
-    //   1. parallel over word-aligned chunks: dense writes in place (word-disjoint), sparse hits staged
-    //      per chunk in row order with per-(chunk, column) counts;
-    //   2. serial counting-sort offsets (chunks × columns adds — trivial);
-    //   3. parallel scatter of each chunk's staged rows into its disjoint set_rows slices.
-    // Chunk-order layout == ascending row order == the serial append order, at any thread count.
-    template <typename Rows>
-    auto fill_rows_parallel_(const Rows &op, size_t base, size_t n, size_t p) -> void {
-        constexpr size_t kAlignRows = 512; // 8 words = one cacheline per dense column per boundary
-        constexpr size_t kMinBlocksPerChunk = 8;
-        const size_t last = base + n;
-        const size_t first_block = base / kAlignRows;
-        const size_t n_blocks = (last + kAlignRows - 1) / kAlignRows - first_block;
-        const size_t chunks = std::min(p * 4, std::max<size_t>(1, n_blocks / kMinBlocksPerChunk));
-        if (chunks <= 1) {
-            fill_rows_range_serial_(op, base, last);
-            return;
-        }
-        const size_t bpc = (n_blocks + chunks - 1) / chunks;
-        auto chunk_lo = [&](size_t c) { return std::max(base, (first_block + c * bpc) * kAlignRows); };
-        auto chunk_hi = [&](size_t c) { return std::min(last, (first_block + (c + 1) * bpc) * kAlignRows); };
-
-        // Pass 1: cursors[c*K + b] first holds chunk c's sparse-hit count for column b. The staging
-        // buffers are PERSISTENT members (capacity reused across gates): freeing megabytes of staging
-        // every gate returned the pages to the OS and left later allocations re-faulting them.
-        auto &stage = fill_stage_;
-        auto &cursors = fill_cursors_;
-        if (stage.size() < chunks) {
-            stage.resize(chunks);
-        }
-        cursors.assign(chunks * kNumColumns, 0);
-        threading::run_static(chunks, [&](size_t c) {
-            auto &st = stage[c];
-            st.clear(); // ALWAYS clear (empty chunks too) — pass 3 replays stage[c] verbatim
-            const size_t lo = chunk_lo(c);
-            const size_t hi = chunk_hi(c);
-            if (lo >= hi) {
-                return;
-            }
-            size_t *cnt = cursors.data() + c * kNumColumns;
-            for (size_t row_idx = lo; row_idx < hi; ++row_idx) {
-                const size_t w = row_idx >> 6U;
-                const uint64_t row_bit = uint64_t{1} << (row_idx & 63U);
-                for_each_row_position<NumModes>(op, row_idx, [&](size_t bit) {
-                    Column &col = cols[bit];
-                    if (col.is_dense) {
-                        col.words[w] |= row_bit;
-                    }
-                    else {
-                        st.emplace_back(static_cast<uint32_t>(bit), static_cast<TermIndex>(row_idx));
-                        ++cnt[bit];
-                    }
-                });
-            }
-        });
-
-        // Pass 2: per column, turn counts into chunk-order write cursors and size set_rows once.
-        for (size_t b = 0; b < kNumColumns; ++b) {
-            Column &col = cols[b];
-            if (col.is_dense) {
-                continue;
-            }
-            size_t off = col.set_rows.size();
-            for (size_t c = 0; c < chunks; ++c) {
-                off += std::exchange(cursors[c * kNumColumns + b], off);
-            }
-            col.set_rows.resize(off);
-        }
-
-        // Pass 3: replay each chunk's staged (column, row) hits — disjoint destination slices per (c, b).
-        threading::run_static(chunks, [&](size_t c) {
-            size_t *cur = cursors.data() + c * kNumColumns;
-            for (const auto &[b, r] : stage[c]) {
-                cols[b].set_rows[cur[b]++] = r;
-            }
-        });
     }
 
     template <typename Rows>
@@ -305,26 +201,15 @@ struct InvertedIndex {
         }
         const size_t required_words = (size + 63) / 64;
 
-        // Pass 1: per-column set-bit counts (parallel reduce) → decide tiers from the FINAL density,
-        // so the fill never has to promote. One count array per row CHUNK (not per thread), summed in
-        // chunk order — deterministic at any thread count (integer sums commute anyway).
+        // Pass 1: per-column set-bit counts → decide tiers from the FINAL density, so the fill never has
+        // to promote.
         using Counts = std::array<size_t, kNumColumns>;
-        const size_t grain = std::max<size_t>(256, size / 64);
-        const size_t count_chunks = (size + grain - 1) / grain;
-        std::vector<Counts> chunk_counts(count_chunks); // value-initialized → all zeros
-        threading::run_static(count_chunks, [&](size_t chunk) {
-            Counts &cnt = chunk_counts[chunk];
-            const size_t lo = chunk * grain;
-            const size_t hi = std::min(size, lo + grain);
-            for (size_t row_idx = lo; row_idx < hi; ++row_idx) {
-                for_each_row_position<NumModes>(op, row_idx, [&](size_t bit) { ++cnt[bit]; });
-            }
-        });
+        Counts counts{}; // value-initialized → all zeros
+        for (size_t row_idx = 0; row_idx < size; ++row_idx) {
+            for_each_row_position<NumModes>(op, row_idx, [&](size_t bit) { ++counts[bit]; });
+        }
         for (size_t c = 0; c < kNumColumns; ++c) {
-            size_t count = 0;
-            for (const auto &cnt : chunk_counts) {
-                count += cnt[c];
-            }
+            const size_t count = counts[c];
             Column &col = cols[c];
             if (count * kPromoteDensityInv >= size) {
                 col.is_dense = true;
@@ -444,10 +329,10 @@ inline auto pivot_column_block_scratch() -> std::vector<uint64_t> & {
 
 template <size_t NumModes>
 [[gnu::always_inline]] inline auto combine_columns_block(const InvertedIndex<NumModes> &sc,
-                                                    std::span<const size_t> cols,
-                                                    uint64_t *blk,
-                                                    size_t bb,
-                                                    size_t be) -> void {
+                                                         std::span<const size_t> cols,
+                                                         uint64_t *blk,
+                                                         size_t bb,
+                                                         size_t be) -> void {
     const size_t nb = be - bb;
     std::memset(blk, 0, nb * sizeof(uint64_t));
     const size_t lo = bb * 64;

@@ -145,40 +145,20 @@ struct MPOperator {
             return op_coeffs;
         }
 
-        // Snapshot keys/values to enable parallel iteration (the flat_map itself isn't safely iterable
-        // while erasing). Matched entries are erased afterward, single-threaded, to avoid concurrent
-        // map mutation.
-        std::vector<std::pair<MajoranaSet<NumModes>, double>> items;
-        items.reserve(init_op_map.size());
+        // Match keys in ascending map order; the found entries are erased afterward (the flat_map is not
+        // safely mutable mid-iteration), so the erase order is deterministic (ascending map order).
+        std::vector<MajoranaSet<NumModes>> del;
         for (const auto &kv : init_op_map) {
-            items.emplace_back(kv.first, kv.second);
+            const auto &maj = kv.first;
+            const auto coeff = kv.second;
+            if (const auto found = store->find(maj)) {
+                op_coeffs[*found] = coeff;
+                del.push_back(maj);
+            }
         }
 
-        // Matched keys are staged per CHUNK (not per thread) and concatenated in chunk order, so the
-        // erase order below is deterministic at any thread count (ascending items order).
-        const size_t n_items = items.size();
-        const size_t grain = threading::kDefaultGrainSize;
-        const size_t del_chunks = (n_items + grain - 1) / grain;
-        std::vector<std::vector<MajoranaSet<NumModes>>> del_parts(del_chunks);
-        threading::run_static(del_chunks, [&](size_t c) {
-            auto &local_del = del_parts[c];
-            const size_t lo = c * grain;
-            const size_t hi = std::min(n_items, lo + grain);
-            for (size_t i = lo; i < hi; ++i) {
-                const auto &maj = items[i].first;
-                const auto coeff = items[i].second;
-                if (const auto found = store->find(maj)) {
-                    op_coeffs[*found] = coeff;
-                    local_del.push_back(maj);
-                }
-            }
-        });
-
-        // Batch erase processed entries (do erases single-threaded, in chunk order).
-        for (const auto &part : del_parts) {
-            for (const auto &maj : part) {
-                init_op_map.erase(maj);
-            }
+        for (const auto &maj : del) {
+            init_op_map.erase(maj);
         }
 
         return op_coeffs;
@@ -214,18 +194,18 @@ struct MPOperator {
         // term slots 2q and 2q+1 agree, so the same get_hf_mask feeds both phases (see pauli_hf_phase).
         if (basis == Basis::Pauli) {
             const auto hf_mask = get_hf_mask<NumModes>(slater_determinant);
-            threading::parallel_for_indices(paired_inds.size(), [&](size_t i) {
+            for (size_t i = 0; i < paired_inds.size(); ++i) {
                 const auto &row = materialize_row<NumModes>(*store, paired_inds[i]);
                 state_coeffs[paired_inds[i]] = pauli_hf_phase<NumModes>(row, hf_mask);
-            });
+            }
             return state_coeffs;
         }
 
         const auto hf_phases = get_hf_phases<NumModes>(paired_inds, slater_determinant, *store);
 
-        threading::parallel_for_indices(paired_inds.size(), [&](size_t i) {
+        for (size_t i = 0; i < paired_inds.size(); ++i) {
             state_coeffs[paired_inds[i]] = hf_phases[i];
-        });
+        }
 
         return state_coeffs;
     }
@@ -306,7 +286,9 @@ struct MPOperator {
 template <size_t NumModes, typename KeyAt, typename PerSlot>
 inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
     const size_t base = op.store->grow_rows_geometric(n);
-    threading::parallel_for_indices(n, [&](size_t k) { per_slot(k, base); });
+    for (size_t k = 0; k < n; ++k) {
+        per_slot(k, base);
+    }
     op.store->bulk_insert(n, base, std::forward<KeyAt>(key_at));
     op.reindex_after_growth(base, n);
     return base;

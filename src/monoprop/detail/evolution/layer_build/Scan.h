@@ -155,8 +155,10 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
 // cap, upper-atol freeze, lower-atol sine cutoff) and a STATIC part (structural cutoff on M' = M⊕G,
 // via CutoffEvaluator::passes_with_popcount). Every emitting path MUST use these helpers so the
 // gate semantics cannot drift between paths.
-inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t maj_pop, const CutoffContext &ctx, double abs_c)
-    -> bool {
+inline auto rotation_dynamic_gate(int only_rotate_len_k,
+                                  size_t maj_pop,
+                                  const CutoffContext &ctx,
+                                  double abs_c) -> bool {
     if (only_rotate_len_k > 0 && maj_pop > static_cast<size_t>(only_rotate_len_k)) {
         return false;
     }
@@ -280,9 +282,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     const size_t gen_pop = gen.count();
     const auto ectx = make_gen_emit_context<NumModes, IsPauli>(gen);
 
-    // Cutoff + emit for one anticommuting term. Writes only the per-chunk per-rank sinks passed in
-    // (safe under for_each_chunk). The dynamic gate (depends only on |M|) runs BEFORE
-    // emit_term_products, so a gate-rejected term computes no products.
+    // Cutoff + emit for one anticommuting term. Writes only the per-rank sinks passed in. The dynamic
+    // gate (depends only on |M|) runs BEFORE emit_term_products, so a gate-rejected term computes no
+    // products.
     // abs_c = |coeff[i]| is passed in (the caller already loaded it for the pre-popcount atol gate on
     // the only_rotate_len_k==0 fast path), so emit does not re-read the coefficient. `v_src` is the
     // SIGNED coeff (derived from the same read); it is pushed into lv/fv only when capture_values.
@@ -387,146 +389,120 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
 
         const size_t last_word = word_count - 1;
         const uint64_t last_word_mask = (n % 64 == 0) ? ~uint64_t{0} : ((uint64_t{1} << (n % 64)) - 1);
-        // Generator column list, pivot first. Each chunk folds its own L1-resident blocks inside
-        // pass 1 (combine_columns_block) — no serial full-width sparse-scatter prologue.
+        // Generator column list, pivot first. Pass 1 folds L1-resident blocks (combine_columns_block)
+        // — no full-width sparse-scatter prologue.
         const std::span<const size_t> gen_cols(gen_columns.indices.data(), gen_columns.count);
 
-        const size_t chunks = partition_chunk_count_words(word_count);
-        std::vector<CosMask> ch_cos(chunks);
-        std::vector<std::vector<VecZ>> ch_lq(chunks, std::vector<VecZ>(rank_count));
-        std::vector<std::vector<std::vector<size_t>>> ch_ls(chunks, std::vector<std::vector<size_t>>(rank_count));
-        std::vector<std::vector<VecZ>> ch_fq(chunks, std::vector<VecZ>(rank_count));
-        std::vector<std::vector<std::vector<size_t>>> ch_fs(chunks, std::vector<std::vector<size_t>>(rank_count));
-        // Fused v_src sinks: allocated (chunks × rank_count) only when capture_values; otherwise the
-        // outer vectors hold `chunks` empty entries and are never indexed (emit guards on capture_values).
-        std::vector<std::vector<std::vector<double>>> ch_lv(chunks);
-        std::vector<std::vector<std::vector<double>>> ch_fv(chunks);
-        if (capture_values) {
-            for (size_t c = 0; c < chunks; ++c) {
-                ch_lv[c].assign(rank_count, std::vector<double>{});
-                ch_fv[c].assign(rank_count, std::vector<double>{});
-            }
-        }
-        for_each_chunk(word_count, chunks, [&](size_t c, size_t wlo, size_t whi) {
-            auto &cos = ch_cos[c];
-            auto &lq = ch_lq[c];
-            auto &ls = ch_ls[c];
-            auto &lv = ch_lv[c];
-            auto &fq = ch_fq[c];
-            auto &fs = ch_fs[c];
-            auto &fv = ch_fv[c];
+        // Single serial sweep over all inverted-index words [0, word_count). Emit directly into the
+        // result's per-rank query / source / value streams (each pre-sized to rank_count above). When
+        // !capture_values, leader_val/follower_val stay size 0 and are never indexed (emit guards on it).
+        auto &lq = res.leader_queries;
+        auto &ls = res.leader_src;
+        auto &lv = res.leader_val;
+        auto &fq = res.follower_queries;
+        auto &fs = res.follower_src;
+        auto &fv = res.follower_val;
 
-            // Pass 1: fold the inverted index to find anticommuting terms (see even_parity_scan_pass1).
-            // `nz` is thread_local to reuse capacity across chunks. Pass 1 and pass 2 stay FUSED in one
-            // chunk task on purpose: a split (pass-1 all chunks, barrier, then pass-2) measured +4-16%
-            // on the large fermionic workloads because `nz` spills out of L1 across the barrier.
-            thread_local std::vector<EvenParityNzWord> nz;
-            size_t n_anti = 0;
-            size_t n_foll = 0;
-            even_parity_scan_pass1<NumModes>(inverted_index,
-                                             gen_cols,
-                                             gen.find_first(),
-                                             wlo,
-                                             whi,
-                                             last_word,
-                                             last_word_mask,
-                                             g_odd,
-                                             row_parity_ptr,
-                                             nz,
-                                             n_anti,
-                                             n_foll);
-            if (rank_count == 1) {
-                lq[my_rank].reserve((n_anti - n_foll) * kQueryWords<NumModes>);
-                ls[my_rank].reserve(n_anti - n_foll);
-                fq[my_rank].reserve(n_foll * kQueryWords<NumModes>);
-                fs[my_rank].reserve(n_foll);
-            }
-            // Pass 2: collect cosine for EVERY anticommuting term, then apply cutoff + emit the query.
-            // No orbital gate → store each nz word's full overlap whole (push_word); orbital gate →
-            // per-index (push_index, ascending).
-            // Derive (v_src, abs_c) for term i, shared by both pass-2 arms. Fused mode captures the
-            // SIGNED coeff v_src and derives abs_c from it; the derived abs_c is bit-identical to
-            // abs_coeff_for, so the non-capture (OFF) path is unchanged. Kept out of the arms so the
-            // gate-before-popcount ordering in each arm stays explicit at the call site.
-            auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
-                if (capture_values) {
-                    const double v_src = (i < coeffs.size()) ? coeffs[i] : 0.0;
-                    return {v_src, cut_st.use_coeff_checks ? std::abs(v_src) : 0.0};
-                }
-                return {0.0, cut_st.abs_coeff_for(i, coeffs)};
-            };
-            const bool word_aligned_cos = only_rotate_len_k == 0;
-            CosineWordBuilder cos_b;
-            for (const auto &w : nz) {
-                if (word_aligned_cos && fused_scale_coeffs != nullptr) {
-                    // Fused cos sweep (ContractImmediately, k==0): every anticommuting coefficient is
-                    // loaded ONCE — the pre-cos value feeds the atol gate and v_src exactly as the eager
-                    // arm below — and stored back scaled, unconditionally and BEFORE any gate `continue`
-                    // (the sweep covers all anti terms; the gates only decide emission). No cosine set is
-                    // built: this store IS the gate's cos pass.
-                    for (uint64_t m = w.overlap; m; m &= m - 1) {
-                        const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                        const size_t i = w.base + tz;
-                        const double v_src = fused_scale_coeffs[i];
-                        fused_scale_coeffs[i] = v_src * fused_scale_cos;
-                        const double abs_c = std::abs(v_src);
-                        if (cut_st.is_below_sin(abs_c)) {
-                            continue;
-                        }
-                        const size_t maj_pop = op.store->popcount(i);
-                        const bool is_follower = (w.foll >> tz) & 1u;
-                        emit(maj_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
-                    }
-                }
-                else if (word_aligned_cos) {
-                    // No orbital gate: cosine-scale the whole word (all anticommuting terms), then per
-                    // bit apply the ATOL coefficient gate BEFORE the popcount ROW read. ~90–97% of
-                    // anticommuting terms fail this gate (their coefficient is below the sine cutoff),
-                    // and the gate needs only |coeff[i]| — not the row — so deferring popcount until a
-                    // term passes eliminates that many random packed-row cacheline loads (the dominant
-                    // pass-2 memory traffic). Bit-identical: same emitted set/order, same cos word.
-                    cos_b.push_word(w.base, w.overlap);
-                    for (uint64_t m = w.overlap; m; m &= m - 1) {
-                        const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                        const size_t i = w.base + tz;
-                        const auto [v_src, abs_c] = derive_coeff(i);
-                        if (cut_st.is_below_sin(abs_c)) {
-                            continue;
-                        }
-                        const size_t maj_pop = op.store->popcount(i);
-                        const bool is_follower = (w.foll >> tz) & 1u;
-                        emit(maj_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
-                    }
-                }
-                else {
-                    // Orbital gate active: it needs maj_pop, and the per-index cosine push covers only
-                    // orbital-passing terms, so the popcount row read must precede both.
-                    for (uint64_t m = w.overlap; m; m &= m - 1) {
-                        const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                        const size_t i = w.base + tz;
-                        const size_t maj_pop = op.store->popcount(i);
-                        if (maj_pop > static_cast<size_t>(only_rotate_len_k)) {
-                            continue;
-                        }
-                        cos_b.push_index(i);
-                        const auto [v_src, abs_c] = derive_coeff(i);
-                        const bool is_follower = (w.foll >> tz) & 1u;
-                        emit(maj_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
-                    }
-                }
-            }
-            cos = cos_b.finish();
-        });
-        res.cos_blocks = std::move(ch_cos);
-        append_chunked_rank_vectors(res.leader_queries, ch_lq);
-        append_chunked_rank_vectors(res.leader_src, ch_ls);
-        append_chunked_rank_vectors(res.follower_queries, ch_fq);
-        append_chunked_rank_vectors(res.follower_src, ch_fs);
-        if (capture_values) {
-            // res.leader_val / follower_val were pre-sized to R above; append the per-chunk parts.
-            append_chunked_rank_vectors(res.leader_val, ch_lv);
-            append_chunked_rank_vectors(res.follower_val, ch_fv);
+        // Pass 1: fold the inverted index to find anticommuting terms (see even_parity_scan_pass1).
+        // Pass 1 and pass 2 stay FUSED in one loop over `nz`: splitting them (pass-1 fully, then pass-2)
+        // measured +4-16% on the large fermionic workloads because `nz` spills out of L1 between them.
+        // `nz` is thread_local so each shard master reuses its capacity across gates.
+        thread_local std::vector<EvenParityNzWord> nz;
+        size_t n_anti = 0;
+        size_t n_foll = 0;
+        even_parity_scan_pass1<NumModes>(inverted_index,
+                                         gen_cols,
+                                         gen.find_first(),
+                                         /*wlo=*/0,
+                                         /*whi=*/word_count,
+                                         last_word,
+                                         last_word_mask,
+                                         g_odd,
+                                         row_parity_ptr,
+                                         nz,
+                                         n_anti,
+                                         n_foll);
+        if (rank_count == 1) {
+            lq[my_rank].reserve((n_anti - n_foll) * kQueryWords<NumModes>);
+            ls[my_rank].reserve(n_anti - n_foll);
+            fq[my_rank].reserve(n_foll * kQueryWords<NumModes>);
+            fs[my_rank].reserve(n_foll);
         }
+        // Pass 2: collect cosine for EVERY anticommuting term, then apply cutoff + emit the query.
+        // No orbital gate → store each nz word's full overlap whole (push_word); orbital gate →
+        // per-index (push_index, ascending).
+        // Derive (v_src, abs_c) for term i, shared by both pass-2 arms. Fused mode captures the
+        // SIGNED coeff v_src and derives abs_c from it; the derived abs_c is bit-identical to
+        // abs_coeff_for, so the non-capture (OFF) path is unchanged. Kept out of the arms so the
+        // gate-before-popcount ordering in each arm stays explicit at the call site.
+        auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
+            if (capture_values) {
+                const double v_src = (i < coeffs.size()) ? coeffs[i] : 0.0;
+                return {v_src, cut_st.use_coeff_checks ? std::abs(v_src) : 0.0};
+            }
+            return {0.0, cut_st.abs_coeff_for(i, coeffs)};
+        };
+        const bool word_aligned_cos = only_rotate_len_k == 0;
+        CosineWordBuilder cos_b;
+        for (const auto &w : nz) {
+            if (word_aligned_cos && fused_scale_coeffs != nullptr) {
+                // Fused cos sweep (ContractImmediately, k==0): every anticommuting coefficient is
+                // loaded ONCE — the pre-cos value feeds the atol gate and v_src exactly as the eager
+                // arm below — and stored back scaled, unconditionally and BEFORE any gate `continue`
+                // (the sweep covers all anti terms; the gates only decide emission). No cosine set is
+                // built: this store IS the gate's cos pass.
+                for (uint64_t m = w.overlap; m; m &= m - 1) {
+                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                    const size_t i = w.base + tz;
+                    const double v_src = fused_scale_coeffs[i];
+                    fused_scale_coeffs[i] = v_src * fused_scale_cos;
+                    const double abs_c = std::abs(v_src);
+                    if (cut_st.is_below_sin(abs_c)) {
+                        continue;
+                    }
+                    const size_t maj_pop = op.store->popcount(i);
+                    const bool is_follower = (w.foll >> tz) & 1u;
+                    emit(maj_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
+                }
+            }
+            else if (word_aligned_cos) {
+                // No orbital gate: cosine-scale the whole word (all anticommuting terms), then per
+                // bit apply the ATOL coefficient gate BEFORE the popcount ROW read. ~90–97% of
+                // anticommuting terms fail this gate (their coefficient is below the sine cutoff),
+                // and the gate needs only |coeff[i]| — not the row — so deferring popcount until a
+                // term passes eliminates that many random packed-row cacheline loads (the dominant
+                // pass-2 memory traffic). Bit-identical: same emitted set/order, same cos word.
+                cos_b.push_word(w.base, w.overlap);
+                for (uint64_t m = w.overlap; m; m &= m - 1) {
+                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                    const size_t i = w.base + tz;
+                    const auto [v_src, abs_c] = derive_coeff(i);
+                    if (cut_st.is_below_sin(abs_c)) {
+                        continue;
+                    }
+                    const size_t maj_pop = op.store->popcount(i);
+                    const bool is_follower = (w.foll >> tz) & 1u;
+                    emit(maj_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
+                }
+            }
+            else {
+                // Orbital gate active: it needs maj_pop, and the per-index cosine push covers only
+                // orbital-passing terms, so the popcount row read must precede both.
+                for (uint64_t m = w.overlap; m; m &= m - 1) {
+                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                    const size_t i = w.base + tz;
+                    const size_t maj_pop = op.store->popcount(i);
+                    if (maj_pop > static_cast<size_t>(only_rotate_len_k)) {
+                        continue;
+                    }
+                    cos_b.push_index(i);
+                    const auto [v_src, abs_c] = derive_coeff(i);
+                    const bool is_follower = (w.foll >> tz) & 1u;
+                    emit(maj_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
+                }
+            }
+        }
+        res.cos_blocks.push_back(cos_b.finish());
     }
     return res;
 }

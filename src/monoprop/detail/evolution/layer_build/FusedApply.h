@@ -55,11 +55,9 @@ inline auto apply_fused_contract(FusedContract &fc,
     // (extend zero-fills the appended tail), so v_tgt stays its initialized 0.0 and the c[src] += …·v_tgt
     // add is a no-op; skip the gather entirely. Parallel over the distinct insert targets.
     if (schrodinger) {
-        threading::parallel_for_ranges(fc.inserts.size(), [&](size_t begin, size_t end) {
-            for (size_t k = begin; k < end; ++k) {
-                fc.inserts[k].v_tgt = op_coeffs[fc.inserts[k].tgt];
-            }
-        });
+        for (size_t k = 0; k < fc.inserts.size(); ++k) {
+            fc.inserts[k].v_tgt = op_coeffs[fc.inserts[k].tgt];
+        }
     }
 
     // (2) Two-pass mode only: cos scale over ALL anticommuting endpoints (inserts included) — the
@@ -86,33 +84,30 @@ inline auto apply_fused_contract(FusedContract &fc,
     const size_t n_full = n_hit + fc.inserts.size();
     const size_t n_cross = fc.cross_half.size();
     profiling::ScopedRegion prof_fa(profiling::Region::FusedApply);
-    threading::parallel_for_ranges(n_full + n_cross, [&](size_t begin, size_t end) {
-        for (size_t k = begin; k < end; ++k) {
-            if (k < n_full) {
-                const bool is_insert = k >= n_hit;
-                const RotationRec &r = is_insert ? fc.inserts[k - n_hit] : fc.hits[k];
-                c[r.src] += sin_val * static_cast<double>(-r.phase) * r.v_tgt;
-                if (fused_scale && is_insert) {
-                    c[r.tgt] = cos_val * c[r.tgt] + sin_val * static_cast<double>(r.phase) * r.v_src;
-                }
-                else {
-                    c[r.tgt] += sin_val * static_cast<double>(r.phase) * r.v_src;
-                }
+    for (size_t k = 0; k < n_full + n_cross; ++k) {
+        if (k < n_full) {
+            const bool is_insert = k >= n_hit;
+            const RotationRec &r = is_insert ? fc.inserts[k - n_hit] : fc.hits[k];
+            c[r.src] += sin_val * static_cast<double>(-r.phase) * r.v_tgt;
+            if (fused_scale && is_insert) {
+                c[r.tgt] = cos_val * c[r.tgt] + sin_val * static_cast<double>(r.phase) * r.v_src;
             }
             else {
-                // Cross-rank half rotations (R>1): add the wire-carried partner term to the one slot this
-                // rank owns; resolver MISS halves (fresh inserts, unswept) fold the cos in first.
-                const HalfRotationRec &h = fc.cross_half[k - n_full];
-                if (fused_scale && h.is_insert) {
-                    c[h.local_idx] =
-                        cos_val * c[h.local_idx] + sin_val * static_cast<double>(h.phase_signed) * h.v_partner;
-                }
-                else {
-                    c[h.local_idx] += sin_val * static_cast<double>(h.phase_signed) * h.v_partner;
-                }
+                c[r.tgt] += sin_val * static_cast<double>(r.phase) * r.v_src;
             }
         }
-    });
+        else {
+            // Cross-rank half rotations (R>1): add the wire-carried partner term to the one slot this
+            // rank owns; resolver MISS halves (fresh inserts, unswept) fold the cos in first.
+            const HalfRotationRec &h = fc.cross_half[k - n_full];
+            if (fused_scale && h.is_insert) {
+                c[h.local_idx] = cos_val * c[h.local_idx] + sin_val * static_cast<double>(h.phase_signed) * h.v_partner;
+            }
+            else {
+                c[h.local_idx] += sin_val * static_cast<double>(h.phase_signed) * h.v_partner;
+            }
+        }
+    }
 }
 
 } // namespace monoprop::detail

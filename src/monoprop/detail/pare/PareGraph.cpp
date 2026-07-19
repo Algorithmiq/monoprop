@@ -77,8 +77,9 @@ auto has_remote_cross_rank_edges(const Layer &layer, size_t my_rank) -> bool {
     return has_remote_edges;
 }
 
-auto build_builder_exchange_layout(const Layer &layer, size_t my_rank, BuilderExchangeDirection direction)
-    -> BuilderExchangeLayout {
+auto build_builder_exchange_layout(const Layer &layer,
+                                   size_t my_rank,
+                                   BuilderExchangeDirection direction) -> BuilderExchangeLayout {
     BuilderExchangeLayout layout;
     layout.send_counts.resize(layer.cross_rank_rank_count(), 0);
     layout.send_displs.resize(layer.cross_rank_rank_count(), 0);
@@ -89,10 +90,12 @@ auto build_builder_exchange_layout(const Layer &layer, size_t my_rank, BuilderEx
     size_t total_recv = 0;
     for_each_remote_rank(layer, my_rank, [&](size_t rank) {
         // In this layout the "outgoing" direction maps to B (send) and the "incoming" to D (recv).
-        const size_t send_count = direction == BuilderExchangeDirection::Outgoing ? cross_rank_sin_send_size(layer, rank)
-                                                                                  : cross_rank_sin_recv_size(layer, rank);
-        const size_t recv_count = direction == BuilderExchangeDirection::Outgoing ? cross_rank_sin_recv_size(layer, rank)
-                                                                                  : cross_rank_sin_send_size(layer, rank);
+        const size_t send_count = direction == BuilderExchangeDirection::Outgoing
+                                      ? cross_rank_sin_send_size(layer, rank)
+                                      : cross_rank_sin_recv_size(layer, rank);
+        const size_t recv_count = direction == BuilderExchangeDirection::Outgoing
+                                      ? cross_rank_sin_recv_size(layer, rank)
+                                      : cross_rank_sin_send_size(layer, rank);
         layout.send_counts[rank] = detail::checked_mpi_int(send_count, "Pare builder send count");
         layout.recv_counts[rank] = detail::checked_mpi_int(recv_count, "Pare builder receive count");
         total_send += send_count;
@@ -145,8 +148,9 @@ auto pack_source_keep_flags(const Layer &layer,
     });
 }
 
-auto execute_builder_exchange(const BuilderExchangeLayout &layout, BuilderExchangeBuffers &buffers, mpi::Comm comm)
-    -> void {
+auto execute_builder_exchange(const BuilderExchangeLayout &layout,
+                              BuilderExchangeBuffers &buffers,
+                              mpi::Comm comm) -> void {
     // Blocking one-shot keep-flag exchange. Recv counts are known locally (the per-rank transpose of
     // the send counts), so no count round is needed — just post + wait via the facade, which also
     // owns the "all ranks participate / never skip on zero counts" deadlock discipline. Buffers are
@@ -180,56 +184,20 @@ inline auto keep_mask_for_block(const std::vector<char> &keep, size_t base, uint
     return mask;
 }
 
-auto filter_layer_cosine_data(const CosMask &cos, const std::vector<char> &nodes_to_keep)
-    -> std::pair<CosMask, bool> {
+auto filter_layer_cosine_data(const CosMask &cos, const std::vector<char> &nodes_to_keep) -> std::pair<CosMask, bool> {
     const size_t n = cos.blocks.size();
-    if (n == 0) {
-        return {{}, true};
-    }
-    const bool use_parallel = threading::effective_parallelism() > 1
-                              && (n >= (threading::kSmallLoopThreshold * 4) || cos.total_count >= (size_t{1} << 15));
-
-    auto scan = [&](size_t begin, size_t end, CosMask &out, bool &preserves) {
-        for (size_t k = begin; k < end; ++k) {
-            const auto [base, bits] = cos.blocks[k];
-            const uint64_t kept = bits & keep_mask_for_block(nodes_to_keep, base, bits);
-            if (kept != bits) {
-                preserves = false;
-            }
-            if (kept) {
-                out.blocks.emplace_back(base, kept);
-                out.total_count += static_cast<size_t>(std::popcount(kept));
-            }
-        }
-    };
-
-    if (!use_parallel) {
-        CosMask filtered;
-        bool preserves = true;
-        scan(0, n, filtered, preserves);
-        if (preserves) {
-            return {{}, true};
-        }
-        return {std::move(filtered), false};
-    }
-
-    const size_t workers = threading::effective_parallelism();
-    const size_t block_count = std::min(n, std::max<size_t>(1, workers * 8));
-    const size_t chunk = (n + block_count - 1) / block_count;
-    struct Part {
-        CosMask list;
-        bool preserves = true;
-    };
-    std::vector<Part> parts((n + chunk - 1) / chunk);
-    threading::run_static(parts.size(), [&](size_t p) {
-        scan(p * chunk, std::min(n, (p + 1) * chunk), parts[p].list, parts[p].preserves);
-    });
     CosMask filtered;
     bool preserves = true;
-    for (auto &part : parts) {
-        preserves = preserves && part.preserves;
-        filtered.total_count += part.list.total_count;
-        filtered.blocks.insert(filtered.blocks.end(), part.list.blocks.begin(), part.list.blocks.end());
+    for (size_t k = 0; k < n; ++k) {
+        const auto [base, bits] = cos.blocks[k];
+        const uint64_t kept = bits & keep_mask_for_block(nodes_to_keep, base, bits);
+        if (kept != bits) {
+            preserves = false;
+        }
+        if (kept) {
+            filtered.blocks.emplace_back(base, kept);
+            filtered.total_count += static_cast<size_t>(std::popcount(kept));
+        }
     }
     if (preserves) {
         return {{}, true};
@@ -247,13 +215,13 @@ auto mark_replayed_d_targets(const Layer &layer, std::vector<char> &nodes_to_kee
     const size_t rank_count = layer.cross_rank_rank_count();
     for (size_t rank = 0; rank < rank_count; ++rank) {
         layer.for_each_cross_rank_sin_recv_range(rank,
-                                          0,
-                                          cross_rank_sin_recv_size(layer, rank),
-                                          [&](size_t /*logical_idx*/, size_t tgt_idx, int) {
-                                              if (tgt_idx < nodes_to_keep.size()) {
-                                                  nodes_to_keep[tgt_idx] = 1;
-                                              }
-                                          });
+                                                 0,
+                                                 cross_rank_sin_recv_size(layer, rank),
+                                                 [&](size_t /*logical_idx*/, size_t tgt_idx, int) {
+                                                     if (tgt_idx < nodes_to_keep.size()) {
+                                                         nodes_to_keep[tgt_idx] = 1;
+                                                     }
+                                                 });
     }
 }
 
@@ -310,15 +278,15 @@ auto propagate_cross_rank_b(const Layer &layer,
     for_each_remote_rank(layer, my_rank, [&](size_t rank) {
         const size_t base = static_cast<size_t>(selection_layout.recv_displs[rank]);
         layer.for_each_cross_rank_sin_send_range(rank,
-                                          0,
-                                          cross_rank_sin_send_size(layer, rank),
-                                          [&](size_t logical_idx, size_t src_idx) {
-                                              const bool selected = base + logical_idx < selection_recv.size()
-                                                                    && selection_recv[base + logical_idx] != 0;
-                                              if (selected && src_idx < nodes_to_keep.size()) {
-                                                  nodes_to_keep[src_idx] = 1;
-                                              }
-                                          });
+                                                 0,
+                                                 cross_rank_sin_send_size(layer, rank),
+                                                 [&](size_t logical_idx, size_t src_idx) {
+                                                     const bool selected = base + logical_idx < selection_recv.size()
+                                                                           && selection_recv[base + logical_idx] != 0;
+                                                     if (selected && src_idx < nodes_to_keep.size()) {
+                                                         nodes_to_keep[src_idx] = 1;
+                                                     }
+                                                 });
     });
 }
 

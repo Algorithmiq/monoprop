@@ -51,8 +51,8 @@ public:
 
     // Position element: u8 when 2N<=256 (byte-identical to the original packed layout), widening
     // only for larger mode counts so positions never truncate.
-    using PosT = std::conditional_t<(2 * NumModes <= 256), uint8_t,
-                                    std::conditional_t<(2 * NumModes <= 65536), uint16_t, uint32_t>>;
+    using PosT = std::
+        conditional_t<(2 * NumModes <= 256), uint8_t, std::conditional_t<(2 * NumModes <= 65536), uint16_t, uint32_t>>;
 
     static constexpr size_t kMaxInlinePositions = 11;
     static constexpr PosT kOverflowMarker = std::numeric_limits<PosT>::max();
@@ -94,24 +94,11 @@ public:
         return static_cast<size_t>(x);
     }
 
-    // The index is SHARDED into independent tables so the per-layer build insert -- a serial probe
-    // loop on one giant table, latency-bound and non-scaling -- becomes a parallel disjoint-shard
-    // insert. The shard COUNT is chosen from the available parallelism at construction
-    // (choose_shard_count). Routing uses the HIGH bits of the avalanched hash, leaving the low bits
-    // (in-shard bucketing) full-entropy. Sharding only relocates entries; it never changes
-    // membership or what find() returns, so it is BIT-EXACT.
-    static constexpr size_t kMaxShards = 64;                    // cap (bounds per-shard overhead)
-    static constexpr size_t kBulkInsertParallelMin = 1U << 12U; // small batches insert serially
-
-    // ~2x the worker count, rounded up to a power of two and capped: each worker gets a couple of shards
-    // for load balance without excessive per-shard overhead. 1 worker -> 1 shard (single table).
-    static auto choose_shard_count() -> size_t {
-        const size_t workers = threading::effective_parallelism();
-        if (workers <= 1) {
-            return 1;
-        }
-        return std::min(kMaxShards, std::bit_ceil(workers * 2));
-    }
+    // The index keeps its shard-routing machinery (a single table is shard_count_ == 1: shard_of()
+    // always returns 0, one deref on the hot probe path). Operator sharding across cores is handled a
+    // level up by ShardGroup; within one shard the index is a single lock-free table, filled serially.
+    // The routing never changes membership or what find() returns, so it is BIT-EXACT.
+    static constexpr size_t kMaxShards = 64; // cap (bounds per-shard overhead)
     auto shard_of_spread(size_t sp) const noexcept -> size_t { return (sp >> shard_shift_) & shard_mask_; }
     auto shard_of(uint32_t h) const noexcept -> size_t { return shard_of_spread(spread(h)); }
 
@@ -120,19 +107,21 @@ public:
     // It is purely a memory/overflow trade: rows longer than the width spill to overflow losslessly,
     // so any width is correct -- callers pass the cutoff that bounds the common-case popcount.
     explicit OperatorIndex(size_t inline_width = kMaxInlinePositions)
-        : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)), stride_(1 + inline_width_),
-          shard_count_(choose_shard_count()),
+        : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
+          stride_(1 + inline_width_),
+          shard_count_(1),
           shard_shift_(shard_count_ <= 1 ? 0 : 64U - static_cast<size_t>(std::countr_zero(shard_count_))),
-          shard_mask_(shard_count_ - 1), shards_(shard_count_) {}
+          shard_mask_(shard_count_ - 1),
+          shards_(shard_count_) {}
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
     OperatorIndex(OperatorIndex &&) = delete;
     OperatorIndex &operator=(OperatorIndex &&) = delete;
 
     // ---- deep copy ----------------------------------------------------------------------------
-    // Single named deep-copy (enables the simulator's __deepcopy__). The clone's shard_count_ may
-    // differ if the worker count changed, so entries are re-routed through the clone's own shard_of
-    // rather than copied verbatim. Returns by unique_ptr because owners hold the store that way.
+    // Single named deep-copy (enables the simulator's __deepcopy__). Entries are re-inserted through
+    // the clone's own shard_of rather than copied verbatim. Returns by unique_ptr because owners hold
+    // the store that way.
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
         auto out = std::make_unique<OperatorIndex>(inline_width_);
         {
@@ -381,103 +370,13 @@ public:
             return;
         }
         check_index_fits(base + n - 1);
-        // Small batch (or unsharded single-thread build): serial insert -- parallel_for + per-shard
-        // bucketing overhead would exceed the work.
-        if (shard_count_ == 1 || n < kBulkInsertParallelMin) {
-            for (size_t k = 0; k < n; ++k) {
-                const uint32_t h = fold_hash(key_at(k));
-                Shard &shard = shards_[shard_of(h)];
-                shard.rehash_if_needed();
-                insert_into_(shard, static_cast<TermIndex>(base + k), h);
-            }
-            return;
+        // Single-table serial insert: probe the one lock-free table for each of the n distinct keys.
+        for (size_t k = 0; k < n; ++k) {
+            const uint32_t h = fold_hash(key_at(k));
+            Shard &shard = shards_[shard_of(h)];
+            shard.rehash_if_needed();
+            insert_into_(shard, static_cast<TermIndex>(base + k), h);
         }
-        // Bucket the n DISTINCT keys by shard (hash-only -- no table probe), then insert each shard's
-        // entries in parallel: shards are disjoint, so the probe-heavy inserts never contend. Staging
-        // is a counting sort into ONE flat exact-sized array (shard s owns flat[off[s], off[s+1])) --
-        // a vector-of-vectors would duplicate every Slot with push_back capacity overshoot on top,
-        // a build-peak transient at large miss batches.
-        //
-        // The counting sort itself is CHUNK-PARALLEL over [0,n): each chunk tallies its own per-shard
-        // counts (pass 1), a tiny serial prefix lays out a chunk-major/shard-minor offset matrix
-        // (pass 2), and each chunk scatters into its disjoint slices (pass 3). Shard s's block is the
-        // chunks concatenated in order, and each chunk walks k ascending, so in-shard order stays
-        // ascending-k -- byte-identical to the former serial scatter.
-        const size_t P = threading::effective_parallelism();
-        const size_t chunks = std::min(P * 4, std::max<size_t>(1, n / 4096));
-        DefaultInitVector<uint32_t> hashes(n);
-        std::vector<size_t> off(shard_count_ + 1, 0);
-        DefaultInitVector<Slot> flat(n);
-        if (chunks <= 1) {
-            for (size_t k = 0; k < n; ++k) {
-                const uint32_t h = fold_hash(key_at(k));
-                hashes[k] = h;
-                ++off[shard_of(h) + 1];
-            }
-            for (size_t s = 0; s < shard_count_; ++s) {
-                off[s + 1] += off[s];
-            }
-            std::vector<size_t> cursor(off.begin(), off.end() - 1);
-            for (size_t k = 0; k < n; ++k) {
-                const uint32_t h = hashes[k];
-                flat[cursor[shard_of(h)]++] = Slot{static_cast<TermIndex>(base + k), h};
-            }
-        }
-        else {
-            const size_t per = (n + chunks - 1) / chunks;
-            const auto chunk_lo = [&](size_t c) { return std::min(n, c * per); };
-            // cnt[c*S + s] = keys in chunk c owned by shard s (S = shard_count_).
-            const size_t S = shard_count_;
-            std::vector<size_t> cnt(chunks * S, 0);
-            // Pass 1: per-chunk hash + count (disjoint chunk ranges, disjoint cnt rows).
-            threading::run_static(chunks, [&](size_t c) {
-                size_t *row = &cnt[c * S];
-                for (size_t k = chunk_lo(c); k < chunk_lo(c + 1); ++k) {
-                    const uint32_t h = fold_hash(key_at(k));
-                    hashes[k] = h;
-                    ++row[shard_of(h)];
-                }
-            });
-            // Pass 2 (serial, tiny -- chunks*S cells): shard base offsets, then per-(chunk,shard)
-            // start cursors laid out chunk-major within each shard's block.
-            std::vector<size_t> shard_total(S, 0);
-            for (size_t c = 0; c < chunks; ++c) {
-                for (size_t s = 0; s < S; ++s) {
-                    shard_total[s] += cnt[c * S + s];
-                }
-            }
-            for (size_t s = 0; s < S; ++s) {
-                off[s + 1] = off[s] + shard_total[s];
-            }
-            std::vector<size_t> cur(chunks * S, 0);
-            for (size_t s = 0; s < S; ++s) {
-                size_t running = off[s];
-                for (size_t c = 0; c < chunks; ++c) {
-                    cur[c * S + s] = running;
-                    running += cnt[c * S + s];
-                }
-            }
-            // Pass 3: per-chunk scatter into disjoint flat slices (cur rows are disjoint by construction).
-            threading::run_static(chunks, [&](size_t c) {
-                size_t *wr = &cur[c * S];
-                for (size_t k = chunk_lo(c); k < chunk_lo(c + 1); ++k) {
-                    const uint32_t h = hashes[k];
-                    flat[wr[shard_of(h)]++] = Slot{static_cast<TermIndex>(base + k), h};
-                }
-            });
-        }
-        threading::run_static(shard_count_, [&](size_t s) {
-            const size_t lo = off[s];
-            const size_t hi = off[s + 1];
-            if (lo == hi) {
-                return;
-            }
-            Shard &shard = shards_[s];
-            shard.rehash_to(slots_for_(shard.count + (hi - lo)));
-            for (size_t i = lo; i < hi; ++i) {
-                insert_into_(shard, flat[i].idx, flat[i].h);
-            }
-        });
     }
     auto index_size() const -> size_t {
         size_t total = 0;
@@ -603,9 +502,8 @@ private:
     }
     static auto check_index_fits(size_t value) -> void {
         if (would_overflow(value)) {
-            throw std::runtime_error(
-                "OperatorIndex: operator index reached the TermIndex ceiling; rebuild with "
-                "-Dmonoprop_WIDE_TERM_INDEX (term count exceeded ~2^32).");
+            throw std::runtime_error("OperatorIndex: operator index reached the TermIndex ceiling; rebuild with "
+                                     "-Dmonoprop_WIDE_TERM_INDEX (term count exceeded ~2^32).");
         }
     }
 

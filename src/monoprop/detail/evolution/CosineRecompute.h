@@ -58,7 +58,7 @@
 #include "monoprop/detail/EnvConfig.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h" // LayerCosScale, LayerCosAccumulate
 #include "monoprop/detail/evolution/layer_build/Scan.h" // gen columns, inverted index, CosMask (only scan-side symbols used)
-#include "monoprop/detail/operator/InvertedIndex.h"                   // combine_columns_block, column_block_scratch
+#include "monoprop/detail/operator/InvertedIndex.h" // combine_columns_block, column_block_scratch
 
 namespace monoprop::detail {
 
@@ -78,7 +78,7 @@ inline auto generator_from_words(const std::vector<uint64_t> &gw) -> MajoranaSet
 struct FoldMask {
     bool g_odd = false;
     const uint64_t *row_parity = nullptr; // null for even |G|
-    size_t mask_words = 0;                  // min(inverted index words, ceil(scaled_count/64))
+    size_t mask_words = 0;                // min(inverted index words, ceil(scaled_count/64))
     size_t last_word = 0;
     uint64_t last_mask = ~uint64_t{0};
 };
@@ -117,9 +117,9 @@ struct FoldCache {
 
 template <size_t NumModes>
 auto make_fold_cache(const InvertedIndex<NumModes> &sc,
-                        const MajoranaSet<NumModes> &gen,
-                        uint64_t scaled_count,
-                        Basis basis = Basis::Majorana) -> FoldCache<NumModes> {
+                     const MajoranaSet<NumModes> &gen,
+                     uint64_t scaled_count,
+                     Basis basis = Basis::Majorana) -> FoldCache<NumModes> {
     FoldCache<NumModes> p;
     p.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
     // generator_words stores the REAL G; re-derive J(G) here for Pauli exactly as the scan did.
@@ -132,8 +132,11 @@ auto make_fold_cache(const InvertedIndex<NumModes> &sc,
     // mask are still applied per-word in fold_word.
     p.combined.resize(p.fold.mask_words); // combine_columns_block zero-fills
     if (p.fold.mask_words != 0) {
-        combine_columns_block<NumModes>(
-            sc, {gen_columns.indices.data(), gen_columns.count}, p.combined.data(), 0, p.fold.mask_words);
+        combine_columns_block<NumModes>(sc,
+                                        {gen_columns.indices.data(), gen_columns.count},
+                                        p.combined.data(),
+                                        0,
+                                        p.fold.mask_words);
     }
     return p;
 }
@@ -171,38 +174,24 @@ template <typename BitOp>
 
 template <size_t NumModes>
 void scale_cos_cached(const FoldCache<NumModes> &p, double *coeff, double cos_val) {
-    threading::parallel_for_ranges(
-        p.fold.mask_words,
-        [&](size_t b, size_t e) {
-            for (size_t wi = b; wi < e; ++wi) {
-                for_each_cos_index(wi * 64, fold_word<NumModes>(p, wi),
-                                   [&](size_t i) { coeff[i] *= cos_val; });
-            }
-        },
-        threading::range_grain_size(p.fold.mask_words, 1));
+    const size_t mask_words = p.fold.mask_words;
+    for (size_t wi = 0; wi < mask_words; ++wi) {
+        for_each_cos_index(wi * 64, fold_word<NumModes>(p, wi), [&](size_t i) { coeff[i] *= cos_val; });
+    }
 }
 
 template <size_t NumModes>
-double accumulate_cos_cached(const FoldCache<NumModes> &p,
-                           double *state,
-                           double *ham,
-                           double cos_val,
-                           double sec_val) {
-    return threading::parallel_reduce_ranges(
-        p.fold.mask_words,
-        0.0,
-        [&](size_t b, size_t e, double loc) {
-            for (size_t wi = b; wi < e; ++wi) {
-                for_each_cos_index(wi * 64, fold_word<NumModes>(p, wi), [&](size_t i) {
-                    loc += state[i] * ham[i];
-                    ham[i] *= sec_val;
-                    state[i] *= cos_val;
-                });
-            }
-            return loc;
-        },
-        [](double a, double c) { return a + c; },
-        threading::range_grain_size(p.fold.mask_words, 1));
+double accumulate_cos_cached(const FoldCache<NumModes> &p, double *state, double *ham, double cos_val, double sec_val) {
+    const size_t mask_words = p.fold.mask_words;
+    double loc = 0.0;
+    for (size_t wi = 0; wi < mask_words; ++wi) {
+        for_each_cos_index(wi * 64, fold_word<NumModes>(p, wi), [&](size_t i) {
+            loc += state[i] * ham[i];
+            ham[i] *= sec_val;
+            state[i] *= cos_val;
+        });
+    }
+    return loc;
 }
 
 // ---- fold RECOMPUTE (no per-layer cache buffer) ----
@@ -235,9 +224,9 @@ struct LazyFold {
 
 template <size_t NumModes>
 auto make_lazy_fold(const InvertedIndex<NumModes> &sc,
-                      const MajoranaSet<NumModes> &gen,
-                      uint64_t scaled_count,
-                      Basis basis = Basis::Majorana) -> LazyFold<NumModes> {
+                    const MajoranaSet<NumModes> &gen,
+                    uint64_t scaled_count,
+                    Basis basis = Basis::Majorana) -> LazyFold<NumModes> {
     LazyFold<NumModes> r;
     r.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
     // generator_words stores the REAL G; re-derive J(G) here for Pauli exactly as the scan did.
@@ -249,59 +238,50 @@ auto make_lazy_fold(const InvertedIndex<NumModes> &sc,
 // The recompute analogue of fold_word: apply the odd-|G| parity correction and last-word scaled_count
 // mask to a freshly-built block word `blk[wi - bb]` (bb = the block's first fold word).
 template <size_t NumModes>
-[[gnu::always_inline]] inline uint64_t recipe_fold_word(const LazyFold<NumModes> &r, const uint64_t *blk,
-                                                       size_t bb, size_t wi) {
+[[gnu::always_inline]] inline uint64_t recipe_fold_word(const LazyFold<NumModes> &r,
+                                                        const uint64_t *blk,
+                                                        size_t bb,
+                                                        size_t wi) {
     return apply_fold_mask(blk[wi - bb], wi, r.fold);
 }
 
 template <size_t NumModes>
-void scale_cos_lazy(const InvertedIndex<NumModes> &sc,
-                              const LazyFold<NumModes> &r,
-                              double *coeff,
-                              double cos_val) {
-    threading::parallel_for_ranges(
-        r.fold.mask_words,
-        [&](size_t rb, size_t re) {
-            std::vector<uint64_t> &blk = column_block_scratch();
-            for (size_t bb = rb; bb < re; bb += kColumnBlockWords) {
-                const size_t be = std::min(bb + kColumnBlockWords, re);
-                combine_columns_block<NumModes>(sc, {r.columns.indices.data(), r.columns.count}, blk.data(), bb, be);
-                for (size_t wi = bb; wi < be; ++wi) {
-                    for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi),
-                                       [&](size_t i) { coeff[i] *= cos_val; });
-                }
-            }
-        },
-        threading::range_grain_size(r.fold.mask_words, 1));
+void scale_cos_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, double *coeff, double cos_val) {
+    const size_t mask_words = r.fold.mask_words;
+    std::vector<uint64_t> &blk = column_block_scratch();
+    for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
+        const size_t be = std::min(bb + kColumnBlockWords, mask_words);
+        combine_columns_block<NumModes>(sc, {r.columns.indices.data(), r.columns.count}, blk.data(), bb, be);
+        for (size_t wi = bb; wi < be; ++wi) {
+            for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi), [&](size_t i) {
+                coeff[i] *= cos_val;
+            });
+        }
+    }
 }
 
 template <size_t NumModes>
 double accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
-                                     const LazyFold<NumModes> &r,
-                                     double *state,
-                                     double *ham,
-                                     double cos_val,
-                                     double sec_val) {
-    return threading::parallel_reduce_ranges(
-        r.fold.mask_words,
-        0.0,
-        [&](size_t rb, size_t re, double loc) {
-            std::vector<uint64_t> &blk = column_block_scratch();
-            for (size_t bb = rb; bb < re; bb += kColumnBlockWords) {
-                const size_t be = std::min(bb + kColumnBlockWords, re);
-                combine_columns_block<NumModes>(sc, {r.columns.indices.data(), r.columns.count}, blk.data(), bb, be);
-                for (size_t wi = bb; wi < be; ++wi) {
-                    for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi), [&](size_t i) {
-                        loc += state[i] * ham[i];
-                        ham[i] *= sec_val;
-                        state[i] *= cos_val;
-                    });
-                }
-            }
-            return loc;
-        },
-        [](double a, double c) { return a + c; },
-        threading::range_grain_size(r.fold.mask_words, 1));
+                           const LazyFold<NumModes> &r,
+                           double *state,
+                           double *ham,
+                           double cos_val,
+                           double sec_val) {
+    const size_t mask_words = r.fold.mask_words;
+    double loc = 0.0;
+    std::vector<uint64_t> &blk = column_block_scratch();
+    for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
+        const size_t be = std::min(bb + kColumnBlockWords, mask_words);
+        combine_columns_block<NumModes>(sc, {r.columns.indices.data(), r.columns.count}, blk.data(), bb, be);
+        for (size_t wi = bb; wi < be; ++wi) {
+            for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi), [&](size_t i) {
+                loc += state[i] * ham[i];
+                ham[i] *= sec_val;
+                state[i] *= cos_val;
+            });
+        }
+    }
+    return loc;
 }
 
 // ---- parallel/serial scale & accumulate over a CosMask ----
@@ -310,38 +290,23 @@ double accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
 // so only the parallel overload is needed.
 inline void scale_cos_mask(double *coeff, const CosMask &cos, double cos_val) {
     const size_t n = cos.blocks.size();
-    threading::parallel_for_ranges(
-        n,
-        [&](size_t b, size_t e) {
-            for (size_t k = b; k < e; ++k) {
-                const auto [base, bits] = cos.blocks[k];
-                for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
-            }
-        },
-        threading::range_grain_size(n, 1));
+    for (size_t k = 0; k < n; ++k) {
+        const auto [base, bits] = cos.blocks[k];
+        for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
+    }
 }
-inline double accumulate_cos_mask(double *state,
-                                   double *ham,
-                                   const CosMask &cos,
-                                   double cos_val,
-                                   double sec_val) {
+inline double accumulate_cos_mask(double *state, double *ham, const CosMask &cos, double cos_val, double sec_val) {
     const size_t n = cos.blocks.size();
-    return threading::parallel_reduce_ranges(
-        n,
-        0.0,
-        [&](size_t b, size_t e, double loc) {
-            for (size_t k = b; k < e; ++k) {
-                const auto [base, bits] = cos.blocks[k];
-                for_each_cos_index(base, bits, [&](size_t i) {
-                    loc += state[i] * ham[i];
-                    ham[i] *= sec_val;
-                    state[i] *= cos_val;
-                });
-            }
-            return loc;
-        },
-        [](double a, double c) { return a + c; },
-        threading::range_grain_size(n, 1));
+    double loc = 0.0;
+    for (size_t k = 0; k < n; ++k) {
+        const auto [base, bits] = cos.blocks[k];
+        for_each_cos_index(base, bits, [&](size_t i) {
+            loc += state[i] * ham[i];
+            ham[i] *= sec_val;
+            state[i] *= cos_val;
+        });
+    }
+    return loc;
 }
 
 // ---- fold → CosMask / index vector ----

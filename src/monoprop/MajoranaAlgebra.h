@@ -132,36 +132,14 @@ template <size_t NumModes, typename Rows>
 auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     VecZ result;
     const auto mask = even_bits<2 * NumModes, LSb0>();
-
-    if (inds.empty()) {
-        return result;
-    }
-
-    // Hits are staged per CHUNK and concatenated in chunk order, so the result preserves the input
-    // order of `inds` deterministically at any thread count (the former per-thread merge returned a
-    // scheduling-dependent order; every caller scatters through the returned indices, so only the SET
-    // was ever observable).
-    constexpr size_t grain_size = 512;
-    const size_t n = inds.size();
-    const size_t chunks = (n + grain_size - 1) / grain_size;
-    std::vector<VecZ> parts(chunks);
-    threading::run_static(chunks, [&](size_t c) {
-        auto &local = parts[c];
-        const size_t lo = c * grain_size;
-        const size_t hi = std::min(n, lo + grain_size);
-        for (size_t i = lo; i < hi; ++i) {
-            const auto index = inds[i];
-            const auto &op_row = materialize_row<NumModes>(op, index);
-            if (is_paired<NumModes>(op_row, mask)) {
-                local.push_back(index);
-            }
+    // Kept indices are appended in ascending `inds` order; every caller scatters through the returned
+    // indices, so only the SET is observable, but the order is deterministic regardless.
+    for (const auto index : inds) {
+        const auto &op_row = materialize_row<NumModes>(op, index);
+        if (is_paired<NumModes>(op_row, mask)) {
+            result.push_back(index);
         }
-    });
-
-    for (const auto &local : parts) {
-        result.insert(result.end(), local.begin(), local.end());
     }
-
     return result;
 }
 
@@ -196,16 +174,10 @@ auto get_hf_phases(const VecZ &paired_inds, const VecZ &hf, const Rows &op) -> V
     const auto size = paired_inds.size();
     auto result = std::vector(size, 0.0);
 
-    if (size > 0) {
-        constexpr size_t grain_size = 512;
-        threading::parallel_for_indices(
-            size,
-            [&paired_inds, &result, &hf_mask, &op](size_t idx) {
-                const auto op_idx = paired_inds[idx];
-                const auto &op_row = materialize_row<NumModes>(op, op_idx);
-                result[idx] = hf_phase<NumModes>(op_row, hf_mask);
-            },
-            grain_size);
+    for (size_t idx = 0; idx < size; ++idx) {
+        const auto op_idx = paired_inds[idx];
+        const auto &op_row = materialize_row<NumModes>(op, op_idx);
+        result[idx] = hf_phase<NumModes>(op_row, hf_mask);
     }
     return result;
 }
@@ -225,8 +197,7 @@ auto get_hf_phases(const VecZ &paired_inds, const VecZ &hf, const Rows &op) -> V
  * discarding them would discard signal regardless of their length.
  */
 template <size_t NumModes>
-auto length_cutoff(const MajoranaSet<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes)
-    -> bool {
+auto length_cutoff(const MajoranaSet<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes) -> bool {
     const size_t inactive_mode_prefix = NumModes - logical_num_modes;
     const size_t active_bit_offset = 2 * inactive_mode_prefix;
 
@@ -336,9 +307,7 @@ public:
           length_cutoff_(cutoff_fn.template target<LengthCutoff<NumModes>>()),
           support_cutoff_(cutoff_fn.template target<SupportCutoff<NumModes>>()) {}
 
-    auto length_cutoff() const -> const LengthCutoff<NumModes> * {
-        return length_cutoff_;
-    }
+    auto length_cutoff() const -> const LengthCutoff<NumModes> * { return length_cutoff_; }
 
     auto support_cutoff() const -> const SupportCutoff<NumModes> * { return support_cutoff_; }
 
