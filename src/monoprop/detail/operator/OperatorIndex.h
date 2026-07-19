@@ -27,9 +27,12 @@ namespace monoprop::detail {
  *   slots 1..c  : the c set-bit positions, ascending (PosT each)
  * stride_ = 1 + inline_width_, fixed for the container's life so the parallel disjoint miss-fill
  * stays lock-free. inline_width_ is a CONSTRUCTION INVARIANT (the constructor's only argument,
- * default = kMaxInlinePositions); re-init with a different width by assigning a fresh store. Rows
- * whose popcount exceeds the width spill LOSSLESSLY to a dense-bitset overflow map (mutex-guarded;
- * touched only on genuine overflow transitions).
+ * default = kDefaultInlinePositions), clamped to kMaxInlinePositions; re-init with a different width
+ * by assigning a fresh store. Callers derive the width from the cutoff (see packed_inline_width_): a
+ * weight-w Pauli occupies up to 2w positions, so an under-sized width would spill the COMMON case to
+ * overflow — the arena is meant for pathological high-weight terms, not the bulk. Rows whose popcount
+ * exceeds the width spill LOSSLESSLY to a dense-bitset overflow map (mutex-guarded; touched only on
+ * genuine overflow transitions).
  *
  * INDEX: sharded OPEN-ADDRESSING tables of Slot{TermIndex idx, uint32_t h} (power-of-2 capacity,
  * linear probing, max load 0.7). The 32-bit folded hash is cached at insert from the in-hand key
@@ -53,7 +56,13 @@ public:
     using PosT = std::
         conditional_t<(2 * NumModes <= 256), uint8_t, std::conditional_t<(2 * NumModes <= 65536), uint16_t, uint32_t>>;
 
-    static constexpr size_t kMaxInlinePositions = 11;
+    // Default inline width when no cutoff-derived bound is supplied (e.g. Schrödinger state rows).
+    // Kept at the historical value so default-constructed stores are byte-identical.
+    static constexpr size_t kDefaultInlinePositions = 11;
+    // Ceiling on the caller-requested inline width. A weight-w Pauli needs 2w positions; at the
+    // supported Pauli cutoffs this covers the common case inline (2*cutoff <= 32 for cutoff <= 16)
+    // so the bulk of terms stay out of the overflow arena. Beyond it, rows spill losslessly.
+    static constexpr size_t kMaxInlinePositions = 32;
     static constexpr PosT kOverflowMarker = std::numeric_limits<PosT>::max();
 
     static_assert(2 * NumModes - 1 <= std::numeric_limits<PosT>::max(),
@@ -105,7 +114,7 @@ public:
     // The inline width (hence stride) is a CONSTRUCTION INVARIANT, fixed here and never mutated.
     // It is purely a memory/overflow trade: rows longer than the width spill to overflow losslessly,
     // so any width is correct -- callers pass the cutoff that bounds the common-case popcount.
-    explicit OperatorIndex(size_t inline_width = kMaxInlinePositions)
+    explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
           stride_(1 + inline_width_),
           shard_count_(1),
@@ -242,6 +251,61 @@ public:
     }
     // Test-support only: lets operator_index_tests assert how many rows spilled past the inline width.
     [[nodiscard]] auto overflow_count() const -> size_t { return overflow_.size(); }
+    // Diagnostic: inline width (stride - 1), for attributing per-row byte cost in the scaling study.
+    [[nodiscard]] auto diag_inline_width() const -> size_t { return inline_width_; }
+    // Diagnostic: histogram of row popcounts (index = popcount, value = #rows). Whole-index walk;
+    // used by the scaling study to see the weight distribution driving overflow. Not a hot path.
+    [[nodiscard]] auto popcount_histogram() const -> std::vector<size_t> {
+        std::vector<size_t> hist;
+        for (size_t i = 0; i < size_; ++i) {
+            const size_t pc = popcount(i);
+            if (pc >= hist.size()) {
+                hist.resize(pc + 1, 0);
+            }
+            ++hist[pc];
+        }
+        return hist;
+    }
+    // Diagnostic: histogram of each row's SUPPORT WINDOW = (last_pos - first_pos). If windows stay
+    // bounded as NumModes grows, the terms are light-cone-local (a window-relative encoding would be
+    // N-flat); if they grow with N, the operator is genuinely spread and growth is intrinsic.
+    [[nodiscard]] auto support_window_histogram() const -> std::vector<size_t> {
+        std::vector<size_t> hist;
+        for (size_t i = 0; i < size_; ++i) {
+            size_t first = std::numeric_limits<size_t>::max();
+            size_t last = 0;
+            size_t cnt = 0;
+            for_each_position(i, [&](size_t p) {
+                first = std::min(first, p);
+                last = std::max(last, p);
+                ++cnt;
+            });
+            const size_t w = cnt ? (last - first) : 0;
+            if (w >= hist.size()) {
+                hist.resize(w + 1, 0);
+            }
+            ++hist[w];
+        }
+        return hist;
+    }
+    // Diagnostic: number of fully-paired (diagonal / Z-only) rows — positions come as adjacent pairs
+    // (2q, 2q+1). These are the terms the support/length cutoff admits at ANY weight (xor_sum == 0).
+    [[nodiscard]] auto diagonal_count() const -> size_t {
+        size_t diag = 0;
+        std::vector<size_t> pos;
+        for (size_t i = 0; i < size_; ++i) {
+            pos.clear();
+            for_each_position(i, [&](size_t p) { pos.push_back(p); });
+            bool paired = (pos.size() % 2 == 0);
+            for (size_t k = 0; paired && k + 1 < pos.size(); k += 2) {
+                if ((pos[k] % 2 != 0) || pos[k + 1] != pos[k] + 1) {
+                    paired = false;
+                }
+            }
+            diag += (paired && !pos.empty()) ? 1 : 0;
+        }
+        return diag;
+    }
 
     [[nodiscard]] auto memory_bytes() const -> size_t {
         size_t total = rows_.capacity() * sizeof(PosT);

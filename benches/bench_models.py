@@ -21,21 +21,38 @@ in ``_builders.MODELS``; each config field is overridable via ``--<model>-<field
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from _builders import MODELS, barriered
+from _memory import resting_pss_bytes
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("model", list(MODELS))
-def test_model(benchmark, bench_comm, model_configs, model, record_model_config):
+def test_model(
+    benchmark,
+    bench_comm,
+    model_configs,
+    model,
+    record_model_config,
+    record_model_stats,
+):
     """Benchmark a fixed in-place model simulation (Heisenberg picture)."""
     _config_cls, build_fn, steps_fn = MODELS[model]
     config = model_configs[model]
     steps = steps_fn(config)
     record_model_config(model, config)
 
+    # rounds=1/iterations=1: ``setup`` runs once and its build is the exact
+    # propagator ``run`` evolves in place, so we stash it to record its evolved
+    # term count and settled footprint after the timed section.
+    state: dict[str, Any] = {}
+
     def setup():
-        return (build_fn(config, comm=bench_comm), steps), {}
+        state["baseline_pss"] = resting_pss_bytes()  # footprint before the build
+        state["built"] = build_fn(config, comm=bench_comm)
+        return (state["built"], steps), {}
 
     def run(built, n_steps):
         propagator, circuit = built
@@ -47,3 +64,6 @@ def test_model(benchmark, bench_comm, model_configs, model, record_model_config)
         barriered(run, bench_comm), setup=setup, rounds=1, iterations=1
     )
     assert isinstance(result, float)
+
+    propagator, _circuit = state["built"]
+    record_model_stats(model, propagator, state["baseline_pss"])
