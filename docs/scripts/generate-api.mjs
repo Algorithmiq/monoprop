@@ -66,26 +66,6 @@ function convertSphinxMarkup(content) {
   });
 }
 
-/**
- * Ensure proper formatting of docstring field blocks (Returns, Args, etc.)
- * to prevent truncation of multi-line descriptions in the rendered output.
- */
-function improveDocstringFormatting(content) {
-  // Fumadocs-python uses <Callout> or similar components for docstring sections.
-  // Ensure multi-line field descriptions are wrapped to preserve formatting.
-  // This regex looks for field blocks and ensures they're properly structured.
-
-  // The main issue is that some markdown renderers might truncate text in field blocks.
-  // Since we can't modify fumadocs-python's output directly, we ensure the content
-  // is properly escaped and formatted for MDX.
-
-  // Escape any unescaped backticks that might cause MDX issues
-  // but preserve code blocks and inline code within the content.
-  // This is a minimal fix to prevent common rendering issues.
-
-  return content;
-}
-
 async function main() {
   const pkg = JSON.parse(await fs.readFile(JSON_PATH, 'utf8'));
 
@@ -101,9 +81,6 @@ async function main() {
   for (const file of files) {
     // Convert Sphinx-style markup to markdown before other processing
     file.content = convertSphinxMarkup(file.content);
-
-    // Improve docstring formatting for multi-line descriptions
-    file.content = improveDocstringFormatting(file.content);
 
     // `convert` keeps the package name ("monoprop") in hrefs, but `write`
     // strips that leading segment from file paths. Realign the links.
