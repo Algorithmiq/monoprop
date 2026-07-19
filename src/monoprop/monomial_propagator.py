@@ -93,6 +93,7 @@ class MonomialPropagator(ABC):
         upper_atol: None | float,
         basis_change: None | list[list[int]],
         comm: MPI.Comm | None,
+        basis: str = "majorana",
     ) -> None:
         """Dispatch to the compiled per-mode simulator and record shared state.
 
@@ -117,6 +118,10 @@ class MonomialPropagator(ABC):
         # System qubit count for expanding Pauli gates; set by PauliPropagator from the
         # observable. None for a native Majorana propagator (its gates need no qubit count).
         self._num_qubits = None
+        # Whether gates are Pauli generators packed in the native local symplectic frame
+        # (X_q->slot 2q, Y_q->slot 2q+1, Z_q->{2q,2q+1}) rather than Jordan-Wigner Majorana
+        # images. Set True by PauliPropagator; drives _gate_layers' native branch.
+        self._pauli_native = basis == "pauli"
         self._initial_state = list(initial_state)
         # dispatch() is typed to return the base `type[_SimulatorAdapter]`, whose __init__ takes
         # extra positional args the generated per-mode subclasses fill in; the kwargs below match
@@ -131,6 +136,7 @@ class MonomialPropagator(ABC):
             cutoff_type=cutoff_type,
             basis_change=basis_change,
             comm=comm,
+            basis=basis,
         )
 
     @classmethod
@@ -247,7 +253,7 @@ class MonomialPropagator(ABC):
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
         self._n_params += circuit.n_parameters
         majoranas, gen_coeffs, per_monomial, gate_indices = expand_monomials(
-            gates, mapping, num_qubits
+            gates, mapping, num_qubits, native_pauli=self._pauli_native
         )
         # `seed` may be a NumPy array (an accepted ParameterValues type), so resolve to a list
         # first and treat an empty vector as "no seed" -- `if seed` would raise on an ndarray.
@@ -282,7 +288,7 @@ class MonomialPropagator(ABC):
         gates = self._circuit_gates(circuit)
         num_qubits = self._num_qubits
         majoranas, gen_coeffs, mapping, _gate_indices = expand_monomials(
-            gates, circuit.resolved_mapping, num_qubits
+            gates, circuit.resolved_mapping, num_qubits, native_pauli=self._pauli_native
         )
         self._simulator.propagate(
             majoranas,
