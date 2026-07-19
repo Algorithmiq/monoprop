@@ -277,15 +277,23 @@ def record_model_stats(bench_comm: Any) -> Callable[..., None]:
     def _do(model: str, propagator: Any, baseline_pss: int) -> None:
         _record("opsize", model, {"terms": _reduce_sum(bench_comm, propagator.size())})
 
+        # operator_memory_bytes()/graph_memory_bytes() require an unsharded
+        # propagator and raise once it shards under multi-thread parallelism.
+        # The operator's byte count is thread-count-independent (same evolved
+        # operator, only partitioned across shards), so the serial run already
+        # captures the exact figure; skip it here rather than fail the point.
         sim = propagator._simulator
-        _record(
-            "storage",
-            model,
-            {
-                "operator": _reduce_sum(bench_comm, sim.operator_memory_bytes()),
-                "graph": _reduce_sum(bench_comm, sim.graph_memory_bytes()),
-            },
-        )
+        try:
+            _record(
+                "storage",
+                model,
+                {
+                    "operator": _reduce_sum(bench_comm, sim.operator_memory_bytes()),
+                    "graph": _reduce_sum(bench_comm, sim.graph_memory_bytes()),
+                },
+            )
+        except RuntimeError:
+            pass
 
         resting = _reduce_sum(bench_comm, resting_pss_bytes())
         if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
