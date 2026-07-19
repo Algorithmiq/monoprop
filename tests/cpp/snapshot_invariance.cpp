@@ -7,11 +7,10 @@
 // Snapshot-invariance test (plan Phase 6).
 //
 // Calling the energy functional twice with identical parameters must give
-// results that agree to tight numerical tolerance. The pool-backed
-// parallel_reduce_indices folds per-chunk partials in fixed chunk order, so for
-// a fixed thread configuration repeated evaluations should agree exactly; the
-// tolerance check is kept so the test pins the CONTRACT (tight numerical
-// agreement), not the scheduler implementation.
+// results that agree to tight numerical tolerance. Each shard folds its
+// partition serially in a fixed order, so repeated evaluations should agree
+// exactly; the tolerance check is kept so the test pins the CONTRACT (tight
+// numerical agreement), not the reduction implementation.
 //
 // Even-parity vs Default backend comparison is covered by the existing
 // fastpath_matches_mainline_* tests; no duplication needed here.

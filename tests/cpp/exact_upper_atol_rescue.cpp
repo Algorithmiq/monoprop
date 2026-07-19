@@ -14,15 +14,11 @@
 
 #include <boost/test/unit_test.hpp>
 
-#include <algorithm>
-#include <array>
 #include <cmath>
 #include <optional>
-#include <thread>
 #include <vector>
 
 #include "TestUtilities.h"
-#include "monoprop/Threading.h"
 
 // upper_atol RESCUE invariant: a structural cutoff of 0 rejects every partner term the evolution
 // generates (only the identity has popcount <= 0), so on its own it would truncate the operator down
@@ -43,11 +39,6 @@ using namespace monoprop;
 constexpr double kEnergyAtol = 1e-9;
 
 enum class CommMode { Self, World };
-
-inline auto thread_mode_values() -> std::array<int, 2> {
-    const int hw = static_cast<int>(std::thread::hardware_concurrency());
-    return {1, std::max(2, hw)};
-}
 
 // Build a simulator with a ZERO structural cutoff and upper_atol = 0 (full rescue). Unlike
 // build_simulator (which hardcodes cutoff = 2*NumModes), this exercises the rescue path: cutoff 0
@@ -87,12 +78,11 @@ struct LihFixture {
 
 } // namespace
 
-// One test per (fixture, comm, thread-mode) so a failure pinpoints the configuration.
-#define MAKE_ZERO_CUTOFF_RESCUE_TEST(NAME, FixtureType, CommToken, ThrIdx)                                    \
-    BOOST_FIXTURE_TEST_CASE(NAME##_##CommToken##_thr##ThrIdx, FixtureType) {                                  \
-        const auto thread_modes = thread_mode_values();                                                       \
-        const auto capped_threads = static_cast<std::size_t>(std::max(1, thread_modes[ThrIdx]));              \
-        monoprop::threading::ScopedParallelismCap thread_guard(capped_threads);                               \
+// One test per (fixture, comm) so a failure pinpoints the configuration. The rescue invariant is
+// independent of the shard/thread count (each shard runs its partition serially), so there is no
+// thread-mode axis.
+#define MAKE_ZERO_CUTOFF_RESCUE_TEST(NAME, FixtureType, CommToken)                                            \
+    BOOST_FIXTURE_TEST_CASE(NAME##_##CommToken, FixtureType) {                                                \
         MPI_Comm comm = (CommMode::CommToken == CommMode::Self) ? MPI_COMM_SELF : MPI_COMM_WORLD;             \
         if (CommMode::CommToken == CommMode::World && mpi::size(comm) == 1) {                                 \
             BOOST_TEST_MESSAGE("Skipping multi-rank scenario for " #NAME " (world size=1)");                  \
@@ -103,14 +93,10 @@ struct LihFixture {
         BOOST_CHECK_SMALL(std::abs(energy - data.actual_expval), kEnergyAtol);                                \
     }
 
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, RandomExactFixture, Self, 0)
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, RandomExactFixture, Self, 1)
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, RandomExactFixture, World, 0)
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, RandomExactFixture, World, 1)
+MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, RandomExactFixture, Self)
+MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, RandomExactFixture, World)
 
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, Self, 0)
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, Self, 1)
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, World, 0)
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, World, 1)
+MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, Self)
+MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, World)
 
 #undef MAKE_ZERO_CUTOFF_RESCUE_TEST
