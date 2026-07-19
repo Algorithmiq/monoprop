@@ -14,7 +14,7 @@
 
 // Single definition of the RegionProfiler's process-wide mutable state (see RegionProfiler.h). Kept
 // in one TU, compiled into libmonoprop.so and exported, so the core and the nanobind extension share
-// one copy of the enable flag, the accumulators, the per-thread current region, and the atexit dump.
+// one copy of the enable flag, the accumulators, and the atexit dump.
 
 #include "monoprop/detail/profiling/RegionProfiler.h"
 
@@ -50,21 +50,17 @@ auto dump() -> void {
         const auto &a = g_accs[static_cast<size_t>(i)];
         const auto calls = a.calls.load(std::memory_order_relaxed);
         const auto wall = a.wall_ns.load(std::memory_order_relaxed);
-        const auto busy = a.busy_ns.load(std::memory_order_relaxed);
-        const auto tasks = a.tasks.load(std::memory_order_relaxed);
-        if (calls == 0 && busy == 0) {
+        if (calls == 0) {
             continue;
         }
         const auto name = kRegionNames[static_cast<size_t>(i)];
         std::fprintf(stderr,
-                     "monoprop_PHASE rank=%d region=%.*s wall_ms=%.3f busy_ms=%.3f calls=%llu tasks=%llu\n",
+                     "monoprop_PHASE rank=%d region=%.*s wall_ms=%.3f calls=%llu\n",
                      rank,
                      static_cast<int>(name.size()),
                      name.data(),
                      static_cast<double>(wall) / 1.0e6,
-                     static_cast<double>(busy) / 1.0e6,
-                     static_cast<unsigned long long>(calls),
-                     static_cast<unsigned long long>(tasks));
+                     static_cast<unsigned long long>(calls));
     }
     std::fflush(stderr);
 }
@@ -74,11 +70,6 @@ auto dump() -> void {
 bool g_profiling_enabled = env_enabled();
 
 auto profiling_accs() -> RegionAcc * { return g_accs.data(); }
-
-auto profiling_current() -> Region & {
-    static thread_local Region current = Region::Other;
-    return current;
-}
 
 auto profiling_ensure_atexit() -> void {
     static std::atomic<bool> registered{false};
