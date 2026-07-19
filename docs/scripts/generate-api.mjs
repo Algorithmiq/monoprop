@@ -66,6 +66,83 @@ function convertSphinxMarkup(content) {
   });
 }
 
+/** Collapse internal whitespace/newlines to a single line. */
+function foldToOneLine(text) {
+  return String(text).replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Extract the raw `Returns:` block from a function source docstring.
+ * We prefer source extraction because some upstream parsed `returns.description`
+ * values are already truncated to the first wrapped line.
+ */
+function extractReturnsFromSource(source) {
+  if (typeof source !== 'string' || source.length === 0) return null;
+
+  // Find a Returns section inside the function source, ending at the next
+  // section header (e.g. Args:, Raises:, Note:) or the closing docstring.
+  const match = source.match(
+    /\n\s+Returns:\n([\s\S]*?)(?=\n\s+[A-Z][A-Za-z_ ]+:\n|\n\s+["']{3})/,
+  );
+  if (!match) return null;
+
+  const text = match[1]
+    .split('\n')
+    .map((line) => line.replace(/^\s+/, ''))
+    .join(' ')
+    .trim();
+
+  return text || null;
+}
+
+/**
+ * griffe preserves wrapped descriptions in parsed docstring sections. The
+ * fumadocs-python renderer currently truncates multi-line Returns text in some
+ * cases, so we normalize function Returns descriptions to one line before
+ * conversion.
+ */
+function normalizeFunctionReturnsSection(funcNode) {
+  const fromSource = extractReturnsFromSource(funcNode?.source);
+  if (fromSource && funcNode?.returns && typeof funcNode.returns === 'object') {
+    funcNode.returns.description = foldToOneLine(fromSource);
+  }
+
+  const parsed = funcNode?.docstring?.parsed;
+  if (!Array.isArray(parsed)) return;
+
+  for (const section of parsed) {
+    if (section?.kind !== 'returns') continue;
+
+    // Depending on parser shape, `value` can be a list of return entries or a
+    // single entry-like object.
+    const values = Array.isArray(section.value) ? section.value : [section.value];
+    for (const item of values) {
+      if (item && typeof item.description === 'string') {
+        item.description = foldToOneLine(item.description);
+      }
+    }
+  }
+}
+
+/** Recursively visit modules/classes and normalize function Returns text. */
+function normalizeFunctionReturns(mod) {
+  if (!mod || typeof mod !== 'object') return;
+
+  for (const fn of Object.values(mod.functions ?? {})) {
+    normalizeFunctionReturnsSection(fn);
+  }
+
+  for (const cls of Object.values(mod.classes ?? {})) {
+    for (const fn of Object.values(cls.functions ?? {})) {
+      normalizeFunctionReturnsSection(fn);
+    }
+  }
+
+  for (const sub of Object.values(mod.modules ?? {})) {
+    normalizeFunctionReturns(sub);
+  }
+}
+
 async function main() {
   const pkg = JSON.parse(await fs.readFile(JSON_PATH, 'utf8'));
 
@@ -75,6 +152,7 @@ async function main() {
   );
   pkg.attributes = []; // drop the package-level __all__ dump
   pruneModule(pkg);
+  normalizeFunctionReturns(pkg);
 
   const files = convert(pkg, { baseUrl: BASE_URL });
 
