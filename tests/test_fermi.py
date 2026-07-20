@@ -110,6 +110,106 @@ class TestFermiOperator:
         ):
             FermiOperator([], [])
 
+    @pytest.mark.parametrize(
+        ("left", "right", "expected"),
+        [
+            pytest.param(
+                FermiOperator(
+                    [FermiString([(0, "+")]), FermiString([(1, "-")])],
+                    [1.0, 0.5],
+                    num_modes=2,
+                ),
+                FermiOperator(
+                    [FermiString([(0, "+")]), FermiString([(1, "-")])],
+                    [1.0, 0.5],
+                    num_modes=2,
+                ),
+                True,
+                id="same",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                FermiOperator([FermiString([(0, "+")])], [1.0 + 1e-9], num_modes=2),
+                True,
+                id="within_atol",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                FermiOperator([FermiString([(0, "+")])], [1.1], num_modes=2),
+                False,
+                id="outside_atol",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [1e-16], num_modes=2),
+                FermiOperator([], [], num_modes=2),
+                True,
+                id="negligible_vs_missing",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                FermiOperator([FermiString([(1, "+")])], [1.0], num_modes=2),
+                False,
+                id="different_terms",
+            ),
+            pytest.param(
+                FermiOperator(
+                    [FermiString([(0, "+")]), FermiString([(1, "-")])],
+                    [1.0, 0.5],
+                    num_modes=2,
+                ),
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                False,
+                id="different_num_terms",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=3),
+                False,
+                id="different_num_modes",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+"), (1, "-")])], [1.0], num_modes=2),
+                FermiOperator([FermiString([(1, "-"), (0, "+")])], [1.0], num_modes=3),
+                False,
+                id="same_after_canonicalization",
+            ),
+        ],
+    )
+    def test_is_closely_equal(self, left, right, expected):
+        assert left.isclose(right) is expected
+
+    @pytest.mark.parametrize(
+        ("left", "right", "expected"),
+        [
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                True,
+                id="equal",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                FermiOperator([FermiString([(1, "+")])], [1.0], num_modes=2),
+                False,
+                id="unequal",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=3),
+                False,
+                id="unequal_modes",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [0.0], num_modes=2),
+                FermiOperator([], [], num_modes=2),
+                False,
+                id="unequal_although_same_matrix",
+            ),
+        ],
+    )
+    def test_eq_working_and_non_working_examples(self, left, right, expected):
+        assert (left == right) is expected
+
 
 class TestMajoranaOperator:
     def test_valid_creation_and_repr(self):
@@ -142,6 +242,56 @@ class TestMajoranaOperator:
         terms = operator.get_majorana_operator().terms
 
         assert expected_terms == terms
+
+    @pytest.mark.parametrize(
+        ("left", "right", "expected"),
+        [
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0j, (1,): 0.5}, num_modes=2),
+                MajoranaOperator({(0, 1): 1.0j, (1,): 0.5}, num_modes=2),
+                True,
+                id="same",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+                MajoranaOperator({(0, 1): 1.0 + 1e-9}, num_modes=2),
+                True,
+                id="within_atol",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+                MajoranaOperator({(0, 1): 1.1}, num_modes=2),
+                False,
+                id="outside_atol",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1e-16}, num_modes=2),
+                MajoranaOperator({}, num_modes=2),
+                True,
+                id="negligible_vs_missing",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+                MajoranaOperator({(0, 2): 1.0}, num_modes=2),
+                False,
+                id="different_terms",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0, (1, 2): 0.5}, num_modes=2),
+                MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+                False,
+                id="different_num_terms",
+            ),
+            pytest.param(
+                MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+                MajoranaOperator({(0, 1): 1.0}, num_modes=3),
+                False,
+                id="different_num_qubits",
+            ),
+        ],
+    )
+    def test_is_closely_equal(self, left, right, expected):
+        assert left.isclose(right) is expected
 
 
 def _number_op(mode: int = 0, num_modes: int = 1) -> FermiOperator:

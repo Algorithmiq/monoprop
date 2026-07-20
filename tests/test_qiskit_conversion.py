@@ -238,11 +238,11 @@ class QiskitCircuitsCases:
         circuit.rz(0.7, 0)
         expected = Circuit(
             gates=(
-                ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),
-                ExpGate(PauliOperator({Pauli("Y", 0): 1.0}, num_qubits=1)),
-                ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("X", 0): 0.5}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("Y", 0): 0.5}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("Z", 0): 0.5}, num_qubits=1)),
             ),
-            parameters=(0.25, 0.15, 0.35),
+            parameters=(0.5, 0.3, 0.7),
             initial_state=(),
         )
         return circuit, expected

@@ -111,6 +111,8 @@ A circuit is a sequence of *gates*, each a Majorana rotation described by:
 3. **Propagate** the circuit to build the reusable propagated operator.
 4. **Evaluate** expectation values or gradients across many parameter values.
 
-Steps 1-2 happen once; steps 3-4 form the inner loop of a variational
+Steps 1-2 happen once; step 3 happens once for a fixed circuit, although running it multiple times for a single
+`MajoranaPropagator` instance with new gates is possible. Step 4 can be executed multiple times for various
+parameter inputs, allowing effective variational
 optimisation, covered in [Propagation Algorithm](/concepts/algorithm) with the
 concrete API in [Python API](/api).

@@ -65,3 +65,5 @@ independently of the structural cutoff:
 sim.lower_atol = 1e-9
 sim.upper_atol = 1e-3
 ```
+Note that choosing a very low value for `upper_atol` results in increased number of the
+kept Majorana monomials, which eventually may even grow exponentially in the number of gates.
