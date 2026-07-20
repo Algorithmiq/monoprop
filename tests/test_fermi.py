@@ -110,6 +110,38 @@ class TestFermiOperator:
         ):
             FermiOperator([], [])
 
+    @pytest.mark.parametrize(
+        ("left", "right", "expected"),
+        [
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                True,
+                id="equal",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                FermiOperator([FermiString([(1, "+")])], [1.0], num_modes=2),
+                False,
+                id="unequal",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2),
+                FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=3),
+                False,
+                id="unequal_modes",
+            ),
+            pytest.param(
+                FermiOperator([FermiString([(0, "+")])], [0.0], num_modes=2),
+                FermiOperator([], [], num_modes=2),
+                False,
+                id="unequal_although_same_matrix",
+            ),
+        ],
+    )
+    def test_eq_working_and_non_working_examples(self, left, right, expected):
+        assert (left == right) is expected
+
 
 class TestMajoranaOperator:
     def test_valid_creation_and_repr(self):
