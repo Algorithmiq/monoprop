@@ -45,9 +45,9 @@ struct LayerExchangeLayout final {
 namespace monoprop {
 
 // Materialized cosine (anticommuting) index set: ascending (block_base, 64-bit mask) blocks,
-// block_base = absolute operator index of the word's bit 0. The inverted index fold (scale_cos_cached) is
-// still the primary path; this type is only for sets that must be stored (pruned pare layers) or
-// carried transiently (in-build contraction, combined cos, graph_data export).
+// block_base = absolute operator index of the word's bit 0. The on-the-fly inverted index fold recompute
+// (scale_cos_lazy) is the primary replay path; this type is only for sets that must be stored (pruned
+// pare layers) or carried transiently (in-build contraction, combined cos, graph_data export).
 struct CosMask final {
     std::vector<std::pair<size_t, uint64_t>> blocks;
     size_t total_count = 0; // number of set bits

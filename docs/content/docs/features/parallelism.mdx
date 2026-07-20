@@ -38,7 +38,6 @@ benchmarking.
 | `monoprop_SHARDS` | `auto` | `auto` = one shard per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` shards; `off` = a single partition (no sharding). |
 | `monoprop_SHARD_PINNING` | `on` | `0`/`false`/`no` disables pinning each shard to a core. Has an effect only on Linux. |
 | `monoprop_PHASE_TIMERS` | `off` | `1`/`true` prints a per-phase wall-time breakdown to stderr at exit. |
-| `monoprop_RECOMPUTE_CACHE_MAX_MB` | `2048` | Cap (MB) on the per-layer cosine fold cache before the evaluator switches to on-the-fly recompute. `0` always recomputes. |
 
 ```bash
 # Run 8 shards instead of one-per-core:

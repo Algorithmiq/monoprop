@@ -54,7 +54,6 @@
 #include <vector>
 
 #include "monoprop/PauliAlgebra.h" // pair_swap (Pauli fold columns = J(G))
-#include "monoprop/detail/EnvConfig.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h" // LayerCosScale, LayerCosAccumulate
 #include "monoprop/detail/evolution/layer_build/Scan.h" // gen columns, inverted index, CosMask (only scan-side symbols used)
 #include "monoprop/detail/operator/InvertedIndex.h" // combine_columns_block, column_block_scratch
@@ -102,12 +101,12 @@ inline auto make_fold_mask(const InvertedIndex<NumModes> &sc,
     return s;
 }
 
-// ---- prepared fold per layer (built once per functional) ----
-/// A layer's cosine fold, precomputed once per functional: the generator's inverted index columns XOR-
-/// combined into one self-owned buffer of exactly `fold.mask_words` words (the only words ever read).
-/// Replaying the cos is then a single load per word (vs one per column), holding one `mask_words`
-/// buffer instead of a full-width buffer per sparse column — the memory that otherwise dominates
-/// cosine recompute.
+// ---- prepared fold, materialised into one buffer ----
+/// A layer's cosine fold materialised into one self-owned buffer: the generator's inverted index columns
+/// XOR-combined over exactly `fold.mask_words` words (the only words ever read). No longer a runtime
+/// replay cache (that was retired — see the fold-recompute note below); it now backs two one-shot uses:
+/// the pare materializer (make_fold_cache → fold_to_cos_mask, one transient buffer per layer, discarded
+/// immediately) and the recompute-equivalence test oracle (scale_cos_cached / accumulate_cos_cached).
 template <size_t NumModes>
 struct FoldCache {
     std::vector<uint64_t> combined; // the generator's columns XOR-combined over [0, fold.mask_words)
@@ -171,6 +170,9 @@ template <typename BitOp>
     }
 }
 
+// scale_cos_cached / accumulate_cos_cached replay a materialised FoldCache buffer. They are no longer a
+// runtime path (build_cos_callbacks always recomputes); they survive as the reference oracle the
+// recompute-equivalence test checks the live scale_cos_lazy / accumulate_cos_lazy against.
 template <size_t NumModes>
 void scale_cos_cached(const FoldCache<NumModes> &p, double *coeff, double cos_val) {
     const size_t mask_words = p.fold.mask_words;
@@ -194,26 +196,17 @@ double accumulate_cos_cached(const FoldCache<NumModes> &p, double *state, double
 }
 
 // ---- fold RECOMPUTE (no per-layer cache buffer) ----
-// Above the fold-cache memory budget the eval recomputes each layer's fold on the fly instead of
-// holding a `mask_words`-word buffer per layer (that cache is multi-GB for large operators × many
-// generators, and being cold its own streaming dominates). A LazyFold stores only the generator's
-// inverted index column indices + cos metadata. The recompute is fused with the scatter and parallelised
-// over disjoint fold-word ranges (disjoint words → disjoint operator indices → race-free; XOR is
-// associative so the per-word fold is byte-identical to make_fold_cache's combine). Each thread
-// cache-blocks its range into kColumnBlockWords-word (L1-resident) sub-blocks so the fold is produced
-// and consumed in-cache, avoiding the full-width scratch memset + readback the cache build pays.
+// The SOLE runtime replay path (build_cos_callbacks): the eval recomputes each layer's fold on the fly
+// instead of holding a `mask_words`-word buffer per layer. Holding that buffer was multi-GB for large
+// operators × many generators, and — being cold — its own streaming matched or beat the recompute it was
+// meant to save (measured 2026-07-20), so the persistent FoldCache runtime cache was retired. A LazyFold
+// stores only the generator's inverted index column indices + cos metadata. The recompute is fused with
+// the scatter and parallelised over disjoint fold-word ranges (disjoint words → disjoint operator indices
+// → race-free; XOR is associative so the per-word fold is byte-identical to make_fold_cache's combine).
+// Each thread cache-blocks its range into kColumnBlockWords-word (L1-resident) sub-blocks so the fold is
+// produced and consumed in-cache, avoiding the full-width scratch memset + readback the cache build pays.
 
-/// Fold-cache memory budget in bytes. If the persistent per-layer fold cache (Σ mask_words · 8 B)
-/// would exceed this, the functional switches to fold recompute (make_lazy_fold +
-/// *_cos_fold_recompute), trading a small, largely bandwidth-hidden per-eval recompute for dropping a
-/// multi-GB cold cache. Override with the `monoprop_RECOMPUTE_CACHE_MAX_MB` env var (0 ⇒ always
-/// recompute); the 2048 MB default caps cache memory while keeping recompute rare.
-inline auto recompute_cache_budget_bytes() -> size_t {
-    // Parsed once in config::get(); the MB→bytes scaling stays here (0 MB ⇒ 0 ⇒ always recompute).
-    return config::get().recompute_cache_max_mb * size_t{1024} * 1024;
-}
-
-/// Metadata to recompute a layer's cosine fold on the fly (used above the fold-cache budget): the
+/// Metadata to recompute a layer's cosine fold on the fly (the sole runtime replay path): the
 /// generator's ≤|G| inverted index column indices plus the cos truncation bounds — no per-layer buffer.
 template <size_t NumModes>
 struct LazyFold {

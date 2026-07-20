@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Guardrail: the two ways a layer's cosine set is applied must agree bit-for-bit.
-//   - CACHE path:     make_fold_cache + scale_cos_cached / accumulate_cos_cached
-//   - RECOMPUTE path: make_lazy_fold   + scale_cos_lazy / accumulate_cos_lazy
-// The functional switches between them on a memory budget (recompute_cache_budget_bytes) and relies on
-// them being bit-identical. This pins that claim directly on every layer of a real propagated
-// operator, so a refactor of the shared word-scan cannot silently diverge the two paths.
+// Guardrail: the live recompute replay must agree bit-for-bit with the materialised-fold reference.
+//   - RECOMPUTE (live runtime path): make_lazy_fold  + scale_cos_lazy / accumulate_cos_lazy
+//   - REFERENCE (materialised oracle): make_fold_cache + scale_cos_cached / accumulate_cos_cached
+// build_cos_callbacks always recomputes (the persistent runtime FoldCache was retired; it bought <=5%
+// per eval and lost for large operators while costing GB — see CosineRecompute.h). This pins the
+// recompute path against the reference on every layer of a real propagated operator, so a refactor of
+// the shared word-scan cannot silently diverge them.
 
 #include <boost/test/unit_test.hpp>
 

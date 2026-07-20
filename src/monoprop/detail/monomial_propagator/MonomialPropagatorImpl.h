@@ -846,36 +846,28 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
     return {std::move(parameter_mapping), std::move(gen_coeffs)};
 }
 
-// Build the per-layer (scale, accumulate) cos callbacks for a replayed graph. Handles all three
-// layer kinds uniformly, so the pare and non-pare functional paths share ONE implementation:
-//   - PRUNED  (pruned_cos() != nullptr): cos is a stored filtered CosMask, scaled in parallel;
-//   - FOLD, cached (below the memory budget): a FoldCache buffer per layer;
-//   - FOLD, recompute (above the budget): a LazyFold (no buffer; fused/blocked recompute).
-// The non-pare graph simply has no pruned layers. The returned closures capture only the cache +
-// inverted index pointer + recompute flag; the GRAPH's lifetime is owned by the caller's functional capture.
+// Build the per-layer (scale, accumulate) cos callbacks for a replayed graph. Handles both layer
+// kinds uniformly, so the pare and non-pare functional paths share ONE implementation:
+//   - PRUNED (pruned_cos() != nullptr): cos is a stored filtered CosMask, scaled in parallel;
+//   - FOLD:  a LazyFold — the layer's cos is recomputed on the fly (no per-layer buffer).
+// The non-pare graph simply has no pruned layers. The returned closures capture only the per-layer
+// recipes + inverted index pointer; the GRAPH's lifetime is owned by the caller's functional capture.
 template <size_t NumModes>
 auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, const MPGraphView &graph, Basis basis)
     -> std::pair<detail::LayerCosScale, detail::LayerCosAccumulate> {
-    // Memory-budget gate: Σ mask_words · 8 B for the fold layers. Below it caching is cheapest; above
-    // it the cache is a multi-GB cold burden, so recompute each fold on the fly (bit-identical).
-    size_t recompute_cache_words = 0;
-    for (size_t i = 0; i < graph.layers(); ++i) {
-        const auto &l = graph.get_layer(i);
-        if (l.pruned_cos() == nullptr) {
-            recompute_cache_words +=
-                std::min(inverted_index.words(), static_cast<size_t>((l.scaled_count() + 63) / 64));
-        }
-    }
-    const bool recompute = recompute_cache_words * sizeof(uint64_t) > detail::recompute_cache_budget_bytes();
-    if (recompute) {
-        inverted_index.ensure_sorted_columns();
-    }
+    // Each fold layer's cosine set is recomputed on the fly from the persistent inverted index (LazyFold:
+    // cache-blocked + fused + parallel), never retained as a per-layer buffer. A functional-path A/B
+    // (2026-07-20) showed the former budget-gated persistent FoldCache bought <=5% per eval — and LOST
+    // for large operators, its buffer going cold faster than the L1-blocked recompute rebuilds it — while
+    // costing 0.3–1 GB per 1.7M-term operator, so the cache (and its monoprop_RECOMPUTE_CACHE_MAX_MB knob)
+    // was removed. make_fold_cache survives only as the pare materializer + equivalence-test oracle.
+    // Recompute reads the columns in sorted order.
+    inverted_index.ensure_sorted_columns();
 
     struct LayerCos {
         bool recomputes_cos = false;
-        detail::FoldCache<NumModes> combined{}; // used iff recomputes_cos && !recompute
-        detail::LazyFold<NumModes> recipe{};    // used iff recomputes_cos && recompute
-        const CosMask *filtered = nullptr;      // points into a pruned layer's stored cos
+        detail::LazyFold<NumModes> recipe{}; // used iff recomputes_cos
+        const CosMask *filtered = nullptr;   // points into a pruned layer's stored cos
     };
     auto cache = std::make_shared<std::vector<LayerCos>>();
     cache->reserve(graph.layers());
@@ -889,38 +881,27 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
         else {
             entry.recomputes_cos = true;
             const auto gen = detail::generator_from_words<NumModes>(layer.generator_words());
-            if (recompute) {
-                entry.recipe = detail::make_lazy_fold<NumModes>(inverted_index, gen, layer.scaled_count(), basis);
-            }
-            else {
-                entry.combined = detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count(), basis);
-            }
+            entry.recipe = detail::make_lazy_fold<NumModes>(inverted_index, gen, layer.scaled_count(), basis);
         }
         cache->push_back(std::move(entry));
     }
 
     const auto *sc = &inverted_index;
-    detail::LayerCosScale cos_scale = [cache, sc, recompute](size_t i, double *c, double v) {
+    detail::LayerCosScale cos_scale = [cache, sc](size_t i, double *c, double v) {
         const auto &e = (*cache)[i];
         if (!e.recomputes_cos) {
             detail::scale_cos_mask(c, *e.filtered, v);
         }
-        else if (recompute) {
+        else {
             detail::scale_cos_lazy<NumModes>(*sc, e.recipe, c, v);
         }
-        else {
-            detail::scale_cos_cached<NumModes>(e.combined, c, v);
-        }
     };
-    detail::LayerCosAccumulate cos_acc = [cache, sc, recompute](size_t i, double *s, double *h, double v, double sec) {
+    detail::LayerCosAccumulate cos_acc = [cache, sc](size_t i, double *s, double *h, double v, double sec) {
         const auto &e = (*cache)[i];
         if (!e.recomputes_cos) {
             return detail::accumulate_cos_mask(s, h, *e.filtered, v, sec);
         }
-        if (recompute) {
-            return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec);
-        }
-        return detail::accumulate_cos_cached<NumModes>(e.combined, s, h, v, sec);
+        return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec);
     };
     return {std::move(cos_scale), std::move(cos_acc)};
 }
