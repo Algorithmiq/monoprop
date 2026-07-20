@@ -150,10 +150,10 @@ def from_qiskit_circuit(
                 from_qiskit_operator(g_op.operator), qubits, num_qubits
             )
         elif gate_name in PAULI_EVOLUTION_EQUIVALENT:
-            parameter = g_op.params[0] * 0.5
+            parameter = g_op.params[0]
             pauli_string = gate_name[1:].upper()  # Remove the leading 'R' and uppercase
             generator = PauliOperator._from_terms(
-                [Pauli(pauli_string, qubits)], [1.0], num_qubits=num_qubits
+                [Pauli(pauli_string, qubits)], [0.5], num_qubits=num_qubits
             )
         else:
             raise ValueError(
