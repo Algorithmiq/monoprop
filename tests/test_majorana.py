@@ -94,6 +94,39 @@ def test_majorana_operator_from_dict_round_trips():
 
 
 @pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [
+        pytest.param(
+            MajoranaOperator({(0, 1): 1.0j}, num_modes=2),
+            MajoranaOperator({(0, 1): 1.0j}, num_modes=2),
+            True,
+            id="equal",
+        ),
+        pytest.param(
+            MajoranaOperator({(0, 1): 1.0j}, num_modes=2),
+            MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+            False,
+            id="unequal",
+        ),
+        pytest.param(
+            MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+            MajoranaOperator({(0, 1): 1.0}, num_modes=3),
+            False,
+            id="unequal_modes",
+        ),
+        pytest.param(
+            MajoranaOperator({(0, 1): 0.0}, num_modes=2),
+            MajoranaOperator({}, num_modes=2),
+            False,
+            id="unequal_although_same_matrix",
+        ),
+    ],
+)
+def test_majorana_operator_eq_working_and_non_working_examples(left, right, expected):
+    assert (left == right) is expected
+
+
+@pytest.mark.parametrize(
     ("majoranas", "coefficients", "num_modes"),
     [
         ([(0, 1)], [1.0], 4),
