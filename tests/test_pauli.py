@@ -55,6 +55,21 @@ class TestPauliPropagatorCutoff:
         with pytest.raises(ValueError, match="not Hermitian"):
             self._propagator(serial_comm).propagate(circuit)
 
+    @pytest.mark.parametrize("schrodinger_cutoff", [3, 4, 5])
+    def test_schrodinger_cutoff(self, schrodinger_cutoff, serial_comm):
+        """The Schrodinger cutoff is multiplied by 2 to convert from qubits to Majorana operators."""
+        mp = PauliPropagator(
+            PauliOperator({"ZZ": 1.0}, num_qubits=10),
+            initial_state=[],
+            cutoff=4,
+            schrodinger_cutoff=schrodinger_cutoff,
+            comm=serial_comm,
+        )
+        op = mp.evolved_operator()
+        assert (
+            max(len(k) for k in op) == 2 * schrodinger_cutoff
+        )  # 3 qubits * 2 Majoranas/qubit
+
 
 class TestPauli:
     def test_default_qubits_are_range(self):
