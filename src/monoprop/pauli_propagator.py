@@ -71,8 +71,11 @@ class PauliPropagator(MonomialPropagator):
             cutoff: Maximum Pauli weight (number of qubits touched) retained during
                 evolution. The fully-paired exception described in
                 :class:`~monoprop.monomial_propagator.MonomialPropagator` still applies.
-            schrodinger_cutoff: Optional Schrodinger-picture cutoff (enables that
-                picture).
+            schrodinger_cutoff: Optional cutoff for Schrodinger-picture evolution. If
+                provided, enables the Schrodinger picture, starting in a n initial state
+                with terms truncated with that parameter; if ``None``, the Heisenberg
+                picture is used. It is recommended that ``schrodinger_cutoff`` be slightly
+                larger than ``cutoff`` for comparable accuracy.
             lower_atol: Optional lower coefficient-truncation tolerance.
             upper_atol: Optional upper coefficient-retention tolerance.
             comm: Optional MPI communicator (must outlive the propagator).
