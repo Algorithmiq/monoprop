@@ -163,13 +163,19 @@ public:
         return mp_op_;
     }
 
+    // Memory breakdowns sum across shards on a facade (each field is additive over the disjoint
+    // hash-partitions), so introspection works whether or not the propagator sharded.
     auto graph_memory_usage() const -> GraphMemoryBreakdown {
-        require_unsharded_("graph_memory_usage()");
+        if (shard_group_) {
+            return sharded_graph_memory_usage_();
+        }
         return graph_.storage_memory_usage();
     }
 
     auto operator_memory_usage() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
-        require_unsharded_("operator_memory_usage()");
+        if (shard_group_) {
+            return sharded_operator_memory_usage_();
+        }
         return detail::estimate_memory_usage(mp_op_);
     }
 
@@ -637,6 +643,9 @@ private:
     auto sharded_graph_layers_() const -> size_t;
     auto sharded_reserve_operator_(size_t expected_local_terms) -> void;
     auto sharded_core_term_() const -> double; // core term is replicated on every shard; read shard 0
+    // Sum the per-shard memory breakdowns (each shard owns a disjoint hash-partition, so fields add).
+    auto sharded_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes>;
+    auto sharded_graph_memory_usage_() const -> GraphMemoryBreakdown;
     // Run `fn` on every shard's propagator concurrently (via the ShardGroup masters); the caller
     // guards on shard_group_ being set. Out-of-line because ShardGroup is incomplete in this header.
     auto for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void;

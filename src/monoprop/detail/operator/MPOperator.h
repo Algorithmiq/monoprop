@@ -312,6 +312,18 @@ struct MPOperatorMemoryBreakdown final {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
                + slater_determinant_bytes + inverted_index_bytes;
     }
+
+    // Field-wise sum, so a sharded propagator can aggregate its per-shard operator breakdowns.
+    auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
+        operator_terms_bytes += o.operator_terms_bytes;
+        op_coeffs_bytes += o.op_coeffs_bytes;
+        state_coeffs_bytes += o.state_coeffs_bytes;
+        indexing_bytes += o.indexing_bytes;
+        init_operator_bytes += o.init_operator_bytes;
+        slater_determinant_bytes += o.slater_determinant_bytes;
+        inverted_index_bytes += o.inverted_index_bytes;
+        return *this;
+    }
 };
 
 template <size_t NumModes>

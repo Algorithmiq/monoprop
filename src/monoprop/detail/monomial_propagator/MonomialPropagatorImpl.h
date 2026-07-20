@@ -316,6 +316,24 @@ auto MonomialPropagator<NumModes>::sharded_core_term_() const -> double {
 }
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::sharded_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
+    detail::MPOperatorMemoryBreakdown<NumModes> total;
+    for (int r = 0; r < shard_group_->shard_count(); ++r) {
+        total += shard_group_->shard(r).operator_memory_usage();
+    }
+    return total;
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::sharded_graph_memory_usage_() const -> GraphMemoryBreakdown {
+    GraphMemoryBreakdown total;
+    for (int r = 0; r < shard_group_->shard_count(); ++r) {
+        total += shard_group_->shard(r).graph_memory_usage();
+    }
+    return total;
+}
+
+template <size_t NumModes>
 auto MonomialPropagator<NumModes>::for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void {
     shard_group_->run_on_all([&](int r) { fn(shard_group_->shard(r)); });
 }

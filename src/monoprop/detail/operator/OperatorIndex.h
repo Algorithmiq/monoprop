@@ -34,7 +34,7 @@ namespace monoprop::detail {
  * exceeds the width spill LOSSLESSLY to a dense-bitset overflow map (mutex-guarded; touched only on
  * genuine overflow transitions).
  *
- * INDEX: sharded OPEN-ADDRESSING tables of Slot{TermIndex idx, uint32_t h} (power-of-2 capacity,
+ * INDEX: a single OPEN-ADDRESSING table of Slot{TermIndex idx, uint32_t h} (power-of-2 capacity,
  * linear probing, max load 0.7). The 32-bit folded hash is cached at insert from the in-hand key
  * (never from a row reconstruction), so insert/rehash are gather-free; find pre-filters on h and
  * confirms a hit by reading THIS store's own row (row_eq_key). The hand-rolled table exists for one
@@ -90,8 +90,7 @@ public:
         return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
     }
     // Avalanche the cached 32-bit fold into a full-width hash (splitmix64 finalizer): the stored h
-    // is only an equality pre-filter, so it must be re-mixed before it drives shard routing (top
-    // bits) and in-shard bucketing (low bits) — the two use disjoint bit ranges.
+    // is only an equality pre-filter, so it must be re-mixed before its low bits drive table bucketing.
     static size_t spread(uint32_t h) noexcept {
         uint64_t x = static_cast<uint64_t>(h) * 0x9E3779B97F4A7C15ull;
         x ^= x >> 30;
@@ -102,33 +101,25 @@ public:
         return static_cast<size_t>(x);
     }
 
-    // The index keeps its shard-routing machinery (a single table is shard_count_ == 1: shard_of()
-    // always returns 0, one deref on the hot probe path). Operator sharding across cores is handled a
-    // level up by ShardGroup; within one shard the index is a single lock-free table, filled serially.
-    // The routing never changes membership or what find() returns, so it is BIT-EXACT.
-    auto shard_of_spread(size_t sp) const noexcept -> size_t { return (sp >> shard_shift_) & shard_mask_; }
-    auto shard_of(uint32_t h) const noexcept -> size_t { return shard_of_spread(spread(h)); }
-
+    // The index is a SINGLE lock-free open-addressing table, filled serially within one shard.
+    // Operator sharding across cores is handled a level up by ShardGroup (one OperatorIndex per shard),
+    // so this table never needs internal partitioning.
+    //
     // ---- ctors --------------------------------------------------------------------------------
     // The inline width (hence stride) is a CONSTRUCTION INVARIANT, fixed here and never mutated.
     // It is purely a memory/overflow trade: rows longer than the width spill to overflow losslessly,
     // so any width is correct -- callers pass the cutoff that bounds the common-case popcount.
     explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
-        : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
-          stride_(1 + inline_width_),
-          shard_count_(1),
-          shard_shift_(shard_count_ <= 1 ? 0 : 64U - static_cast<size_t>(std::countr_zero(shard_count_))),
-          shard_mask_(shard_count_ - 1),
-          shards_(shard_count_) {}
+        : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)), stride_(1 + inline_width_) {}
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
     OperatorIndex(OperatorIndex &&) = delete;
     OperatorIndex &operator=(OperatorIndex &&) = delete;
 
     // ---- deep copy ----------------------------------------------------------------------------
-    // Single named deep-copy (enables the simulator's __deepcopy__). Entries are re-inserted through
-    // the clone's own shard_of rather than copied verbatim. Returns by unique_ptr because owners hold
-    // the store that way.
+    // Single named deep-copy (enables the simulator's __deepcopy__). Entries are re-inserted into the
+    // clone's table rather than copied verbatim. Returns by unique_ptr because owners hold the store
+    // that way.
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
         auto out = std::make_unique<OperatorIndex>(inline_width_);
         {
@@ -138,11 +129,9 @@ public:
             out->overflow_ = overflow_;
         }
         out->reserve_index(index_size());
-        for (const Shard &shard : shards_) {
-            for (const Slot &e : shard.slots) {
-                if (e.idx != kEmptySlot) {
-                    out->insert_slot_(e.idx, e.h);
-                }
+        for (const Slot &e : table_.slots) {
+            if (e.idx != kEmptySlot) {
+                out->insert_slot_(e.idx, e.h);
             }
         }
         return out;
@@ -157,12 +146,7 @@ public:
     // reserve_rows vs reserve_index are kept SEPARATE on purpose: the builder's per-layer geometric
     // growth grows ROW capacity, while the index is right-sized to its element count by bulk_insert.
     auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
-    auto reserve_index(size_t n) -> void {
-        const size_t per = n / shard_count_ + 1;
-        for (Shard &shard : shards_) {
-            shard.rehash_to(slots_for_(per));
-        }
-    }
+    auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
     auto reserve(size_t n) -> void {
         reserve_rows(n);
         reserve_index(n);
@@ -190,10 +174,8 @@ public:
         rows_.clear();
         overflow_.clear();
         size_ = 0;
-        for (Shard &shard : shards_) {
-            shard.slots.assign(shard.slots.size(), Slot{});
-            shard.count = 0;
-        }
+        table_.slots.assign(table_.slots.size(), Slot{});
+        table_.count = 0;
     }
 
     // ---- row writes ---------------------------------------------------------------------------
@@ -280,14 +262,12 @@ public:
     // Returns the dense row index for `key`, or nullopt if absent. Usage: `if (auto i = find(k)) ...`.
     auto find(const key_type &key) const -> std::optional<size_t> {
         const uint32_t h = fold_hash(key);
-        const size_t sp = spread(h);
-        const Shard &shard = shards_[shard_of_spread(sp)];
-        if (shard.count == 0) {
+        if (table_.count == 0) {
             return std::nullopt;
         }
-        size_t s = sp & shard.mask;
-        for (;; s = (s + 1) & shard.mask) {
-            const Slot &e = shard.slots[s];
+        size_t s = spread(h) & table_.mask;
+        for (;; s = (s + 1) & table_.mask) {
+            const Slot &e = table_.slots[s];
             if (e.idx == kEmptySlot) {
                 return std::nullopt;
             }
@@ -313,18 +293,16 @@ public:
             for (size_t j = 0; j < g; ++j) {
                 hh[j] = fold_hash(keys[base + j]);
                 sp[j] = spread(hh[j]);
-                const Shard &shard = shards_[shard_of_spread(sp[j])];
-                __builtin_prefetch(&shard.slots[sp[j] & shard.mask], 0, 0);
+                __builtin_prefetch(&table_.slots[sp[j] & table_.mask], 0, 0);
             }
             for (size_t j = 0; j < g; ++j) {
-                const Shard &shard = shards_[shard_of_spread(sp[j])];
                 cand[j] = kEmptySlot;
-                if (shard.count == 0) {
+                if (table_.count == 0) {
                     continue;
                 }
-                size_t s = sp[j] & shard.mask;
-                for (;; s = (s + 1) & shard.mask) {
-                    const Slot &e = shard.slots[s];
+                size_t s = sp[j] & table_.mask;
+                for (;; s = (s + 1) & table_.mask) {
+                    const Slot &e = table_.slots[s];
                     if (e.idx == kEmptySlot) {
                         break;
                     }
@@ -357,17 +335,16 @@ public:
     auto emplace(const key_type &key, mapped_type value) -> void {
         check_index_fits(value);
         const uint32_t h = fold_hash(key);
-        Shard &shard = shards_[shard_of(h)];
-        shard.rehash_if_needed();
-        size_t s = spread(h) & shard.mask;
-        while (shard.slots[s].idx != kEmptySlot) {
-            if (shard.slots[s].h == h && row_eq_key(static_cast<size_t>(shard.slots[s].idx), key)) {
+        table_.rehash_if_needed();
+        size_t s = spread(h) & table_.mask;
+        while (table_.slots[s].idx != kEmptySlot) {
+            if (table_.slots[s].h == h && row_eq_key(static_cast<size_t>(table_.slots[s].idx), key)) {
                 return; // key already present — no-op (matches the former set semantics)
             }
-            s = (s + 1) & shard.mask;
+            s = (s + 1) & table_.mask;
         }
-        shard.slots[s] = Slot{static_cast<TermIndex>(value), h};
-        ++shard.count;
+        table_.slots[s] = Slot{static_cast<TermIndex>(value), h};
+        ++table_.count;
     }
     // Insert n distinct rows with consecutive indices [base, base+n). Rows MUST already be written.
     template <typename KeyFn>
@@ -376,39 +353,26 @@ public:
             return;
         }
         check_index_fits(base + n - 1);
-        // Single-table serial insert: probe the one lock-free table for each of the n distinct keys.
+        // Serial insert: probe the lock-free table for each of the n distinct keys.
         for (size_t k = 0; k < n; ++k) {
             const uint32_t h = fold_hash(key_at(k));
-            Shard &shard = shards_[shard_of(h)];
-            shard.rehash_if_needed();
-            insert_into_(shard, static_cast<TermIndex>(base + k), h);
+            table_.rehash_if_needed();
+            insert_into_(table_, static_cast<TermIndex>(base + k), h);
         }
     }
-    auto index_size() const -> size_t {
-        size_t total = 0;
-        for (const Shard &shard : shards_) {
-            total += shard.count;
-        }
-        return total;
-    }
+    auto index_size() const -> size_t { return table_.count; }
     // Test-support only: visits every indexed (row, index) pair. Production reads rows by index via
     // row()/popcount()/for_each_position(); this whole-index walk exists for simulator_copy_tests.
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
-        for (const Shard &shard : shards_) {
-            for (const Slot &e : shard.slots) {
-                if (e.idx != kEmptySlot) {
-                    fn(row(static_cast<size_t>(e.idx)), static_cast<size_t>(e.idx));
-                }
+        for (const Slot &e : table_.slots) {
+            if (e.idx != kEmptySlot) {
+                fn(row(static_cast<size_t>(e.idx)), static_cast<size_t>(e.idx));
             }
         }
     }
     auto index_estimated_memory_bytes() const -> size_t {
-        size_t slots = 0;
-        for (const Shard &shard : shards_) {
-            slots += shard.slots.capacity();
-        }
-        return sizeof(OperatorIndex) + slots * sizeof(Slot);
+        return sizeof(OperatorIndex) + table_.slots.capacity() * sizeof(Slot);
     }
 
 private:
@@ -459,9 +423,8 @@ private:
         ++shard.count;
     }
     auto insert_slot_(TermIndex idx, uint32_t h) -> void {
-        Shard &shard = shards_[shard_of(h)];
-        shard.rehash_if_needed();
-        insert_into_(shard, idx, h);
+        table_.rehash_if_needed();
+        insert_into_(table_, idx, h);
     }
 
     auto write_row(size_t i, const value_type &maj) -> void {
@@ -522,11 +485,9 @@ private:
     size_t stride_ = 1 + kMaxInlinePositions;
     mutable std::unordered_map<size_t, value_type> overflow_ = {};
     mutable std::mutex overflow_mutex_ = {};
-    // Sharded index; count/shift/mask are set once at construction from the worker count.
-    size_t shard_count_ = 1;
-    size_t shard_shift_ = 0;
-    size_t shard_mask_ = 0;
-    std::vector<Shard> shards_ = {};
+    // Single open-addressing index table (see the Shard doc-comment: one shard per core lives a level
+    // up in ShardGroup, so this store never partitions internally).
+    Shard table_ = {};
 };
 
 } // namespace monoprop::detail

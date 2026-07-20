@@ -36,11 +36,7 @@ monoprop_EXPORT auto map_params(const VecD &parameters,
                                 double phase,
                                 bool reverse = false) -> VecD;
 
-// The forward (cos_scale) and reverse (cos_acc) callbacks recompute each layer's cosine set from the
-// prepared fold and are REQUIRED for any run with parameters: no layer stores its cosine bitmap
-// anymore, so the old "stored-cos" fallback is gone. The `= {}` defaults exist only so the
-// energy-only `ev` overload can omit the unused reverse callback; ev_and_grad throws if a callback it
-// consumes is empty (rather than faulting with std::bad_function_call).
+
 monoprop_EXPORT auto ev(double e_core,
                         const VecD &state,
                         const VecD &op,
@@ -63,12 +59,6 @@ monoprop_EXPORT auto ev_and_grad(double e_core,
                                  const detail::LayerCosAccumulate &cos_acc = {})
     -> std::pair<double, VecD>;
 
-// Streaming backward keep-set sweep producing a typed-layer MPGraph (FoldLayer / PrunedLayer) that
-// reuses `graph`'s layer cores (shared_ptr — no cross-rank copy) and stores a pruned CosMask
-// only on layers whose cos was trimmed. `full_cos_of_layer(layer_idx)` is invoked at most once per
-// layer, in sweep order, so the caller materializes one layer's cos at a time. The cross-rank D/B
-// reachability exchange runs (propagating the keep-set across ranks) but stores NO positions —
-// cross-rank replays unmasked, exactly as today. Definitions live in src/monoprop/detail/pare/PareGraph.cpp.
 monoprop_EXPORT auto pare_graph(const MPGraph &graph,
                 const VecZ &nonzero_inds,
                 size_t local_index_count,

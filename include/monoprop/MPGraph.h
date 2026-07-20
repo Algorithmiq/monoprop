@@ -95,7 +95,7 @@ public:
           layers_(std::move(layers)) {}
 
     /**
-     * @brief Append a new layer (shared immutable core) to the graph, recording its gate info.
+     * @brief Append a new layer to the graph.
      *
      * @param storage The layer's LayerCore. Gate info is written onto it here, while it is still
      *   mutable, before it is frozen into the shared const core owned by the Layer.
@@ -122,10 +122,8 @@ public:
      */
     auto slice_graph(size_t key, bool contract = false) -> MPGraph;
 
-    // Non-owning view of the first `key` layers; shares layer cores, copies nothing.
     auto slice_view(size_t key) const -> MPGraphView;
 
-    // Drop the first `key` layers in place (advances the active-layer front offset).
     auto consume_prefix(size_t key) -> void;
 
     /**
@@ -157,11 +155,6 @@ public:
 
     /**
      * @brief Non-owning replay view over the active layers, in build order.
-     *
-     * Reproduces get_layer(i) indexing exactly (window [front_offset_, end), no reversal). This is the
-     * single replay-facing handle: every forward/reverse replay consumer takes an MPGraphView, so a
-     * whole graph and its slices funnel through one type instead of duplicating each entry point for
-     * MPGraph and MPGraphView. Non-owning — this graph must outlive the returned view.
      */
     auto replay_view() const -> MPGraphView {
         return MPGraphView(layers_, active_begin_index(), layers(), false);
