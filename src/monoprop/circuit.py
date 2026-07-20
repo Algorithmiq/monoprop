@@ -152,6 +152,8 @@ class ExpGate:
             )
         if isinstance(generator, PauliOperator):
             _validate_commuting_pauli_generator(generator)
+        if isinstance(generator, MajoranaOperator):
+            _validate_commuting_majorana_generator(generator)
         self.generator = generator
         self.index = None if index is None else int(index)
         self.family = family
@@ -573,6 +575,36 @@ def _validate_commuting_pauli_generator(generator: PauliOperator) -> None:
             raise ValueError(
                 "A multi-term Pauli gate generator must have mutually commuting terms so the "
                 f"gate is a single exponential of their sum; {p1} and {p2} anticommute."
+            )
+
+
+def _majoranas_commute(m1: Sequence[int], m2: Sequence[int]) -> bool:
+    """Whether two Majorana monomials commute as operators.
+
+    For canonicalized monomials with distinct indices, swapping the products contributes
+    the sign ``(-1)**(len(m1)*len(m2) - |set(m1) & set(m2)|)``.
+    """
+    n_common = len(set(m1) & set(m2))
+    return ((len(m1) * len(m2) - n_common) % 2) == 0
+
+
+def _validate_commuting_majorana_generator(generator: MajoranaOperator) -> None:
+    """Reject a multi-term Majorana generator whose terms do not pairwise commute.
+
+    A gate is a single exponential of its generator, but :func:`_gate_layers` realizes a
+    multi-term generator as a product of one rotation per term. That product equals
+    ``exp(theta * sum_i g_i*M_i)`` only when the Majorana monomials mutually commute;
+    otherwise the evolution would be silently Trotterized.
+
+    Raises:
+        ValueError: If any two terms of ``generator`` anticommute.
+    """
+    for m1, m2 in itertools.combinations(generator.terms, 2):
+        if not _majoranas_commute(m1, m2):
+            raise ValueError(
+                "A multi-term Majorana gate generator must have mutually commuting terms "
+                "so the gate is a single exponential of their sum; "
+                f"{tuple(m1)} and {tuple(m2)} anticommute."
             )
 
 
