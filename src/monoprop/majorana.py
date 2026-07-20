@@ -181,9 +181,11 @@ class MajoranaOperator:
             raise TypeError(
                 f"Cannot compare MajoranaOperator with {type(other).__name__}."
             )
-        if self.num_modes != other.num_modes or self.terms.keys() != other.terms.keys():
+        if self.num_modes != other.num_modes:
             return False
         return all(
-            np.isclose(coef, other.terms[key], rtol=rtol, atol=atol)
-            for key, coef in self.terms.items()
+            np.isclose(
+                self.terms.get(key, 0), other.terms.get(key, 0), rtol=rtol, atol=atol
+            )
+            for key in self.terms | other.terms
         )
