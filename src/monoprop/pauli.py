@@ -140,7 +140,7 @@ class PauliOperator:
         self.num_qubits = num_qubits
         if num_qubits is not None:
             for pauli in self.terms:
-                if pauli.qubits and max(pauli.qubits) >= num_qubits:
+                if pauli.qubits and pauli.qubits[-1] >= num_qubits:
                     raise ValueError(
                         f"Pauli term {pauli} acts on a qubit index >= num_qubits="
                         f"{num_qubits}."
@@ -173,6 +173,14 @@ class PauliOperator:
             out += f": {terms}"
         out += ")"
         return out
+
+    def __eq__(self, other: object) -> bool:
+        """Equal when num_qubits and term coefficients match exactly."""
+        if not isinstance(other, PauliOperator):
+            return NotImplemented
+        return self.num_qubits == other.num_qubits and self.terms == other.terms
+
+    __hash__ = None  # type: ignore[assignment]  # value-equal but mutable
 
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1e-8) -> bool:
         """Check if two PauliOperators are closely equal (same terms and coefficients).
