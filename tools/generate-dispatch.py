@@ -192,7 +192,7 @@ def dispatch(num_modes: int) -> type[_SimulatorAdapter]:
 {cases}
         case n if n > {max_logical_num_modes}:
             errmsg = (
-                f"Number of Fermionic modes {{n}} invalid. num_modes must be <= 250."
+                f"Number of Fermionic modes {{n}} invalid. num_modes must be <= {max_logical_num_modes}."
                 "Contact monoprop developers if more than 250 Fermionic modes are required."
             )
             raise NumberOfModesInvalidError(errmsg)
