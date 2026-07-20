@@ -42,9 +42,9 @@ sim.update_initial_operator({(0, 1, 2, 3): 0.5})
 ```
 
 This lets you estimate several observables without re-propagating: in the
-Schrödinger picture the state is evolved independently, so you can re-weight the
-observable and read it off against the same evolved state; in the Heisenberg
-picture the same graph can be reused with different initial operators.
+Schrödinger picture the state is evolved independently, so you can change the
+observable arbitrarily and read it off against the same evolved state; in the Heisenberg
+picture the observable can be re-weighted.
 
 <Callout type="info">
     Only terms that already exist in the initial operator can be updated; supplying a

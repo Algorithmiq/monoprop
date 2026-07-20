@@ -55,8 +55,7 @@ step.
 
 ## Applying a gate
 
-Because the gate generator and every propagated term are even monomials, a single
-gate $U_j$ sends each monomial $M_\nu$ into one of three cases,
+A single gate $U_j$ sends each monomial $M_\nu$ into one of three cases,
 governed entirely by whether it commutes with the generator:
 
 $$
@@ -67,17 +66,17 @@ M_\nu \;\xrightarrow{\;U_j\;}\;
   \cos(\theta_j)\, M_\nu + i\sin(\theta_j)\, M_{\gamma_j} M_\nu
     & \text{if } \{M_\nu, M_{\gamma_j}\} = 0 \text{ and kept}, \\[4pt]
   \cos(\theta_j)\, M_\nu
-    & \text{if } \{M_\nu, M_{\gamma_j}\} = 0 \text{ and truncated}.
+    & \text{if } \{M_\nu, M_{\gamma_j}\} = 0 \text{ and truncated},
 \end{cases}
 $$
 
+where $[A,B]= AB-BA$ and $\{A,B\} =AB+BA$ are commutator and anticommutator respectively.
 If $M_\nu$ **commutes** with the generator it passes through unchanged. If
 it **anticommutes** it *branches* into the original monomial (the **cosine**
 branch) and a single new monomial $M_{\gamma_j} M_\nu$ (the **sine**
 branch); recall from [Notation](/concepts/notation) that the product of two
-anticommuting monomials is again a single monomial. When it is time to truncate,
-the sine branch may be discarded, in which case the truncation step discards it
-and only the cosine branch survives.
+anticommuting monomials is again a single monomial. If the new monomial is supposed to be truncated,
+the sine branch is discarded and only the cosine branch survives.
 
 Applied across a whole circuit, the surviving branches grow the observable as a
 tree - each branching gate can up to double the number of active terms. That
@@ -128,10 +127,10 @@ unpaired monomial contributes nothing.
 
 ### Coefficient truncation
 
-A complementary rule discards monomials whose coefficients fall below a
+A complementary rule discards new monomials whose coefficients fall below a
 threshold, suppressing numerically negligible terms that would otherwise
-accumulate over a long sequence of gates. Conversely, a term whose coefficient
-exceeds an upper threshold can be kept even when it is beyond the length cutoff.
+accumulate over a long sequence of gates. Conversely, new monomials whose coefficients
+exceed an upper threshold are kept even when it is beyond the length cutoff.
 
 ## Reading off the expectation value
 
@@ -145,7 +144,7 @@ state $\varrho = \sum_\mu b_\mu M_\mu$, the trace collapses to a product
 over shared terms:
 
 $$
-\tilde{f}_L(\theta) = \mathrm{Tr}[\varrho\, \tilde{H}_L] = \sum_\nu c_\nu b_\nu.
+\tilde{f}_L(\theta) = \mathrm{Tr}[\varrho\, \tilde{H}_L] = 2^N\sum_\nu c_\nu b_\nu.
 $$
 
 Only monomials present in *both* the evolved observable and the reference state
@@ -157,14 +156,15 @@ overlap with the surviving observable.
 ## Surrogate graphs, gradients, and optimisation
 
 In variational workflows one must evaluate $f_L(\theta)$ and its gradient
-$\nabla f_L(\theta)$ repeatedly, across many parameter updates, so cheap
-re-evaluation is essential. To this end the evolution paths of the monomials in
+$\nabla f_L(\theta)$ repeatedly, across many parameter updates, so quick
+re-evaluation is essential. To this end, the evolution paths of the monomials in
 $H$ through the circuit are recorded as a **surrogate graph**. Once built,
 the graph is replayed to compute $f_L(\theta)$ and $\nabla
 f_L(\theta)$ at new parameter values *without re-propagating* the monomials -
-propagating and evaluating become separate steps, and only the (cheap) evaluation
+propagating and evaluating become separate steps, and only the much faster evaluation
 is repeated inside the optimisation loop.
 Note that storing the surrogate graph can be memory intensive for large circuits.
+
 
 ## See also
 
