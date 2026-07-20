@@ -120,7 +120,7 @@ def main():
         "--output",
         "-o",
         help="Path to the JSONL file results are appended to.",
-        default=Path(__file__).with_name("monoprop_hubbard1d_benchmark_results.jsonl"),
+        default=Path(__file__).with_name("monoprop_hubbard1d_benchmark_results.json"),
     )
 
     args = parser.parse_args()
@@ -179,21 +179,21 @@ def main():
         values[step + 1] = simulator.expectation_value()
         term_counts[step + 1] = simulator.size()
     t_total = perf_counter() - t_start
-
+    memory_size = simulator._simulator.operator_memory_bytes() / 1024**2
     # rss0 = proc.memory_info().rss
     print(
-        f"{n_spinful_sites} spinful sites, {n_layers} layers, {trotter_steps} Trotter steps, runtime {t_total:.3f} seconds"
+        f"{n_spinful_sites} n_spin {n_layers} layers {term_counts[-1]} num_terms {values[-1]} final overlap  runtime {t_total:.3f} seconds"
     )
     save_result(
         args.output,
         {
             "n_spinful_sites": n_spinful_sites,
             "n_layers": n_layers,
-            "trotter_steps": trotter_steps,
             "num_threads": os.environ.get("monoprop_NUM_THREADS", "not set"),
             "runtime_seconds": t_total,
-            "expectation_values": values.tolist(),
-            "term_counts": term_counts.tolist(),
+            "final_overlap": values[-1],
+            "num_terms": term_counts[-1],
+            "memory_MB": memory_size,
         },
     )
 

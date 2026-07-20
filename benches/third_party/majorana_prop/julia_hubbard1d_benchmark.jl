@@ -20,21 +20,22 @@ function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_l
         propagate!(circ_single, obs, thetas_single, min_abs_coeff=min_abs_coeff, max_unpaired=max_unpaired)
         res[k+1] = overlapwithfock(obs, fock_state)
     end
-    return res, length(obs), loop_elapsed
+    memory_size = Base.summarysize(obs) / 1024^2
+    return res, length(obs), loop_elapsed, memory_size
 
 
 end
-
-"""Append one benchmark result as a JSON line, creating the parent directory if needed."""
-function save_result(output_path, N_spinful_sites, n_layers, obs_length, final_res, loop_elapsed)
-    mkpath(dirname(output_path))
+function save_result(output_path, N_spinful_sites, n_layers, obs_length, final_res, loop_elapsed, memory_size)
+    """Append one benchmark result as a JSON line, creating the parent directory if needed."""
     record = Dict(
         "n_spinful_sites" => N_spinful_sites,
         "n_layers" => n_layers,
         "num_terms" => obs_length,
         "final_overlap" => final_res,
         "runtime_seconds" => loop_elapsed,
+        "memory_MB" => memory_size,
     )
+
     open(output_path, "a") do io
         JSON.print(io, record)
         println(io)
@@ -62,14 +63,13 @@ function main(args)
 
     spin_layers_pairs = []
     for i in [20, 40, 60]
-        for j in range(10,20)
+        for j in range(10, 20)
             push!(spin_layers_pairs, (i, j))
         end
     end
 
     case_pair = parsed_args["case"]
     N_spinful_sites, n_layers = spin_layers_pairs[case_pair]
-    # println("Running benchmark for $N_spinful_sites spinful sites and $n_layers layers.")
 
     t = 1.
     U = 1.5
@@ -107,11 +107,11 @@ function main(args)
 
     println("Number of threads: $(Threads.nthreads())")
 
-    res, obs_length, loop_elapsed = experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
+    res, obs_length, loop_elapsed, memory_size = experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
     final_res = res[end]
     println("$N_spinful_sites n_spin $n_layers layers $obs_length num_terms $final_res final overlap $loop_elapsed seconds")
 
-    save_result(parsed_args["output"], N_spinful_sites, n_layers, obs_length, final_res, loop_elapsed)
+    save_result(parsed_args["output"], N_spinful_sites, n_layers, obs_length, final_res, loop_elapsed, memory_size)
 
 end
 
