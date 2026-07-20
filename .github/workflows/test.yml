@@ -225,7 +225,7 @@ jobs:
           path: ctest-*.xml
           retention-days: 1
 
-      - name: Collect coverage into one XML report
+      - name: Collect coverage into a gcovr tracefile
         run: |
           pipx run gcovr \
             --gcov-executable gcov-14 \
@@ -235,13 +235,91 @@ jobs:
             --exclude '^tests/' \
             --exclude '^src/example\.cpp$' \
             build \
-            --sonarqube coverage_cpp.xml
+            --json cpp-coverage-native.json
 
-      - name: Upload SonarQube C++ coverage as artifact
+      - name: Upload C++ coverage tracefile as artifact
         uses: actions/upload-artifact@v7
         with:
-          name: sonar_cpp_coverage
-          path: coverage_cpp.xml
+          name: cpp_coverage_native
+          path: cpp-coverage-native.json
+          retention-days: 1
+
+  python-bindings-coverage:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Collect C++ coverage through the Python bindings
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    env:
+      # Build the compiled extension with the Coverage build type so the C++
+      # code exercised through the Python bindings is instrumented for gcov.
+      SKBUILD_CMAKE_BUILD_TYPE: Coverage
+      # Keep the instrumented build directory around so gcov can find the
+      # .gcno/.gcda files after the tests have run.
+      SKBUILD_BUILD_DIR: ${{ github.workspace }}/build-python-coverage
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set gcc-14/g++-14 as default compilers
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
+          sudo update-alternatives --set g++ /usr/bin/g++-14
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
+          sudo update-alternatives --set c++ /usr/bin/g++-14
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-test --skip-msgpack
+
+      - name: Set build environment variables
+        run: |
+          echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          uv sync --no-progress --group test --all-extras -v
+
+      - name: Run tests to exercise the bindings
+        run: |
+          uv run pytest tests -r aR
+
+      - name: Collect coverage into a gcovr tracefile
+        run: |
+          pipx run gcovr \
+            --gcov-executable gcov-14 \
+            --gcov-ignore-parse-errors \
+            --root . \
+            --filter '^(src|include)/' \
+            --exclude '^tests/' \
+            --exclude '^src/example\.cpp$' \
+            "$SKBUILD_BUILD_DIR" \
+            --json cpp-coverage-python.json
+
+      - name: Upload C++ coverage tracefile as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: cpp_coverage_python
+          path: cpp-coverage-python.json
           retention-days: 1
 
   sonarqube-analysis:
@@ -254,6 +332,7 @@ jobs:
     needs:
       - python-checks
       - cpp-checks
+      - python-bindings-coverage
 
     steps:
       - uses: actions/checkout@v7
@@ -266,16 +345,17 @@ jobs:
           merge-multiple: true
           path: .
 
-      - name: Download C++ SonarQube coverage
-        uses: actions/download-artifact@v8
-        with:
-          name: sonar_cpp_coverage
-          path: .
-
       - name: Combine Python coverage data
         run: |
           pipx run coverage combine coverage-*
           pipx run coverage xml -o coverage.xml
+
+      - name: Combine C++ coverage tracefiles into one SonarQube report
+        run: |
+          pipx run gcovr \
+            --root . \
+            --add-tracefile 'cpp-coverage-*.json' \
+            --sonarqube coverage_cpp.xml
 
       - name: Set gcc-14/g++-14 as default compilers
         run: |
@@ -424,6 +504,7 @@ jobs:
     needs:
       - python-checks
       - cpp-checks
+      - python-bindings-coverage
       - sonarqube-analysis
       - cpp-checks-other
     runs-on: ubuntu-latest
