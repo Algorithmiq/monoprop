@@ -23,9 +23,9 @@ operators $m_1, \ldots, m_{2N}$. They are related to the usual fermionic
 creation and annihilation operators by
 
 $$
-c_j = \tfrac{1}{2}(m_{2j-1} + i\,m_{2j}),
+c_j^\dagger = \tfrac{1}{2}(m_{2j-1} + i\,m_{2j}),
 \qquad
-c_j^\dagger = \tfrac{1}{2}(m_{2j-1} - i\,m_{2j}).
+c_j = \tfrac{1}{2}(m_{2j-1} - i\,m_{2j}).
 $$
 
 Every operator on $N$ modes can be written as a polynomial in the
@@ -72,7 +72,7 @@ $$
 
 For two monomials $M_\nu$ and $M_\mu$, whether they commute or
 anticommute is fixed by their lengths and the parity of their overlap
-$|\nu \cap \mu|$:
+$|\nu \cap \mu|$ with $\cap$ being equivalent to bit-wise AND operation on the binary strings:
 
 $$
 M_\nu M_\mu = (-1)^{\,|\nu|\,|\mu| \,+\, |\nu \cap \mu|}\, M_\mu M_\nu.
@@ -84,9 +84,9 @@ The three resulting cases are:
 - two **odd** monomials commute iff the overlap is odd;
 - an **even** and an **odd** monomial commute iff the overlap is even.
 
-Throughout propagation the generators and the propagated terms are even
-monomials, so the relevant case is the first: two even monomials **anticommute
-if and only if their overlap is odd**. When that happens, their product is again
+If the generators and the propagated terms are even monomials, as often happens
+in e.g., quantum chemistry simulations, the relevant case is the first one: two even monomials **anticommute
+if and only if their overlap is odd**. In general when monomials anti-commute, their product is again
 a single monomial, on the symmetric difference of the two supports:
 
 $$
@@ -95,8 +95,8 @@ M_\nu M_\mu \;\propto\; M_{\nu \oplus \mu},
 |\nu \oplus \mu| = |\nu| + |\mu| - 2\,|\nu \cap \mu|.
 $$
 
-This one-to-one map, an anticommuting pair produces exactly one new monomial,
-is what makes gate application deterministic and sparse, and is the algebraic
+With this one-to-one map, an anticommuting pair produces exactly one new monomial,
+which is what makes gate application deterministic and sparse, and is the algebraic
 core of the propagation algorithm.
 
 ## Reference states and paired monomials
