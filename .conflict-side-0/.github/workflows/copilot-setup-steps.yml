@@ -1,0 +1,55 @@
+name: "Copilot Setup Steps"
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # the job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+  copilot-setup-steps:
+    runs-on: ubuntu-26.04
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies from APT
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y just libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      - name: Install dependencies
+        run: |
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
+
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
+        run: |
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          export CPM_USE_LOCAL_PACKAGES=TRUE
+          uv sync --all-extras

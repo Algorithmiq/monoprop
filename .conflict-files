@@ -1,0 +1,3 @@
+ancestorEntries = [".github/workflows/docpages.yml"]
+ourEntries = [".github/workflows/docpages.yml"]
+theirEntries = [".github/workflows/docpages.yml"]
