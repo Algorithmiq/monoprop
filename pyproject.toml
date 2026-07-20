@@ -353,11 +353,11 @@ test-extras = ["qiskit", "openfermion", "pyscf"]
 
 [tool.cibuildwheel.linux]
 before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
-environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
+environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF" }
 
 [tool.cibuildwheel.macos]
 before-all = "brew install boost tbb"
-environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
+environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF" }
 
 [[tool.cibuildwheel.overrides]]
 # override on x86_64 to set TBB environment variables

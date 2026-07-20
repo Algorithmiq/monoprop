@@ -30,7 +30,7 @@ configure_package_config_file(
 
 write_basic_package_version_file(
   ${PROJECT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake
-  VERSION ${PROJECT_VERSION}
+  VERSION ${SKBUILD_PROJECT_VERSION_FULL}
   COMPATIBILITY SameMajorVersion
 )
 

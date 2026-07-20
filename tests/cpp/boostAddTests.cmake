@@ -92,6 +92,7 @@ while(_common_prop_idx LESS _common_prop_len)
   math(EXPR _common_prop_idx "${_common_prop_idx} + 2")
 endwhile()
 
+list(APPEND common_labels_list cxx)
 list(REMOVE_DUPLICATES common_labels_list)
 list(REMOVE_DUPLICATES common_env_list)
 

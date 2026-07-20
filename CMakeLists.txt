@@ -1,17 +1,30 @@
 cmake_minimum_required(VERSION 3.28...4.0)
 
-include(cmake/CPM.cmake)
+project(monoprop LANGUAGES CXX)
 
-if(SKBUILD)
-  # this value doesn't really matter, as it will be set by scikit-build-core
-  set(PROJECT_VERSION "0.1.0")
-else()
-  cpmaddpackage("gh:LecrisUT/CMakeExtraUtils@0.4.1")
-  include(${CMakeExtraUtils_BINARY_DIR}/DynamicVersion.cmake)
-  dynamic_version(PROJECT_PREFIX monoprop_)
+# warn if the user invokes CMake directly
+if (NOT SKBUILD)
+  message(WARNING "\
+  This CMake file is meant to be executed using 'scikit-build-core'.
+  Running it directly will almost certainly not produce the desired
+  result. If you are a user trying to install this package, use the
+  command below, which will install all necessary build dependencies,
+  compile the package in an isolated environment, and then install it.
+  =====================================================================
+   $ pip install .
+  =====================================================================
+  If you are a software developer, and this is your own package, then
+  it is usually much more efficient to install the build dependencies
+  in your environment once and use the following command that avoids
+  a costly creation of a new virtual environment at every compilation:
+  =====================================================================
+   $ pip install nanobind scikit-build-core
+   $ pip install --no-build-isolation -ve .
+  =====================================================================
+  You may optionally add -Ceditable.rebuild=true to auto-rebuild when
+  the package is imported. Otherwise, you need to rerun the above
+  after editing C++ files.")
 endif()
-
-project(monoprop LANGUAGES CXX VERSION ${PROJECT_VERSION})
 
 if(APPLE)
   set(THREADS_FOUND TRUE CACHE BOOL "")
@@ -60,6 +73,7 @@ endmacro()
 
 option_with_default(monoprop_MAX_NUM_MODES "Maximum number of simulable Fermionic modes with Python bindings" 250)
 option_with_print(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
+option_with_print(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
 find_package(TBB REQUIRED)
 if(TARGET TBB::tbb)
@@ -76,14 +90,10 @@ endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
 
-if(DEFINED SKBUILD)
-  message(
-    STATUS
-    "Maximum simulable Fermionic modes with Python bindings: ${monoprop_MAX_NUM_MODES}"
-  )
-else()
-  message(STATUS "${PROJECT_NAME} version: ${PROJECT_VERSION_FULL}")
-endif()
+message(
+  STATUS
+  "Maximum simulable Fermionic modes with Python bindings: ${monoprop_MAX_NUM_MODES}"
+)
 
 # report on compiler flags in use
 message(STATUS "Configuring a ${CMAKE_BUILD_TYPE} build")
@@ -106,6 +116,7 @@ message(
 )
 message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
+message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 
 include(GNUInstallDirs)
 
@@ -119,7 +130,7 @@ configure_file(
 
 add_subdirectory(src)
 
-if(NOT DEFINED SKBUILD)
+if(monoprop_ENABLE_CXX_UNIT_TESTS)
   enable_testing()
   include(CTest)
 
