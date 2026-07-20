@@ -16,7 +16,6 @@
 - [ ] Tests added or updated to cover the changes
 - [ ] Documentation updated (docstrings, `docs/`, `CONTRIBUTING.md`) if needed
 - [ ] `CHANGELOG` / release notes updated if applicable
-- [ ] CI is green
 
 ## AI/LLM disclosure
 
