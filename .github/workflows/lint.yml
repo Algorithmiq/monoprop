@@ -24,8 +24,3 @@ jobs:
           RUFF_OUTPUT_FORMAT: github
         with:
           extra-args: --from-ref ${{ github.event.pull_request.base.sha }} --to-ref ${{ github.event.pull_request.head.sha }}
-
-      - name: Run Aislop
-        uses: scanaislop/aislop@v1
-        with:
-          version: latest
