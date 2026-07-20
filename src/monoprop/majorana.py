@@ -155,9 +155,13 @@ class MajoranaOperator:
         out += ")"
         return out
 
-    def is_identity(self) -> bool:
-        """Check if the operator is the identity."""
-        return all(coef == 0 for coef in self.terms.values())
+    def __eq__(self, other: object) -> bool:
+        """Equal when num_modes and term coefficients match exactly."""
+        if not isinstance(other, MajoranaOperator):
+            return NotImplemented
+        return self.num_modes == other.num_modes and self.terms == other.terms
+
+    __hash__ = None  # type: ignore[assignment]  # value-equal but mutable
 
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1e-8) -> bool:
         """Check if two MajoranaOperators are closely equal (same terms and coefficients).
@@ -177,9 +181,11 @@ class MajoranaOperator:
             raise TypeError(
                 f"Cannot compare MajoranaOperator with {type(other).__name__}."
             )
-        if self.num_modes != other.num_modes or self.terms.keys() != other.terms.keys():
+        if self.num_modes != other.num_modes:
             return False
         return all(
-            np.isclose(coef, other.terms[key], rtol=rtol, atol=atol)
-            for key, coef in self.terms.items()
+            np.isclose(
+                self.terms.get(key, 0), other.terms.get(key, 0), rtol=rtol, atol=atol
+            )
+            for key in self.terms | other.terms
         )
