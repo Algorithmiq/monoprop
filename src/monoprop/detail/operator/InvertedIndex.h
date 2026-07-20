@@ -279,15 +279,6 @@ struct InvertedIndex {
         }
     }
 
-    auto reserve_rows(size_t total_rows) -> void {
-        const size_t required_words = (total_rows + 63) / 64;
-        for (auto &col : cols) {
-            if (col.is_dense && col.words.capacity() < required_words) {
-                col.words.reserve(required_words);
-            }
-        }
-    }
-
     auto memory_bytes() const -> size_t {
         size_t total = 0;
         for (const auto &col : cols) {

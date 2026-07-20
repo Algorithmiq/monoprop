@@ -25,7 +25,7 @@
 
 #include <mpi.h>
 
-#include "monoprop/detail/mpi/ShmComm.h" // reuse the ShmCommPoisoned exception type
+#include "monoprop/detail/mpi/ShardBarrier.h" // ShardBarrier + the shared ShmCommPoisoned exception type
 
 // Hybrid transport: compose R MPI ranks x S in-process shards into ONE flat SPMD world of P = R*S
 // partitions, so the unchanged engine — which only ever asks its comm for size()/rank() and issues
@@ -49,7 +49,7 @@ public:
     // parent = the R-rank MPI communicator; n_local_shards = S (same on every rank — the facade ctor
     // allreduces S for a min==max consistency check before constructing this).
     HybridComm(MPI_Comm parent, int n_local_shards)
-        : parent_(parent), s_(n_local_shards), slots_(static_cast<size_t>(n_local_shards)) {
+        : parent_(parent), s_(n_local_shards), slots_(static_cast<size_t>(n_local_shards)), barrier_(n_local_shards) {
         MPI_Comm_size(parent_, &r_);
         MPI_Comm_rank(parent_, &mpi_rank_);
         int provided = MPI_THREAD_SINGLE;
@@ -355,11 +355,8 @@ public:
         // unreachable until every shard still copying here has arrived at that verb's first barrier.
     }
 
-    auto poison() -> void { poisoned_.store(true, std::memory_order_release); }
-    auto reset() -> void {
-        poisoned_.store(false, std::memory_order_relaxed);
-        arrived_.store(0, std::memory_order_relaxed);
-    }
+    auto poison() -> void { barrier_.poison(); }
+    auto reset() -> void { barrier_.reset(); }
 
 private:
     struct alignas(64) Slot {
@@ -484,33 +481,9 @@ private:
         return static_cast<int>(v);
     }
 
-    // Sense-reversing S-participant barrier with poison escape (same design as ShmComm::sync).
-    auto sync() -> void {
-        const unsigned g = gen_.load(std::memory_order_acquire);
-        if (arrived_.fetch_add(1, std::memory_order_acq_rel) + 1 == s_) {
-            arrived_.store(0, std::memory_order_relaxed);
-            gen_.store(g + 1, std::memory_order_release);
-        }
-        else {
-            // Bounded on-core spin before yielding — see the matching comment in ShmComm::sync.
-            int spins = 0;
-            while (gen_.load(std::memory_order_acquire) == g) {
-                if (poisoned_.load(std::memory_order_acquire)) {
-                    throw ShmCommPoisoned();
-                }
-                if (spins < detail::kSpinPauseIters) {
-                    ++spins;
-                    detail::cpu_relax();
-                }
-                else {
-                    std::this_thread::yield();
-                }
-            }
-        }
-        if (poisoned_.load(std::memory_order_acquire)) {
-            throw ShmCommPoisoned();
-        }
-    }
+    // Intra-rank barrier between the s_ local shards (the shard-0 master brackets its one MPI call
+    // between two of these). See ShardBarrier.
+    auto sync() -> void { barrier_.sync(); }
 
     MPI_Comm parent_;
     int s_;
@@ -527,10 +500,7 @@ private:
     uint64_t red_u64_ = 0;
     std::vector<double> red_vec_;
 
-    // Private cache line per barrier word — see the matching comment in ShmComm.h.
-    alignas(64) std::atomic<int> arrived_{0};
-    alignas(64) std::atomic<unsigned> gen_{0};
-    alignas(64) std::atomic<bool> poisoned_{false};
+    ShardBarrier barrier_;
 };
 
 } // namespace monoprop::mpi

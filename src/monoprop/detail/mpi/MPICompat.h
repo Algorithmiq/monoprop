@@ -201,6 +201,30 @@ inline auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
 #endif
 }
 
+// ─── count exchange ──────────────────────────────────────────────────────────
+
+/// Exchange per-rank send counts to obtain per-rank recv counts (MPI_Alltoall of one int per rank,
+/// or the ShmComm/HybridComm transpose). Single-process Kind::Mpi build: identity copy (recv == send).
+/// `n` is the communicator size.
+inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void {
+    if (comm.kind == Comm::Kind::Shm) {
+        comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
+        return;
+    }
+#ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
+        return;
+    }
+    (void)n;
+    MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
+#else
+    for (int i = 0; i < n; ++i) {
+        recv_counts[i] = send_counts[i];
+    }
+#endif
+}
+
 // ─── variable all-to-all (vector-of-vectors) ─────────────────────────────────
 
 /**
@@ -332,20 +356,8 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
             h.recv_counts[static_cast<size_t>(self)] = 0;
         }
     }
-    else if (comm.kind == Comm::Kind::Shm) {
-        comm.shm->alltoall_counts(comm.shm_rank, h.send_counts.data(), h.recv_counts.data());
-    }
-#ifdef monoprop_ENABLE_MPI
-    else if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoall_counts(comm.shm_rank, h.send_counts.data(), h.recv_counts.data());
-    }
-#endif
     else {
-#ifdef monoprop_ENABLE_MPI
-        MPI_Alltoall(h.send_counts.data(), 1, MPI_INT, h.recv_counts.data(), 1, MPI_INT, comm.mpi);
-#else
-        h.recv_counts = h.send_counts; // single participant: recv counts == send counts
-#endif
+        alltoall_counts(h.send_counts.data(), h.recv_counts.data(), num_ranks, comm);
     }
 
     h.recv_displs[0] = 0;

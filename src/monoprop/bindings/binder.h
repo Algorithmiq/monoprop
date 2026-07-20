@@ -232,31 +232,5 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             [](const MonomialPropagator<NumModes> &self) { return self.operator_memory_usage().total_bytes(); });
     cls.def("graph_memory_bytes",
             [](const MonomialPropagator<NumModes> &self) { return self.graph_memory_usage().total_bytes(); });
-
-    // Sharded-aware component breakdown of the operator footprint (bytes), as a dict. Measurement
-    // hook for the scaling study; never raises under sharding (unlike operator_memory_bytes()).
-    cls.def("operator_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
-        const auto b = self.operator_memory_breakdown();
-        namespace nb = nanobind;
-        nb::dict d;
-        d["operator_terms"] = b.operator_terms_bytes;
-        d["op_coeffs"] = b.op_coeffs_bytes;
-        d["state_coeffs"] = b.state_coeffs_bytes;
-        d["indexing"] = b.indexing_bytes;
-        d["init_operator"] = b.init_operator_bytes;
-        d["slater_determinant"] = b.slater_determinant_bytes;
-        d["inverted_index"] = b.inverted_index_bytes;
-        d["total"] = b.total_bytes();
-        d["overflow_count"] = self.operator_overflow_count();
-        d["inline_width"] = self.operator_inline_width();
-        return d;
-    });
-
-    cls.def("operator_popcount_histogram",
-            [](const MonomialPropagator<NumModes> &self) { return self.operator_popcount_histogram(); });
-    cls.def("operator_support_window_histogram",
-            [](const MonomialPropagator<NumModes> &self) { return self.operator_support_window_histogram(); });
-    cls.def("operator_diagonal_count",
-            [](const MonomialPropagator<NumModes> &self) { return self.operator_diagonal_count(); });
 }
 } // namespace monoprop::bindings::detail

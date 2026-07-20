@@ -51,33 +51,16 @@ struct IncomingProbe {
     size_t nq_total = 0;
 };
 
-// Phases 1-2 CORE: deserialize + batch-find every incoming record and assign miss indices. Read-only
-// w.r.t. the operator's contents (probes only); the caller runs its Phase-3 scatter, then
+// Phases 1-2 for QUERY records: deserialize + batch-find every incoming record and assign miss indices.
+// Read-only w.r.t. the operator's contents (probes only); the caller runs its Phase-3 scatter, then
 // insert_incoming_misses. QW = per-record stride: the plain query width, or kQueryWordsFused for the fused
-// resolver (trailing v_src word). WithPhase selects the trailing-phase-word decode (query records) — a
-// caller whose records carry no phase word can probe with WithPhase=false, leaving phase_of empty.
-// Extracting this single copy keeps the deterministic serial (s,q) miss-prefix — and thus multi-rank
-// bit-exactness — from drifting between resolvers. The value word (if any) is read by the caller
-// (see resolve_incoming_queries_fused), never here.
-// Default miss filter: keep every miss. The query resolvers insert every distinct absent partner, so
-// they pass this and Phase 2 is byte-identical to the historical unconditional prefix.
-struct KeepAllMisses {
-    // Templated on the key type: MajoranaSet<N> is an alias (Bitset<2N>), a non-deducible context, so we
-    // cannot bind NumModes here — the key argument's type deduces directly instead.
-    template <typename Key>
-    auto operator()(const Key & /*key*/, size_t /*sender*/, size_t /*q*/) const -> bool {
-        return true;
-    }
-};
-
-template <size_t NumModes,
-          size_t QW = kQueryWords<NumModes>,
-          bool WithPhase = true,
-          typename MissFilter = KeepAllMisses>
-auto probe_incoming_keys(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
-                         MPOperator<NumModes> &op,
-                         size_t rank_count,
-                         MissFilter miss_filter = MissFilter{}) -> IncomingProbe<NumModes> {
+// resolver (trailing v_src word). Keeping this single copy keeps the deterministic serial (s,q) miss-prefix
+// — and thus multi-rank bit-exactness — consistent across resolvers. The value word (if any) is read by
+// the caller (see resolve_incoming_queries_fused), never here.
+template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
+auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
+                            MPOperator<NumModes> &op,
+                            size_t rank_count) -> IncomingProbe<NumModes> {
     constexpr size_t W = QW;
     IncomingProbe<NumModes> pr;
 
@@ -104,23 +87,16 @@ auto probe_incoming_keys(const std::vector<VecZ> &incoming, // serialized, one V
     // Phase 1 (parallel, read-only): deserialize, then probe with the group-prefetch batch find
     // (chunked so each task pipelines its own probes; the table is not mutated during this phase).
     pr.maj.resize(pr.nq_total);
-    if constexpr (WithPhase) {
-        pr.phase_of.resize(pr.nq_total);
-    }
+    pr.phase_of.resize(pr.nq_total);
     pr.idx_of.resize(pr.nq_total);
     for (size_t g = 0; g < pr.nq_total; ++g) {
         const size_t s = pr.sender_of[g];
         const size_t q = g - pr.goff[s];
-        if constexpr (WithPhase) {
-            MajoranaSet<NumModes> m;
-            int ph = 0;
-            query_read<NumModes, QW>(incoming[s], q, m, ph);
-            pr.maj[g] = m;
-            pr.phase_of[g] = ph;
-        }
-        else {
-            pr.maj[g] = mpi_detail::read_majorana_from_words<NumModes>(incoming[s], q * QW);
-        }
+        MajoranaSet<NumModes> m;
+        int ph = 0;
+        query_read<NumModes, QW>(incoming[s], q, m, ph);
+        pr.maj[g] = m;
+        pr.phase_of[g] = ph;
     }
     {
         const size_t op_size = op.store->size();
@@ -132,33 +108,16 @@ auto probe_incoming_keys(const std::vector<VecZ> &incoming, // serialized, one V
         }
     }
 
-    // Phase 2 (serial prefix, (sender,query) order): each KEPT miss takes the next index base+j. miss_g[j]
+    // Phase 2 (serial prefix, (sender,query) order): each miss takes the next index base+j. miss_g[j]
     // records which query g became miss j, so Phase 4 reads the deserialized maj[miss_g[j]] directly.
-    // A miss the filter rejects (a caller-supplied MissFilter returning false) keeps idx_of==kMissingIndex
-    // and is NEVER inserted, so it consumes no index — the kept misses stay a deterministic (s,q) prefix
-    // exactly as if the rejected records had never been sent. Query resolvers pass KeepAllMisses, so every
-    // miss is kept and this loop is byte-identical to the historical unconditional prefix.
     pr.base = op.store->size(); // LOCAL insert base into the op being mutated
     for (size_t g = 0; g < pr.nq_total; ++g) {
         if (pr.idx_of[g] == kMissingIndex) {
-            const size_t s = pr.sender_of[g];
-            const size_t q = g - pr.goff[s];
-            if (miss_filter(pr.maj[g], s, q)) {
-                pr.idx_of[g] = pr.base + pr.miss_g.size();
-                pr.miss_g.push_back(static_cast<TermIndex>(g));
-            }
+            pr.idx_of[g] = pr.base + pr.miss_g.size();
+            pr.miss_g.push_back(static_cast<TermIndex>(g));
         }
     }
     return pr;
-}
-
-// Phases 1-2 for QUERY records (thin wrapper: the probe core with the trailing phase word decoded).
-// Every query resolver goes through here, behaviorally untouched by the core extraction.
-template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
-auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
-                            MPOperator<NumModes> &op,
-                            size_t rank_count) -> IncomingProbe<NumModes> {
-    return probe_incoming_keys<NumModes, QW, /*WithPhase=*/true>(incoming, op, rank_count);
 }
 
 // Phase 4 (parallel bulk insert of the distinct absent terms): scatter majs into the disjoint op slots

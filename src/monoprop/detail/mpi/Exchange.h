@@ -18,39 +18,13 @@ namespace monoprop::mpi {
 
 // ─── count exchange ──────────────────────────────────────────────────────────
 
-/// Exchange per-rank send counts to obtain per-rank recv counts (MPI_Alltoall of one int per rank,
-/// or the ShmComm transpose). Single-process Kind::Mpi build: identity copy (recv == send). `n` is the
-/// communicator size.
-inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void {
-    if (comm.kind == Comm::Kind::Shm) {
-        comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
-        return;
-    }
-#ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
-        return;
-    }
-    (void)n;
-    MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
-#else
-    for (int i = 0; i < n; ++i) {
-        recv_counts[i] = send_counts[i];
-    }
-#endif
-}
-
 /// Resolve the recv side of a send-count vector, reusing `cache` when the communicator size is
 /// unchanged (the send pattern of a replayed graph is fixed ⇒ recv layout is identical every call, so
 /// a hit removes one blocking count round-trip per layer per evaluation). Resolution order:
 ///   1. cache hit (cache.comm_size == size and same rank count) → no MPI;
-///   2. `known` non-empty → recv counts are already known (e.g. the transpose of query counts) → no MPI;
-///   3. otherwise → one MPI_Alltoall via alltoall_counts.
+///   2. otherwise → one MPI_Alltoall via alltoall_counts.
 /// The resolved layout is stored in `cache` and returned by reference.
-inline auto resolve_recv(std::span<const int> send_counts,
-                         Comm comm,
-                         RecvLayoutCache &cache,
-                         std::span<const int> known = {}) -> const RecvLayout & {
+inline auto resolve_recv(std::span<const int> send_counts, Comm comm, RecvLayoutCache &cache) -> const RecvLayout & {
     const int n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);
     if (cache.comm_size == comm_size && static_cast<int>(cache.layout.counts.size()) == n) {
@@ -59,14 +33,7 @@ inline auto resolve_recv(std::span<const int> send_counts,
 
     RecvLayout &out = cache.layout;
     out.counts.resize(static_cast<size_t>(n));
-    if (!known.empty()) {
-        for (int i = 0; i < n; ++i) {
-            out.counts[static_cast<size_t>(i)] = known[static_cast<size_t>(i)];
-        }
-    }
-    else {
-        alltoall_counts(send_counts.data(), out.counts.data(), n, comm);
-    }
+    alltoall_counts(send_counts.data(), out.counts.data(), n, comm);
     out.displs.resize(static_cast<size_t>(n));
     int total = 0;
     for (int i = 0; i < n; ++i) {

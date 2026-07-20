@@ -170,31 +170,6 @@ template <typename BitOp>
     }
 }
 
-// scale_cos_cached / accumulate_cos_cached replay a materialised FoldCache buffer. They are no longer a
-// runtime path (build_cos_callbacks always recomputes); they survive as the reference oracle the
-// recompute-equivalence test checks the live scale_cos_lazy / accumulate_cos_lazy against.
-template <size_t NumModes>
-void scale_cos_cached(const FoldCache<NumModes> &p, double *coeff, double cos_val) {
-    const size_t mask_words = p.fold.mask_words;
-    for (size_t wi = 0; wi < mask_words; ++wi) {
-        for_each_cos_index(wi * 64, fold_word<NumModes>(p, wi), [&](size_t i) { coeff[i] *= cos_val; });
-    }
-}
-
-template <size_t NumModes>
-double accumulate_cos_cached(const FoldCache<NumModes> &p, double *state, double *ham, double cos_val, double sec_val) {
-    const size_t mask_words = p.fold.mask_words;
-    double loc = 0.0;
-    for (size_t wi = 0; wi < mask_words; ++wi) {
-        for_each_cos_index(wi * 64, fold_word<NumModes>(p, wi), [&](size_t i) {
-            loc += state[i] * ham[i];
-            ham[i] *= sec_val;
-            state[i] *= cos_val;
-        });
-    }
-    return loc;
-}
-
 // ---- fold RECOMPUTE (no per-layer cache buffer) ----
 // The SOLE runtime replay path (build_cos_callbacks): the eval recomputes each layer's fold on the fly
 // instead of holding a `mask_words`-word buffer per layer. Holding that buffer was multi-GB for large

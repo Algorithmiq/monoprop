@@ -43,14 +43,12 @@ inline auto build_majorana_evolution_cutoff_state(const std::optional<double> &a
     const bool check_atol = atol.has_value() && local_coeffs.has_value() && param.has_value();
     const bool check_upper_atol = upper_atol.has_value() && local_coeffs.has_value();
     const double sin_val = param.has_value() ? std::sin(2 * param.value()) : 1.0;
-    const double cos_val = param.has_value() ? std::cos(2 * param.value()) : 1.0;
 
     return CutoffContext{.check_atol = check_atol,
                          .check_upper_atol = check_upper_atol,
                          .atol_value = atol.value_or(0.0),
                          .upper_atol_value = upper_atol.value_or(0.0),
                          .abs_sin_val = std::abs(sin_val),
-                         .abs_cos_val = std::abs(cos_val),
                          .use_coeff_checks = check_atol || check_upper_atol};
 }
 
@@ -445,11 +443,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         CosineWordBuilder cos_b;
         for (const auto &w : nz) {
             if (word_aligned_cos && fused_scale_coeffs != nullptr) {
-                // Fused cos sweep (ContractImmediately, k==0): every anticommuting coefficient is
-                // loaded ONCE — the pre-cos value feeds the atol gate and v_src exactly as the eager
-                // arm below — and stored back scaled, unconditionally and BEFORE any gate `continue`
-                // (the sweep covers all anti terms; the gates only decide emission). No cosine set is
-                // built: this store IS the gate's cos pass.
+                // Fused cos sweep (ContractImmediately, k==0): cosine-scale inplace all anticommuting terms and emit survivors 
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
@@ -466,11 +460,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
             else if (word_aligned_cos) {
                 // No orbital gate: cosine-scale the whole word (all anticommuting terms), then per
-                // bit apply the ATOL coefficient gate BEFORE the popcount ROW read. ~90–97% of
-                // anticommuting terms fail this gate (their coefficient is below the sine cutoff),
-                // and the gate needs only |coeff[i]| — not the row — so deferring popcount until a
-                // term passes eliminates that many random packed-row cacheline loads (the dominant
-                // pass-2 memory traffic). Bit-identical: same emitted set/order, same cos word.
+                // bit apply the ATOL coefficient gate BEFORE the popcount ROW read. Deferring popcount 
+                // until a term passes eliminates that many random packed-row cacheline loads. 
                 cos_b.push_word(w.base, w.overlap);
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));

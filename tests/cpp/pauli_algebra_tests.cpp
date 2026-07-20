@@ -15,6 +15,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstdint>
@@ -57,6 +58,59 @@ auto native_bitset(const std::string &p) -> MajoranaSet<NumModes> {
         }
     }
     return indices_to_bitset<NumModes>(slots);
+}
+
+// --- Reference oracles (test-only) -----------------------------------------------------------
+// Closed-form phase/weight computations kept here rather than in the shipped PauliAlgebra.h: the
+// library's hot path derives the same quantities inline (pauli_rotation_sign). These readable
+// forms exist only to pin that inline kernel against an independent reference in the cases below.
+// They reuse the header's still-shipped primitives (detail::pauli_uv, detail::mod4, pauli_y_count).
+
+// Qubit Pauli weight = number of non-identity single-qubit letters = or_sum = |x | z|.
+template <size_t NumModes>
+[[nodiscard]] auto pauli_weight(const MajoranaSet<NumModes> &p) -> size_t {
+    constexpr auto e_mask = pauli_even_mask<NumModes>();
+    size_t weight = 0;
+    for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
+        const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
+        weight += static_cast<size_t>(std::popcount(v | u));
+    }
+    return weight;
+}
+
+// The mod-4 exponent of the product-phase i^e for A*B, with A the LEFT operand.
+//   e = yA + yB - yR + 2*(zA . xB)  (mod 4),  R = A ^ B.
+// e is odd iff A,B anticommute (phase = +/- i); even iff they commute (phase = +/- 1).
+template <size_t NumModes>
+[[nodiscard]] auto product_phase_exponent(const MajoranaSet<NumModes> &a, const MajoranaSet<NumModes> &b) -> int {
+    constexpr auto e_mask = pauli_even_mask<NumModes>();
+    const auto r = a ^ b;
+    const long y_a = static_cast<long>(pauli_y_count<NumModes>(a));
+    const long y_b = static_cast<long>(pauli_y_count<NumModes>(b));
+    const long y_r = static_cast<long>(pauli_y_count<NumModes>(r));
+    long cross = 0; // zA . xB = popcount(v-plane(A) & x-plane(B))
+    for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
+        const uint64_t e = e_mask.word(w);
+        const uint64_t z_a = a.word(w) & e; // v-plane of A
+        const auto [v_b, u_b] = detail::pauli_uv(b.word(w), e);
+        const uint64_t x_b = u_b ^ v_b; // x-plane of B
+        cross += std::popcount(z_a & x_b);
+    }
+    return detail::mod4(y_a + y_b - y_r + 2 * cross);
+}
+
+// Product phase phi (unit modulus) such that A*B = phi * (A ^ B), A the LEFT operand.
+template <size_t NumModes>
+[[nodiscard]] auto pauli_product_phase(const MajoranaSet<NumModes> &a, const MajoranaSet<NumModes> &b)
+    -> std::complex<double> {
+    return POWERS_OF_I[product_phase_exponent<NumModes>(a, b)];
+}
+
+// Emit sign +/-1 such that A*B = sign * i * (A ^ B), valid when A,B ANTICOMMUTE (exponent e odd).
+// The RAW product sign; pauli_rotation_sign returns exactly -pauli_emit_sign_antic.
+template <size_t NumModes>
+[[nodiscard]] auto pauli_emit_sign_antic(const MajoranaSet<NumModes> &a, const MajoranaSet<NumModes> &b) -> int {
+    return product_phase_exponent<NumModes>(a, b) == 1 ? 1 : -1;
 }
 
 // Faithful C++ port of _pauli_to_fermi (conversion_utils.py) -- indices only (coeff dropped;

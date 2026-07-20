@@ -106,7 +106,6 @@ public:
     // always returns 0, one deref on the hot probe path). Operator sharding across cores is handled a
     // level up by ShardGroup; within one shard the index is a single lock-free table, filled serially.
     // The routing never changes membership or what find() returns, so it is BIT-EXACT.
-    static constexpr size_t kMaxShards = 64; // cap (bounds per-shard overhead)
     auto shard_of_spread(size_t sp) const noexcept -> size_t { return (sp >> shard_shift_) & shard_mask_; }
     auto shard_of(uint32_t h) const noexcept -> size_t { return shard_of_spread(spread(h)); }
 
@@ -251,62 +250,6 @@ public:
     }
     // Test-support only: lets operator_index_tests assert how many rows spilled past the inline width.
     [[nodiscard]] auto overflow_count() const -> size_t { return overflow_.size(); }
-    // Diagnostic: inline width (stride - 1), for attributing per-row byte cost in the scaling study.
-    [[nodiscard]] auto diag_inline_width() const -> size_t { return inline_width_; }
-    // Diagnostic: histogram of row popcounts (index = popcount, value = #rows). Whole-index walk;
-    // used by the scaling study to see the weight distribution driving overflow. Not a hot path.
-    [[nodiscard]] auto popcount_histogram() const -> std::vector<size_t> {
-        std::vector<size_t> hist;
-        for (size_t i = 0; i < size_; ++i) {
-            const size_t pc = popcount(i);
-            if (pc >= hist.size()) {
-                hist.resize(pc + 1, 0);
-            }
-            ++hist[pc];
-        }
-        return hist;
-    }
-    // Diagnostic: histogram of each row's SUPPORT WINDOW = (last_pos - first_pos). If windows stay
-    // bounded as NumModes grows, the terms are light-cone-local (a window-relative encoding would be
-    // N-flat); if they grow with N, the operator is genuinely spread and growth is intrinsic.
-    [[nodiscard]] auto support_window_histogram() const -> std::vector<size_t> {
-        std::vector<size_t> hist;
-        for (size_t i = 0; i < size_; ++i) {
-            size_t first = std::numeric_limits<size_t>::max();
-            size_t last = 0;
-            size_t cnt = 0;
-            for_each_position(i, [&](size_t p) {
-                first = std::min(first, p);
-                last = std::max(last, p);
-                ++cnt;
-            });
-            const size_t w = cnt ? (last - first) : 0;
-            if (w >= hist.size()) {
-                hist.resize(w + 1, 0);
-            }
-            ++hist[w];
-        }
-        return hist;
-    }
-    // Diagnostic: number of fully-paired (diagonal / Z-only) rows — positions come as adjacent pairs
-    // (2q, 2q+1). These are the terms the support/length cutoff admits at ANY weight (xor_sum == 0).
-    [[nodiscard]] auto diagonal_count() const -> size_t {
-        size_t diag = 0;
-        std::vector<size_t> pos;
-        for (size_t i = 0; i < size_; ++i) {
-            pos.clear();
-            for_each_position(i, [&](size_t p) { pos.push_back(p); });
-            bool paired = (pos.size() % 2 == 0);
-            for (size_t k = 0; paired && k + 1 < pos.size(); k += 2) {
-                if ((pos[k] % 2 != 0) || pos[k + 1] != pos[k] + 1) {
-                    paired = false;
-                }
-            }
-            diag += (paired && !pos.empty()) ? 1 : 0;
-        }
-        return diag;
-    }
-
     [[nodiscard]] auto memory_bytes() const -> size_t {
         size_t total = rows_.capacity() * sizeof(PosT);
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);

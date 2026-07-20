@@ -24,7 +24,7 @@
 #include <type_traits>
 #include <vector>
 
-#include "monoprop/detail/mpi/CpuRelax.h"
+#include "monoprop/detail/mpi/ShardBarrier.h"
 
 // In-process shared-memory SPMD transport. S participant threads (shard masters) each hold a
 // mpi::Comm{Kind::Shm, this, rank} and call the SAME sequence of collectives in program order — the
@@ -44,16 +44,9 @@
 
 namespace monoprop::mpi {
 
-/// Thrown by a collective when a peer shard unwound (set the poison flag) instead of arriving —
-/// turns a would-be permanent barrier hang into a propagating exception on every participant.
-class ShmCommPoisoned : public std::runtime_error {
-public:
-    ShmCommPoisoned() : std::runtime_error("ShmComm poisoned: a peer shard threw during a collective") {}
-};
-
 class ShmComm {
 public:
-    explicit ShmComm(int n) : n_(n), slots_(static_cast<size_t>(n)) {}
+    explicit ShmComm(int n) : n_(n), slots_(static_cast<size_t>(n)), barrier_(n) {}
 
     ShmComm(const ShmComm &) = delete;
     auto operator=(const ShmComm &) -> ShmComm & = delete;
@@ -194,18 +187,12 @@ public:
         sync(); // peers write into our buffer (and read from it) until here
     }
 
-    /// Signal that this participant is unwinding (e.g. an engine exception): release peers spinning in
-    /// a barrier so they throw ShmCommPoisoned rather than hang forever. Idempotent.
-    auto poison() -> void { poisoned_.store(true, std::memory_order_release); }
+    /// Release peers spinning in a barrier so they throw ShmCommPoisoned rather than hang forever
+    /// (called by the shard dispatcher when a participant unwinds). Idempotent. See ShardBarrier.
+    auto poison() -> void { barrier_.poison(); }
 
-    /// Clear the poison flag and the barrier's arrival counter. MUST be called only when every
-    /// participant is quiescent (between collective rounds, e.g. by the shard dispatcher before a new
-    /// job), so a round aborted by poison leaves no dirty state for the next round. The generation is
-    /// left monotonic (each participant re-reads it at its next barrier).
-    auto reset() -> void {
-        poisoned_.store(false, std::memory_order_relaxed);
-        arrived_.store(0, std::memory_order_relaxed);
-    }
+    /// Clear the poison flag and arrival counter between collective rounds. See ShardBarrier::reset.
+    auto reset() -> void { barrier_.reset(); }
 
 private:
     // One cache-line-isolated publish slot per rank (no false sharing between publishers). A rank only
@@ -219,46 +206,12 @@ private:
         uint64_t u64 = 0;
     };
 
-    // Sense-reversing generation barrier with a poison escape. The completer (last arriver) resets the
-    // counter then bumps the generation, releasing spinners; a poisoned peer that never arrives is
-    // covered because spinners also break on the poison flag and throw.
-    auto sync() -> void {
-        const unsigned g = gen_.load(std::memory_order_acquire);
-        if (arrived_.fetch_add(1, std::memory_order_acq_rel) + 1 == n_) {
-            arrived_.store(0, std::memory_order_relaxed);
-            gen_.store(g + 1, std::memory_order_release);
-        }
-        else {
-            // Bounded on-core spin first: with one pinned shard per core the completer's release
-            // store lands within the pause window, so the hot path never syscalls. Only genuinely
-            // long waits (imbalance tails, oversubscription) fall back to yielding the timeslice.
-            int spins = 0;
-            while (gen_.load(std::memory_order_acquire) == g) {
-                if (poisoned_.load(std::memory_order_acquire)) {
-                    throw ShmCommPoisoned();
-                }
-                if (spins < detail::kSpinPauseIters) {
-                    ++spins;
-                    detail::cpu_relax();
-                }
-                else {
-                    std::this_thread::yield();
-                }
-            }
-        }
-        if (poisoned_.load(std::memory_order_acquire)) {
-            throw ShmCommPoisoned();
-        }
-    }
+    // Two-phase barrier between the n_ participant shards (publish → sync → read → sync).
+    auto sync() -> void { barrier_.sync(); }
 
     int n_;
     std::vector<Slot> slots_;
-    // Each barrier word gets a private cache line: every arrival's fetch_add on arrived_ takes its
-    // line exclusive, and if gen_ shared that line the spinners' gen_ reload would miss to L3 on
-    // every peer arrival — O(S) coherence bounces per barrier (measured as the top hotspot at S=112).
-    alignas(64) std::atomic<int> arrived_{0};
-    alignas(64) std::atomic<unsigned> gen_{0};
-    alignas(64) std::atomic<bool> poisoned_{false};
+    ShardBarrier barrier_;
 };
 
 } // namespace monoprop::mpi

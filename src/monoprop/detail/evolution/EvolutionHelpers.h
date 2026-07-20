@@ -32,7 +32,6 @@ struct CutoffContext {
     double atol_value = 0.0;
     double upper_atol_value = 0.0;
     double abs_sin_val = 1.0;
-    double abs_cos_val = 1.0;
     bool use_coeff_checks = false;
 
     auto abs_coeff_for(size_t i, const VecD &coeffs) const -> double {

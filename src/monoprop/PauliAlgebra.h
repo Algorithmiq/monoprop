@@ -59,8 +59,7 @@ namespace detail {
 /// The (u,v) symplectic planes of one physical word of a Pauli bitset, with `e` the
 /// physical-even-bit mask (pauli_even_mask's word). `v` is the z-plane (even physical bits);
 /// `u` is the odd-bit plane shifted onto the even lane; the x-plane is `u ^ v`. Factors the
-/// per-word split shared by pauli_weight / pauli_y_count / product_phase_exponent /
-/// pauli_rotation_sign.
+/// per-word split shared by pauli_y_count and pauli_rotation_sign.
 struct PauliUv {
     uint64_t v; ///< z-plane (even physical bits)
     uint64_t u; ///< odd-bit plane, aligned onto the even lane
@@ -85,20 +84,6 @@ template <size_t NumModes>
         result.data()[w] = ((word & e) << 1) | ((word >> 1) & e);
     }
     return result;
-}
-
-/*!
- * @brief Qubit Pauli weight = number of non-identity single-qubit letters = or_sum = |x | z|.
- */
-template <size_t NumModes>
-[[nodiscard]] auto pauli_weight(const MajoranaSet<NumModes> &p) -> size_t {
-    constexpr auto e_mask = pauli_even_mask<NumModes>();
-    size_t weight = 0;
-    for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
-        const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
-        weight += static_cast<size_t>(std::popcount(v | u));
-    }
-    return weight;
 }
 
 /*!
@@ -129,55 +114,7 @@ template <size_t NumModes>
 namespace detail {
 /// Reduce a (possibly negative) i-power exponent to [0, 4) for POWERS_OF_I indexing.
 [[nodiscard]] inline constexpr auto mod4(long e) -> int { return static_cast<int>(((e % 4) + 4) % 4); }
-
-/// The mod-4 exponent of the product-phase i^e for A*B, with A the LEFT operand.
-///   e = yA + yB - yR + 2*(zA . xB)   (mod 4),   R = A ^ B.
-/// e is odd iff A,B anticommute (phase = +/- i); even iff they commute (phase = +/- 1).
-template <size_t NumModes>
-[[nodiscard]] auto product_phase_exponent(const MajoranaSet<NumModes> &a, const MajoranaSet<NumModes> &b) -> int {
-    constexpr auto e_mask = pauli_even_mask<NumModes>();
-    const auto r = a ^ b;
-    const long y_a = static_cast<long>(pauli_y_count<NumModes>(a));
-    const long y_b = static_cast<long>(pauli_y_count<NumModes>(b));
-    const long y_r = static_cast<long>(pauli_y_count<NumModes>(r));
-    long cross = 0; // zA . xB = popcount(v-plane(A) & x-plane(B))
-    for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
-        const uint64_t e = e_mask.word(w);
-        const uint64_t z_a = a.word(w) & e;    // v-plane of A
-        const auto [v_b, u_b] = detail::pauli_uv(b.word(w), e);
-        const uint64_t x_b = u_b ^ v_b;        // x-plane of B
-        cross += std::popcount(z_a & x_b);
-    }
-    return mod4(y_a + y_b - y_r + 2 * cross);
-}
 } // namespace detail
-
-/*!
- * @brief Product phase phi (unit modulus) such that A*B = phi * (A ^ B), A the LEFT operand.
- *
- * For Hermitian representatives A = i^{yA} X^{xA} Z^{zA}, moving Z^{zA} past X^{xB} via
- * ZX = -XZ gives A*B = i^{yA+yB} (-1)^{zA.xB} X^{xR} Z^{zR}; folding X^{xR}Z^{zR} = i^{-yR} R
- * yields phi = i^e with e = yA + yB - yR + 2*(zA.xB) (mod 4). Order-sensitive: for
- * anticommuting A,B, phi(A,B) = -phi(B,A).
- */
-template <size_t NumModes>
-[[nodiscard]] auto pauli_product_phase(const MajoranaSet<NumModes> &a, const MajoranaSet<NumModes> &b)
-    -> std::complex<double> {
-    return POWERS_OF_I[detail::product_phase_exponent<NumModes>(a, b)];
-}
-
-/*!
- * @brief Emit sign +/-1 such that A*B = sign * i * (A ^ B), valid when A,B ANTICOMMUTE.
- *
- * A the LEFT operand. When A,B anticommute the exponent e is odd: e==1 -> phi=+i -> sign=+1,
- * e==3 -> phi=-i -> sign=-1. (Undefined for commuting operands, where the product is real.)
- * This is the RAW product sign; the rotation O' = U†OU applies its negation -- see
- * pauli_rotation_sign, which returns exactly -pauli_emit_sign_antic and is what the engine emits.
- */
-template <size_t NumModes>
-[[nodiscard]] auto pauli_emit_sign_antic(const MajoranaSet<NumModes> &a, const MajoranaSet<NumModes> &b) -> int {
-    return detail::product_phase_exponent<NumModes>(a, b) == 1 ? 1 : -1;
-}
 
 /*!
  * @brief Precomputed per-generator context for the hot emit-sign kernel.

@@ -48,7 +48,6 @@ enum class Region : int {
     CosScale,     // apply_fused_contract — the eager scale_cos_mask bandwidth pass (redesign Piece 2 target)
     FusedApply,   // apply_fused_contract — the per-rotation sine-add pass
     Extend,       // extend_coeffs_from_current_picture_if_needed_ — per-gate coeff tail extension
-    Other,        // any work dispatched outside a marked region
     COUNT,        // region count / array size
 };
 
@@ -56,7 +55,7 @@ inline constexpr int kRegionCount = static_cast<int>(Region::COUNT);
 
 inline constexpr std::array<std::string_view, kRegionCount> kRegionNames{
     "find",   "self_resolve", "mpi_exchange", "defer_insert", "gather",  "evolve",
-    "cos_recompute", "cos_scale", "fused_apply", "extend",     "other",
+    "cos_recompute", "cos_scale", "fused_apply", "extend",
 };
 
 using prof_clock = std::chrono::steady_clock;

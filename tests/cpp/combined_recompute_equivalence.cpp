@@ -46,6 +46,36 @@ auto generator_of(const Layer &layer) -> MajoranaSet<NumModes> {
     return gen;
 }
 
+// Reference oracle (test-only): replay a MATERIALISED FoldCache buffer. The live runtime path
+// (scale_cos_lazy / accumulate_cos_lazy) recomputes each layer's fold on the fly; these cached replays
+// are kept here only as the independent reference the equivalence cases below pin the recompute against.
+template <size_t NumModes>
+void scale_cos_cached(const monoprop::detail::FoldCache<NumModes> &p, double *coeff, double cos_val) {
+    const size_t mask_words = p.fold.mask_words;
+    for (size_t wi = 0; wi < mask_words; ++wi) {
+        monoprop::detail::for_each_cos_index(
+            wi * 64, monoprop::detail::fold_word<NumModes>(p, wi), [&](size_t i) { coeff[i] *= cos_val; });
+    }
+}
+
+template <size_t NumModes>
+double accumulate_cos_cached(const monoprop::detail::FoldCache<NumModes> &p,
+                             double *state,
+                             double *ham,
+                             double cos_val,
+                             double sec_val) {
+    const size_t mask_words = p.fold.mask_words;
+    double loc = 0.0;
+    for (size_t wi = 0; wi < mask_words; ++wi) {
+        monoprop::detail::for_each_cos_index(wi * 64, monoprop::detail::fold_word<NumModes>(p, wi), [&](size_t i) {
+            loc += state[i] * ham[i];
+            ham[i] *= sec_val;
+            state[i] *= cos_val;
+        });
+    }
+    return loc;
+}
+
 } // namespace
 
 // scale: coeff[i] *= cos over the layer's cosine index set. A pure per-index scatter, so the cache
@@ -84,7 +114,7 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
 
         std::vector<double> a = baseline;
         std::vector<double> b = baseline;
-        monoprop::detail::scale_cos_cached<kNumModes>(prepared, a.data(), cos_val);
+        scale_cos_cached<kNumModes>(prepared, a.data(), cos_val);
         monoprop::detail::scale_cos_lazy<kNumModes>(inverted_index, recipe, b.data(), cos_val);
 
         BOOST_TEST_INFO("layer " << li);
@@ -128,8 +158,7 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
 
         std::vector<double> sa = state0, ha = ham0;
         std::vector<double> sb = state0, hb = ham0;
-        const double ea =
-            monoprop::detail::accumulate_cos_cached<kNumModes>(prepared, sa.data(), ha.data(), cos_val, sec_val);
+        const double ea = accumulate_cos_cached<kNumModes>(prepared, sa.data(), ha.data(), cos_val, sec_val);
         const double eb = monoprop::detail::accumulate_cos_lazy<kNumModes>(
             inverted_index, recipe, sb.data(), hb.data(), cos_val, sec_val);
 
