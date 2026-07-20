@@ -74,6 +74,63 @@ def _pauli_to_majorana(pauli: str) -> tuple[tuple[int, ...], complex]:
     return tuple(reversed(new_p)), coeff
 
 
+def _majorana_to_pauli(
+    majorana: tuple[int, ...], *, n_qubits: int
+) -> tuple[str, complex]:
+    """Invert :func:`_pauli_to_majorana` for a fixed system width.
+
+    Args:
+        majorana: Majorana-index tuple.
+        n_qubits: expected number of qubits.
+
+    Returns:
+        A tuple ``(pauli, coeff)`` where ``pauli`` maps back to ``majorana`` under
+        :func:`_pauli_to_majorana`, and ``coeff`` is the complex conjugate of the
+        coefficient returned by :func:`_pauli_to_majorana` for that ``pauli``.
+    """
+    majorana_set = set(majorana)
+    if any(el >= 2 * n_qubits for el in majorana_set):
+        raise ValueError(
+            f"Majorana indices {majorana} out of range for {n_qubits} qubits"
+        )
+
+    pauli = ["I"] * n_qubits
+    flag_z = False
+    forward_coeff = 1 + 0j
+
+    for i in range(n_qubits - 1, -1, -1):
+        has_even = (2 * i) in majorana_set
+        has_odd = (2 * i + 1) in majorana_set
+
+        if not flag_z:
+            if has_even and has_odd:
+                pauli[i] = "Z"
+                forward_coeff *= -1j
+            elif not has_even and not has_odd:
+                pauli[i] = "I"
+            elif has_even:
+                pauli[i] = "X"
+                flag_z = True
+            else:
+                pauli[i] = "Y"
+                flag_z = True
+        elif has_even and has_odd:
+            pauli[i] = "I"
+            forward_coeff *= -1j
+        elif not has_even and not has_odd:
+            pauli[i] = "Z"
+        elif has_even:
+            pauli[i] = "Y"
+            flag_z = False
+            forward_coeff *= 1j
+        else:
+            pauli[i] = "X"
+            flag_z = False
+            forward_coeff *= -1j
+
+    return "".join(pauli), forward_coeff.conjugate()
+
+
 def _parity(perm: Sequence[int]) -> int:
     r"""Compute parity of a permutation.
 
