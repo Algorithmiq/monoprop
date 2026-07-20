@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 from _builders import MODELS, barriered
-from _memory import resting_pss_bytes
+from _memory import resting_rss_bytes
 
 
 @pytest.mark.slow
@@ -50,7 +50,7 @@ def test_model(
     state: dict[str, Any] = {}
 
     def setup():
-        state["baseline_pss"] = resting_pss_bytes()  # footprint before the build
+        state["baseline_rss"] = resting_rss_bytes()  # footprint before the build
         state["built"] = build_fn(config, comm=bench_comm)
         return (state["built"], steps), {}
 
@@ -66,4 +66,4 @@ def test_model(
     assert isinstance(result, float)
 
     propagator, _circuit = state["built"]
-    record_model_stats(model, propagator, state["baseline_pss"])
+    record_model_stats(model, propagator, state["baseline_rss"])

@@ -1,3 +1,17 @@
+// Copyright 2026 Algorithmiq
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #pragma once
 
 #include <algorithm>
@@ -30,12 +44,10 @@ class MPGraphView;
 struct LayerCore;
 
 /**
- * @brief Perform a single-Majorana evolution step using MPI communication.
+ * @brief Perform a single-monomial evolution step using MPI communication.
  *
  * Each rank owns its local operator coefficients; cross-rank cycles are communicated via
- * MPI_Alltoallv. Recompute-routed (cos via callback): the layer stores no cos bitmap, so
- * cos_scale (recompute fold / transient or filtered word list) performs the cosine scaling.
- * Used by the in-build contraction and replay.
+ * Used by the in-built contraction and replay.
  */
 monoprop_EXPORT auto evolve_step(VecD &op, const Layer &layer, double param, const detail::LayerCosScale &cos_scale, mpi::Comm comm)
     -> void;
@@ -44,7 +56,7 @@ monoprop_EXPORT auto evolve_step(VecD &op, const Layer &layer, double param, con
  * @brief Evolves an operator through the graph using MPI communication.
  *
  * This function applies a series of evolutions to an operator based on the
- * provided MBS graph and parameters. Each rank processes its local data
+ * provided MP graph and parameters. Each rank processes its local data
  * and communicates as needed.
  *
  * @param coeffs The local rank's initial coefficients (state or operator)
@@ -54,8 +66,6 @@ monoprop_EXPORT auto evolve_step(VecD &op, const Layer &layer, double param, con
  * @return The evolved operator coefficients for this rank
  */
 // ── Recompute-routed forward evolution (cos scaling via the mandatory callback) ─
-// Each layer's cosine scaling is performed by `cos_scale(layer_index, …)` (the prepared-fold
-// recompute / transient or filtered word list) — no layer stores its cos bitmap. Used by the energy/
 // gradient functional replay. Callers pass a view (MPGraph::replay_view() / slice_view()).
 monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
                      const MPGraphView &graph,
@@ -64,8 +74,6 @@ monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
                      mpi::Comm comm) -> VecD;
 
 // ── Recompute-routed reverse derivative (cos accumulation via the mandatory callback) ──
-// The cosine accumulate pass is performed by `cos_acc(layer_index, …)` (the prepared-fold recompute /
-// transient or filtered word list) — no layer stores its cos bitmap.
 monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
                                      VecD &op,
                                      const MPGraphView &graph,

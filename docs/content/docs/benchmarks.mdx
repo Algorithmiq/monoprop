@@ -4,7 +4,7 @@ description: Performance benchmark suite.
 ---
 
 The `monoprop` repository includes a pytest suite measuring the **time** and
-**peak physical memory (PSS)** of monoprop's core operations.
+**peak resident memory (RSS)** of monoprop's core operations.
 The suite is separated from the test suite and can be run with `just bench`.
 See below for more detailed instructions.
 
@@ -28,8 +28,8 @@ uv run --group bench python benches/report.py  # rebuild report, no re-run
 ## MPI
 
 Communicator-aware: operations are barrier-wrapped so the timed cost is the
-**makespan** across ranks, and memory is the **peak of the PSS summed across
-ranks** (shared pages counted once), not the sum of per-rank peaks.
+**makespan** across ranks, and memory is the **peak of the RSS summed across
+ranks**.
 
 ```bash
 just bench-build-mpi                           # build once (MPI on)

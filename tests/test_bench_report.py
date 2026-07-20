@@ -193,26 +193,22 @@ def test_build_report_includes_memory(tmp_path: Path) -> None:
     )
     md = _collapse(report.build_report(tmp_path))
 
-    assert "Memory (PSS)" in md
+    assert "Memory (RSS)" in md
     # Bytes render as MiB in the per-picture memory tables.
     assert "50.00 MiB" in md
     assert "100.00 MiB" in md
 
 
-def test_build_report_includes_resting_and_storage(tmp_path: Path) -> None:
+def test_build_report_includes_resting(tmp_path: Path) -> None:
     _write_timings(tmp_path)
     _write_results(
         tmp_path,
         memrest={"heisenberg": 52428800},
-        storage={"heisenberg": {"operator": 104857600, "graph": 10485760}},
     )
     md = _collapse(report.build_report(tmp_path))
 
-    assert "## Operator resting footprint (PSS)" in md
-    assert "## Storage breakdown: operator vs graph" in md
+    assert "## Operator resting footprint (RSS)" in md
     assert "| Heisenberg | 50.00 MiB |" in md
-    assert "| Heisenberg / operator | 100.00 MiB |" in md
-    assert "| Heisenberg / graph | 10.00 MiB |" in md
 
 
 def test_build_report_sorts_labels_numerically(tmp_path: Path) -> None:

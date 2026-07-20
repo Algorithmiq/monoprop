@@ -45,7 +45,7 @@ from _builders import (
     build_random_propagator,
     make_random_problem,
 )
-from _memory import PssSampler, merge_peak_of_sum, resting_pss_bytes
+from _memory import RssSampler, merge_peak_of_sum, resting_rss_bytes
 
 import monoprop
 
@@ -98,11 +98,10 @@ _RANDOM_OPTIONS = (
 _RESULTS: dict[str, Any] = {
     "meta": {},  # run configuration (ranks, threads, host, ...)
     "params": {},  # resolved random-problem hyperparameters
-    "mem": {},  # node id -> peak PSS bytes (per operation)
+    "mem": {},  # node id -> peak RSS bytes (per operation)
     "opsize": {},  # picture / model -> {"terms": n}
-    "memrest": {},  # picture / model -> resting PSS bytes
-    "storage": {},  # picture / model -> {"operator": bytes, "graph": bytes}
-    "membase": {},  # fixed model -> resting PSS bytes before the model is built
+    "memrest": {},  # picture / model -> resting RSS bytes
+    "membase": {},  # fixed model -> resting RSS bytes before the model is built
     "configs": {},  # fixed model -> config dataclass fields
 }
 
@@ -127,9 +126,9 @@ def _results_path() -> Path | None:
 
 
 def _peak_of_sum(comm: Any, samples: list[tuple[float, int]]) -> int:
-    """Reduce per-rank PSS timelines to the job's peak summed PSS (bytes).
+    """Reduce per-rank RSS timelines to the job's peak summed RSS (bytes).
 
-    Gathers every rank's ``(wall_clock, pss)`` samples to rank 0 and merges them
+    Gathers every rank's ``(wall_clock, rss)`` samples to rank 0 and merges them
     via :func:`_memory.merge_peak_of_sum`. Collective; returns ``0`` off root.
     """
     if comm is None or comm.Get_size() == 1:
@@ -264,42 +263,24 @@ def record_model_config() -> Callable[[str, Any], None]:
 
 @pytest.fixture
 def record_model_stats(bench_comm: Any) -> Callable[..., None]:
-    """Return ``record(model, propagator, baseline_pss)`` for fixed-model runs.
+    """Return ``record(model, propagator, baseline_rss)`` for fixed-model runs.
 
     Records, for one evolved model operator, the same non-timing quantities the
     random benchmarks capture in :func:`built_graph` -- keyed by model name rather
-    than picture: the term count, the operator-vs-graph storage breakdown, and the
-    settled (resting) PSS -- plus ``membase``, the resting PSS sampled *before* the
-    model was built, so a consumer can isolate the operator's persistent footprint
-    as ``memrest - membase``. All reductions are collective; only rank 0 records.
+    than picture: the term count and the settled (resting) RSS -- plus ``membase``,
+    the resting RSS sampled *before* the model was built, so a consumer can isolate
+    the operator's persistent footprint as ``memrest - membase``. All reductions are
+    collective; only rank 0 records.
     """
 
-    def _do(model: str, propagator: Any, baseline_pss: int) -> None:
+    def _do(model: str, propagator: Any, baseline_rss: int) -> None:
         _record("opsize", model, {"terms": _reduce_sum(bench_comm, propagator.size())})
 
-        # operator_memory_bytes()/graph_memory_bytes() require an unsharded
-        # propagator and raise once it shards under multi-thread parallelism.
-        # The operator's byte count is thread-count-independent (same evolved
-        # operator, only partitioned across shards), so the serial run already
-        # captures the exact figure; skip it here rather than fail the point.
-        sim = propagator._simulator
-        try:
-            _record(
-                "storage",
-                model,
-                {
-                    "operator": _reduce_sum(bench_comm, sim.operator_memory_bytes()),
-                    "graph": _reduce_sum(bench_comm, sim.graph_memory_bytes()),
-                },
-            )
-        except RuntimeError:
-            pass
-
-        resting = _reduce_sum(bench_comm, resting_pss_bytes())
+        resting = _reduce_sum(bench_comm, resting_rss_bytes())
         if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
             _record("memrest", model, resting)
 
-        baseline = _reduce_sum(bench_comm, baseline_pss)
+        baseline = _reduce_sum(bench_comm, baseline_rss)
         if baseline:
             _record("membase", model, baseline)
 
@@ -308,15 +289,15 @@ def record_model_stats(bench_comm: Any) -> Callable[..., None]:
 
 @pytest.fixture(autouse=True)
 def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[None]:
-    """Record each benchmark's peak physical-memory footprint (PSS) for the report.
+    """Record each benchmark's peak physical-memory footprint (RSS) for the report.
 
-    A background :class:`PssSampler` samples this rank's live PSS while the test
+    A background :class:`RssSampler` samples this rank's live RSS while the test
     runs. It is a footprint: it includes structures already resident when the
     operation starts (e.g. the shared :func:`built_graph`). Under MPI the per-rank
     timelines are merged into the peak-of-sum (see :func:`_peak_of_sum`); the
     gather is collective, but only rank 0 records.
     """
-    with PssSampler() as sampler:
+    with RssSampler() as sampler:
         yield
     mem = _peak_of_sum(bench_comm, sampler.samples)
     if mem:  # 0 => non-root rank or /proc unavailable: nothing to record
@@ -376,8 +357,8 @@ def built_graph(
     Session-scoped per picture so the graph is built once and shared across the
     read-only graph benchmarks (``pare``, ``energy``, ``gradient``).
 
-    Also records the operator size, operator-vs-graph storage breakdown, and
-    resting footprint for this picture while the graph is resident.
+    Also records the operator size and resting footprint for this picture while the
+    graph is resident.
     """
     mp, circuit = build_random_propagator(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
@@ -387,21 +368,9 @@ def built_graph(
     # Under MPI the operator is partitioned, so sum the shards.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})
 
-    # Structural byte totals from the C++ accounting, which a process-wide PSS
-    # reading cannot attribute to a structure.
-    sim = mp._simulator
-    _record(
-        "storage",
-        picture,
-        {
-            "operator": _reduce_sum(bench_comm, sim.operator_memory_bytes()),
-            "graph": _reduce_sum(bench_comm, sim.graph_memory_bytes()),
-        },
-    )
-
-    # Settled PSS once the build's transients are released -- the persistent
+    # Settled RSS once the build's transients are released -- the persistent
     # footprint the per-operation peak cannot see.
-    resting = _reduce_sum(bench_comm, resting_pss_bytes())
+    resting = _reduce_sum(bench_comm, resting_rss_bytes())
     if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
         _record("memrest", picture, resting)
 

@@ -23,7 +23,7 @@ never overlapped.
 from __future__ import annotations
 
 import pytest
-from _memory import PssSampler, merge_peak_of_sum, pss_bytes
+from _memory import RssSampler, merge_peak_of_sum, rss_bytes
 
 MIB = 2**20
 
@@ -63,9 +63,9 @@ def test_merge_handles_empty_series() -> None:
 
 
 def test_sampler_records_timeline_and_sees_a_transient() -> None:
-    if pss_bytes() == 0:
-        pytest.skip("/proc/self/smaps_rollup unavailable (non-Linux)")
-    with PssSampler(interval=0.002) as sampler:
+    if rss_bytes() == 0:
+        pytest.skip("/proc/self/status VmRSS unavailable (non-Linux)")
+    with RssSampler(interval=0.002) as sampler:
         baseline = sampler.samples[0][1]
         blob = bytearray(80 * MIB)
         for i in range(0, len(blob), 4096):  # touch pages so they become resident
