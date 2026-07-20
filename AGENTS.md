@@ -7,9 +7,12 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - **C++23**: All C++ code must use C++23 features and idioms.
 - **Auto style**: Use `clang-format` with the provided `.clang-format` file
 - Python code must pass lints as defined in pre-commit hooks.
-- We use conventional commits with syntax: `<type>(<optional scope>): <gitmoji> <description>`. See `CONTRIBUTING.md` for details.
-See `CONTRIBUTING.md` for details. Breaking changes should have `!` in the commit message. Make sure PR titles are adhering to the same format.
+- We use conventional commits with syntax: `<type>(<optional scope>): <gitmoji> <description>`. See `CONTRIBUTING.md` for details. Breaking changes should have `!` in the commit message.
+- If you make a commit, add a trailer: `Assisted-by: <harness>:<model>`, where `<harness>` is the current agent harness (like ClaudeCode), and `<model>` is the AI model (like claude-opus-4.8). You don't need to add a coauthored-by when you have this.
+- PR titles must adhere to the same conventional commits format.
+- Prefix PR descriptions and comments on PRs with the line ":robot: _AI text below_ :robot:" to indicate you are an agent speaking on a user's behalf.
 - Python docstrings use Google style. C++ docstrings use Doxygen style.
+
 
 ## Architecture Overview
 
