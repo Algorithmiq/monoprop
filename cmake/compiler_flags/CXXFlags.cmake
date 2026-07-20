@@ -57,11 +57,18 @@ set(CMAKE_VISIBILITY_INLINES_HIDDEN TRUE)
 # Usage:
 #   _monoprop_query_machine_flags(MARCH <arch> OUTPUT_VARIABLE <var>)
 function(_monoprop_query_machine_flags)
-  set(_one_value_args MARCH OUTPUT_VARIABLE)
+  set(
+    _one_value_args
+    MARCH
+    OUTPUT_VARIABLE
+  )
   cmake_parse_arguments(PARSE_ARGV 0 _arg "" "${_one_value_args}" "")
 
   if(NOT _arg_OUTPUT_VARIABLE)
-    message(FATAL_ERROR "_monoprop_query_machine_flags: OUTPUT_VARIABLE is required")
+    message(
+      FATAL_ERROR
+      "_monoprop_query_machine_flags: OUTPUT_VARIABLE is required"
+    )
   endif()
   if(NOT _arg_MARCH)
     message(FATAL_ERROR "_monoprop_query_machine_flags: MARCH is required")
@@ -73,8 +80,10 @@ function(_monoprop_query_machine_flags)
     set(_march_args "-march=${_arg_MARCH}")
   endif()
   execute_process(
-    COMMAND ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
-    COMMAND ${Python_EXECUTABLE} ${_machine_flags_cleaner}
+    COMMAND
+      ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
+    COMMAND
+      ${Python_EXECUTABLE} ${_machine_flags_cleaner}
     OUTPUT_VARIABLE _flags
     OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE _result
@@ -92,7 +101,10 @@ endfunction()
 # querying `gcc -march=<arch> -Q --help=target` and cleaning the output with
 # tools/gcc-target-help-clean.py.
 find_package(Python COMPONENTS Interpreter REQUIRED QUIET)
-set(_machine_flags_cleaner "${PROJECT_SOURCE_DIR}/tools/gcc-target-help-clean.py")
+set(
+  _machine_flags_cleaner
+  "${PROJECT_SOURCE_DIR}/tools/gcc-target-help-clean.py"
+)
 
 set(monoprop_MACHINE_FLAGS_DEFAULT "")
 _monoprop_query_machine_flags(MARCH default OUTPUT_VARIABLE monoprop_MACHINE_FLAGS_DEFAULT)
@@ -139,7 +151,10 @@ if(
     list(JOIN _targets_arch ", " TARGETS)
 
     message(STATUS "Function multiversioning targets: \"default\", ${TARGETS}")
-    set(monoprop_TARGET_CLONES "[[using gnu: flatten, target_clones(\"default\", ${TARGETS})]]")
+    set(
+      monoprop_TARGET_CLONES
+      "[[using gnu: flatten, target_clones(\"default\", ${TARGETS})]]"
+    )
     set(_variants "")
     foreach(_target IN LISTS _targets)
       string(APPEND _variants "monoprop_FMV_VARIANT(\"${_target}\")\n")
