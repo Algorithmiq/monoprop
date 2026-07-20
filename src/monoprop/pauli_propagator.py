@@ -22,7 +22,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .conversion_utils import _majorana_to_pauli
 from .monomial_propagator import MonomialPropagator
+from .pauli import PauliOperator
 from .utils import jordan_wigner_basis_change
 
 if TYPE_CHECKING:
@@ -32,7 +34,8 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
-    from .pauli import PauliOperator
+
+    ParameterValues = Circuit | Sequence[float] | np.ndarray | None
 
 
 class PauliPropagator(MonomialPropagator):
@@ -118,3 +121,35 @@ class PauliPropagator(MonomialPropagator):
                 "Use MajoranaPropagator for those."
             )
         return circuit.gates
+
+    def evolved_operator(
+        self,
+        parameters: ParameterValues = None,
+        *,
+        atol: float = 1e-12,
+    ) -> PauliOperator:
+        """Return the evolved operator/state as a PauliOperator.
+
+        Converts the base Majorana-domain output term-by-term using
+        :func:`~monoprop.conversion_utils._majorana_to_pauli`. If
+        ``_pauli_to_majorana(pauli) -> (majorana, jw_coeff)``, then the inverse path uses
+        ``conj(jw_coeff)`` and returns the Pauli coefficient
+        ``majorana_coeff * conj(jw_coeff)``.
+
+        Args:
+            parameters: Variational parameter values (see base class).
+            atol: Absolute tolerance for filtering small Majorana coefficients before
+                conversion.
+
+        Returns:
+            The evolved operator (Heisenberg picture) or evolved state (Schrodinger
+            picture) as a :class:`~monoprop.pauli.PauliOperator`.
+        """
+        evolved_majorana = super().evolved_operator(parameters, atol=atol)
+        pauli_terms: dict[str, complex] = {}
+        for majorana, coeff in evolved_majorana.items():
+            pauli, jw_coeff_conj = _majorana_to_pauli(
+                majorana, n_qubits=self.num_qubits
+            )
+            pauli_terms[pauli] = coeff * jw_coeff_conj
+        return PauliOperator(pauli_terms, num_qubits=self.num_qubits)
