@@ -3,8 +3,10 @@ cmake_minimum_required(VERSION 3.28...4.0)
 project(monoprop LANGUAGES CXX)
 
 # warn if the user invokes CMake directly
-if (NOT SKBUILD)
-  message(WARNING "\
+if(NOT SKBUILD)
+  message(
+    WARNING
+    "\
   This CMake file is meant to be executed using 'scikit-build-core'.
   Running it directly will almost certainly not produce the desired
   result. If you are a user trying to install this package, use the
@@ -23,7 +25,8 @@ if (NOT SKBUILD)
   =====================================================================
   You may optionally add -Ceditable.rebuild=true to auto-rebuild when
   the package is imported. Otherwise, you need to rerun the above
-  after editing C++ files.")
+  after editing C++ files."
+  )
 endif()
 
 if(APPLE)
