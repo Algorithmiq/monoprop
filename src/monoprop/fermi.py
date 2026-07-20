@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from .conversion_utils import _n_product
 from .majorana import MajoranaOperator
 
@@ -200,9 +202,8 @@ class FermiOperator:
         rhs = other._as_dict()
 
         return all(
-            abs(lhs.get(term, 0) - rhs.get(term, 0))
-            <= atol + rtol * abs(rhs.get(term, 0))
-            for term in lhs.keys() | rhs.keys()
+            np.isclose(lhs.get(term, 0) - rhs.get(term, 0), 0, rtol=rtol, atol=atol)
+            for term in lhs | rhs
         )
 
     def get_majorana_operator(self) -> MajoranaOperator:
