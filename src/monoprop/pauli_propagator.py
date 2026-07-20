@@ -83,6 +83,14 @@ class PauliPropagator(MonomialPropagator):
         # The PauliOperator carries its own qubit count (a required constructor argument), so
         # the propagator reads it directly rather than validating it here.
         num_qubits = initial_operator.num_qubits
+
+        # we have to multiply the Schrodinger cutoff by 2, because the Majorana
+        # cutoff is measured in terms of Majorana operators, while PauliPropagator
+        # measures it in terms of qubits. Each qubit corresponds to 2 Majorana operators.
+        schrodinger_cutoff = (
+            None if schrodinger_cutoff is None else 2 * schrodinger_cutoff
+        )
+
         self._init_simulator(
             initial_operator.get_majorana_operator(),
             initial_state,
