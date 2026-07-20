@@ -155,10 +155,6 @@ class FermiOperator:
         out += ")"
         return out
 
-    def is_identity(self) -> bool:
-        """Check if the operator is the identity."""
-        return all(coef == 0 for coef in self.coefficients)
-
     def _as_dict(self) -> dict[tuple, complex]:
         """Return the operator as a dictionary."""
         result = {}

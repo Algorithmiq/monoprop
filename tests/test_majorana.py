@@ -85,17 +85,12 @@ def test_majorana_operator_normalizes_terms():
     assert op.terms == {(0, 1): 3.0, (2, 3): 1e-15}  # (1,0) and (0,1) merge
     assert len(op) == 2
     assert op.num_modes == 4
-    assert not op.is_identity()
 
 
 def test_majorana_operator_from_dict_round_trips():
     op = MajoranaOperator({(0, 1): 1.0j, (2, 3): -0.5}, num_modes=4)
     assert op.terms == {(0, 1): 1.0j, (2, 3): -0.5}
     assert op.get_majorana_operator() is op
-
-
-def test_majorana_operator_is_identity_when_empty():
-    assert MajoranaOperator({}, num_modes=4).is_identity()
 
 
 @pytest.mark.parametrize(
