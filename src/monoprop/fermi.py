@@ -157,9 +157,17 @@ class FermiOperator:
         out += ")"
         return out
 
-    def is_identity(self) -> bool:
-        """Check if the operator is the identity."""
-        return all(coef == 0 for coef in self.coefficients)
+    def __eq__(self, other: object) -> bool:
+        """Equal when terms, coefficients, and num_modes match exactly."""
+        if not isinstance(other, FermiOperator):
+            return NotImplemented
+        return (
+            self.num_modes == other.num_modes
+            and self.terms == other.terms
+            and self.coefficients == other.coefficients
+        )
+
+    __hash__ = None  # type: ignore[assignment]  # value-equal but mutable
 
     def _as_dict(self) -> dict[tuple, complex]:
         """Return the operator as a dictionary."""

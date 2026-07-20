@@ -114,6 +114,38 @@ class TestPauliOperator:
         op = PauliOperator({"XYZ": 1.0}, num_qubits=3)
         assert op.num_qubits == 3
 
+    @pytest.mark.parametrize(
+        ("left", "right", "expected"),
+        [
+            pytest.param(
+                PauliOperator({"XY": 1.0}, num_qubits=2),
+                PauliOperator({"XY": 1.0}, num_qubits=2),
+                True,
+                id="equal",
+            ),
+            pytest.param(
+                PauliOperator({"XY": 1.0}, num_qubits=2),
+                PauliOperator({"XZ": 1.0}, num_qubits=2),
+                False,
+                id="unequal",
+            ),
+            pytest.param(
+                PauliOperator({"XY": 1.0}, num_qubits=2),
+                PauliOperator({"XYI": 1.0}, num_qubits=3),
+                False,
+                id="unequal_modes",
+            ),
+            pytest.param(
+                PauliOperator({"XY": 0.0}, num_qubits=2),
+                PauliOperator({}, num_qubits=2),
+                False,
+                id="unequal_although_same_matrix",
+            ),
+        ],
+    )
+    def test_eq_working_and_non_working_examples(self, left, right, expected):
+        assert (left == right) is expected
+
     def test_qubit_index_must_be_within_num_qubits(self):
         with pytest.raises(ValueError, match="qubit index"):
             PauliOperator({"XYZ": 1.0}, num_qubits=2)

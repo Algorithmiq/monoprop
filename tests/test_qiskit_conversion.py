@@ -24,6 +24,7 @@ from pytest_cases import case, parametrize_with_cases
 
 try:
     from qiskit import QuantumCircuit
+    from qiskit.circuit import QuantumRegister
     from qiskit.circuit.library import PauliEvolutionGate
     from qiskit.quantum_info import SparsePauliOp
 
@@ -237,11 +238,11 @@ class QiskitCircuitsCases:
         circuit.rz(0.7, 0)
         expected = Circuit(
             gates=(
-                ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),
-                ExpGate(PauliOperator({Pauli("Y", 0): 1.0}, num_qubits=1)),
-                ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("X", 0): 0.5}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("Y", 0): 0.5}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("Z", 0): 0.5}, num_qubits=1)),
             ),
-            parameters=(0.25, 0.15, 0.35),
+            parameters=(0.5, 0.3, 0.7),
             initial_state=(),
         )
         return circuit, expected
@@ -296,3 +297,18 @@ def test_to_qiskit_circuit_rejects_unbound() -> None:
     )  # no parameter values
     with pytest.raises(ValueError, match="bound circuit"):
         to_qiskit_circuit(circuit, num_qubits=1)
+
+
+@requires_qiskit
+@pytest.mark.qiskit
+def test_from_qiskit_circuit_rejects_multiple_registers() -> None:
+    """from_qiskit_circuit on a circuit with multiple registers raises a clear error."""
+    qreg1 = QuantumRegister(1)
+    qreg2 = QuantumRegister(1)
+    circuit = QuantumCircuit(qreg1, qreg2)
+
+    with pytest.raises(
+        ValueError,
+        match=r"from_qiskit_circuit only supports a single quantum register; got 2.",
+    ):
+        from_qiskit_circuit(circuit, [0, 1])
