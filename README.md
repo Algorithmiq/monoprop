@@ -21,8 +21,8 @@ shared-memory threading (oneTBB) and multi-node MPI.
 
 ## Benchmarks
 
-Check it out the comparison of `monoprop` against other open-source Pauli propagation engines in [benches/third_party]!
-
+Check out the comparison of `monoprop` against other open-source Pauli propagation engines in [benches/third_party]!
+![Runtime Benchmark](benches/third_party/pauli_prop/runtime.png)
 ![Memory Benchmark](benches/third_party/pauli_prop/memory.png)
 
 📖 **Full documentation:** <https://docs.algorithmiq.fi/monoprop>

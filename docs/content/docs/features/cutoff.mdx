@@ -17,7 +17,8 @@ by its qubit **Pauli weight**.
 
 Whatever the measure, the structural cutoff shares one exception: a monomial
 that is **fully paired** — every Majorana operator it contains comes as a
-complete pair $m_{2j-1}m_{2j}$ on some mode, or in qubit space is a product of Pauli-$Z$ operators, is *always kept*, regardless of
+complete pair $m_{2j-1}m_{2j}$ on some mode, or, in qubit space, the monomial is
+a product of Pauli-$Z$ operators — is *always kept*, regardless of
 its size. Fully paired monomials are exactly the terms that can contribute to an
 expectation value against a computational-basis or Slater-determinant reference,
 so discarding them would throw away signal (see
@@ -65,3 +66,5 @@ independently of the structural cutoff:
 sim.lower_atol = 1e-9
 sim.upper_atol = 1e-3
 ```
+Note that choosing a very low value for `upper_atol` results in an increased number of
+kept Majorana monomials, which eventually may even grow exponentially in the number of gates.

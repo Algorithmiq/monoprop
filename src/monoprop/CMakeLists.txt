@@ -37,8 +37,7 @@ file(
 )
 
 list(
-  APPEND
-  monoprop_PUBLIC_HEADERS
+  APPEND monoprop_PUBLIC_HEADERS
   ${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/Info.h
   ${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h
 )

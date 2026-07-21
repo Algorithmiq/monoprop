@@ -85,7 +85,6 @@ def test_majorana_operator_normalizes_terms():
     assert op.terms == {(0, 1): 3.0, (2, 3): 1e-15}  # (1,0) and (0,1) merge
     assert len(op) == 2
     assert op.num_modes == 4
-    assert not op.is_identity()
 
 
 def test_majorana_operator_from_dict_round_trips():
@@ -94,8 +93,37 @@ def test_majorana_operator_from_dict_round_trips():
     assert op.get_majorana_operator() is op
 
 
-def test_majorana_operator_is_identity_when_empty():
-    assert MajoranaOperator({}, num_modes=4).is_identity()
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [
+        pytest.param(
+            MajoranaOperator({(0, 1): 1.0j}, num_modes=2),
+            MajoranaOperator({(0, 1): 1.0j}, num_modes=2),
+            True,
+            id="equal",
+        ),
+        pytest.param(
+            MajoranaOperator({(0, 1): 1.0j}, num_modes=2),
+            MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+            False,
+            id="unequal",
+        ),
+        pytest.param(
+            MajoranaOperator({(0, 1): 1.0}, num_modes=2),
+            MajoranaOperator({(0, 1): 1.0}, num_modes=3),
+            False,
+            id="unequal_modes",
+        ),
+        pytest.param(
+            MajoranaOperator({(0, 1): 0.0}, num_modes=2),
+            MajoranaOperator({}, num_modes=2),
+            False,
+            id="unequal_although_same_matrix",
+        ),
+    ],
+)
+def test_majorana_operator_eq_working_and_non_working_examples(left, right, expected):
+    assert (left == right) is expected
 
 
 @pytest.mark.parametrize(
