@@ -32,89 +32,7 @@ auto validate_equal_sizes(size_t lhs, size_t rhs, const char *message) -> void {
     }
 }
 
-auto has_complete_evolution_parameters(const std::optional<VecZ> &parameter_mapping,
-                                       const std::optional<VecD> &gen_coeffs,
-                                       const std::optional<VecD> &parameters) -> bool {
-    return parameter_mapping && gen_coeffs && parameters;
-}
-
 } // namespace
-
-auto determine_evolution_mode(const std::optional<VecZ> &parameter_mapping,
-                              const std::optional<VecD> &gen_coeffs,
-                              const std::optional<VecD> &parameters,
-                              const std::optional<VecD> &operator_coeffs) -> EvolutionMode {
-    const auto has_all_params = has_complete_evolution_parameters(parameter_mapping, gen_coeffs, parameters);
-
-    if (!has_all_params && !operator_coeffs.has_value()) {
-        return EvolutionMode::GraphOnly;
-    }
-    if (has_all_params && operator_coeffs.has_value()) {
-        return EvolutionMode::GraphWithCoeffs;
-    }
-    if (has_all_params && !operator_coeffs.has_value()) {
-        return EvolutionMode::ContractImmediately;
-    }
-    throw std::runtime_error(
-        "Invalid evolution mode detected. This function supports three main evolution strategies:\n"
-        "\n"
-        "1. Building the evolution graph only.\n"
-        "    - To use this mode, only provide the majoranas parameter.\n"
-        "\n"
-        "2. Building the evolution graph with coefficient information.\n"
-        "    - To use this mode, provide majoranas, parameter_mapping, gen_coeffs, parameters and "
-        "operator_coeffs. Operator coefficients can be obtained from a prior call to contract_partially() with "
-        "inplace set to false if you want to preserve the graph.\n"
-        "\n"
-        "3. Evolving and contracting immediately without building a graph.\n"
-        "    - To use this mode, provide majoranas, parameter_mapping, gen_coeffs, and parameters. Do not "
-        "provide operator_coeffs. This mode is memory efficient as it does not store the evolution graph.");
-}
-
-auto validate_evolution_parameters(const std::optional<VecZ> &parameter_mapping,
-                                   const std::optional<VecD> &gen_coeffs,
-                                   const std::optional<VecD> &parameters) -> void {
-    const auto has_all_params = has_complete_evolution_parameters(parameter_mapping, gen_coeffs, parameters);
-    const auto has_some_params = parameter_mapping || gen_coeffs || parameters;
-
-    if (has_some_params && !has_all_params) {
-        throw std::runtime_error(
-            "Either all of parameters, parameter_mapping, and gen_coeffs must be None, or all must be provided.");
-    }
-
-    if (has_all_params) {
-        validate_coefficient_lengths(parameter_mapping.value(), gen_coeffs.value());
-        validate_parameters_length(parameters.value(), parameter_mapping.value());
-    }
-}
-
-auto validate_graph_state_for_mode(EvolutionMode mode,
-                                   const std::optional<VecZ> &parameter_mapping,
-                                   const std::optional<VecD> &gen_coeffs,
-                                   const std::optional<VecD> &parameters,
-                                   size_t graph_size) -> void {
-    const auto has_all_params = has_complete_evolution_parameters(parameter_mapping, gen_coeffs, parameters);
-    const auto graph_is_empty = graph_size == 0;
-
-    if (has_all_params && !graph_is_empty) {
-        if (mode == EvolutionMode::ContractImmediately) {
-            throw std::runtime_error(
-                std::format("Cannot evolve inplace as there is a previous evolution of {} Majoranas. "
-                            "Please call 'contract_partially' to contract the graph first.",
-                            graph_size));
-        }
-    }
-}
-
-auto validate_params(const VecD &params, const VecZ &parameter_mapping, const VecD &gen_coeffs) -> void {
-    validate_coefficient_lengths(parameter_mapping, gen_coeffs);
-
-    for (const auto &ind : parameter_mapping) {
-        if (ind >= params.size()) {
-            throw std::runtime_error(std::format("Index {} in parameter_mapping is out of range.", ind));
-        }
-    }
-}
 
 auto validate_coefficient_lengths(const VecZ &parameter_mapping, const VecD &gen_coeffs) -> void {
     validate_equal_sizes(parameter_mapping.size(),
@@ -145,19 +63,6 @@ auto validate_gate_indices(const VecZ &gate_indices, size_t num_monomials) -> vo
     }
 }
 
-auto validate_param_map_gen_coeffs_majoranas_match(size_t parameter_mapping_size,
-                                                   size_t gen_coeffs_size,
-                                                   size_t majoranas_size) -> void {
-    validate_equal_sizes(parameter_mapping_size,
-                         gen_coeffs_size,
-                         "The length of parameter_mapping and gen_coeffs must be the same.");
-    if (parameter_mapping_size != majoranas_size) {
-        throw std::runtime_error(std::format(
-            "The length of parameter_mapping and gen_coeffs must match the number of evolved Majoranas ({}).",
-            majoranas_size));
-    }
-}
-
 auto validate_parameters_length(const VecD &params, const VecZ &parameter_mapping) -> void {
     if (parameter_mapping.empty()) {
         return; // No validation needed for empty parameter_mapping
@@ -170,22 +75,6 @@ auto validate_parameters_length(const VecD &params, const VecZ &parameter_mappin
             std::format("The length of parameters ({}) must be the same as max(parameter_mapping)+1 ({}).",
                         params.size(),
                         expected_param_length));
-    }
-}
-
-auto validate_propagation_params(size_t parameter_mapping_size, size_t num_evolved) -> void {
-    if (parameter_mapping_size != num_evolved) {
-        throw std::runtime_error(std::format("The length of parameter_mapping and gen_coeffs must be the same as the "
-                                             "number of propagated Majoranas {}.",
-                                             num_evolved));
-    }
-}
-
-auto validate_propagation_contraction(size_t parameter_mapping_size, size_t num_evolved) -> void {
-    if (parameter_mapping_size > num_evolved) {
-        throw std::runtime_error(std::format("The length of parameter_mapping must be less than or equal to the "
-                                             "number of propagated Majoranas {}.",
-                                             num_evolved));
     }
 }
 
