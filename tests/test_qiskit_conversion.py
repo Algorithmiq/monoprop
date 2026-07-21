@@ -185,21 +185,44 @@ class TestToQiskitOperator:
 
 @requires_qiskit
 @pytest.mark.qiskit
-class TestToQiskitCircuit:
-    def test_single_gate(self):
+class ToQiskitCircuitCases:
+    @case(id="single_gate")
+    def case_single_gate(self):
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
             parameters=(0.7,),
             initial_state=(),
         )
+        expected_circuit = QuantumCircuit(1)
+        expected_circuit.append(
+            PauliEvolutionGate(SparsePauliOp.from_list([("Z", 1.0)]), time=0.7),
+            [0],
+        )
+        return circuit, 1, expected_circuit
 
-        result = to_qiskit_circuit(circuit, 1)
+    @case(id="local_gate")
+    def case_local_gate(self):
+        circuit = Circuit(
+            (ExpGate(PauliOperator({Pauli("ZXY", (3, 1, 2)): 1.5}, num_qubits=5)),),
+            parameters=(0.7,),
+            initial_state=(),
+        )
+        expected_circuit = QuantumCircuit(5)
+        # qiskit uses reversed Pauli string order and sorted gate qubit indices.
+        expected_circuit.append(
+            PauliEvolutionGate(SparsePauliOp.from_list([("ZYX", 1.5)]), time=0.7),
+            [1, 2, 3],
+        )
+        return circuit, 5, expected_circuit
 
-        assert isinstance(result, QuantumCircuit)
-        assert result.num_qubits == 1
-        assert len(result.data) == 1
-        assert result.data[0].operation.name == "PauliEvolution"
-        assert result.data[0].operation.params[0] == pytest.approx(0.7)
+
+@requires_qiskit
+@pytest.mark.qiskit
+class TestToQiskitCircuit:
+    @parametrize_with_cases("circuit, num_qubits, expected", cases=ToQiskitCircuitCases)
+    def test_to_qiskit_circuit(self, circuit, num_qubits, expected):
+        converted = to_qiskit_circuit(circuit, num_qubits)
+        assert expected == converted
 
 
 class QiskitCircuitsCases:
@@ -297,6 +320,26 @@ def test_to_qiskit_circuit_rejects_unbound() -> None:
     )  # no parameter values
     with pytest.raises(ValueError, match="bound circuit"):
         to_qiskit_circuit(circuit, num_qubits=1)
+
+
+@requires_qiskit
+@pytest.mark.qiskit
+def test_from_to_qiskit_circuit_roundtrip() -> None:
+    """Since in both to and from qiskit operator there are some qubit rewiring,
+    this test makes sure algebraically the operators represent the same matrix.
+
+    The test compares the first and final form on the monoprop side, since it is uniquely
+    representing circuits.
+    """
+    circuit = Circuit(
+        gates=(ExpGate(PauliOperator({Pauli("XYZ", (3, 1, 2)): 1.0}, num_qubits=4)),),
+        parameters=[-1.2],
+    )  # no parameter values
+    qcirc = to_qiskit_circuit(circuit, num_qubits=4)
+    circuit_test = from_qiskit_circuit(qcirc, initial_state=[])
+    assert circuit.gates[0].generator.isclose(
+        circuit_test.gates[0].generator, atol=0.0, rtol=0.0
+    )
 
 
 @requires_qiskit
