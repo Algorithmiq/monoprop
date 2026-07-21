@@ -294,10 +294,7 @@ class MonomialPropagator(ABC):
         )
 
     def propagate(
-        self,
-        circuit: Circuit,
-        *,
-        only_rotate_len_k: int | None = None,
+        self, circuit: Circuit, *, only_rotate_len_k: int | None = None
     ) -> None:
         """Evolve and contract immediately, without storing a graph.
 
