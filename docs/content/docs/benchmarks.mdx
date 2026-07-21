@@ -7,9 +7,7 @@ description: Performance benchmark suite.
 # Comparison with other packages
 
 
-![Benchmark results for Pauli Propagation engines: Runtime per Trotter step](/benchmarks/runtime.png)
-
-![Benchmark results for Pauli Propagation engines: Memory per Trotter step](/benchmarks/memory.png)
+![Benchmark results for Pauli Propagation engines: Runtime and Memory per Trotter step](/benchmarks/results.png)
 
 ![Benchmark results for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: number of terms, final overlap, runtime, and memory vs layers](/benchmarks/majorana/benchmark_results.png)
 
@@ -40,7 +38,7 @@ The end-to-end workflow is:
 2. [Set up the Python environment](#2-set-up-the-python-environment).
 3. [(Optional) install Julia and `PauliPropagation.jl`](#3-optional-install-julia-and-pauliPropagationjl).
 4. [Run the benchmarks](#4-run-the-benchmarks) to produce `results.json`.
-5. [Plot the results](#5-plot-the-results) to produce `runtime.png` and `memory.png`.
+5. [Plot the results](#5-plot-the-results) to produce `results.png`.
 
 ### 1. Choose the simulation settings
 
@@ -139,9 +137,9 @@ For every engine, `results.json` collects, indexed by Trotter step:
 uv run python plot_results.py
 ```
 
-This reads `results.json` and produces two log-scale plots for each engine present in the file (so
-they reflect whichever engines you actually ran in step 4): `runtime.png` (runtime per Trotter
-step) and `memory.png` (operator memory footprint per Trotter step).
+This reads `results.json` and produces a single image, `results.png`, combining two log-scale
+panels (runtime per Trotter step and operator memory footprint per Trotter step) side by side, for
+each engine present in the file (so they reflect whichever engines you actually ran in step 4).
 
 
 ### Results
