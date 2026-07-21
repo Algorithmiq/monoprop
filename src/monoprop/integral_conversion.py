@@ -86,20 +86,20 @@ def _iter_integrals_to_fermion(
             yield _index(quad, (0, 1, 1, 0), num_orbs), coeff
 
 
-def integrals_to_fermion(
-    hamiltonian: tuple[float, ndarray, ndarray],
-) -> FermiOperator:
-    """Converts a integral Hamiltonian to fermion format.
+def integrals_to_fermion(h0: float, h1: ndarray, h2: ndarray) -> FermiOperator:
+    """Converts an integral Hamiltonian to fermion format.
 
     Args:
-        hamiltonian: Hamiltonian to convert.
+        h0: Zero-body term (scalar).
+        h1: One-body terms (2D array indexed by spin and orbitals).
+        h2: Two-body terms (5D array).
 
     Returns:
         Hamiltonian in FermiOperator format.
 
     """
     terms = defaultdict(complex)
-    for ind, coeff in _iter_integrals_to_fermion(*hamiltonian):
+    for ind, coeff in _iter_integrals_to_fermion(h0, h1, h2):
         if np.isclose(coeff, 0, atol=1e-12):
             continue
         terms[ind] += coeff
