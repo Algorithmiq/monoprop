@@ -95,25 +95,21 @@ def main() -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = plt.subplots(figsize=(9, 6))
-    plot_metric(ax, df, "seconds", "time (seconds)")
-    ax.set_title("Runtime vs layers")
-    fig.savefig(args.output_dir / "runtime_vs_layers.png")
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    plot_metric(axes[0, 0], df, "seconds", "time (seconds)")
+    axes[0, 0].set_title("Runtime vs layers")
 
-    fig, ax = plt.subplots(figsize=(9, 6))
-    plot_metric(ax, df, "num_terms", "number of terms")
-    ax.set_title("Number of terms vs layers")
-    fig.savefig(args.output_dir / "num_terms_vs_layers.png")
+    plot_metric(axes[0, 1], df, "num_terms", "number of terms")
+    axes[0, 1].set_title("Number of terms vs layers")
 
-    fig, ax = plt.subplots(figsize=(9, 6))
-    plot_metric(ax, df, "memory", "memory (MB)")
-    ax.set_title("Memory vs layers")
-    fig.savefig(args.output_dir / "memory_vs_layers.png")
+    plot_metric(axes[1, 0], df, "memory", "memory (MB)")
+    axes[1, 0].set_title("Memory vs layers")
 
-    fig, ax = plt.subplots(figsize=(9, 6))
-    plot_metric(ax, df, "overlap", "final overlap")
-    ax.set_title("Final overlap vs layers")
-    fig.savefig(args.output_dir / "overlap_vs_layers.png")
+    plot_metric(axes[1, 1], df, "overlap", "final overlap")
+    axes[1, 1].set_title("Final overlap vs layers")
+
+    fig.tight_layout()
+    fig.savefig(args.output_dir / "benchmark_results.png")
 
     if args.show:
         plt.show()
