@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from pytest_cases import case, parametrize_with_cases
 
 from monoprop import (
     Circuit,
@@ -81,6 +82,77 @@ def test_exp_from_fermi_generator_becomes_majorana() -> None:
     gate = ExpGate(FermiOperator([[(0, "+"), (1, "-")]], [1.0], num_modes=2))
     assert gate.family == "majorana"
     assert isinstance(gate.generator, MajoranaOperator)
+
+
+class ExpGateAtolCases:
+    @case(id="single_excitation")
+    def case_single_excitation(self):
+        """Without truncation, single excitation can produce up to 4 terms."""
+        generator = FermiOperator(
+            [
+                [(0, "+"), (1, "-")],
+                [(1, "+"), (0, "-")],
+            ],
+            [1.0, -1.0 + 1e-10],
+            num_modes=2,
+        )
+        expected = MajoranaOperator({(0, 2): 0.5, (1, 3): 0.5}, num_modes=2)
+        return generator, 1e-8, expected
+
+    @case(id="double_excitation")
+    def case_double_excitation(self):
+        """Without truncation, double excitation can produce up to 4 terms."""
+        generator = FermiOperator(
+            [
+                [(0, "+"), (1, "+"), (2, "-"), (3, "-")],
+                [(3, "+"), (2, "+"), (1, "-"), (0, "-")],
+            ],
+            [1.0, -1.0 + 1e-10],
+            num_modes=4,
+        )
+        expected = MajoranaOperator(
+            {
+                (0, 2, 4, 7): 0.125j,
+                (0, 2, 5, 6): 0.125j,
+                (0, 3, 4, 6): -0.125j,
+                (0, 3, 5, 7): 0.125j,
+                (1, 2, 4, 6): -0.125j,
+                (1, 2, 5, 7): 0.125j,
+                (1, 3, 4, 7): -0.125j,
+                (1, 3, 5, 6): -0.125j,
+            },
+            num_modes=4,
+        )
+        return generator, 1e-8, expected
+
+    @case(id="majorana_operator")
+    def case_majorana_operator(self):
+        generator = MajoranaOperator({(0, 1): 1.0j, (2, 3): 1e-10j}, num_modes=2)
+        expected = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
+        return generator, 1e-8, expected
+
+    @case(id="pauli_operator")
+    def case_pauli_operator(self):
+        generator = PauliOperator(
+            {Pauli("XX"): 1.0, Pauli("ZZ"): 1e-4, Pauli("YY"): 1e-6},
+            num_qubits=2,
+        )
+        expected = PauliOperator({Pauli("XX"): 1.0, Pauli("ZZ"): 1e-4}, num_qubits=2)
+        return generator, 1e-5, expected
+
+
+@parametrize_with_cases("generator, atol, expected", cases=ExpGateAtolCases)
+def test_exp_gate_applies_atol_truncation(
+    generator: FermiOperator | MajoranaOperator | PauliOperator,
+    atol: float,
+    expected: MajoranaOperator | PauliOperator,
+) -> None:
+    """ExpGate(atol=...) keeps only terms above the provided threshold."""
+    truncated = ExpGate(generator, atol=atol).generator
+
+    assert isinstance(truncated, type(expected))
+    assert truncated.terms.keys() == expected.terms.keys()
+    assert truncated.isclose(expected, atol=1e-10, rtol=0.0)
 
 
 def test_circuit_equality() -> None:
