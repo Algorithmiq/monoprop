@@ -495,10 +495,14 @@ class MonomialPropagator(ABC, Generic[T_op]):
         *,
         atol: float = 1e-12,
     ) -> T_op:
-        """Return the evolved operator/state as a dict, without modifying state.
+        """Return the evolved operator/state without modifying simulator state.
 
-        Equivalent to :meth:`contract_partially` with ``inplace=False``, returned as a
-        mapping keyed by Majorana indices and without touching the simulator state.
+        Equivalent to :meth:`contract_partially` with ``inplace=False``. The concrete
+        return type depends on the subclass:
+        :class:`~monoprop.majorana.MajoranaOperator` for
+        :class:`~monoprop.majorana_propagator.MajoranaPropagator` and
+        :class:`~monoprop.pauli.PauliOperator` for
+        :class:`~monoprop.pauli_propagator.PauliPropagator`.
 
         Args:
             parameters: Variational parameter values (see :meth:`expectation_value`).
@@ -508,7 +512,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
         Returns:
             The evolved operator (Heisenberg picture) or the evolved state (Schrodinger
-            picture) as a dict mapping Majorana-index tuples to complex coefficients.
+            picture) as the concrete operator type of this propagator.
         """
         return self._simulator.evolved_operator(self._bind(parameters), atol)
 

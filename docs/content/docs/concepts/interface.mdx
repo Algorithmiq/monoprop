@@ -37,7 +37,7 @@ generator = FermiOperator([[(0, "+"), (0, "-")]], [1.0], num_modes=4)
 circuit = Circuit(initial_state=[0, 1], gates=[ExpGate(generator)], parameters=[0.3])
 
 mp = MajoranaPropagator.from_circuit(circuit, observable, cutoff=4)
-print(sorted(mp.evolved_operator().items()))  # keyed by Majorana indices
+print(mp.evolved_operator())  # MajoranaOperator
 ```
 
 ### Qubit (Pauli) operators
@@ -58,7 +58,7 @@ gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2))
 circuit = Circuit(gates=[gate], parameters=[0.3])
 
 mp = PauliPropagator.from_circuit(circuit, observable, cutoff=4)
-print(sorted(mp.evolved_operator().items()))  # keys are Majorana indices
+print(mp.evolved_operator())
 ```
 
 ### Majorana operators
@@ -81,7 +81,7 @@ generator = MajoranaOperator({(3, 4): 1j}, 4)
 circuit = Circuit(initial_state=[0, 1], gates=[ExpGate(generator)], parameters=[0.3])
 
 mp = MajoranaPropagator.from_circuit(circuit, observable, cutoff=4)
-print(sorted(mp.evolved_operator().items()))  # keys are Majorana indices
+print(mp.evolved_operator())  # MajoranaOperator
 ```
 
 ## The reference state

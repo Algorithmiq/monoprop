@@ -84,5 +84,6 @@ parameters:
 coeffs = sim.contract_partially(parameters, inplace=False)
 ```
 
-To read the fully evolved operator as a dictionary — without modifying the
+To read the fully evolved operator as a `MajoranaOperator` (or `PauliOperator` for
+`PauliPropagator`) — without modifying the
 simulator — use `evolved_operator`.
