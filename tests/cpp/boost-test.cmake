@@ -94,8 +94,7 @@ function(discover_tests TARGET)
   )
 
   file(
-    WRITE
-    "${ctest_include_file}"
+    WRITE "${ctest_include_file}"
     "if(EXISTS \"${ctest_tests_file}\")\n"
     "  include(\"${ctest_tests_file}\")\n"
     "else()\n"
