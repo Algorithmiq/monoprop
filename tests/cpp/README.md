@@ -71,6 +71,9 @@ name and cannot address suite-nested cases, tests use flat
 - **`ThreadHarness.h`**: `run_comm_threads` — spawn S shard threads over a
   transport and capture per-thread exceptions (used by the ShmComm/HybridComm
   suites).
+- **`GraphBuildHarness.h`**: direct Layer/MPGraph construction helpers
+  (`core_with_gate`, `layer_with_gate`, `graph_with_gates`) for white-box
+  MPGraph transform tests.
 - **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
 - **`boost-test.cmake` / `boostAddTests.cmake`**: CMake test discovery.
 
@@ -84,7 +87,10 @@ name and cannot address suite-nested cases, tests use flat
   (parameter validators), `mpi_utils_tests.cpp` (find_rank + word serialization),
   `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
   `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
-- **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`.
+- **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`,
+  `mp_operator_tests.cpp` (MPOperator get_state Pauli/Majorana scoring,
+  get_operator init-map drain, update_initial_operator picture branches,
+  insert_absent_terms, inverted-index sync, memory estimate, deep copy).
 - **Layer build / evolution**: `build_graph_tests.cpp`,
   `pauli_build_layer_tests.cpp`, `fused_cos_sweep_tests.cpp`,
   `fused_query_codec_tests.cpp`, `combined_recompute_equivalence.cpp`
@@ -93,7 +99,9 @@ name and cannot address suite-nested cases, tests use flat
 - **Graph encoding / packing**: `graph_encoding_tests.cpp` (CosineWordBuilder
   coalescer, checked_* overflow guards, packed-phase storage + int8 read,
   build_layer_exchange_layout_impl, and both arms of the D-from-B derivation).
-- **Graph / paring**: `pare_graph_tests.cpp`, `mpi_pare.cpp`.
+- **Graph / paring**: `pare_graph_tests.cpp`, `mpi_pare.cpp`,
+  `mp_graph_tests.cpp` (MPGraph slice_graph/slice_view transforms, the
+  front_offset lazy-compaction arms, MPGraphView reverse mapping + OOB throw).
 - **Transports / distribution**: `shm_comm_tests.cpp`, `hybrid_comm_tests.cpp`
   (MPI-only), `shard_equivalence_tests.cpp`,
   `mpi_distributed_layer_equivalence.cpp`.
