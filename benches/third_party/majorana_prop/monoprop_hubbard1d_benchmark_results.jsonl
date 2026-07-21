@@ -24,10 +24,4 @@
 {"n_spinful_sites": 40, "n_layers": 17, "num_threads": "8", "runtime_seconds": 179.20380444196053, "memory_MB": 3321.5752458572388, "final_overlap": 0.601324908815721, "num_terms": 31047603}
 {"n_spinful_sites": 60, "n_layers": 17, "num_threads": "8", "runtime_seconds": 198.33632923383266, "memory_MB": 4057.5755586624146, "final_overlap": 0.6013249088157211, "num_terms": 31047603}
 {"n_spinful_sites": 40, "n_layers": 18, "num_threads": "8", "runtime_seconds": 293.89168079406954, "memory_MB": 4537.319264411926, "final_overlap": 0.5748900593909397, "num_terms": 48480054}
-{"n_spinful_sites": 20, "n_layers": 19, "num_threads": "8", "runtime_seconds": 303.6464500417933, "memory_MB": 6882.534497261047, "final_overlap": 0.5469240755705151, "num_terms": 74517148}
 {"n_spinful_sites": 60, "n_layers": 18, "num_threads": "8", "runtime_seconds": 303.75193184800446, "memory_MB": 5529.319577217102, "final_overlap": 0.5748900593909397, "num_terms": 48480054}
-{"n_spinful_sites": 40, "n_layers": 19, "num_threads": "8", "runtime_seconds": 375.2120391950011, "memory_MB": 8866.54805469513, "final_overlap": 0.5469240755702593, "num_terms": 74517760}
-{"n_spinful_sites": 20, "n_layers": 20, "num_threads": "8", "runtime_seconds": 491.13073363900185, "memory_MB": 10279.833050727844, "final_overlap": 0.5196160175786673, "num_terms": 112828326}
-{"n_spinful_sites": 60, "n_layers": 19, "num_threads": "8", "runtime_seconds": 524.0507513941266, "memory_MB": 10850.548367500305, "final_overlap": 0.5469240755702593, "num_terms": 74517760}
-{"n_spinful_sites": 40, "n_layers": 20, "num_threads": "8", "runtime_seconds": 618.6696563649457, "memory_MB": 13223.85191822052, "final_overlap": 0.5196160175775307, "num_terms": 112829532}
-{"n_spinful_sites": 60, "n_layers": 20, "num_threads": "8", "runtime_seconds": 837.2285976121202, "memory_MB": 16167.852231025696, "final_overlap": 0.5196160175775307, "num_terms": 112829532}

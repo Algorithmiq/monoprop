@@ -63,7 +63,7 @@ function main(args)
 
     spin_layers_pairs = []
     for i in [20, 40, 60]
-        for j in range(10, 20)
+        for j in 10:18
             push!(spin_layers_pairs, (i, j))
         end
     end

@@ -120,14 +120,14 @@ def main():
         "--output",
         "-o",
         help="Path to the JSONL file results are appended to.",
-        default=Path(__file__).with_name("monoprop_hubbard1d_benchmark_results.json"),
+        default=Path(__file__).with_name("monoprop_hubbard1d_benchmark_results.jsonl"),
     )
 
     args = parser.parse_args()
 
     spin_layer_cases = []
     for i in [20, 40, 60]:
-        for j in range(10, 21):
+        for j in range(10, 19):
             spin_layer_cases.append((i, j))
 
     case_pair = args.case

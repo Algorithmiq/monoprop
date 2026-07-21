@@ -22,12 +22,6 @@
 {"final_overlap":0.6237907699662404,"runtime_seconds":303.675066342,"n_spinful_sites":40,"memory_MB":1224.568588256836,"n_layers":16,"num_terms":12869611}
 {"final_overlap":0.5748922977223003,"runtime_seconds":348.358432812,"n_spinful_sites":20,"memory_MB":1899.7230987548828,"n_layers":18,"num_terms":32668247}
 {"final_overlap":0.6013260785341688,"runtime_seconds":458.170467557,"n_spinful_sites":40,"memory_MB":1979.6058959960938,"n_layers":17,"num_terms":20600739}
-{"final_overlap":0.5469266596001552,"runtime_seconds":525.030100376,"n_spinful_sites":20,"memory_MB":3007.299285888672,"n_layers":19,"num_terms":51176901}
 {"final_overlap":0.6013260020506138,"runtime_seconds":577.085489642,"n_spinful_sites":60,"memory_MB":1976.4950866699219,"n_layers":17,"num_terms":20582020}
 {"final_overlap":0.5748922102989575,"runtime_seconds":602.853697251,"n_spinful_sites":40,"memory_MB":3167.8807373046875,"n_layers":18,"num_terms":32655012}
-{"final_overlap":0.5196147039186482,"runtime_seconds":832.501937976,"n_spinful_sites":20,"memory_MB":4700.029144287109,"n_layers":20,"num_terms":79515774}
 {"final_overlap":0.5748921471542362,"runtime_seconds":981.613709723,"n_spinful_sites":60,"memory_MB":3162.911178588867,"n_layers":18,"num_terms":32625568}
-{"final_overlap":0.5469264564869873,"runtime_seconds":1483.685426638,"n_spinful_sites":60,"memory_MB":5007.087661743164,"n_layers":19,"num_terms":51103291}
-{"final_overlap":0.5469265629095421,"runtime_seconds":1504.05380393,"n_spinful_sites":40,"memory_MB":5015.32405090332,"n_layers":19,"num_terms":51155475}
-{"final_overlap":0.5196146450621298,"runtime_seconds":2115.654928621,"n_spinful_sites":40,"memory_MB":7838.299591064453,"n_layers":20,"num_terms":79485919}
-{"final_overlap":0.51961452777913,"runtime_seconds":2122.51099881,"n_spinful_sites":60,"memory_MB":7825.958740234375,"n_layers":20,"num_terms":79406422}
