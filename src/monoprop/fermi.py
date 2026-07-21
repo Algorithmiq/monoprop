@@ -78,7 +78,7 @@ class FermiString:
 
     def __repr__(self) -> str:
         """Return a string representation of the Fermi string."""
-        terms = " ".join(f"a_{idx}^{op}" for idx, op in self.expression)
+        terms = " ".join(f"c_{idx}^{op}" for idx, op in self.expression)
         return f"{self.__class__.__name__}({terms})"
 
     def __eq__(self, value: object) -> bool:
