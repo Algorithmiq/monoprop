@@ -1,9 +1,19 @@
 # transform monoprop_CXX_FLAGS and EXTRA_CXXFLAGS to ;-separated lists
 if(DEFINED monoprop_CXX_FLAGS)
-  string(REPLACE " " ";" monoprop_CXX_FLAGS ${monoprop_CXX_FLAGS})
+  string(
+    REPLACE " "
+    ";"
+    monoprop_CXX_FLAGS
+    ${monoprop_CXX_FLAGS}
+  )
 endif()
 if(DEFINED EXTRA_CXXFLAGS)
-  string(REPLACE " " ";" EXTRA_CXXFLAGS ${EXTRA_CXXFLAGS})
+  string(
+    REPLACE " "
+    ";"
+    EXTRA_CXXFLAGS
+    ${EXTRA_CXXFLAGS}
+  )
 endif()
 
 add_subdirectory(monoprop)
