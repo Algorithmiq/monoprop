@@ -16,7 +16,12 @@ set(
 )
 
 foreach(_entry IN LISTS _matrix)
-  string(REPLACE "|" ";" _parts "${_entry}")
+  string(
+    REPLACE "|"
+    ";"
+    _parts
+    "${_entry}"
+  )
   list(GET _parts 0 config_name)
   list(GET _parts 1 extra_opts)
 
