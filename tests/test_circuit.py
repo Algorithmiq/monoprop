@@ -79,7 +79,11 @@ def test_exp_equality_and_repr() -> None:
 
 def test_exp_from_fermi_generator_becomes_majorana() -> None:
     """A FermiOperator generator is converted to its Majorana form and the gate is 'majorana'."""
-    gate = ExpGate(FermiOperator([[(0, "+"), (1, "-")]], [1.0], num_modes=2))
+    gate = ExpGate(
+        FermiOperator(
+            [[(0, "+"), (1, "-")], [(1, "+"), (0, "-")]], [1.0, -1.0], num_modes=2
+        )
+    )
     assert gate.family == "majorana"
     assert isinstance(gate.generator, MajoranaOperator)
 
@@ -450,7 +454,7 @@ def _multi_term_gate_propagator():
     op = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(op, [0, 1], cutoff=4)
     # two monomials -> two layers
-    g0 = ExpGate(MajoranaOperator({(0,): 1.0, (1,): 1.0}, num_modes=2))
+    g0 = ExpGate(MajoranaOperator({(0, 2): 1.0j, (1, 3): 1.0j}, num_modes=2))
     g1 = ExpGate(MajoranaOperator({(2,): 1.0}, num_modes=2))
     prop.build_graph(Circuit((g0, g1)))
     return prop
