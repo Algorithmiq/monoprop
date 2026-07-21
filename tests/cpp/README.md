@@ -77,8 +77,13 @@ name and cannot address suite-nested cases, tests use flat
 ## Test Files (by area)
 
 - **Runner**: `unit_tests.cpp`.
-- **Algebra / utilities**: `mpfunctions.cpp` (MP utilities + bit-flip helpers),
-  `pauli_algebra_tests.cpp`.
+- **Containers / algebra / utilities**: `bitset_tests.cpp` (the Bitset container
+  vs a std::bitset oracle), `mpfunctions.cpp` (MP utilities + bit-flip helpers),
+  `pauli_algebra_tests.cpp`, `majorana_cutoff_tests.cpp` (length/support cutoff,
+  CutoffEvaluator, interleave phase, coeff encode/decode), `validation_tests.cpp`
+  (parameter validators), `mpi_utils_tests.cpp` (find_rank + word serialization),
+  `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
+  `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
 - **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`.
 - **Layer build / evolution**: `build_graph_tests.cpp`,
   `pauli_build_layer_tests.cpp`, `fused_cos_sweep_tests.cpp`,
@@ -90,7 +95,8 @@ name and cannot address suite-nested cases, tests use flat
   (MPI-only), `shard_equivalence_tests.cpp`,
   `mpi_distributed_layer_equivalence.cpp`.
 - **Simulator / operator lifecycle**: `simulator_copy_tests.cpp`,
-  `update_initial_operator.cpp`.
+  `update_initial_operator.cpp`, `ctor_validation_tests.cpp` (constructor guard
+  rails + MPGraph bounds).
 
 New `*.cpp` files are auto-discovered on the next configure — no CMake edit
 needed.
