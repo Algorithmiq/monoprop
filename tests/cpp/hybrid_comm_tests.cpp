@@ -29,6 +29,7 @@
 
 #include <mpi.h>
 
+#include "ThreadHarness.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/HybridComm.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -38,27 +39,12 @@ using monoprop::mpi::HybridComm;
 
 namespace {
 
-// Run body(hyb, local_shard) on S threads sharing one HybridComm over MPI_COMM_WORLD; join all.
+// Run body(hyb, local_shard) on S threads sharing one HybridComm over MPI_COMM_WORLD; join all
+// (see ThreadHarness.h).
 template <class Body>
 auto run_hybrid(int s, Body body) -> std::vector<std::exception_ptr> {
     HybridComm hyb(MPI_COMM_WORLD, s);
-    std::vector<std::exception_ptr> errs(static_cast<size_t>(s));
-    std::vector<std::thread> threads;
-    threads.reserve(static_cast<size_t>(s));
-    for (int r = 0; r < s; ++r) {
-        threads.emplace_back([&, r]() {
-            try {
-                body(hyb, r);
-            }
-            catch (...) {
-                errs[static_cast<size_t>(r)] = std::current_exception();
-            }
-        });
-    }
-    for (auto &t : threads) {
-        t.join();
-    }
-    return errs;
+    return test_utils::run_comm_threads(hyb, s, body);
 }
 
 auto world_size() -> int {

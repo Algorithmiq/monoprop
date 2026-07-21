@@ -18,6 +18,7 @@
 #include <map>
 #include <string>
 
+#include "PauliTestOracle.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -32,15 +33,10 @@ namespace {
 
 using namespace monoprop;
 using namespace test_utils;
+using pauli_oracle::slots_of_string;
 
 constexpr size_t kNumModes = 8;
 constexpr unsigned int kCutoff = 4;
-constexpr double kFpRtol = 1e-7;
-
-auto near(double lhs, double rhs, double atol = 1e-9, double rtol = kFpRtol) -> bool {
-    const double scale = std::max(std::abs(lhs), std::abs(rhs));
-    return std::abs(lhs - rhs) <= (atol + rtol * scale);
-}
 
 // ─── Majorana (fixture-driven) ───────────────────────────────────────────────
 
@@ -142,24 +138,7 @@ BOOST_AUTO_TEST_CASE(shard_deep_copy_matches) {
 }
 
 // ─── Native Pauli (inline circuit) ───────────────────────────────────────────
-
-// Map a Pauli string ("ZZI…") to the Majorana-slot index vector used by the FermiOperatorMap key.
-auto slots_of_string(const std::string &p) -> VecZ {
-    VecZ slots;
-    for (size_t q = 0; q < p.size(); ++q) {
-        if (p[q] == 'X') {
-            slots.push_back(2 * q);
-        }
-        else if (p[q] == 'Y') {
-            slots.push_back(2 * q + 1);
-        }
-        else if (p[q] == 'Z') {
-            slots.push_back(2 * q);
-            slots.push_back(2 * q + 1);
-        }
-    }
-    return slots;
-}
+// Pauli strings map to Majorana-slot index vectors via pauli_oracle::slots_of_string.
 
 constexpr size_t kNq = 6; // qubits for the Pauli case
 

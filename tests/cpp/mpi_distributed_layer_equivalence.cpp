@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "PauliTestOracle.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -33,16 +34,10 @@ namespace {
 
 using namespace monoprop;
 using namespace test_utils;
+using pauli_oracle::slots_of_string;
 
 constexpr size_t kNumModes = 8;
 constexpr unsigned int kCutoff = 4;
-constexpr double kAtol = 1e-9;
-constexpr double kFpRtol = 1e-7; // tolerance for n=1 vs n>1 floating-point accumulation
-
-auto near(double lhs, double rhs, double atol = kAtol, double rtol = kFpRtol) -> bool {
-    const double scale = std::max(std::abs(lhs), std::abs(rhs));
-    return std::abs(lhs - rhs) <= (atol + rtol * scale);
-}
 
 struct TestInputs {
     CaseData data;
@@ -121,28 +116,12 @@ BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
 // hash and cross-rank resolve path drive the intra-process shard runtime, so this guards both.
 
 constexpr size_t kPauliQ = 6;
-
-auto pauli_slots(const std::string& p) -> VecZ {
-    VecZ slots;
-    for (size_t q = 0; q < p.size(); ++q) {
-        if (p[q] == 'X') {
-            slots.push_back(2 * q);
-        }
-        else if (p[q] == 'Y') {
-            slots.push_back(2 * q + 1);
-        }
-        else if (p[q] == 'Z') {
-            slots.push_back(2 * q);
-            slots.push_back(2 * q + 1);
-        }
-    }
-    return slots;
-}
+// Pauli strings map to Majorana-slot index vectors via pauli_oracle::slots_of_string.
 
 auto run_pauli_energy(MPI_Comm comm) -> double {
     FermiOperatorMap init;
-    init[pauli_slots("ZIIIII")] = std::complex<double>(1.0, 0.0);
-    init[pauli_slots("IIZZII")] = std::complex<double>(0.5, 0.0);
+    init[slots_of_string("ZIIIII")] = std::complex<double>(1.0, 0.0);
+    init[slots_of_string("IIZZII")] = std::complex<double>(0.5, 0.0);
     MonomialPropagator<kPauliQ> sim(init,
                                     kPauliQ,
                                     VecZ{},
@@ -161,7 +140,7 @@ auto run_pauli_energy(MPI_Comm comm) -> double {
     for (size_t q = 0; q < kPauliQ; ++q) {
         std::string s(kPauliQ, 'I');
         s[q] = 'X';
-        gens.push_back(pauli_slots(s));
+        gens.push_back(slots_of_string(s));
         pmap.push_back(p++);
         gcoeffs.push_back(1.0);
     }
@@ -169,7 +148,7 @@ auto run_pauli_energy(MPI_Comm comm) -> double {
         std::string s(kPauliQ, 'I');
         s[q] = 'Z';
         s[q + 1] = 'Z';
-        gens.push_back(pauli_slots(s));
+        gens.push_back(slots_of_string(s));
         pmap.push_back(p++);
         gcoeffs.push_back(1.0);
     }

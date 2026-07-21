@@ -18,6 +18,7 @@
 
 #include "TestUtilities.h"
 #include "monoprop/MPFunctions.h"
+#include "monoprop/Utilities.h"
 
 using namespace monoprop;
 
@@ -135,4 +136,16 @@ static std::vector<IS_FULLY_PAIRED_TEST_CASE> ds_is_fully_paired_test = {
 BOOST_DATA_TEST_CASE(is_fully_paired_test, bdata::make(ds_is_fully_paired_test), test_case) {
     auto result = is_fully_paired<NumQubits2>(test_case.inds, test_case.op_terms);
     BOOST_CHECK(std::is_permutation(result.cbegin(), result.cend(), test_case.expected_result.cbegin()));
+}
+
+// even_bits/odd_bits from Utilities.h under both bit orderings (formerly utilities.cpp).
+BOOST_AUTO_TEST_CASE(bit_flipping_utilities) {
+    auto val1 = even_bits<10, LSb0>();
+    auto val2 = odd_bits<10, LSb0>();
+    auto val3 = even_bits<10, MSb0>();
+    auto val4 = odd_bits<10, MSb0>();
+    BOOST_TEST(val1 == 0b0101010101);
+    BOOST_TEST(val2 == 0b1010101010);
+    BOOST_TEST(val3 == 0b1010101010);
+    BOOST_TEST(val4 == 0b0101010101);
 }

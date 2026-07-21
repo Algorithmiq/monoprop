@@ -38,12 +38,6 @@ using namespace monoprop;
 constexpr double kAgreeAtol = 1e-12;
 constexpr double kExactAtol = 1e-9;
 
-struct RandomExactFixture {
-    static constexpr size_t n_modes = 8;
-    CaseData data;
-    RandomExactFixture() : data(load_case_data<n_modes>("random_exact.msgpack")) {}
-};
-
 template <size_t NumModes>
 auto inplace_energy(const CaseData &data, const SimulatorConfig &cfg) -> double {
     auto sim = build_simulator<NumModes>(data, cfg);
@@ -61,8 +55,8 @@ auto graph_energy(const CaseData &data, const SimulatorConfig &cfg) -> double {
 }
 
 void check_agreement(const CaseData &data, const SimulatorConfig &cfg, const char *label) {
-    const double inplace = inplace_energy<RandomExactFixture::n_modes>(data, cfg);
-    const double graph = graph_energy<RandomExactFixture::n_modes>(data, cfg);
+    const double inplace = inplace_energy<ExampleDataFix::n_modes>(data, cfg);
+    const double graph = graph_energy<ExampleDataFix::n_modes>(data, cfg);
     BOOST_TEST_CONTEXT(label << " inplace=" << inplace << " graph=" << graph) {
         BOOST_CHECK_SMALL(inplace - graph, kAgreeAtol);
         BOOST_CHECK_SMALL(inplace - data.actual_expval, kExactAtol);
@@ -71,22 +65,22 @@ void check_agreement(const CaseData &data, const SimulatorConfig &cfg, const cha
 
 } // namespace
 
-BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg, RandomExactFixture) {
+BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg, ExampleDataFix) {
     check_agreement(data, SimulatorConfig{}, "heisenberg");
 }
 
 // lower_atol active: the sin gate reads the PRE-cos value the sweep loads — emission (and therefore
 // the rotation set) must be unchanged by the in-place store that follows it.
-BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg_atol, RandomExactFixture) {
+BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg_atol, ExampleDataFix) {
     check_agreement(data, SimulatorConfig{.atol = 1e-10}, "heisenberg atol=1e-10");
 }
 
 // Schrödinger picture: fresh inserts carry a nonzero HF-scored value born AFTER the sweep — the
 // apply's in-place insert arm (c = cos·c + sin term) must fold the gate's cos into those slots.
-BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger, RandomExactFixture) {
+BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger, ExampleDataFix) {
     check_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes}, "schrodinger");
 }
 
-BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger_atol, RandomExactFixture) {
+BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger_atol, ExampleDataFix) {
     check_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes, .atol = 1e-10}, "schrodinger atol=1e-10");
 }

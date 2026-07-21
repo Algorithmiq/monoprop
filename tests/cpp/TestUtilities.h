@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <complex>
 #include <concepts>
 #include <cstdlib>
@@ -152,6 +154,14 @@ inline auto check_expval_close(const char* label, double expval, double exact, d
     BOOST_CHECK_SMALL(expval - exact, atol);
 }
 
+/// Mixed absolute/relative float comparison, shared by the equivalence suites
+/// (rtol covers the floating-point accumulation drift between n=1 and n>1 runs).
+inline constexpr double kFpRtol = 1e-7;
+inline auto near(double lhs, double rhs, double atol = 1e-9, double rtol = kFpRtol) -> bool {
+    const double scale = std::max(std::abs(lhs), std::abs(rhs));
+    return std::abs(lhs - rhs) <= (atol + rtol * scale);
+}
+
 // ---------------------------------------------------------------------------
 // Template test functions (used by build_graph_tests.cpp)
 // ---------------------------------------------------------------------------
@@ -209,6 +219,13 @@ struct ExampleDataFix {
         auto msgpack_file = data_path / "random_exact.msgpack";
         data = load_case(msgpack_file);
     }
+};
+
+/// LiH fixture (n_modes = 12), backed by lih_fermionic_spin_exact.msgpack.
+struct LihFixture {
+    static constexpr size_t n_modes = 12;
+    CaseData data;
+    LihFixture() : data(load_case_data<n_modes>("lih_fermionic_spin_exact.msgpack")) {}
 };
 
 inline constexpr std::array<bool, 2> ds_pare_values{false, true};

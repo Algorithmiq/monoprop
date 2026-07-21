@@ -64,18 +64,6 @@ auto evaluate_zero_cutoff_full_rescue_energy(MonomialPropagator<NumModes>& simul
     return energy_fn(VecD{});
 }
 
-struct RandomExactFixture {
-    static constexpr size_t n_modes = 8;
-    CaseData data;
-    RandomExactFixture() : data(load_case_data<n_modes>("random_exact.msgpack")) {}
-};
-
-struct LihFixture {
-    static constexpr size_t n_modes = 12;
-    CaseData data;
-    LihFixture() : data(load_case_data<n_modes>("lih_fermionic_spin_exact.msgpack")) {}
-};
-
 } // namespace
 
 // One test per (fixture, comm) so a failure pinpoints the configuration. The rescue invariant is
@@ -93,8 +81,8 @@ struct LihFixture {
         BOOST_CHECK_SMALL(std::abs(energy - data.actual_expval), kEnergyAtol);                                \
     }
 
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, RandomExactFixture, Self)
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, RandomExactFixture, World)
+MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, ExampleDataFix, Self)
+MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, ExampleDataFix, World)
 
 MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, Self)
 MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, World)

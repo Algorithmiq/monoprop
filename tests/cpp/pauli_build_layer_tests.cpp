@@ -25,110 +25,16 @@
 #include <string>
 #include <vector>
 
+#include "PauliTestOracle.h"
 #include "monoprop/MajoranaAlgebra.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/PauliAlgebra.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
 using namespace monoprop;
+using namespace pauli_oracle;
 
 namespace {
-
-using cd = std::complex<double>;
-
-constexpr char LETTERS[4] = {'I', 'X', 'Y', 'Z'};
-
-// ── Native-encoding helpers (copied from pauli_algebra_tests.cpp) ────────────────────────────
-
-// Native gamma-slot list for a Pauli string: X_q -> slot 2q, Y_q -> slot 2q+1, Z_q -> {2q, 2q+1}.
-// This is the key format the propagator's initial_operator / generators expect.
-auto slots_of_string(const std::string &p) -> VecZ {
-    VecZ slots;
-    for (size_t q = 0; q < p.size(); ++q) {
-        switch (p[q]) {
-            case 'X':
-                slots.push_back(2 * q);
-                break;
-            case 'Y':
-                slots.push_back(2 * q + 1);
-                break;
-            case 'Z':
-                slots.push_back(2 * q);
-                slots.push_back(2 * q + 1);
-                break;
-            default:
-                break; // 'I'
-        }
-    }
-    return slots;
-}
-
-// Decode the single-qubit letter of qubit q from a native-encoded bitset (MSb0 physical mapping).
-template <size_t NumModes>
-auto letter_from_bitset(const MajoranaSet<NumModes> &maj, size_t q) -> char {
-    const bool u = maj.test(2 * NumModes - 1 - 2 * q); // slot 2q   (odd physical bit, x-plane)
-    const bool v = maj.test(2 * NumModes - 2 - 2 * q); // slot 2q+1 (even physical bit, z-plane)
-    if (!u && !v) {
-        return 'I';
-    }
-    if (u && !v) {
-        return 'X';
-    }
-    if (!u && v) {
-        return 'Y';
-    }
-    return 'Z';
-}
-
-// ── Faithful JW port (copied from pauli_algebra_tests.cpp) for T6/T8 ─────────────────────────
-auto pauli_to_fermi_indices(const std::string &pauli) -> VecZ {
-    std::vector<size_t> acc;
-    bool flag_z = false;
-    for (int i = static_cast<int>(pauli.size()) - 1; i >= 0; --i) {
-        const char p = pauli[static_cast<size_t>(i)];
-        const auto ii = static_cast<size_t>(i);
-        if ((p == 'Z' && !flag_z) || (p == 'I' && flag_z)) {
-            acc.push_back(2 * ii + 1);
-            acc.push_back(2 * ii);
-        }
-        else if (p == 'X' && !flag_z) {
-            acc.push_back(2 * ii);
-            flag_z = true;
-        }
-        else if (p == 'X' && flag_z) {
-            acc.push_back(2 * ii + 1);
-            flag_z = false;
-        }
-        else if (p == 'Y' && !flag_z) {
-            acc.push_back(2 * ii + 1);
-            flag_z = true;
-        }
-        else if (p == 'Y' && flag_z) {
-            acc.push_back(2 * ii);
-            flag_z = false;
-        }
-    }
-    return VecZ(acc.rbegin(), acc.rend());
-}
-
-// jordan_wigner_basis_change(n) as a full-width (2*NumModes) basis so change_basis can index by slot.
-template <size_t NumModes>
-auto jw_basis(size_t n) -> MajoranaVector<NumModes> {
-    MajoranaVector<NumModes> basis(2 * NumModes);
-    for (size_t i = 0; i < n; ++i) {
-        VecZ z_str;
-        for (size_t z = 0; z < 2 * i; ++z) {
-            z_str.push_back(z);
-        }
-        VecZ even_vec = z_str;
-        even_vec.push_back(2 * i);
-        VecZ odd_vec = z_str;
-        odd_vec.push_back(2 * i + 1);
-        basis[2 * i] = indices_to_bitset<NumModes>(even_vec);
-        basis[2 * i + 1] = indices_to_bitset<NumModes>(odd_vec);
-    }
-    return basis;
-}
 
 // The JW basis-change table as a Python-facing index list (each basis vector -> its gamma indices),
 // suitable for the MonomialPropagator basis_change parameter.
@@ -152,84 +58,6 @@ auto jw_basis_indices(size_t n) -> std::vector<VecZ> {
         table[s] = VecZ{s};
     }
     return table;
-}
-
-// ── Dense Pauli-matrix brute force (copied from pauli_algebra_tests.cpp) ──────────────────────
-auto single_letter(char c) -> std::vector<cd> {
-    switch (c) {
-        case 'X':
-            return {cd(0, 0), cd(1, 0), cd(1, 0), cd(0, 0)};
-        case 'Y':
-            return {cd(0, 0), cd(0, -1), cd(0, 1), cd(0, 0)};
-        case 'Z':
-            return {cd(1, 0), cd(0, 0), cd(0, 0), cd(-1, 0)};
-        default:
-            return {cd(1, 0), cd(0, 0), cd(0, 0), cd(1, 0)}; // I
-    }
-}
-
-auto kron(const std::vector<cd> &a, size_t da, const std::vector<cd> &b, size_t db) -> std::vector<cd> {
-    const size_t d = da * db;
-    std::vector<cd> r(d * d, cd(0, 0));
-    for (size_t i = 0; i < da; ++i) {
-        for (size_t j = 0; j < da; ++j) {
-            const cd aij = a[i * da + j];
-            for (size_t k = 0; k < db; ++k) {
-                for (size_t l = 0; l < db; ++l) {
-                    r[(i * db + k) * d + (j * db + l)] = aij * b[k * db + l];
-                }
-            }
-        }
-    }
-    return r;
-}
-
-auto matmul(const std::vector<cd> &a, const std::vector<cd> &b, size_t d) -> std::vector<cd> {
-    std::vector<cd> r(d * d, cd(0, 0));
-    for (size_t i = 0; i < d; ++i) {
-        for (size_t k = 0; k < d; ++k) {
-            const cd aik = a[i * d + k];
-            if (aik == cd(0, 0)) {
-                continue;
-            }
-            for (size_t j = 0; j < d; ++j) {
-                r[i * d + j] += aik * b[k * d + j];
-            }
-        }
-    }
-    return r;
-}
-
-// Dense matrix of a Pauli string (qubit 0 = most-significant tensor factor).
-auto matrix_from_string(const std::string &p) -> std::vector<cd> {
-    std::vector<cd> m = single_letter(p[0]);
-    size_t d = 2;
-    for (size_t q = 1; q < p.size(); ++q) {
-        m = kron(m, d, single_letter(p[q]), 2);
-        d *= 2;
-    }
-    return m;
-}
-
-auto approx_equal(const std::vector<cd> &a, const std::vector<cd> &b, double tol = 1e-10) -> bool {
-    if (a.size() != b.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::abs(a[i] - b[i]) > tol) {
-            return false;
-        }
-    }
-    return true;
-}
-
-auto random_string(std::mt19937 &rng, size_t n) -> std::string {
-    std::uniform_int_distribution<int> d(0, 3);
-    std::string s(n, 'I');
-    for (size_t q = 0; q < n; ++q) {
-        s[q] = LETTERS[d(rng)];
-    }
-    return s;
 }
 
 // ── Native Pauli propagator drivers ──────────────────────────────────────────────────────────

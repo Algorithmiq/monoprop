@@ -21,6 +21,7 @@
 #include <thread>
 #include <vector>
 
+#include "ThreadHarness.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/Exchange.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -32,28 +33,11 @@ using monoprop::mpi::ShmCommPoisoned;
 
 namespace {
 
-// Run `body(sh, rank)` on S participant threads sharing one ShmComm; join all. Exceptions thrown by a
-// body are captured per-rank (so Boost.Test assertions stay on the main thread, where they are safe).
+// Run `body(sh, rank)` on S participant threads sharing one ShmComm; join all (see ThreadHarness.h).
 template <class Body>
 auto run_shm(int s, Body body) -> std::vector<std::exception_ptr> {
     ShmComm sh(s);
-    std::vector<std::exception_ptr> errs(static_cast<size_t>(s));
-    std::vector<std::thread> threads;
-    threads.reserve(static_cast<size_t>(s));
-    for (int r = 0; r < s; ++r) {
-        threads.emplace_back([&, r]() {
-            try {
-                body(sh, r);
-            }
-            catch (...) {
-                errs[static_cast<size_t>(r)] = std::current_exception();
-            }
-        });
-    }
-    for (auto &t : threads) {
-        t.join();
-    }
-    return errs;
+    return test_utils::run_comm_threads(sh, s, body);
 }
 
 } // namespace

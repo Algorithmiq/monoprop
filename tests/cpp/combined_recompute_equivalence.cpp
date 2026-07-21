@@ -169,3 +169,21 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
         BOOST_CHECK_SMALL(std::abs(ea - eb), 1e-9 * (1.0 + std::abs(ea)));
     }
 }
+
+// Snapshot invariance (formerly snapshot_invariance.cpp): calling the energy functional twice with
+// identical parameters must agree to tight tolerance. Each shard folds its partition serially in a
+// fixed order, so repeated evaluations agree exactly; the tolerance check pins the CONTRACT (tight
+// numerical agreement), not the reduction implementation. It lives here because it is the same
+// recompute machinery exercised above, evaluated twice.
+BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix) {
+    SimulatorConfig cfg{.comm = MPI_COMM_SELF};
+    auto sim = build_simulator<n_modes>(data, cfg);
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+
+    auto fn = sim.expectation_value_functional();
+    const double e1 = fn(data.parameters);
+    const double e2 = fn(data.parameters);
+
+    BOOST_CHECK_SMALL(e1 - e2, 1e-13);
+    BOOST_TEST_MESSAGE("snapshot_invariance energy=" << e1);
+}
