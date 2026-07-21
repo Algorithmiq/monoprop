@@ -58,7 +58,7 @@ gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2))
 circuit = Circuit(gates=[gate], parameters=[0.3])
 
 pp = PauliPropagator.from_circuit(circuit, observable, cutoff=4)
-print(mp.evolved_operator())
+print(pp.evolved_operator())
 ```
 
 ### Majorana operators
