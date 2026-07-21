@@ -16,6 +16,7 @@
 #include <boost/test/data/test_case.hpp>
 #include <boost/test/unit_test.hpp>
 
+#include "AlgebraReference.h" // fermionic_to_binary_operator, get_multiplicative_phase (test-only)
 #include "TestUtilities.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/Utilities.h"
@@ -33,7 +34,7 @@ static std::vector<VecZ> ds_input_indices_to_bitset_test = {
     {5},          // Single index set
     {4, 7}        // Two indices set
 };
-static std::vector<MajoranaSet<NumQubits>> ds_output_indices_to_bitset_test = {
+static std::vector<Monomial<NumQubits>> ds_output_indices_to_bitset_test = {
 
     {0b11110000}, // Full indices set
     {0b00000000}, // No indices set, empty majorana
@@ -51,7 +52,7 @@ BOOST_DATA_TEST_CASE(indices_to_bitset_test,
 }
 
 // Test cases for length_cutoff
-static std::vector<MajoranaSet<NumQubits>> ds_input_bitset_to_indices_test = {
+static std::vector<Monomial<NumQubits>> ds_input_bitset_to_indices_test = {
     0b00000000, // No indices set, empty majorana
     0b00011000, // Single index set
     0b10101010  // Two indices set
@@ -99,7 +100,7 @@ BOOST_AUTO_TEST_CASE(test_fermionic_to_binary_operator_multiple_terms) {
 }
 
 constexpr size_t NumQubits2 = 2;
-static std::vector<std::pair<MajoranaSet<NumQubits2>, int>> ds_get_multiplicative_phase = {{{0b0001}, 0},
+static std::vector<std::pair<Monomial<NumQubits2>, int>> ds_get_multiplicative_phase = {{{0b0001}, 0},
                                                                                            {{0b0101}, -1},
                                                                                            {{0b1001}, 1}};
 
@@ -116,7 +117,7 @@ BOOST_DATA_TEST_CASE(get_multiplicative_phase_test, bdata::make(ds_get_multiplic
 
 struct IS_FULLY_PAIRED_TEST_CASE {
     VecZ inds;
-    MajoranaVector<NumQubits2> op_terms;
+    MonomialList<NumQubits2> op_terms;
     VecZ expected_result;
     std::string test_name;
 

@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/MajoranaAlgebra.h" // indices_to_bitset
+#include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/detail/operator/OperatorIndex.h"
 
 using namespace monoprop;
@@ -27,7 +27,7 @@ BOOST_AUTO_TEST_CASE(operator_index_term_index_width_matches_build) {
 namespace {
 constexpr size_t N = 32;
 using Store = OperatorIndex<N>;
-using MSet = MajoranaSet<N>;
+using MSet = Monomial<N>;
 
 // The store is non-copyable and non-movable: owners hold it by unique_ptr and share stable
 // pointers to it, and clone() is the only deep copy. Lock this design invariant at compile time.

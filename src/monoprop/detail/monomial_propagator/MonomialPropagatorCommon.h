@@ -18,7 +18,7 @@
 #include <stdexcept>
 
 #include "monoprop/Evolution.h"
-#include "monoprop/MajoranaAlgebra.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/TypeAliases.h"
 
 namespace monoprop::detail {
@@ -52,16 +52,16 @@ auto cutoff_function(CutoffType cutoff_type, unsigned int cutoff, size_t logical
 template <size_t NumModes>
 auto cutoff_function_basis_change(CutoffType cutoff_type,
                                   unsigned int cutoff,
-                                  const MajoranaVector<NumModes> &basis,
+                                  const MonomialList<NumModes> &basis,
                                   size_t logical_num_modes = NumModes) -> CutoffFn<NumModes> {
     switch (cutoff_type) {
         case CutoffType::Length:
-            return [cutoff, logical_num_modes, basis_copy = basis](const MajoranaSet<NumModes> &maj) {
+            return [cutoff, logical_num_modes, basis_copy = basis](const Monomial<NumModes> &maj) {
                 const auto mapped_maj = change_basis<NumModes>(maj, basis_copy);
                 return length_cutoff<NumModes>(mapped_maj, cutoff, logical_num_modes);
             };
         case CutoffType::Support:
-            return [cutoff, logical_num_modes, basis_copy = basis](const MajoranaSet<NumModes> &maj) {
+            return [cutoff, logical_num_modes, basis_copy = basis](const Monomial<NumModes> &maj) {
                 const auto mapped_maj = change_basis<NumModes>(maj, basis_copy);
                 return support_cutoff<NumModes>(mapped_maj, cutoff, logical_num_modes);
             };

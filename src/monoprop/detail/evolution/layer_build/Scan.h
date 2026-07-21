@@ -22,8 +22,7 @@
 #include <span>
 #include <vector>
 
-#include "monoprop/MajoranaAlgebra.h"
-#include "monoprop/PauliAlgebra.h"
+#include "monoprop/algebra/Algebra.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
@@ -55,7 +54,7 @@ inline auto build_majorana_evolution_cutoff_state(const std::optional<double> &a
 
 template <size_t NumModes>
 struct EvenParityGeneratorColumns {
-    std::array<size_t, MajoranaSet<NumModes>::size()> indices{};
+    std::array<size_t, Monomial<NumModes>::size()> indices{};
     size_t count = 0;
 };
 
@@ -63,7 +62,7 @@ struct EvenParityGeneratorColumns {
 // LOWEST set column; ordinary (Majorana) callers pass it to even_parity_scan_pass1 as the pivot — the
 // column that splits each anticommuting pair into leader (pivot clear) and follower (pivot set).
 template <size_t NumModes>
-auto build_even_parity_generator_columns(const MajoranaSet<NumModes> &gen_maj) -> EvenParityGeneratorColumns<NumModes> {
+auto build_even_parity_generator_columns(const Monomial<NumModes> &gen_maj) -> EvenParityGeneratorColumns<NumModes> {
     EvenParityGeneratorColumns<NumModes> columns;
     for (size_t bit_idx = gen_maj.find_first(); bit_idx < gen_maj.size(); bit_idx = gen_maj.find_next(bit_idx)) {
         columns.indices[columns.count++] = bit_idx;
@@ -179,37 +178,10 @@ inline auto rotation_dynamic_gate(int only_rotate_len_k,
 }
 
 // ─── Rebuild-then-word-kernels emit (packed survivor products) ────────────────
-// Per-generator context, built once per generator. Two flavours selected at compile time by IsPauli:
-// the Majorana arm caches the real generator G plus the fixed-per-layer interleave mask; the Pauli arm
-// caches the rotation-sign kernel context (PauliGenContext, which itself holds G and |G| — the single
-// source of truth). Either way emit_term_products reads the generator (for M⊕G / overlap) from here.
-template <size_t NumModes, bool IsPauli>
-struct GenEmitContext;
-
-template <size_t NumModes>
-struct GenEmitContext<NumModes, false> {
-    const MajoranaSet<NumModes> &gen;
-    // Fixed-per-layer interleave mask W: interleave_phase(M,G) == (M.parity_and(W) ? -1 : 1).
-    // Replaces the per-term prefix-XOR scan with one masked parity (see interleave_phase_mask).
-    MajoranaSet<NumModes> interleave_mask;
-};
-
-template <size_t NumModes>
-struct GenEmitContext<NumModes, true> {
-    // Precomputed context for the hot Pauli rotation-sign kernel (pauli_rotation_sign). It already
-    // carries the generator G and |G|, so no separate gen/gen_pop members are duplicated here.
-    PauliGenContext<NumModes> pauli_ctx;
-};
-
-template <size_t NumModes, bool IsPauli>
-inline auto make_gen_emit_context(const MajoranaSet<NumModes> &gen) -> GenEmitContext<NumModes, IsPauli> {
-    if constexpr (IsPauli) {
-        return GenEmitContext<NumModes, true>{make_pauli_gen_context<NumModes>(gen)};
-    }
-    else {
-        return GenEmitContext<NumModes, false>{gen, interleave_phase_mask<NumModes>(gen)};
-    }
-}
+// The per-generator context, built once per layer, is owned by the algebra policy: `A::GenContext`
+// (Majorana caches the generator G plus its fixed-per-layer interleave mask; Pauli caches the
+// rotation-sign kernel context PauliGenContext, which holds G and |G|). `A::make_gen_context(gen)`
+// builds it and `A::generator(ctx)` reads G back (for M⊕G / overlap). See algebra/Algebra.h.
 
 // Compute the three per-survivor products the cutoff/phase emit needs for term i:
 //   new_maj  = M_i ⊕ G        (the rotated partner term that gets pushed as a query)
@@ -217,7 +189,7 @@ inline auto make_gen_emit_context(const MajoranaSet<NumModes> &gen) -> GenEmitCo
 //   interleave = (−1)^x,  x = #{(m∈M_i, g∈G) : m<g}   (the interleave factor of the multiplicative phase)
 //
 // REBUILD-THEN-WORD-KERNELS: stream the term's stored ascending position list once to rebuild M_i as
-// a dense W-word MajoranaSet in registers (k OR-shifts), then evaluate all three products with the
+// a dense W-word Monomial in registers (k OR-shifts), then evaluate all three products with the
 // branch-free W-word kernels (XOR, AND-popcount, prefix-xor interleave). The dynamic rotation gate
 // (O(1) from the count byte) is applied by the caller BEFORE this kernel, so rejected terms cost
 // zero reconstruction.
@@ -226,26 +198,19 @@ inline auto make_gen_emit_context(const MajoranaSet<NumModes> &gen) -> GenEmitCo
 //   Pauli:    pauli_rotation_sign(pauli_ctx, maj, new_maj) — the ±1 ROTATION sign of maj·G (already
 //             negated relative to the raw product sign, so no extra flip at the emit site).
 // Majorana additionally folds in hermitian_phase to obtain the final query phase (see the emit lambda).
-template <size_t NumModes, bool IsPauli>
+template <size_t NumModes, Algebra A>
 [[gnu::always_inline]] inline void emit_term_products(const OperatorIndex<NumModes> &ham,
                                                       size_t i,
-                                                      const GenEmitContext<NumModes, IsPauli> &ctx,
-                                                      MajoranaSet<NumModes> &new_maj,
+                                                      const typename A::GenContext &ctx,
+                                                      Monomial<NumModes> &new_maj,
                                                       size_t &overlap,
                                                       int &phase_factor) {
-    MajoranaSet<NumModes> maj; // zero-init, W words, lives in registers
+    Monomial<NumModes> maj; // zero-init, W words, lives in registers
     ham.for_each_position(i, [&](size_t pos) { maj.set(pos); });
-    if constexpr (IsPauli) {
-        const MajoranaSet<NumModes> &gen = ctx.pauli_ctx.gen;
-        new_maj = maj ^ gen;
-        overlap = maj.count_and(gen);
-        phase_factor = pauli_rotation_sign<NumModes>(ctx.pauli_ctx, maj, new_maj);
-    }
-    else {
-        new_maj = maj ^ ctx.gen;
-        overlap = maj.count_and(ctx.gen);
-        phase_factor = maj.parity_and(ctx.interleave_mask) ? -1 : 1;
-    }
+    const Monomial<NumModes> &gen = A::generator(ctx);
+    new_maj = maj ^ gen;
+    overlap = maj.count_and(gen);
+    phase_factor = A::rotation_sign(ctx, maj, new_maj);
 }
 
 // ─── fused_find_and_collect (any rank count) ──────────────────────────────────
@@ -277,9 +242,9 @@ struct FusedScanResult {
 // so no cosine set is built (cos_blocks stay empty). Chunks own disjoint word ranges ⇒ the in-place
 // writes are race-free. Downstream, a hit partner's stored value is then POST-cos — resolve recovers
 // the pre-cos v_tgt via 1/cos (see LayerBuildEngine::inv_cos_).
-template <size_t NumModes, bool IsPauli = false>
+template <size_t NumModes, Algebra A>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
-                            const MajoranaSet<NumModes> &gen,
+                            const Monomial<NumModes> &gen,
                             const CutoffEvaluator<NumModes> &cutoff_eval,
                             const CutoffContext &cut_st,
                             const VecD &coeffs,
@@ -290,7 +255,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult {
     const size_t gen_pop = gen.count();
-    const auto ectx = make_gen_emit_context<NumModes, IsPauli>(gen);
+    const auto ectx = A::make_gen_context(gen);
 
     // Structural-cutoff rejections this gate (anticommuters whose partner failed the structural
     // cutoff without an upper-atol rescue). A register-resident local; published to the fold-stats
@@ -318,10 +283,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         if (!rotation_dynamic_gate(only_rotate_len_k, maj_pop, cut_st, abs_c)) {
             return;
         }
-        MajoranaSet<NumModes> new_maj;
+        Monomial<NumModes> new_maj;
         size_t overlap = 0;
         int phase_factor = 0;
-        emit_term_products<NumModes, IsPauli>(*op.store, i, ectx, new_maj, overlap, phase_factor);
+        emit_term_products<NumModes, A>(*op.store, i, ectx, new_maj, overlap, phase_factor);
         // Structural cutoff on the partner M⊕G — UNLESS upper_atol rescues it (its sine coefficient is
         // large enough to keep alive despite exceeding the cutoff). See CutoffContext::is_above_upper.
         const size_t new_pop = maj_pop + gen_pop - 2 * overlap;
@@ -330,18 +295,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             ++struct_rejects;
             return;
         }
-        // Pauli: pauli_rotation_sign already returns the rotation-ready sign for U=exp(iθG), O'=U†OU
-        // (the negated raw product sign of maj·G, pinned by pauli_build_layer_dense_matrix_ground_truth
-        // / T7), so it is emitted directly. Majorana folds in hermitian_phase.
-        int phase;
-        if constexpr (IsPauli) {
-            phase = phase_factor;
-        }
-        else {
-            phase = phase_factor * hermitian_phase(maj_pop, gen_pop, overlap);
-        }
+        // Emitted sine phase: the algebra folds the rotation sign into the final ±1 (Majorana folds in
+        // hermitian_phase; Pauli's pauli_rotation_sign is already rotation-ready — the negated raw product
+        // sign of maj·G, pinned by pauli_build_layer_dense_matrix_ground_truth / T7). See A::emit_phase.
+        const int phase = A::emit_phase(phase_factor, maj_pop, gen_pop, overlap);
         // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-        const size_t r_prime = (rank_count == 1) ? my_rank : (majorana_hash<NumModes>(new_maj) % rank_count);
+        const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_maj) % rank_count);
         const size_t source = i;
         if (is_follower) {
             query_push<NumModes>(fq[r_prime], new_maj, phase);
@@ -378,10 +337,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // row-parity correction is ever needed for Pauli (g_odd forced false). J is a bijection so
         // J(G) ≠ 0 ⟺ G ≠ 0. The pivot that splits each anticommuting pair is a set bit of the REAL G
         // (gen.find_first()), NOT of J(G) — A and A⊕G differ exactly on G's bits (see the pivot arg below).
-        const MajoranaSet<NumModes> fold_gen = IsPauli ? pair_swap<NumModes>(gen) : gen;
+        const Monomial<NumModes> fold_gen = A::fold_generator(gen);
         // Odd |G| needs the per-row parity(|M|) correction (see even_parity_scan_pass1); even |G| is
         // byte-identical with no parity bitmap. Pauli never needs it (invariant above).
-        const bool g_odd = IsPauli ? false : (gen.count() % 2 != 0);
+        const bool g_odd = A::fold_needs_odd_correction(gen);
         const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
         if (gen_columns.count == 0) {
             return res;

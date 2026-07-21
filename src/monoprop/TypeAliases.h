@@ -24,16 +24,13 @@
 #include <boost/unordered/unordered_flat_map.hpp>
 
 #include "monoprop/Bitset.h"
-namespace monoprop {
-/*!
- * @brief Bitset container for a multi-qubit operator in Majorana basis.
- * @tparam NumModes Number of Fermionic modes.
- */
-template <size_t NumModes>
-using MajoranaSet = Bitset<2 * NumModes>;
-} // namespace monoprop
+// The basis-agnostic monomial vocabulary (Monomial, MonomialList, MonomialMap, MonomialHash/Equal,
+// monomial_hash, Basis, CutoffType, CutoffFn) lives in its own core header; the storage-backend
+// plumbing (TermIndex, the OperatorIndex/InvertedIndex/MPOperator orchestration, and the
+// backend-agnostic row accessors) stays here.
+#include "monoprop/core/Monomial.h"
 
-// Forward-declare (not include) OperatorIndex: it includes THIS header for MPHash/MajoranaSet,
+// Forward-declare (not include) OperatorIndex: it includes THIS header for MonomialHash/Monomial,
 // so a full include here would be a cycle. The packed row-accessor overloads below take it by
 // reference (incomplete type is fine for the declaration); the complete type is in scope wherever
 // they are instantiated, since every such TU includes operator/OperatorIndex.h.
@@ -44,35 +41,22 @@ class OperatorIndex;
 
 namespace monoprop {
 
-/*!
- * @brief Generic Majorana term-list type: a dense std::vector<MajoranaSet>.
- * @tparam NumModes Number of Fermionic modes.
- *
- * Used for plain term lists (gradient ham/state pairs, basis-change vectors, commutator
- * pipeline operands). The evolved operator's row storage (`MPOperator::op`) is NOT this
- * alias — it is the entropy-packed detail::OperatorIndex (position-list rows plus
- * hash index, always-on for every NumModes; see that header). Functions that must accept
- * both go through the backend-agnostic row accessors below and template their rows parameter.
- */
-template <size_t NumModes>
-using MajoranaVector = std::vector<MajoranaSet<NumModes>>;
-
 // --- Backend-agnostic row access -------------------------------------------------------------
 // All operator-row consumers go through these so the dense and packed backends present one
 // surface. For the dense backend materialize_row() returns a const reference (zero-copy); for the
 // packed backend it returns a freshly reconstructed value (bind with `const auto&` to extend
 // its lifetime). assign_row() overwrites an already-sized slot (parallel miss-fill paths).
 template <size_t NumModes>
-[[nodiscard]] inline auto materialize_row(const std::vector<MajoranaSet<NumModes>> &op, size_t i)
-    -> const MajoranaSet<NumModes> & {
+[[nodiscard]] inline auto materialize_row(const std::vector<Monomial<NumModes>> &op, size_t i)
+    -> const Monomial<NumModes> & {
     return op[i];
 }
 template <size_t NumModes>
-inline auto assign_row(std::vector<MajoranaSet<NumModes>> &op, size_t i, const MajoranaSet<NumModes> &maj) -> void {
+inline auto assign_row(std::vector<Monomial<NumModes>> &op, size_t i, const Monomial<NumModes> &maj) -> void {
     op[i] = maj;
 }
 template <size_t NumModes>
-[[nodiscard]] inline auto row_popcount(const std::vector<MajoranaSet<NumModes>> &op, size_t i) -> size_t {
+[[nodiscard]] inline auto row_popcount(const std::vector<Monomial<NumModes>> &op, size_t i) -> size_t {
     return op[i].count();
 }
 
@@ -80,7 +64,7 @@ template <size_t NumModes>
 // the backend can avoid it. The dense backend scans words; the packed backend reads its stored
 // position list directly. Used by the even-parity inverted index, the heaviest per-row op reader.
 template <size_t NumModes, typename Fn>
-inline auto for_each_row_position(const std::vector<MajoranaSet<NumModes>> &op, size_t i, Fn &&fn) -> void {
+inline auto for_each_row_position(const std::vector<Monomial<NumModes>> &op, size_t i, Fn &&fn) -> void {
     const auto &m = op[i];
     for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
         fn(b);
@@ -88,42 +72,7 @@ inline auto for_each_row_position(const std::vector<MajoranaSet<NumModes>> &op, 
 }
 // OperatorIndex overloads for materialize_row / assign_row / row_popcount /
 // for_each_row_position are defined after the OperatorIndex.h include at the bottom of
-// this file (OperatorIndex needs TermIndex + MPHash which are defined later in this file).
-
-/*!
- * @brief Transparent hash for MajoranaSet (is_transparent enables heterogeneous map lookup).
- */
-template <size_t NumModes>
-struct MPHash final {
-    using is_transparent = void;
-
-    auto operator()(const MajoranaSet<NumModes> &arr) const noexcept -> size_t {
-        return SplitmixHash<MajoranaSet<NumModes>>{}(arr);
-    }
-};
-
-template <size_t NumModes>
-struct MPEqual final {
-    using is_transparent = void;
-
-    auto operator()(const MajoranaSet<NumModes> &lhs, const MajoranaSet<NumModes> &rhs) const noexcept -> bool {
-        return lhs == rhs;
-    }
-};
-
-template <size_t NumModes>
-using MajoranaOperator =
-    boost::unordered_flat_map<MajoranaSet<NumModes>, double, MPHash<NumModes>, MPEqual<NumModes>>;
-
-template <size_t NumModes>
-inline auto majorana_hash(const MajoranaSet<NumModes> &maj) noexcept -> size_t {
-    if constexpr (MajoranaSet<NumModes>::num_words() == 1) {
-        return static_cast<size_t>(SplitmixHash<MajoranaSet<NumModes>>::mix(maj.word(0)));
-    }
-    else {
-        return MPHash<NumModes>{}(maj);
-    }
-}
+// this file (OperatorIndex needs TermIndex, defined below, and MonomialHash, from core/Monomial.h).
 
 using VecCD = std::vector<std::complex<double>>;
 
@@ -186,33 +135,12 @@ using FermiOperatorMap = std::map<VecZ, std::complex<double>>;
 
 using CyclesType = std::vector<std::vector<std::pair<size_t, size_t>>>;
 
-template <size_t NumModes>
-using CutoffFn = std::function<bool(const MajoranaSet<NumModes> &)>;
-
-/**
- * @brief Structural truncation criterion applied to Majorana monomials after each gate.
- *
- * Both criteria share one rule: a *fully paired* monomial -- one whose support
- * consists entirely of complete pairs m_{2j-1} m_{2j} on a mode -- is always kept,
- * regardless of the cutoff. Fully paired monomials are exactly the terms that can
- * contribute to an expectation value against a computational-basis state or Slater
- * determinant, so discarding them would throw away signal. The criteria differ only
- * in how they measure the remaining, partially paired monomials.
- */
-enum class CutoffType {
-    Length, // Keep if the monomial length (number of Majorana operators) <= cutoff (or fully paired)
-    Support // Keep if the orbital support (number of distinct orbitals) <= cutoff (or fully paired)
-};
-
-/// @brief Operator basis: Majorana monomials (default) or Pauli strings (native JW-image encoding).
-enum class Basis : uint8_t { Majorana, Pauli };
-
 } // namespace monoprop
 
 // Data classes extracted into focused detail headers. Included here so existing consumers
 // of TypeAliases.h continue to see all types without modification.
-// OperatorIndex needs TermIndex and MPHash (defined above), so it is included here rather
-// than at the top where only MajoranaSet is yet in scope.
+// OperatorIndex needs TermIndex and MonomialHash (defined above), so it is included here rather
+// than at the top where only Monomial is yet in scope.
 #include "monoprop/detail/operator/OperatorIndex.h"
 
 // OperatorIndex backend-agnostic row-accessor overloads (requires OperatorIndex defined).
@@ -223,11 +151,11 @@ enum class Basis : uint8_t { Majorana, Pauli };
 namespace monoprop {
 template <size_t NumModes>
 [[nodiscard]] inline auto materialize_row(const detail::OperatorIndex<NumModes> &op, size_t i)
-    -> MajoranaSet<NumModes> {
+    -> Monomial<NumModes> {
     return op.row(i);
 }
 template <size_t NumModes>
-inline auto assign_row(detail::OperatorIndex<NumModes> &op, size_t i, const MajoranaSet<NumModes> &maj) -> void {
+inline auto assign_row(detail::OperatorIndex<NumModes> &op, size_t i, const Monomial<NumModes> &maj) -> void {
     // All callers of this overload (Engine.h insert_deferred_self_misses, Resolve.h miss scatter) write
     // freshly grown, disjoint, never-before-written rows, so use the fresh path that skips the overflow
     // pre-read/erase (unnecessary + UB-adjacent on default-init rows inside the parallel scatter).

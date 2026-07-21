@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Direct unit coverage of Bitset.h — the foundational fixed-width bit container underlying
-// MajoranaSet. The engine exercises it heavily end-to-end, but these tests pin its contract in
+// Monomial. The engine exercises it heavily end-to-end, but these tests pin its contract in
 // isolation (single-word and multi-word) against a std::bitset oracle so a regression in the
 // hand-rolled multi-word shift / scan / mask surfaces here rather than as a distant energy drift.
 

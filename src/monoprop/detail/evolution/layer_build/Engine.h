@@ -24,7 +24,7 @@
 #include <utility>
 #include <vector>
 
-#include "monoprop/MajoranaAlgebra.h"
+#include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
@@ -43,7 +43,7 @@ namespace monoprop::detail {
 template <size_t NumModes>
 struct LayerBuildEngine {
     struct DeferredSelfMiss {
-        MajoranaSet<NumModes> maj;
+        Monomial<NumModes> maj;
         size_t src;
         int phase;
         double v_src = 0.0; // fused only: op_pre[src] captured at scan emit; 0 (unused) otherwise
@@ -248,10 +248,10 @@ struct LayerBuildEngine {
             // order, is assigned base+k — byte-identical to the serial loop — with no dedup and NO
             // ATOMICS: op slots, map shards, inverted index words and acc slots are written by disjoint tasks.
             // Grow → scatter → index → resync (see insert_absent_terms). key_at reads the staged dense
-            // MajoranaSet directly (no packed-row re-materialization); per_slot scatters the row into the
+            // Monomial directly (no packed-row re-materialization); per_slot scatters the row into the
             // disjoint op slot base+k plus the matching per-record side entry. Side arrays are resized
             // before the insert (their base offsets don't depend on the op insert base).
-            auto key_at = [&](size_t k) -> const MajoranaSet<NumModes> & { return deferred_self_misses[k].maj; };
+            auto key_at = [&](size_t k) -> const Monomial<NumModes> & { return deferred_self_misses[k].maj; };
             if (fused_ != nullptr) {
                 // Fused: append INSERT records (v_tgt filled later, after op_coeffs is extended). No acc /
                 // in_entries / out_entries in fused mode.
@@ -404,7 +404,7 @@ private:
                         std::vector<RotationRec> *hit_sink) -> void {
         const bool fused = (hit_sink != nullptr);
         const size_t op_size = local_op.store->size();
-        std::array<MajoranaSet<NumModes>, kResolveBatch> keys;
+        std::array<Monomial<NumModes>, kResolveBatch> keys;
         std::array<int, kResolveBatch> phases;
         std::array<size_t, kResolveBatch> srcs;
         std::array<double, kResolveBatch> vals;
@@ -468,7 +468,7 @@ private:
 // AFTER both resolves), the per-rank CrossRankPartnerData is assembled, and a LayerCore is built.
 template <size_t NumModes>
 auto build_layer(MPOperator<NumModes> &local_op,
-                 const MajoranaSet<NumModes> &gen,
+                 const Monomial<NumModes> &gen,
                  const CutoffFn<NumModes> &cutoff_fn,
                  const std::optional<double> &atol,
                  std::optional<std::reference_wrapper<const VecD>> local_coeffs,
@@ -519,23 +519,19 @@ auto build_layer(MPOperator<NumModes> &local_op,
         // Majorana interleave/hermitian phase). Every other argument — including the fused cos sweep,
         // which scales the same anticommuting set the fold finds — is basis-agnostic.
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
-        auto scan = [&]<bool IsPauli>() {
-            return fused_find_and_collect<NumModes, IsPauli>(local_op,
-                                                             gen,
-                                                             cut_eval,
-                                                             cut_st,
-                                                             coeffs,
-                                                             only_rotate_len_k,
-                                                             R,
-                                                             my_rank,
-                                                             /*capture_values=*/use_fused,
-                                                             sweep_ptr,
-                                                             cos_build);
-        };
-        if (basis == Basis::Pauli) {
-            return scan.template operator()<true>();
-        }
-        return scan.template operator()<false>();
+        return with_algebra<NumModes>(basis, [&]<class A>() {
+            return fused_find_and_collect<NumModes, A>(local_op,
+                                                       gen,
+                                                       cut_eval,
+                                                       cut_st,
+                                                       coeffs,
+                                                       only_rotate_len_k,
+                                                       R,
+                                                       my_rank,
+                                                       /*capture_values=*/use_fused,
+                                                       sweep_ptr,
+                                                       cos_build);
+        });
     }();
 
     CosMask cos_all;

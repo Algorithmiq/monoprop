@@ -23,8 +23,8 @@
 #include <vector>
 
 #include "PauliTestOracle.h"
-#include "monoprop/MajoranaAlgebra.h"
-#include "monoprop/PauliAlgebra.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
+#include "monoprop/algebra/PauliAlgebra.h"
 
 using namespace monoprop;
 using namespace pauli_oracle;
@@ -39,10 +39,10 @@ namespace {
 
 // Qubit Pauli weight = number of non-identity single-qubit letters = or_sum = |x | z|.
 template <size_t NumModes>
-[[nodiscard]] auto pauli_weight(const MajoranaSet<NumModes> &p) -> size_t {
+[[nodiscard]] auto pauli_weight(const Monomial<NumModes> &p) -> size_t {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     size_t weight = 0;
-    for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
+    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
         const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
         weight += static_cast<size_t>(std::popcount(v | u));
     }
@@ -53,14 +53,14 @@ template <size_t NumModes>
 //   e = yA + yB - yR + 2*(zA . xB)  (mod 4),  R = A ^ B.
 // e is odd iff A,B anticommute (phase = +/- i); even iff they commute (phase = +/- 1).
 template <size_t NumModes>
-[[nodiscard]] auto product_phase_exponent(const MajoranaSet<NumModes> &a, const MajoranaSet<NumModes> &b) -> int {
+[[nodiscard]] auto product_phase_exponent(const Monomial<NumModes> &a, const Monomial<NumModes> &b) -> int {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     const auto r = a ^ b;
     const long y_a = static_cast<long>(pauli_y_count<NumModes>(a));
     const long y_b = static_cast<long>(pauli_y_count<NumModes>(b));
     const long y_r = static_cast<long>(pauli_y_count<NumModes>(r));
     long cross = 0; // zA . xB = popcount(v-plane(A) & x-plane(B))
-    for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
+    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
         const uint64_t e = e_mask.word(w);
         const uint64_t z_a = a.word(w) & e; // v-plane of A
         const auto [v_b, u_b] = detail::pauli_uv(b.word(w), e);
@@ -72,7 +72,7 @@ template <size_t NumModes>
 
 // Product phase phi (unit modulus) such that A*B = phi * (A ^ B), A the LEFT operand.
 template <size_t NumModes>
-[[nodiscard]] auto pauli_product_phase(const MajoranaSet<NumModes> &a, const MajoranaSet<NumModes> &b)
+[[nodiscard]] auto pauli_product_phase(const Monomial<NumModes> &a, const Monomial<NumModes> &b)
     -> std::complex<double> {
     return POWERS_OF_I[product_phase_exponent<NumModes>(a, b)];
 }
@@ -80,7 +80,7 @@ template <size_t NumModes>
 // Emit sign +/-1 such that A*B = sign * i * (A ^ B), valid when A,B ANTICOMMUTE (exponent e odd).
 // The RAW product sign; pauli_rotation_sign returns exactly -pauli_emit_sign_antic.
 template <size_t NumModes>
-[[nodiscard]] auto pauli_emit_sign_antic(const MajoranaSet<NumModes> &a, const MajoranaSet<NumModes> &b) -> int {
+[[nodiscard]] auto pauli_emit_sign_antic(const Monomial<NumModes> &a, const Monomial<NumModes> &b) -> int {
     return product_phase_exponent<NumModes>(a, b) == 1 ? 1 : -1;
 }
 

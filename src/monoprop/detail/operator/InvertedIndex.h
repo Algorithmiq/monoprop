@@ -60,7 +60,7 @@ namespace monoprop::detail {
  */
 template <size_t NumModes>
 struct InvertedIndex {
-    static constexpr size_t kNumColumns = MajoranaSet<NumModes>::size();
+    static constexpr size_t kNumColumns = Monomial<NumModes>::size();
     // Promote a column to DENSE at set density ≥ 1/kPromoteDensityInv. Two crossovers matter:
     //   - STORAGE (1/32): a uint32 row-list (4 B/set-bit) and a dense bit-vector (rows/8 B) cost the same.
     //   - FOLD (1/64): below it a sparse column is scatter-expanded per block in combine_columns_block
@@ -223,7 +223,7 @@ struct InvertedIndex {
         fill_rows(op, 0, size);
     }
 
-    auto append_row(const MajoranaSet<NumModes> &maj) -> void {
+    auto append_row(const Monomial<NumModes> &maj) -> void {
         const size_t row_idx = row_count;
         ++row_count;
         const size_t required_words = (row_count + 63) / 64;

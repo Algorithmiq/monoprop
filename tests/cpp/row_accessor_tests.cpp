@@ -22,7 +22,7 @@
 
 #include <vector>
 
-#include "monoprop/MajoranaAlgebra.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/TypeAliases.h"
 
 using namespace monoprop;
@@ -38,10 +38,10 @@ auto positions_of(const auto &backend, size_t i) -> std::vector<size_t> {
 
 template <size_t N>
 auto check_backends_agree(const std::vector<std::vector<size_t>> &raw_rows) -> void {
-    std::vector<MajoranaSet<N>> dense;
+    std::vector<Monomial<N>> dense;
     detail::OperatorIndex<N> packed;
     for (const auto &bits : raw_rows) {
-        MajoranaSet<N> m;
+        Monomial<N> m;
         for (size_t b : bits) {
             m.set(b);
         }
@@ -74,15 +74,15 @@ BOOST_AUTO_TEST_CASE(row_accessor_backends_agree_multi_word) {
 // assign_row overwrites an already-sized slot in place; both backends reflect the new row.
 BOOST_AUTO_TEST_CASE(row_accessor_assign_row_overwrites) {
     constexpr size_t N = 32;
-    std::vector<MajoranaSet<N>> dense;
+    std::vector<Monomial<N>> dense;
     detail::OperatorIndex<N> packed;
-    MajoranaSet<N> original;
+    Monomial<N> original;
     original.set(1);
     original.set(2);
     dense.push_back(original);
     packed.push_back(original);
 
-    MajoranaSet<N> replacement;
+    Monomial<N> replacement;
     replacement.set(10);
     replacement.set(20);
     replacement.set(30);

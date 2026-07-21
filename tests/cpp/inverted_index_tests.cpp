@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "monoprop/MajoranaAlgebra.h" // indices_to_bitset
+#include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 
@@ -12,7 +12,7 @@
 // bit-vectors, promoted at the 1/kPromoteDensityInv density crossover), the lazily-built per-row
 // parity(|M|) bitmap, and the row-block-parallel fill. The inverted index reads its rows through the
 // backend-agnostic for_each_row_position accessor, which is defined for a plain
-// std::vector<MajoranaSet<N>> — so these tests build one directly, no operator store required.
+// std::vector<Monomial<N>> — so these tests build one directly, no operator store required.
 
 using namespace monoprop;
 using namespace monoprop::detail;
@@ -20,7 +20,7 @@ using namespace monoprop::detail;
 namespace {
 constexpr size_t N = 32; // 2N = 64 majorana columns
 using Sc = InvertedIndex<N>;
-using MSet = MajoranaSet<N>;
+using MSet = Monomial<N>;
 MSet bs(const VecZ &r) { return indices_to_bitset<N>(r); }
 // indices_to_bitset maps mode index m to bit position 2N-1-m, and the inverted index indexes its columns by
 // raw bit position — so mode m populates column col_of(m).
@@ -92,7 +92,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_parallel_fill_yields_ascending_sparse_rows) 
     constexpr size_t M = 64;                    // 2M = 128 columns
     using ScW = InvertedIndex<M>;
     constexpr size_t kR = 16'385;               // just over the parallel floor
-    std::vector<MajoranaSet<M>> op;
+    std::vector<Monomial<M>> op;
     op.reserve(kR);
     for (size_t i = 0; i < kR; ++i) {
         // one mode per row spread over all 128 columns: each column set ~128 times, 128*64 < 16385,

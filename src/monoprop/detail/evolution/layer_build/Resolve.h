@@ -18,8 +18,7 @@
 #include <limits>
 #include <vector>
 
-#include "monoprop/MajoranaAlgebra.h" // get_hf_mask, is_paired, hf_phase (fresh Schrödinger miss coeff)
-#include "monoprop/PauliAlgebra.h"    // pauli_hf_phase (Pauli fresh Schrödinger miss coeff)
+#include "monoprop/algebra/Algebra.h" // is_paired / get_hf_mask (common) + algebra_hf_phase (fresh Schrödinger miss coeff)
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
@@ -43,7 +42,7 @@ template <size_t NumModes>
 struct IncomingProbe {
     std::vector<size_t> goff;                     // rank_count+1 flat offsets: g = goff[s] + q
     DefaultInitVector<uint32_t> sender_of;        // g → sender rank
-    DefaultInitVector<MajoranaSet<NumModes>> maj; // g → deserialized query monomial
+    DefaultInitVector<Monomial<NumModes>> maj; // g → deserialized query monomial
     DefaultInitVector<int> phase_of;              // g → query phase
     DefaultInitVector<size_t> idx_of;             // g → resolved index (HIT: < base; MISS: base+j)
     std::vector<TermIndex> miss_g;                // j → the g that became miss j (Phase 4 reads maj[miss_g[j]])
@@ -92,7 +91,7 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     for (size_t g = 0; g < pr.nq_total; ++g) {
         const size_t s = pr.sender_of[g];
         const size_t q = g - pr.goff[s];
-        MajoranaSet<NumModes> m;
+        Monomial<NumModes> m;
         int ph = 0;
         query_read<NumModes, QW>(incoming[s], q, m, ph);
         pr.maj[g] = m;
@@ -137,7 +136,7 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
     insert_absent_terms<NumModes>(
         op,
         n_miss,
-        [&](size_t j) -> const MajoranaSet<NumModes> & { return pr.maj[pr.miss_g[j]]; },
+        [&](size_t j) -> const Monomial<NumModes> & { return pr.maj[pr.miss_g[j]]; },
         [&](size_t j, size_t base) { assign_row<NumModes>(*op.store, base + j, pr.maj[pr.miss_g[j]]); });
 }
 
@@ -235,7 +234,7 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
 
     // Schrödinger fresh-insert coeff = is_paired ? hf_phase : 0, a pure ±1/0 function of the majorana
     // (get_state's scoring). Precompute the HF mask once; unused (empty) in the Heisenberg picture.
-    const auto hf_mask = schrodinger ? get_hf_mask<NumModes>(op.slater_determinant) : MajoranaSet<NumModes>{};
+    const auto hf_mask = schrodinger ? get_hf_mask<NumModes>(op.slater_determinant) : Monomial<NumModes>{};
 
     // Phase 3 (parallel scatter): resp_val + one resolver +φ half per query + matched marks. Deterministic
     // resize+indexed-scatter keyed by the flat g (append base = current cross_half size); never a shared
@@ -257,10 +256,7 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
         else if (schrodinger) {
             // Fresh Schrödinger insert coeff = ⟨b|P|b⟩ scoring, ±1/0. For a Z-only (is_paired) term the
             // Pauli phase omits the Majorana pairing sign (see pauli_hf_phase); off-diagonal terms score 0.
-            v_tgt = is_paired<NumModes>(pr.maj[g])
-                        ? ((basis == Basis::Pauli) ? pauli_hf_phase<NumModes>(pr.maj[g], hf_mask)
-                                                   : hf_phase<NumModes>(pr.maj[g], hf_mask))
-                        : 0.0;
+            v_tgt = is_paired<NumModes>(pr.maj[g]) ? algebra_hf_phase<NumModes>(basis, pr.maj[g], hf_mask) : 0.0;
         }
         else {
             v_tgt = 0.0; // Heisenberg fresh insert

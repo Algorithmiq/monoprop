@@ -22,7 +22,7 @@
 #include <random>
 #include <vector>
 
-#include "monoprop/MajoranaAlgebra.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 
 using namespace monoprop;
@@ -41,7 +41,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
         for (size_t n_ranks : {size_t{1}, size_t{2}, size_t{3}, size_t{7}}) {
             const size_t r = find_rank<N>(maj, n_ranks);
             BOOST_TEST(r < n_ranks);
-            BOOST_TEST(r == majorana_hash<N>(maj) % n_ranks); // matches the documented formula
+            BOOST_TEST(r == monomial_hash<N>(maj) % n_ranks); // matches the documented formula
             BOOST_TEST(r == find_rank<N>(maj, n_ranks));       // deterministic
         }
     }

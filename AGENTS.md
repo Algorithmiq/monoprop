@@ -19,9 +19,23 @@ See `CONTRIBUTING.md` for details. Breaking changes should have `!` in the commi
 - **Generated Code**: Python dispatch and C++ bindings auto-generated via `tools/generate-*.py`
 
 Key files:
-- `src/monoprop/monomial_propagator.py`: Main Python API
-- `include/monoprop/MonomialPropagator.h`: Core C++ simulator (1000+ lines)
-- `src/bindings/bindings.cpp`: auto-generated Python bindings, using the nanobind library.
+- `src/monoprop/monomial_propagator.py`: abstract base `MonomialPropagator`; the concrete
+  user-facing front-ends are `src/monoprop/majorana_propagator.py` (`MajoranaPropagator`) and
+  `src/monoprop/pauli_propagator.py` (`PauliPropagator`).
+- `include/monoprop/MonomialPropagator.h`: the single templated C++ engine `MonomialPropagator<NumModes>`
+  (the Majorana/Pauli choice is a runtime `Basis`, not a separate class).
+- `src/monoprop/bindings/binder.h`: hand-written binding template; `tools/generate-*.py` generate the
+  per-mode-width `bindings.cpp` and `_dispatch.py` from it (do not hand-edit the generated files).
+
+### Core abstractions (the propagation backbone)
+
+- **`Monomial<N>`** (`src/monoprop/core/Monomial.h`) = `Bitset<2*N>`: ONE basis operator, two bits per
+  mode/qubit. Basis-agnostic — read as a Majorana product, or as a Pauli string (JW image).
+  Collections: `MonomialList<N>` (no coeffs) and `MonomialMap<N>` (monomial → real coeff).
+- **`Basis` / the `Algebra` policy** (`src/monoprop/algebra/`): the two algebras are sibling models
+  (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
+  (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
+  templated on the algebra policy and bound to a runtime `Basis` once, via `with_algebra`.
 
 
 ### Environment Management
@@ -45,10 +59,12 @@ class MonomialPropagator { /* ... */ };
 
 ### Mode-Based Dispatching
 
-Python automatically dispatches to appropriate C++ template based on `num_modes`:
+Python automatically dispatches to the appropriate C++ template based on the operator's mode count.
+`MonomialPropagator` is an abstract base; construct a concrete front-end (which reads the mode count
+off the operator — there is no `num_modes` argument):
 ```python
-# This routes to MonomialPropagator<4> in C++
-mp = MonomialPropagator(operator, num_modes=4, ...)
+# Routes to MonomialPropagator<4> in C++ (Basis::Majorana here; PauliPropagator uses Basis::Pauli)
+mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 ```
 
 ### Testing Structure
@@ -76,7 +92,7 @@ mp = MonomialPropagator(operator, num_modes=4, ...)
 4. Use trailing return type syntax in function declarations.
 5. Add Doxygen docstrings.
 6. Implement in corresponding `.cpp` in `src/`
-7. Add Python bindings in `src/bindings/binder.h`
+7. Add Python bindings in `src/monoprop/bindings/binder.h`
 8. Regenerate bindings with `tools/generate-binders.py`
 9. Test with both C++ and Python tests
 

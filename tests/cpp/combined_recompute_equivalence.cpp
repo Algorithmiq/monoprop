@@ -39,8 +39,8 @@ namespace {
 constexpr size_t kNumModes = 8;
 
 template <size_t NumModes>
-auto generator_of(const Layer &layer) -> MajoranaSet<NumModes> {
-    MajoranaSet<NumModes> gen{};
+auto generator_of(const Layer &layer) -> Monomial<NumModes> {
+    Monomial<NumModes> gen{};
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
     return gen;

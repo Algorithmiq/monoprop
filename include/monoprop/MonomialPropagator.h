@@ -34,7 +34,7 @@
 #include "monoprop/Evolution.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
-#include "monoprop/PauliAlgebra.h"
+#include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 #include "monoprop/Validation.h"
@@ -582,7 +582,7 @@ protected:
      * for this rank as a (Majorana terms, encoded coefficients) pair, so overrides that maintain
      * caches keyed on the initial operator can refresh them from the return value.
      */
-    auto apply_initial_operator_(const FermiOperatorMap &op_dict) -> std::pair<MajoranaVector<NumModes>, VecD>;
+    auto apply_initial_operator_(const FermiOperatorMap &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
 
     // Data members also needed by MonomialPropagatorExtra.
     bool schrodinger_;

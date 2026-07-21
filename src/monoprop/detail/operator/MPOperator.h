@@ -30,32 +30,29 @@
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
-// Forward declarations of MajoranaAlgebra.h helpers (namespace monoprop) so this header need not
-// include it. `Rows` is either the generic MajoranaVector (plain vector) or the packed operator-row
-// container; both are read through the backend-agnostic row accessors.
+// Forward declarations of algebra helpers (namespace monoprop) so this header need not include
+// algebra/Algebra.h. That header pulls in TypeAliases.h (through the algebra models), and this
+// header is itself included at the bottom of TypeAliases.h, so including it here would form an
+// include cycle. The definitions are visible wherever the MPOperator methods below are actually
+// instantiated (those TUs pull in algebra/Algebra.h via MonomialPropagatorImpl.h). `Rows` is
+// either the generic MonomialList (plain vector) or the packed operator-row container; both are
+// read through the backend-agnostic row accessors.
 namespace monoprop {
 template <size_t NumModes, typename Rows>
 auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ;
 
+template <size_t NumModes>
+auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes>;
+
+// The two algebra-generic entry points this header calls: diagonal (Hartree-Fock) scoring and the
+// real<->double coefficient codec. Each binds the runtime Basis to its compile-time algebra model
+// internally (see algebra/Algebra.h), so the Majorana/Pauli choice lives in ONE place -- the
+// policy layer -- rather than as scattered `if (basis == Basis::Pauli)` branches here.
 template <size_t NumModes, typename Rows>
-auto get_hf_phases(const VecZ &paired_inds, const VecZ &hf, const Rows &op) -> VecD;
+auto algebra_score_hf(Basis basis, const VecZ &paired_inds, const VecZ &hf, const Rows &store, VecD &out) -> void;
 
 template <size_t NumModes>
-auto encode_coeff(const std::complex<double> &coeff, const MajoranaSet<NumModes> &maj) -> double;
-
-template <size_t NumModes>
-auto indices_to_bitset(const VecZ &arr) -> MajoranaSet<NumModes>;
-
-// Pauli-basis helpers (defined in PauliAlgebra.h). Forward-declared here so this header stays free of a
-// PauliAlgebra.h include (which would form a cycle through TypeAliases.h); every TU that instantiates the
-// MPOperator methods below also includes PauliAlgebra.h transitively (via CosineRecompute.h).
-template <size_t NumModes>
-auto get_hf_mask(const VecZ &hf) -> MajoranaSet<NumModes>;
-
-template <size_t NumModes>
-auto pauli_hf_phase(const MajoranaSet<NumModes> &maj, const MajoranaSet<NumModes> &hf_mask) -> double;
-
-auto encode_pauli_coeff(const std::complex<double> &coeff) -> double;
+auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const Monomial<NumModes> &maj) -> double;
 } // namespace monoprop
 
 namespace monoprop::detail {
@@ -72,11 +69,12 @@ struct MPOperator {
     std::unique_ptr<OperatorIndex<NumModes>> store = std::make_unique<OperatorIndex<NumModes>>();
     VecD op_coeffs = {};
     VecD state_coeffs = {};
-    MajoranaOperator<NumModes> init_op_map = {};
+    MonomialMap<NumModes> init_op_map = {};
     VecZ slater_determinant = {};
-    // Operator basis: Majorana monomials (default) or native Pauli strings. Selects the coefficient
-    // encoding (identity for Pauli) and the ⟨b|·|b⟩ scoring (pauli_hf_phase vs hf_phase) in get_state /
-    // the fused resolver. Set once at propagator construction (MonomialPropagator ctor).
+    // Operator basis: Majorana monomials (default) or native Pauli strings. Bound to its
+    // compile-time algebra model (see algebra/Algebra.h) at each use — here it drives the
+    // coefficient codec (algebra_encode_coeff) and the ⟨b|·|b⟩ scoring (algebra_score_hf). Set once
+    // at propagator construction (MonomialPropagator ctor).
     Basis basis = Basis::Majorana;
     mutable std::optional<InvertedIndex<NumModes>> inverted_index_ = std::nullopt;
 
@@ -99,7 +97,7 @@ struct MPOperator {
 
     auto size() const -> size_t { return store->size(); }
 
-    auto append_term(const MajoranaSet<NumModes> &maj) -> void {
+    auto append_term(const Monomial<NumModes> &maj) -> void {
         store->push_back(maj);
         if (inverted_index_.has_value()) {
             inverted_index_->append_row(maj);
@@ -146,7 +144,7 @@ struct MPOperator {
 
         // Match keys in ascending map order; the found entries are erased afterward (the flat_map is not
         // safely mutable mid-iteration), so the erase order is deterministic (ascending map order).
-        std::vector<MajoranaSet<NumModes>> del;
+        std::vector<Monomial<NumModes>> del;
         for (const auto &kv : init_op_map) {
             const auto &maj = kv.first;
             const auto coeff = kv.second;
@@ -188,23 +186,12 @@ struct MPOperator {
 
         const auto paired_inds = is_fully_paired<NumModes>(new_inds, *store);
 
-        // A Z-only (paired) Pauli scores ⟨b|P|b⟩ = (−1)^{|Z∩occ|} with no Majorana pairing sign, so
-        // Pauli uses pauli_hf_phase rather than hf_phase. The occupancy mask marks slot 2q; for a paired
-        // term slots 2q and 2q+1 agree, so the same get_hf_mask feeds both phases (see pauli_hf_phase).
-        if (basis == Basis::Pauli) {
-            const auto hf_mask = get_hf_mask<NumModes>(slater_determinant);
-            for (size_t i = 0; i < paired_inds.size(); ++i) {
-                const auto &row = materialize_row<NumModes>(*store, paired_inds[i]);
-                state_coeffs[paired_inds[i]] = pauli_hf_phase<NumModes>(row, hf_mask);
-            }
-            return state_coeffs;
-        }
-
-        const auto hf_phases = get_hf_phases<NumModes>(paired_inds, slater_determinant, *store);
-
-        for (size_t i = 0; i < paired_inds.size(); ++i) {
-            state_coeffs[paired_inds[i]] = hf_phases[i];
-        }
+        // Score the diagonal ⟨b|·|b⟩ coefficient of each fully-paired term. The algebra picks the
+        // phase: a Z-only Pauli scores (−1)^{|Z∩occ|} with no Majorana pairing sign, whereas a
+        // Majorana term folds in the pairing sign (MajoranaAlgebra::hf_phase / PauliAlgebra::hf_phase).
+        // The occupancy mask marks slot 2q; for a paired term slots 2q and 2q+1 agree, so one hf_mask
+        // feeds either phase. algebra_score_hf binds the basis to its model once, then loops.
+        algebra_score_hf<NumModes>(basis, paired_inds, slater_determinant, *store, state_coeffs);
 
         return state_coeffs;
     }
@@ -226,17 +213,17 @@ struct MPOperator {
      *         new_grad_op (parallel (majorana, coeff) arrays of every supplied term)}.
      */
     auto update_initial_operator(const FermiOperatorMap &op_dict, bool schrodinger)
-        -> std::tuple<MajoranaOperator<NumModes>, VecD, std::pair<MajoranaVector<NumModes>, VecD>> {
+        -> std::tuple<MonomialMap<NumModes>, VecD, std::pair<MonomialList<NumModes>, VecD>> {
         // Update the Hamiltonian with new elements for the specified rank
-        MajoranaOperator<NumModes> new_op_map;
-        std::pair<MajoranaVector<NumModes>, VecD> new_grad_op;
+        MonomialMap<NumModes> new_op_map;
+        std::pair<MonomialList<NumModes>, VecD> new_grad_op;
         VecD new_op_coeffs(size(), 0.0);
 
         for (const auto &[k, v] : op_dict) {
             const auto maj = indices_to_bitset<NumModes>(k);
             const auto rank_evolved_op = store->find(maj);
             const auto rank_init_op = init_op_map.find(maj);
-            const auto coeff = (basis == Basis::Pauli) ? encode_pauli_coeff(v) : encode_coeff<NumModes>(v, maj);
+            const auto coeff = algebra_encode_coeff<NumModes>(basis, v, maj);
 
             // in heisenberg picture, we cannot change the initial hamiltonian if the majorana is not present
             // this is because these paths from new majoranas may not be present in the evolution graph
@@ -281,7 +268,7 @@ struct MPOperator {
 // base+k assignment is byte-identical to a serial loop because callers pass pairwise-distinct keys
 // (source ⊕ G over distinct terms, ⊕G injective); atomics-free (disjoint op slots / map shards /
 // inverted-index words). Call AFTER any pass that reads pre-insert op state — op.size() must equal the
-// returned base. `key_at(k) -> const MajoranaSet<NumModes>&`, `per_slot(k, base) -> void`.
+// returned base. `key_at(k) -> const Monomial<NumModes>&`, `per_slot(k, base) -> void`.
 template <size_t NumModes, typename KeyAt, typename PerSlot>
 inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
     const size_t base = op.store->grow_rows_geometric(n);
@@ -329,7 +316,7 @@ struct MPOperatorMemoryBreakdown final {
 template <size_t NumModes>
 inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorMemoryBreakdown<NumModes> {
     MPOperatorMemoryBreakdown<NumModes> breakdown;
-    // Packed rows store stride bytes/row (+ overflow side-map), not sizeof(MajoranaSet); ask directly.
+    // Packed rows store stride bytes/row (+ overflow side-map), not sizeof(Monomial); ask directly.
     breakdown.operator_terms_bytes = op.store->memory_bytes();
     breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
     breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double);

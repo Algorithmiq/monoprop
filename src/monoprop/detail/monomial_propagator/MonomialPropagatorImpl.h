@@ -30,6 +30,7 @@
 #include <utility>
 
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/algebra/Algebra.h" // algebra_encode_coeff / algebra_decode_coeff (basis-dispatched codec)
 #include "monoprop/detail/EnvConfig.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/LayerBuilder.h"
@@ -67,18 +68,19 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
             std::format("logical_num_modes ({}) must be in the range [1, {}].", logical_num_modes_, NumModes));
     }
 
+    // Each algebra declares its structural constraints (see algebra/Algebra.h); enforce them here.
     // Native Pauli requires the support (orbital-weight) cutoff — length has no Pauli-weight meaning
     // under this encoding — and forbids a Majorana basis change (the encoding IS the JW image already).
-    if (basis_ == Basis::Pauli) {
-        if (cutoff_type_ != CutoffType::Support) {
+    with_algebra<NumModes>(basis_, [&]<class A>() {
+        if (A::requires_support_cutoff && cutoff_type_ != CutoffType::Support) {
             throw std::invalid_argument("Pauli basis requires cutoff_type == Support "
                                         "(Length has no Pauli-weight meaning under the Pauli encoding).");
         }
-        if (basis_change_.has_value()) {
+        if (!A::allows_basis_change && basis_change_.has_value()) {
             throw std::invalid_argument("Pauli basis does not accept a basis_change "
                                         "(the encoding is already the Jordan-Wigner image).");
         }
-    }
+    });
 
     // Record the basis on the operator so its coefficient encoding / HF scoring match this picture.
     mp_op_.basis = basis_;
@@ -125,7 +127,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
 
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
-    MajoranaVector<NumModes> local_heisenberg_terms;
+    MonomialList<NumModes> local_heisenberg_terms;
 
     // convert the operator to the internal format
     double core_term = 0.0;
@@ -137,8 +139,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
             }
         }
         const auto majorana_bitset = indices_to_bitset<NumModes>(indices);
-        const auto encoded_coeff = (basis_ == Basis::Pauli) ? encode_pauli_coeff(coefficient)
-                                                            : encode_coeff<NumModes>(coefficient, majorana_bitset);
+        const auto encoded_coeff = algebra_encode_coeff<NumModes>(basis_, coefficient, majorana_bitset);
 
         // Store the core term separately as it is orders of magnitude larger than the other terms
         if (indices.empty()) {
@@ -351,16 +352,18 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
     if (!bound) {
         return kDefault;
     }
-    // A weight-w Pauli carries up to 2w set bits (a Z occupies both slots of its qubit), so the
-    // support-cutoff position bound must be doubled — otherwise every diagonal-heavy Pauli spills to the
-    // overflow arena. Majorana's bound already counts Majorana operators directly.
-    const size_t inline_bound = (basis_ == Basis::Pauli) ? 2 * (*bound) : *bound;
+    // Scale the cutoff-unit bound to physical slots per the algebra (see A::max_slots_per_cutoff_unit):
+    // a weight-w Pauli carries up to 2w set bits (a Z occupies both slots of its qubit), so its bound
+    // doubles — otherwise every diagonal-heavy Pauli spills to the overflow arena; Majorana counts
+    // Majorana operators directly.
+    const size_t inline_bound =
+        with_algebra<NumModes>(basis_, [&]<class A>() -> size_t { return A::max_slots_per_cutoff_unit * (*bound); });
     return std::min<size_t>(inline_bound, kMax);
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMap &op_dict)
-    -> std::pair<MajoranaVector<NumModes>, VecD> {
+    -> std::pair<MonomialList<NumModes>, VecD> {
     if (shard_group_) {
         // Each shard filters op_dict to its own hash partition. The facade holds no local terms, so
         // the return (used by subclasses to refresh caches) is empty; subclasses aren't supported with
@@ -376,7 +379,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMa
     for (const auto &[ind, coeff] : op_dict) {
         const auto maj = indices_to_bitset<NumModes>(ind);
         if (ind.empty()) { // Core term, store in all
-            core_term_ = (basis_ == Basis::Pauli) ? encode_pauli_coeff(coeff) : encode_coeff<NumModes>(coeff, maj);
+            core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, maj);
             continue;
         }
         if (my_rank == find_rank<NumModes>(maj, num_ranks)) {
@@ -448,7 +451,7 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
     if (basis_change_.has_value()) {
-        MajoranaVector<NumModes> basis;
+        MonomialList<NumModes> basis;
         basis.reserve(2 * logical_num_modes_);
         for (size_t i = 0; i < 2 * logical_num_modes_; ++i) {
             basis.push_back(indices_to_bitset<NumModes>(basis_change_.value()[i]));
@@ -1136,7 +1139,6 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters, double atol)
     -> std::vector<std::pair<VecZ, std::complex<double>>> {
     using Term = std::pair<VecZ, std::complex<double>>;
-    const bool is_pauli = (basis_ == Basis::Pauli);
     // Contract one propagator's partition and decode its above-atol terms. `p` is always an
     // unsharded propagator here (a shard, or *this when unsharded), so indexing() is available.
     const auto collect = [&](MonomialPropagator &p) -> std::vector<Term> {
@@ -1152,7 +1154,7 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
             }
             // Pauli coefficients are already real (identity decode); Majorana un-applies the Hermitian
             // phase from the stored gamma-slot list. Round to drop anti-hermitian numerical noise.
-            const auto decoded = is_pauli ? decode_pauli_coeff(coeff) : decode_coeff<NumModes>(coeff, maj);
+            const auto decoded = algebra_decode_coeff<NumModes>(basis_, coeff, maj);
             const std::complex<double> rounded(std::round(decoded.real() * 1e12) / 1e12,
                                                std::round(decoded.imag() * 1e12) / 1e12);
             terms.emplace_back(bitset_to_indices<NumModes>(maj), rounded);

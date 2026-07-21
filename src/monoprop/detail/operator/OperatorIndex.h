@@ -47,8 +47,8 @@ namespace monoprop::detail {
 template <size_t NumModes>
 class OperatorIndex {
 public:
-    using value_type = MajoranaSet<NumModes>;
-    using key_type = MajoranaSet<NumModes>;
+    using value_type = Monomial<NumModes>;
+    using key_type = Monomial<NumModes>;
     using mapped_type = size_t;
 
     // Position element: u8 when 2N<=256 (byte-identical to the original packed layout), widening
@@ -86,7 +86,7 @@ public:
     };
 
     static uint32_t fold_hash(const key_type &q) noexcept {
-        const size_t full = MPHash<NumModes>{}(q);
+        const size_t full = MonomialHash<NumModes>{}(q);
         return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
     }
     // Avalanche the cached 32-bit fold into a full-width hash (splitmix64 finalizer): the stored h

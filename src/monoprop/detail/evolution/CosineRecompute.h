@@ -53,18 +53,18 @@
 #include <utility>
 #include <vector>
 
-#include "monoprop/PauliAlgebra.h" // pair_swap (Pauli fold columns = J(G))
+#include "monoprop/algebra/Algebra.h" // algebra_fold_generator / algebra_fold_needs_odd_correction
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h" // LayerCosScale, LayerCosAccumulate
 #include "monoprop/detail/evolution/layer_build/Scan.h" // gen columns, inverted index, CosMask (only scan-side symbols used)
 #include "monoprop/detail/operator/InvertedIndex.h" // combine_columns_block, column_block_scratch
 
 namespace monoprop::detail {
 
-// Reconstruct a layer's generator MajoranaSet from the raw words stored on its LayerCore
+// Reconstruct a layer's generator Monomial from the raw words stored on its LayerCore
 // (generator_words()). Single definition for every replay/pare consumer.
 template <size_t NumModes>
-inline auto generator_from_words(const std::vector<uint64_t> &gw) -> MajoranaSet<NumModes> {
-    MajoranaSet<NumModes> gen{};
+inline auto generator_from_words(const std::vector<uint64_t> &gw) -> Monomial<NumModes> {
+    Monomial<NumModes> gen{};
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
     return gen;
 }
@@ -83,13 +83,13 @@ struct FoldMask {
 
 template <size_t NumModes>
 inline auto make_fold_mask(const InvertedIndex<NumModes> &sc,
-                           const MajoranaSet<NumModes> &gen,
+                           const Monomial<NumModes> &gen,
                            uint64_t scaled_count,
                            Basis basis = Basis::Majorana) -> FoldMask {
     FoldMask s;
     // Pauli anticommutation folds J(G)'s columns and never needs the odd-|G| parity correction (see
     // Scan.h); Majorana applies it when |G| is odd. Truncation bounds are basis-independent.
-    s.g_odd = (basis == Basis::Pauli) ? false : (gen.count() % 2 != 0);
+    s.g_odd = algebra_fold_needs_odd_correction<NumModes>(basis, gen);
     if (s.g_odd) {
         sc.ensure_row_parity();
         s.row_parity = sc.row_parity_word_ptr();
@@ -115,13 +115,13 @@ struct FoldCache {
 
 template <size_t NumModes>
 auto make_fold_cache(const InvertedIndex<NumModes> &sc,
-                     const MajoranaSet<NumModes> &gen,
+                     const Monomial<NumModes> &gen,
                      uint64_t scaled_count,
                      Basis basis = Basis::Majorana) -> FoldCache<NumModes> {
     FoldCache<NumModes> p;
     p.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
-    // generator_words stores the REAL G; re-derive J(G) here for Pauli exactly as the scan did.
-    const auto fold_gen = (basis == Basis::Pauli) ? pair_swap<NumModes>(gen) : gen;
+    // generator_words stores the REAL G; re-derive the fold generator (J(G) for Pauli) as the scan did.
+    const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);
     const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
 
     // One combine_columns_block call over [0, mask_words): dense columns XOR-read over the read words
@@ -191,13 +191,13 @@ struct LazyFold {
 
 template <size_t NumModes>
 auto make_lazy_fold(const InvertedIndex<NumModes> &sc,
-                    const MajoranaSet<NumModes> &gen,
+                    const Monomial<NumModes> &gen,
                     uint64_t scaled_count,
                     Basis basis = Basis::Majorana) -> LazyFold<NumModes> {
     LazyFold<NumModes> r;
     r.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
-    // generator_words stores the REAL G; re-derive J(G) here for Pauli exactly as the scan did.
-    const auto fold_gen = (basis == Basis::Pauli) ? pair_swap<NumModes>(gen) : gen;
+    // generator_words stores the REAL G; re-derive the fold generator (J(G) for Pauli) as the scan did.
+    const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);
     r.columns = build_even_parity_generator_columns<NumModes>(fold_gen);
     return r;
 }

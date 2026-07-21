@@ -162,7 +162,7 @@ inline auto decode_value(size_t word) -> double {
 }
 
 template <size_t NumModes>
-inline auto query_push(VecZ &buf, const MajoranaSet<NumModes> &maj, int phase) -> void {
+inline auto query_push(VecZ &buf, const Monomial<NumModes> &maj, int phase) -> void {
     mpi_detail::append_majorana_words<NumModes>(maj, buf);
     buf.push_back(encode_phase(phase));
 }
@@ -171,7 +171,7 @@ inline auto query_push(VecZ &buf, const MajoranaSet<NumModes> &maj, int phase) -
 // fused (kQueryWordsFused) record, so the readers only differ in the per-record stride QW — defaulted to
 // the plain width, so every existing `query_read<NumModes>` / `query_phase<NumModes>` call is unchanged.
 template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
-inline auto query_read(const VecZ &buf, size_t q, MajoranaSet<NumModes> &maj_out, int &phase_out) -> void {
+inline auto query_read(const VecZ &buf, size_t q, Monomial<NumModes> &maj_out, int &phase_out) -> void {
     const size_t base = q * QW;
     maj_out = mpi_detail::read_majorana_from_words<NumModes>(buf, base);
     phase_out = decode_phase(buf[base + mpi_detail::kWords<NumModes>]);

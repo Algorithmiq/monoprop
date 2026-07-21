@@ -37,7 +37,7 @@ constexpr size_t kNumModes = 8;
 template <size_t NumModes>
 auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_index, const Layer &layer)
     -> CosMask {
-    MajoranaSet<NumModes> gen{};
+    Monomial<NumModes> gen{};
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
     const auto combined = monoprop::detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count());

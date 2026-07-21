@@ -22,16 +22,16 @@
 #include <stdexcept>
 
 #include "monoprop/Bitset.h"
-#include "monoprop/MajoranaAlgebra.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
+#include "monoprop/algebra/AlgebraCommon.h" // is_paired / support_cutoff (basis-agnostic structure)
 
 /*!
  * @file PauliAlgebra.h
  * @brief Pauli-native operator algebra over the Majorana bitset container.
  *
  * A qubit Pauli string P = i^{#Y} X^x Z^z is stored in the SAME container as a Majorana
- * monomial (`MajoranaSet<NumModes> = Bitset<2*NumModes>`), under the per-qubit image of
+ * monomial (`Monomial<NumModes> = Bitset<2*NumModes>`), under the per-qubit image of
  * `change_basis(JordanWigner(P))`. For qubit q (NumModes = number of qubits N):
  *   - X_q sets gamma-slot 2q, Y_q sets slot 2q+1, Z_q sets both slots {2q, 2q+1}.
  * `indices_to_bitset` maps slot k -> physical bit 2N-1-k (MSb0), so with m = N-1-q qubit q
@@ -51,7 +51,7 @@ namespace monoprop {
 /// @brief Physical-even-bit mask E (z-plane / v-plane selector) for the Pauli encoding.
 /// @tparam NumModes Number of qubits N; the Majorana container holds 2N bits.
 template <size_t NumModes>
-[[nodiscard]] inline constexpr auto pauli_even_mask() -> MajoranaSet<NumModes> {
+[[nodiscard]] inline constexpr auto pauli_even_mask() -> Monomial<NumModes> {
     return even_bits<2 * NumModes, LSb0>();
 }
 
@@ -75,10 +75,10 @@ struct PauliUv {
  * never sets a bit above 2N-1. J is an involution: J(J(P)) == P.
  */
 template <size_t NumModes>
-[[nodiscard]] auto pair_swap(const MajoranaSet<NumModes> &p) -> MajoranaSet<NumModes> {
+[[nodiscard]] auto pair_swap(const Monomial<NumModes> &p) -> Monomial<NumModes> {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
-    MajoranaSet<NumModes> result;
-    for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
+    Monomial<NumModes> result;
+    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
         const uint64_t word = p.word(w);
         const uint64_t e = e_mask.word(w);
         result.data()[w] = ((word & e) << 1) | ((word >> 1) & e);
@@ -90,10 +90,10 @@ template <size_t NumModes>
  * @brief Total number of Y letters over all qubits (a Y has v=1, u=0).
  */
 template <size_t NumModes>
-[[nodiscard]] auto pauli_y_count(const MajoranaSet<NumModes> &p) -> size_t {
+[[nodiscard]] auto pauli_y_count(const Monomial<NumModes> &p) -> size_t {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     size_t y = 0;
-    for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
+    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
         const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
         y += static_cast<size_t>(std::popcount(v & ~u));
     }
@@ -107,7 +107,7 @@ template <size_t NumModes>
  *                                            == (x_P . z_G + z_P . x_G) mod 2.
  */
 template <size_t NumModes>
-[[nodiscard]] auto pauli_anticommutes(const MajoranaSet<NumModes> &p, const MajoranaSet<NumModes> &g) -> bool {
+[[nodiscard]] auto pauli_anticommutes(const Monomial<NumModes> &p, const Monomial<NumModes> &g) -> bool {
     return p.parity_and(pair_swap<NumModes>(g));
 }
 
@@ -124,10 +124,10 @@ namespace detail {
  */
 template <size_t NumModes>
 struct PauliGenContext final {
-    MajoranaSet<NumModes> gen{};
+    Monomial<NumModes> gen{};
     size_t gen_pop = 0; ///< gen.count()
     size_t g_y = 0;     ///< pauli_y_count(gen)
-    std::array<size_t, MajoranaSet<NumModes>::num_words()> nz_words{}; ///< indices of gen's nonzero words
+    std::array<size_t, Monomial<NumModes>::num_words()> nz_words{}; ///< indices of gen's nonzero words
     size_t nz_count = 0;                                              ///< number of valid entries in nz_words
 };
 
@@ -135,12 +135,12 @@ struct PauliGenContext final {
  * @brief Build the per-generator context (call once per layer, not per term).
  */
 template <size_t NumModes>
-[[nodiscard]] auto make_pauli_gen_context(const MajoranaSet<NumModes> &gen) -> PauliGenContext<NumModes> {
+[[nodiscard]] auto make_pauli_gen_context(const Monomial<NumModes> &gen) -> PauliGenContext<NumModes> {
     PauliGenContext<NumModes> ctx;
     ctx.gen = gen;
     ctx.gen_pop = gen.count();
     ctx.g_y = pauli_y_count<NumModes>(gen);
-    for (size_t w = 0; w < MajoranaSet<NumModes>::num_words(); ++w) {
+    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
         if (gen.word(w) != 0) {
             ctx.nz_words[ctx.nz_count++] = w;
         }
@@ -163,8 +163,8 @@ template <size_t NumModes>
  */
 template <size_t NumModes>
 [[gnu::always_inline]] inline auto pauli_rotation_sign(const PauliGenContext<NumModes> &ctx,
-                                                       const MajoranaSet<NumModes> &maj,
-                                                       const MajoranaSet<NumModes> &new_maj) -> int {
+                                                       const Monomial<NumModes> &maj,
+                                                       const Monomial<NumModes> &new_maj) -> int {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     long delta = static_cast<long>(ctx.g_y); // + yGen
     long cross = 0;                           // zMaj . xGen
@@ -190,7 +190,7 @@ template <size_t NumModes>
  * terms (is_paired holds); for a non-diagonal Pauli <b|P|b> = 0 and the caller must not use this.
  */
 template <size_t NumModes>
-[[nodiscard]] auto pauli_hf_phase(const MajoranaSet<NumModes> &maj, const MajoranaSet<NumModes> &hf_mask) -> double {
+[[nodiscard]] auto pauli_hf_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &hf_mask) -> double {
     return (maj.count_and(hf_mask) & 1) ? -1.0 : 1.0;
 }
 

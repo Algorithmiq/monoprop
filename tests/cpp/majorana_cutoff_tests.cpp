@@ -16,7 +16,7 @@
 // (including the logical_num_modes active-window masking and its single-word vs multi-word paths),
 // the CutoffEvaluator dispatch / popcount fast path / max_positions_bound, the interleave_phase vs
 // its fast masked-parity form, and encode/decode_coeff. Majorana sets are built directly in raw-bit
-// space (MajoranaSet::set) so the "fully paired" condition (word[2k] == word[2k+1] for every mode k)
+// space (Monomial::set) so the "fully paired" condition (word[2k] == word[2k+1] for every mode k)
 // is unambiguous and matches the xor_sum spec in the cutoff docstrings.
 
 #include <boost/test/unit_test.hpp>
@@ -25,7 +25,7 @@
 #include <cstdint>
 #include <random>
 
-#include "monoprop/MajoranaAlgebra.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/TypeAliases.h"
 
 using namespace monoprop;
@@ -34,7 +34,7 @@ using cd = std::complex<double>;
 // A fully paired set: modes 0 and 2 each carry a complete pair (raw bits {0,1} and {4,5}).
 BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_kept_unconditionally) {
     constexpr size_t N = 32;
-    MajoranaSet<N> paired;
+    Monomial<N> paired;
     paired.set(0);
     paired.set(1);
     paired.set(4);
@@ -49,7 +49,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_kept_unconditionally) {
 // An unpaired set of length 3 (raw bits {0,2,4}: each even bit lacks its odd partner).
 BOOST_AUTO_TEST_CASE(majorana_cutoff_length_and_support_thresholds) {
     constexpr size_t N = 32;
-    MajoranaSet<N> unpaired;
+    Monomial<N> unpaired;
     unpaired.set(0);
     unpaired.set(2);
     unpaired.set(4);
@@ -65,7 +65,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_length_and_support_thresholds) {
     std::mt19937_64 rng(0x50FA11ULL);
     std::uniform_int_distribution<size_t> bit(0, 2 * N - 1);
     for (int trial = 0; trial < 400; ++trial) {
-        MajoranaSet<N> m;
+        Monomial<N> m;
         for (int k = 0; k < 5; ++k) {
             m.set(bit(rng));
         }
@@ -84,7 +84,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_length_and_support_thresholds) {
 BOOST_AUTO_TEST_CASE(majorana_cutoff_logical_num_modes_masks_prefix_single_word) {
     constexpr size_t N = 32;
     constexpr size_t logical = 6; // active window = raw bits [2*(32-6), 64) = [52, 64)
-    MajoranaSet<N> prefix_only;
+    Monomial<N> prefix_only;
     prefix_only.set(0); // lone unpaired bit, inside the inactive prefix
 
     // Active window is empty -> treated as fully paired -> kept even at cutoff 0.
@@ -95,11 +95,11 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_logical_num_modes_masks_prefix_single_word)
     BOOST_TEST(!length_cutoff<N>(prefix_only, 0)); // whole-register overload
 
     // A lone unpaired bit INSIDE the active window is still dropped at cutoff 0.
-    MajoranaSet<N> active_bit;
+    Monomial<N> active_bit;
     active_bit.set(52);
     BOOST_TEST(!length_cutoff<N>(active_bit, 0, logical));
     // ... but a complete pair in the active window is kept.
-    MajoranaSet<N> active_pair;
+    Monomial<N> active_pair;
     active_pair.set(52);
     active_pair.set(53);
     BOOST_TEST(length_cutoff<N>(active_pair, 0, logical));
@@ -109,7 +109,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_logical_num_modes_masks_prefix_single_word)
 BOOST_AUTO_TEST_CASE(majorana_cutoff_logical_num_modes_masks_prefix_multi_word) {
     constexpr size_t N = 96;
     constexpr size_t logical = 90; // active window = raw bits [2*(96-90), 192) = [12, 192)
-    MajoranaSet<N> prefix_only;
+    Monomial<N> prefix_only;
     prefix_only.set(4); // lone unpaired bit in the inactive prefix
 
     BOOST_TEST(length_cutoff<N>(prefix_only, 0, logical)); // active window empty -> kept
@@ -135,14 +135,14 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_evaluator_dispatch_and_popcount) {
     BOOST_TEST(support_ev.max_positions_bound().value() == 2U);
 
     // An opaque predicate has neither concrete target and no positional bound.
-    CutoffFn<N> opaque_fn = [](const MajoranaSet<N> &) { return true; };
+    CutoffFn<N> opaque_fn = [](const Monomial<N> &) { return true; };
     detail::CutoffEvaluator<N> opaque_ev(opaque_fn);
     BOOST_TEST((opaque_ev.length_cutoff() == nullptr));
     BOOST_TEST((opaque_ev.support_cutoff() == nullptr));
     BOOST_TEST(!opaque_ev.max_positions_bound().has_value());
 
     // passes_with_popcount: pc <= cutoff short-circuits to true; otherwise it equals a direct eval.
-    MajoranaSet<N> unpaired; // length 4, not paired
+    Monomial<N> unpaired; // length 4, not paired
     unpaired.set(0);
     unpaired.set(2);
     unpaired.set(4);
@@ -151,7 +151,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_evaluator_dispatch_and_popcount) {
     BOOST_TEST(!length_ev.passes_with_popcount(unpaired, 4)); // pc>cutoff -> direct eval -> false
     BOOST_TEST(length_ev.passes_with_popcount(unpaired, 4) == length_ev(unpaired));
 
-    MajoranaSet<N> paired; // pc>cutoff but paired -> direct eval keeps it
+    Monomial<N> paired; // pc>cutoff but paired -> direct eval keeps it
     paired.set(0);
     paired.set(1);
     paired.set(2);
@@ -166,8 +166,8 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_interleave_phase_mask_cross_check) {
         std::mt19937_64 rng(0xABCDEF01ULL + N);
         std::uniform_int_distribution<size_t> bit(0, 2 * N - 1);
         for (int trial = 0; trial < 500; ++trial) {
-            MajoranaSet<N> m;
-            MajoranaSet<N> g;
+            Monomial<N> m;
+            Monomial<N> g;
             for (int k = 0; k < 6; ++k) {
                 m.set(bit(rng));
                 g.set(bit(rng));
@@ -186,7 +186,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_interleave_phase_mask_cross_check) {
 // non-Hermitian one (imaginary residue after dividing out the hermitian phase).
 BOOST_AUTO_TEST_CASE(majorana_cutoff_encode_decode_coeff) {
     constexpr size_t N = 32;
-    MajoranaSet<N> maj;
+    Monomial<N> maj;
     maj.set(0);
     maj.set(3);
     maj.set(6);

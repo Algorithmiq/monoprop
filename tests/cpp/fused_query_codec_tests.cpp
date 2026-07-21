@@ -41,8 +41,8 @@ using monoprop::detail::query_value;
 constexpr size_t kModes = 8; // 2*kModes = 16 majorana bits, one 64-bit word
 
 // A reproducible spread of majorana bit patterns for `n` records.
-auto make_maj(size_t r) -> MajoranaSet<kModes> {
-    MajoranaSet<kModes> m;
+auto make_maj(size_t r) -> Monomial<kModes> {
+    Monomial<kModes> m;
     // deterministic, distinct per r; touch a few bits across the 16-bit range
     for (size_t b = 0; b < 2 * kModes; ++b) {
         if (((r * 2654435761u + b * 40503u) & 3u) == 0u) {
@@ -68,7 +68,7 @@ BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
     const size_t nq = values.size();
 
     VecZ plain;
-    std::vector<MajoranaSet<kModes>> majs(nq);
+    std::vector<Monomial<kModes>> majs(nq);
     for (size_t r = 0; r < nq; ++r) {
         majs[r] = make_maj(r);
         query_push<kModes>(plain, majs[r], phases[r]);
@@ -80,7 +80,7 @@ BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
     BOOST_REQUIRE_EQUAL(fused.size(), nq * kQueryWordsFused<kModes>);
 
     for (size_t q = 0; q < nq; ++q) {
-        MajoranaSet<kModes> m_out;
+        Monomial<kModes> m_out;
         int ph_out = 0;
         query_read<kModes, kQueryWordsFused<kModes>>(fused, q, m_out, ph_out);
         BOOST_CHECK(m_out == majs[q]);
