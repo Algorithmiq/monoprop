@@ -90,6 +90,9 @@ name and cannot address suite-nested cases, tests use flat
   `fused_query_codec_tests.cpp`, `combined_recompute_equivalence.cpp`
   (recompute equivalence + snapshot invariance), `exact_upper_atol_rescue.cpp`,
   `large_cosine_storage_tests.cpp`, `gate_boundaries.cpp`.
+- **Graph encoding / packing**: `graph_encoding_tests.cpp` (CosineWordBuilder
+  coalescer, checked_* overflow guards, packed-phase storage + int8 read,
+  build_layer_exchange_layout_impl, and both arms of the D-from-B derivation).
 - **Graph / paring**: `pare_graph_tests.cpp`, `mpi_pare.cpp`.
 - **Transports / distribution**: `shm_comm_tests.cpp`, `hybrid_comm_tests.cpp`
   (MPI-only), `shard_equivalence_tests.cpp`,
