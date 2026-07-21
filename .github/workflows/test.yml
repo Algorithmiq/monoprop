@@ -345,23 +345,25 @@ jobs:
           merge-multiple: true
           path: .
 
-      - name: Combine Python coverage data
+      - name: Convert Python coverage data to XML
         run: |
-          pipx run coverage combine coverage-*
-          pipx run coverage xml -o coverage-python.xml
+          for f in coverage-*; do
+            COVERAGE_FILE="$f" pipx run coverage xml -o "${f}.xml"
+          done
 
-      - name: Combine C++ coverage tracefiles into Cobertura report
+      - name: Convert C++ tracefiles to Cobertura XML
         run: |
-          pipx run gcovr \
-            --root . \
-            --add-tracefile 'cpp-coverage-*.json' \
-            --cobertura coverage-cpp.xml
+          for f in cpp-coverage-*.json; do
+            pipx run gcovr \
+              --root . \
+              --add-tracefile "$f" \
+              --cobertura "${f%.json}.xml"
+          done
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage-python.xml,coverage-cpp.xml
           fail_ci_if_error: true
 
   sonarqube-analysis:
