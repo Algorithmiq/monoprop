@@ -419,6 +419,50 @@ jobs:
             ctest-*.xml
           retention-days: 1
 
+  cpp-wide:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Check C++ on ubuntu-latest (wide TermIndex)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set gcc-14/g++-14 as default compilers
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
+          sudo update-alternatives --set g++ /usr/bin/g++-14
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
+          sudo update-alternatives --set c++ /usr/bin/g++-14
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin
+          ./tools/install-deps.sh /opt/Software
+
+      # Builds with a 64-bit TermIndex so the monoprop_WIDE_TERM_INDEX #if branches
+      # (operator_index_tests, large_cosine_storage_tests) are actually compiled and run.
+      # Serial coverage is enough to exercise those branches; MPI is left to cpp-checks.
+      - name: Configure (wide TermIndex)
+        run: |
+          export CMAKE_PREFIX_PATH=/opt/Software
+          cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Release -Dmonoprop_WIDE_TERM_INDEX=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test (serial)
+        run: ctest --test-dir build -L serial --output-on-failure
+
   publish-test-results:
     name: "Publish Tests Results"
     needs:
