@@ -49,45 +49,6 @@ body:
     validations:
       required: true
 
-  - type: dropdown
-    id: install_tool
-    attributes:
-      label: Installation tool
-      options:
-        - pip
-        - uv
-        - Other (describe below)
-    validations:
-      required: true
-
-  - type: dropdown
-    id: install_artifact
-    attributes:
-      label: Installation artifact
-      description: Did you install a pre-built wheel or build from source (sdist)?
-      options:
-        - Wheel (pre-built binary)
-        - sdist (built from source)
-        - Editable install from source (git clone)
-    validations:
-      required: true
-
-  - type: textarea
-    id: sdist_details
-    attributes:
-      label: Source build details (sdist only)
-      description: |
-        If you built from source, please provide:
-        - Compiler name and version (e.g. `g++ 13.2`, `clang++ 17`)
-        - Versions of key build dependencies (oneTBB, Boost, fmt, nanobind)
-        - How you installed those dependencies (e.g. system package manager, Conda, manual build)
-      placeholder: |
-        Compiler: clang++ 17.0.6
-        oneTBB: 2021.11
-        Boost: 1.84
-        fmt: 10.2
-        Installed via: apt / homebrew / conda / manual
-
   - type: input
     id: monoprop_version
     attributes:
