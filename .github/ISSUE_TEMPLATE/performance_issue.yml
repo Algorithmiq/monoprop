@@ -37,7 +37,6 @@ body:
         - Linux (aarch64 / ARM64)
         - macOS (Apple Silicon)
         - macOS (Intel)
-        - Windows
         - Other (describe below)
     validations:
       required: true
