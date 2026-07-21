@@ -23,9 +23,9 @@ operators $m_1, \ldots, m_{2N}$. They are related to the usual fermionic
 creation and annihilation operators by
 
 $$
-c_j = \tfrac{1}{2}(m_{2j-1} + i\,m_{2j}),
+c_j^\dagger = \tfrac{1}{2}(m_{2j-1} + i\,m_{2j}),
 \qquad
-c_j^\dagger = \tfrac{1}{2}(m_{2j-1} - i\,m_{2j}).
+c_j = \tfrac{1}{2}(m_{2j-1} - i\,m_{2j}).
 $$
 
 Every operator on $N$ modes can be written as a polynomial in the
@@ -72,7 +72,7 @@ $$
 
 For two monomials $M_\nu$ and $M_\mu$, whether they commute or
 anticommute is fixed by their lengths and the parity of their overlap
-$|\nu \cap \mu|$:
+$|\nu \cap \mu|$ with $\cap$ being equivalent to bit-wise AND operation on the binary strings:
 
 $$
 M_\nu M_\mu = (-1)^{\,|\nu|\,|\mu| \,+\, |\nu \cap \mu|}\, M_\mu M_\nu.
@@ -95,8 +95,8 @@ M_\nu M_\mu \;\propto\; M_{\nu \oplus \mu},
 |\nu \oplus \mu| = |\nu| + |\mu| - 2\,|\nu \cap \mu|.
 $$
 
-This one-to-one map, an anticommuting pair produces exactly one new monomial,
-is what makes gate application deterministic and sparse, and is the algebraic
+With this one-to-one map, an anticommuting pair produces exactly one new monomial,
+which is what makes gate application deterministic and sparse, and is the algebraic
 core of the propagation algorithm.
 
 ## Reference states and paired monomials

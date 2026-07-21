@@ -53,7 +53,7 @@ openfermion = ["openfermion"]
 pyscf = ["pyscf"]
 
 [dependency-groups]
-dev = ["coverage", "prek>=0.4", "ruff==0.14.8", "gcovr"]
+dev = ["coverage", "prek>=0.4", "ruff==0.15.20", "gcovr"]
 # The documentation site is built with Fumadocs (Next.js); see `docs/`.
 # Python's only roles are converting the tutorial notebooks to Markdown
 # (`nbconvert`) and generating the API reference from docstrings (`griffe`,
