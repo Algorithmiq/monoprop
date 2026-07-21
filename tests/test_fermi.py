@@ -54,7 +54,7 @@ class TestFermiString:
 
     def test_repr(self):
         f = FermiString([(0, "+"), (2, "-")])
-        assert repr(f) == "FermiString(a_0^+ a_2^-)"
+        assert repr(f) == "FermiString(c_0^+ c_2^-)"
 
     def test_repr_empty(self):
         f = FermiString([])
@@ -96,7 +96,7 @@ class TestFermiOperator:
     def test_str(self):
         terms = [FermiString([(0, "+")])]
         op = FermiOperator(terms, [2.0])
-        assert str(op) == "FermiOperator(1 terms, 1 modes: 2.0*FermiString(a_0^+))"
+        assert str(op) == "FermiOperator(1 terms, 1 modes: 2.0*FermiString(c_0^+))"
 
     def test_num_modes_explicit_override(self):
         terms = [FermiString([(0, "+"), (5, "-")])]

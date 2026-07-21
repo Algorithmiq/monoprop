@@ -532,7 +532,7 @@ def _real_generator_coefficient(majorana: Sequence[int], value: complex) -> floa
 def _antihermitian_gen_coeff(majorana: Sequence[int], coeff: complex) -> float:
     """Antihermitian-normalize a raw Majorana-product coefficient to a real ``g``.
 
-    A physical generator's coefficient on the raw product ``gamma_{i_1}...gamma_{i_w}`` is
+    A physical generator's coefficient on the raw product ``m_{i_1}...m_{i_w}`` is
     turned into the real structural coefficient of the antihermitian generator the engine
     rotates by, dividing out the Hermitian phase ``(1j)**(w(w-1)/2)``. Raises ``ValueError``
     if the result is not real (i.e. the generator is not Hermitian).
