@@ -7,7 +7,11 @@ description: Performance benchmark suite.
 # Comparison with other packages
 
 
+![Benchmark results for Pauli Propagation engines: Runtime per Trotter step](/benchmarks/runtime.png)
 
+![Benchmark results for Pauli Propagation engines: Memory per Trotter step](/benchmarks/memory.png)
+
+![Benchmark results for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: number of terms, final overlap, runtime, and memory vs layers](/benchmarks/majorana/benchmark_results.png)
 
 
 We provide standalone benchmark scripts comparing `monoprop` against other open-source
@@ -147,9 +151,6 @@ Runtime and memory footprint per Trotter step for the 2D TFIM problem above, com
 pauli-prop`. `monoprop` tracks the GPU-accelerated `cuPauliProp` closely while running on CPU,
 and outperforms all other CPU-only engines in both time and memory as the operator grows.
 
-![Runtime per Trotter step](/benchmarks/runtime.png)
-
-![Memory per Trotter step](/benchmarks/memory.png)
 
 
 ## Majorana Propagation
@@ -239,7 +240,6 @@ Number of terms, final-state overlap, runtime, and memory footprint versus circu
 correctness, while `monoprop` runs faster and uses less memory than the Julia engine as depth and
 system size grow.
 
-![Benchmark results: number of terms, final overlap, runtime, and memory vs layers](/benchmarks/majorana/benchmark_results.png)
 
 
 # Internal benchmarks

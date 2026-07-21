@@ -41,7 +41,7 @@ def load_benchmark(path: Path, source: str) -> pd.DataFrame:
 
 def plot_metric(ax, data: pd.DataFrame, metric: str, ylabel: str) -> None:
     """Plot ``metric`` vs. layers for each n_spin/source combination onto ``ax``."""
-    styles = {"monoprop": "-o", "julia": "--x"}
+    styles = {"monoprop": "-o", "MajoranaPropagation.jl": "--x"}
     colors = plt.cm.tab10.colors
     for i, n_spin in enumerate(sorted(data["n_spin"].unique())):
         color = colors[i % len(colors)]
@@ -90,7 +90,7 @@ def main() -> None:
     args = parser.parse_args()
 
     monoprop_df = load_benchmark(args.monoprop_results, "monoprop")
-    julia_df = load_benchmark(args.julia_results, "julia")
+    julia_df = load_benchmark(args.julia_results, "MajoranaPropagation.jl")
     df = pd.concat([monoprop_df, julia_df], ignore_index=True)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
