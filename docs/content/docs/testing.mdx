@@ -1,9 +1,11 @@
 ---
 title: Testing
-description: Running the test for the Python and C++ API, with or without MPI.
+description: Running the tests for the Python and C++ API, with or without MPI.
 ---
 
-The monoprop test suits require installing the package from the source. If you follow the proper installation guide on how to [Building from source](/building) you should have all the tools to run the tests.
+The monoprop test suite requires installing the package from source. If you follow
+the installation guide in [Building from source](/building), you should have all
+the tools needed to run the tests.
 
 
 ## Running the tests
@@ -93,7 +95,9 @@ class TestPauli:
 
 #### Data-driven integration test
 
-Use `parametrize_with_cases` to test against the reference msgpack fixtures. The `cases.py` module defines `CasesFermionicProblem`, which exposes all fixtures in `tests/data/`. The `serial_comm` and `comm` fixtures are provided by `conftest.py`.
+Use `parametrize_with_cases` to test against the reference msgpack fixtures.
+The `cases.py` module defines `CasesFermionicProblem`, which exposes all fixtures
+in `tests/data/`. The `serial_comm` and `comm` fixtures are provided by `conftest.py`.
 
 ```python notest
 import pytest
@@ -111,8 +115,9 @@ def test_energy_matches_reference(problem, comm):
         cutoff=2 * problem.n_modes,
         comm=comm,
     )
-    energy = mp.propagate(problem.monomial_circuit)
-    assert abs(energy - problem.actual_energy) < 1e-8
+    mp.propagate(problem.monomial_circuit.to_circuit())
+    energy = mp.expectation_value()
+    assert abs(energy - problem.exact_expval) < 1e-8
 ```
 
 Tag filtering narrows which fixtures run in a given test:

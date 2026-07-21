@@ -57,7 +57,7 @@ observable = PauliOperator({"ZZ": 1.0, "XX": 0.5}, num_qubits=2)
 gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2))
 circuit = Circuit(gates=[gate], parameters=[0.3])
 
-mp = PauliPropagator.from_circuit(circuit, observable, cutoff=4)
+pp = PauliPropagator.from_circuit(circuit, observable, cutoff=4)
 print(mp.evolved_operator())
 ```
 

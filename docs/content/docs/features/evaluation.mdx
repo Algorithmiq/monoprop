@@ -5,7 +5,7 @@ description: Replaying the propagated graph to evaluate expectation values and g
 
 Once the circuit has been propagated with
 `MajoranaPropagator.build_graph`, the stored graph can be replayed at any
-parameter vector without re-running the Majorana algebra — the basis of
+parameter vector without re-running the Majorana algebra — this is the basis of
 variational workflows, where one circuit is evaluated at many parameter values.
 
 Parameter values are given as a sequence of floats (list or numpy array) in
@@ -51,9 +51,9 @@ Passing a `pare_threshold` to `expectation_value_functional` or
 `expectation_value_and_gradient_functional` is an optional
 speed-up: terms whose contribution to the expectation value falls below the
 threshold are *pared* away, so they no longer have to be tracked through the graph
-during replay. The stored graph itself is unchanged, only the replay skips the
+during replay. The stored graph itself is unchanged; only the replay skips the
 negligible terms, so this can dramatically speed up replay cost for sparse graphs
-(at the expense of some memory and accuracy):
+(at the expense of some accuracy):
 
 ```python notest
 pared_expval_fn = sim.expectation_value_functional(pare_threshold=1e-7)
