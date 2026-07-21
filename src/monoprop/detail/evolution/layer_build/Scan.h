@@ -31,6 +31,7 @@
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/MPOperator.h"
+#include "monoprop/detail/profiling/RegionProfiler.h"
 
 namespace monoprop::detail {
 
@@ -113,18 +114,15 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_data(pivot_col) : nullptr;
     std::vector<uint64_t> &blk = column_block_scratch();
     // Fold one word range [bb,be): combine G's columns, split leader/follower by the pivot bit, and
-    // record every nonzero-overlap word. Driven by the single kColumnBlockWords block loop below.
+    // record every nonzero-overlap word. A DENSE pivot is read inline (a pointer index, free). A
+    // SPARSE pivot is scatter-expanded LAZILY — only for blocks that produced a nonzero overlap
+    // word, so blocks with no anticommuting term (the common case on low-participation gates)
+    // never pay the expansion stream; the deferred follower fix-up walks only that block's nz
+    // entries. Same nz entries in the same order with the same foll values ⇒ bit-identical to the
+    // eager expansion. Driven by the single kColumnBlockWords block loop below.
     auto fold_range = [&](size_t bb, size_t be) {
         combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
-        const uint64_t *pw; // pivot words for [bb,be), indexed [0, be-bb)
-        if (pivot_dense) {
-            pw = pivot_dense_ptr + bb;
-        }
-        else {
-            std::vector<uint64_t> &pblk = pivot_column_block_scratch();
-            combine_columns_block<NumModes>(sc, std::span<const size_t>(&pivot_col, 1), pblk.data(), bb, be);
-            pw = pblk.data();
-        }
+        const size_t nz_block_start = nz.size();
         for (size_t wi = bb; wi < be; ++wi) {
             uint64_t overlap = blk[wi - bb];
             if (g_odd) {
@@ -136,10 +134,25 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
             if (!overlap) {
                 continue;
             }
-            const uint64_t foll = overlap & pw[wi - bb];
             n_anti += static_cast<size_t>(std::popcount(overlap));
-            n_foll += static_cast<size_t>(std::popcount(foll));
+            uint64_t foll = 0;
+            if (pivot_dense) {
+                foll = overlap & pivot_dense_ptr[wi];
+                n_foll += static_cast<size_t>(std::popcount(foll));
+            }
             nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
+        }
+        if (pivot_dense || nz.size() == nz_block_start) {
+            return; // dense pivot already folded in, or no anticommuting term — nothing to expand
+        }
+        std::vector<uint64_t> &pblk = pivot_column_block_scratch();
+        combine_columns_block<NumModes>(sc, std::span<const size_t>(&pivot_col, 1), pblk.data(), bb, be);
+        const uint64_t *pw = pblk.data();
+        for (size_t k = nz_block_start; k < nz.size(); ++k) {
+            EvenParityNzWord &e = nz[k];
+            const size_t wi = e.base / 64;
+            e.foll = e.overlap & pw[wi - bb];
+            n_foll += static_cast<size_t>(std::popcount(e.foll));
         }
     };
     for (size_t bb = wlo; bb < whi; bb += kColumnBlockWords) {
@@ -279,6 +292,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     const size_t gen_pop = gen.count();
     const auto ectx = make_gen_emit_context<NumModes, IsPauli>(gen);
 
+    // Structural-cutoff rejections this gate (anticommuters whose partner failed the structural
+    // cutoff without an upper-atol rescue). A register-resident local; published to the fold-stats
+    // accumulators only when monoprop_FOLD_STATS is set.
+    size_t struct_rejects = 0;
+
     // Cutoff + emit for one anticommuting term. Writes only the per-rank sinks passed in. The dynamic
     // gate (depends only on |M|) runs BEFORE emit_term_products, so a gate-rejected term computes no
     // products.
@@ -309,6 +327,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const size_t new_pop = maj_pop + gen_pop - 2 * overlap;
         const bool struct_pass = cutoff_eval.passes_with_popcount(new_maj, new_pop);
         if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
+            ++struct_rejects;
             return;
         }
         // Pauli: pauli_rotation_sign already returns the rotation-ready sign for U=exp(iθG), O'=U†OU
@@ -390,6 +409,34 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // — no full-width sparse-scatter prologue.
         const std::span<const size_t> gen_cols(gen_columns.indices.data(), gen_columns.count);
 
+        // Classify the fold columns in O(|G|). A DENSE column always holds at least one posting
+        // (promotion requires set density ≥ 1/kPromoteDensityInv of a nonzero row count), so
+        // Σ postings == 0 ⟺ every fold column is sparse-tier with an empty row list.
+        bool fold_cols_all_sparse = true;
+        bool fold_cols_empty = true;
+        size_t fold_postings = 0; // Σ sparse-column postings; a complete Σ only when all_sparse
+        for (size_t ci = 0; ci < gen_columns.count; ++ci) {
+            const size_t c = gen_columns.indices[ci];
+            if (inverted_index.column_is_dense(c)) {
+                fold_cols_all_sparse = false;
+                fold_cols_empty = false;
+            }
+            else {
+                const size_t p = inverted_index.sparse_column_rows(c).size();
+                fold_postings += p;
+                if (p != 0) {
+                    fold_cols_empty = false;
+                }
+            }
+        }
+        // Zero-postings early-out: no term touches any of the fold columns ⇒ |M ∩ fold_gen| = 0 for
+        // every term ⇒ (for even |G|; Pauli is always even here) nothing anticommutes and pass 1
+        // would provably produce an empty nz. Skip the O(K/64) fold sweep; everything downstream
+        // (empty reserves, empty pass 2, the empty cosine block) is byte-identical to running it.
+        // The g_odd guard is load-bearing: an odd Majorana generator anticommutes with every
+        // odd-weight term it is DISJOINT from, so zero overlap does not imply commutation there.
+        const bool skip_scan = !g_odd && fold_cols_empty;
+
         // Single serial sweep over all inverted-index words [0, word_count). Emit directly into the
         // result's per-rank query / source / value streams (each pre-sized to rank_count above). When
         // !capture_values, leader_val/follower_val stay size 0 and are never indexed (emit guards on it).
@@ -407,18 +454,23 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         thread_local std::vector<EvenParityNzWord> nz;
         size_t n_anti = 0;
         size_t n_foll = 0;
-        even_parity_scan_pass1<NumModes>(inverted_index,
-                                         gen_cols,
-                                         gen.find_first(),
-                                         /*wlo=*/0,
-                                         /*whi=*/word_count,
-                                         last_word,
-                                         last_word_mask,
-                                         g_odd,
-                                         row_parity_ptr,
-                                         nz,
-                                         n_anti,
-                                         n_foll);
+        if (skip_scan) {
+            nz.clear(); // pass 1 clears it on entry; the skip must too (thread_local reuse)
+        }
+        else {
+            even_parity_scan_pass1<NumModes>(inverted_index,
+                                             gen_cols,
+                                             gen.find_first(),
+                                             /*wlo=*/0,
+                                             /*whi=*/word_count,
+                                             last_word,
+                                             last_word_mask,
+                                             g_odd,
+                                             row_parity_ptr,
+                                             nz,
+                                             n_anti,
+                                             n_foll);
+        }
         if (rank_count == 1) {
             lq[my_rank].reserve((n_anti - n_foll) * kQueryWords<NumModes>);
             ls[my_rank].reserve(n_anti - n_foll);
@@ -493,6 +545,17 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
         }
         res.cos_blocks.push_back(cos_b.finish());
+
+        // Fold-stats instrumentation (monoprop_FOLD_STATS): one relaxed-atomic publish per gate per
+        // shard — sizing data for the candidate-merge (A2) and bit-sliced-prefilter (S1) proposals.
+        if (profiling::g_fold_stats_enabled) {
+            profiling::record_fold_stats(fold_cols_all_sparse,
+                                         skip_scan,
+                                         fold_postings,
+                                         word_count,
+                                         n_anti,
+                                         struct_rejects);
+        }
     }
     return res;
 }

@@ -324,11 +324,30 @@ template <size_t NumModes>
                                                          size_t bb,
                                                          size_t be) -> void {
     const size_t nb = be - bb;
-    std::memset(blk, 0, nb * sizeof(uint64_t));
+    // Initialize the scratch from the first dense column (memcpy) when there is one — XOR is
+    // commutative, so seeding with any one column and folding the rest is bit-identical to
+    // memset + XOR-all while saving one full pass over the block.
+    size_t dense_init = cols.size();
+    for (size_t ci = 0; ci < cols.size(); ++ci) {
+        if (sc.column_is_dense(cols[ci])) {
+            dense_init = ci;
+            break;
+        }
+    }
+    if (dense_init < cols.size()) {
+        std::memcpy(blk, sc.dense_column_data(cols[dense_init]) + bb, nb * sizeof(uint64_t));
+    }
+    else {
+        std::memset(blk, 0, nb * sizeof(uint64_t));
+    }
     const size_t lo = bb * 64;
     const size_t hi = be * 64;
     const auto below = [](TermIndex row, size_t bound) { return static_cast<size_t>(row) < bound; };
-    for (const size_t c : cols) {
+    for (size_t ci = 0; ci < cols.size(); ++ci) {
+        if (ci == dense_init) {
+            continue;
+        }
+        const size_t c = cols[ci];
         if (sc.column_is_dense(c)) {
             const uint64_t *d = sc.dense_column_data(c);
             for (size_t wi = bb; wi < be; ++wi) {

@@ -72,6 +72,19 @@ monoprop_EXPORT extern bool g_profiling_enabled;
 monoprop_EXPORT auto profiling_accs() -> RegionAcc *;   // base of the kRegionCount-element array
 monoprop_EXPORT auto profiling_ensure_atexit() -> void; // register the one-shot stderr dump
 
+// ── Fold statistics (monoprop_FOLD_STATS) ──
+// Per-gate anticommutation-scan statistics from fused_find_and_collect, one relaxed-atomic publish
+// per (gate, shard): sizing data for candidate-merge discovery (is the whole fold-column set
+// sparse-tier, and how do its postings compare to the K/64 fold words?) and for the structural-
+// cutoff reject rate. Dumped by the same one-shot atexit dump as the region timers.
+monoprop_EXPORT extern bool g_fold_stats_enabled;
+monoprop_EXPORT auto record_fold_stats(bool all_sparse,
+                                       bool skipped,
+                                       size_t postings,
+                                       size_t word_count,
+                                       size_t n_anti,
+                                       size_t struct_rejects) -> void;
+
 inline auto acc(Region r) -> RegionAcc & { return profiling_accs()[static_cast<int>(r)]; }
 
 // ── ScopedRegion: mark a named phase and accumulate its wall time. ──

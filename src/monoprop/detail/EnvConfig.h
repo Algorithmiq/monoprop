@@ -28,6 +28,7 @@
 // Recognised env vars:
 //   monoprop_NUM_THREADS          positive int (1..1e6); else ignored          → num_threads
 //   monoprop_PHASE_TIMERS         bool, default OFF                            → phase_timers
+//   monoprop_FOLD_STATS           bool, default OFF; per-gate fold/scan statistics → fold_stats
 //   monoprop_SHARD_PINNING        bool, default ON; 0/false disables per-core pinning → shard_pinning
 //                                 (CpuTopology; Linux-only effect)
 // The one shard-runtime var parsed at its point of use (it needs string forms beyond a plain field):
@@ -73,6 +74,7 @@ inline auto parse_positive_int(const char *text) -> std::optional<int> {
 struct Settings {
     std::optional<int> num_threads; // monoprop_NUM_THREADS
     bool phase_timers = false;      // monoprop_PHASE_TIMERS
+    bool fold_stats = false;        // monoprop_FOLD_STATS
     bool shard_pinning = true;      // monoprop_SHARD_PINNING
 };
 
@@ -83,6 +85,7 @@ inline auto get() -> const Settings & {
         Settings s;
         s.num_threads = detail::parse_positive_int(std::getenv("monoprop_NUM_THREADS"));
         s.phase_timers = detail::parse_flag(std::getenv("monoprop_PHASE_TIMERS"), false);
+        s.fold_stats = detail::parse_flag(std::getenv("monoprop_FOLD_STATS"), false);
         s.shard_pinning = detail::parse_flag(std::getenv("monoprop_SHARD_PINNING"), true);
         return s;
     }();
