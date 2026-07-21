@@ -73,15 +73,18 @@ Each run writes `results/time-<label>.json` (pytest-benchmark) and
 `results/REPORT.md`.
 
 
-## Comparison with other packages
+# Comparison with other packages
 
 We provide standalone benchmark scripts comparing `monoprop` against other open-source
-Pauli propagation engines. The benchmark suite includes memory and time
+Pauli propagation and Majorana Propagation engines. The benchmark suite includes memory and time
 performance metrics, providing insights into the efficiency of different
-propagation engines. The chosen problem is the Trotterized time evolution of a 2D transverse-field Ising model (TFIM), tracking the runtime,
+propagation engines.
+
+
+## Pauli Propagation
+
+The chosen problem is the Trotterized time evolution of a 2D transverse-field Ising model (TFIM), tracking the runtime,
 expectation value, and operator size at each Trotter step.
-
-
 
 ### SPECS
 
@@ -98,7 +101,7 @@ The end-to-end workflow is:
 4. [Run the benchmarks](#4-run-the-benchmarks) to produce `results.json`.
 5. [Plot the results](#5-plot-the-results) to produce `runtime.png` and `memory.png`.
 
-## 1. Choose the simulation settings
+### 1. Choose the simulation settings
 
 All simulation parameters live in [`settings.json`](settings.json) and are shared by every engine
 (Python and Julia alike), so a single edit compares them all on an identical problem instance:
@@ -126,7 +129,7 @@ cutoff, only a mandatory positive `max_terms` (which also caps its memory pre-al
 can't be left unbounded). `run_model.py` sets it to monoprop's own term count at each step, so its
 per-step term budget tracks `cutoff`/`lower_atol` indirectly through monoprop rather than directly.
 
-## 2. Set up the Python environment
+### 2. Set up the Python environment
 
 ```bash
 # Navigate to this directory
@@ -140,7 +143,7 @@ This installs `monoprop`, `qiskit`, `ppvm`, `pauli-prop`, and `cuquantum-python-
 `cuPauliProp (GPU)` engine requires an NVIDIA GPU with a working CUDA setup; the other three Python
 engines (`monoprop`, `QuEra ppvm`, `Qiskit pauli-prop`) run on CPU only.
 
-## 3. (Optional) install Julia and `PauliPropagation.jl`
+### 3. (Optional) install Julia and `PauliPropagation.jl`
 
 Skip this step if you only want to compare the Python engines — `run_model.py` and
 `plot_results.py` work fine without it. Install it if you also want the `PauliPropagation.jl`
@@ -163,7 +166,7 @@ Finally, install the package [`PauliPropagation.jl`](https://github.com/SparqleS
 julia -e 'using Pkg; Pkg.add(Pkg.PackageSpec(name="PauliPropagation", version="0.7.3"))'
 ```
 
-## 4. Run the benchmarks
+### 4. Run the benchmarks
 
 ```bash
 # Run the Python engines (monoprop, QuEra ppvm, Qiskit pauli-prop, cuPauliProp) — (re)writes results.json from scratch
@@ -189,7 +192,7 @@ For every engine, `results.json` collects, indexed by Trotter step:
   reconstructed by accumulating this process's host-memory growth across each of their own steps.
 - `expvals`: the `ZZ` expectation value on `obs_qubits`, for every step.
 
-## 5. Plot the results
+### 5. Plot the results
 
 ```bash
 uv run python plot_results.py
@@ -198,3 +201,118 @@ uv run python plot_results.py
 This reads `results.json` and produces two log-scale plots for each engine present in the file (so
 they reflect whichever engines you actually ran in step 4): `runtime.png` (runtime per Trotter
 step) and `memory.png` (operator memory footprint per Trotter step).
+
+
+### Results
+
+Runtime and memory footprint per Trotter step for the 2D TFIM problem above, comparing
+`monoprop` against `cuPauliProp (GPU)`, `PauliPropagation.jl`, `QuEra ppvm`, and `Qiskit
+pauli-prop`. `monoprop` tracks the GPU-accelerated `cuPauliProp` closely while running on CPU,
+and outperforms all other CPU-only engines in both time and memory as the operator grows.
+
+![Runtime per Trotter step](/benchmarks/runtime.png)
+
+![Memory per Trotter step](/benchmarks/memory.png)
+
+
+## Majorana Propagation
+The chosen problem is the 1D Hubbard model, tracking the runtime, expectation value,
+and operator size at each Trotter step.
+
+### SPECS
+
+The benchmark is run on Leonardo (CINECA), in a multi-threaded node with
+
+- Processors: single socket 32-core Intel Xeon Platinum 8358 CPU, 2.60GHz (Ice Lake)
+- Cores: 110592
+- RAM: 8×64 GB DDR4 3200 MHz (512 GB)
+
+
+
+## 1. Set up the Python environment
+
+```bash
+# Navigate to this directory
+cd benches/third_party
+
+# Create the venv and install all Python dependencies (including monoprop itself, in editable mode)
+uv sync
+```
+
+This installs `monoprop`, `qiskit`, `ppvm`, `pauli-prop`, and `cuquantum-python-cu12`. Running the
+`cuPauliProp (GPU)` engine requires an NVIDIA GPU with a working CUDA setup; the other three Python
+engines (`monoprop`, `QuEra ppvm`, `Qiskit pauli-prop`) run on CPU only.
+
+## 2. Install Julia and `MajoranaPropagation.jl`
+
+Skip this step if you only want to compare the Python engines — `run_model.py` and
+`plot_results.py` work fine without it. Install it if you also want the `PauliPropagation.jl`
+comparison:
+
+```bash
+# Install juliaup and the latest stable Julia release
+curl -fsSL https://install.julialang.org | sh
+```
+
+Once Julia has been installed, add some utils:
+
+```bash
+julia -e 'using Pkg; Pkg.add(["JSON", "ProgressMeter"])'
+```
+
+Finally, install the package [`PauliPropagation.jl`](https://github.com/SparqleSim/PauliPropagation.jl) v0.7.3:
+
+```bash
+julia -e 'using Pkg; Pkg.add(Pkg.PackageSpec(name="PauliPropagation", version="0.7.3"))'
+```
+
+## 3. Run the benchmarks
+
+```bash
+# Run the Python engines (monoprop, QuEra ppvm, Qiskit pauli-prop, cuPauliProp) — (re)writes results.json from scratch
+uv run python run_model.py
+
+# (Optional) run the Julia engine — merges its results into the existing results.json
+julia run_model.jl
+```
+
+`run_model.py` must be run first: it (re)creates `results.json` from `settings.json`.
+`run_model.jl` then reads that file and adds the `PauliPropagation.jl` entries to it, so
+re-running `run_model.py` afterwards overwrites the file and drops them again — rerun
+`run_model.jl` too if you do.
+
+For every engine, `results.json` collects, indexed by Trotter step:
+
+- `num_terms`: the number of Pauli/Majorana terms kept in the evolving operator, for every step.
+- `runtime`: wall-clock time per step, in seconds (excluding the first step, see the note above).
+- `memory`: the memory footprint of the evolving operator, in megabytes, for every step. Where an
+  engine exposes its own accounting this is exact (monoprop's C++ operator-memory accounting,
+  cuPauliProp's cupy device memory pool, `PauliPropagation.jl`'s `Base.summarysize` of the Pauli
+  sum); `QuEra ppvm` and `Qiskit pauli-prop` expose no such accounting, so their footprint is
+  reconstructed by accumulating this process's host-memory growth across each of their own steps.
+- `expvals`: the `ZZ` expectation value on `obs_qubits`, for every step.
+
+### 4. Plot the results
+
+```bash
+uv run python plot_results.py
+```
+
+This reads the json file results for each simulation and produces four linear scale plots.
+
+
+### Results
+
+Number of terms, final-state overlap, runtime, and memory footprint versus circuit depth for the
+1D Hubbard model, comparing `monoprop` against `MajoranaPropagation.jl` across system sizes
+`n=20`, `40`, and `60`. Both engines produce matching term counts and overlaps, confirming
+correctness, while `monoprop` runs faster and uses less memory than the Julia engine as depth and
+system size grow.
+
+![Number of terms vs layers](/benchmarks/majorana/num_terms_vs_layers.png)
+
+![Final overlap vs layers](/benchmarks/majorana/overlap_vs_layers.png)
+
+![Runtime vs layers](/benchmarks/majorana/runtime_vs_layers.png)
+
+![Memory vs layers](/benchmarks/majorana/memory_vs_layers.png)
