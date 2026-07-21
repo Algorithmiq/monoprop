@@ -34,8 +34,7 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
-
-    ParameterValues = Circuit | Sequence[float] | np.ndarray | None
+    from .monomial_propagator import ParameterValues
 
 
 class PauliPropagator(MonomialPropagator):

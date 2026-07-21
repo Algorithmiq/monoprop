@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
+    from .monomial_propagator import ParameterValues
     from .quantum_data import IQuantumOperator
 
 
@@ -127,6 +128,24 @@ class MajoranaPropagator(MonomialPropagator):
                 "Use PauliPropagator for qubit circuits."
             )
         return circuit.gates
+
+    def evolved_operator(
+        self, parameters: ParameterValues = None, *, atol: float = 1e-12
+    ) -> MajoranaOperator:
+        """Return the evolved operator as a :class:`~monoprop.majorana.MajoranaOperator`.
+
+        Args:
+            parameters: Variational parameter values (see :meth:`expectation_value`).
+            atol: Absolute tolerance for filtering small coefficients; terms with
+                ``|coeff| < atol`` are dropped. Defaults to ``1e-12``; set to ``0.0`` to
+                keep all terms.
+
+        Returns:
+            The evolved operator (Heisenberg picture) or the evolved state (Schrodinger
+            picture) as a :class:`~monoprop.majorana.MajoranaOperator`.
+        """
+        terms = self._simulator.evolved_operator(self._bind(parameters), atol)
+        return MajoranaOperator(terms, self.num_modes)
 
     @MonomialPropagator.cutoff_type.setter
     def cutoff_type(self, new_cutoff_type: str) -> None:

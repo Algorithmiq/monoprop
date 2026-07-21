@@ -253,9 +253,8 @@ def test_hermitian_majorana_generator_matches_structural() -> None:
         structural, obs, cutoff=16
     ).evolved_operator()
 
-    assert from_hermitian.keys() == from_structural.keys()
-    for key, value in from_hermitian.items():
-        np.testing.assert_allclose(value, from_structural[key])
+    assert from_hermitian.terms.keys() == from_structural.terms.keys()
+    assert from_hermitian.isclose(from_structural)
 
 
 # -- evaluation contracts -------------------------------------------------------
