@@ -106,16 +106,16 @@ def _majorana_to_pauli(
             if has_even and has_odd:
                 pauli[i] = "Z"
                 forward_coeff *= -1j
-            elif not has_even and not has_odd:
-                pauli[i] = "I"
-            elif has_even:
+            elif has_even and not has_odd:
                 pauli[i] = "X"
                 flag_z = True
-            else:
+            elif not has_even and has_odd:
                 pauli[i] = "Y"
                 flag_z = True
+            # the only possibility left is has_even == has_odd == False but this is just
+            # setting identity again
         elif has_even and has_odd:
-            pauli[i] = "I"
+            # pauli[i] = "I" but this is already set
             forward_coeff *= -1j
         elif not has_even and not has_odd:
             pauli[i] = "Z"
