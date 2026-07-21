@@ -79,7 +79,7 @@ def test_trivial_evolved_operator(serial_comm):
         # Regular picture: checks contract_partially (rank-local) → serial_comm
         (
             MajoranaOperator({(0, 1, 2, 4): 1}, 8),
-            {(0, 1, 2, 4): 2.0 + 0j},
+            MajoranaOperator({(0, 1, 2, 4): 2.0 + 0j}, 8),
             16,
             None,
             np.array([-2.0]),
@@ -88,7 +88,7 @@ def test_trivial_evolved_operator(serial_comm):
         # Schrodinger picture: checks expectation value (allreduced) → but kept here for simplicity
         (
             MajoranaOperator({(0, 3): 1.0j}, 4),
-            {(0, 1): 2.0j},
+            MajoranaOperator({(0, 1): 2.0j}, 4),
             8,
             8,
             None,

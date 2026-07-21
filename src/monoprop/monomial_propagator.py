@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import numpy as np
 
@@ -39,6 +39,8 @@ from .circuit import (
     expand_monomials,
     validate_parameter_mapping,
 )
+from .majorana import MajoranaOperator
+from .pauli import PauliOperator
 from .utils import validate_basis_change
 
 if TYPE_CHECKING:
@@ -47,14 +49,14 @@ if TYPE_CHECKING:
 
     from mpi4py import MPI
 
-    from .majorana import MajoranaOperator
-
     ParameterValues = Circuit | Sequence[float] | np.ndarray | None
 
 logger = logging.getLogger(__name__)
 
+T_op = TypeVar("T_op", MajoranaOperator, PauliOperator)
 
-class MonomialPropagator(ABC):
+
+class MonomialPropagator(ABC, Generic[T_op]):
     """Abstract base for the classical monomial-propagation simulators.
 
     The propagation graph owns the gate information; evaluation methods
@@ -492,7 +494,7 @@ class MonomialPropagator(ABC):
         parameters: ParameterValues = None,
         *,
         atol: float = 1e-12,
-    ) -> dict[tuple[int, ...], complex]:
+    ) -> T_op:
         """Return the evolved operator/state as a dict, without modifying state.
 
         Equivalent to :meth:`contract_partially` with ``inplace=False``, returned as a
@@ -510,9 +512,7 @@ class MonomialPropagator(ABC):
         """
         return self._simulator.evolved_operator(self._bind(parameters), atol)
 
-    def update_initial_operator(
-        self, new_operator: dict[tuple[int, ...], complex]
-    ) -> None:
+    def update_initial_operator(self, new_operator: T_op) -> None:
         """Replace coefficients of the *initial operator* (existing terms only).
 
         Re-weights the initial operator the graph is evaluated against, without touching
@@ -522,8 +522,7 @@ class MonomialPropagator(ABC):
         terms are introduced).
 
         Args:
-            new_operator: Mapping from Majorana-index tuples to their new complex
-                coefficients.
+            new_operator: Mapping for new coefficients values.
 
         Raises:
             RuntimeError: If a term in ``new_operator`` is not present in the current

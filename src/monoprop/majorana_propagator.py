@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from .quantum_data import IQuantumOperator
 
 
-class MajoranaPropagator(MonomialPropagator):
+class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
     """Classical simulator for Majorana operators.
 
     Accepts a :class:`~monoprop.majorana.MajoranaOperator` (or any object implementing
@@ -146,6 +146,19 @@ class MajoranaPropagator(MonomialPropagator):
         """
         terms = self._simulator.evolved_operator(self._bind(parameters), atol)
         return MajoranaOperator(terms, self.num_modes)
+
+    def update_initial_operator(self, new_operator: MajoranaOperator) -> None:
+        """Replace coefficients of the *initial operator* (existing terms only).
+
+        Args:
+            new_operator: :class:`~monoprop.majorana.MajoranaOperator` whose terms
+                replace the matching initial-operator coefficients.
+
+        Raises:
+            RuntimeError: If a term in ``new_operator`` is not present in the current
+                initial operator.
+        """
+        self._simulator.update_initial_operator(new_operator.terms)
 
     @MonomialPropagator.cutoff_type.setter
     def cutoff_type(self, new_cutoff_type: str) -> None:

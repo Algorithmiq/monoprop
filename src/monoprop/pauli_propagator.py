@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from .monomial_propagator import ParameterValues
 
 
-class PauliPropagator(MonomialPropagator):
+class PauliPropagator(MonomialPropagator[PauliOperator]):
     """Classical simulator for qubit (Pauli) operators.
 
     Accepts a :class:`~monoprop.pauli.PauliOperator` observable and a
@@ -122,18 +122,9 @@ class PauliPropagator(MonomialPropagator):
         return circuit.gates
 
     def evolved_operator(
-        self,
-        parameters: ParameterValues = None,
-        *,
-        atol: float = 1e-12,
+        self, parameters: ParameterValues = None, *, atol: float = 1e-12
     ) -> PauliOperator:
         """Return the evolved operator/state as a PauliOperator.
-
-        Converts the base Majorana-domain output term-by-term using
-        :func:`~monoprop.conversion_utils._majorana_to_pauli`. If
-        ``_pauli_to_majorana(pauli) -> (majorana, jw_coeff)``, then the inverse path uses
-        ``conj(jw_coeff)`` and returns the Pauli coefficient
-        ``majorana_coeff * conj(jw_coeff)``.
 
         Args:
             parameters: Variational parameter values (see base class).
@@ -144,7 +135,9 @@ class PauliPropagator(MonomialPropagator):
             The evolved operator (Heisenberg picture) or evolved state (Schrodinger
             picture) as a :class:`~monoprop.pauli.PauliOperator`.
         """
-        evolved_majorana = super().evolved_operator(parameters, atol=atol)
+        evolved_majorana = self._simulator.evolved_operator(
+            self._bind(parameters), atol
+        )  # type: ignore[union-attr]
         pauli_terms: dict[str, complex] = {}
         for majorana, coeff in evolved_majorana.items():
             pauli, jw_coeff_conj = _majorana_to_pauli(
@@ -152,3 +145,18 @@ class PauliPropagator(MonomialPropagator):
             )
             pauli_terms[pauli] = coeff * jw_coeff_conj
         return PauliOperator(pauli_terms, num_qubits=self.num_qubits)
+
+    def update_initial_operator(self, new_operator: PauliOperator) -> None:
+        """Replace coefficients of the *initial operator* (existing terms only).
+
+        Args:
+            new_operator: :class:`~monoprop.pauli.PauliOperator` whose terms replace
+                the matching initial-operator coefficients.
+
+        Raises:
+            RuntimeError: If a term in ``new_operator`` is not present in the current
+                initial operator.
+        """
+        self._simulator.update_initial_operator(  # type: ignore[union-attr]
+            new_operator.get_majorana_operator().terms
+        )

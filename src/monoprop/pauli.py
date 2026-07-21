@@ -111,6 +111,9 @@ class PauliOperator:
     as a :class:`PauliOperator` (wrapped in :class:`~monoprop.circuit.ExpGate`) -- bare
     :class:`Pauli` terms are not accepted by ``ExpGate``, since the operator is what carries the
     qubit count.
+
+    PauliOperator is always interpreted in the Jordan-Wigner basis.
+
     """
 
     def __init__(
