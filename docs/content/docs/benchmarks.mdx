@@ -230,7 +230,6 @@ The benchmark is run on Leonardo (CINECA), in a multi-threaded node with
 - RAM: 8×64 GB DDR4 3200 MHz (512 GB)
 
 
-
 ## 1. Set up the Python environment
 
 ```bash
@@ -241,58 +240,51 @@ cd benches/third_party
 uv sync
 ```
 
-This installs `monoprop`, `qiskit`, `ppvm`, `pauli-prop`, and `cuquantum-python-cu12`. Running the
-`cuPauliProp (GPU)` engine requires an NVIDIA GPU with a working CUDA setup; the other three Python
-engines (`monoprop`, `QuEra ppvm`, `Qiskit pauli-prop`) run on CPU only.
+This installs `monoprop` and `numpy`.
 
 ## 2. Install Julia and `MajoranaPropagation.jl`
 
-Skip this step if you only want to compare the Python engines — `run_model.py` and
-`plot_results.py` work fine without it. Install it if you also want the `PauliPropagation.jl`
-comparison:
+You can find the installation instructions for Julia and `MajoranaPropagation.jl` in the [official documentation](https://github.com/SparqleSim/MajoranaPropagation.jl).
 
 ```bash
 # Install juliaup and the latest stable Julia release
 curl -fsSL https://install.julialang.org | sh
 ```
 
-Once Julia has been installed, add some utils:
+Once Julia has been installed, you can install and instantiate the required packages for the benchmark:
 
 ```bash
-julia -e 'using Pkg; Pkg.add(["JSON", "ProgressMeter"])'
+julia --project=@. -e 'using Pkg; Pkg.instantiate()'
+
 ```
 
-Finally, install the package [`PauliPropagation.jl`](https://github.com/SparqleSim/PauliPropagation.jl) v0.7.3:
+Then, you can precompile the `MajoranaPropagation.jl` package to ensure that it is ready for use:
 
 ```bash
-julia -e 'using Pkg; Pkg.add(Pkg.PackageSpec(name="PauliPropagation", version="0.7.3"))'
+julia --project=@. -e 'using Pkg; Pkg.precompile()'
 ```
 
 ## 3. Run the benchmarks
 
-```bash
-# Run the Python engines (monoprop, QuEra ppvm, Qiskit pauli-prop, cuPauliProp) — (re)writes results.json from scratch
-uv run python run_model.py
 
-# (Optional) run the Julia engine — merges its results into the existing results.json
-julia run_model.jl
+You can run the benchmarks using the provided bash script for both Python and Julia engines. The script will execute the benchmarks and generate the results in two separate JSON files: `julia_hubbard1d_benchmark_results.jsonl` for the Julia engine and `monoprop_hubbard1d_benchmark_results.jsonl` for the Python engine.
+
+```bash
+# Run the benchmarks for both Python and Julia engines
+bash run_benchmarks.sh
 ```
 
-`run_model.py` must be run first: it (re)creates `results.json` from `settings.json`.
-`run_model.jl` then reads that file and adds the `PauliPropagation.jl` entries to it, so
-re-running `run_model.py` afterwards overwrites the file and drops them again — rerun
-`run_model.jl` too if you do.
+Each line of both JSONL files is one benchmark run (one system size / circuit depth pair), with:
 
-For every engine, `results.json` collects, indexed by Trotter step:
+- `n_spinful_sites`: number of spinful sites in the 1D Hubbard chain.
+- `n_layers`: number of Trotter layers simulated.
+- `num_terms`: number of Majorana terms kept in the operator at the final layer.
+- `final_overlap`: expectation value at the final layer.
+- `runtime_seconds`: wall-clock time to run all `n_layers` layers.
+- `memory_MB`: operator memory footprint at the final layer, in megabytes.
 
-- `num_terms`: the number of Pauli/Majorana terms kept in the evolving operator, for every step.
-- `runtime`: wall-clock time per step, in seconds (excluding the first step, see the note above).
-- `memory`: the memory footprint of the evolving operator, in megabytes, for every step. Where an
-  engine exposes its own accounting this is exact (monoprop's C++ operator-memory accounting,
-  cuPauliProp's cupy device memory pool, `PauliPropagation.jl`'s `Base.summarysize` of the Pauli
-  sum); `QuEra ppvm` and `Qiskit pauli-prop` expose no such accounting, so their footprint is
-  reconstructed by accumulating this process's host-memory growth across each of their own steps.
-- `expvals`: the `ZZ` expectation value on `obs_qubits`, for every step.
+The Python results additionally record `num_threads`, the value of the `monoprop_NUM_THREADS`
+environment variable used for the run.
 
 ### 4. Plot the results
 
