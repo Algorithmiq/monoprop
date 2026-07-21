@@ -243,9 +243,6 @@ struct PendingAlltoallv {
     MPI_Request request = MPI_REQUEST_NULL; // set only on the Kind::Mpi async path
 #endif
 
-    // Per-source recv counts, known after begin_alltoallv (the transpose of the peers' send counts).
-    auto received_counts() const -> const std::vector<int> & { return recv_counts; }
-
     auto wait_into(std::vector<std::vector<T>> &recv_data) -> void {
 #ifdef monoprop_ENABLE_MPI
         if (request != MPI_REQUEST_NULL) {

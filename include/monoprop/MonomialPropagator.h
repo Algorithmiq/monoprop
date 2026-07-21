@@ -111,27 +111,6 @@ public:
     auto size() const -> size_t { return shard_group_ ? sharded_size_() : mp_op_.size(); }
 
     /**
-     * @brief Pre-reserve operator storage for an expected final (this-rank) term count.
-     *
-     * Purely an allocation hint — it changes no results. The operator vector and index-map shards
-     * otherwise grow by geometric doubling during evolution, so a run that ends at N terms pays a
-     * sequence of serial multi-GB reallocations/rehashes (an Amdahl anchor in deferred_self_inserts)
-     * and carries up to ~2× transient over-allocation at the largest doubling. Reserving once to a
-     * known scale removes both. For an R-rank run, pass the per-rank estimate (≈ global / R), since
-     * each rank stores only the terms it owns. Safe to call any time before/between evolution steps;
-     * a smaller value than the current size is a no-op.
-     */
-    auto reserve_operator(size_t expected_local_terms) -> void {
-        if (shard_group_) {
-            sharded_reserve_operator_(expected_local_terms);
-            return;
-        }
-        // Sizes BOTH the packed rows and the hash index to a known final per-rank count. Called on a
-        // non-empty store between steps, so it only ever reserves capacity (width was fixed at setup).
-        mp_op_.store->reserve(expected_local_terms);
-    }
-
-    /**
      * @brief Returns the size of the graph.
      * To get global size, use MPI allreduce.
      *
@@ -178,8 +157,6 @@ public:
         }
         return detail::estimate_memory_usage(mp_op_);
     }
-
-    auto print_object_memory_report(std::string_view label) const { print_object_memory_report_(label); }
 
     /**
      * @brief Get the number of evolved Majoranas (graph layers).
@@ -641,7 +618,6 @@ private:
     auto sharded_size_() const -> size_t;
     auto sharded_graph_size_() const -> std::pair<size_t, size_t>;
     auto sharded_graph_layers_() const -> size_t;
-    auto sharded_reserve_operator_(size_t expected_local_terms) -> void;
     auto sharded_core_term_() const -> double; // core term is replicated on every shard; read shard 0
     // Sum the per-shard memory breakdowns (each shard owns a disjoint hash-partition, so fields add).
     auto sharded_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes>;
@@ -657,12 +633,6 @@ private:
                                      + " is unavailable on a shard-backed propagator; use per-shard access");
         }
     }
-
-    static auto format_bytes_(size_t bytes) -> std::string;
-
-    auto print_memory_row_(std::string_view name, size_t local_bytes) const -> void;
-
-    auto print_object_memory_report_(std::string_view label) const -> void;
 
     auto regenerate_cutoff_fn_() -> void;
 

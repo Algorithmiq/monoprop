@@ -198,14 +198,6 @@ auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialLi
 }
 
 /**
- * @brief Generates all paired Majorana operators up to a maximum weight
- */
-template <size_t NumModes>
-auto generate_paired_op(size_t max_ones) -> MonomialList<NumModes> {
-    return generate_paired_op<NumModes>(max_ones, NumModes);
-}
-
-/**
  * @brief Encode a single Majorana coefficient into its real representation
  */
 template <size_t NumModes>

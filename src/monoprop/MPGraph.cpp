@@ -104,43 +104,6 @@ auto MPGraph::slice_view(size_t key) const -> MPGraphView {
     return MPGraphView(layers_, active_begin_index(), k, false);
 }
 
-auto MPGraph::consume_prefix(size_t key) -> void {
-    const auto k = std::min(key, layers());
-    if (k == 0) {
-        return;
-    }
-
-    if (schrodinger_) {
-        layers_.resize(active_end_index() - k);
-        return;
-    }
-
-    front_offset_ = active_begin_index() + k;
-    maybe_compact_layers(layers_, front_offset_);
-}
-
-auto MPGraph::union_with(const MPGraph &other) const -> MPGraph {
-    if (schrodinger_ != other.schrodinger_) {
-        throw std::runtime_error("Cannot union graphs with different Schrodinger/Heisenberg settings");
-    }
-
-    std::vector<Layer> combined_layers;
-    combined_layers.reserve(layers() + other.layers());
-
-    if (schrodinger_) {
-        // Schrödinger picture stores layers newest-first.
-        other.append_active_layers_to(combined_layers);
-        append_active_layers_to(combined_layers);
-    }
-    else {
-        // In Heisenberg picture, this graph's operations are applied first.
-        append_active_layers_to(combined_layers);
-        other.append_active_layers_to(combined_layers);
-    }
-
-    return MPGraph(schrodinger_, std::move(combined_layers));
-}
-
 auto MPGraph::num_cos_inds_and_cycles() const -> std::pair<size_t, size_t> {
     size_t total_cy = 0;
     size_t total_ci = 0;

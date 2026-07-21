@@ -38,14 +38,12 @@ namespace monoprop {
 ///
 /// Flag-free window used to replay a layer. Cross-rank data is ALWAYS read verbatim from the core (the
 /// assemble_partners layout is never masked at replay, so there is no logical→stored remapping).
-/// cos_data() is valid ONLY for a pruned layer (has_pruned_cos()); recompute layers store no cosine and
+/// cos_data() is valid ONLY for a pruned layer (pruned_cos_ != nullptr); recompute layers store no cosine and
 /// rebuild it from the inverted index.
 struct LayerTraversal final {
     explicit LayerTraversal(const LayerCore &core, const CosMask *pruned_cos = nullptr)
         : core_(&core),
           pruned_cos_(pruned_cos) {}
-
-    auto has_pruned_cos() const -> bool { return pruned_cos_ != nullptr; }
 
     // cos_data() is valid ONLY for pruned layers (pruned_cos_ != nullptr). Fold layers recompute cos
     // from the inverted index fold and never call cos_data(); num_cos_inds()/cos_span_count() report 0 there.

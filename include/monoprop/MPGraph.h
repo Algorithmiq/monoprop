@@ -72,10 +72,6 @@ private:
         return active_begin_index() + layer_idx;
     }
 
-    auto append_active_layers_to(std::vector<Layer> &target) const -> void {
-        target.insert(target.end(), active_begin_iterator(), active_end_iterator());
-    }
-
 public:
     /**
      * @brief Initialize the Majorana graph.
@@ -123,16 +119,6 @@ public:
     auto slice_graph(size_t key, bool contract = false) -> MPGraph;
 
     auto slice_view(size_t key) const -> MPGraphView;
-
-    auto consume_prefix(size_t key) -> void;
-
-    /**
-     * @brief Create a union of two graphs without copying layer data.
-     *
-     * @param other The other graph to union with.
-     * @return A new graph containing references to all layers from both graphs.
-     */
-    auto union_with(const MPGraph &other) const -> MPGraph;
 
     /**
      * @brief Get the number of layers.

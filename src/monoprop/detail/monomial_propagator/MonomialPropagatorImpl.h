@@ -303,13 +303,6 @@ auto MonomialPropagator<NumModes>::sharded_graph_layers_() const -> size_t {
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::sharded_reserve_operator_(size_t expected_local_terms) -> void {
-    const size_t per =
-        std::max<size_t>(1, expected_local_terms / static_cast<size_t>(shard_group_->shard_count()));
-    shard_group_->run_on_all([&](int r) { shard_group_->shard(r).reserve_operator(per); });
-}
-
-template <size_t NumModes>
 auto MonomialPropagator<NumModes>::sharded_core_term_() const -> double {
     // The core (identity) term is stored on every shard, not hash-partitioned, so any shard's value
     // is the full core term (see apply_initial_operator_'s "store in all" branch).

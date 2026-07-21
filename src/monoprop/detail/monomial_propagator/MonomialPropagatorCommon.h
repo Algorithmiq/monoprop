@@ -23,19 +23,6 @@
 
 namespace monoprop::detail {
 
-inline constexpr std::string_view kLoopEvolvedOperatorMethod = "loop_evolved_operator";
-inline constexpr std::string_view kLoopInitialOperatorMethod = "loop_initial_operator";
-inline constexpr std::string_view kStateOpCommutatorMethod = "state_op_commutator";
-
-[[noreturn]] inline auto throw_unsupported_generator_dispatch(std::string_view generator_name,
-                                                              bool schrodinger,
-                                                              std::string_view method) -> void {
-    throw std::runtime_error(std::format("Unsupported {} generator dispatch (schrodinger={}, method='{}').",
-                                         generator_name,
-                                         schrodinger,
-                                         method));
-}
-
 template <size_t NumModes>
 auto cutoff_function(CutoffType cutoff_type, unsigned int cutoff, size_t logical_num_modes = NumModes)
     -> CutoffFn<NumModes> {

@@ -109,10 +109,4 @@ auto join_with_separator(std::ranges::range auto const &values, std::string_view
     }
     return joined;
 }
-
-/*!
- * @brief Get maximum resident set size in KiB.
- * @return double maximum RSS in KiB.
- */
-monoprop_EXPORT auto get_memory_usage() -> double;
 } // namespace monoprop

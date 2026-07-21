@@ -89,23 +89,6 @@ inline auto make_packed_phase_storage(size_t count, bool use_binary_phases) -> P
     return storage;
 }
 
-inline auto set_packed_phase(PackedPhaseStorage &storage, size_t idx, int value, const char *what) -> void {
-    if (storage.uses_binary_phases) {
-        if (!is_binary_phase(value)) {
-            throw std::overflow_error(std::format("{} {} is not representable as a binary packed phase.", what, value));
-        }
-        if (value < 0) {
-            storage.phase_words[packed_phase_word_index(idx)] |= packed_phase_bit_mask(idx);
-        }
-        else {
-            storage.phase_words[packed_phase_word_index(idx)] &= ~packed_phase_bit_mask(idx);
-        }
-        return;
-    }
-
-    storage.phase_values[idx] = checked_packed_phase(value, what);
-}
-
 inline auto packed_phase_at(const PackedPhaseStorage &storage, size_t idx) -> int {
     if (storage.uses_binary_phases) {
         return (storage.phase_words[packed_phase_word_index(idx)] & packed_phase_bit_mask(idx)) != 0 ? -1 : 1;
