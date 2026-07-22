@@ -18,8 +18,8 @@
 #include <stdexcept>
 
 #include "monoprop/Evolution.h"
-#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 
 namespace monoprop::detail {
 

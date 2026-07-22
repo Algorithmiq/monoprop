@@ -120,8 +120,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
                                                                   basis,
                                                                   /*shards=*/1);
         };
-        shard_group_ =
-            std::make_unique<detail::shard::ShardGroup<NumModes>>(static_cast<int>(n_shards), factory, comm);
+        shard_group_ = std::make_unique<detail::shard::ShardGroup<NumModes>>(static_cast<int>(n_shards), factory, comm);
         return;
     }
 
@@ -212,9 +211,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       cutoff_type_(other.cutoff_type_),
       basis_change_(other.basis_change_),
       basis_(other.basis_),
-      shard_group_(other.shard_group_
-                       ? std::make_unique<detail::shard::ShardGroup<NumModes>>(*other.shard_group_)
-                       : nullptr) {}
+      shard_group_(other.shard_group_ ? std::make_unique<detail::shard::ShardGroup<NumModes>>(*other.shard_group_)
+                                      : nullptr) {}
 
 // Resolve the effective shard count.
 //   • explicit ctor `shards` >= 1 wins;
@@ -310,7 +308,8 @@ auto MonomialPropagator<NumModes>::sharded_core_term_() const -> double {
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::sharded_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
+auto MonomialPropagator<NumModes>::sharded_operator_memory_usage_() const
+    -> detail::MPOperatorMemoryBreakdown<NumModes> {
     detail::MPOperatorMemoryBreakdown<NumModes> total;
     for (int r = 0; r < shard_group_->shard_count(); ++r) {
         total += shard_group_->shard(r).operator_memory_usage();
@@ -599,8 +598,8 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                                int only_rotate_len_k) -> void {
     if (shard_group_) {
         shard_group_->run_on_all([&](int r) {
-            shard_group_->shard(r).build_graph(
-                majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
+            shard_group_->shard(r)
+                .build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
         });
         return;
     }
@@ -997,8 +996,8 @@ auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<do
         // exchange), then return a closure that invokes them all concurrently and returns shard 0's
         // (global, via the allreduce inside each). Captures the group by raw pointer: like the
         // single-rank functional, the returned callable must not outlive this propagator.
-        auto fns =
-            std::make_shared<std::vector<std::function<double(const VecD &)>>>(static_cast<size_t>(shard_group_->shard_count()));
+        auto fns = std::make_shared<std::vector<std::function<double(const VecD &)>>>(
+            static_cast<size_t>(shard_group_->shard_count()));
         shard_group_->run_on_all([&](int r) {
             (*fns)[static_cast<size_t>(r)] = shard_group_->shard(r).expectation_value_functional(pare_threshold);
         });

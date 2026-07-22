@@ -212,8 +212,8 @@ inline auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layou
 // build_layer_exchange_layout_impl: sums sin_send_count * scale per rank.
 // PartnerRangeLike must have a sin_send_count field (full-width size_t so checked_mpi_int catches overflow).
 template <typename PartnerRangeLike>
-inline auto build_layer_exchange_layout_impl(const std::vector<PartnerRangeLike> &ranges,
-                                             int scale) -> LayerExchangeLayout {
+inline auto build_layer_exchange_layout_impl(const std::vector<PartnerRangeLike> &ranges, int scale)
+    -> LayerExchangeLayout {
     LayerExchangeLayout layout;
     layout.counts.resize(ranges.size());
     layout.displs.resize(ranges.size());
@@ -232,8 +232,8 @@ inline auto build_layer_exchange_layout_impl(const std::vector<PartnerRangeLike>
 // into the self-rank partner slot (my_rank).  The exchange layout zeroes counts[my_rank]
 // so MPI_Alltoallv never touches the self-rank slot; the replay handles it as a local
 // buffer copy.  This matches paper Algorithm 3 (BuildDistributedLayer / ContractLayer).
-inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners,
-                                        size_t my_rank) -> std::shared_ptr<LayerCore> {
+inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
+    -> std::shared_ptr<LayerCore> {
     auto storage = std::make_shared<LayerCore>();
 
     // Build exchange layout excluding self-rank (counts[my_rank] = 0).

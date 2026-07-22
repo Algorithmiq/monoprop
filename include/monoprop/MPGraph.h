@@ -142,9 +142,7 @@ public:
     /**
      * @brief Non-owning replay view over the active layers, in build order.
      */
-    auto replay_view() const -> MPGraphView {
-        return MPGraphView(layers_, active_begin_index(), layers(), false);
-    }
+    auto replay_view() const -> MPGraphView { return MPGraphView(layers_, active_begin_index(), layers(), false); }
 
     /**
      * @brief Check if the graph is in Schrodinger picture.

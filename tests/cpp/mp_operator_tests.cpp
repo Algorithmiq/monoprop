@@ -35,8 +35,7 @@ namespace {
 // hash index are separate in OperatorIndex: push_back/append_term writes a row only, while find()
 // needs the index that bulk_insert populates. insert_absent_terms is the production grow→assign→
 // bulk_insert path, so it yields a store where find() works — required by every find-driven method.
-auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis::Majorana)
-    -> detail::MPOperator<8> {
+auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis::Majorana) -> detail::MPOperator<8> {
     detail::MPOperator<8> op;
     op.basis = basis;
     detail::insert_absent_terms<8>(
@@ -71,11 +70,11 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_paul
         op.basis = basis;
         op.slater_determinant = hf;
 
-        Monomial<8> identity;              // empty -> paired
-        Monomial<8> paired_mode0;          // raw bits {0,1} -> mode 0 paired
+        Monomial<8> identity;     // empty -> paired
+        Monomial<8> paired_mode0; // raw bits {0,1} -> mode 0 paired
         paired_mode0.set(0);
         paired_mode0.set(1);
-        Monomial<8> unpaired;              // raw bit {0} only -> not paired
+        Monomial<8> unpaired; // raw bit {0} only -> not paired
         unpaired.set(0);
 
         op.append_term(identity);
@@ -133,8 +132,8 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map
     const VecD &coeffs = op.get_operator();
     BOOST_REQUIRE_EQUAL(coeffs.size(), 2U);
     BOOST_CHECK_EQUAL(coeffs[0], 3.0);
-    BOOST_CHECK_EQUAL(coeffs[1], 0.0); // b was not in the init map
-    BOOST_CHECK(op.init_op_map.find(a) == op.init_op_map.end());       // drained
+    BOOST_CHECK_EQUAL(coeffs[1], 0.0);                                // b was not in the init map
+    BOOST_CHECK(op.init_op_map.find(a) == op.init_op_map.end());      // drained
     BOOST_CHECK(op.init_op_map.find(absent) != op.init_op_map.end()); // retained
 
     // Second call is a no-op fast path (size already matches).
@@ -183,8 +182,8 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_abse
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identity_term) {
     // The Majorana codec divides by the term's hermitian phase; for the identity term that phase is
     // 1, so a real coefficient round-trips as itself without tripping the non-Hermitian guard.
-    const Monomial<8> identity;                 // empty
-    auto op = build_indexed_op({identity});     // basis defaults to Majorana
+    const Monomial<8> identity;             // empty
+    auto op = build_indexed_op({identity}); // basis defaults to Majorana
 
     FermiOperatorMap dict;
     dict[VecZ{}] = cd(2.75, 0.0);
@@ -201,8 +200,9 @@ BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {
     const auto e1 = indices_to_bitset<8>({2, 3});
     auto op = build_indexed_op({e0, e1}); // two existing indexed rows
 
-    const std::vector<Monomial<8>> fresh = {
-        indices_to_bitset<8>({4, 5}), indices_to_bitset<8>({6, 7}), indices_to_bitset<8>({0, 3})};
+    const std::vector<Monomial<8>> fresh = {indices_to_bitset<8>({4, 5}),
+                                            indices_to_bitset<8>({6, 7}),
+                                            indices_to_bitset<8>({0, 3})};
 
     const size_t base = detail::insert_absent_terms<8>(
         op,

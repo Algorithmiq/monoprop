@@ -17,12 +17,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstring>
 #include <format>
+#include <functional>
 #include <map>
 #include <numeric>
-#include <complex>
-#include <functional>
 #include <optional>
 #include <set>
 #include <string>
@@ -34,10 +34,10 @@
 #include "monoprop/Evolution.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
-#include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 #include "monoprop/Validation.h"
+#include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/mpi/MPICompat.h"

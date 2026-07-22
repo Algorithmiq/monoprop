@@ -36,8 +36,8 @@ BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_push_index_coalesces_within_wor
     CosineWordBuilder b;
     b.push_index(0);
     b.push_index(1);
-    b.push_index(3); // same 64-bit word (base 0)
-    b.push_index(64); // crosses into the next word -> flushes word 0
+    b.push_index(3);   // same 64-bit word (base 0)
+    b.push_index(64);  // crosses into the next word -> flushes word 0
     b.push_index(197); // word base 192, bit 5
     const CosMask cos = b.finish();
 

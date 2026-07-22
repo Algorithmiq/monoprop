@@ -17,8 +17,8 @@
 #include <algorithm>
 
 #include "monoprop/MonomialPropagator.h"
-#include "monoprop/detail/evolution/LayerBuilder.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
+#include "monoprop/detail/evolution/LayerBuilder.h"
 
 namespace monoprop {
 

@@ -34,8 +34,8 @@
 #endif
 
 // These includes are here on purpose and should not be moved to the top
-#include "monoprop/detail/print_compat.h"
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/print_compat.h"
 
 namespace monoprop::mpi {
 
@@ -345,10 +345,10 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
 #endif
 
     if (known_recv_counts != nullptr) {
-        std::copy(known_recv_counts->begin(),
-                  known_recv_counts->begin()
-                      + std::min<size_t>(known_recv_counts->size(), static_cast<size_t>(num_ranks)),
-                  h.recv_counts.begin());
+        std::copy(
+            known_recv_counts->begin(),
+            known_recv_counts->begin() + std::min<size_t>(known_recv_counts->size(), static_cast<size_t>(num_ranks)),
+            h.recv_counts.begin());
         if (self >= 0) {
             h.recv_counts[static_cast<size_t>(self)] = 0;
         }

@@ -42,9 +42,7 @@ list(
   ${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h
 )
 
-set(
-  monoprop_PRIVATE_HEADERS
-)
+set(monoprop_PRIVATE_HEADERS)
 
 set_target_properties(
   monoprop

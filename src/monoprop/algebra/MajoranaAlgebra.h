@@ -82,7 +82,6 @@ auto hf_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &hf_mask) 
     return POWERS_OF_MINUS_ONE[(num_pairs + maj.count() / 2) % 2];
 }
 
-
 /**
  * @brief Computes the ordering sign of the Majorana product maj * gen.
  *
