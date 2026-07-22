@@ -29,13 +29,14 @@ from cuquantum.pauliprop.experimental import (
     Truncation,
     get_num_packed_integers,
 )
-from monoprop import MonomialPropagator, jordan_wigner_basis_change
+from monoprop import PauliPropagator
 from monoprop.qiskit_conversion import from_qiskit_circuit, from_qiskit_operator
-from pauli_prop import propagate_through_circuit
 from ppvm import PauliSum
 from qiskit.circuit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 from tqdm import tqdm
+
+from pauli_prop import propagate_through_circuit
 
 
 def _pauli_string_to_packed_integers(
@@ -80,7 +81,9 @@ hz = settings["hz"]
 j = settings["j"]
 dt = settings["dt"]
 
-step_range = range(settings["step_min"], settings["step_max"] + 1)
+step_range = range(
+    settings["step_min"], settings["step_max"] + 1, settings["step_size"]
+)
 lower_atol = settings["lower_atol"]
 max_pauli_weight = nq if settings["cutoff"] is None else settings["cutoff"]
 obs_qubits = tuple(settings["obs_qubits"])
@@ -119,13 +122,11 @@ obs = SparsePauliOp.from_sparse_list([("ZZ", list(obs_qubits), 1.0)], num_qubits
 # --- monoprop ---
 mp_circ = from_qiskit_circuit(step_circ, initial_state=[])
 mp_obs = from_qiskit_operator(obs)
-mp = MonomialPropagator(
+mp = PauliPropagator(
     initial_operator=mp_obs,
-    quantum_circuit=mp_circ,
-    cutoff_type="support",
+    initial_state=mp_circ.initial_state,
     cutoff=max_pauli_weight,
     lower_atol=lower_atol,
-    basis_change=jordan_wigner_basis_change(nq),
 )
 
 # --- QuEra ppvm ---
@@ -171,7 +172,7 @@ cupp_step_gates += [PauliRotationGate(theta_x, ["X"], [i]) for i in range(nq)]
 for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
     # --- monoprop --- (exposes its own C++ operator-memory accounting)
     t1 = time.perf_counter()
-    mp.propagate(evolve_with_coeffs=True)
+    mp.propagate(mp_circ)
     expval = mp.expectation_value()
     t2 = time.perf_counter()
     if step_idx > 0:

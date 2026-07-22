@@ -25,7 +25,7 @@ hz = settings["hz"]
 j = settings["j"]
 dt = settings["dt"]
 
-step_range = settings["step_min"]:settings["step_max"]
+step_range = settings["step_min"]:settings["step_size"]:settings["step_max"]
 lower_atol = settings["lower_atol"]
 max_pauli_weight = something(settings["cutoff"], Inf)
 obs_qubits = Tuple(q + 1 for q in settings["obs_qubits"])
