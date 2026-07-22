@@ -109,7 +109,7 @@ def main() -> None:
     axes[1, 1].set_title("Final overlap vs layers")
 
     fig.tight_layout()
-    fig.savefig(args.output_dir / "benchmark_results.png")
+    fig.savefig(args.output_dir / "majorana_results.png")
 
     if args.show:
         plt.show()
