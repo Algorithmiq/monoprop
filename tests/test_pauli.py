@@ -55,6 +55,24 @@ class TestPauliPropagatorCutoff:
         with pytest.raises(ValueError, match="not Hermitian"):
             self._propagator(serial_comm).propagate(circuit)
 
+    @pytest.mark.parametrize("schrodinger_cutoff", [3, 4, 5])
+    def test_schrodinger_cutoff(self, schrodinger_cutoff, serial_comm):
+        """schrodinger_cutoff bounds the retained Schrodinger-state Pauli weight, in qubits.
+
+        PauliPropagator doubles it internally (qubit weight -> gamma-slot popcount), so the
+        user-facing value is a Pauli weight in qubits, matching ``cutoff``.
+        """
+        mp = PauliPropagator(
+            PauliOperator({"ZZ": 1.0}, num_qubits=10),
+            initial_state=[],
+            cutoff=4,
+            schrodinger_cutoff=schrodinger_cutoff,
+            comm=serial_comm,
+        )
+        op = mp.evolved_operator()
+        # evolved_operator() returns a PauliOperator; a term's weight is its qubit count.
+        assert max(len(p.qubits) for p in op.terms) == schrodinger_cutoff
+
 
 class TestPauli:
     def test_default_qubits_are_range(self):
