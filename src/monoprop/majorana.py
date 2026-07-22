@@ -26,12 +26,12 @@ if TYPE_CHECKING:
 
 
 class Majorana:
-    """A single Majorana monomial: the ordered product ``gamma_{i_1} ... gamma_{i_w}``.
+    """A single Majorana monomial: the ordered product ``m_{i_1} ... m_{i_w}``.
 
     A term is the atom a :class:`MajoranaOperator` is built from and the generator an
     :class:`~monoprop.circuit.ExpGate` gate exponentiates. Indices are sorted on construction
     (matching the operator's canonicalization) and must be distinct and non-negative. A
-    repeated index is rejected because ``gamma_i^2 = 1`` would silently change the monomial's
+    repeated index is rejected because ``m_i^2 = 1`` would silently change the monomial's
     weight -- almost always a mistake rather than an intended simplification.
 
     An immutable value object: equal indices compare equal and hash alike, so a term can be
