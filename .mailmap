@@ -1,2 +1,20 @@
-Roberto Di Remigio Eikås <roberto@algorithmiq.fi> <roberto@totaltrash.xyz>
+# Entries in this file are made for two reasons:
+# 1) to merge multiple git commit authors that correspond to a single author
+# 2) to change the canonical name and/or email address of an author.
+#
+# Format is:
+#     Canonical Name <Canonical@email> commit name <commit@email>
+#     \--------------+---------------/ \----------+-------------/
+#                 replace                       find
+# See also: 'git shortlog --help' and 'git check-mailmap --help'.
+
+Aaron Miller <aaron.miller@algorithmiq.fi> <61472721+diagonal-hamiltonian@users.noreply.github.com>
+Adam Glos <adam@algorithmiq.fi> Adam <adam@algorithmiq.fi>
+Matteo AC Rossi <matteo@algorithmiq.fi> Matteo Rossi <matteo@algorithmiq.fi>
+Matteo AC Rossi <matteo@algorithmiq.fi> Matteo Rossi <teo.red90@gmail.com>
+Matteo AC Rossi <matteo@algorithmiq.fi> Matteo AC Rossi <9745862+matteoacrossi@users.noreply.github.com>
+Roberto Di Remigio Eikås <roberto@algorithmiq.fi> <roberto@ip-10-0-21-180.eu-west-1.compute.internal>
+Roberto Di Remigio Eikås <roberto@algorithmiq.fi> <roberto@ip-10-0-62-154.eu-west-1.compute.internal>
+Roberto Di Remigio Eikås <roberto@algorithmiq.fi> <roberto@ip-10-0-24-7.eu-west-1.compute.internal>
 Roberto Di Remigio Eikås <roberto@algorithmiq.fi> <robertodr@users.noreply.github.com>
+Roberto Di Remigio Eikås <roberto@algorithmiq.fi> <roberto@totaltrash.xyz>
