@@ -72,4 +72,4 @@ for label, memory in memory_dict.items():
 _style_axes(ax2, "Memory per step [MB]")
 
 fig.tight_layout()
-fig.savefig(Path(__file__).parent / "results.png", dpi=150)
+fig.savefig(Path(__file__).parent / "pauli_results.png", dpi=150)
