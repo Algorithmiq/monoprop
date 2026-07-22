@@ -115,6 +115,7 @@ class ExpGate:
         generator: MajoranaOperator | PauliOperator | FermiOperator,
         index: int | None = None,
         *,
+        atol: float = 1e-8,
         _structural: bool = False,
     ) -> None:
         """Wrap a generator operator; its type selects the family and normalization convention.
@@ -127,6 +128,10 @@ class ExpGate:
         :class:`~monoprop.pauli.Pauli` term is *not* accepted; wrap it in the
         corresponding operator (e.g. ``MajoranaOperator({(0, 1): 1j}, num_modes)`` -- a Majorana
         generator carries the Hermitian operator, so a weight-2 coefficient is imaginary).
+
+        ``atol`` is the tolerance for rejecting a non-Hermitian Majorana or Pauli terms; if the corresponding
+        coefficients are below the threshold in the absolute values, they are discarded.
+
 
         ``_structural`` is internal: :meth:`_structural_gate` sets it when the generator already
         carries the real structural coefficients ``g`` (the wire/dense format), so
@@ -150,14 +155,34 @@ class ExpGate:
                 f"(an operator object carrying its mode/qubit count), not a bare term; got "
                 f"{type(generator).__name__}."
             )
-        if isinstance(generator, PauliOperator):
-            _validate_commuting_pauli_generator(generator)
-        self.generator = generator
+
+        self.generator = self._truncated_term(generator, atol)
+
+        if isinstance(self.generator, PauliOperator):
+            _validate_commuting_pauli_generator(self.generator)
+        elif isinstance(self.generator, MajoranaOperator):
+            _validate_commuting_majorana_generator(self.generator)
+
         self.index = None if index is None else int(index)
         self.family = family
         # Authored generators (including converted fermionic ones) carry the Hermitian operator;
         # _gate_layers normalizes them. Only the wire/dense path sets _structural=True.
         self._structural = _structural
+
+    def _truncated_term(
+        self, generator: PauliOperator | MajoranaOperator, atol: float
+    ) -> PauliOperator | MajoranaOperator:
+        """Return a generator with terms below the threshold dropped.
+
+        The threshold is the same as :meth:`Circuit.from_dense_arrays` uses to drop
+        negligible terms when converting a FermiOperator to its Majorana form.
+        """
+        if isinstance(generator, PauliOperator):
+            terms = {p: c for p, c in generator.terms.items() if abs(c) > atol}
+            return PauliOperator(terms, generator.num_qubits)
+
+        terms = {m: c for m, c in generator.terms.items() if abs(c) > atol}
+        return MajoranaOperator(terms, generator.num_modes)
 
     @classmethod
     def _structural_gate(
@@ -532,7 +557,7 @@ def _real_generator_coefficient(majorana: Sequence[int], value: complex) -> floa
 def _antihermitian_gen_coeff(majorana: Sequence[int], coeff: complex) -> float:
     """Antihermitian-normalize a raw Majorana-product coefficient to a real ``g``.
 
-    A physical generator's coefficient on the raw product ``gamma_{i_1}...gamma_{i_w}`` is
+    A physical generator's coefficient on the raw product ``m_{i_1}...m_{i_w}`` is
     turned into the real structural coefficient of the antihermitian generator the engine
     rotates by, dividing out the Hermitian phase ``(1j)**(w(w-1)/2)``. Raises ``ValueError``
     if the result is not real (i.e. the generator is not Hermitian).
@@ -573,6 +598,36 @@ def _validate_commuting_pauli_generator(generator: PauliOperator) -> None:
             raise ValueError(
                 "A multi-term Pauli gate generator must have mutually commuting terms so the "
                 f"gate is a single exponential of their sum; {p1} and {p2} anticommute."
+            )
+
+
+def _majoranas_commute(m1: Sequence[int], m2: Sequence[int]) -> bool:
+    """Whether two Majorana monomials commute as operators.
+
+    For canonicalized monomials with distinct indices, swapping the products contributes
+    the sign ``(-1)**(len(m1)*len(m2) - |set(m1) & set(m2)|)``.
+    """
+    n_common = len(set(m1) & set(m2))
+    return ((len(m1) * len(m2) - n_common) % 2) == 0
+
+
+def _validate_commuting_majorana_generator(generator: MajoranaOperator) -> None:
+    """Reject a multi-term Majorana generator whose terms do not pairwise commute.
+
+    A gate is a single exponential of its generator, but :func:`_gate_layers` realizes a
+    multi-term generator as a product of one rotation per term. That product equals
+    ``exp(theta * sum_i g_i*M_i)`` only when the Majorana monomials mutually commute;
+    otherwise the evolution would be silently Trotterized.
+
+    Raises:
+        ValueError: If any two terms of ``generator`` anticommute.
+    """
+    for m1, m2 in itertools.combinations(generator.terms, 2):
+        if not _majoranas_commute(m1, m2):
+            raise ValueError(
+                "A multi-term Majorana gate generator must have mutually commuting terms "
+                "so the gate is a single exponential of their sum; "
+                f"{tuple(m1)} and {tuple(m2)} anticommute."
             )
 
 

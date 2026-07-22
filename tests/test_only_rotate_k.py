@@ -14,12 +14,15 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext as does_not_raise
+
 import numpy as np
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import Circuit, ExpGate, MajoranaPropagator
+from monoprop import Circuit, ExpGate, MajoranaPropagator, PauliPropagator
 from monoprop.majorana import MajoranaOperator
+from monoprop.pauli import PauliOperator
 from tests.cases import CasesFermionicProblemOrbitalRotations
 
 
@@ -121,3 +124,67 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
 
     assert mp.size() < mp_act.size()
     assert np.isclose(test_expval, act_ener, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("only_rotate_len_k", "err"),
+    [
+        (
+            -1,
+            pytest.raises(
+                ValueError,
+                match=r"only_rotate_len_k=-1 is out of range; must be 0 < k <= 2\*num_qubits",
+            ),
+        ),
+        (
+            0,
+            pytest.raises(
+                ValueError,
+                match=r"only_rotate_len_k=0 is out of range; must be 0 < k <= 2\*num_qubits",
+            ),
+        ),
+        (9, does_not_raise()),
+        (8, does_not_raise()),
+    ],
+)
+@pytest.mark.parametrize("method_name", ["build_graph", "propagate"])
+def test_only_rotate_len_k_errors_majorana(only_rotate_len_k, err, method_name):
+    """Test that invalid only_rotate_len_k raises ValueError."""
+    mp = MajoranaPropagator(MajoranaOperator({}, 4), [], cutoff=6, schrodinger_cutoff=8)
+    with err:
+        getattr(mp, method_name)(Circuit(), only_rotate_len_k=only_rotate_len_k)
+
+
+@pytest.mark.parametrize(
+    ("only_rotate_len_k", "err"),
+    [
+        (
+            -1,
+            pytest.raises(
+                ValueError,
+                match=r"only_rotate_len_k=-1 is out of range; must be 0 < k <= 2\*num_qubits",
+            ),
+        ),
+        (
+            0,
+            pytest.raises(
+                ValueError,
+                match=r"only_rotate_len_k=0 is out of range; must be 0 < k <= 2\*num_qubits",
+            ),
+        ),
+        (
+            9,
+            pytest.raises(
+                ValueError,
+                match=r"only_rotate_len_k=9 is out of range; must be 0 < k <= 2\*num_qubits",
+            ),
+        ),
+        (8, does_not_raise()),
+    ],
+)
+@pytest.mark.parametrize("method_name", ["build_graph", "propagate"])
+def test_only_rotate_len_k_errors_pauli(only_rotate_len_k, err, method_name):
+    """Test that invalid only_rotate_len_k raises ValueError."""
+    mp = PauliPropagator(PauliOperator({}, 4), [], cutoff=6, schrodinger_cutoff=8)
+    with err:
+        getattr(mp, method_name)(Circuit(), only_rotate_len_k=only_rotate_len_k)
