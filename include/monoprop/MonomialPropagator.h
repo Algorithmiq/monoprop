@@ -505,17 +505,7 @@ public:
     virtual auto update_initial_operator(const FermiOperatorMap &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
-    // FROZEN EXTENSION SURFACE. Everything in this `protected:` block (the ev/ev_and_grad callbacks,
-    // the static utilities, apply_initial_operator_, the data members, packed_inline_width_) plus the
-    // two `virtual` methods above exist for the out-of-tree subclass `MonomialPropagatorExtra` (no C++
-    // definition lives in this repo — only in a downstream/private repo that builds against this
-    // header). Do NOT change these signatures/layout without coordinating that repo; refactors must
-    // delegate underneath them.
-    // Reusable evaluation callbacks for make_functional_ / the pare functionals — also used by
-    // MonomialPropagatorExtra.
-    // The trailing cos_scale/cos_acc recompute the per-layer cosine set from the prepared fold and are
-    // required for any evolving path (the "stored-cos" fallback no longer exists — no layer keeps its
-    // cosine bitmap). ev_fn ignores cos_acc because the energy path has no reverse sweep.
+    // Reusable evaluation callbacks for make_functional_
     static inline const auto ev_fn = [](double e_core,
                                         const VecD &state,
                                         const VecD &op,
@@ -545,7 +535,7 @@ protected:
         return ev_and_grad(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale, cos_acc);
     };
 
-    // Static utility methods also needed by MonomialPropagatorExtra.
+    // Static utility methods
     static auto expected_num_params(const VecZ &parameter_mapping) -> size_t;
 
     template <typename Fn, typename R = std::invoke_result_t<Fn, const VecD &>>
@@ -561,7 +551,7 @@ protected:
      */
     auto apply_initial_operator_(const FermiOperatorMap &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
 
-    // Data members also needed by MonomialPropagatorExtra.
+    // Data members
     bool schrodinger_;
     mpi::Comm comm_; // communicator handle (real MPI across nodes, or in-process ShmComm across shards)
     CutoffFn<NumModes> cutoff_fn_;
