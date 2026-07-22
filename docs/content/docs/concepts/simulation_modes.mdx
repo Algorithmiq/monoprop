@@ -39,7 +39,9 @@ though matching the Heisenberg-picture result requires a slightly looser cutoff
 on the state (the `schrodinger_cutoff` setting; see
 [Initialisation and updates](/features/initialisation)). The Schrödinger picture
 is less common, but useful for evaluating many observables against the same
-state.
+Note that `schrodinger_cutoff` is measured in Pauli weight for PauliPropagator,
+and in number of Majorana operators for MajoranaPropagator, following the natural
+definitions in each case.
 
 ## See also
 
