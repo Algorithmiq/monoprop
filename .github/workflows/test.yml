@@ -116,7 +116,8 @@ jobs:
           -r aR \
           --durations=50 \
           --durations-min=5.0 \
-          --junit-xml=pytest-"${{ steps.test-group-label.outputs.label }}".xml
+          --junit-xml=pytest-"${{ steps.test-group-label.outputs.label }}".xml \
+          -o junit_family=legacy
 
       - name: Run Python tests under MPI
         env:
@@ -607,3 +608,9 @@ jobs:
           files: |
             pytest-*.xml
             ctest-*.xml
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
