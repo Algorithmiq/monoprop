@@ -32,17 +32,17 @@ jobs:
     outputs:
       should-run: ${{ steps.check.outputs.should-run }}
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: changed-deploy-workflow
         if: ${{ github.event_name == 'pull_request' }}
-        uses: tj-actions/changed-files@v47.0.6
+        uses: tj-actions/changed-files@v47
         with:
           files: .github/workflows/deploy.yml
       - id: changed-pyproject
         if: ${{ github.event_name == 'pull_request' }}
-        uses: tj-actions/changed-files@v47.0.6
+        uses: tj-actions/changed-files@v47
         with:
           files: pyproject.toml
       - id: check
@@ -101,18 +101,18 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || needs.check-pr-changes.outputs.should-run == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # such that setuptools_scm can do its job correctly
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@v9
 
       - name: Build SDist
         run: |
           uv tool run --from build pyproject-build --verbose --sdist --installer uv
 
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7
         with:
           name: cibw-sdist
           path: dist/*.tar.gz
@@ -138,7 +138,7 @@ jobs:
             runs-on: macos-15
 
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -151,7 +151,7 @@ jobs:
           CIBW_DEBUG_TRACEBACK: TRUE
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: wheelhouse/*.whl
@@ -171,7 +171,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@v8
         with:
           # unpacks all CIBW artifacts into dist/
           pattern: cibw-*
@@ -179,9 +179,9 @@ jobs:
           merge-multiple: true
 
       - name: Generate artifact attestations
-        uses: actions/attest-build-provenance@v4.1.1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "dist/*"
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.1
+        uses: pypa/gh-action-pypi-publish@v1

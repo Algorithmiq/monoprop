@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v7
         with:
           # grab the history of the PR, so setuptools-scm can compute the correct version number
           fetch-depth: 0
@@ -66,13 +66,13 @@ jobs:
           ./tools/install-deps.sh /opt/Software --skip-boost-test --skip-msgpack
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@v9
         with:
           enable-cache: true
           python-version: "3.11"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7.0.0
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -93,11 +93,11 @@ jobs:
 
       - name: Setup Pages
         if: ${{ github.ref == 'refs/heads/main' }}
-        uses: actions/configure-pages@v6.0.0
+        uses: actions/configure-pages@v6
 
       - name: Upload artifact
         if: ${{ github.ref == 'refs/heads/main' }}
-        uses: actions/upload-pages-artifact@v5.0.0
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/out
 
@@ -105,7 +105,7 @@ jobs:
       # main): the Cloudflare deploy job below needs `docs/out` for PR builds
       # too, to publish a preview.
       - name: Upload docs site artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: docs-site
           path: docs/out
@@ -121,7 +121,7 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5.0.0
+        uses: actions/deploy-pages@v5
 
   deploy-cloudflare:
     needs: build
@@ -131,7 +131,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Download docs site artifact
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@v8
         with:
           name: docs-site
           path: docs/out
@@ -142,7 +142,7 @@ jobs:
       # and `CLOUDFLARE_ACCOUNT_ID` repo secrets.
       - name: Deploy to Cloudflare Pages
         id: deploy
-        uses: cloudflare/wrangler-action@v4.0.0
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -152,7 +152,7 @@ jobs:
 
       - name: Comment preview link on PR
         if: ${{ github.event_name == 'pull_request' }}
-        uses: marocchino/sticky-pull-request-comment@v3.0.5
+        uses: marocchino/sticky-pull-request-comment@v3
         with:
           message: |
             Docs preview: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
