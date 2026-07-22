@@ -514,7 +514,7 @@ public:
     virtual auto update_initial_operator(const FermiOperatorMap &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
-    // Reusable evaluation callbacks for make_functional — also used by MonomialPropagatorExtra.
+    // Reusable evaluation callbacks for make_functional
     static inline const auto ev_fn = [](double e_core,
                                         const VecD &state,
                                         const VecD &op,
@@ -537,7 +537,7 @@ protected:
         return ev_and_grad(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm);
     };
 
-    // Static utility methods also needed by MonomialPropagatorExtra.
+    // Static utility methods
     static auto append_to_graph(MPGraph &graph,
                                 VecZ &cos_inds,
                                 std::optional<CompressedCosineData> &compressed_cos_data,
@@ -583,7 +583,7 @@ protected:
         return std::move(std::get<2>(res));
     }
 
-    // Data members also needed by MonomialPropagatorExtra.
+    // Data members
     bool schrodinger_;
     MPI_Comm comm_; // MPI communicator
     CutoffFn<NumModes> cutoff_fn_;
