@@ -29,7 +29,7 @@ from cuquantum.pauliprop.experimental import (
     Truncation,
     get_num_packed_integers,
 )
-from monoprop import MonomialPropagator, jordan_wigner_basis_change
+from monoprop import PauliPropagator
 from monoprop.qiskit_conversion import from_qiskit_circuit, from_qiskit_operator
 from pauli_prop import propagate_through_circuit
 from ppvm import PauliSum
@@ -80,7 +80,9 @@ hz = settings["hz"]
 j = settings["j"]
 dt = settings["dt"]
 
-step_range = range(settings["step_min"], settings["step_max"] + 1)
+step_range = range(settings["step_min"],
+                   settings["step_max"] + 1,
+                   settings["step_size"])
 lower_atol = settings["lower_atol"]
 max_pauli_weight = nq if settings["cutoff"] is None else settings["cutoff"]
 obs_qubits = tuple(settings["obs_qubits"])
@@ -119,13 +121,12 @@ obs = SparsePauliOp.from_sparse_list([("ZZ", list(obs_qubits), 1.0)], num_qubits
 # --- monoprop ---
 mp_circ = from_qiskit_circuit(step_circ, initial_state=[])
 mp_obs = from_qiskit_operator(obs)
-mp = MonomialPropagator(
+mp = PauliPropagator(
     initial_operator=mp_obs,
     quantum_circuit=mp_circ,
     cutoff_type="support",
     cutoff=max_pauli_weight,
     lower_atol=lower_atol,
-    basis_change=jordan_wigner_basis_change(nq),
 )
 
 # --- QuEra ppvm ---
