@@ -194,12 +194,40 @@ class MonomialPropagator(ABC):
                 "propagator with this circuit's initial state (or via from_circuit)."
             )
 
+    def _validate_and_correct_only_rotate_len_k(
+        self, only_rotate_len_k: int | None
+    ) -> int:
+        """Validate and correct the optional only_rotate_len_k argument.
+
+        The argument is a positive integer in the range ``1..2*num_qubits`` (inclusive) or
+        ``None``. If ``None``, it is replaced with ``0`` to indicate "no restriction" to the
+        simulator. The simulator interprets ``0`` as "apply all gates to all monomials",
+        so this is a convenient way to avoid passing an extra argument when no restriction
+        is needed.
+
+        Args:
+            only_rotate_len_k: Optional length cutoff for gate application.
+
+        Returns:
+            The validated and corrected cutoff, with ``None`` replaced by ``0``.
+        """
+        if only_rotate_len_k is None:
+            return 0
+        if only_rotate_len_k <= 0 or (
+            isinstance(self._num_qubits, int)
+            and only_rotate_len_k > 2 * self._num_qubits
+        ):
+            raise ValueError(
+                f"only_rotate_len_k={only_rotate_len_k} is out of range; must be 0 < k <= 2*num_qubits "
+            )
+        return only_rotate_len_k
+
     def build_graph(
         self,
         circuit: Circuit,
         *,
         seed_parameters: ParameterValues = None,
-        only_rotate_len_k: int = 0,
+        only_rotate_len_k: int | None = None,
     ) -> None:
         """Append a circuit to the propagation graph.
 
@@ -220,7 +248,7 @@ class MonomialPropagator(ABC):
                 omitted while extending, the new layers are built structurally (coefficient
                 truncation is skipped for them); the engine validates the length of an explicit
                 seed.
-            only_rotate_len_k: If > 0, apply gates to monomials of length <= k in the
+            only_rotate_len_k: If provided, apply gates to monomials of length <= k in the
                 evolved operator even if they anticommute. Useful when many free-fermionic
                 gates (generators that are length-2 Majorana monomials) are applied before
                 expectation-value estimation in Schrodinger-picture simulations.
@@ -235,6 +263,10 @@ class MonomialPropagator(ABC):
         #    its local angles, not the accumulated axis, so there is no seed to give: build the
         #    new layers structurally (coefficient truncation applies only when a seed is
         #    supplied; pass seed_parameters to truncate an incremental extension).
+        only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
+            only_rotate_len_k
+        )
+
         if seed_parameters is not None:
             seed = seed_parameters
         elif self.graph_layers == 0:
@@ -262,10 +294,7 @@ class MonomialPropagator(ABC):
         )
 
     def propagate(
-        self,
-        circuit: Circuit,
-        *,
-        only_rotate_len_k: int = 0,
+        self, circuit: Circuit, *, only_rotate_len_k: int | None = None
     ) -> None:
         """Evolve and contract immediately, without storing a graph.
 
@@ -278,6 +307,9 @@ class MonomialPropagator(ABC):
                 :class:`~monoprop.circuit.Circuit`.
             only_rotate_len_k: See :meth:`build_graph`.
         """
+        only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
+            only_rotate_len_k
+        )
         self._check_initial_state(circuit)
         gates = self._circuit_gates(circuit)
         num_qubits = self._num_qubits
