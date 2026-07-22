@@ -81,9 +81,14 @@ class MajoranaPropagator(MonomialPropagator):
                 regardless of this cutoff, because only paired monomials can contribute
                 to an expectation value against a computational-basis state or Slater
                 determinant; discarding them would throw away signal.
-            schrodinger_cutoff: Optional cutoff for Schrodinger-picture evolution. If
-                provided, enables the Schrodinger picture; if ``None``, the Heisenberg
-                picture is used.
+            schrodinger_cutoff: Selects and configures Schrodinger-picture evolution.
+                If ``None`` (default), the simulator runs in the Heisenberg picture.
+                If an integer is provided, the simulator runs in the Schrodinger
+                picture and this value is used as the truncation limit for the evolved
+                state (including initialization from ``initial_state``), using the same
+                complexity notion as ``cutoff_type``. In practice, choose
+                ``schrodinger_cutoff`` at least as large as ``cutoff`` (often slightly
+                larger) for comparable accuracy.
             cutoff_type: Truncation scheme (the fully-paired exception above always
                 applies on top of either). ``"length"`` (default) keeps monomials
                 whose length -- the number of Majorana operators -- does not exceed
