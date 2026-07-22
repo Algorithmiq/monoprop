@@ -322,6 +322,54 @@ jobs:
           path: cpp-coverage-python.json
           retention-days: 1
 
+  upload-coverage:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Upload coverage to Codecov
+    runs-on: ubuntu-latest
+    needs:
+      - python-checks
+      - cpp-checks
+      - python-bindings-coverage
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: .
+
+      - name: Convert Python coverage data to XML
+        run: |
+          for f in coverage-*; do
+            COVERAGE_FILE="$f" pipx run coverage xml -o "${f}.xml"
+          done
+
+      - name: Convert C++ tracefiles to Cobertura XML
+        run: |
+          # --merge-lines: collapse gcov's per-instantiation duplicate line
+          # records into one aggregated line each (see the SonarQube step for the
+          # full rationale) so the Codecov report reflects true line coverage.
+          for f in cpp-coverage-*.json; do
+            pipx run gcovr \
+              --root . \
+              --merge-lines \
+              --add-tracefile "$f" \
+              --cobertura "${f%.json}.xml"
+          done
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+
   sonarqube-analysis:
     # in combination with the PR types selection, this top-level if statement
     # skips running the workflow for Draft PRs
@@ -352,8 +400,17 @@ jobs:
 
       - name: Combine C++ coverage tracefiles into one SonarQube report
         run: |
+          # --merge-lines collapses the multiple per-line coverage records that
+          # gcov emits for template instantiations (and across the native +
+          # python-bindings tracefiles) into a single lineToCover per source
+          # line, marked covered if ANY instantiation covers it. Without it the
+          # SonarQube report contains duplicate lineToCover entries whose
+          # covered= values conflict; SonarCloud keeps only the last, discarding
+          # most real coverage of the heavily-templated headers and sinking
+          # new_coverage far below the true value.
           pipx run gcovr \
             --root . \
+            --merge-lines \
             --add-tracefile 'cpp-coverage-*.json' \
             --sonarqube coverage_cpp.xml
 
@@ -507,6 +564,7 @@ jobs:
       - python-bindings-coverage
       - sonarqube-analysis
       - cpp-checks-other
+      - upload-coverage
     runs-on: ubuntu-latest
     permissions:
       checks: write
