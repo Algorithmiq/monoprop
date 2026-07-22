@@ -103,17 +103,18 @@ The end-to-end workflow is:
 All simulation parameters live in [`settings.json`](settings.json) and are shared by every engine
 (Python and Julia alike), so a single edit compares them all on an identical problem instance:
 
-| Key          | Meaning                                                                              |
+| Key          | Meaning                                                                               |
 | ------------ | ------------------------------------------------------------------------------------- |
 | `nx`, `ny`   | Size of the qubit grid (columns × rows); total qubits = `nx * ny`, row-major indexed. |
 | `hx`         | Transverse (X) field strength.                                                        |
-| `hz`         | Longitudinal (Z) field strength, i.e. the Hamiltonian's tilt.                        |
+| `hz`         | Longitudinal (Z) field strength, i.e. the Hamiltonian's tilt.                         |
 | `j`          | ZZ coupling strength between nearest-neighbor qubits.                                 |
 | `dt`         | Trotter step size.                                                                    |
 | `step_min`   | First Trotter step to simulate (inclusive).                                           |
 | `step_max`   | Last Trotter step to simulate (inclusive).                                            |
+| `step_size`  | Step size for Trotter steps.                                                          |
 | `lower_atol` | Coefficient magnitude below which Pauli terms are truncated.                          |
-| `cutoff`     | Maximum Pauli weight to keep during propagation; `null` disables weight truncation.  |
+| `cutoff`     | Maximum Pauli weight to keep during propagation; `null` disables weight truncation.   |
 | `obs_qubits` | The qubit pair (row-major grid index) whose `ZZ` correlator is measured.              |
 
 Edit the values directly in `settings.json` before running the benchmarks — e.g. increase

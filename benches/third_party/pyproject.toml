@@ -10,6 +10,7 @@ dependencies = [
     "ppvm==0.1.0",
     "pauli-prop==0.2.0",
     "cuquantum-python-cu12==26.6.0",
+    "cupy-cuda12x[ctk]==14.1.1",
     "psutil>=7.2",
     "matplotlib>=3.11",
 ]
