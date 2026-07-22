@@ -35,16 +35,22 @@ namespace shard = monoprop::detail::shard;
 BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
     const auto cores = shard::enumerate_physical_cores();
 
-    // Placing one shard: on a host with >=1 core this returns one cpuset; otherwise empty.
+    // Placing one shard yields at most one cpuset -- never oversubscribing.
     const auto one = shard::shard_cpusets(/*n=*/1);
-    if (!cores.empty()) {
-        BOOST_CHECK_EQUAL(one.size(), 1u);
-        // Pinning is best-effort and no-op-safe; just drive the call.
+    BOOST_CHECK(one.size() <= 1u);
+    if (!one.empty()) {
+        // A real placement only comes back where the engine can actually pin (the Linux /sys path),
+        // and it implies the host reported cores. Pinning is best-effort and no-op-safe; drive it.
+        BOOST_CHECK(!cores.empty());
         shard::pin_this_thread(one.front());
     }
-    else {
-        BOOST_CHECK(one.empty());
+#if defined(__linux__)
+    // On the Linux CI host with a readable /sys and pinning enabled, a non-empty core list must yield
+    // a placement. Elsewhere (e.g. macOS counts cores but cannot pin) `one` stays empty by design.
+    if (!cores.empty()) {
+        BOOST_CHECK_EQUAL(one.size(), 1u);
     }
+#endif
 
     // Asking for more physical cores than exist disables pinning (empty vector), never oversubscribes.
     const auto too_many = shard::shard_cpusets(/*n=*/1'000'000);
@@ -61,8 +67,16 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
     // domain-major slice when there are more ranks than domains (the common single-L3 CI runner).
     const auto rank0 = shard::shard_cpusets(/*n=*/1, /*group_index=*/0, /*group_count=*/2);
     const auto rank1 = shard::shard_cpusets(/*n=*/1, /*group_index=*/1, /*group_count=*/2);
+    // Placement only materializes where the engine can pin (the Linux /sys path). macOS counts >=2
+    // cores but cannot pin, so both come back empty -- correct (unpinned shards, still disjoint by the
+    // OS scheduler).
+#if defined(__linux__)
     BOOST_CHECK_EQUAL(rank0.size(), 1u);
     BOOST_CHECK_EQUAL(rank1.size(), 1u);
+#else
+    BOOST_CHECK(rank0.empty());
+    BOOST_CHECK(rank1.empty());
+#endif
 
     // A group_index past the available slices yields empty (offset + n > order.size()).
     const auto past_end = shard::shard_cpusets(/*n=*/cores.size(), /*group_index=*/1, /*group_count=*/2);
