@@ -42,7 +42,6 @@ auto run_shm(int s, Body body) -> std::vector<std::exception_ptr> {
 
 } // namespace
 
-
 // alltoall_counts is a transpose: recv[s] on rank r == what s declared it sends to r.
 BOOST_AUTO_TEST_CASE(shm_comm_alltoall_counts_transpose) {
     for (const int S : {2, 4, 8}) {
@@ -148,7 +147,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_bit_identical) {
             BOOST_CHECK(e == nullptr);
         }
         const size_t expect_int = static_cast<size_t>(S) * (static_cast<size_t>(S) + 1) / 2; // sum 1..S
-        const double expect_dbl = static_cast<double>(S) * static_cast<double>(S) / 2.0;      // sum (r+0.5)
+        const double expect_dbl = static_cast<double>(S) * static_cast<double>(S) / 2.0;     // sum (r+0.5)
         for (int r = 0; r < S; ++r) {
             BOOST_CHECK_EQUAL(int_res[static_cast<size_t>(r)], expect_int);
             BOOST_CHECK_EQUAL(dbl_res[static_cast<size_t>(r)], dbl_res[0]); // identical across ranks
@@ -162,26 +161,36 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_bit_identical) {
 // slices), partial cache lines, and many lines per rank.
 BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_inplace_vector) {
     for (const int S : {2, 4, 8}) {
-        for (const size_t N : {size_t{1}, size_t{5}, size_t{8 * 2 + 3}, size_t{8} * static_cast<size_t>(S) + 7,
-                               size_t{257}}) {
+        for (const size_t N :
+             {size_t{1}, size_t{5}, size_t{8 * 2 + 3}, size_t{8} * static_cast<size_t>(S) + 7, size_t{257}}) {
+            // Materialize every rank's input ONCE, then have both the transport and the reference reduce
+            // those exact stored doubles. Recomputing `r*0.3 + k*1.7` at the reference site instead would
+            // make the bit-identical check hostage to how the compiler rounds that product-sum at each call
+            // site: aarch64 gcc-14 (-O3 -march=native, default -ffp-contract=fast) contracts the store site
+            // to an fma but leaves the reference add un-fused, so the two disagree by a ulp. Reducing the
+            // same stored values isolates what we actually test — the ascending-order, cross-rank-identical
+            // reduction — from that codegen freedom.
+            std::vector<std::vector<double>> inputs(static_cast<size_t>(S), std::vector<double>(N));
+            for (int r = 0; r < S; ++r) {
+                for (size_t k = 0; k < N; ++k) {
+                    inputs[static_cast<size_t>(r)][k] = static_cast<double>(r + 1) * 0.3 + static_cast<double>(k) * 1.7;
+                }
+            }
             std::vector<std::vector<double>> res(static_cast<size_t>(S));
             auto errs = run_shm(S, [&](ShmComm &sh, int r) {
-                std::vector<double> v(N);
-                for (size_t k = 0; k < N; ++k) {
-                    v[k] = static_cast<double>(r + 1) * 0.3 + static_cast<double>(k) * 1.7;
-                }
+                std::vector<double> v = inputs[static_cast<size_t>(r)];
                 sh.allreduce_sum_inplace(r, v.data(), N);
                 res[static_cast<size_t>(r)] = v;
             });
             for (const auto &e : errs) {
                 BOOST_CHECK(e == nullptr);
             }
-            // Ascending-rank-order reference, computed the same way the transport promises to.
+            // Ascending-rank-order reference over the identical stored inputs.
             std::vector<double> ref(N);
             for (size_t k = 0; k < N; ++k) {
                 double acc = 0.0;
                 for (int r = 0; r < S; ++r) {
-                    acc += static_cast<double>(r + 1) * 0.3 + static_cast<double>(k) * 1.7;
+                    acc += inputs[static_cast<size_t>(r)][k];
                 }
                 ref[k] = acc;
             }
@@ -212,8 +221,14 @@ BOOST_AUTO_TEST_CASE(shm_comm_post_flat_alltoallv_flat_buffers) {
             rd[static_cast<size_t>(i)] = i;
         }
         std::vector<int> out(static_cast<size_t>(S), -1);
-        auto ticket = monoprop::mpi::post_flat_alltoallv<int>(
-            send.data(), sc.data(), sd.data(), out.data(), rc.data(), rd.data(), S, c);
+        auto ticket = monoprop::mpi::post_flat_alltoallv<int>(send.data(),
+                                                              sc.data(),
+                                                              sd.data(),
+                                                              out.data(),
+                                                              rc.data(),
+                                                              rd.data(),
+                                                              S,
+                                                              c);
         ticket.wait();
         recv[static_cast<size_t>(r)] = out;
     });
@@ -238,7 +253,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_alltoallv_resolve_fused) {
         const int rounds = 25;
         std::atomic<int> failures{0};
         auto errs = run_shm(S, [&](ShmComm &sh, int r) {
-            std::vector<int> recv;                             // reused across rounds (HWM)
+            std::vector<int> recv; // reused across rounds (HWM)
             std::vector<int> rc(static_cast<size_t>(S)), rd(static_cast<size_t>(S));
             for (int round = 0; round < rounds; ++round) {
                 // r sends target t a block of length len(r,round); every 5th round is big to push the
@@ -345,4 +360,3 @@ BOOST_AUTO_TEST_CASE(shm_comm_poison_releases_waiters) {
         }
     }
 }
-
