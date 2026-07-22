@@ -364,6 +364,16 @@ jobs:
               --cobertura "${f%.json}.xml"
           done
 
+      - name: Remove non-XML coverage files
+        run: |
+          # Both conversion steps above leave their sources next to the
+          # generated .xml (the raw coverage.py binaries and the gcovr .json
+          # tracefiles). codecov-action auto-discovers everything in the
+          # directory, so drop the non-XML sources to avoid uploading each
+          # report twice.
+          rm -f cpp-coverage-*.json
+          find . -maxdepth 1 -name 'coverage-*' ! -name '*.xml' -delete
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
