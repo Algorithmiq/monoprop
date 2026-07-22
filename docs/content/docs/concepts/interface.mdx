@@ -58,7 +58,8 @@ gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2))
 circuit = Circuit(gates=[gate], parameters=[0.3])
 
 pp = PauliPropagator.from_circuit(circuit, observable, cutoff=4)
-print(sorted(pp.evolved_operator().items()))  # keys are Pauli strings
+result = pp.evolved_operator()  # a PauliOperator; .terms maps Pauli -> coefficient
+print(sorted((p.string, round(c.real, 4)) for p, c in result.terms.items()))
 ```
 
 ### Majorana operators

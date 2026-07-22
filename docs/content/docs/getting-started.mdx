@@ -69,7 +69,8 @@ For qubit problems there is a dedicated simulator, `PauliPropagator`, which take
 Pauli operators and gates directly. The following example back-propagates the
 two-qubit observable $Z \otimes Z$ under a single qubit rotation
 $e^{-i\theta X_0/2}$, which likewise splits it into a cosine and a sine branch.
-Its results are keyed by Majorana indices (see [Notation](/concepts/notation)):
+Its result is a `PauliOperator` whose `.terms` map each Pauli to its coefficient
+(see [Notation](/concepts/notation)):
 
 ```python
 import numpy as np
@@ -78,9 +79,11 @@ from monoprop import PauliPropagator, ExpGate, Circuit, PauliOperator, Pauli
 observable = PauliOperator({"ZZ": 1.0}, num_qubits=2)
 gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2))  # exp(-i θ/2 · X_0)
 circuit = Circuit(gates=[gate], parameters=[0.5])
-mbs = PauliPropagator.from_circuit(circuit, observable, cutoff=16)
-result = mbs.evolved_operator()  # keys are Majorana indices
+pp = PauliPropagator.from_circuit(circuit, observable, cutoff=16)
+result = pp.evolved_operator()  # a PauliOperator; .terms maps Pauli -> coefficient
 
-assert sorted(result) == [(0, 1, 2, 3), (1, 2, 3)]
-assert np.isclose(result[(0, 1, 2, 3)].real, -np.cos(2 * 0.5))  # cosine branch
+# Back-propagating Z⊗Z through the X_0 rotation splits it into a cosine and a sine branch.
+coeffs = {pauli.string: coeff.real for pauli, coeff in result.terms.items()}
+assert np.isclose(coeffs["ZZ"], np.cos(2 * 0.5))   # cosine branch (unrotated term)
+assert np.isclose(coeffs["YZ"], -np.sin(2 * 0.5))  # sine branch (rotated term)
 ```
