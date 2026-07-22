@@ -1,5 +1,7 @@
 <!-- Use "Fixes #<issue>" to auto-close the related issue when this PR is merged. -->
 
+By opening this PR I confirm that I have read [CONTRIBUTING.md](CONTRIBUTING.md) and I agree to the terms of the [Contributor License Agreement](CLA.md).
+
 ## Summary
 
 <!-- Provide a self-contained description of what this PR does and why.
@@ -16,7 +18,6 @@
 - [ ] Tests added or updated to cover the changes
 - [ ] Documentation updated (docstrings, `docs/`, `CONTRIBUTING.md`) if needed
 - [ ] `CHANGELOG` / release notes updated if applicable
-- [ ] By opening this PR I declare that I have read and agree to the [Contributor License Agreement](CLA.md)
 
 ## AI/LLM disclosure
 
