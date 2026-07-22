@@ -53,17 +53,17 @@ The end-to-end workflow is:
 All simulation parameters live in [`settings.json`](settings.json) and are shared by every engine
 (Python and Julia alike), so a single edit compares them all on an identical problem instance:
 
-| Key          | Meaning                                                                              |
+| Key          | Meaning                                                                               |
 | ------------ | ------------------------------------------------------------------------------------- |
 | `nx`, `ny`   | Size of the qubit grid (columns × rows); total qubits = `nx * ny`, row-major indexed. |
 | `hx`         | Transverse (X) field strength.                                                        |
-| `hz`         | Longitudinal (Z) field strength, i.e. the Hamiltonian's tilt.                        |
+| `hz`         | Longitudinal (Z) field strength, i.e. the Hamiltonian's tilt.                         |
 | `j`          | ZZ coupling strength between nearest-neighbor qubits.                                 |
 | `dt`         | Trotter step size.                                                                    |
 | `step_min`   | First Trotter step to simulate (inclusive).                                           |
 | `step_max`   | Last Trotter step to simulate (inclusive).                                            |
 | `lower_atol` | Coefficient magnitude below which Pauli terms are truncated.                          |
-| `cutoff`     | Maximum Pauli weight to keep during propagation; `null` disables weight truncation.  |
+| `cutoff`     | Maximum Pauli weight to keep during propagation; `null` disables weight truncation.   |
 | `obs_qubits` | The qubit pair (row-major grid index) whose `ZZ` correlator is measured.              |
 
 Edit the values directly in `settings.json` before running the benchmarks — e.g. increase
@@ -145,7 +145,7 @@ For every engine, `results.json` collects, indexed by Trotter step:
 uv run python plot_results.py
 ```
 
-This reads `results.json` and produces a single image, `results.png`, combining two log-scale
+This reads `results.json` and produces a single image, `pauli_results.png`, combining two log-scale
 panels (runtime per Trotter step and operator memory footprint per Trotter step) side by side, for
 each engine present in the file (so they reflect whichever engines you actually ran in step 4).
 
@@ -176,7 +176,7 @@ The end-to-end workflow is:
 1. [Set up the Python environment](#1-set-up-the-python-environment).
 2. [Install Julia and `MajoranaPropagation.jl`](#2-install-julia-and-majoranapropagationjl).
 3. [Run the benchmarks](#3-run-the-benchmarks) to produce the JSONL result files.
-4. [Plot the results](#4-plot-the-results) to produce `benchmark_results.png`.
+4. [Plot the results](#4-plot-the-results) to produce `majorana_results.png`.
 
 ### 1. Set up the Python environment
 
@@ -239,7 +239,7 @@ environment variable used for the run.
 uv run python plot_results.py
 ```
 
-This reads the json file results for each simulation and produces a single image, `benchmark_results.png`,
+This reads the json file results for each simulation and produces a single image, `majorana_results.png`,
 combining four linear scale panels (number of terms, final overlap, runtime, and memory) in a 2x2 grid.
 
 
