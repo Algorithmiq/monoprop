@@ -73,14 +73,14 @@ class MajoranaPropagator(MonomialPropagator):
                 implementing ``get_majorana_operator()``.
             initial_state: Slater determinant (occupied mode indices) for the initial
                 state.
-            cutoff: Truncation parameter controlling the maximum complexity of the
-                Majorana monomials retained during evolution; its meaning depends on
-                ``cutoff_type``. Higher values increase accuracy at greater cost. A
-                *fully paired* monomial -- one whose support consists entirely of
-                complete pairs ``(m_{2j-1} m_{2j})`` on a mode -- is always kept
-                regardless of this cutoff, because only paired monomials can contribute
-                to an expectation value against a computational-basis state or Slater
-                determinant; discarding them would throw away signal.
+            cutoff: Truncation parameter controlling the number of Majorana monomials
+                retained during evolution; its meaning depends on ``cutoff_type``.
+                Higher values improve accuracy at the expense of cost. A *fully paired*
+                monomial -- one whose support consists entirely of complete pairs
+                ``(m_{2j-1} m_{2j})`` on a mode -- is always kept regardless of this
+                cutoff, because only paired monomials can contribute to an expectation
+                value against a computational-basis state or Slater determinant;
+                discarding them would throw away signal.
             schrodinger_cutoff: Optional cutoff for Schrodinger-picture evolution. If
                 provided, enables the Schrodinger picture; if ``None``, the Heisenberg
                 picture is used.
@@ -123,7 +123,7 @@ class MajoranaPropagator(MonomialPropagator):
         """
         if circuit.family == "pauli":
             raise TypeError(
-                "MajoranaPropagator cannot consume a qubit circuit; its gates are Pauli. "
+                "MajoranaPropagator requires a Majorana/fermionic circuit. "
                 "Use PauliPropagator for qubit circuits."
             )
         return circuit.gates

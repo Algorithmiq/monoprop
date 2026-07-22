@@ -43,8 +43,8 @@ class PauliPropagator(MonomialPropagator):
     See :class:`~monoprop.monomial_propagator.MonomialPropagator` for the shared building,
     evaluation, and introspection surface.
 
-    The cutoff is measured as qubit Pauli weight (the number of qubits a retained term
-    touches); ``cutoff_type`` is fixed and read-only on this class.
+    The cutoff-based truncation is applied through Pauli weight (the number of qubits
+    the term touches); ``cutoff_type`` is fixed and read-only for this class.
     """
 
     def __init__(
@@ -61,21 +61,29 @@ class PauliPropagator(MonomialPropagator):
         """Initialize the qubit propagator.
 
         See :class:`~monoprop.monomial_propagator.MonomialPropagator` for the shared
-        arguments. The cutoff is always measured as Pauli weight, so ``cutoff`` bounds the
-        number of qubits a retained term touches.
+        arguments. The cutoff is always measured as Pauli weight, so ``cutoff`` bounds
+        the number of qubits a retained term touches.
 
         Args:
             initial_operator: Initial qubit operator as a
                 :class:`~monoprop.pauli.PauliOperator`.
             initial_state: Computational-basis reference (indices of qubits set to 1).
-            cutoff: Maximum Pauli weight (number of qubits touched) retained during
-                evolution. The fully-paired exception described in
-                :class:`~monoprop.monomial_propagator.MonomialPropagator` still applies.
-            schrodinger_cutoff: Optional Schrodinger-picture cutoff (enables that
-                picture).
-            lower_atol: Optional lower coefficient-truncation tolerance.
-            upper_atol: Optional upper coefficient-retention tolerance.
-            comm: Optional MPI communicator (must outlive the propagator).
+            cutoff: Truncation parameter controlling the maximum Pauli weight (number of
+                qubits touched) retained during evolution. The fully-paired exception
+                described in :class:`~monoprop.monomial_propagator.MonomialPropagator`
+                still applies.
+            schrodinger_cutoff: Optional cutoff for Schrodinger-picture evolution. If
+                provided, enables the Schrodinger picture; if ``None``, the Heisenberg
+                picture is used.
+            lower_atol: Optional lower absolute-tolerance threshold for coefficient
+                truncation. Monomials with ``|coeff| < lower_atol`` are discarded during
+                evolution to improve performance.
+            upper_atol: Optional upper absolute-tolerance threshold. Monomials with
+                ``|coeff| > upper_atol`` are always retained regardless of their
+                complexity, overriding cutoff-based truncation.
+            comm: Optional MPI communicator. The communicator must remain valid for the
+                simulator's lifetime.
+
         """
         # The PauliOperator carries its own qubit count (a required constructor argument), so
         # the propagator reads it directly rather than validating it here.
@@ -105,7 +113,7 @@ class PauliPropagator(MonomialPropagator):
         return self._num_qubits
 
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
-        """Accept a qubit circuit; its gates are expanded by the shared pipeline.
+        """Validate the circuit's gate family and return its gates for expansion.
 
         A ``PauliPropagator`` rejects a Majorana/fermionic circuit. The Jordan-Wigner mapping
         and antihermitian normalization live in :func:`~monoprop.circuit.expand_monomials`;
@@ -114,7 +122,7 @@ class PauliPropagator(MonomialPropagator):
         """
         if circuit.family == "majorana":
             raise TypeError(
-                "PauliPropagator requires a qubit circuit; its gates are Majorana/fermionic. "
-                "Use MajoranaPropagator for those."
+                "PauliPropagator requires a qubit circuit."
+                "Use MajoranaPropagator for fermionic/Majorana circuits."
             )
         return circuit.gates
