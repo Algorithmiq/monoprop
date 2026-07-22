@@ -131,8 +131,8 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
         // Only the phase needs scanning — the D index list is derived from B at read time, so it
         // is neither width-checked nor stored.
         bool non_binary_phase = false;
-        for (size_t k = 0; k < partner.sin_recv_entries.size(); ++k) {
-            non_binary_phase = non_binary_phase || !is_binary_phase(partner.sin_recv_entries[k].second);
+        for (const auto &entry : partner.sin_recv_entries) {
+            non_binary_phase = non_binary_phase || !is_binary_phase(entry.second);
         }
         uses_binary_phases = uses_binary_phases && !non_binary_phase;
     }

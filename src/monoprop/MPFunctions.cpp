@@ -59,7 +59,7 @@ auto prepare_evolved_operator(EvalScratch &scratch,
                               const VecZ &parameter_mapping,
                               const VecD &gen_coeffs,
                               const MPGraphView &graph,
-                              mpi::Comm comm,
+                              const mpi::Comm &comm,
                               const detail::LayerCosScale &cos_scale) -> void {
     fill_mapped_params(scratch.mapped_params, params, parameter_mapping, gen_coeffs, 1.0, true);
     scratch.op = op;
@@ -77,7 +77,7 @@ auto ev_impl(double e_core,
              const VecD &gen_coeffs,
              const MPGraphView &graph,
              const VecD &params,
-             mpi::Comm comm,
+             const mpi::Comm &comm,
              const detail::LayerCosScale &cos_scale) -> double {
     if (params.empty()) {
         return e_core + mpi::allreduce_sum(inner_product(state, op), comm);
@@ -98,7 +98,7 @@ auto ev_and_grad_impl(double e_core,
                       const VecD &gen_coeffs,
                       const MPGraphView &graph,
                       const VecD &params,
-                      mpi::Comm comm,
+                      const mpi::Comm &comm,
                       const detail::LayerCosScale &cos_scale,
                       const detail::LayerCosAccumulate &cos_acc) -> std::pair<double, VecD> {
     if (params.empty()) {

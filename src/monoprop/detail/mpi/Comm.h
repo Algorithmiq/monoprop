@@ -54,7 +54,7 @@ struct Comm {
     int shm_rank = 0;             // this participant's LOCAL shard index; valid iff kind == Shm | Hybrid
 
     constexpr Comm() = default;
-    constexpr Comm(MPI_Comm c) : kind(Kind::Mpi), mpi(c) {} // implicit on purpose (see above)
+    constexpr Comm(MPI_Comm c) : mpi(c) {} // implicit on purpose (see above)
 
     static auto make_shm(ShmComm *group, int rank) -> Comm {
         Comm c;

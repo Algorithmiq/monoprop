@@ -68,7 +68,7 @@ auto for_each_remote_rank(const Layer &layer, size_t my_rank, Func &&func) -> vo
 
 auto has_remote_cross_rank_edges(const Layer &layer, size_t my_rank) -> bool {
     bool has_remote_edges = false;
-    for_each_remote_rank(layer, my_rank, [&](size_t rank) {
+    for_each_remote_rank(layer, my_rank, [&layer, &has_remote_edges](size_t rank) {
         if (cross_rank_sin_send_size(layer, rank) != 0 || cross_rank_sin_recv_size(layer, rank) != 0) {
             has_remote_edges = true;
         }
@@ -86,7 +86,7 @@ auto build_builder_exchange_layout(const Layer &layer, size_t my_rank, BuilderEx
 
     size_t total_send = 0;
     size_t total_recv = 0;
-    for_each_remote_rank(layer, my_rank, [&](size_t rank) {
+    for_each_remote_rank(layer, my_rank, [&layer, &direction, &layout, &total_send, &total_recv](size_t rank) {
         // In this layout the "outgoing" direction maps to B (send) and the "incoming" to D (recv).
         const size_t send_count = direction == BuilderExchangeDirection::Outgoing
                                       ? cross_rank_sin_send_size(layer, rank)
@@ -137,17 +137,22 @@ auto pack_source_keep_flags(const Layer &layer,
                             const BuilderExchangeLayout &layout,
                             size_t my_rank,
                             VecI &send_buffer) -> void {
-    for_each_remote_rank(layer, my_rank, [&](size_t rank) {
-        const size_t base = static_cast<size_t>(layout.send_displs[rank]);
+    for_each_remote_rank(layer, my_rank, [&layer, &layout, &nodes_to_keep, &send_buffer](size_t rank) {
+        const auto base = static_cast<size_t>(layout.send_displs[rank]);
         const size_t count = cross_rank_sin_send_size(layer, rank);
-        layer.for_each_cross_rank_sin_send_range(rank, 0, count, [&](size_t logical_idx, size_t src_idx) {
-            send_buffer[base + logical_idx] = (src_idx < nodes_to_keep.size() && nodes_to_keep[src_idx]) ? 1 : 0;
-        });
+        layer.for_each_cross_rank_sin_send_range(
+            rank,
+            0,
+            count,
+            [&send_buffer, &base, &nodes_to_keep](size_t logical_idx, size_t src_idx) {
+                send_buffer[base + logical_idx] = (src_idx < nodes_to_keep.size() && nodes_to_keep[src_idx]) ? 1 : 0;
+            });
     });
 }
 
-auto execute_builder_exchange(const BuilderExchangeLayout &layout, BuilderExchangeBuffers &buffers, mpi::Comm comm)
-    -> void {
+auto execute_builder_exchange(const BuilderExchangeLayout &layout,
+                              BuilderExchangeBuffers &buffers,
+                              const mpi::Comm &comm) -> void {
     // Blocking one-shot keep-flag exchange. Recv counts are known locally (the per-rank transpose of
     // the send counts), so no count round is needed — just post + wait via the facade, which also
     // owns the "all ranks participate / never skip on zero counts" deadlock discipline. Buffers are
@@ -171,9 +176,8 @@ inline auto keep_mask_for_block(const std::vector<char> &keep, size_t base, uint
     uint64_t mask = 0;
     uint64_t b = present;
     while (b) {
-        const size_t t = static_cast<size_t>(std::countr_zero(b));
-        const size_t idx = base + t;
-        if (idx < keep.size() && keep[idx] != 0) {
+        const auto t = static_cast<size_t>(std::countr_zero(b));
+        if (const size_t idx = base + t; idx < keep.size() && keep[idx] != 0) {
             mask |= (uint64_t{1} << t);
         }
         b &= b - 1;
@@ -214,12 +218,46 @@ auto mark_replayed_d_targets(const Layer &layer, std::vector<char> &nodes_to_kee
         layer.for_each_cross_rank_sin_recv_range(rank,
                                                  0,
                                                  cross_rank_sin_recv_size(layer, rank),
-                                                 [&](size_t /*logical_idx*/, size_t tgt_idx, int) {
+                                                 [&nodes_to_keep](size_t /*logical_idx*/, size_t tgt_idx, int) {
                                                      if (tgt_idx < nodes_to_keep.size()) {
                                                          nodes_to_keep[tgt_idx] = 1;
                                                      }
                                                  });
     }
+}
+
+// Per-rank body of propagate_cross_rank_d, extracted so the caller's loop stays short. Applies D
+// backward reachability to one remote rank's cross-rank D entries: fills the per-edge selection
+// flags and marks surviving D targets kept. See propagate_cross_rank_d for the full contract.
+auto propagate_cross_rank_d_for_rank(const Layer &layer,
+                                     size_t rank,
+                                     const BuilderExchangeLayout &source_keep_layout,
+                                     const VecI &remote_src_keep,
+                                     const BuilderExchangeLayout &selection_layout,
+                                     VecI &selected_incoming_flags,
+                                     std::vector<char> &nodes_to_keep) -> void {
+    const auto remote_base = static_cast<size_t>(source_keep_layout.recv_displs[rank]);
+    const auto notify_base = static_cast<size_t>(selection_layout.send_displs[rank]);
+    layer.for_each_cross_rank_sin_recv_range(
+        rank,
+        0,
+        cross_rank_sin_recv_size(layer, rank),
+        [&nodes_to_keep, &remote_base, &remote_src_keep, &notify_base, &selected_incoming_flags](size_t logical_idx,
+                                                                                                 size_t tgt_idx,
+                                                                                                 int) {
+            const bool keep_tgt = tgt_idx < nodes_to_keep.size() && nodes_to_keep[tgt_idx];
+            const bool keep_src = remote_base + logical_idx < remote_src_keep.size()
+                                      ? remote_src_keep[remote_base + logical_idx] != 0
+                                      : false;
+            if (keep_src || keep_tgt) {
+                if (notify_base + logical_idx < selected_incoming_flags.size()) {
+                    selected_incoming_flags[notify_base + logical_idx] = 1;
+                }
+                if (!keep_tgt && tgt_idx < nodes_to_keep.size()) {
+                    nodes_to_keep[tgt_idx] = 1;
+                }
+            }
+        });
 }
 
 // Phase 1 (before the selection exchange): propagate the keep-set across this rank's cross-rank D
@@ -240,28 +278,19 @@ auto propagate_cross_rank_d(const Layer &layer,
     // when this rank has outgoing-only cross-rank edges (total_send == 0); the padding slot is never
     // indexed by a real edge nor sent (send_counts sum to total_send). Mirrors resize_builder_exchange_buffers.
     selected_incoming_flags.assign(std::max<size_t>(1, selection_layout.total_send), 0);
-    for_each_remote_rank(layer, my_rank, [&](size_t rank) {
-        const size_t remote_base = static_cast<size_t>(source_keep_layout.recv_displs[rank]);
-        const size_t notify_base = static_cast<size_t>(selection_layout.send_displs[rank]);
-        layer.for_each_cross_rank_sin_recv_range(
-            rank,
-            0,
-            cross_rank_sin_recv_size(layer, rank),
-            [&](size_t logical_idx, size_t tgt_idx, int) {
-                const bool keep_tgt = tgt_idx < nodes_to_keep.size() && nodes_to_keep[tgt_idx];
-                const bool keep_src = remote_base + logical_idx < remote_src_keep.size()
-                                          ? remote_src_keep[remote_base + logical_idx] != 0
-                                          : false;
-                if (keep_src || keep_tgt) {
-                    if (notify_base + logical_idx < selected_incoming_flags.size()) {
-                        selected_incoming_flags[notify_base + logical_idx] = 1;
-                    }
-                    if (!keep_tgt && tgt_idx < nodes_to_keep.size()) {
-                        nodes_to_keep[tgt_idx] = 1;
-                    }
-                }
-            });
-    });
+    for_each_remote_rank(
+        layer,
+        my_rank,
+        [&layer, &source_keep_layout, &remote_src_keep, &selection_layout, &selected_incoming_flags, &nodes_to_keep](
+            size_t rank) {
+            propagate_cross_rank_d_for_rank(layer,
+                                            rank,
+                                            source_keep_layout,
+                                            remote_src_keep,
+                                            selection_layout,
+                                            selected_incoming_flags,
+                                            nodes_to_keep);
+        });
 }
 
 // Phase 2 (after the selection exchange): for each cross-rank B entry whose D the partner selected,
@@ -272,18 +301,19 @@ auto propagate_cross_rank_b(const Layer &layer,
                             const BuilderExchangeLayout &selection_layout,
                             const VecI &selection_recv,
                             std::vector<char> &nodes_to_keep) -> void {
-    for_each_remote_rank(layer, my_rank, [&](size_t rank) {
-        const size_t base = static_cast<size_t>(selection_layout.recv_displs[rank]);
-        layer.for_each_cross_rank_sin_send_range(rank,
-                                                 0,
-                                                 cross_rank_sin_send_size(layer, rank),
-                                                 [&](size_t logical_idx, size_t src_idx) {
-                                                     const bool selected = base + logical_idx < selection_recv.size()
-                                                                           && selection_recv[base + logical_idx] != 0;
-                                                     if (selected && src_idx < nodes_to_keep.size()) {
-                                                         nodes_to_keep[src_idx] = 1;
-                                                     }
-                                                 });
+    for_each_remote_rank(layer, my_rank, [&selection_layout, &layer, &selection_recv, &nodes_to_keep](size_t rank) {
+        const auto base = static_cast<size_t>(selection_layout.recv_displs[rank]);
+        layer.for_each_cross_rank_sin_send_range(
+            rank,
+            0,
+            cross_rank_sin_send_size(layer, rank),
+            [&base, &selection_recv, &nodes_to_keep](size_t logical_idx, size_t src_idx) {
+                const bool selected =
+                    base + logical_idx < selection_recv.size() && selection_recv[base + logical_idx] != 0;
+                if (selected && src_idx < nodes_to_keep.size()) {
+                    nodes_to_keep[src_idx] = 1;
+                }
+            });
     });
 }
 
@@ -301,7 +331,7 @@ auto pare_graph(const MPGraph &graph,
                 const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
     const size_t num_layers = graph.layers();
     const int num_ranks = mpi::size(comm);
-    const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
+    const auto my_rank = static_cast<size_t>(mpi::rank(comm));
 
     std::vector<char> nodes_to_keep(local_index_count, 0);
     for (auto idx : nonzero_inds) {

@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
+#include <print>
 
 #include "monoprop/detail/EnvConfig.h"
 
@@ -73,29 +74,28 @@ auto dump() -> void {
             continue;
         }
         const auto name = kRegionNames[static_cast<size_t>(i)];
-        std::fprintf(stderr,
-                     "monoprop_PHASE rank=%d region=%.*s wall_ms=%.3f calls=%llu\n",
-                     rank,
-                     static_cast<int>(name.size()),
-                     name.data(),
-                     static_cast<double>(wall) / 1.0e6,
-                     static_cast<unsigned long long>(calls));
+        std::print(stderr,
+                   "monoprop_PHASE rank={} region={} wall_ms={:.3f} calls={}\n",
+                   rank,
+                   name,
+                   static_cast<double>(wall) / 1.0e6,
+                   calls);
     }
     if (const auto gates = g_fold_stats.gates.load(std::memory_order_relaxed); gates != 0) {
         const auto v = [](const std::atomic<uint64_t> &a) {
             return static_cast<unsigned long long>(a.load(std::memory_order_relaxed));
         };
-        std::fprintf(stderr,
-                     "monoprop_FOLDSTATS rank=%d gates=%llu skipped=%llu all_sparse=%llu sum_postings=%llu "
-                     "sum_words=%llu n_anti=%llu struct_rejects=%llu\n",
-                     rank,
-                     static_cast<unsigned long long>(gates),
-                     v(g_fold_stats.skipped),
-                     v(g_fold_stats.all_sparse),
-                     v(g_fold_stats.sum_postings),
-                     v(g_fold_stats.sum_words),
-                     v(g_fold_stats.n_anti),
-                     v(g_fold_stats.struct_rejects));
+        std::print(stderr,
+                   "monoprop_FOLDSTATS rank={} gates={} skipped={} all_sparse={} sum_postings={} "
+                   "sum_words={} n_anti={} struct_rejects={}\n",
+                   rank,
+                   gates,
+                   v(g_fold_stats.skipped),
+                   v(g_fold_stats.all_sparse),
+                   v(g_fold_stats.sum_postings),
+                   v(g_fold_stats.sum_words),
+                   v(g_fold_stats.n_anti),
+                   v(g_fold_stats.struct_rejects));
         std::fprintf(stderr, "monoprop_FOLDSTATS rank=%d ratio_hist=", rank);
         for (size_t b = 0; b < kFoldRatioBuckets; ++b) {
             std::fprintf(stderr, "%s%llu", b == 0 ? "" : ",", v(g_fold_stats.ratio_hist[b]));
@@ -137,8 +137,7 @@ auto record_fold_stats(bool all_sparse,
     size_t bucket = 0;
     if (postings != 0) {
         // b ≈ 8 + log2(postings/word_count), from bit widths (±1 bucket), clamped to 1..15.
-        const int diff = static_cast<int>(std::bit_width(static_cast<uint64_t>(postings)))
-                         - static_cast<int>(std::bit_width(static_cast<uint64_t>(word_count | 1)));
+        const int diff = std::bit_width(postings) - std::bit_width(word_count | 1);
         const int b = 8 + diff;
         bucket = static_cast<size_t>(std::clamp(b, 1, static_cast<int>(kFoldRatioBuckets) - 1));
     }

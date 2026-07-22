@@ -32,6 +32,13 @@
 
 namespace monoprop::detail {
 
+/// Thrown when the running term count would exceed the TermIndex representable range (rebuild with
+/// -Dmonoprop_WIDE_TERM_INDEX). Dedicated type rather than a generic std::runtime_error.
+class TermIndexCeilingReached : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 /**
  * @brief Operator-term store: entropy-packed position-list rows PLUS a keyless hash index over
  * those rows, in one self-contained object.
@@ -106,11 +113,11 @@ public:
     // Avalanche the cached 32-bit fold into a full-width hash (splitmix64 finalizer): the stored h
     // is only an equality pre-filter, so it must be re-mixed before its low bits drive table bucketing.
     static size_t spread(uint32_t h) noexcept {
-        uint64_t x = static_cast<uint64_t>(h) * 0x9E3779B97F4A7C15ull;
+        uint64_t x = static_cast<uint64_t>(h) * 0x9E3779B97F4A7C15ULL;
         x ^= x >> 30;
-        x *= 0xBF58476D1CE4E5B9ull;
+        x *= 0xBF58476D1CE4E5B9ULL;
         x ^= x >> 27;
-        x *= 0x94D049BB133111EBull;
+        x *= 0x94D049BB133111EBULL;
         x ^= x >> 31;
         return static_cast<size_t>(x);
     }
@@ -138,7 +145,7 @@ public:
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
         auto out = std::make_unique<OperatorIndex>(inline_width_);
         {
-            std::lock_guard<std::mutex> lock(overflow_mutex_);
+            std::scoped_lock lock(overflow_mutex_);
             out->rows_ = rows_;
             out->size_ = size_;
             out->overflow_ = overflow_;
@@ -211,7 +218,7 @@ public:
     [[nodiscard]] auto row(size_t i) const -> value_type {
         const PosT c = rows_[i * stride_];
         if (c == kOverflowMarker) {
-            std::lock_guard<std::mutex> lock(overflow_mutex_);
+            std::scoped_lock lock(overflow_mutex_);
             return overflow_.at(i);
         }
         value_type maj;
@@ -225,7 +232,7 @@ public:
     auto for_each_position(size_t i, Fn &&fn) const -> void {
         const PosT c = rows_[i * stride_];
         if (c == kOverflowMarker) {
-            std::lock_guard<std::mutex> lock(overflow_mutex_);
+            std::scoped_lock lock(overflow_mutex_);
             const auto &m = overflow_.at(i);
             for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
                 fn(b);
@@ -238,11 +245,10 @@ public:
         }
     }
     [[nodiscard]] auto popcount(size_t i) const -> size_t {
-        const PosT c = rows_[i * stride_];
-        if (c != kOverflowMarker) {
+        if (const PosT c = rows_[i * stride_]; c != kOverflowMarker) {
             return c;
         }
-        std::lock_guard<std::mutex> lock(overflow_mutex_);
+        std::scoped_lock lock(overflow_mutex_);
         return overflow_.at(i).count();
     }
     // Test-support only: lets operator_index_tests assert how many rows spilled past the inline width.
@@ -258,7 +264,7 @@ public:
     [[nodiscard]] auto row_eq_key(size_t i, const key_type &q) const -> bool {
         const PosT c = rows_[i * stride_];
         if (c == kOverflowMarker) {
-            std::lock_guard<std::mutex> lock(overflow_mutex_);
+            std::scoped_lock lock(overflow_mutex_);
             return overflow_.at(i) == q;
         }
         if (q.count() != static_cast<size_t>(c)) {
@@ -429,7 +435,7 @@ private:
 
     // Insert (idx, h) into `shard` with NO dup probe — callers on this path insert provably
     // distinct keys (⊕G-injective miss batches, clone re-insertion). Caller ensures capacity.
-    auto insert_into_(Shard &shard, TermIndex idx, uint32_t h) -> void {
+    auto insert_into_(Shard &shard, TermIndex idx, uint32_t h) const -> void {
         size_t s = spread(h) & shard.mask;
         while (shard.slots[s].idx != kEmptySlot) {
             s = (s + 1) & shard.mask;
@@ -448,12 +454,12 @@ private:
         const bool was_overflow = (row[0] == kOverflowMarker);
         if (c > inline_width_) {
             row[0] = kOverflowMarker;
-            std::lock_guard<std::mutex> lock(overflow_mutex_);
+            std::scoped_lock lock(overflow_mutex_);
             overflow_[i] = maj;
             return;
         }
         if (was_overflow) {
-            std::lock_guard<std::mutex> lock(overflow_mutex_);
+            std::scoped_lock lock(overflow_mutex_);
             overflow_.erase(i);
         }
         row[0] = static_cast<PosT>(c);
@@ -474,7 +480,7 @@ private:
         PosT *row = &rows_[i * stride_];
         if (c > inline_width_) {
             row[0] = kOverflowMarker;
-            std::lock_guard<std::mutex> lock(overflow_mutex_);
+            std::scoped_lock lock(overflow_mutex_);
             overflow_[i] = maj;
             return;
         }
@@ -486,8 +492,8 @@ private:
     }
     static auto check_index_fits(size_t value) -> void {
         if (would_overflow(value)) {
-            throw std::runtime_error("OperatorIndex: operator index reached the TermIndex ceiling; rebuild with "
-                                     "-Dmonoprop_WIDE_TERM_INDEX (term count exceeded ~2^32).");
+            throw TermIndexCeilingReached("OperatorIndex: operator index reached the TermIndex ceiling; rebuild with "
+                                          "-Dmonoprop_WIDE_TERM_INDEX (term count exceeded ~2^32).");
         }
     }
 

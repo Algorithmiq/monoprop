@@ -32,6 +32,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string_view>
+#include <utility>
 
 #include "monoprop/monopropExport.h"
 
@@ -51,7 +52,7 @@ enum class Region : int {
     COUNT,        // region count / array size
 };
 
-inline constexpr int kRegionCount = static_cast<int>(Region::COUNT);
+inline constexpr int kRegionCount = std::to_underlying(Region::COUNT);
 
 inline constexpr std::array<std::string_view, kRegionCount> kRegionNames{
     "find",
@@ -94,7 +95,7 @@ monoprop_EXPORT auto record_fold_stats(bool all_sparse,
                                        size_t struct_rejects) -> void;
 
 inline auto acc(Region r) -> RegionAcc & {
-    return profiling_accs()[static_cast<int>(r)];
+    return profiling_accs()[std::to_underlying(r)];
 }
 
 // ── ScopedRegion: mark a named phase and accumulate its wall time. ──

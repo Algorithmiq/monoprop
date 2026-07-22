@@ -39,6 +39,14 @@
 
 namespace monoprop::mpi {
 
+/// Thrown when a collective's inputs are inconsistent with its communicator (e.g. a per-rank
+/// send-buffer count that does not match the number of ranks). Dedicated type (rather than a
+/// generic std::runtime_error) so callers can catch this condition specifically.
+class CollectiveArgumentError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 // ─── lifecycle (MPI only; ShmComm needs no global init) ──────────────────────────
 
 #ifdef monoprop_ENABLE_MPI
@@ -116,14 +124,15 @@ struct datatype {
     }
 };
 #else
-inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr) -> void {}
-inline auto finalize() -> void {}
+inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr)
+    -> void { /* no MPI to initialize in a non-MPI build */ }
+inline auto finalize() -> void { /* no MPI to finalize in a non-MPI build */ }
 #endif // monoprop_ENABLE_MPI
 
 // ─── rank / size ─────────────────────────────────────────────────────────────
 
 /// Rank of the caller in `comm`.
-inline auto rank(Comm comm) -> int {
+inline auto rank(const Comm &comm) -> int {
     if (comm.kind == Comm::Kind::Shm) {
         return comm.shm_rank;
     }
@@ -142,7 +151,7 @@ inline auto rank(Comm comm) -> int {
 }
 
 /// Total number of participants in `comm`.
-inline auto size(Comm comm) -> int {
+inline auto size(const Comm &comm) -> int {
     if (comm.kind == Comm::Kind::Shm) {
         return comm.shm->size();
     }
@@ -237,8 +246,12 @@ inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Com
 template <class T>
 struct PendingAlltoallv {
     int num_ranks = 0;
-    std::vector<int> send_counts, send_displs, recv_counts, recv_displs;
-    std::vector<T> send_buffer, recv_buffer;
+    std::vector<int> send_counts;
+    std::vector<int> send_displs;
+    std::vector<int> recv_counts;
+    std::vector<int> recv_displs;
+    std::vector<T> send_buffer;
+    std::vector<T> recv_buffer;
 #ifdef monoprop_ENABLE_MPI
     MPI_Request request = MPI_REQUEST_NULL; // set only on the Kind::Mpi async path
 #endif
@@ -278,9 +291,10 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                             const std::vector<int> *known_recv_counts = nullptr) -> PendingAlltoallv<T> {
     const int num_ranks = size(comm);
     if (static_cast<int>(send_data.size()) != num_ranks) {
-        throw std::runtime_error(std::format("begin_alltoallv: send_data size ({}) must equal number of ranks ({})",
-                                             send_data.size(),
-                                             num_ranks));
+        throw CollectiveArgumentError(
+            std::format("begin_alltoallv: send_data size ({}) must equal number of ranks ({})",
+                        send_data.size(),
+                        num_ranks));
     }
     PendingAlltoallv<T> h;
     h.num_ranks = num_ranks;

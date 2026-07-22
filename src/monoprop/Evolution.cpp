@@ -84,7 +84,8 @@ void resize_flat_exchange_buffers(const LayerExchangeLayout &layout, FlatExchang
     buffers.recv_displs.clear();
 }
 
-auto active_evolution_exchange_layout(const LayerTraversal &layer, mpi::Comm comm) -> const LayerExchangeLayout * {
+auto active_evolution_exchange_layout(const LayerTraversal &layer, const mpi::Comm &comm)
+    -> const LayerExchangeLayout * {
     if (mpi::size(comm) == 1) {
         return nullptr;
     }
@@ -100,14 +101,14 @@ auto active_evolution_exchange_layout(const LayerTraversal &layer, mpi::Comm com
 struct CrossRankExchangeHandle {
     const LayerExchangeLayout *layout = nullptr;
     FlatExchangeBuffers *buffers = nullptr;
-    mpi::Ticket ticket;
+    [[no_unique_address]] mpi::Ticket ticket;
 };
 
 // Resolve the recv layout (cached per layer via the facade), size the recv buffer, and post the
 // payload transfer. All ranks must participate — never skip on zero counts (the facade owns that
 // deadlock discipline). The transfer is non-blocking; the returned handle's ticket completes it.
 // Buffers are always sized ≥ 1 (see resize_flat_exchange_buffers).
-inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers, mpi::Comm comm)
+inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers, const mpi::Comm &comm)
     -> CrossRankExchangeHandle {
     CrossRankExchangeHandle handle;
     handle.layout = &layout;
@@ -154,7 +155,7 @@ void pack_cross_rank_derivative_payload_impl(const std::vector<VecD> &sin_send_s
         const size_t base = static_cast<size_t>(layout.displs[rank]);
         const auto &bs = sin_send_state[rank];
         const auto &bh = sin_send_op[rank];
-        layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&](size_t k, size_t /*i*/) {
+        layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&send_buffer, &base, &bs, &bh](size_t k, size_t /*i*/) {
             send_buffer[base + 2 * k] = bs[k];
             send_buffer[base + 2 * k + 1] = bh[k];
         });
@@ -188,21 +189,25 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
         const auto *rv = recv_buffer.data() + recv_displs[rank];
         const auto &ds = sin_recv_state[rank];
         const auto &dh = sin_recv_op[rank];
-        layer.for_each_cross_rank_sin_recv_range(rank, 0, end, [&](size_t k, size_t i, int phi_signed) {
-            const double phi = static_cast<double>(phi_signed);
-            // INVERSE-rotation write-back (−sin): the reverse sweep un-evolves state/op one
-            // layer for the next iteration. cos_terms/b below use the recovered pre-cos values
-            // directly, so this sign only affects the values fed to the subsequent layer.
-            const double ps = -trig.sin_val * phi;
-            const double s_old = ds[k];
-            const double h_old = dh[k];
-            const double s_p = rv[2 * k];
-            const double h_p = rv[2 * k + 1];
-            local.cos_terms += s_old * h_old;
-            local.sin_terms += phi * s_old * h_p;
-            op[i] = (h_old * trig.cos_val) + (ps * h_p);
-            state[i] = (s_old * trig.cos_val) + (ps * s_p);
-        });
+        layer.for_each_cross_rank_sin_recv_range(
+            rank,
+            0,
+            end,
+            [&trig, &ds, &dh, &rv, &local, &op, &state](size_t k, size_t i, int phi_signed) {
+                const auto phi = static_cast<double>(phi_signed);
+                // INVERSE-rotation write-back (−sin): the reverse sweep un-evolves state/op one
+                // layer for the next iteration. cos_terms/b below use the recovered pre-cos values
+                // directly, so this sign only affects the values fed to the subsequent layer.
+                const double ps = -trig.sin_val * phi;
+                const double s_old = ds[k];
+                const double h_old = dh[k];
+                const double s_p = rv[2 * k];
+                const double h_p = rv[2 * k + 1];
+                local.cos_terms += s_old * h_old;
+                local.sin_terms += phi * s_old * h_p;
+                op[i] = (h_old * trig.cos_val) + (ps * h_p);
+                state[i] = (s_old * trig.cos_val) + (ps * s_p);
+            });
     }
     return local;
 }
@@ -220,7 +225,7 @@ struct InFlightCrossRankDerivative {
 inline auto begin_cross_rank_derivative_exchange(const std::vector<VecD> &sin_send_state,
                                                  const std::vector<VecD> &sin_send_op,
                                                  const LayerTraversal &layer,
-                                                 mpi::Comm comm) -> InFlightCrossRankDerivative {
+                                                 const mpi::Comm &comm) -> InFlightCrossRankDerivative {
     InFlightCrossRankDerivative in_flight;
     // Single-rank (or no peer participating): nothing to exchange — the self slot covers everything.
     if (active_evolution_exchange_layout(layer, comm) == nullptr) {
@@ -287,7 +292,7 @@ void pack_cross_rank_evolution_payload_impl(VecD &op,
             continue;
         }
         const size_t base = static_cast<size_t>(layout.displs[rank]);
-        layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&](size_t k, size_t i) {
+        layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&send_buffer, &base, &op](size_t k, size_t i) {
             send_buffer[base + k] = op[i];
         });
     }
@@ -313,9 +318,12 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
             continue;
         }
         const auto *rv = recv_buffer.data() + recv_displs[rank];
-        layer.for_each_cross_rank_sin_recv_range(rank, 0, end, [&](size_t k, size_t i, int phi_signed) {
-            op[i] += sin_val * static_cast<double>(phi_signed) * rv[k];
-        });
+        layer.for_each_cross_rank_sin_recv_range(rank,
+                                                 0,
+                                                 end,
+                                                 [&op, &sin_val, &rv](size_t k, size_t i, int phi_signed) {
+                                                     op[i] += sin_val * static_cast<double>(phi_signed) * rv[k];
+                                                 });
     }
 }
 
@@ -328,7 +336,7 @@ struct InFlightCrossRankEvolution {
     bool active = false;
 };
 
-inline auto begin_cross_rank_evolution_exchange(VecD &op, const LayerTraversal &layer, mpi::Comm comm)
+inline auto begin_cross_rank_evolution_exchange(VecD &op, const LayerTraversal &layer, const mpi::Comm &comm)
     -> InFlightCrossRankEvolution {
     InFlightCrossRankEvolution in_flight;
     const auto *layout = active_evolution_exchange_layout(layer, comm);
@@ -384,7 +392,7 @@ auto apply_self_slot_derivative_paired(VecD &state,
         const size_t i1 = layer.cross_rank_sin_recv_index_at(my_rank, k);
         const double phi1 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k));
         const size_t i2 = layer.cross_rank_sin_recv_index_at(my_rank, k + pairs);
-        const double phi2 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k + pairs));
+        const auto phi2 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k + pairs));
         // Recover pre-cos values (read both endpoints before any write).
         const double s1 = state[i1] * trig.sec_val;
         const double h1 = op[i1] * trig.cos_val;
@@ -449,7 +457,7 @@ void snapshot_remote_endpoints(const VecD &state,
         if (bc > 0) {
             auto &bs = snap.sin_send_state[r];
             auto &bh = snap.sin_send_op[r];
-            layer.for_each_cross_rank_sin_send_range(r, 0, bc, [&](size_t k, size_t i) {
+            layer.for_each_cross_rank_sin_send_range(r, 0, bc, [&bs, &bh, &state, &op](size_t k, size_t i) {
                 bs[k] = state[i];
                 bh[k] = op[i];
             });
@@ -460,10 +468,13 @@ void snapshot_remote_endpoints(const VecD &state,
         if (dc > 0) {
             auto &ds = snap.sin_recv_state[r];
             auto &dh = snap.sin_recv_op[r];
-            layer.for_each_cross_rank_sin_recv_range(r, 0, dc, [&](size_t k, size_t i, int /*phi*/) {
-                ds[k] = state[i];
-                dh[k] = op[i];
-            });
+            layer.for_each_cross_rank_sin_recv_range(r,
+                                                     0,
+                                                     dc,
+                                                     [&ds, &dh, &state, &op](size_t k, size_t i, int /*phi*/) {
+                                                         ds[k] = state[i];
+                                                         dh[k] = op[i];
+                                                     });
         }
     }
 }
@@ -483,11 +494,11 @@ auto state_operator_derivative_local_impl(VecD &state,
                                           size_t layer_idx,
                                           double gen_coeff,
                                           double param,
-                                          mpi::Comm comm,
+                                          const mpi::Comm &comm,
                                           const detail::LayerCosAccumulate &cos_acc) -> double {
     const TrigValues trig(param, gen_coeff);
     const auto layer = graph.get_layer_traversal(layer_idx);
-    const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
+    const auto my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = layer.cross_rank_rank_count();
 
     // The cos pass clobbers state/op at every anticommuting (B/D) index, so the remote endpoints must
@@ -495,10 +506,10 @@ auto state_operator_derivative_local_impl(VecD &state,
     // live. See snapshot_remote_endpoints.
     auto &snap = derivative_snapshot_scratch();
     snapshot_remote_endpoints(state, op, layer, my_rank, R, snap);
-    auto &sin_send_state = snap.sin_send_state;
-    auto &sin_send_op = snap.sin_send_op;
-    auto &sin_recv_state = snap.sin_recv_state;
-    auto &sin_recv_op = snap.sin_recv_op;
+    const auto &sin_send_state = snap.sin_send_state;
+    const auto &sin_send_op = snap.sin_send_op;
+    const auto &sin_recv_state = snap.sin_recv_state;
+    const auto &sin_recv_op = snap.sin_recv_op;
 
     // Fire the remote cross-rank exchange NOW (pack from the pre-cos sin_send snapshots, start the
     // non-blocking Ialltoallv) so the network transfer overlaps the cos pass + self-slot below —
@@ -550,14 +561,14 @@ auto evolve_step_traversal_impl(VecD &op,
                                 const LayerTraversal &layer,
                                 double param,
                                 size_t layer_idx,
-                                mpi::Comm comm,
+                                const mpi::Comm &comm,
                                 const detail::LayerCosScale &cos_scale) -> void {
     profiling::ScopedRegion prof_evolve(profiling::Region::Evolve);
     const double cos_val = std::cos(2 * param), sin_val = std::sin(2 * param);
 
     auto *const op_data = op.data();
     const int my_rank_int = mpi::rank(comm);
-    const size_t my_rank = static_cast<size_t>(my_rank_int);
+    const auto my_rank = static_cast<size_t>(my_rank_int);
 
     // Snapshot self-B (cross_rank[my_rank] B-indices) BEFORE the cos pass.
     // This must run unconditionally (not gated on MPI size) so single-rank works.
@@ -568,7 +579,7 @@ auto evolve_step_traversal_impl(VecD &op,
     if (self_b_count > 0) {
         // Gather the pre-cos self-B values (each k reads op[i] into its own snapshot[k]).
         auto &snap = self_b_snapshot;
-        layer.for_each_cross_rank_sin_send_range(my_rank, 0, self_b_count, [&](size_t k, size_t i) {
+        layer.for_each_cross_rank_sin_send_range(my_rank, 0, self_b_count, [&snap, &op](size_t k, size_t i) {
             snap[k] = op[i];
         });
     }
@@ -587,9 +598,13 @@ auto evolve_step_traversal_impl(VecD &op,
     // the sine rotation: op[i] += sin·φ_signed·self_b_snapshot[k].
     if (self_b_count > 0) {
         const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);
-        layer.for_each_cross_rank_sin_recv_range(my_rank, 0, self_d_count, [&](size_t k, size_t i, int phi_signed) {
-            op[i] += sin_val * static_cast<double>(phi_signed) * self_b_snapshot[k];
-        });
+        layer.for_each_cross_rank_sin_recv_range(my_rank,
+                                                 0,
+                                                 self_d_count,
+                                                 [&op, &sin_val, &self_b_snapshot](size_t k, size_t i, int phi_signed) {
+                                                     op[i] +=
+                                                         sin_val * static_cast<double>(phi_signed) * self_b_snapshot[k];
+                                                 });
     }
 }
 
@@ -598,7 +613,7 @@ auto evolve_step_impl(VecD &op,
                       const MPGraphView &graph,
                       double param,
                       size_t layer_idx,
-                      mpi::Comm comm,
+                      const mpi::Comm &comm,
                       const detail::LayerCosScale &cos_scale) -> void {
     evolve_step_traversal_impl(op, graph.get_layer_traversal(layer_idx), param, layer_idx, comm, cos_scale);
 }
@@ -612,7 +627,7 @@ auto evolve_step(VecD &op, const Layer &layer, double param, const detail::Layer
 auto evolve_operator_impl(VecD coeffs,
                           const MPGraphView &graph,
                           const VecD &params,
-                          mpi::Comm comm,
+                          const mpi::Comm &comm,
                           const detail::LayerCosScale &cos_scale) -> VecD {
     for (size_t i = 0; i < graph.layers(); ++i) {
         evolve_step_impl(coeffs, graph, params[i], i, comm, cos_scale);

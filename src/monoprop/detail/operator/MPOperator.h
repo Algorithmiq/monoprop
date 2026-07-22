@@ -18,6 +18,7 @@
 #include <numeric>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -56,6 +57,13 @@ auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const 
 } // namespace monoprop
 
 namespace monoprop::detail {
+
+/// Thrown by set-coefficient / update paths when a requested operator term is absent from the
+/// store. Dedicated type (rather than a generic std::runtime_error) so it can be caught specifically.
+class OperatorTermNotFound : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 /// The propagated operator: the term store (entropy-packed rows + keyless hash index), its
 /// coefficient vectors, the initial-operator map, and the lazily-built even-parity scan inverted index.
@@ -236,7 +244,7 @@ struct MPOperator {
                 }
                 else {
                     const auto term_repr = std::format("[{}]", join_with_separator(k, ", "));
-                    throw std::runtime_error(std::format("Operator term {} not found in the operator.", term_repr));
+                    throw OperatorTermNotFound(std::format("Operator term {} not found in the operator.", term_repr));
                 }
             }
             // otherwise, in schrodinger picture, we can change the initial hamiltonian freely as the state has

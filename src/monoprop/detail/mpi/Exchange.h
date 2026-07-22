@@ -38,8 +38,9 @@ namespace monoprop::mpi {
 ///   1. cache hit (cache.comm_size == size and same rank count) → no MPI;
 ///   2. otherwise → one MPI_Alltoall via alltoall_counts.
 /// The resolved layout is stored in `cache` and returned by reference.
-inline auto resolve_recv(std::span<const int> send_counts, Comm comm, RecvLayoutCache &cache) -> const RecvLayout & {
-    const int n = static_cast<int>(send_counts.size());
+inline auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache)
+    -> const RecvLayout & {
+    const auto n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);
     if (cache.comm_size == comm_size && static_cast<int>(cache.layout.counts.size()) == n) {
         return cache.layout;
@@ -64,7 +65,7 @@ inline auto resolve_recv(std::span<const int> send_counts, Comm comm, RecvLayout
 /// Idempotent completion handle for a posted payload transfer. wait() finishes a non-blocking
 /// transfer; it is a no-op for the blocking path and for non-MPI builds. Move-only so a request is
 /// waited on exactly once.
-class [[nodiscard]] Ticket {
+class [[nodiscard("call wait() on the Ticket to complete the posted transfer")]] Ticket {
 public:
     Ticket() = default;
     Ticket(const Ticket &) = delete;

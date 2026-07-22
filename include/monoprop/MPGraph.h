@@ -167,7 +167,8 @@ struct formatter<monoprop::Layer> {
     constexpr auto parse(format_parse_context &ctx) { return ctx.begin(); }
     template <typename FormatContext>
     auto format(const monoprop::Layer &layer, FormatContext &ctx) const {
-        size_t sin_send_count = 0, sin_recv_count = 0;
+        size_t sin_send_count = 0;
+        size_t sin_recv_count = 0;
         for (size_t rank = 0; rank < layer.cross_rank_rank_count(); ++rank) {
             sin_send_count += layer.cross_rank_sin_send_size(rank);
             sin_recv_count += layer.cross_rank_sin_recv_size(rank);

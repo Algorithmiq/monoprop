@@ -123,7 +123,7 @@ struct InvertedIndex {
     // self-healing so a future fill change cannot silently feed the recompute unsorted rows. Idempotent.
     auto ensure_sorted_columns() const -> void {
         for (auto &col : cols) {
-            if (!col.is_dense && !std::is_sorted(col.set_rows.begin(), col.set_rows.end())) {
+            if (!col.is_dense && !std::ranges::is_sorted(col.set_rows)) {
                 std::sort(col.set_rows.begin(), col.set_rows.end());
             }
         }
@@ -171,7 +171,7 @@ struct InvertedIndex {
         for (size_t row_idx = lo; row_idx < hi; ++row_idx) {
             const size_t w = row_idx >> 6U;
             const uint64_t row_bit = uint64_t{1} << (row_idx & 63U);
-            for_each_row_position<NumModes>(op, row_idx, [&](size_t bit) {
+            for_each_row_position<NumModes>(op, row_idx, [this, &w, &row_bit, &row_idx](size_t bit) {
                 Column &col = cols[bit];
                 if (col.is_dense) {
                     col.words[w] |= row_bit;
@@ -205,7 +205,7 @@ struct InvertedIndex {
         using Counts = std::array<size_t, kNumColumns>;
         Counts counts{}; // value-initialized → all zeros
         for (size_t row_idx = 0; row_idx < size; ++row_idx) {
-            for_each_row_position<NumModes>(op, row_idx, [&](size_t bit) { ++counts[bit]; });
+            for_each_row_position<NumModes>(op, row_idx, [&counts](size_t bit) { ++counts[bit]; });
         }
         for (size_t c = 0; c < kNumColumns; ++c) {
             const size_t count = counts[c];

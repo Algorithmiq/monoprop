@@ -75,8 +75,7 @@ struct CosineWordBuilder final {
         cur_base = std::numeric_limits<size_t>::max();
     }
     auto push_index(size_t idx) -> void {
-        const size_t base = (idx >> 6) << 6;
-        if (base != cur_base) {
+        if (const size_t base = (idx >> 6) << 6; base != cur_base) {
             flush();
             cur_base = base;
         }

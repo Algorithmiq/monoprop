@@ -78,11 +78,11 @@ public:
         me.ptr = send;
         me.displs = send_displs;
         sync();
-        char *dst = static_cast<char *>(recv);
+        auto *dst = static_cast<char *>(recv);
         for (int s = 0; s < n_; ++s) {
             const Slot &src = slots_[static_cast<size_t>(s)];
-            const char *sp = static_cast<const char *>(src.ptr);
-            const size_t count = static_cast<size_t>(recv_counts[s]);
+            const auto *sp = static_cast<const char *>(src.ptr);
+            const auto count = static_cast<size_t>(recv_counts[s]);
             if (count == 0) {
                 continue;
             }
@@ -121,10 +121,10 @@ public:
             total += static_cast<size_t>(c);
         }
         recv.resize(total);
-        char *dst = reinterpret_cast<char *>(recv.data());
+        auto *dst = reinterpret_cast<char *>(recv.data());
         for (int s = 0; s < n_; ++s) {
             const Slot &src = slots_[static_cast<size_t>(s)];
-            const size_t count = static_cast<size_t>(recv_counts[s]);
+            const auto count = static_cast<size_t>(recv_counts[s]);
             if (count == 0) {
                 continue;
             }
