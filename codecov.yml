@@ -1,0 +1,39 @@
+# Codecov configuration.
+# Docs: https://docs.codecov.com/docs/codecov-yaml
+#
+# The project uploads several reports per commit (one coverage.py XML per
+# runner/Python-version leg plus the C++ gcovr Cobertura reports); Codecov
+# merges them into a single report for the commit.
+
+coverage:
+  # Round displayed percentages down and show two decimals.
+  precision: 2
+  round: down
+  range: "70...100"
+
+  status:
+    # Coverage of the whole project. Kept informational so a dip never blocks
+    # a PR while the coverage setup is still stabilising; flip to a real
+    # threshold once the baseline on `main` is trusted.
+    project:
+      default:
+        informational: true
+    # Coverage of just the lines changed in the PR.
+    patch:
+      default:
+        informational: true
+
+# Post (and keep updating) a single PR comment. `require_base: false` lets the
+# comment appear even before `main` has an uploaded baseline to diff against.
+comment:
+  layout: "condensed_header, diff, flags, components, condensed_files"
+  behavior: default
+  require_base: false
+  require_head: true
+
+# Wait for every expected upload before finalising, so the merged report is not
+# computed from a partial set of the matrix legs.
+codecov:
+  require_ci_to_pass: true
+  notify:
+    wait_for_ci: true
