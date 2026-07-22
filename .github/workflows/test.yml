@@ -573,9 +573,8 @@ jobs:
       - python-checks
       - cpp-checks
       - python-bindings-coverage
-      - sonarqube-analysis
       - cpp-checks-other
-      - upload-coverage
+
     runs-on: ubuntu-latest
     permissions:
       checks: write
