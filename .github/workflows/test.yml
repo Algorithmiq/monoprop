@@ -608,8 +608,9 @@ jobs:
             pytest-*.xml
             ctest-*.xml
 
-      - name: Upload test results to Codecov
-        if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v1
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
