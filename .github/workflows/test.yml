@@ -322,6 +322,50 @@ jobs:
           path: cpp-coverage-python.json
           retention-days: 1
 
+  upload-coverage:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Upload coverage to Codecov
+    runs-on: ubuntu-latest
+    needs:
+      - python-checks
+      - cpp-checks
+      - python-bindings-coverage
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: .
+
+      - name: Convert Python coverage data to XML
+        run: |
+          for f in coverage-*; do
+            COVERAGE_FILE="$f" pipx run coverage xml -o "${f}.xml"
+          done
+
+      - name: Convert C++ tracefiles to Cobertura XML
+        run: |
+          for f in cpp-coverage-*.json; do
+            pipx run gcovr \
+              --root . \
+              --add-tracefile "$f" \
+              --cobertura "${f%.json}.xml"
+          done
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+
   sonarqube-analysis:
     # in combination with the PR types selection, this top-level if statement
     # skips running the workflow for Draft PRs
@@ -507,6 +551,7 @@ jobs:
       - python-bindings-coverage
       - sonarqube-analysis
       - cpp-checks-other
+      - upload-coverage
     runs-on: ubuntu-latest
     permissions:
       checks: write
