@@ -353,9 +353,13 @@ jobs:
 
       - name: Convert C++ tracefiles to Cobertura XML
         run: |
+          # --merge-lines: collapse gcov's per-instantiation duplicate line
+          # records into one aggregated line each (see the SonarQube step for the
+          # full rationale) so the Codecov report reflects true line coverage.
           for f in cpp-coverage-*.json; do
             pipx run gcovr \
               --root . \
+              --merge-lines \
               --add-tracefile "$f" \
               --cobertura "${f%.json}.xml"
           done
@@ -396,8 +400,17 @@ jobs:
 
       - name: Combine C++ coverage tracefiles into one SonarQube report
         run: |
+          # --merge-lines collapses the multiple per-line coverage records that
+          # gcov emits for template instantiations (and across the native +
+          # python-bindings tracefiles) into a single lineToCover per source
+          # line, marked covered if ANY instantiation covers it. Without it the
+          # SonarQube report contains duplicate lineToCover entries whose
+          # covered= values conflict; SonarCloud keeps only the last, discarding
+          # most real coverage of the heavily-templated headers and sinking
+          # new_coverage far below the true value.
           pipx run gcovr \
             --root . \
+            --merge-lines \
             --add-tracefile 'cpp-coverage-*.json' \
             --sonarqube coverage_cpp.xml
 
