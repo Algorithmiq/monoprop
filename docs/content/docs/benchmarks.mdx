@@ -9,8 +9,16 @@ description: Performance benchmark suite.
 
 ![Benchmark results for Pauli Propagation engines: Runtime and Memory per Trotter step](/benchmarks/results.png)
 
+Runtime and memory usage per Trotter step for the 2D TFIM problem, comparing `monoprop` against
+other Pauli propagation engines. See the [Pauli Propagation](#pauli-propagation) section below for
+details on the setup and how to reproduce these results.
+
 ![Benchmark results for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: number of terms, final overlap, runtime, and memory vs layers](/benchmarks/majorana/benchmark_results.png)
 
+Number of terms, final overlap, runtime, and memory vs. circuit layers for the 1D Fermi-Hubbard
+model, comparing `monoprop` against `MajoranaPropagation.jl`. See the
+[Majorana Propagation](#majorana-propagation) section below for details on the setup and how to
+reproduce these results.
 
 We provide standalone benchmark scripts comparing `monoprop` against other open-source
 Pauli propagation and Majorana Propagation engines. The benchmark suite includes memory and time
@@ -152,6 +160,7 @@ and outperforms all other CPU-only engines in both time and memory as the operat
 
 
 ## Majorana Propagation
+
 The chosen problem is the 1D Hubbard model, tracking the runtime, expectation value,
 and operator size at each Trotter step.
 
@@ -163,8 +172,14 @@ The benchmark is run on Leonardo (CINECA), in a multi-threaded node with
 - Cores: 110592
 - RAM: 8×64 GB DDR4 3200 MHz (512 GB)
 
+The end-to-end workflow is:
 
-## 1. Set up the Python environment
+1. [Set up the Python environment](#1-set-up-the-python-environment).
+2. [Install Julia and `MajoranaPropagation.jl`](#2-install-julia-and-majoranapropagationjl).
+3. [Run the benchmarks](#3-run-the-benchmarks) to produce the JSONL result files.
+4. [Plot the results](#4-plot-the-results) to produce `benchmark_results.png`.
+
+### 1. Set up the Python environment
 
 ```bash
 # Navigate to this directory
@@ -176,7 +191,7 @@ uv sync
 
 This installs `monoprop` and `numpy`.
 
-## 2. Install Julia and `MajoranaPropagation.jl`
+### 2. Install Julia and `MajoranaPropagation.jl`
 
 You can find the installation instructions for Julia and `MajoranaPropagation.jl` in the [official documentation](https://github.com/SparqleSim/MajoranaPropagation.jl).
 
@@ -198,8 +213,7 @@ Then, you can precompile the `MajoranaPropagation.jl` package to ensure that it 
 julia --project=@. -e 'using Pkg; Pkg.precompile()'
 ```
 
-## 3. Run the benchmarks
-
+### 3. Run the benchmarks
 
 You can run the benchmarks using the provided bash script for both Python and Julia engines. The script will execute the benchmarks and generate the results in two separate JSON files: `julia_hubbard1d_benchmark_results.jsonl` for the Julia engine and `monoprop_hubbard1d_benchmark_results.jsonl` for the Python engine.
 

@@ -59,16 +59,17 @@ def _style_axes(ax: plt.Axes, ylabel: str) -> None:
     ax.spines["right"].set_visible(False)
 
 
-_, ax1 = plt.subplots()
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
 for label, runtime in runtime_dict.items():
     steps, values = _filter_from_min_step(step_range, runtime)
     ax1.plot(steps, values, color=colors[label], label=label)
 _style_axes(ax1, "Time per step [s]")
-plt.savefig(Path(__file__).parent / "runtime.png", dpi=150)
 
-_, ax2 = plt.subplots()
 for label, memory in memory_dict.items():
     steps, values = _filter_from_min_step(step_range, memory)
     ax2.plot(steps, values, color=colors[label], label=label)
 _style_axes(ax2, "Memory per step [MB]")
-plt.savefig(Path(__file__).parent / "memory.png", dpi=150)
+
+fig.tight_layout()
+fig.savefig(Path(__file__).parent / "results.png", dpi=150)

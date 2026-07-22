@@ -127,7 +127,7 @@ def main():
 
     spin_layer_cases = []
     for i in [20, 40, 60]:
-        for j in range(10, 19):
+        for j in range(10, 19, 2):
             spin_layer_cases.append((i, j))
 
     case_pair = args.case
