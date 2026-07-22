@@ -23,18 +23,8 @@
 
 namespace monoprop {
 
-/**
- * @brief Fixed-size bitset with direct word access for MPI transmission.
- *
- * Drop-in replacement for std::bitset<NumBits> that stores data as contiguous
- * uint64_t words. This enables:
- *   - Zero-copy MPI send/recv via data() pointer
- *   - O(1) hash computation on raw words
- *   - Portable bit scanning via std::countr_zero
- *   - Trivially copyable (memcpy-safe)
- *
- * @tparam NumBits Total number of bits in the bitset.
- */
+/// @brief std::bitset replacement storing contiguous uint64_t words for zero-copy MPI, O(1) word
+/// hashing, portable std::countr_zero scanning, and memcpy-safety.
 template <size_t NumBits>
 class Bitset {
     static_assert(NumBits > 0, "Bitset requires at least 1 bit");
@@ -59,7 +49,6 @@ public:
 
     constexpr explicit(false) Bitset(uint64_t val) noexcept : words_{val} { sanitize_top(); }
 
-    // --- Query ---
     [[nodiscard]] constexpr auto count() const noexcept -> size_t {
         size_t c = 0;
         for (size_t i = 0; i < kNumWords; ++i)
@@ -97,14 +86,11 @@ public:
         return (std::popcount(parity_word) & 1U) != 0;
     }
 
-    // --- Modification ---
-
     constexpr auto set(size_t pos) noexcept -> Bitset & {
         words_[pos / word_width] |= uint64_t(1) << (pos % word_width);
         return *this;
     }
 
-    // --- Bitwise operators ---
     constexpr auto operator&=(const Bitset &rhs) noexcept -> Bitset & {
         for (auto i = 0uz; i < kNumWords; ++i)
             words_[i] &= rhs.words_[i];
@@ -183,8 +169,6 @@ public:
         return r;
     }
 
-    // --- Comparison ---
-
     [[nodiscard]] constexpr auto operator==(const Bitset &o) const noexcept -> bool {
         for (size_t i = 0; i < kNumWords; ++i)
             if (words_[i] != o.words_[i])
@@ -192,14 +176,10 @@ public:
         return true;
     }
 
-    // --- Word access (MPI, hashing, serialization) ---
-
     [[nodiscard]] static constexpr auto num_words() noexcept -> size_t { return kNumWords; }
     [[nodiscard]] constexpr auto data() const noexcept -> const uint64_t * { return words_.data(); }
     [[nodiscard]] constexpr auto data() noexcept -> uint64_t * { return words_.data(); }
     [[nodiscard]] constexpr auto word(size_t i) const noexcept -> uint64_t { return words_[i]; }
-
-    // --- Bit scanning ---
 
     /// Find the position of the first set bit, or NumBits if none.
     [[nodiscard]] constexpr auto find_first() const noexcept -> size_t {
@@ -231,8 +211,7 @@ public:
         }
     }
 
-    /// Stream output: prints bits from MSB to LSB (matches std::bitset convention). Test-support only:
-    /// lets Boost.Test print Bitset operands when a BOOST_TEST assertion over them fails.
+    /// Stream output MSB→LSB (std::bitset convention); test-support for Boost.Test assertion printing.
     friend auto operator<<(std::ostream &os, const Bitset &bs) -> std::ostream & {
         for (size_t i = NumBits; i-- > 0;)
             os << (bs.test(i) ? '1' : '0');

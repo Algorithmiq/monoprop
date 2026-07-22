@@ -32,38 +32,23 @@
 
 namespace monoprop::detail {
 
-/// Thrown when the running term count would exceed the TermIndex representable range (rebuild with
-/// -Dmonoprop_WIDE_TERM_INDEX). Dedicated type rather than a generic std::runtime_error.
+/// Thrown when the term count would exceed the TermIndex range (rebuild with -Dmonoprop_WIDE_TERM_INDEX).
 class TermIndexCeilingReached : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
 /**
- * @brief Operator-term store: entropy-packed position-list rows PLUS a keyless hash index over
- * those rows, in one self-contained object.
+ * @brief Operator-term store: entropy-packed position-list rows plus a keyless open-addressing hash
+ * index over those rows, in one self-contained object.
  *
- * ROWS (byte layout identical to the former PackedMajoranaVector):
- *   slot 0      : popcount c (or kOverflowMarker if c > inline_width_)
- *   slots 1..c  : the c set-bit positions, ascending (PosT each)
- * stride_ = 1 + inline_width_, fixed for the container's life so the parallel disjoint miss-fill
- * stays lock-free. inline_width_ is a CONSTRUCTION INVARIANT (the constructor's only argument,
- * default = kDefaultInlinePositions), clamped to kMaxInlinePositions; re-init with a different width
- * by assigning a fresh store. Callers derive the width from the cutoff (see packed_inline_width_): a
- * weight-w Pauli occupies up to 2w positions, so an under-sized width would spill the COMMON case to
- * overflow — the arena is meant for pathological high-weight terms, not the bulk. Rows whose popcount
- * exceeds the width spill LOSSLESSLY to a dense-bitset overflow map (mutex-guarded; touched only on
- * genuine overflow transitions).
- *
- * INDEX: a single OPEN-ADDRESSING table of Slot{TermIndex idx, uint32_t h} (power-of-2 capacity,
- * linear probing, max load 0.7). The 32-bit folded hash is cached at insert from the in-hand key
- * (never from a row reconstruction), so insert/rehash are gather-free; find pre-filters on h and
- * confirms a hit by reading THIS store's own row (row_eq_key). The hand-rolled table exists for one
- * capability boost::unordered_flat_set cannot expose: **find_batch**, a group-prefetch pipelined
- * lookup that overlaps the DRAM misses of many probes, which the latency-bound resolve phases need.
- *
- * The store is non-copyable/non-movable and heap-owned via unique_ptr: owners share stable pointers
- * to it across the codebase, and clone() is the single named deep-copy.
+ * Rows: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c = ascending set-bit
+ * positions. stride_ is fixed for the container's life so the parallel disjoint miss-fill stays
+ * lock-free. inline_width_ is a construction invariant: any width is correct — over-long rows spill
+ * losslessly to a mutex-guarded overflow map — so callers pass the cutoff that bounds the common case.
+ * The hand-rolled index exists for one capability boost::unordered_flat_set cannot expose: find_batch,
+ * a group-prefetch pipelined lookup that overlaps DRAM misses, which the latency-bound resolve phases
+ * need. Non-copyable/non-movable and heap-owned via unique_ptr; clone() is the single deep-copy.
  */
 template <size_t NumModes>
 class OperatorIndex {
@@ -80,9 +65,8 @@ public:
     // Default inline width when no cutoff-derived bound is supplied (e.g. Schrödinger state rows).
     // Kept at the historical value so default-constructed stores are byte-identical.
     static constexpr size_t kDefaultInlinePositions = 11;
-    // Ceiling on the caller-requested inline width. A weight-w Pauli needs 2w positions; at the
-    // supported Pauli cutoffs this covers the common case inline (2*cutoff <= 32 for cutoff <= 16)
-    // so the bulk of terms stay out of the overflow arena. Beyond it, rows spill losslessly.
+    // Ceiling on the caller-requested inline width. A weight-w Pauli needs 2w positions; 32 covers the
+    // common case inline at the supported Pauli cutoffs (2*cutoff <= 32 for cutoff <= 16).
     static constexpr size_t kMaxInlinePositions = 32;
     static constexpr PosT kOverflowMarker = std::numeric_limits<PosT>::max();
 
@@ -100,7 +84,6 @@ public:
     static constexpr size_t kNotFound = std::numeric_limits<size_t>::max();
     static bool would_overflow(size_t value) noexcept { return value >= kIndexCeiling; }
 
-    // ---- index element + hashing ------------------------------------------------------------
     struct Slot {
         TermIndex idx = kEmptySlot;
         uint32_t h = 0;
@@ -122,14 +105,8 @@ public:
         return static_cast<size_t>(x);
     }
 
-    // The index is a SINGLE lock-free open-addressing table, filled serially within one shard.
-    // Operator sharding across cores is handled a level up by ShardGroup (one OperatorIndex per shard),
-    // so this table never needs internal partitioning.
-    //
-    // ---- ctors --------------------------------------------------------------------------------
-    // The inline width (hence stride) is a CONSTRUCTION INVARIANT, fixed here and never mutated.
-    // It is purely a memory/overflow trade: rows longer than the width spill to overflow losslessly,
-    // so any width is correct -- callers pass the cutoff that bounds the common-case popcount.
+    // The inline width (hence stride) is a construction invariant: any width is correct, since
+    // over-long rows spill to overflow losslessly.
     explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
           stride_(1 + inline_width_) {}
@@ -138,10 +115,7 @@ public:
     OperatorIndex(OperatorIndex &&) = delete;
     OperatorIndex &operator=(OperatorIndex &&) = delete;
 
-    // ---- deep copy ----------------------------------------------------------------------------
-    // Single named deep-copy (enables the simulator's __deepcopy__). Entries are re-inserted into the
-    // clone's table rather than copied verbatim. Returns by unique_ptr because owners hold the store
-    // that way.
+    // Single named deep-copy: entries are re-inserted into the clone's table (not copied verbatim).
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
         auto out = std::make_unique<OperatorIndex>(inline_width_);
         {
@@ -159,35 +133,29 @@ public:
         return out;
     }
 
-    // ---- sizing -------------------------------------------------------------------------------
     [[nodiscard]] auto size() const -> size_t { return size_; }
     [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
     [[nodiscard]] auto inline_width() const -> size_t { return inline_width_; }
 
-    // Capacity hints only -- width is a construction invariant, never touched here.
-    // reserve_rows vs reserve_index are kept SEPARATE on purpose: the builder's per-layer geometric
-    // growth grows ROW capacity, while the index is right-sized to its element count by bulk_insert.
+    // reserve_rows vs reserve_index are kept SEPARATE on purpose: the builder grows ROW capacity
+    // geometrically per layer, while the index is right-sized to its element count by bulk_insert.
     auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
     auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
     auto reserve(size_t n) -> void {
         reserve_rows(n);
         reserve_index(n);
     }
-    // Grow the row store to hold `n` additional rows, returning the pre-growth size — the insert base
-    // the caller then writes into. Growth is GEOMETRIC at 1.5×, never an exact-fit reserve: an exact
-    // fit would realloc the whole persistent operator every layer, whereas 1.5× (vs 2×) halves the
-    // transient realloc overshoot on the 100M-term row array at the cost of ~log₁.₅ vs log₂ reallocs.
-    // The reserve-then-resize split is load-bearing: reserve grows capacity geometrically, resize sets
-    // the logical size. Shared by the two per-layer partner-insert sites (build_layer).
+    // Grow the row store by `n` rows, returning the pre-growth size (the caller's insert base). Growth
+    // is GEOMETRIC (1.5×), never exact-fit: an exact fit would realloc the whole operator every layer.
+    // The reserve-then-resize split is load-bearing (reserve grows capacity, resize sets logical size).
     auto grow_rows_geometric(size_t n) -> size_t {
         const size_t base = size_;
         if (capacity() < base + n) {
             const size_t cap = capacity();
             reserve_rows(std::max(base + n, cap + cap / 2 + 1));
         }
-        // Default-init grow, NOT a zeroing resize: every freshly grown row [base, base+n) is overwritten
-        // by the disjoint miss-fill scatter (set_fresh) before any read, so a serial tail zero-fill would
-        // be pure wasted bandwidth on the ~100M-term row array.
+        // Default-init grow, NOT a zeroing resize: every freshly grown row is overwritten by the
+        // disjoint set_fresh scatter before any read, so a tail zero-fill would be wasted bandwidth.
         rows_.resize((base + n) * stride_);
         size_ = base + n;
         return base;
@@ -200,7 +168,6 @@ public:
         table_.count = 0;
     }
 
-    // ---- row writes ---------------------------------------------------------------------------
     auto push_back(const value_type &maj) -> void {
         const size_t idx = size_;
         rows_.resize((idx + 1) * stride_, 0);
@@ -214,7 +181,6 @@ public:
     // the overflow pre-read/erase that set()/write_row do for possibly-existing rows (see write_row_fresh).
     auto set_fresh(size_t i, const value_type &maj) -> void { write_row_fresh(i, maj); }
 
-    // ---- row reads ----------------------------------------------------------------------------
     [[nodiscard]] auto row(size_t i) const -> value_type {
         const PosT c = rows_[i * stride_];
         if (c == kOverflowMarker) {
@@ -279,7 +245,6 @@ public:
         return true;
     }
 
-    // ---- index API ----------------------------------------------------------------------------
     // Returns the dense row index for `key`, or nullopt if absent. Usage: `if (auto i = find(k)) ...`.
     auto find(const key_type &key) const -> std::optional<size_t> {
         const uint32_t h = fold_hash(key);
@@ -298,12 +263,9 @@ public:
         }
     }
 
-    // GROUP-PREFETCH batch find: out[i] = row index of keys[i], or kMissingIndex. Semantically
-    // identical to n independent find() calls on an unchanging table; the point is memory-level
-    // parallelism — per group of G keys, stage 1 hashes and prefetches every home slot, stage 2
-    // probes on the h prefilter and prefetches the candidate row, stage 3 confirms against the
-    // row bytes. An h collision (wrong candidate) falls back to the exact single find.
-    // MUST NOT run concurrently with inserts (the resolve phases are probe-only by construction).
+    // Group-prefetch batch find: out[i] = row index of keys[i], or kMissingIndex. Same result as n
+    // find() calls, but overlaps DRAM misses via a per-group hash/probe/confirm pipeline. An h
+    // collision falls back to an exact find. MUST NOT run concurrently with inserts.
     auto find_batch(const key_type *keys, size_t n, size_t *out) const -> void {
         static constexpr size_t G = 16; // keys prefetched together per pipeline pass
         std::array<uint32_t, G> hh;
@@ -374,7 +336,6 @@ public:
             return;
         }
         check_index_fits(base + n - 1);
-        // Serial insert: probe the lock-free table for each of the n distinct keys.
         for (size_t k = 0; k < n; ++k) {
             const uint32_t h = fold_hash(key_at(k));
             table_.rehash_if_needed();
@@ -468,13 +429,10 @@ private:
             *out++ = static_cast<PosT>(b);
         }
     }
-    // Fresh-row variant of write_row for the parallel disjoint miss-fill scatter into
-    // grow_rows_geometric'd slots. Those rows are DEFAULT-INITIALIZED (indeterminate row[0]) and are
-    // provably never in overflow_ (freshly grown, never previously written), so write_row's
-    // `was_overflow = (row[0] == kOverflowMarker)` pre-read is BOTH unnecessary AND unsafe here: a
-    // garbage row[0] could spuriously equal kOverflowMarker and take overflow_mutex_ inside the
-    // PARALLEL scatter (data race / lock churn). This path writes row[0] unconditionally. The
-    // c>inline_width_ branch is KEPT: a genuinely long fresh row still must spill losslessly to overflow_.
+    // Fresh-row variant of write_row for the parallel disjoint miss-fill scatter. Freshly grown rows
+    // have indeterminate row[0] and are never in overflow_, so write_row's was_overflow pre-read is
+    // skipped — it could otherwise spuriously take overflow_mutex_ inside the PARALLEL scatter. The
+    // c>inline_width_ spill branch is kept: a genuinely long fresh row still must go to overflow_.
     auto write_row_fresh(size_t i, const value_type &maj) -> void {
         const size_t c = maj.count();
         PosT *row = &rows_[i * stride_];
@@ -497,17 +455,15 @@ private:
         }
     }
 
-    // DefaultInitVector: grow_rows_geometric skips the serial tail zero-fill; every freshly grown row
-    // is overwritten by set_fresh (the disjoint miss-fill scatter) before any read. push_back still
-    // zero-fills its one cold-path row (resize(..., 0)) so its write_row sees a defined row[0].
+    // DefaultInitVector: grow_rows_geometric skips the tail zero-fill (set_fresh overwrites each row
+    // first); push_back still zero-fills its one cold-path row so write_row sees a defined row[0].
     DefaultInitVector<PosT> rows_ = {};
     size_t size_ = 0;
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;
     mutable std::unordered_map<size_t, value_type> overflow_ = {};
     mutable std::mutex overflow_mutex_ = {};
-    // Single open-addressing index table (see the Shard doc-comment: one shard per core lives a level
-    // up in ShardGroup, so this store never partitions internally).
+    // Single open-addressing index table (operator sharding across cores lives up in ShardGroup).
     Shard table_ = {};
 };
 

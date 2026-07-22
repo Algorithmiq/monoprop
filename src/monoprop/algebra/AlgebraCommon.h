@@ -25,14 +25,8 @@
 
 /*!
  * @file algebra/AlgebraCommon.h
- * @brief Basis-agnostic structural primitives shared by BOTH algebras (Majorana and Pauli).
- *
- * These operate purely on the bit structure of a @ref Monomial -- pairing, orbital support,
- * length, and the index<->bit conversions -- and are meaningful in either basis. The engine
- * applies them uniformly to Majorana monomials and to Pauli strings (e.g. is_paired(P) holds
- * iff P is Z-only; support_cutoff measures qubit Pauli weight). The basis-*specific* algebra
- * (phases, coefficient codecs, HF scoring) lives in the sibling headers MajoranaAlgebra.h and
- * PauliAlgebra.h, both of which include this one.
+ * @brief Basis-agnostic structural primitives (pairing, cutoffs, index<->bit conversions) meaningful
+ * in either basis; the basis-specific algebra lives in the sibling MajoranaAlgebra.h / PauliAlgebra.h.
  */
 
 namespace monoprop {
@@ -44,7 +38,7 @@ template <size_t NumModes>
 auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
     Monomial<NumModes> bs;
     for (const auto &bit_loc : arr) {
-        bs.set(2 * NumModes - 1 - bit_loc); // MSb0 index convention: index 0 maps to the top bit
+        bs.set(2 * NumModes - 1 - bit_loc); // MSb0 convention: index 0 maps to the top bit
     }
     return bs;
 }
@@ -69,8 +63,7 @@ auto bitset_to_indices(const Monomial<NumModes> &bs) -> VecZ {
  */
 template <size_t NumModes>
 auto is_paired(const Monomial<NumModes> &maj, const Monomial<NumModes> &even_mask) -> bool {
-    // Paired = each mode's two Majoranas (adjacent bits) are both set or both clear, i.e. the
-    // even bit and its odd partner agree for every mode.
+    // Paired = each mode's even bit and its odd partner agree (both set or both clear).
     const auto even_bits_masked = maj & even_mask;
     const auto odd_bits_masked = (maj >> 1) & even_mask;
     return (even_bits_masked ^ odd_bits_masked).none();
@@ -97,8 +90,7 @@ template <size_t NumModes, typename Rows>
 auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     VecZ result;
     const auto mask = even_bits<2 * NumModes, LSb0>();
-    // Kept indices are appended in ascending `inds` order; every caller scatters through the returned
-    // indices, so only the SET is observable, but the order is deterministic regardless.
+    // Appended in ascending `inds` order; only the SET is observable to callers, but order is deterministic.
     for (const auto index : inds) {
         const auto &op_row = materialize_row<NumModes>(op, index);
         if (is_paired<NumModes>(op_row, mask)) {
@@ -124,16 +116,9 @@ auto get_hf_mask(const VecZ &hf) -> Monomial<NumModes> {
 /**
  * @brief Length cutoff: keep a monomial iff its length is within @p cutoff, OR it is fully paired.
  *
- * Returns true (keep) when either:
- *   - the monomial is *fully paired* (`xor_sum == 0`): every Majorana operator it
- *     contains belongs to a complete pair m_{2j-1} m_{2j} on a mode, so no mode
- *     carries a lone Majorana; or
- *   - its length (`popcount_sum`, the number of Majorana operators) is <= @p cutoff.
- *
- * Fully paired monomials are kept unconditionally because they are the only terms
- * that can overlap a computational-basis state or Slater determinant under the
- * trace, and so are the only terms that contribute to an expectation value;
- * discarding them would discard signal regardless of their length.
+ * Fully paired monomials (xor_sum == 0) are kept unconditionally: they are the only terms that
+ * contribute to an expectation value against a computational-basis state / Slater determinant, so
+ * dropping them by length would discard signal. Otherwise keep iff Majorana count <= @p cutoff.
  */
 template <size_t NumModes>
 auto length_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes) -> bool {
@@ -170,17 +155,9 @@ auto length_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff) -> bool {
 /**
  * @brief Support cutoff: keep a monomial iff its orbital support is within @p cutoff, OR it is fully paired.
  *
- * Returns true (keep) when either:
- *   - the monomial is *fully paired* (`xor_sum == 0`), kept unconditionally for the
- *     same reason as in length_cutoff() -- only paired monomials contribute to an
- *     expectation value against a computational-basis state or Slater determinant; or
- *   - the number of distinct orbitals it touches (`or_sum`, the orbital support --
- *     orbital j counts once if either m_{2j-1} or m_{2j} is present) is <= @p cutoff.
- *
- * The support is a coarser measure than length, since one orbital can carry two
- * Majorana operators. Under the Jordan-Wigner mapping each occupied orbital
- * contributes exactly one single-qubit Pauli (X, Y or Z), so the support equals the
- * qubit Pauli weight and this cutoff bounds the number of X/Y/Z factors.
+ * Fully paired terms are kept unconditionally (same expectation-value reason as length_cutoff).
+ * Support (or_sum: orbital j counts once if either of its Majoranas is present) is coarser than
+ * length; under Jordan-Wigner it equals the qubit Pauli weight, so this bounds the X/Y/Z factor count.
  */
 template <size_t NumModes>
 auto support_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes) -> bool {
@@ -260,10 +237,8 @@ public:
         return cutoff_fn_(maj);
     }
 
-    // Fast path: caller already knows popcount(maj). For length_pairing and mode cutoffs
-    // the predicate is `xor_sum == 0 || (popcount or or_sum) <= cutoff`; if the popcount
-    // alone is already <= cutoff we can return true without touching the bitset.
-    // For support_cutoff, or_sum <= popcount_sum so the same shortcut is safe.
+    // Fast path when popcount(maj) is known: the predicate is `xor_sum==0 || (popcount/or_sum)<=cutoff`,
+    // so popcount<=cutoff alone proves keep without reading the bitset (or_sum<=popcount makes support safe).
     auto passes_with_popcount(const Monomial<NumModes> &maj, size_t popcount_sum) const -> bool {
         if (length_cutoff_ != nullptr) {
             if (popcount_sum <= length_cutoff_->cutoff) {
@@ -280,12 +255,8 @@ public:
         return cutoff_fn_(maj);
     }
 
-    // Upper bound on the number of Majorana positions a surviving term can carry, when the
-    // cutoff is one of the structural kinds whose predicate fails once popcount exceeds the
-    // cutoff (length-pairing-distance, mode). For an arbitrary user-supplied cutoff_fn no such
-    // bound exists and this returns std::nullopt. This is the same threshold passes_with_popcount
-    // short-circuits on; it lets the operator store size its packed inline rows from the cutoff
-    // instead of always reserving the maximum width.
+    // Upper bound on the Majorana positions a surviving term can carry, for the structural cutoffs
+    // (nullopt for an arbitrary user cutoff_fn). Lets the store size its packed inline rows from the cutoff.
     auto max_positions_bound() const -> std::optional<size_t> {
         if (length_cutoff_ != nullptr) {
             return length_cutoff_->cutoff;

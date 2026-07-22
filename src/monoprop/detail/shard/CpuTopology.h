@@ -17,7 +17,7 @@
 #include <cstddef>
 #include <vector>
 
-#include "monoprop/detail/EnvConfig.h" // config::get().shard_pinning
+#include "monoprop/detail/EnvConfig.h"
 
 #if defined(__linux__)
 #include <pthread.h>
@@ -32,16 +32,11 @@
 #include <sys/sysctl.h>
 #endif
 
-// CPU-topology helpers for shard placement. Phase-0 result: the best config is one single-threaded
-// shard per PHYSICAL CORE, and small shard counts should spread across L3 (CCX) domains so each shard
-// owns a distinct last-level cache.
-//
-// This is the ONE platform-specific file in the engine. The Linux fast path parses /sys to build that
-// placement and pins each shard master to its core (intersected with the process's allowed-CPU mask,
-// so a cgroup-restricted / partial Slurm allocation reports and pins only its own cores). Everything
-// else runs the portable fallback: no topology, no pinning — the shards run unpinned, still correct,
-// just without the locality win. macOS supplies an accurate physical-core COUNT (via sysctl) for the
-// shard-count policy even though it cannot pin threads.
+// CPU-topology helpers for shard placement (the one platform-specific file). Phase-0 policy: one
+// single-threaded shard per physical core, spread across L3/CCX domains so each owns a distinct LLC.
+// The Linux fast path parses /sys and pins each master, intersected with the process's allowed-CPU
+// mask (so a cgroup/Slurm partial allocation uses only its own cores); elsewhere shards run unpinned
+// (still correct, no locality win). macOS reports a physical-core COUNT for the shard-count policy only.
 
 namespace monoprop::detail::shard {
 
@@ -108,11 +103,10 @@ inline auto allowed_cpus() -> std::set<int> {
 
 } // namespace topo_detail
 
-/// Enumerate physical cores (one entry per SMT sibling group) whose CPUs the process is allowed to
-/// use, each tagged with its L3 domain. A core is included iff at least one of its SMT siblings is in
-/// the allowed mask, and its representative cpu is the smallest allowed sibling — so a partial
-/// allocation yields exactly its own cores (never oversubscribing) and never pins outside the mask.
-/// Empty if /sys cannot be read.
+/// Enumerate physical cores (one per SMT sibling group) the process is allowed to use, each tagged
+/// with its L3 domain. A core is included iff a sibling is in the allowed mask, with the smallest
+/// allowed sibling as its representative — so a partial allocation yields exactly its own cores and
+/// never pins outside the mask. Empty if /sys cannot be read.
 inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
     const std::set<int> allowed = topo_detail::allowed_cpus();
     const bool filter = !allowed.empty(); // no mask readable ⇒ accept every CPU
@@ -169,19 +163,11 @@ inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
     return cores;
 }
 
-/// Build `n` shard cpusets, one physical core each. `group_index`/`group_count` place the shards of
-/// one MPI rank among `group_count` co-located ranks sharing this host (group_count == 1: the
-/// single-process case). Placement:
-///   - group_count == 1: cores ordered round-robin across L3 domains, so a small shard count spreads
-///     over all caches (domain0 core0, domain1 core0, …, then core1s).
-///   - group_count > 1: whole L3 domains are dealt to the co-located ranks round-robin and each rank
-///     interleaves across its own domains (falling back to a flat domain-major slice when there are
-///     more ranks than domains), so ranks get disjoint cores and maximally disjoint caches. Two ranks
-///     must never share a core: MPI's busy-polling collectives on one rank would contend with the
-///     other rank's barrier spins for the same timeslices, degrading lock-step progress
-///     catastrophically.
-/// If the host cannot supply group_count*n distinct physical cores, pinning is disabled (empty
-/// vector ⇒ shards run unpinned; the OS spreads them — still correct, and better than doubling up).
+/// Build `n` shard cpusets, one physical core each. `group_index`/`group_count` place one MPI rank's
+/// shards among the co-located ranks sharing this host (group_count == 1: single-process). Cores are
+/// ordered to spread shards across L3 domains, and co-located ranks get disjoint cores/caches — two
+/// ranks must never share a core (one rank's busy-polling MPI collectives would starve the other's
+/// barrier spins, catastrophically). Returns empty (⇒ unpinned) if the host lacks group_count*n cores.
 inline auto shard_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1) -> std::vector<CpuSet> {
     // monoprop_SHARD_PINNING=0/false/n disables pinning (shards then run unpinned — still correct).
     if (!config::get().shard_pinning) {
@@ -254,15 +240,14 @@ inline auto pin_this_thread(const CpuSet &set) -> void {
     pthread_setaffinity_np(pthread_self(), sizeof(CpuSet), &set);
 }
 
-#else // ─── portable fallback: no topology, no pinning ───────────────────────────
+#else // portable fallback: no topology, no pinning
 
 // A placeholder cpuset type so ShardGroup's member/signatures are platform-independent.
 struct CpuSet {};
 
-/// No /sys to parse. macOS reports its physical-core COUNT so the shard-count policy is accurate even
-/// though threads cannot be pinned; every other platform returns empty (⇒ the shard-count policy falls
-/// back to std::thread::hardware_concurrency()/2). All returned cores carry a placeholder cpu/domain —
-/// they are only counted, never pinned.
+/// No /sys to parse. macOS reports its physical-core COUNT so the shard-count policy stays accurate
+/// (threads still can't be pinned); other platforms return empty (⇒ policy falls back to
+/// hardware_concurrency()/2). Returned cores carry placeholder cpu/domain — counted, never pinned.
 inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
 #if defined(__APPLE__)
     int n = 0;

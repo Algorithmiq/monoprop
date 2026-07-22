@@ -27,11 +27,6 @@
 namespace monoprop {
 
 /// @brief Per-rank breakdown of graph memory, in bytes. Fields sum to total_bytes().
-///
-/// - layer_descriptor_bytes: the Layer structs themselves.
-/// - layer_storage_object_bytes: their owned storage objects.
-/// - cos_data_bytes: cosine word lists stored on pruned layers (recompute layers store none).
-/// - cross_rank_bytes / exchange_layout_bytes: cross-rank postings and the alltoallv exchange layouts.
 struct GraphMemoryBreakdown final {
     size_t layer_descriptor_bytes = 0;
     size_t layer_storage_object_bytes = 0;
@@ -56,10 +51,8 @@ struct GraphMemoryBreakdown final {
 };
 
 /// @brief Windowed, optionally-reversed read-only view over a graph's layer vector.
-///
-/// Presents `count` layers starting at `base`; when `reverse` is set the window is traversed
-/// newest-first (the Schrödinger replay order). Non-owning — the referenced layer vector must outlive
-/// the view.
+/// `reverse` traverses the window newest-first (Schrödinger replay order). Non-owning — the layer
+/// vector must outlive the view.
 class MPGraphView {
 public:
     MPGraphView() = default;

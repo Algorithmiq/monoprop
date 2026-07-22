@@ -31,12 +31,10 @@
  * @file algebra/MajoranaAlgebra.h
  * @brief The Majorana algebra: how a @ref Monomial is read as a product of Majorana operators.
  *
- * Sibling of algebra/PauliAlgebra.h; both build on the basis-agnostic structural primitives in
- * algebra/AlgebraCommon.h (pairing, cutoffs, index<->bit conversions). This header carries the
+ * Sibling of algebra/PauliAlgebra.h over the shared primitives in algebra/AlgebraCommon.h. Carries the
  * Majorana-specific algebra: the Hermitian coefficient normalization i^(C(|maj|,2)), the ordering
- * (interleave) sign and its per-layer mask form, the Hartree-Fock phase, the real<->complex
- * coefficient codec, and Majorana basis changes. The generic propagation backbone reaches these
- * through the @c MajoranaAlgebra policy model in algebra/Algebra.h.
+ * (interleave) sign and its per-layer mask form, the Hartree-Fock phase, the real<->complex codec, and
+ * Majorana basis changes. Reached through the @c MajoranaAlgebra policy in algebra/Algebra.h.
  */
 
 namespace monoprop {
@@ -61,7 +59,6 @@ auto hermitian_coefficient(const Monomial<NumModes> &maj) -> std::complex<double
  * @note Test-support only (tests/cpp/mpfunctions.cpp); not called by the shipped library.
  */
 inline auto is_antihermitian(const VecZ &indices) -> bool {
-    // Check if the number of Majorana operators is odd/even
     return ((indices.size() / 2) % 2) != 0;
 }
 
@@ -83,21 +80,12 @@ auto hf_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &hf_mask) 
 }
 
 /**
- * @brief Computes the ordering sign of the Majorana product maj * gen.
+ * @brief Ordering sign (-1)^S of the Majorana product maj·gen, S = #{set bits of maj strictly below
+ *        each set bit of gen} mod 2.
  *
- * Reference implementation. The build hot path does NOT call this per term: it precomputes the
- * fixed-per-layer interleave mask W once and evaluates the identical sign as `maj.parity_and(W)`
- * (see interleave_phase_mask + its use in Scan.h). Keep this as the branch-clear spec that the mask
- * form is proven against; don't reintroduce it into the per-term scan.
- *
- * For each set bit in @p gen, the sign flips once for each set bit in @p maj
- * at strictly lower bit positions. The returned value is therefore
- * (-1)^S where S is that crossing count modulo 2.
- *
- * This implementation is word-based:
- * - prefix_xor_64 gives per-bit prefix parity inside each 64-bit word,
- * - carry tracks prefix parity from previous words,
- * - popcount(running_parity & gen_word) accumulates the odd-crossing bits.
+ * Reference spec only: the hot path uses the equivalent per-layer mask form `maj.parity_and(W)` (see
+ * interleave_phase_mask). Keep this branch-clear version as the proof target; do NOT reintroduce it
+ * into the per-term scan.
  */
 inline constexpr auto prefix_xor_64(uint64_t x) -> uint64_t {
     x ^= x << 1;
@@ -135,14 +123,11 @@ auto interleave_phase(const Monomial<NumModes> &maj_bs, const Monomial<NumModes>
 }
 
 /**
- * @brief Per-generator mask W that collapses the per-term interleave sign to one masked parity.
+ * @brief Per-generator mask W collapsing the per-term interleave sign to one masked parity.
  *
- * IDENTITY (exact): with x = #{(m∈M, g∈G) : m<g} = Σ_{g∈G} rank_M(g),
- *   interleave_phase(M,G) = (−1)^x  and  x ≡ |{m∈M : w(m)}| (mod 2),  w(c) = #{g∈G : g>c} (mod 2).
- * Hence interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : w(c) odd}, FIXED for the layer.
- * Building W is O(2N); the per-term sign then costs one `maj.parity_and(W)` instead of the
- * latency-bound prefix-XOR scan of interleave_phase(). w(c) is computed by sweeping c high→low,
- * tracking #{g>c} (each generator bit at position c contributes to all strictly-lower columns).
+ * IDENTITY: interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : #{g∈G : g>c} odd}, FIXED for
+ * the layer. Building W is O(2N) (sweep c high→low tracking #{g>c}); the per-term sign is then one
+ * `maj.parity_and(W)` instead of interleave_phase's latency-bound prefix-XOR scan.
  */
 template <size_t NumModes>
 auto interleave_phase_mask(const Monomial<NumModes> &gen) -> Monomial<NumModes> {

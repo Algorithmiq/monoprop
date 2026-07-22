@@ -38,16 +38,11 @@
 #include <format>
 
 #include "monoprop/Bitset.h"
-// The basis-agnostic monomial vocabulary (Monomial, MonomialList, MonomialMap, MonomialHash/Equal,
-// monomial_hash, Basis, CutoffType, CutoffFn) lives in its own core header; the storage-backend
-// plumbing (TermIndex, the OperatorIndex/InvertedIndex/MPOperator orchestration, and the
-// backend-agnostic row accessors) stays here.
+// Basis-agnostic monomial vocabulary (Monomial, Basis, CutoffFn, ...) lives in core/Monomial.h; the
+// storage-backend plumbing (TermIndex, OperatorIndex/InvertedIndex/MPOperator, row accessors) stays here.
 #include "monoprop/core/Monomial.h"
 
-// Forward-declare (not include) OperatorIndex: it includes THIS header for MonomialHash/Monomial,
-// so a full include here would be a cycle. The packed row-accessor overloads below take it by
-// reference (incomplete type is fine for the declaration); the complete type is in scope wherever
-// they are instantiated, since every such TU includes operator/OperatorIndex.h.
+// Forward-declare (not include) OperatorIndex: it includes this header, so a full include would cycle.
 namespace monoprop::detail {
 template <size_t NumModes>
 class OperatorIndex;
@@ -55,11 +50,8 @@ class OperatorIndex;
 
 namespace monoprop {
 
-// --- Backend-agnostic row access -------------------------------------------------------------
-// All operator-row consumers go through these so the dense and packed backends present one
-// surface. For the dense backend materialize_row() returns a const reference (zero-copy); for the
-// packed backend it returns a freshly reconstructed value (bind with `const auto&` to extend
-// its lifetime). assign_row() overwrites an already-sized slot (parallel miss-fill paths).
+// Backend-agnostic row access: dense/packed backends present one surface. materialize_row() returns a
+// const ref (dense, zero-copy) or a fresh value (packed — bind with `const auto&` to extend lifetime).
 template <size_t NumModes>
 [[nodiscard]] inline auto materialize_row(const std::vector<Monomial<NumModes>> &op, size_t i)
     -> const Monomial<NumModes> & {
@@ -74,9 +66,8 @@ template <size_t NumModes>
     return op[i].count();
 }
 
-// Iterate the set-bit positions of row i (ascending) without materializing a dense bitset where
-// the backend can avoid it. The dense backend scans words; the packed backend reads its stored
-// position list directly. Used by the even-parity inverted index, the heaviest per-row op reader.
+// Iterate row i's set-bit positions (ascending) without materializing a dense bitset when the backend
+// can avoid it. Used by the even-parity inverted index, the heaviest per-row op reader.
 template <size_t NumModes, typename Fn>
 inline auto for_each_row_position(const std::vector<Monomial<NumModes>> &op, size_t i, Fn &&fn) -> void {
     const auto &m = op[i];
@@ -84,9 +75,7 @@ inline auto for_each_row_position(const std::vector<Monomial<NumModes>> &op, siz
         fn(b);
     }
 }
-// OperatorIndex overloads for materialize_row / assign_row / row_popcount /
-// for_each_row_position are defined after the OperatorIndex.h include at the bottom of
-// this file (OperatorIndex needs TermIndex, defined below, and MonomialHash, from core/Monomial.h).
+// OperatorIndex overloads for these accessors are defined after the OperatorIndex.h include below.
 
 using VecCD = std::vector<std::complex<double>>;
 
@@ -96,28 +85,22 @@ using VecI = std::vector<int>;
 
 using VecZ = std::vector<size_t>;
 
-// ── Compile-time build knobs (set at configure time: cmake -D<name>=...) ──────────────────────
+// Compile-time build knobs (cmake -D<name>=...):
 //   monoprop_ENABLE_MPI         real MPI transport vs single-rank stubs         (default OFF)
 //   monoprop_WIDE_TERM_INDEX    TermIndex = u64 vs u32 → >2^32 local terms/rank (default OFF)
 //   monoprop_MAX_NUM_MODES      NumModes codegen/instantiation ceiling          (default 250)
 //   monoprop_ENABLE_ARCH_FLAGS  -march=native / -xHost (non-Debug)              (default ON)
-// Runtime (env-var) knobs live in detail/EnvConfig.h. Storage-width regimes (Bitset word count,
-// OperatorIndex::PosT) are template/constexpr decisions derived from NumModes, not build switches.
+// Runtime (env-var) knobs live in detail/EnvConfig.h.
 //
-// TermIndex: operator row index. Default uint32_t (memory-minimal); monoprop_WIDE_TERM_INDEX widens
-// it to uint64_t to support > 2^32 local terms on a single rank, at the cost of doubling the per-term
-// index arrays.
+// TermIndex: operator row index. Default u32; monoprop_WIDE_TERM_INDEX widens to u64 for > 2^32 local terms/rank.
 #if defined(monoprop_WIDE_TERM_INDEX)
 using TermIndex = std::uint64_t;
 #else
 using TermIndex = std::uint32_t;
 #endif
 
-// Allocator that DEFAULT-initializes (placement-new `U`) on the no-arg construct instead of
-// value-initializing (`U()`). For trivially-default-constructible T this leaves resize()-grown
-// elements UNINITIALIZED (no serial zero-fill). Use ONLY for buffers whose every grown element is
-// overwritten before it is read (e.g. parallel-scatter gather destinations) — otherwise it exposes
-// indeterminate values. Lets a parallel fill avoid the serial memset that resize() would otherwise do.
+// Allocator that DEFAULT-initializes (no zero-fill) on the no-arg construct. Use ONLY for buffers whose
+// every grown element is overwritten before read — otherwise it exposes indeterminate values.
 template <typename T, typename A = std::allocator<T>>
 struct default_init_allocator : A {
     using a_traits = std::allocator_traits<A>;
@@ -151,17 +134,11 @@ using CyclesType = std::vector<std::vector<std::pair<size_t, size_t>>>;
 
 } // namespace monoprop
 
-// Data classes extracted into focused detail headers. Included here so existing consumers
-// of TypeAliases.h continue to see all types without modification.
-// OperatorIndex needs TermIndex and MonomialHash (defined above), so it is included here rather
-// than at the top where only Monomial is yet in scope.
+// Included here (not at the top) because OperatorIndex needs TermIndex/MonomialHash defined above.
 #include "monoprop/detail/operator/OperatorIndex.h"
 
-// OperatorIndex backend-agnostic row-accessor overloads (requires OperatorIndex defined).
-// MUST be declared BEFORE InvertedIndex.h / MPOperator.h: those headers' templates call these accessors,
-// and since OperatorIndex lives in monoprop::detail, ADL from those templates searches only
-// monoprop::detail — it would NOT reach these monoprop-namespace overloads. Declaring them here
-// puts them in ordinary-lookup scope at the point those headers are parsed.
+// OperatorIndex row-accessor overloads. MUST be declared BEFORE InvertedIndex.h/MPOperator.h: those
+// templates reach these via ordinary lookup, not ADL (ADL searches only monoprop::detail).
 namespace monoprop {
 template <size_t NumModes>
 [[nodiscard]] inline auto materialize_row(const detail::OperatorIndex<NumModes> &op, size_t i) -> Monomial<NumModes> {
@@ -169,9 +146,8 @@ template <size_t NumModes>
 }
 template <size_t NumModes>
 inline auto assign_row(detail::OperatorIndex<NumModes> &op, size_t i, const Monomial<NumModes> &maj) -> void {
-    // All callers of this overload (Engine.h insert_deferred_self_misses, Resolve.h miss scatter) write
-    // freshly grown, disjoint, never-before-written rows, so use the fresh path that skips the overflow
-    // pre-read/erase (unnecessary + UB-adjacent on default-init rows inside the parallel scatter).
+    // All callers write freshly grown, never-before-written rows, so use the fresh path that skips the
+    // overflow pre-read/erase (UB-adjacent on default-init rows in the parallel scatter).
     op.set_fresh(i, maj);
 }
 template <size_t NumModes>

@@ -18,34 +18,28 @@
 #include <cstdlib>
 #include <optional>
 
-// Single home for all runtime environment configuration. Every `monoprop_*` env var the library reads
-// is parsed here, exactly once (function-local static in config::get()), and exposed as a field of
-// config::Settings. Callers read config::get() directly (e.g. resolve_shard_count_ reads num_threads).
+// Single home for all runtime environment configuration: every `monoprop_*` env var is parsed here
+// once (function-local static in config::get()) and exposed as a config::Settings field.
 //
-// Dependency-free by design (only <cstdlib>): this header is pulled into low-level, hot-path headers
-// (e.g. cosine recompute), so it must not depend on the threading layer, MPI, or any monoprop type.
+// Dependency-free by design (only <cstdlib>): pulled into low-level hot-path headers, so it must not
+// depend on the threading layer, MPI, or any monoprop type.
 //
 // Recognised env vars:
 //   monoprop_NUM_THREADS          positive int (1..1e6); else ignored          → num_threads
 //   monoprop_PHASE_TIMERS         bool, default OFF                            → phase_timers
 //   monoprop_FOLD_STATS           bool, default OFF; per-gate fold/scan statistics → fold_stats
 //   monoprop_SHARD_PINNING        bool, default ON; 0/false disables per-core pinning → shard_pinning
-//                                 (CpuTopology; Linux-only effect)
-// The one shard-runtime var parsed at its point of use (it needs string forms beyond a plain field):
-//   monoprop_SHARDS               int N | "auto" | "off"; overrides the shard-count policy
-//                                 (MonomialPropagator::resolve_shard_count_). Default (unset) is
-//                                 "auto": one single-threaded shard per physical core — the default
-//                                 parallelism — capped by monoprop_NUM_THREADS when set. "off" ⇒ one
-//                                 partition (the pre-sharding behaviour); N ⇒ exactly N shards.
-// NOTE: the profiler's rank discovery (OMPI_COMM_WORLD_RANK/PMI_RANK/PMIX_RANK) is intentionally NOT
-// here — it is launcher-provided, not a monoprop knob.
+//   monoprop_SHARDS               int N | "auto" | "off"; overrides the shard-count policy. Parsed at
+//                                 its point of use (resolve_shard_count_) since it needs string forms.
+//                                 "auto" (default) = one single-threaded shard per physical core, capped
+//                                 by monoprop_NUM_THREADS; "off" = one partition; N = exactly N shards.
+// NOTE: the profiler's rank discovery (OMPI_COMM_WORLD_RANK/...) is launcher-provided, not a monoprop knob.
 
 namespace monoprop::config {
 
 namespace detail {
 
-// Truthy parse shared by the two boolean flags: unset or empty ⇒ default; otherwise false iff the
-// first character is one of {0,f,F,n,N}. Matches the historical per-site semantics exactly.
+// Truthy parse: unset/empty ⇒ default; else false iff first char is one of {0,f,F,n,N}.
 inline auto parse_flag(const char *value, bool default_value) -> bool {
     if (value == nullptr || value[0] == '\0') {
         return default_value;
@@ -78,8 +72,7 @@ struct Settings {
     bool shard_pinning = true;      // monoprop_SHARD_PINNING
 };
 
-/// Parse the environment once and return the shared, immutable Settings. The first call reads every
-/// env var; later calls return the cached result (inline function ⇒ one instance across TUs).
+/// Parse the environment once and return the shared, immutable Settings (cached; one instance across TUs).
 inline auto get() -> const Settings & {
     static const Settings settings = [] {
         Settings s;

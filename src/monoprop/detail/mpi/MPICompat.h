@@ -30,7 +30,7 @@
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/ShmComm.h"
 #ifdef monoprop_ENABLE_MPI
-#include "monoprop/detail/mpi/HybridComm.h" // Kind::Hybrid transport (R MPI ranks x S shards)
+#include "monoprop/detail/mpi/HybridComm.h"
 #endif
 
 // These includes are here on purpose and should not be moved to the top
@@ -39,15 +39,14 @@
 
 namespace monoprop::mpi {
 
-/// Thrown when a collective's inputs are inconsistent with its communicator (e.g. a per-rank
-/// send-buffer count that does not match the number of ranks). Dedicated type (rather than a
-/// generic std::runtime_error) so callers can catch this condition specifically.
+/// Thrown when a collective's inputs are inconsistent with its communicator (e.g. a per-rank count
+/// mismatching the rank count). Dedicated type so callers can catch this condition specifically.
 class CollectiveArgumentError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
-// ─── lifecycle (MPI only; ShmComm needs no global init) ──────────────────────────
+// lifecycle (MPI only; ShmComm needs no global init)
 
 #ifdef monoprop_ENABLE_MPI
 /**
@@ -57,9 +56,8 @@ inline auto init(int *argc = nullptr, char ***argv = nullptr) -> void {
     auto initialized = 0;
     MPI_Initialized(&initialized);
     if (!initialized) {
-        // SERIALIZED (not FUNNELED): under the MPI hybrid, each rank's shard-0 master thread — not the
-        // main thread — makes the MPI calls, always one-at-a-time (bracketed by the HybridComm
-        // barriers). mpi4py already requests MULTIPLE >= SERIALIZED, so Python is unaffected.
+        // SERIALIZED (not FUNNELED): under the hybrid each rank's shard-0 master — not the main thread —
+        // makes the one-at-a-time MPI calls. mpi4py already requests >= SERIALIZED, so Python is unaffected.
         auto required = MPI_THREAD_SERIALIZED;
         auto provided = 0;
         MPI_Init_thread(argc, argv, required, &provided);
@@ -129,8 +127,6 @@ inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr)
 inline auto finalize() -> void { /* no MPI to finalize in a non-MPI build */ }
 #endif // monoprop_ENABLE_MPI
 
-// ─── rank / size ─────────────────────────────────────────────────────────────
-
 /// Rank of the caller in `comm`.
 inline auto rank(const Comm &comm) -> int {
     if (comm.kind == Comm::Kind::Shm) {
@@ -168,8 +164,6 @@ inline auto size(const Comm &comm) -> int {
     return 1;
 #endif
 }
-
-// ─── allreduce ───────────────────────────────────────────────────────────────
 
 /**
  * @brief Allreduce sum for a single value.
@@ -210,11 +204,8 @@ inline auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
 #endif
 }
 
-// ─── count exchange ──────────────────────────────────────────────────────────
-
-/// Exchange per-rank send counts to obtain per-rank recv counts (MPI_Alltoall of one int per rank,
-/// or the ShmComm/HybridComm transpose). Single-process Kind::Mpi build: identity copy (recv == send).
-/// `n` is the communicator size.
+/// Exchange per-rank send counts for per-rank recv counts (MPI_Alltoall, or the ShmComm/HybridComm
+/// transpose). Single-process Kind::Mpi build: identity copy (recv == send). `n` is the comm size.
 inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void {
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
@@ -234,14 +225,12 @@ inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Com
 #endif
 }
 
-// ─── variable all-to-all (vector-of-vectors) ─────────────────────────────────
+// variable all-to-all (vector-of-vectors)
 
 /**
- * @brief In-flight variable-size all-to-all. Owns its send/recv buffers + layout so MULTIPLE
- * exchanges can be in flight at once. The per-rank COUNT exchange has already completed when a handle
- * is returned from begin_alltoallv, so recv_counts is valid immediately; wait_into completes the
- * PAYLOAD transfer (a no-op for the Shm and single-process paths, which transfer synchronously in
- * begin_alltoallv) and unpacks by source.
+ * @brief In-flight variable-size all-to-all owning its buffers + layout (so multiple can be in flight).
+ * The count exchange is done on return from begin_alltoallv (recv_counts valid); wait_into completes the
+ * payload transfer (a no-op for the synchronous Shm / single-process paths) and unpacks by source.
  */
 template <class T>
 struct PendingAlltoallv {
@@ -272,17 +261,13 @@ struct PendingAlltoallv {
 };
 
 /**
- * @brief Post a variable-size all-to-all. The per-rank COUNT exchange runs eagerly (recv_counts is
- * known on return). On the Kind::Mpi path the PAYLOAD is posted NON-BLOCKING (MPI_Ialltoallv) so the
- * caller can compute during the transfer, and PendingAlltoallv::wait_into completes it; on the
- * Kind::Shm path (and the single-process build) the transfer runs synchronously here and wait_into
- * just unpacks.
+ * @brief Post a variable-size all-to-all. The count exchange runs eagerly (recv_counts known on
+ * return); the Kind::Mpi payload is non-blocking (wait_into completes it), while Shm / single-process
+ * transfer synchronously here.
  *
- * @param send_data          Vectors indexed by target rank.
  * @param skip_self          Do not send the self slot (caller handles self inline): self send/recv=0.
- * @param known_recv_counts  Skip the count exchange — the recv counts are already known (e.g. response
- *                           counts are the transpose of the query counts). Self slot is zeroed here
- *                           too when skip_self is set.
+ * @param known_recv_counts  Skip the count exchange — recv counts already known (e.g. the transpose of
+ *                           the query counts). Self slot is also zeroed when skip_self is set.
  */
 template <class T>
 inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
@@ -328,11 +313,9 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     // Resolve recv counts (known transpose, or one count exchange).
     h.recv_counts.resize(static_cast<size_t>(num_ranks));
 
-    // Fused fast path (query round, recv layout unknown): resolve the recv counts AND move the payload
-    // in ONE in-process verb, folding away the standalone count exchange's barriers (Shm 4→2, Hybrid
-    // 6→4). The verb fills recv_counts/recv_displs and resizes recv_buffer, so we return straight into
-    // wait_into (blocking transports leave request == MPI_REQUEST_NULL). Known-layout rounds and the
-    // pure-MPI path fall through to the plain resolve-then-transport below.
+    // Fused fast path (query round, recv layout unknown): resolve recv counts AND move payload in one
+    // in-process verb, folding away the count exchange's barriers (Shm 4→2, Hybrid 6→4). It fills
+    // recv_counts/recv_displs and resizes recv_buffer; known-layout and pure-MPI paths fall through.
     if (known_recv_counts == nullptr && comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoallv_resolve<T>(comm.shm_rank,
                                        h.send_buffer.data(),
@@ -380,7 +363,6 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
         h.recv_displs[static_cast<size_t>(num_ranks - 1)] + h.recv_counts[static_cast<size_t>(num_ranks - 1)];
     h.recv_buffer.resize(static_cast<size_t>(total_recv));
 
-    // Transport.
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoallv(comm.shm_rank,
                             h.send_buffer.data(),

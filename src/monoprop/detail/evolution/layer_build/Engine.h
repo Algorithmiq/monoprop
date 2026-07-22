@@ -36,10 +36,8 @@
 
 namespace monoprop::detail {
 
-// ─── LayerBuildEngine ─────────────────────────────────────────────────────────
-// Owns the machinery for build_layer: the per-rank accumulator, the (caller-owned,
-// epoch-stamped) matched-follower set, the per-rank query streams, the deferred self-misses, and the
-// resolve/exchange/finalize operations. combined_size = the pre-layer operator size.
+// Owns build_layer's machinery: per-rank accumulator, matched-follower set, query streams, deferred
+// self-misses, and the resolve/exchange/finalize ops. combined_size = the pre-layer operator size.
 template <size_t NumModes>
 struct LayerBuildEngine {
     struct DeferredSelfMiss {
@@ -48,48 +46,39 @@ struct LayerBuildEngine {
         int phase;
         double v_src = 0.0; // fused only: op_pre[src] captured at scan emit; 0 (unused) otherwise
     };
-    // ── config (set at construction) ──
-    // The engine's methods only need the operator + the MPI topology. The cutoffs / generator /
-    // coeffs live in the free-function orchestrator (build_layer): they drive the fused
-    // scan and the metadata, not the resolve/exchange/finish machinery, so they are deliberately NOT
-    // held here — the struct advertises exactly the surface its methods touch.
+    // config (set at construction): methods need only the operator + MPI topology. Cutoffs/generator/
+    // coeffs live in the build_layer orchestrator (they drive the scan/metadata), so are not held here.
     MPOperator<NumModes> &local_op; // scanned, looked up, and grown by the inserts
     mpi::Comm comm;
     size_t R;
     size_t my_rank;
-    // Picture flag (fused R>1 only): selects cross-rank MISS handling. A fresh cross-rank insert's
-    // coeff is 0 in Heisenberg (querier half is a no-op) but HF-scored non-zero in Schrödinger (querier
-    // half's v_partner needs a post-extension exchange). Unused at R==1 and in the non-fused path.
+    // Picture flag (fused R>1 only): selects cross-rank MISS handling — a fresh insert's coeff is 0 in
+    // Heisenberg but HF-scored in Schrödinger. Unused at R==1 and in the non-fused path.
     bool schrodinger_ = false;
-    // Operator basis (fused R>1 only): selects Pauli vs Majorana HF scoring of fresh cross-rank
-    // Schrödinger misses in the fused resolver. Set by build_layer; Majorana by default.
+    // Operator basis (fused R>1 only): Pauli vs Majorana HF scoring of fresh cross-rank Schrödinger misses.
     Basis basis_ = Basis::Majorana;
 
-    // ── state (grows during the build) ──
     std::vector<PartnerAcc> acc;
-    // Follower-matched set over the combined index space [0, combined_size): epoch-stamped and owned
-    // by the caller so no O(n) per-gate clear (see MatchedEpochSet). Atomics-free: ≤1 writer per slot
-    // (distinct leaders → distinct found via injective ⊕G), leader-pass writes / follower-pass reads.
+    // Follower-matched set over [0, combined_size): caller-owned + epoch-stamped so no O(n) per-gate
+    // clear (see MatchedEpochSet). Atomics-free: ≤1 writer per slot (distinct leaders → distinct found).
     MatchedEpochSet &matched;
     size_t combined_size;
     std::vector<VecZ> queries_r;
     std::vector<std::vector<size_t>> src_idx_r;
     std::vector<DeferredSelfMiss> deferred_self_misses;
 
-    // ── fused contraction (set by build_layer for the ContractImmediately forward path, all ranks) ──
-    // When fused_ != nullptr the engine emits RotationRec streams into it (skipping the acc /
-    // in_entries / out_entries and the LayerCore) and reads pre-cos target coeffs from op_coeffs_.
-    // src_val_r is parallel to src_idx_r (self-rank only at R==1): the scan-captured v_src per query.
+    // fused contraction (set by build_layer, all ranks): when fused_ != nullptr the engine emits
+    // RotationRec streams into it (no acc/LayerCore) and reads pre-cos target coeffs from op_coeffs_.
+    // src_val_r is parallel to src_idx_r: the scan-captured v_src per query.
     FusedContract *fused_ = nullptr;
     const VecD *op_coeffs_ = nullptr;
     std::vector<std::vector<double>> src_val_r;
-    // Fused query+value send buffer (R>1 ContractImmediately): each gate we interleave queries_r + src_val_r
-    // into one kQueryWordsFused-wide stream so a SINGLE alltoallv carries both. Reused across gates (HWM).
+    // Fused query+value send buffer (R>1): interleaves queries_r + src_val_r into one
+    // kQueryWordsFused-wide stream so a SINGLE alltoallv carries both. Reused across gates.
     std::vector<VecZ> combined_qv_;
 
-    // Fused cos sweep (ContractImmediately k==0): the scan already multiplied every anticommuting
-    // coefficient by cos(2θ) in its own pass, so a hit partner's stored value is POST-cos here; resolve
-    // recovers the pre-cos v_tgt as stored·inv_cos_ (one extra rounding, ≤1 ulp — see build_layer).
+    // Fused cos sweep (k==0): the scan already scaled every anticommuting coeff by cos(2θ), so a hit
+    // partner's stored value is POST-cos; resolve recovers pre-cos v_tgt as stored·inv_cos_.
     bool fused_scale_ = false;
     double inv_cos_ = 1.0;
 
@@ -138,9 +127,8 @@ struct LayerBuildEngine {
         }
     }
 
-    // One partner-resolution pass: resolve this rank's self-rank queries inline, then (multi-rank
-    // only) alltoallv-exchange the cross-rank queries and fold in the one-response-per-query answers.
-    // is_leader_pass selects the leader vs. follower half of the gate's two passes.
+    // One partner-resolution pass: resolve self-rank queries inline, then (multi-rank) alltoallv-exchange
+    // cross-rank queries and fold in the answers. is_leader_pass selects the leader vs. follower half.
     auto run_exchange(bool is_leader_pass) -> void {
         {
             profiling::ScopedRegion prof_sr(profiling::Region::SelfResolve);
@@ -151,21 +139,16 @@ struct LayerBuildEngine {
         }
         profiling::ScopedRegion prof_mx(profiling::Region::MpiExchange);
         if (fused_ != nullptr) {
-            // ── Fused R>1 exchange (ContractImmediately) ──
-            // Round 1: queries A→B FUSED with the v_src value stream — each query record carries its own
-            // v_src as a trailing bit-cast word (build_fused_query_value), so ONE alltoallv replaces the
-            // former query+value pair. Saves a full count+payload round every gate (bit-identical: the
-            // value travels adjacent to its query, same routing / per-source order as the two-stream path).
+            // Fused R>1 exchange. Round 1: queries A→B fused with the v_src value stream (one bit-cast
+            // trailing word per record), so ONE alltoallv replaces the former query+value pair.
             combined_qv_.resize(R);
             for (size_t r = 0; r < R; ++r) {
                 build_fused_query_value<NumModes>(queries_r[r], src_val_r[r], combined_qv_[r]);
             }
             std::vector<std::vector<size_t>> inc_q;
             mpi::begin_alltoallv(combined_qv_, comm).wait_into(inc_q);
-            // Resolver: emit half-rotations into fused_ and return one VALUE per incoming query — the
-            // real target coeff for a HIT and the freshly-computed insert coeff for a MISS, both in the
-            // SAME round. There is no NaN sentinel and no second exchange (see resolve_incoming_queries_fused).
-            // inc_q now holds fused (maj,phase,v_src) records; the resolver reads v_src straight off each.
+            // Resolver: emit half-rotations into fused_ and return one VALUE per query — target coeff for a
+            // HIT, freshly-computed insert coeff for a MISS — in the SAME round (see resolve_incoming_queries_fused).
             auto resp_val = resolve_incoming_queries_fused(inc_q,
                                                            local_op,
                                                            R,
@@ -185,7 +168,7 @@ struct LayerBuildEngine {
             process_query_responses_fused<NumModes>(inc_rval, src_idx_r, queries_r, R, my_rank, *fused_);
             return;
         }
-        // ── Non-fused R>1 exchange (graph build / replay) — unchanged ──
+        // Non-fused R>1 exchange (graph build / replay).
         std::vector<std::vector<size_t>> inc_q;
         mpi::begin_alltoallv(queries_r, comm).wait_into(inc_q);
         auto resps = resolve_incoming_queries(inc_q, local_op, R, is_leader_pass, matched, combined_size, acc);
@@ -234,27 +217,19 @@ struct LayerBuildEngine {
         }
     }
 
-    // Sub-step of finish() — do not call directly. Precondition (LOAD-BEARING): call only AFTER both
-    // resolve passes complete. Inserting earlier would corrupt the base+k ↔ acc-slot index assignment
-    // established below (and the per-miss distinctness argument relies on all passes having run).
+    // Sub-step of finish() — do not call directly. LOAD-BEARING precondition: call only AFTER both resolve
+    // passes complete, else the base+k ↔ acc-slot assignment and per-miss distinctness break.
     auto insert_deferred_self_misses() -> void {
         const size_t n_miss = deferred_self_misses.size();
         if (n_miss > 0) {
             profiling::ScopedRegion prof_di(profiling::Region::DeferInsert);
-            // ── Parallel deterministic insert (any rank count) ──
-            // The deferred SELF misses are pairwise-distinct (each maj is source⊕G over distinct op
-            // terms, ⊕G injective) and still absent (a cross-rank term inserted mid-pass is some other
-            // rank's source'⊕G, source'≠source). So miss k, in deterministic leader-then-follower
-            // order, is assigned base+k — byte-identical to the serial loop — with no dedup and NO
-            // ATOMICS: op slots, map shards, inverted index words and acc slots are written by disjoint tasks.
-            // Grow → scatter → index → resync (see insert_absent_terms). key_at reads the staged dense
-            // Monomial directly (no packed-row re-materialization); per_slot scatters the row into the
-            // disjoint op slot base+k plus the matching per-record side entry. Side arrays are resized
-            // before the insert (their base offsets don't depend on the op insert base).
+            // Parallel deterministic insert (any rank count). Deferred SELF misses are pairwise-distinct
+            // (maj = source⊕G, ⊕G injective) and still absent, so miss k gets base+k in leader-then-follower
+            // order — byte-identical to the serial loop, no dedup, no atomics (disjoint slots/shards/index
+            // words). See insert_absent_terms.
             auto key_at = [&](size_t k) -> const Monomial<NumModes> & { return deferred_self_misses[k].maj; };
             if (fused_ != nullptr) {
-                // Fused: append INSERT records (v_tgt filled later, after op_coeffs is extended). No acc /
-                // in_entries / out_entries in fused mode.
+                // Fused: append INSERT records (v_tgt filled later, after op_coeffs is extended).
                 const size_t rec_base = fused_->inserts.size();
                 fused_->inserts.resize(rec_base + n_miss);
                 insert_absent_terms<NumModes>(local_op, n_miss, key_at, [&](size_t k, size_t base) {
@@ -295,7 +270,6 @@ struct LayerBuildEngine {
             p.in_count = P; // boundary for deriving the D index list from B (D indices are not stored)
             p.sin_send_indices.resize(P + Q);
             p.sin_recv_entries.resize(P + Q);
-            // One pass over P+Q: k<P fills in-entry slots, k>=P fills out-entry slots.
             for (size_t k = 0; k < P + Q; ++k) {
                 if (k < P) {
                     const auto &e = a.in_entries[k];
@@ -313,19 +287,15 @@ struct LayerBuildEngine {
         return partners;
     }
 
-    // cos is not stored on the layer. When `out_cos` is non-null the in-build contraction needs the
-    // full anticommuting cos for the immediate evolve_step, so we hand it over; otherwise cos is
-    // discarded and recomputed from the inverted index fold at replay (generator_words + scaled_count).
+    // cos is not stored on the layer: hand it over when `out_cos` is non-null (the in-build contraction
+    // needs it for evolve_step); otherwise it is recomputed from the inverted index fold at replay.
     auto finish(CosMask &&cos_all, CosMask *out_cos = nullptr) -> std::shared_ptr<LayerCore> {
         insert_deferred_self_misses();
         if (fused_ != nullptr) {
-            // Fused (ContractImmediately, all ranks): the LayerCore is transient in this mode, so skip
-            // assemble_partners + build_layer_storage_unified entirely and return nullptr. In the two-pass
-            // fused path (k>0 / cos==0 fallback) we append the inserted endpoints into cos (see
-            // append_inserted_endpoints_) so the immediate cos scale covers them, exactly as the non-fused
-            // evolve_step path expects. Under the fused cos sweep the scan applied cos in place and built
-            // no cosine set; the apply covers inserts via its in-place insert arm and never reads *out_cos
-            // — building/moving it would be dead work on the hot per-gate path, so leave it empty.
+            // Fused (all ranks): the LayerCore is transient, so skip assemble/build_layer_storage and return
+            // nullptr. Two-pass fused (k>0 / cos==0 fallback) appends inserted endpoints into cos so the
+            // immediate cos scale covers them; the fused cos sweep built no set and its apply covers inserts
+            // in-place, so leave *out_cos empty there.
             if (out_cos != nullptr && !fused_scale_) {
                 append_inserted_endpoints_(cos_all);
                 *out_cos = std::move(cos_all);
@@ -342,9 +312,8 @@ struct LayerBuildEngine {
     }
 
 private:
-    // Response counts are the TRANSPOSE of the query counts: resolve returns exactly one answer per query,
-    // so recv_counts[r] == queries_r[r].size()/W. Both sides know this, so passing it as known_recv_counts
-    // skips the response count-Alltoall round (W is the fixed per-query word count, so the division is exact).
+    // Response counts are the TRANSPOSE of the query counts (one answer per query), so passing them as
+    // known_recv_counts skips the response count-Alltoall round.
     auto response_recv_counts() const -> std::vector<int> {
         std::vector<int> counts(R);
         for (size_t r = 0; r < R; ++r) {
@@ -353,14 +322,9 @@ private:
         return counts;
     }
 
-    // Every rotation TARGET must be in cos so the gradient reverse-sweep can recover its pre-layer
-    // coefficient by un-doing this layer's cosine scaling. Cycle targets are already in cos from the
-    // fused scan; only freshly INSERTED half-terms can be absent. Forward energy is unaffected (an
-    // inserted target's coefficient is 0 when the cos pass runs). Without this the reverse sweep
-    // over-scales those endpoints — see test_infinite_cutoff.
-    //
-    // Inserts are APPENDED, occupying [combined_size, local_op.size()), so we append just that range
-    // (O(inserted)) instead of scanning every rotation target (a serial Amdahl anchor).
+    // Every rotation TARGET must be in cos so the gradient reverse-sweep can un-do this layer's cosine
+    // scaling; only freshly INSERTED half-terms can be absent (see test_infinite_cutoff). Inserts are
+    // APPENDED in [combined_size, local_op.size()), so append just that range, not every target.
     auto append_inserted_endpoints_(CosMask &cos_all) -> void {
         const size_t cos_lo = combined_size;
         const size_t cos_hi = local_op.store->size();
@@ -369,10 +333,8 @@ private:
             end_b.push_index(idx);
         }
         CosMask end_words = end_b.finish();
-        // Scan cos bits are all < cos_lo (pre-insert indices); the freshly-inserted endpoint bits are
-        // all >= cos_lo. The two sets are disjoint, so ONLY the seam word (cos_lo>>6, when cos_lo is
-        // not 64-aligned) can carry bits from both — OR just that word, then append the rest. This keeps
-        // blocks ascending/disjoint, the invariant the inverted index fold + replay need.
+        // Scan cos bits (< cos_lo) and inserted endpoint bits (≥ cos_lo) are disjoint, so only the seam
+        // word can carry both — OR it, then append the rest, keeping blocks ascending/disjoint.
         cos_all.total_count += end_words.total_count;
         if (!cos_all.blocks.empty() && !end_words.blocks.empty()
             && end_words.blocks.front().first == cos_all.blocks.back().first) {
@@ -384,14 +346,11 @@ private:
         }
     }
 
-    // Batched: gather up to kResolveBatch surviving queries, resolve them with the index's
-    // group-prefetch find_batch (which overlaps the independent DRAM misses of the probes), then emit
-    // sequentially in query order. Emission order, matched marks and miss order are identical to a
-    // one-find-at-a-time loop, so the batching is transparent to the result.
+    // Batched: gather up to kResolveBatch surviving queries, resolve via the index's group-prefetch
+    // find_batch, then emit in query order — transparent to a one-find-at-a-time loop's result.
     static constexpr size_t kResolveBatch = 64;
-    // `lv` (fused only, else nullptr) is the per-query v_src array parallel to `ls`. `hit_sink` (fused
-    // only, else nullptr) receives HIT RotationRecs; when it is non-null the acc in/out sinks are NOT
-    // written (no LayerCore in fused mode) and misses carry v_src.
+    // `lv` (fused only) is the per-query v_src array parallel to `ls`. `hit_sink` (fused only) receives HIT
+    // RotationRecs; when non-null the acc in/out sinks are NOT written and misses carry v_src.
     auto resolve_range_(VecZ &lq,
                         std::vector<size_t> &ls,
                         std::vector<double> *lv,
@@ -436,11 +395,8 @@ private:
                         matched.mark(found[j]); // distinct leaders → distinct found → no atomics
                     }
                     if (fused) {
-                        // Capture the partner's PRE-cos v_tgt now. Under the fused cos sweep the scan
-                        // already scaled op_coeffs_[found] (found < combined_size, anticommuting ⇒ swept),
-                        // so recover the pre-cos value with the inverse factor; without the sweep (k>0 /
-                        // cos==0 fallback) the stored value is still pre-cos and stays so (extend only
-                        // appends, the mask scale runs after build).
+                        // Capture the partner's PRE-cos v_tgt: under the fused cos sweep op_coeffs_[found]
+                        // was already scaled, so recover it with inv_cos_; otherwise it is still pre-cos.
                         const double v_tgt =
                             fused_scale_ ? (*op_coeffs_)[found[j]] * inv_cos_ : (*op_coeffs_)[found[j]];
                         hit_sink->push_back(
@@ -459,13 +415,9 @@ private:
     }
 };
 
-// ─── build_layer ─────────────────────────────────────────────────
-// Primary-path layer builder. Implements paper Algorithm 2 and emits a graph layer directly.
-// Runs the fused scan (FindAnticommuting + apply_cutoffs in one walk) to produce the compressed
-// cosine blocks and cutoff-applied per-rank leader/follower query streams. During the two exchange
-// passes, rotation participants accumulate into a uniform per-rank PartnerAcc (self slot = partner
-// with in:=tgt, out:=src). After both passes: self-rank absent partners are inserted (load-bearing:
-// AFTER both resolves), the per-rank CrossRankPartnerData is assembled, and a LayerCore is built.
+// Primary-path layer builder (paper Algorithm 2): the fused scan feeds two MPI exchange passes into a
+// per-rank PartnerAcc, then self-rank absent partners are inserted (load-bearing: AFTER both resolves)
+// and a LayerCore is assembled. See LayerBuilder.h for the algorithm.
 template <size_t NumModes>
 auto build_layer(MPOperator<NumModes> &local_op,
                  const Monomial<NumModes> &gen,
@@ -485,29 +437,22 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
-    // Fused contraction: the caller (evolve_mode_contract_immediately_) passes a non-null sink for the
-    // ContractImmediately forward path. Fused now runs at ALL rank counts (R>1 uses the cross-rank
-    // half-rotation exchange in run_exchange); the sole guard is a non-null sink.
+    // Fused contraction: the caller passes a non-null sink for the ContractImmediately forward path.
+    // Runs at ALL rank counts (R>1 uses the cross-rank half-rotation exchange); the sole guard is the sink.
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
     const auto &coeffs = local_coeffs ? local_coeffs->get() : empty_coeffs();
     const CutoffEvaluator<NumModes> cut_eval{cutoff_fn};
 
-    // Fused cos sweep: the ContractImmediately mode's cos implementation (use_fused == that mode, and the
-    // caller hands the picture's MUTABLE coeff vector through fused_scale_coeffs). The scan folds the
-    // per-gate cosine scale into its own coefficient pass — one sweep instead of the eager read-pass +
-    // CosMask round-trip + RMW-scale-pass, which restreamed every anticommuting coefficient from DRAM
-    // twice per gate. k==0 only: a hit target with popcount>k is outside the k>0 per-index cos set, so
-    // the 1/cos recovery in resolve would be wrong for it — only_rotate_len_k>0 keeps the two-pass eager.
-    // cos(2·param)==0.0 exactly would make the recovery impossible; fall back to two-pass (unreachable
-    // for real angles — no double has cosine exactly 0 — defensive only). cos is even, so the sweep's
-    // cos(2·build_angle) equals the apply's cos(2·apply_angle) bit-for-bit (apply_angle = ±build_angle).
+    // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass (one sweep vs
+    // the eager read + CosMask + RMW-scale). k==0 only (a popcount>k hit is outside the per-index cos set,
+    // so 1/cos recovery would be wrong) and cos!=0 (else recovery is impossible; two-pass fallback). cos is
+    // even, so the sweep's cos(2·build_angle) matches the apply's cos(2·apply_angle) bit-for-bit.
     const double cos_build = (use_fused && param.has_value()) ? std::cos(2.0 * param.value()) : 1.0;
     const bool fused_scale =
         use_fused && only_rotate_len_k == 0 && fused_scale_coeffs != nullptr && param.has_value() && cos_build != 0.0;
-    // build_layer is the single authority for this decision; report it so the fused caller
-    // (evolve_mode_contract_immediately_) drives the apply (skip-the-mask-scale, in-place insert arm)
-    // from the SAME decision instead of recomputing it and risking a build/apply disagreement.
+    // build_layer is the single authority for this decision; report it so the fused caller drives the
+    // apply from the SAME decision instead of risking a build/apply disagreement.
     if (fused_scale_out != nullptr) {
         *fused_scale_out = fused_scale;
     }
@@ -515,9 +460,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
 
     FusedScanResult fused = [&] {
         profiling::ScopedRegion prof_find(profiling::Region::Find);
-        // Dispatch the scan on the basis at compile time (Pauli emit-sign kernel + J(G) fold vs the
-        // Majorana interleave/hermitian phase). Every other argument — including the fused cos sweep,
-        // which scales the same anticommuting set the fold finds — is basis-agnostic.
+        // Dispatch the scan on the basis at compile time (Pauli emit-sign/J(G) fold vs Majorana
+        // interleave/hermitian phase). Every other argument is basis-agnostic.
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
         return with_algebra<NumModes>(basis, [&]<class A>() {
             return fused_find_and_collect<NumModes, A>(local_op,
@@ -584,11 +528,9 @@ auto build_layer(MPOperator<NumModes> &local_op,
 
     auto storage = eng.finish(std::move(cos_all), out_cos);
 
-    // Recompute metadata rides WITH the layer (in its LayerCore), so it survives every graph transform
-    // (slice/union/consume/Schrödinger-prepend). scaled_count is the POST-insert operator size (after
-    // finish() ran this layer's partner inserts): the stored cos is "all anticommuting", so folding the
-    // inverted index truncated to scaled_count reproduces it bit-for-bit in both pictures with no stored bitmap.
-    // Fused mode returns no LayerCore (the layer is transient), so there is nothing to stamp.
+    // Recompute metadata rides WITH the layer so it survives every graph transform. scaled_count is the
+    // POST-insert operator size: folding the inverted index truncated to it reproduces the "all
+    // anticommuting" cos bit-for-bit with no stored bitmap. Fused mode has no LayerCore to stamp.
     if (storage != nullptr) {
         storage->generator_words.assign(gen.data(), gen.data() + mpi_detail::kWords<NumModes>);
         storage->scaled_count = static_cast<uint64_t>(local_op.store->size());

@@ -26,18 +26,12 @@
 
 namespace monoprop::detail {
 
-// ─── Shared incoming-record probe (Phases 1-2 + insert) ───────────────────────
-// resolve_incoming_queries and its fused twin share the picture-independent
-// probe/insert machinery: deserialize every incoming record, batch-find it in the local operator, and
-// assign each miss the next index base+j in a serial (sender,record)-order prefix. None of this does
-// floating-point math, so all resolvers reuse it verbatim — the deterministic base+j assignment (and
-// thus multi-rank bit-exactness) then CANNOT drift between them. Each resolver supplies its own Phase-3
-// scatter (the only part that differs: graph acc entries + TermIndex responses vs. half-rotation records
-// + value responses) BETWEEN the probe and insert_incoming_misses.
-//
-// PARALLELISM (load-bearing): all queries in one pass are source⊕G for globally-distinct sources (each
-// term owned by one rank) and ⊕G is injective ⇒ queries pairwise distinct ⇒ misses distinct and absent.
-// So miss j (in fixed (s,q) order) gets index base+j, byte-identical to a serial current_size++ loop.
+// resolve_incoming_queries and its fused twin share this picture-independent probe/insert machinery:
+// deserialize every incoming record, batch-find it, and assign each miss the next index base+j in a
+// serial (sender,record)-order prefix — so the deterministic assignment (and multi-rank bit-exactness)
+// cannot drift between resolvers. Each supplies its own Phase-3 scatter BETWEEN probe and insert.
+// PARALLELISM (load-bearing): queries are source⊕G for globally-distinct sources and ⊕G is injective ⇒
+// queries pairwise distinct ⇒ misses distinct and absent, so miss j gets base+j like a serial loop.
 template <size_t NumModes>
 struct IncomingProbe {
     std::vector<size_t> goff;                  // rank_count+1 flat offsets: g = goff[s] + q
@@ -50,12 +44,10 @@ struct IncomingProbe {
     size_t nq_total = 0;
 };
 
-// Phases 1-2 for QUERY records: deserialize + batch-find every incoming record and assign miss indices.
-// Read-only w.r.t. the operator's contents (probes only); the caller runs its Phase-3 scatter, then
-// insert_incoming_misses. QW = per-record stride: the plain query width, or kQueryWordsFused for the fused
-// resolver (trailing v_src word). Keeping this single copy keeps the deterministic serial (s,q) miss-prefix
-// — and thus multi-rank bit-exactness — consistent across resolvers. The value word (if any) is read by
-// the caller (see resolve_incoming_queries_fused), never here.
+// Phases 1-2 for QUERY records: deserialize + batch-find every incoming record and assign miss indices
+// (read-only w.r.t. operator contents). QW = per-record stride: the plain query width, or kQueryWordsFused
+// for the fused resolver (trailing v_src word, read by the caller not here). The caller runs Phase-3, then
+// insert_incoming_misses.
 template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
 auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                             MPOperator<NumModes> &op,
@@ -74,8 +66,8 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
         return pr;
     }
 
-    // ── Deterministic PARALLEL resolve (see PARALLELISM above) ── probes run lock-free; the table is
-    // not mutated during this phase. Only the miss-rank prefix (Phase 2) is serial.
+    // Deterministic PARALLEL resolve (see PARALLELISM above): probes run lock-free (table not mutated);
+    // only the miss-rank prefix (Phase 2) is serial.
     pr.sender_of.resize(pr.nq_total);
     for (size_t s = 0; s < rank_count; ++s) {
         std::fill(pr.sender_of.begin() + static_cast<std::ptrdiff_t>(pr.goff[s]),
@@ -119,20 +111,17 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     return pr;
 }
 
-// Phase 4 (parallel bulk insert of the distinct absent terms): scatter majs into the disjoint op slots
-// [base, base+n_miss), insert keys into disjoint map shards, resync the inverted index. Atomics-free (disjoint
-// op slots / map shards / inverted index words, as insert_deferred_self_misses). Call AFTER the caller's
-// Phase-3 scatter: that scatter reads pre-insert op_coeffs for hits and needs base still == op.size().
+// Phase 4 (parallel bulk insert of the distinct absent terms): scatter majs into disjoint op slots
+// [base, base+n_miss), insert keys into disjoint map shards, resync the inverted index — atomics-free.
+// Call AFTER the caller's Phase-3 scatter, which reads pre-insert op_coeffs for hits and needs base == op.size().
 template <size_t NumModes>
 auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumModes> &pr) -> void {
     const size_t n_miss = pr.miss_g.size();
     if (n_miss == 0) {
         return;
     }
-    // Grow → scatter → index → resync (see insert_absent_terms). pr.base was captured at Phase 2 for the
-    // miss-index assignment and no insert has run since, so op.size() still equals pr.base == the insert
-    // base here. One writer per miss slot base+j; the staged dense majorana is read straight out of the
-    // deserialization buffer via miss_g — the packed row is written once, never re-read here.
+    // See insert_absent_terms. pr.base (captured at Phase 2) still equals op.size() here since no insert has
+    // run; one writer per miss slot base+j, the staged maj read straight from the deserialization buffer.
     insert_absent_terms<NumModes>(
         op,
         n_miss,
@@ -140,20 +129,12 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
         [&](size_t j, size_t base) { assign_row<NumModes>(*op.store, base + j, pr.maj[pr.miss_g[j]]); });
 }
 
-// ─── resolve_incoming_queries ─────────────────────────────────────────────────
 // Resolver rank: for each query from sender s, look up M' locally; found → return its index, absent →
-// INSERT it (new index i') and return i' in the SAME response round (the resolver is the sole inserter
-// of cross-rank absent terms). It also records its inbound entry acc[s].in_entries in query order, so
-// build_layer can assemble CrossRankPartnerData without a separate cycle-exchange round.
-//
-// ORDERING CONTRACT (load-bearing): the B/D exchange is positional — querier A's out_indices[k] must
-// pair with resolver B's in_indices[k]. alltoallv preserves per-source order, so responses[s][q]
-// answers incoming[s][q]. Every query yields exactly one resolution — DO NOT skip, reorder, or
-// partition found vs. absent, or the pairing breaks and multi-rank energy diverges.
-//
-// Returns per-sender response buffers — one TermIndex per query, each a REAL local index after the
-// insert-on-miss (check_index_fits keeps it below the TermIndex ceiling; the element widens under
-// monoprop_WIDE_TERM_INDEX). Symmetric-pair dedup is structural.
+// INSERT it and return the new index in the SAME response round (the resolver is the sole inserter of
+// cross-rank absent terms). Records its inbound acc[s].in_entries in query order for CrossRankPartnerData.
+// ORDERING CONTRACT (load-bearing): the B/D exchange is positional — responses[s][q] must answer
+// incoming[s][q], so every query yields exactly one resolution; DO NOT skip/reorder/partition found vs.
+// absent, or multi-rank energy diverges. Each response is a REAL local index (post insert-on-miss).
 template <size_t NumModes>
 auto resolve_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                               MPOperator<NumModes> &op,
@@ -172,8 +153,7 @@ auto resolve_incoming_queries(const std::vector<VecZ> &incoming, // serialized, 
     }
 
     // Phase 3 (parallel scatter): responses, resolver IN entries (q order), and matched-follower marks.
-    // Found indices are distinct so the matched set has ≤1 writer per slot; freshly inserted partners
-    // (ip ≥ base ≥ combined_size) are skipped by the bound check.
+    // Found indices are distinct (≤1 writer per slot); freshly inserted partners (ip ≥ combined_size) skip it.
     std::vector<size_t> in_base(rank_count);
     for (size_t s = 0; s < rank_count; ++s) {
         in_base[s] = acc[s].in_entries.size();
@@ -194,20 +174,13 @@ auto resolve_incoming_queries(const std::vector<VecZ> &incoming, // serialized, 
     return responses;
 }
 
-// ─── resolve_incoming_queries_fused (R>1 ContractImmediately) ─────────────────
-// Fused twin of resolve_incoming_queries: shares the exact probe/insert machinery (probe_incoming_queries
-// + insert_incoming_misses, so the deterministic base+j miss-index assignment and the inverted index resync are
-// literally the same code), but instead of the acc in/out entries + a TermIndex response it emits one
-// half-rotation per query into `fc.cross_half` (the resolver's +φ half on the target it owns, v_src known
-// from the query) and returns a per-query VALUE stream = the querier half's v_partner (the target coeff):
-//   HIT  (target already local, ip < base): resp_val[s][q] = the target's PRE-cos coeff — op_coeffs[ip]
-//        directly, or op_coeffs[ip]·inv_cos when the fused cos sweep already scaled it (fused_scale).
-//   MISS (target freshly inserted, ip = base+j): the fresh term's picture coeff, which is a pure function
-//        of the majorana — 0 in Heisenberg; is_paired ? hf_phase : 0 in Schrödinger (∈ {−1,0,+1}, exactly
-//        get_state's scoring). Computed here from the query's own majorana, so it flows back in THIS round
-//        with no post-extension second exchange. (base == pre-insert op size, so ip < base ⇔ HIT; distinct
-//        sources ⟹ distinct targets ⟹ no query hits a same-layer insert, so a HIT's op_coeffs[ip] is in
-//        bounds.) matched.mark is kept for the leader pass (byte-identical to the non-fused resolver).
+// Fused twin of resolve_incoming_queries: shares the exact probe/insert machinery, but instead of acc
+// entries + a TermIndex response it emits one half-rotation per query into `fc.cross_half` (the resolver's
+// +φ half on the target it owns) and returns a per-query VALUE = the querier half's v_partner (target coeff):
+//   HIT  (ip < base): the target's PRE-cos coeff — op_coeffs[ip], or ·inv_cos under the fused cos sweep.
+//   MISS (ip = base+j): the fresh term's picture coeff — 0 in Heisenberg; is_paired ? hf_phase : 0 in
+//        Schrödinger — computed here from the query's majorana, so it flows back in THIS round (no 2nd exchange).
+// matched.mark is kept for the leader pass (byte-identical to the non-fused resolver).
 template <size_t NumModes>
 auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
                                     MPOperator<NumModes> &op,
@@ -237,8 +210,7 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
     const auto hf_mask = schrodinger ? get_hf_mask<NumModes>(op.slater_determinant) : Monomial<NumModes>{};
 
     // Phase 3 (parallel scatter): resp_val + one resolver +φ half per query + matched marks. Deterministic
-    // resize+indexed-scatter keyed by the flat g (append base = current cross_half size); never a shared
-    // push_back.
+    // resize + indexed-scatter keyed by flat g (never a shared push_back).
     const size_t cross_base = fc.cross_half.size();
     fc.cross_half.resize(cross_base + pr.nq_total);
     for (size_t g = 0; g < pr.nq_total; ++g) {
@@ -247,10 +219,8 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
         const size_t ip = pr.idx_of[g];
         double v_tgt;
         if (ip < pr.base) {
-            // HIT: the target's PRE-cos coeff. Under the fused cos sweep the resolver's own scan already
-            // scaled this slot (an existing anticommuting term), so recover the pre-cos value with the
-            // inverse factor — the wire ships pre-cos values exactly as the two-pass path did. MISS values
-            // below are computed fresh (never swept) and must NOT be un-scaled.
+            // HIT: the target's PRE-cos coeff — under the fused cos sweep this slot was already scaled, so
+            // recover it with inv_cos. MISS values below are computed fresh (never swept), so are NOT un-scaled.
             v_tgt = fused_scale ? op_coeffs[ip] * inv_cos : op_coeffs[ip];
         }
         else if (schrodinger) {
@@ -277,10 +247,8 @@ auto resolve_incoming_queries_fused(const std::vector<VecZ> &incoming,
     return resp_val;
 }
 
-// ─── process_query_responses ──────────────────────────────────────────────────
-// Querier rank: turn each resolver response (always a real partner index, since the resolver inserts
-// on miss) into a querier-side OUT entry (source idx + query phase) in the shared per-rank PartnerAcc.
-// The self/local rank was already resolved inline, so it is skipped here.
+// Querier rank: turn each resolver response into a querier-side OUT entry (source idx + query phase) in
+// the shared per-rank PartnerAcc. The self/local rank was already resolved inline, so it is skipped here.
 template <size_t NumModes>
 auto process_query_responses(const std::vector<std::vector<TermIndex>> &responses,
                              const std::vector<std::vector<size_t>> &src_idx,
@@ -299,12 +267,9 @@ auto process_query_responses(const std::vector<std::vector<TermIndex>> &response
         if (nq == 0) {
             continue;
         }
-        // OUT block (querier side), in response (== q) order, appended after any earlier pass's
-        // entries. Resize once + indexed scatter (mirrors resolve_incoming_queries' in_entries fill):
-        // every query yields exactly one OUT entry, so the slot for q is base+q — parallelizable with
-        // no ordering hazard. Only source_idx + the trailing phase word feed it; the resolver inserts
-        // on miss so found_idx is always a real index and is not needed downstream (see the assert,
-        // which reconstructs nothing).
+        // OUT block (querier side) in response (== q) order: resize once + indexed scatter (every query
+        // yields one OUT entry, slot q = base+q, no ordering hazard). Only source_idx + phase feed it; the
+        // resolver's insert-on-miss makes found_idx always real, so it is unused downstream (see the assert).
         auto &out = acc[r].out_entries;
         const size_t base = out.size();
         out.resize(base + nq);
@@ -315,14 +280,10 @@ auto process_query_responses(const std::vector<std::vector<TermIndex>> &response
     }
 }
 
-// ─── process_query_responses_fused (R>1 ContractImmediately) ──────────────────
 // Fused twin of process_query_responses: turns each resolver value response into a querier half-rotation
-// on the source slot THIS rank owns. inc_rval[r] is parallel to this rank's queries to r (resp_val came
-// back in query order, so inc_rval[r][q] answers query q), and every value is the target coeff v_tgt — the
-// resolver computed the fresh-insert coeff on the spot, so there is no NaN sentinel and no second round.
-// For each r != my_rank, q ascending, append a querier half {S=src_idx[r][q], v_tgt, −φ}: c[S] +=
-// sin·(−φ)·v_tgt is applied later with the resolver halves. (A Heisenberg fresh-insert v_tgt is 0 ⟹ a
-// harmless no-op add.) Serial per r in q-order (no parallel push_back into the shared cross_half).
+// on the source slot THIS rank owns. inc_rval[r][q] answers query q with the target coeff v_tgt, so for
+// each r != my_rank, q ascending, append a querier half {S=src_idx[r][q], v_tgt, −φ} (a Heisenberg
+// fresh-insert v_tgt is 0 ⟹ a no-op add). Serial per r in q-order (no shared push_back into cross_half).
 template <size_t NumModes>
 auto process_query_responses_fused(const std::vector<std::vector<double>> &inc_rval,
                                    const std::vector<std::vector<size_t>> &src_idx,

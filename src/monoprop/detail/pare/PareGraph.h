@@ -14,9 +14,8 @@
 
 #pragma once
 
-// pare_graph / get_pared_graph are declared in the public MPFunctions.h (reachable from the
-// simulator impl header, which lives under include/). This internal header pulls in that public
-// declaration plus the MPI compat layer the .cpp helpers need, so the .cpp definitions match.
+// Pulls in the public pare_graph / get_pared_graph declarations (MPFunctions.h) plus the MPI compat
+// layer the .cpp helpers need.
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"

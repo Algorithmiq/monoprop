@@ -36,11 +36,9 @@ inline auto cpu_relax() noexcept -> void {
 #endif
 }
 
-// How many cpu_relax() iterations a barrier spinner burns before it starts donating its timeslice
-// via sched_yield. PAUSE is ~140 cycles on Sapphire Rapids, so 2048 iterations is ~0.1 ms of
-// on-core waiting — well past the inter-shard arrival gaps of a balanced exchange, so pinned
-// production shards never syscall; oversubscribed runs (tests, CI) still degrade gracefully to
-// yield so a spinner can't starve the completer of a core.
+// cpu_relax() iterations a barrier spinner burns before donating its timeslice via sched_yield.
+// PAUSE ~140 cycles on Sapphire Rapids ⇒ 2048 iters ≈ 0.1 ms, past a balanced exchange's arrival gaps
+// (pinned shards never syscall); oversubscribed runs still degrade gracefully to yield.
 inline constexpr int kSpinPauseIters = 2048;
 
 } // namespace monoprop::mpi::detail

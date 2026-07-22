@@ -68,9 +68,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
             std::format("logical_num_modes ({}) must be in the range [1, {}].", logical_num_modes_, NumModes));
     }
 
-    // Each algebra declares its structural constraints (see algebra/Algebra.h); enforce them here.
-    // Native Pauli requires the support (orbital-weight) cutoff — length has no Pauli-weight meaning
-    // under this encoding — and forbids a Majorana basis change (the encoding IS the JW image already).
+    // Enforce each algebra's structural constraints (see algebra/Algebra.h).
     with_algebra<NumModes>(basis_, [&]<class A>() {
         if (A::requires_support_cutoff && cutoff_type_ != CutoffType::Support) {
             throw std::invalid_argument("Pauli basis requires cutoff_type == Support "
@@ -85,21 +83,17 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
     // Record the basis on the operator so its coefficient encoding / HF scoring match this picture.
     mp_op_.basis = basis_;
 
-    // Validate atol parameters
     if (upper_atol.has_value() && lower_atol.has_value() && (upper_atol.value() < lower_atol.value())) {
         throw std::runtime_error(std::format("upper_atol ({}) must be greater than or equal to lower_atol ({}).",
                                              upper_atol.value(),
                                              lower_atol.value()));
     }
 
-    // Sharding: shards>1 makes this a FACADE that owns S single-shard propagators (each a hash
-    // partition of the operator, built via a Kind::Shm comm on its own pinned master thread) and fans
-    // every operator method out to them. The facade's own mp_op_/graph_ stay empty and unused.
+    // shards>1 makes this a FACADE owning S single-shard propagators (each a hash partition, on its own
+    // pinned master thread via a Kind::Shm comm); its own mp_op_/graph_ stay empty.
     const size_t n_shards = resolve_shard_count_(shards, comm);
-    // Under MPI, every rank must resolve the SAME shard count: the R ranks x S shards form one flat
-    // P = R*S SPMD world, so a mismatch (heterogeneous nodes, un-propagated env) would deadlock at the
-    // first hybrid collective. Check with a matched collective (every rank reaches this ctor SPMD):
-    // sum(S) equals S*R on every rank iff all agree. Cheap and single-threaded (before any master).
+    // Every MPI rank must resolve the SAME shard count: the R ranks x S shards form one flat P = R*S
+    // SPMD world, so a mismatch would deadlock at the first hybrid collective. sum(S) == S*R iff all agree.
     if (comm.kind == mpi::Comm::Kind::Mpi && mpi::size(comm) > 1
         && mpi::allreduce_sum<size_t>(n_shards, comm) != n_shards * static_cast<size_t>(mpi::size(comm))) {
         throw std::runtime_error("Shard count differs across MPI ranks — every rank must resolve the same "
@@ -128,7 +122,6 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
     MonomialList<NumModes> local_heisenberg_terms;
 
-    // convert the operator to the internal format
     double core_term = 0.0;
     for (const auto &[indices, coefficient] : initial_operator) {
         for (const auto &index : indices) {
@@ -156,22 +149,17 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
     auto op = schrodinger_ ? generate_paired_op<NumModes>(sc / 2 + sc % 2, logical_num_modes_) : local_heisenberg_terms;
 
     const size_t expected_local_terms = std::max<size_t>(1, op.size() / std::max<size_t>(1, num_ranks));
-    // Build the cutoff function BEFORE the store: packed_inline_width_() derives the packed-row width
-    // from cutoff_fn_, so it must be populated first — otherwise the width silently falls back to the
-    // loose kMaxInlinePositions and the cutoff-adaptive row narrowing is dead. Inputs (cutoff_type_,
-    // cutoff_, basis_change_, logical_num_modes_) are all set by now; nothing below re-touches them.
+    // Must run BEFORE the store: packed_inline_width_() derives the packed-row width from cutoff_fn_,
+    // else the width falls back to the loose kMaxInlinePositions and the row narrowing is dead.
     regenerate_cutoff_fn_();
-    // Re-init the store with this run's cutoff-adaptive packed-row width (terms with popcount <=
-    // cutoff are the common case for length/mode cutoffs; longer fully-paired terms spill to
-    // overflow losslessly, so a tight width only ever helps). Width is a construction invariant,
-    // so a fresh store sets it; then size rows + index once to the expected per-rank count.
+    // Width is a construction invariant, so a fresh store sets it; a tight width only helps (longer
+    // terms spill to overflow losslessly).
     mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
     mp_op_.store->reserve(expected_local_terms);
 
     size_t i = 0;
-    // The initial operator is a sum over DISTINCT Majorana monomials (Hamiltonian / paired-ham
-    // basis), so each maj is unique on this rank and emplace (insert-if-absent) is equivalent to
-    // an assigning insert — the duplicate-key distinction does not arise.
+    // The initial operator's Majorana monomials are DISTINCT, so emplace (insert-if-absent) == an
+    // assigning insert here.
     for (size_t r = 0; r < op.size(); ++r) {
         const auto &maj = materialize_row<NumModes>(op, r);
         if (my_rank == find_rank<NumModes>(maj, num_ranks)) {
@@ -180,11 +168,9 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
         }
     }
 
-    // Initialize this rank's MPOperator
     mp_op_.slater_determinant = slater_determinant;
     core_term_ = core_term;
 
-    // (cutoff function was built above, before the store, so packed_inline_width_ could use it)
     initialize_operator_caches_();
 }
 
@@ -192,9 +178,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
 template <size_t NumModes>
 MonomialPropagator<NumModes>::~MonomialPropagator() = default;
 
-// Deep copy. Member-wise clone of every value member (MPOperator's copy ctor repairs the index
-// back-pointer; MPGraph shares immutable cores); a shard-backed source clones its whole group (fresh
-// threads + ShmComm). The init-list order matches declaration order to satisfy -Wreorder.
+// Deep copy: a shard-backed source clones its whole group (fresh threads + ShmComm). Init-list order
+// matches declaration order to satisfy -Wreorder.
 template <size_t NumModes>
 MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other)
     : schrodinger_(other.schrodinger_),
@@ -214,36 +199,22 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       shard_group_(other.shard_group_ ? std::make_unique<detail::shard::ShardGroup<NumModes>>(*other.shard_group_)
                                       : nullptr) {}
 
-// Resolve the effective shard count.
-//   • explicit ctor `shards` >= 1 wins;
-//   • else monoprop_SHARDS overrides: an integer, "auto" (the policy value), or "off" (force 1);
-//   • else the AUTO POLICY: native Pauli on a single MPI rank with an explicit monoprop_NUM_THREADS
-//     >= 2 shards one serial partition per requested thread, capped at the physical-core count.
-// The auto policy keys off an EXPLICIT thread budget (monoprop_NUM_THREADS, unset by default) so that
-// a user who never asked for parallelism keeps the single-partition
-// path — and one who set monoprop_NUM_THREADS>=2 (previously flat-scaling for Pauli) now gets the
-// shard speedup automatically. Majorana always defaults to 1 (it already scales; halving per-shard
-// work would hurt it).
+// Resolve the effective shard count: explicit ctor `shards`>=1 wins; else monoprop_SHARDS
+// (integer / "auto" / "off"); else the auto policy below.
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::resolve_shard_count_(size_t requested, mpi::Comm comm) -> size_t {
-    // Explicit ctor argument wins outright: 1 => single partition (no sharding), N>1 => exactly N.
     if (requested >= 1) {
         return requested;
     }
-    // AUTO policy: shards are the DEFAULT parallelism for BOTH bases (Phase-2 measured shards beat the
-    // thread-pool path on every workload — Pauli 6-9x, hubbard ~2x, random ~1.1x). One serial shard per
-    // physical core,
-    // capped by monoprop_NUM_THREADS when the user set it, so the sole user knob is the thread count.
-    // Under R>1 MPI ranks the shards compose with MPI into one flat R*S world (the hybrid): S is the
-    // per-rank shard count, so P = R*S. To avoid oversubscription, auto-sharding on a multi-rank comm
-    // engages ONLY when the thread count is set (an MPI user who has not asked for threads is doing
-    // pure MPI); a single rank always shards to the core count.
+    // AUTO policy (the default parallelism for both bases): one serial shard per physical core, capped
+    // by monoprop_NUM_THREADS when set. On a multi-rank comm the shards compose with MPI into a flat
+    // P = R*S hybrid, so auto-sharding engages there ONLY when threads were explicitly requested
+    // (avoids oversubscribing a pure-MPI run); a single rank always shards to the core count.
     const auto compute_auto = [&]() -> size_t {
         const int ranks = mpi::size(comm);
         size_t cores = detail::shard::enumerate_physical_cores().size();
         if (cores == 0) {
-            // Topology unreadable (non-Linux / restricted /sys): use half the hardware threads so SMT
-            // siblings are not miscounted as cores, floored at 1.
+            // Topology unreadable: use half the hardware threads so SMT siblings aren't counted as cores.
             cores = std::max<size_t>(1, static_cast<size_t>(std::thread::hardware_concurrency()) / 2);
         }
         const auto num_threads = config::get().num_threads;
@@ -251,7 +222,6 @@ auto MonomialPropagator<NumModes>::resolve_shard_count_(size_t requested, mpi::C
             num_threads.has_value() ? static_cast<size_t>(*num_threads) : (ranks == 1 ? cores : size_t{1});
         return std::max<size_t>(1, std::min(budget, cores));
     };
-    // Env override: integer N forces N, "auto" forces the policy above, "off" forces single-partition.
     if (const char *env = std::getenv("monoprop_SHARDS")) {
         const std::string_view v(env);
         if (v == "auto") {
@@ -269,9 +239,8 @@ auto MonomialPropagator<NumModes>::resolve_shard_count_(size_t requested, mpi::C
     return compute_auto();
 }
 
-// Sharded accessors. Pure reads (size, graph_size, graph_layers) run directly on the quiescent shard
-// propagators from the facade thread; the mutating reserve routes through the masters so the reserved
-// capacity is first-touched on the owning core.
+// Sharded accessors. Pure reads run directly on the quiescent shards from the facade thread; the
+// mutating reserve routes through the masters so the reserved capacity is first-touched on its core.
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::sharded_size_() const -> size_t {
     size_t total = 0;
@@ -295,15 +264,13 @@ auto MonomialPropagator<NumModes>::sharded_graph_size_() const -> std::pair<size
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::sharded_graph_layers_() const -> size_t {
-    // The graph STRUCTURE is identical on every shard (same generator sequence), so shard 0 is
-    // authoritative for structural queries.
+    // Graph structure is identical on every shard, so shard 0 is authoritative for structural queries.
     return shard_group_->shard(0).graph_layers();
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::sharded_core_term_() const -> double {
-    // The core (identity) term is stored on every shard, not hash-partitioned, so any shard's value
-    // is the full core term (see apply_initial_operator_'s "store in all" branch).
+    // The core (identity) term is stored on every shard (not hash-partitioned), so any shard is full.
     return shard_group_->shard(0).core_term();
 }
 
@@ -335,7 +302,7 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
     constexpr size_t kMax = detail::OperatorIndex<NumModes>::kMaxInlinePositions;
     // No cutoff-derived bound (Schrödinger state rows, or an opaque cutoff fn): keep the historical
-    // default width so those stores are byte-identical to before this bound was introduced.
+    // default width so those stores stay byte-identical.
     constexpr size_t kDefault = detail::OperatorIndex<NumModes>::kDefaultInlinePositions;
     if (schrodinger_) {
         return kDefault;
@@ -344,10 +311,8 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
     if (!bound) {
         return kDefault;
     }
-    // Scale the cutoff-unit bound to physical slots per the algebra (see A::max_slots_per_cutoff_unit):
-    // a weight-w Pauli carries up to 2w set bits (a Z occupies both slots of its qubit), so its bound
-    // doubles — otherwise every diagonal-heavy Pauli spills to the overflow arena; Majorana counts
-    // Majorana operators directly.
+    // Scale the cutoff-unit bound to physical slots per the algebra (A::max_slots_per_cutoff_unit): a
+    // weight-w Pauli carries up to 2w set bits, so its bound doubles; Majorana counts operators directly.
     const size_t inline_bound =
         with_algebra<NumModes>(basis_, [&]<class A>() -> size_t { return A::max_slots_per_cutoff_unit * (*bound); });
     return std::min<size_t>(inline_bound, kMax);
@@ -357,16 +322,14 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMap &op_dict)
     -> std::pair<MonomialList<NumModes>, VecD> {
     if (shard_group_) {
-        // Each shard filters op_dict to its own hash partition. The facade holds no local terms, so
-        // the return (used by subclasses to refresh caches) is empty; subclasses aren't supported with
-        // shards>1 (see the frozen-surface note).
+        // Each shard filters op_dict to its own hash partition. The facade holds no local terms, so the
+        // return is empty; subclasses aren't supported with shards>1.
         shard_group_->run_on_all([&](int r) { shard_group_->shard(r).update_initial_operator(op_dict); });
         return {};
     }
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
 
-    // Convert the input operator to the internal format and distribute terms to ranks
     FermiOperatorMap new_op;
     for (const auto &[ind, coeff] : op_dict) {
         const auto maj = indices_to_bitset<NumModes>(ind);
@@ -380,7 +343,6 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMa
         }
     }
 
-    // Update this rank's operator
     auto res = mp_op_.update_initial_operator(new_op, schrodinger_);
     return std::move(std::get<2>(res));
 }
@@ -423,10 +385,9 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
             b_data.emplace_back(std::move(sin_send_indices), std::move(b_phases));
             d_data.emplace_back(std::move(d_indices), std::move(sin_recv_phases));
         }
-        // cos is no longer stored per-layer (the main path moves it out transiently and the
-        // replay paths recompute from inverted indexes). Recompute the full cosine index set here from
-        // the persistent even-parity inverted index fold using this layer's recompute metadata
-        // (generator_words + scaled_count). graph_ is the main graph (single-inverted index fold).
+        // cos is not stored per-layer; recompute the full cosine index set here from the persistent
+        // even-parity inverted-index fold using this layer's recompute metadata (generator_words +
+        // scaled_count).
         VecZ cos_inds;
         const auto &gw = traversal.generator_words();
         if (!gw.empty()) {
@@ -530,12 +491,9 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
                                                                                                         size_t i) {
             const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
             const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
-            // The cos word list is no longer persisted on the layer; the builder MOVES it out transiently
-            // (the per-layer recompute metadata still rides on the storage and is appended to the graph).
-            // The immediate evolve_step scales that transient word list in parallel via scale_cos_mask,
-            // rather than reading the layer's (now empty) stored cos_data. Gate info (param index, gen
-            // coeff, gate index) is recorded on the layer here so the graph owns it and evaluation needs
-            // only the variational parameters.
+            // The cos word list is not persisted on the layer; the builder moves it out transiently and
+            // evolve_step scales it in parallel here. Gate info is recorded on the layer so the graph
+            // owns it and evaluation needs only the variational parameters.
             auto cos = std::make_shared<CosMask>();
             auto storage = build_evolve_result_(maj, rot_len, std::cref(coeffs), build_angle, cos.get());
             graph_.append(storage, parameter_mapping[idx], gen_coeffs[idx], gate_indices[idx]);
@@ -560,23 +518,16 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
     VecD *op_coeffs = schrodinger_ ? &mp_op_.state_coeffs : &mp_op_.op_coeffs;
     *op_coeffs = current_picture_coeffs_();
     const auto majoranas_size = majoranas.size();
-    // ContractImmediately is a SINGLE fused contraction path at all rank counts. build_evolve_result_
-    // emits rotation records (self-rank full rotations + R>1 cross-rank half rotations, the latter
-    // carrying partner values via the build-time exchange) — no transient LayerCore (storage is
-    // nullptr) — and apply_fused_contract applies them in place, replacing the old build_layer +
-    // evolve_step. At k==0 the scan applies the gate's cos scale in place during its own coefficient
-    // pass (the fused cos sweep — one sweep instead of read-pass + CosMask + RMW-pass); build_layer
-    // owns that decision and reports it back through `fused_scale`, so the apply below drives its
-    // skip-the-mask-scale / in-place-insert arms from the SAME decision the build used — they cannot
-    // disagree. At k>0 (or the defensive cos==0 fallback) cos is the two-pass mask, consumed
-    // synchronously, so a plain local suffices.
+    // A SINGLE fused contraction path at all rank counts: build_evolve_result_ emits rotation records
+    // (no transient LayerCore) and apply_fused_contract applies them in place. The build reports its
+    // fused-cos-sweep decision back through `fused_scale`, so the apply drives its matching arms from
+    // the SAME decision the build used — they cannot disagree.
     run_gate_loop_(
         majoranas,
         only_rotate_len_k,
         [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
             const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
-            // build_evolve_result_ performs the self-rank operator inserts that grow the operator;
-            // extend_coeffs must run AFTER that grow and BEFORE the apply.
+            // extend_coeffs must run AFTER build_evolve_result_'s self-rank grow and BEFORE the apply.
             CosMask cos;
             detail::FusedContract fc;
             bool fused_scale = false;
@@ -608,8 +559,8 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
     }
     validate_coefficient_lengths(parameter_mapping, gen_coeffs);
 
-    // Resolve gate indices: default to one gate per generator (iota). These are local and
-    // 0-based per call; offset by the gate count already in the graph so they are absolute.
+    // Gate indices default to one gate per generator (iota); they are 0-based per call, so offset by
+    // the graph's existing gate count to make them absolute.
     VecZ local_gates;
     if (gate_indices.has_value()) {
         local_gates = std::move(*gate_indices);
@@ -625,20 +576,16 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
     }
 
     if (!parameters.has_value()) {
-        // Pure structural build: append layers recording their gate information. No arena scope is
-        // needed: the threading pool is persistent and its workers spin briefly between the (often
-        // many) small per-gate parallel regions instead of parking/waking between them.
+        // Pure structural build. No arena scope needed: the threading pool is persistent and spins
+        // briefly between the many small per-gate parallel regions instead of parking/waking.
         evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k);
     }
     else {
-        // Guard the coefficient-informed path the same way propagate() guards its parameters:
-        // evolve_mode_graph_with_coeffs_ -> map_params()/fill_mapped_params() index
-        // `parameters` by parameter_mapping, so a too-short vector reads out of bounds.
+        // map_params() indexes `parameters` by parameter_mapping, so a too-short vector reads OOB.
         validate_parameters_length(*parameters, parameter_mapping);
-        // Coefficient-informed build: regenerate the seed by contracting the existing graph
-        // (replacing the former operator_coeffs input), then build+contract the new layers into it
-        // so atol truncation sees realistic coefficients. The existing graph references the
-        // parameter prefix [0, m); slice `parameters` to that so the exact-length check passes.
+        // Coefficient-informed build: seed by contracting the existing graph so atol truncation sees
+        // realistic coefficients. That graph references the parameter prefix [0, m); slice to it so
+        // the exact-length check passes.
         VecD seed;
         if (graph_layers() > 0) {
             const auto existing = graph_gate_arrays_();
@@ -678,11 +625,8 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
     }
     validate_coefficient_lengths(parameter_mapping, gen_coeffs);
     validate_parameters_length(parameters, parameter_mapping);
-    // propagate() evolves and contracts in place assuming no stored graph: its contract loop
-    // slices and consumes graph layers from the front (see evolve_mode_contract_immediately_),
-    // so running it on a graph built by build_graph() would consume those pre-existing layers
-    // and silently corrupt the result. Reject it -- build_graph() is the extend path, and
-    // contract_partially() folds an existing graph.
+    // propagate() contracts in place and would consume any pre-existing graph layers from the front,
+    // corrupting the result — reject a non-empty graph (contract_partially() folds one instead).
     if (graph_layers() > 0) {
         throw std::runtime_error(std::format("Cannot propagate() on top of a non-empty graph of {} layer(s): "
                                              "propagate() evolves and contracts in place and assumes no stored graph. "
@@ -698,9 +642,8 @@ template <typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
                                                   int only_rotate_len_k,
                                                   EvolutionFunc evolution_func) -> void {
-    // Apply each gate in evolution order (Heisenberg walks the sequence in reverse), then refresh the
-    // operator caches. Each shard runs this loop serially on its pinned core; parallelism comes from
-    // sharding the operator across cores (one serial shard per core) — see PAULI_THREADS.md.
+    // Apply each gate in evolution order (Heisenberg walks it in reverse), then refresh the caches.
+    // This loop is serial per shard; parallelism comes from sharding the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
         const auto &maj = majoranas[idx];
@@ -721,11 +664,9 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                                         bool *fused_scale) -> std::shared_ptr<LayerCore> {
     const auto gen_maj = indices_to_bitset<NumModes>(gen_vec);
 
-    // Unified build pass (paper Algorithm 2). Both parities go through the
-    // parity-corrected fastpath inverted index scan + pivot-bit leader/follower split
-    // (odd generators apply the g_odd parity(|M|) correction in the fold). The per-layer recompute
-    // metadata (generator words + scaled_count) is written onto the returned LayerCore by the
-    // builder, so it travels with the layer through every graph transform.
+    // Unified build pass (paper Algorithm 2): both parities go through the parity-corrected inverted-
+    // index scan (odd generators add the g_odd parity(|M|) correction). The builder writes the
+    // per-layer recompute metadata onto the returned LayerCore, so it travels with every graph transform.
     return detail::build_layer<NumModes>(mp_op_,
                                          gen_maj,
                                          cutoff_fn_,
@@ -752,10 +693,8 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
                                                   size_t param_index,
                                                   double gen_coeff,
                                                   size_t gate_index) -> void {
-    // The per-layer recompute metadata (generator words + scaled_count) is stored ON the layer's
-    // LayerCore by the builder, so it travels with the layer through every graph transform — no
-    // separate lockstep append is needed here. Gate info (param index, gen coeff, gate index) is
-    // recorded on the layer so the graph owns it and evaluation needs only the variational parameters.
+    // Gate info and recompute metadata ride on the layer's LayerCore, so evaluation needs only the
+    // variational parameters.
     graph_.append(build_evolve_result_(gen_vec, only_rotate_len_k, coeffs, param), param_index, gen_coeff, gate_index);
 }
 
@@ -771,8 +710,7 @@ auto MonomialPropagator<NumModes>::evolve_operator_with_recompute_(VecD &&coeffs
                                                                    const MPGraphView &graph,
                                                                    const VecD &params) -> VecD {
     const auto &inverted_index = mp_op_.inverted_index();
-    // Only the scale side is consumed (replay applies rotations to coeffs); build the pair through
-    // the shared builder so the fold-cache budget gate is honored here too.
+    // Only the scale side is consumed; build the pair through the shared builder for consistency.
     auto cos_scale = build_cos_callbacks<NumModes>(inverted_index, graph, basis_).first;
     return evolve_operator(std::move(coeffs), graph, params, cos_scale, comm_);
 }
@@ -802,9 +740,8 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
     const size_t count = graph_.layers();
     const size_t gates = n_gates();
 
-    // Relabel one layer's parameter index. The LayerCore is a shared immutable core (sliced/unioned
-    // graphs may share it), so relabeling copies the core, sets the new parameter index, and replaces
-    // the layer's core in place — preserving generator coeff, gate index, and any stored pruned cos.
+    // Relabel one layer's parameter index. The LayerCore is a shared immutable core, so relabel copies
+    // it, sets the new index, and replaces the layer's core in place (preserving the stored pruned cos).
     auto relabel = [this](size_t layer, size_t new_param_index) {
         auto &target = graph_.get_layer(layer);
         auto new_core = std::make_shared<LayerCore>(target.core());
@@ -859,22 +796,15 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
     return {std::move(parameter_mapping), std::move(gen_coeffs)};
 }
 
-// Build the per-layer (scale, accumulate) cos callbacks for a replayed graph. Handles both layer
-// kinds uniformly, so the pare and non-pare functional paths share ONE implementation:
-//   - PRUNED (pruned_cos() != nullptr): cos is a stored filtered CosMask, scaled in parallel;
-//   - FOLD:  a LazyFold — the layer's cos is recomputed on the fly (no per-layer buffer).
-// The non-pare graph simply has no pruned layers. The returned closures capture only the per-layer
-// recipes + inverted index pointer; the GRAPH's lifetime is owned by the caller's functional capture.
+// Build the per-layer (scale, accumulate) cos callbacks for a replayed graph, so the pare and
+// non-pare functional paths share ONE implementation. Each layer is either PRUNED (a stored filtered
+// CosMask, scaled in parallel) or FOLD (a LazyFold, cos recomputed on the fly); the non-pare graph
+// simply has no pruned layers. The returned closures own their recipes but not the graph.
 template <size_t NumModes>
 auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, const MPGraphView &graph, Basis basis)
     -> std::pair<detail::LayerCosScale, detail::LayerCosAccumulate> {
-    // Each fold layer's cosine set is recomputed on the fly from the persistent inverted index (LazyFold:
-    // cache-blocked + fused + parallel), never retained as a per-layer buffer. A functional-path A/B
-    // (2026-07-20) showed the former budget-gated persistent FoldCache bought <=5% per eval — and LOST
-    // for large operators, its buffer going cold faster than the L1-blocked recompute rebuilds it — while
-    // costing 0.3–1 GB per 1.7M-term operator, so the cache (and its monoprop_RECOMPUTE_CACHE_MAX_MB knob)
-    // was removed. make_fold_cache survives only as the pare materializer + equivalence-test oracle.
-    // Recompute reads the columns in sorted order.
+    // Fold layers recompute cos on the fly (LazyFold), never retained: the former persistent FoldCache
+    // was removed (<=5% gain, and GBs of RAM per large operator). Recompute needs columns sorted.
     inverted_index.ensure_sorted_columns();
 
     struct LayerCos {
@@ -936,17 +866,10 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     const auto expected_layers = graph_layers();
     const auto &inverted_index = mp_op_.inverted_index();
 
-    // Resolve the graph the functional replays, as ONE owning handle so the pare and non-pare paths
-    // share a single tail (build cos callbacks → capture into the functional):
-    //   • pare: a streaming backward keep-set sweep (get_pared_graph) produces a typed-layer MPGraph —
-    //     each layer a FoldLayer (cos recomputed from the fold) or a PrunedLayer (cos trimmed, stored).
-    //     It is heap-owned via shared_ptr so build_cos_callbacks can hold raw pointers into each
-    //     PrunedLayer's stored cos with no copy and no dangling: the functional captures this same
-    //     shared_ptr, so every copy of the std::function keeps the graph (and those cos pointers) alive.
-    //   • non-pare: an ALIASING (non-owning) shared_ptr to graph_ — identical lifetime to capturing
-    //     &graph_ by reference (graph_ must outlive the functional either way), but it lets the tail
-    //     capture one `graph` uniformly. graph_ has no pruned layers, so every layer takes the fold path.
-    // The pared graph keeps the original layer count, so validate_expected_graph_layers is identical.
+    // Resolve the replayed graph as ONE owning handle so the pare and non-pare paths share a single
+    // tail. pare: get_pared_graph produces a heap-owned MPGraph (shared_ptr) — the functional captures
+    // it, keeping alive the stored-cos pointers build_cos_callbacks holds into its PrunedLayers.
+    // non-pare: an aliasing (non-owning) shared_ptr to graph_, which must outlive the functional anyway.
     std::shared_ptr<const MPGraph> graph;
     if (pare_threshold.has_value()) {
         auto full_cos_of_layer = [this, &inverted_index](size_t i) -> CosMask {
@@ -962,10 +885,8 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
         graph = std::shared_ptr<const MPGraph>(std::shared_ptr<const void>{}, &graph_);
     }
 
-    // Per-layer cos callbacks (fold-cached / fold-recompute / stored filtered cos — see
-    // build_cos_callbacks). The inverted index is persistent (pre-warmed in initialize_operator_caches_)
-    // and outlives this simulator; the folds reference its dense columns by pointer and own their sparse
-    // columns, so they stay valid for the captured closure.
+    // The inverted index is persistent (pre-warmed in initialize_operator_caches_) and outlives this
+    // simulator, so the folds' column pointers stay valid for the captured closure.
     auto callbacks = build_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), basis_);
     detail::LayerCosScale cos_scale = std::move(callbacks.first);
     detail::LayerCosAccumulate cos_acc = std::move(callbacks.second);
@@ -992,10 +913,9 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<double> pare_threshold)
     -> std::function<double(const VecD &)> {
     if (shard_group_) {
-        // Build one functional per shard (concurrently — a pared functional does a cross-shard
-        // exchange), then return a closure that invokes them all concurrently and returns shard 0's
-        // (global, via the allreduce inside each). Captures the group by raw pointer: like the
-        // single-rank functional, the returned callable must not outlive this propagator.
+        // Build one functional per shard concurrently, then return a closure that invokes them all
+        // concurrently; each allreduces internally, so shard 0 is the global value. The group is
+        // captured by raw pointer, so the returned callable must not outlive this propagator.
         auto fns = std::make_shared<std::vector<std::function<double(const VecD &)>>>(
             static_cast<size_t>(shard_group_->shard_count()));
         shard_group_->run_on_all([&](int r) {
@@ -1034,8 +954,8 @@ auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional(std
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value(const VecD &parameters) -> double {
     if (shard_group_) {
-        // Each shard's expectation_value runs the inner product over its partition then allreduces via
-        // the ShmComm, so every shard returns the GLOBAL value; shard 0 is representative.
+        // Each shard allreduces over its partition, so every shard returns the GLOBAL value; shard 0
+        // is representative.
         std::vector<double> vals(static_cast<size_t>(shard_group_->shard_count()));
         shard_group_->run_on_all(
             [&](int r) { vals[static_cast<size_t>(r)] = shard_group_->shard(r).expectation_value(parameters); });
@@ -1047,8 +967,7 @@ auto MonomialPropagator<NumModes>::expectation_value(const VecD &parameters) -> 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD> {
     if (shard_group_) {
-        // Value AND gradient are allreduced inside each shard's pass, so every shard ends with the
-        // global pair; shard 0 is representative.
+        // Value AND gradient are allreduced inside each shard's pass; shard 0 is representative.
         std::vector<std::pair<double, VecD>> res(static_cast<size_t>(shard_group_->shard_count()));
         shard_group_->run_on_all([&](int r) {
             res[static_cast<size_t>(r)] = shard_group_->shard(r).expectation_value_and_gradient(parameters);
@@ -1061,12 +980,9 @@ auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &pa
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bool inplace) -> VecD {
     if (shard_group_) {
-        // Contract every shard's partition (fanned out concurrently for the cross-shard exchange),
-        // then concatenate the per-shard coefficient vectors in shard order. The partitions are
-        // disjoint, so the concatenation is a valid enumeration of the whole operator's coefficients
-        // (the flat vector has no cross-shard canonical order beyond this, which is all callers need
-        // — evolved_operator_terms pairs coefficients with indices per shard). Deterministic for a
-        // fixed shard count. The core term is excluded here, exactly as on the single-partition path.
+        // Concatenate the per-shard coefficient vectors in shard order. Partitions are disjoint, so
+        // this enumerates the whole operator (no cross-shard canonical order beyond this; deterministic
+        // for a fixed shard count). The core term is excluded, as on the single-partition path.
         std::vector<VecD> res(static_cast<size_t>(shard_group_->shard_count()));
         shard_group_->run_on_all([&](int r) {
             res[static_cast<size_t>(r)] = shard_group_->shard(r).contract_partially(parameters, inplace);
@@ -1092,11 +1008,8 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
     }
 
     const size_t num_majoranas = parameter_mapping.size();
-    // Main-built layers no longer store the cosine bitmap, so the replay recomputes each layer's cosine
-    // set from the persistent inverted-index fold (evolve_operator_with_recompute_). Both replay paths
-    // take an MPGraphView. Inplace contraction slices into an owned MPGraph, so it must be bound to a
-    // named local before viewing (never view a temporary); the non-inplace path's slice_view() already
-    // returns a view over this graph's still-live layers.
+    // Inplace contraction slices into an owned MPGraph, so it must be bound to a named local before
+    // viewing (never view a temporary); slice_view() views this graph's still-live layers directly.
     if (schrodinger_) {
         const auto &state = mp_op_.get_state();
         const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, -1.0);
@@ -1131,8 +1044,8 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters, double atol)
     -> std::vector<std::pair<VecZ, std::complex<double>>> {
     using Term = std::pair<VecZ, std::complex<double>>;
-    // Contract one propagator's partition and decode its above-atol terms. `p` is always an
-    // unsharded propagator here (a shard, or *this when unsharded), so indexing() is available.
+    // Contract one propagator's partition and decode its above-atol terms. `p` is always unsharded
+    // here (a shard, or *this), so indexing() is available.
     const auto collect = [&](MonomialPropagator &p) -> std::vector<Term> {
         std::vector<Term> terms;
         const VecD evolved = p.contract_partially(parameters, false);
@@ -1144,8 +1057,7 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
             if (std::abs(coeff) < atol) {
                 return;
             }
-            // Pauli coefficients are already real (identity decode); Majorana un-applies the Hermitian
-            // phase from the stored gamma-slot list. Round to drop anti-hermitian numerical noise.
+            // Round to drop anti-hermitian numerical noise (Majorana un-applies the Hermitian phase).
             const auto decoded = algebra_decode_coeff<NumModes>(basis_, coeff, maj);
             const std::complex<double> rounded(std::round(decoded.real() * 1e12) / 1e12,
                                                std::round(decoded.imag() * 1e12) / 1e12);
@@ -1156,9 +1068,8 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
     if (!shard_group_) {
         return collect(*this);
     }
-    // Fan out: each shard decodes its own disjoint hash partition concurrently (the contract_partially
-    // inside collect is the cross-shard collective; the index walk is shard-local). Concatenate — the
-    // partitions never share a term, so the union is the whole operator with no dedup needed.
+    // Each shard decodes its own disjoint hash partition concurrently, then concatenate — partitions
+    // never share a term, so the union is the whole operator with no dedup.
     std::vector<std::vector<Term>> per(static_cast<size_t>(shard_group_->shard_count()));
     shard_group_->run_on_all([&](int r) { per[static_cast<size_t>(r)] = collect(shard_group_->shard(r)); });
     std::vector<Term> merged;

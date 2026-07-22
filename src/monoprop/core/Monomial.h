@@ -28,41 +28,28 @@
  * @file core/Monomial.h
  * @brief The one basis-agnostic monomial container and its vocabulary.
  *
- * ESSENCE. monoprop is a backbone for propagating an operator expanded as a *sum of monomials*
- * through a circuit in the Heisenberg picture. A **monomial** is ONE basis operator -- a product
- * of generators -- stored as a fixed bitset `Bitset<2*NumModes>`: two bits per fermionic mode /
- * qubit. The SAME container represents a term in EITHER algebra; the Majorana/Pauli choice is an
- * *algebra over this container* (a @ref Basis, see algebra/Algebra.h), never a different type:
- *   - Majorana basis: each set bit is a Majorana operator gamma_k present in the product;
- *   - Pauli basis:    the Jordan-Wigner image of the product -- a Pauli string
- *                     (encoding spelled out in algebra/PauliAlgebra.h).
- *
- * Collections of monomials:
- *   - @ref MonomialList : a plain ordered list of monomials, no coefficients;
- *   - @ref MonomialMap  : monomial -> real coefficient, i.e. an operator as a weighted sum.
- * (The evolved operator's own row storage is the entropy-packed detail::OperatorIndex, reached
- * through the backend-agnostic row accessors declared alongside it; see TypeAliases.h.)
+ * A monomial is ONE basis operator (a product of generators) stored as a fixed `Bitset<2*NumModes>`,
+ * two bits per fermionic mode / qubit. The SAME container serves EITHER algebra (a Majorana product,
+ * or its Jordan-Wigner Pauli-string image); the choice is a @ref Basis over the container (see
+ * algebra/Algebra.h), never a distinct type. Collections: @ref MonomialList (no coefficients) and
+ * @ref MonomialMap (monomial -> real coefficient). The evolved operator's own row storage is instead
+ * the entropy-packed detail::OperatorIndex (see TypeAliases.h).
  */
 
 namespace monoprop {
 
 /*!
  * @brief One monomial: a single basis operator (product of generators), basis-agnostic.
- * @tparam NumModes Number of fermionic modes / qubits; the container holds 2*NumModes bits
- *         (two per mode). Read as a Majorana product, or as a Pauli string under the JW image.
  */
 template <size_t NumModes>
 using Monomial = Bitset<2 * NumModes>;
 
 /*!
  * @brief A plain dense list of monomials (no coefficients): `std::vector<Monomial>`.
- * @tparam NumModes Number of fermionic modes / qubits.
  *
- * Used for plain term lists (gradient ham/state pairs, basis-change vectors, commutator
- * pipeline operands). The evolved operator's row storage is NOT this alias -- it is the
- * entropy-packed detail::OperatorIndex (position-list rows plus hash index). Functions that
- * must accept both go through the backend-agnostic row accessors (see TypeAliases.h) and
- * template their rows parameter.
+ * For plain term lists (gradient pairs, basis-change vectors, commutator operands). NOT the evolved
+ * operator's row storage -- that is the entropy-packed detail::OperatorIndex, reached via the
+ * backend-agnostic row accessors (see TypeAliases.h).
  */
 template <size_t NumModes>
 using MonomialList = std::vector<Monomial<NumModes>>;
@@ -90,7 +77,6 @@ struct MonomialEqual final {
 
 /*!
  * @brief An operator as a weighted sum of monomials: monomial -> real coefficient.
- * @tparam NumModes Number of fermionic modes / qubits.
  */
 template <size_t NumModes>
 using MonomialMap =
@@ -113,20 +99,16 @@ using CutoffFn = std::function<bool(const Monomial<NumModes> &)>;
 /**
  * @brief Structural truncation criterion applied to monomials after each gate.
  *
- * Both criteria share one rule: a *fully paired* monomial -- one whose support
- * consists entirely of complete pairs m_{2j-1} m_{2j} on a mode -- is always kept,
- * regardless of the cutoff. Fully paired monomials are exactly the terms that can
- * contribute to an expectation value against a computational-basis state or Slater
- * determinant, so discarding them would throw away signal. The criteria differ only
- * in how they measure the remaining, partially paired monomials.
+ * Both criteria always keep a fully paired monomial (the terms that contribute to an expectation
+ * value); they differ only in how they measure the remaining partially paired monomials.
  */
 enum class CutoffType {
     Length, // Keep if the monomial length (number of Majorana operators) <= cutoff (or fully paired)
     Support // Keep if the orbital support (number of distinct orbitals) <= cutoff (or fully paired)
 };
 
-/// @brief Operator basis: the algebra a monomial is read in -- Majorana monomials (default) or
-/// Pauli strings (native JW-image encoding). Selects an @c Algebra model (see algebra/Algebra.h).
+/// @brief Operator basis: the algebra a monomial is read in -- Majorana (default) or Pauli (JW-image).
+/// Selects an @c Algebra model (see algebra/Algebra.h).
 enum class Basis : uint8_t { Majorana, Pauli };
 
 } // namespace monoprop

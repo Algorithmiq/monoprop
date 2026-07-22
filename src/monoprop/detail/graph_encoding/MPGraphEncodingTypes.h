@@ -31,12 +31,9 @@ struct LayerExchangeLayout final {
     std::vector<int> displs;
     size_t total_count = 0;
 
-    // Cached result of the per-layer send-count exchange (see mpi::resolve_recv). The send pattern is
-    // FIXED for a replayed graph, so the recv counts/displs an optimizer would otherwise recompute on
-    // every one of its thousands of evaluations are identical each call; the cache is filled lazily on
-    // the first exchange and reused while the communicator size matches (a monoprop graph is bound to
-    // one communicator for its lifetime). Eval-time-only (default-empty, never touched by the build
-    // path); `mutable` because the layout is reached through const traversal handles during evaluation.
+    // Cached per-layer recv counts/displs (see mpi::resolve_recv): the send pattern is fixed for a
+    // replayed graph, so they are identical every eval. Filled lazily, reused while comm size matches;
+    // `mutable` because reached through const traversal handles at eval time.
     mutable mpi::RecvLayoutCache recv_cache;
 };
 
@@ -44,10 +41,9 @@ struct LayerExchangeLayout final {
 
 namespace monoprop {
 
-// Materialized cosine (anticommuting) index set: ascending (block_base, 64-bit mask) blocks,
-// block_base = absolute operator index of the word's bit 0. The on-the-fly inverted index fold recompute
-// (scale_cos_lazy) is the primary replay path; this type is only for sets that must be stored (pruned
-// pare layers) or carried transiently (in-build contraction, combined cos, graph_data export).
+// Materialized cosine (anticommuting) index set: ascending (block_base, 64-bit mask) blocks. Only for
+// sets that must be stored (pruned layers) or carried transiently; the inverted-index fold recompute is
+// the primary replay path.
 struct CosMask final {
     std::vector<std::pair<size_t, uint64_t>> blocks;
     size_t total_count = 0; // number of set bits
@@ -60,9 +56,8 @@ struct CosMask final {
     auto shrink_to_fit() -> void { blocks.shrink_to_fit(); }
 };
 
-// Coalesces ascending absolute indices (or whole word-aligned blocks) into a CosMask.
-// Mirrors the build scan's two emit modes: whole-word stores (primary, word-aligned) and per-index
-// appends (orbital, not word-aligned). Indices/blocks MUST arrive in ascending order.
+// Coalesces ascending absolute indices (or whole word-aligned blocks) into a CosMask. Indices/blocks
+// MUST arrive in ascending order.
 struct CosineWordBuilder final {
     CosMask list;
     size_t cur_base = std::numeric_limits<size_t>::max();
@@ -106,25 +101,20 @@ struct PackedPhaseStorage final {
     auto empty() const -> bool { return total_count == 0; }
 };
 
-// NAMING LEGEND for the cross-rank structs below: `sin_send` == the paper's send recipe B^{(r')},
-// `sin_recv` == the paper's apply recipe D^{(r')}. They are the off-diagonal, sin(θ)-coupled endpoints
-// of each Givens rotation (the diagonal is the cos-scaled part). The uppercase B/D/P/Q in the comments
-// are the paper's symbols; the invariant "b = [in(P)]++[out(Q)], d = [out(Q)]++[in(P)]" is preserved.
+// NAMING LEGEND for the cross-rank structs below: `sin_send` = paper's send recipe B^{(r')}, `sin_recv`
+// = apply recipe D^{(r')} — the off-diagonal sin(θ) endpoints of each Givens rotation. B/D/P/Q are the
+// paper's symbols; invariant "b = [in(P)]++[out(Q)], d = [out(Q)]++[in(P)]".
 
 /// Build-time input for one partner rank's per-layer cross-rank data.
-/// `sin_send_indices`: local indices whose op[i] we send to this partner (in paper order:
-///   first the "in" block's source idx, then the "out" block's source idx).
-/// `sin_recv_entries`: (local_target_idx, phi_signed) pairs forming the single phased D list. Former D-
-///   entries (sign already negated to -phi) come first, former D+ entries (+phi) second.
-///   No boundary is stored — the signed phase carries everything downstream consumers need.
+/// sin_send_indices: local indices whose op[i] we send (in(P) sources then out(Q) sources).
+/// sin_recv_entries: (local_target_idx, signed phi) pairs — the single phased D list (former D- then D+).
 struct CrossRankPartnerData {
-    // default-init storage: assemble_partners resizes then overwrites EVERY element in parallel, so
-    // the serial resize() zero-fill was pure waste (and the Amdahl anchor that capped this phase ~2.3×).
+    // default-init storage: assemble_partners overwrites every element in parallel, so the serial
+    // resize() zero-fill was pure waste.
     DefaultInitVector<size_t> sin_send_indices;
     DefaultInitVector<std::pair<size_t, int>> sin_recv_entries;
-    // Size of the in-block (P). Layout invariant: b = [in(P)]++[out(Q)], d = [out(Q)]++[in(P)], so the
-    // D index list is a permutation of B and is NOT stored — it is derived from B via in_count (see
-    // cross_rank_sin_recv_index). The D PHASES are not derivable (in/out phases differ) and ARE stored.
+    // Size of the in-block (P). Layout invariant b=[in(P)]++[out(Q)], d=[out(Q)]++[in(P)]: D indices are
+    // derived from B (not stored); D PHASES differ per endpoint and ARE stored. See cross_rank_sin_recv_index.
     size_t in_count = 0;
     bool empty() const { return sin_send_indices.empty() && sin_recv_entries.empty(); }
 };
@@ -135,11 +125,9 @@ struct CrossRankPartnerRange final {
     TermIndex sin_send_count =
         0;                      // == sin_recv_count (paper invariant); TermIndex-wide so one rank/layer can exceed 2^32
     size_t sin_recv_offset = 0; // into sin_recv_phases; cumulative across ranks, so size_t (see sin_send_offset)
-    // Single phased D list: former D- entries (sign baked as -phi) come first, former D+ entries
-    // (+phi) second, but no consumer needs the boundary — the signed phase carries everything.
+    // Single phased D list (former D- then D+); the signed phase carries everything, no boundary stored.
     TermIndex sin_recv_count = 0;
-    // Size of the in-block within B (P). B = [in(P)]++[out(Q)], D = [out(Q)]++[in(P)] with Q=sin_recv_count-P,
-    // so D index k = (k<Q) ? B[P+k] : B[k-Q]. Lets us store B only and derive D (see cross_rank_sin_recv_index).
+    // Size of the in-block P within B. D index k = (k<Q) ? B[P+k] : B[k-Q], Q=sin_recv_count-P (derive D from B).
     TermIndex in_count = 0;
 };
 
@@ -151,8 +139,7 @@ struct PackedCrossRankStorage final {
     auto rank_count() const -> size_t { return ranges.size(); }
     auto sin_send_size(size_t rank) const -> size_t { return ranges[rank].sin_send_count; }
     auto sin_recv_size(size_t rank) const -> size_t { return ranges[rank].sin_recv_count; }
-    // P = number of in-entries = number of rotations on this rank (each rotation has one in/target).
-    // sin_recv_size = in_count + out_count counts BOTH endpoints, so it double-counts self-rank rotations.
+    // P = in-entries = rotations on this rank; sin_recv_size counts both endpoints (double-counts self-rank).
     auto in_count(size_t rank) const -> size_t { return ranges[rank].in_count; }
     auto empty() const -> bool { return sin_recv_phases.empty() && sin_send_indices.empty(); }
 };
@@ -162,26 +149,19 @@ struct LayerCore final {
     LayerExchangeLayout evolution_exchange_layout;
     LayerExchangeLayout derivative_exchange_layout; // precomputed 2x of evolution_exchange_layout
 
-    // ── Per-layer recompute metadata (NumModes-agnostic) ─────────────────────────────────────────
-    // Lets the cosine-recompute path rebuild this layer's cosine set on the fly (an XOR-fold of the
-    // generator's inverted index columns) instead of storing it. Held in the shared LayerCore so it survives
-    // every graph transform (slice/union/consume/prepend) for free.
-    //   - generator_words: this layer's generator G as W = kWords<NumModes> backing words.
-    //   - scaled_count: fold truncation bound = the operator size AFTER this layer's partner inserts, so
-    //     the recompute reaches the freshly-inserted rotation endpoints the cosine set also covers.
+    // Per-layer recompute metadata: lets the cosine-recompute path rebuild this layer's cosine set on the
+    // fly (XOR-fold of the generator's inverted-index columns) instead of storing it.
+    //   generator_words: this layer's generator G as W=kWords<NumModes> backing words.
+    //   scaled_count:    fold truncation bound = operator size AFTER this layer's partner inserts.
     std::vector<uint64_t> generator_words;
     uint64_t scaled_count = 0;
 
-    // Gate information owned by this layer: the index into the variational parameter
-    // vector that drives this layer's rotation, and the generator coefficient g so the
-    // rotation angle is parameters[param_index] * gen_coeff. Populated when the layer is
-    // appended during graph building; read by evaluation instead of threading the
-    // parameter_mapping / gen_coeffs arrays through every call.
+    // Gate info owned by this layer: param_index into the variational parameter vector and generator
+    // coefficient g (rotation angle = parameters[param_index] * gen_coeff). Read by evaluation.
     size_t param_index = 0;
     double gen_coeff = 0.0;
-    // Index of the ingested gate this layer came from; layers expanded from the same
-    // multi-term gate share it. Absolute across build_graph calls (offset by the gate
-    // count already in the graph). Enables per-gate parameter_mapping relabelling.
+    // Index of the ingested gate this layer came from (shared by layers from one multi-term gate;
+    // absolute across build_graph calls). Enables per-gate parameter_mapping relabelling.
     size_t gate_index = 0;
 };
 

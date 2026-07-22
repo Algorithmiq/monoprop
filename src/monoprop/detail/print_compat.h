@@ -14,7 +14,6 @@
 
 #pragma once
 // std::print polyfill for compilers that lack <print> (GCC < 14).
-// When <print> is available natively, we just include it.
 #if __has_include(<print>)
 #include <print>
 #else

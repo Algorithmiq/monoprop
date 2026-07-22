@@ -34,7 +34,6 @@
 
 namespace monoprop::detail {
 
-// ─── Even-parity scan + cutoff-state helpers ───────────────────────────────────
 // The cutoff state read by the fused scan and the even-parity generator-column scan it uses.
 inline auto build_majorana_evolution_cutoff_state(const std::optional<double> &atol,
                                                   std::optional<std::reference_wrapper<const VecD>> local_coeffs,
@@ -58,9 +57,8 @@ struct EvenParityGeneratorColumns {
     size_t count = 0;
 };
 
-// Collect a generator's set columns (the modes it touches) in ASCENDING bit order. indices[0] is the
-// LOWEST set column; ordinary (Majorana) callers pass it to even_parity_scan_pass1 as the pivot — the
-// column that splits each anticommuting pair into leader (pivot clear) and follower (pivot set).
+// Collect a generator's set columns in ASCENDING bit order. indices[0] (lowest) is the pivot ordinary
+// callers pass to even_parity_scan_pass1 — the column that splits an anticommuting pair leader/follower.
 template <size_t NumModes>
 auto build_even_parity_generator_columns(const Monomial<NumModes> &gen_maj) -> EvenParityGeneratorColumns<NumModes> {
     EvenParityGeneratorColumns<NumModes> columns;
@@ -70,29 +68,20 @@ auto build_even_parity_generator_columns(const Monomial<NumModes> &gen_maj) -> E
     return columns;
 }
 
-// One nonzero-overlap word carried from the memory-bound scan (pass 1) to the emit (pass 2) in the
-// even-parity inverted index scan. `overlap` bit t set ⟺ term (base+t) anticommutes with G. `foll` is the
-// follower sub-mask (overlap & the pivot column): a term and its partner M⊕G split on the pivot bit,
-// so masking overlap by the pivot column selects exactly the followers; leaders are the complement
-// `overlap ^ foll` (disjoint). Used by fused_find_and_collect.
+// One nonzero-overlap word carried from scan pass 1 to emit pass 2. `overlap` bit t set ⟺ term (base+t)
+// anticommutes with G; `foll` = overlap & pivot column = the followers (leaders are `overlap ^ foll`).
 struct EvenParityNzWord {
     size_t base;
     uint64_t overlap;
     uint64_t foll;
 };
 
-// Even-parity scan pass 1: over words [wlo,whi), fold the generator's inverted index columns block-by-block
-// (L1-resident sub-blocks; see combine_columns_block) into a per-word overlap mask, keep nonzero
-// words in `nz`, and tally popcounts (n_anti, n_foll) so pass 2 reserves its
-// output runs once. Pass a thread_local `nz` to reuse its capacity across chunks. `gen_cols` is
-// the column list the fold XORs into the anticommutation parity; `pivot_col` is the leader/follower
-// split column and is read SEPARATELY (its bits come from its dense words directly or a per-block
-// scatter if sparse). `pivot_col` must be a set bit that flips between every anticommuting partner
-// pair; ordinary callers pass gen_cols[0]. Keeping it a distinct argument lets a caller fold one
-// column set (e.g. a transformed generator) while splitting on a bit of the untransformed generator.
-// `g_odd` carries the odd-|G| correction: the anticommutation bit is (|M∩G| mod 2) XOR (|M| mod 2),
-// so the per-row parity(|M|) bit (row_parity_ptr) is XORed in before foll/nonzero/pivot are derived.
-// Even |G| (g_odd==false) ignores row_parity_ptr and is byte-identical.
+// Even-parity scan pass 1: over words [wlo,whi), fold G's inverted index columns into a per-word overlap
+// mask, keep nonzero words in `nz`, and tally popcounts (n_anti, n_foll) so pass 2 reserves once. `nz` is
+// thread_local for capacity reuse. `pivot_col` (the leader/follower split bit) is read SEPARATELY from
+// `gen_cols` so a caller can fold a transformed generator while splitting on the untransformed one;
+// ordinary callers pass gen_cols[0]. `g_odd` XORs the per-row parity(|M|) correction (row_parity_ptr) in
+// before followers are derived; even |G| ignores it and is byte-identical.
 template <size_t NumModes>
 inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                                    std::span<const size_t> gen_cols,
@@ -112,13 +101,9 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     const bool pivot_dense = sc.column_is_dense(pivot_col);
     const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_data(pivot_col) : nullptr;
     std::vector<uint64_t> &blk = column_block_scratch();
-    // Fold one word range [bb,be): combine G's columns, split leader/follower by the pivot bit, and
-    // record every nonzero-overlap word. A DENSE pivot is read inline (a pointer index, free). A
-    // SPARSE pivot is scatter-expanded LAZILY — only for blocks that produced a nonzero overlap
-    // word, so blocks with no anticommuting term (the common case on low-participation gates)
-    // never pay the expansion stream; the deferred follower fix-up walks only that block's nz
-    // entries. Same nz entries in the same order with the same foll values ⇒ bit-identical to the
-    // eager expansion. Driven by the single kColumnBlockWords block loop below.
+    // Fold one word range [bb,be): combine G's columns and record nonzero-overlap words. A DENSE pivot is
+    // read inline; a SPARSE pivot is scatter-expanded LAZILY (only for blocks with a nonzero overlap, so
+    // no-anticommuter blocks skip it) via a deferred follower fix-up — bit-identical to eager expansion.
     auto fold_range = [&](size_t bb, size_t be) {
         combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
         const size_t nz_block_start = nz.size();
@@ -159,11 +144,9 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     }
 }
 
-// ─── Rotation gate (shared semantics) ─────────────────────────────────────────
-// The per-term rotation gate splits into a DYNAMIC part (depends on current coeffs/param: orbital pop
-// cap, upper-atol freeze, lower-atol sine cutoff) and a STATIC part (structural cutoff on M' = M⊕G,
-// via CutoffEvaluator::passes_with_popcount). Every emitting path MUST use these helpers so the
-// gate semantics cannot drift between paths.
+// The per-term rotation gate splits into a DYNAMIC part (orbital pop cap, upper-atol freeze, lower-atol
+// sine cutoff) and a STATIC part (structural cutoff on M'=M⊕G). Every emitting path uses these helpers so
+// the gate semantics cannot drift.
 inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t maj_pop, const CutoffContext &ctx, double abs_c)
     -> bool {
     if (only_rotate_len_k > 0 && maj_pop > static_cast<size_t>(only_rotate_len_k)) {
@@ -175,27 +158,15 @@ inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t maj_pop, const C
     return true;
 }
 
-// ─── Rebuild-then-word-kernels emit (packed survivor products) ────────────────
-// The per-generator context, built once per layer, is owned by the algebra policy: `A::GenContext`
-// (Majorana caches the generator G plus its fixed-per-layer interleave mask; Pauli caches the
-// rotation-sign kernel context PauliGenContext, which holds G and |G|). `A::make_gen_context(gen)`
-// builds it and `A::generator(ctx)` reads G back (for M⊕G / overlap). See algebra/Algebra.h.
+// The per-generator context, built once per layer, is owned by the algebra policy `A::GenContext`
+// (Majorana: G + interleave mask; Pauli: PauliGenContext = G + |G|). See algebra/Algebra.h.
 
-// Compute the three per-survivor products the cutoff/phase emit needs for term i:
-//   new_maj  = M_i ⊕ G        (the rotated partner term that gets pushed as a query)
-//   overlap  = |M_i ∩ G|      (feeds the new-popcount and the hermitian phase)
-//   interleave = (−1)^x,  x = #{(m∈M_i, g∈G) : m<g}   (the interleave factor of the multiplicative phase)
-//
-// REBUILD-THEN-WORD-KERNELS: stream the term's stored ascending position list once to rebuild M_i as
-// a dense W-word Monomial in registers (k OR-shifts), then evaluate all three products with the
-// branch-free W-word kernels (XOR, AND-popcount, prefix-xor interleave). The dynamic rotation gate
-// (O(1) from the count byte) is applied by the caller BEFORE this kernel, so rejected terms cost
-// zero reconstruction.
-// The per-term phase_factor is the basis-specific multiplicative sign:
-//   Majorana: interleave_phase(maj, gen) via the fixed-per-layer mask (branch/scan-free);
-//   Pauli:    pauli_rotation_sign(pauli_ctx, maj, new_maj) — the ±1 ROTATION sign of maj·G (already
-//             negated relative to the raw product sign, so no extra flip at the emit site).
-// Majorana additionally folds in hermitian_phase to obtain the final query phase (see the emit lambda).
+// Compute the three per-survivor products for term i: new_maj = M_i ⊕ G (the query partner),
+// overlap = |M_i ∩ G| (feeds new-popcount + hermitian phase), and the phase_factor sign. Rebuilds M_i
+// dense in registers from its stored position list, then evaluates with branch-free W-word kernels; the
+// dynamic gate runs in the caller BEFORE this, so rejected terms cost no reconstruction.
+// phase_factor is the basis-specific multiplicative sign: Majorana interleave_phase (folds hermitian_phase
+// in later), Pauli pauli_rotation_sign (already rotation-ready — no extra flip at emit).
 template <size_t NumModes, Algebra A>
 [[gnu::always_inline]] inline void emit_term_products(const OperatorIndex<NumModes> &ham,
                                                       size_t i,
@@ -211,10 +182,8 @@ template <size_t NumModes, Algebra A>
     phase_factor = A::rotation_sign(ctx, maj, new_maj);
 }
 
-// ─── fused_find_and_collect (any rank count) ──────────────────────────────────
-// One pass over the operator fusing FindAnticommuting + apply_cutoffs: classify each anticommuting
-// term leader/follower (inverted index XOR-column fold + pivot bit), compress it into the cosine block, and
-// in the SAME walk apply the cutoffs and emit the surviving rotation query into its per-rank stream.
+// fused_find_and_collect (any rank count): one pass fusing FindAnticommuting + apply_cutoffs — classify
+// each anticommuting term leader/follower, compress it into the cosine block, and emit surviving queries.
 struct FusedScanResult {
     std::vector<CosMask> cos_blocks;               // ascending, disjoint, chunk order
     std::vector<VecZ> leader_queries;              // size R: serialized leader queries per owner rank
@@ -227,19 +196,12 @@ struct FusedScanResult {
     std::vector<std::vector<double>> follower_val;
 };
 
-// Streams are routed to the owner of each partner M' = M⊕G (hash%R; self for single-rank, skipping
-// the O(W) hash) and emitted in ascending source-index (chunk) order, so the downstream resolve and
-// cross-rank index assignment are deterministic.
-// `capture_values` (fused contraction, R==1): also collect the signed pre-cos source coefficient
-// (v_src) into leader_val/follower_val, parallel to leader_src/follower_src. Off by default so every
-// other path is byte-for-byte unchanged.
-// `fused_scale_coeffs` (ContractImmediately, k==0 only; must alias coeffs.data()): fold the gate's
-// cosine scale into this same pass — each anticommuting coefficient is loaded once (pre-cos, feeding
-// the atol gate and v_src exactly as before) and stored back multiplied by `fused_scale_cos` =
-// cos(2·build_angle). One coefficient sweep replaces the eager read-pass + CosMask + RMW-scale-pass,
-// so no cosine set is built (cos_blocks stay empty). Chunks own disjoint word ranges ⇒ the in-place
-// writes are race-free. Downstream, a hit partner's stored value is then POST-cos — resolve recovers
-// the pre-cos v_tgt via 1/cos (see LayerBuildEngine::inv_cos_).
+// Streams are routed to the owner of each partner M'=M⊕G (hash%R; self at R==1) in ascending source-index
+// order, so the downstream resolve + cross-rank index assignment are deterministic.
+// `capture_values` (fused): also collect the signed pre-cos source coeff (v_src) into leader_val/follower_val.
+// `fused_scale_coeffs` (k==0 only; must alias coeffs.data()): fold the gate's cosine scale into this pass —
+// each anticommuting coeff is stored back ×`fused_scale_cos`=cos(2·build_angle), so no cosine set is built.
+// Chunks own disjoint word ranges ⇒ race-free; a hit's stored value is then POST-cos (resolve recovers via 1/cos).
 template <size_t NumModes, Algebra A>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const Monomial<NumModes> &gen,
@@ -255,17 +217,13 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     const size_t gen_pop = gen.count();
     const auto ectx = A::make_gen_context(gen);
 
-    // Structural-cutoff rejections this gate (anticommuters whose partner failed the structural
-    // cutoff without an upper-atol rescue). A register-resident local; published to the fold-stats
-    // accumulators only when monoprop_FOLD_STATS is set.
+    // Structural-cutoff rejections this gate (partner failed structural cutoff, no upper-atol rescue).
+    // Published to the fold-stats accumulators only when monoprop_FOLD_STATS is set.
     size_t struct_rejects = 0;
 
-    // Cutoff + emit for one anticommuting term. Writes only the per-rank sinks passed in. The dynamic
-    // gate (depends only on |M|) runs BEFORE emit_term_products, so a gate-rejected term computes no
-    // products.
-    // abs_c = |coeff[i]| is passed in (the caller already loaded it for the pre-popcount atol gate on
-    // the only_rotate_len_k==0 fast path), so emit does not re-read the coefficient. `v_src` is the
-    // SIGNED coeff (derived from the same read); it is pushed into lv/fv only when capture_values.
+    // Cutoff + emit for one anticommuting term. The dynamic gate (|M| only) runs BEFORE emit_term_products,
+    // so a gate-rejected term computes no products. abs_c/v_src are passed in from the caller's coeff read
+    // (v_src the SIGNED coeff, pushed into lv/fv only when capture_values), so emit does not re-read it.
     auto emit = [&](size_t maj_pop,
                     size_t i,
                     double abs_c,
@@ -294,8 +252,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             return;
         }
         // Emitted sine phase: the algebra folds the rotation sign into the final ±1 (Majorana folds in
-        // hermitian_phase; Pauli's pauli_rotation_sign is already rotation-ready — the negated raw product
-        // sign of maj·G, pinned by pauli_build_layer_dense_matrix_ground_truth / T7). See A::emit_phase.
+        // hermitian_phase; Pauli's pauli_rotation_sign is already rotation-ready). See A::emit_phase.
         const int phase = A::emit_phase(phase_factor, maj_pop, gen_pop, overlap);
         // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
         const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_maj) % rank_count);
@@ -329,12 +286,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     }
 
     {
-        // The anticommutation fold runs over the generator's inverted-index columns. For Majorana that is
-        // G itself; for Pauli it is J(G) = pair_swap(G), since pauli_anticommutes(M,G) = parity(|M ∩ J(G)|).
-        // parity(|G ∩ J(G)|) = parity(2·#Z) = 0 ⇒ the self-commutation invariant holds and no odd-|G|
-        // row-parity correction is ever needed for Pauli (g_odd forced false). J is a bijection so
-        // J(G) ≠ 0 ⟺ G ≠ 0. The pivot that splits each anticommuting pair is a set bit of the REAL G
-        // (gen.find_first()), NOT of J(G) — A and A⊕G differ exactly on G's bits (see the pivot arg below).
+        // The anticommutation fold runs over G's inverted-index columns (Majorana: G; Pauli: J(G) =
+        // pair_swap(G), so pauli_anticommutes = parity(|M ∩ J(G)|), and Pauli never needs the odd-|G|
+        // correction since parity(|G ∩ J(G)|)=0). The pivot splitting each pair is a set bit of the REAL G
+        // (gen.find_first()), NOT J(G) — A and A⊕G differ exactly on G's bits.
         const Monomial<NumModes> fold_gen = A::fold_generator(gen);
         // Odd |G| needs the per-row parity(|M|) correction (see even_parity_scan_pass1); even |G| is
         // byte-identical with no parity bitmap. Pauli never needs it (invariant above).
@@ -354,21 +309,18 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         }
         const uint64_t *const row_parity_ptr = g_odd ? inverted_index.row_parity_word_ptr() : nullptr;
         const size_t n = op.store->size();
-        // The fused sweep writes fused_scale_coeffs[i] for every anticommuting index i < n, so the coeff
-        // vector must already cover the full operator and be the very array the reads come from. Both
-        // hold in ContractImmediately (entry sync + per-gate extend); a violation is a caller bug —
-        // assert, never a silent write-skip (a skipped scale would corrupt the 1/cos recovery later).
+        // The fused sweep writes fused_scale_coeffs[i] for every anticommuting i < n, so it must be the
+        // very array the reads come from and cover the full operator — a violation corrupts 1/cos recovery,
+        // so assert rather than silently skip.
         assert(fused_scale_coeffs == nullptr || (fused_scale_coeffs == coeffs.data() && coeffs.size() >= n));
 
         const size_t last_word = word_count - 1;
         const uint64_t last_word_mask = (n % 64 == 0) ? ~uint64_t{0} : ((uint64_t{1} << (n % 64)) - 1);
-        // Generator column list, pivot first. Pass 1 folds L1-resident blocks (combine_columns_block)
-        // — no full-width sparse-scatter prologue.
+        // Generator column list, pivot first. Pass 1 folds L1-resident blocks — no sparse-scatter prologue.
         const std::span<const size_t> gen_cols(gen_columns.indices.data(), gen_columns.count);
 
-        // Classify the fold columns in O(|G|). A DENSE column always holds at least one posting
-        // (promotion requires set density ≥ 1/kPromoteDensityInv of a nonzero row count), so
-        // Σ postings == 0 ⟺ every fold column is sparse-tier with an empty row list.
+        // Classify the fold columns in O(|G|). A DENSE column always holds ≥1 posting, so Σ postings == 0
+        // ⟺ every fold column is sparse-tier with an empty row list.
         bool fold_cols_all_sparse = true;
         bool fold_cols_empty = true;
         size_t fold_postings = 0; // Σ sparse-column postings; a complete Σ only when all_sparse
@@ -386,17 +338,13 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 }
             }
         }
-        // Zero-postings early-out: no term touches any of the fold columns ⇒ |M ∩ fold_gen| = 0 for
-        // every term ⇒ (for even |G|; Pauli is always even here) nothing anticommutes and pass 1
-        // would provably produce an empty nz. Skip the O(K/64) fold sweep; everything downstream
-        // (empty reserves, empty pass 2, the empty cosine block) is byte-identical to running it.
-        // The g_odd guard is load-bearing: an odd Majorana generator anticommutes with every
-        // odd-weight term it is DISJOINT from, so zero overlap does not imply commutation there.
+        // Zero-postings early-out: no term touches a fold column ⇒ nothing anticommutes (for even |G|),
+        // so pass 1 would produce an empty nz — skip it, byte-identical downstream. The g_odd guard is
+        // load-bearing: an odd Majorana generator anticommutes with disjoint odd-weight terms.
         const bool skip_scan = !g_odd && fold_cols_empty;
 
-        // Single serial sweep over all inverted-index words [0, word_count). Emit directly into the
-        // result's per-rank query / source / value streams (each pre-sized to rank_count above). When
-        // !capture_values, leader_val/follower_val stay size 0 and are never indexed (emit guards on it).
+        // Single serial sweep over all inverted-index words, emitting directly into the result's per-rank
+        // query/source/value streams. When !capture_values, leader_val/follower_val stay size 0 (emit guards).
         auto &lq = res.leader_queries;
         auto &ls = res.leader_src;
         auto &lv = res.leader_val;
@@ -404,9 +352,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
 
-        // Pass 1: fold the inverted index to find anticommuting terms (see even_parity_scan_pass1).
-        // Pass 1 and pass 2 stay FUSED in one loop over `nz`: splitting them (pass-1 fully, then pass-2)
-        // measured +4-16% on the large fermionic workloads because `nz` spills out of L1 between them.
+        // Pass 1: fold the inverted index to find anticommuting terms (see even_parity_scan_pass1). Pass 1
+        // and pass 2 stay FUSED over `nz` (splitting them measured +4-16% — `nz` spills L1 between them).
         // `nz` is thread_local so each shard master reuses its capacity across gates.
         thread_local std::vector<EvenParityNzWord> nz;
         size_t n_anti = 0;
@@ -434,13 +381,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             fq[my_rank].reserve(n_foll * kQueryWords<NumModes>);
             fs[my_rank].reserve(n_foll);
         }
-        // Pass 2: collect cosine for EVERY anticommuting term, then apply cutoff + emit the query.
-        // No orbital gate → store each nz word's full overlap whole (push_word); orbital gate →
-        // per-index (push_index, ascending).
-        // Derive (v_src, abs_c) for term i, shared by both pass-2 arms. Fused mode captures the
-        // SIGNED coeff v_src and derives abs_c from it; the derived abs_c is bit-identical to
-        // abs_coeff_for, so the non-capture (OFF) path is unchanged. Kept out of the arms so the
-        // gate-before-popcount ordering in each arm stays explicit at the call site.
+        // Pass 2: collect cosine for EVERY anticommuting term, then apply cutoff + emit the query. No
+        // orbital gate → push each word's full overlap (push_word); orbital gate → per-index (push_index).
+        // Derive (v_src, abs_c) for term i, shared by both pass-2 arms. Fused captures the SIGNED v_src and
+        // derives abs_c from it (bit-identical to abs_coeff_for, so the OFF path is unchanged).
         auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
             if (capture_values) {
                 const double v_src = (i < coeffs.size()) ? coeffs[i] : 0.0;
@@ -452,8 +396,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         CosineWordBuilder cos_b;
         for (const auto &w : nz) {
             if (word_aligned_cos && fused_scale_coeffs != nullptr) {
-                // Fused cos sweep (ContractImmediately, k==0): cosine-scale inplace all anticommuting terms and emit
-                // survivors
+                // Fused cos sweep (k==0): cosine-scale in place all anticommuting terms and emit survivors.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
@@ -469,9 +412,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 }
             }
             else if (word_aligned_cos) {
-                // No orbital gate: cosine-scale the whole word (all anticommuting terms), then per
-                // bit apply the ATOL coefficient gate BEFORE the popcount ROW read. Deferring popcount
-                // until a term passes eliminates that many random packed-row cacheline loads.
+                // No orbital gate: cosine-scale the whole word, then per bit apply the ATOL gate BEFORE the
+                // popcount ROW read — deferring popcount until a term passes saves random packed-row loads.
                 cos_b.push_word(w.base, w.overlap);
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
@@ -504,8 +446,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         }
         res.cos_blocks.push_back(cos_b.finish());
 
-        // Fold-stats instrumentation (monoprop_FOLD_STATS): one relaxed-atomic publish per gate per
-        // shard — sizing data for the candidate-merge (A2) and bit-sliced-prefilter (S1) proposals.
+        // Fold-stats instrumentation (monoprop_FOLD_STATS): one relaxed-atomic publish per gate per shard.
         if (profiling::g_fold_stats_enabled) {
             profiling::record_fold_stats(fold_cols_all_sparse,
                                          skip_scan,

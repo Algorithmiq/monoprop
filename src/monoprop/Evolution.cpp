@@ -28,10 +28,8 @@
 namespace monoprop {
 namespace {
 
-// Endpoint (rotation) accumulators for the gradient identity g_j = −g·(tan·(A − A_ep) + B).
-// Named for the trig factor each rides in that identity (paper symbol in parens):
-//   cos_terms = Σ_endpoints s_old·h_old        (pre-cos own product; paper A_ep — the cos/tan term)
-//   sin_terms = Σ_endpoints σ·s_old·h_p         (pre-cos own state × partner ham, signed phase σ; paper B)
+// Endpoint accumulators for the gradient identity: cos_terms = A_ep (Σ s_old·h_old),
+// sin_terms = B (Σ σ·s_old·h_p).
 struct EndpointContrib {
     double cos_terms = 0.0;
     double sin_terms = 0.0;
@@ -74,9 +72,7 @@ auto &acquire_flat_exchange_buffers() {
 }
 
 void resize_flat_exchange_buffers(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers) {
-    // Allocate send buffer sized to the layout's total send count. The recv
-    // buffer size is not known until we exchange send-counts with peers,
-    // so reserve a single element to ensure data() is non-null.
+    // Recv size isn't known until counts are exchanged; keep it at 1 element so data() stays non-null.
     const size_t send_alloc = layout.total_count == 0 ? 1 : layout.total_count;
     buffers.send_buffer.resize(send_alloc);
     buffers.recv_buffer.resize(1);
@@ -89,25 +85,18 @@ auto active_evolution_exchange_layout(const LayerTraversal &layer, const mpi::Co
     if (mpi::size(comm) == 1) {
         return nullptr;
     }
-    // All ranks must participate in MPI collectives even when this rank's local
-    // total_count is 0. Skipping based on local total_count causes a deadlock
-    // when another rank has non-zero counts for the same layer (MPI_Alltoallv
-    // requires all processes in the communicator to call it).
+    // All ranks must participate even at local total_count 0, else MPI_Alltoallv deadlocks.
     return &layer.evolution_exchange_layout();
 }
 
-// In-flight cross-rank exchange handle. The mpi::Ticket completes the non-blocking transfer;
-// an empty Ticket means nothing is in flight (single-rank / non-MPI build).
+// In-flight cross-rank exchange handle; an empty ticket means nothing is in flight.
 struct CrossRankExchangeHandle {
     const LayerExchangeLayout *layout = nullptr;
     FlatExchangeBuffers *buffers = nullptr;
     [[no_unique_address]] mpi::Ticket ticket;
 };
 
-// Resolve the recv layout (cached per layer via the facade), size the recv buffer, and post the
-// payload transfer. All ranks must participate — never skip on zero counts (the facade owns that
-// deadlock discipline). The transfer is non-blocking; the returned handle's ticket completes it.
-// Buffers are always sized ≥ 1 (see resize_flat_exchange_buffers).
+// Size the recv buffer from the cached layout and post the non-blocking payload transfer.
 inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers, const mpi::Comm &comm)
     -> CrossRankExchangeHandle {
     CrossRankExchangeHandle handle;
@@ -132,11 +121,7 @@ inline auto wait_flat_exchange(CrossRankExchangeHandle &handle) -> void {
     handle.ticket.wait();
 }
 
-// ─── Cross-rank derivative helpers ──────────────────────────────────────────
-
-// Pack B entries from PRE-COS snapshots (sin_send_state[rank][k], sin_send_op[rank][k]). The live
-// state/op at B-indices have been clobbered by the cos pass (endpoints are in cos_data now),
-// so the payload must come from the snapshots taken before the cos pass.
+// Pack B entries from the pre-cos snapshots; the live state/op at B-indices are clobbered by the cos pass.
 void pack_cross_rank_derivative_payload_impl(const std::vector<VecD> &sin_send_state,
                                              const std::vector<VecD> &sin_send_op,
                                              const LayerTraversal &layer,
@@ -162,11 +147,8 @@ void pack_cross_rank_derivative_payload_impl(const std::vector<VecD> &sin_send_s
     }
 }
 
-// Remote endpoint pass. Own pre-cos (s_old,h_old) come from sin_recv snapshots (cos pass clobbered
-// the live values); partner (s_p,h_p) = (rv[2k], rv[2k+1]) is the sender's pre-cos B-payload.
-//   A_ep += s_old·h_old;  B += σ·s_old·h_p
-//   op[i]    = cos·h_old + sin·σ·h_p   (overwrite)
-//   state[i] = cos·s_old + sin·σ·s_p   (overwrite)
+// Remote endpoint pass: own pre-cos values come from sin_recv snapshots, partner values from the
+// received B-payload; accumulates A_ep/B and overwrites state/op with the rotation.
 auto apply_cross_rank_derivative_exchange_impl(VecD &state,
                                                VecD &op,
                                                const LayerTraversal &layer,
@@ -195,9 +177,7 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
             end,
             [&trig, &ds, &dh, &rv, &local, &op, &state](size_t k, size_t i, int phi_signed) {
                 const auto phi = static_cast<double>(phi_signed);
-                // INVERSE-rotation write-back (−sin): the reverse sweep un-evolves state/op one
-                // layer for the next iteration. cos_terms/b below use the recovered pre-cos values
-                // directly, so this sign only affects the values fed to the subsequent layer.
+                // INVERSE-rotation write-back (−sin): un-evolves state/op for the next reverse layer.
                 const double ps = -trig.sin_val * phi;
                 const double s_old = ds[k];
                 const double h_old = dh[k];
@@ -212,10 +192,8 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
     return local;
 }
 
-// In-flight cross-rank DERIVATIVE exchange. Pack + Ialltoallv fire up front (from the pre-cos
-// sin_send snapshots), the caller runs the cos pass + self-slot during the transfer, then calls
-// finish_cross_rank_derivative_exchange to wait + apply the received partner payloads. Mirrors
-// the forward (evolution) overlap so the reverse-sweep network IO is hidden behind compute.
+// In-flight cross-rank derivative exchange: pack + Ialltoallv fire up front so the transfer overlaps
+// the cos pass + self-slot; finish_cross_rank_derivative_exchange waits and applies the payloads.
 struct InFlightCrossRankDerivative {
     CrossRankExchangeHandle handle;
     int my_rank = 0;
@@ -237,8 +215,7 @@ inline auto begin_cross_rank_derivative_exchange(const std::vector<VecD> &sin_se
     const auto &layout = layer.derivative_exchange_layout();
     auto &buffers = acquire_flat_exchange_buffers();
     resize_flat_exchange_buffers(layout, buffers);
-    // Pack reads the PRE-COS sin_send snapshots, so it is safe to fire before the cos pass mutates
-    // the live state/ham. The Ialltoallv only touches send/recv buffers, never state/ham.
+    // Safe to fire before the cos pass: pack reads pre-cos snapshots and the transfer touches only buffers.
     pack_cross_rank_derivative_payload_impl(sin_send_state,
                                             sin_send_op,
                                             layer,
@@ -249,9 +226,8 @@ inline auto begin_cross_rank_derivative_exchange(const std::vector<VecD> &sin_se
     return in_flight;
 }
 
-// Wait for the in-flight transfer, then apply the partner payloads into the live state/op at the
-// remote D-endpoints. Runs AFTER the cos pass, so endpoints are overwritten with snapshot-based
-// values exactly as in the original blocking order — bit-identical result.
+// Wait for the transfer, then apply partner payloads at the remote D-endpoints (after the cos pass,
+// so results are bit-identical to the original blocking order).
 inline auto finish_cross_rank_derivative_exchange(VecD &state,
                                                   VecD &op,
                                                   const LayerTraversal &layer,
@@ -274,14 +250,11 @@ inline auto finish_cross_rank_derivative_exchange(VecD &state,
                                                      in_flight.my_rank);
 }
 
-// ─── Cross-rank evolution helpers ───────────────────────────────────────────
-
 void pack_cross_rank_evolution_payload_impl(VecD &op,
                                             const LayerTraversal &layer,
                                             int my_rank,
                                             const LayerExchangeLayout &layout,
                                             VecD &send_buffer) {
-    // Pack B entries: each entry contributes one scalar.
     const size_t num_ranks = layer.cross_rank_rank_count();
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         if (static_cast<int>(rank) == my_rank) {
@@ -304,10 +277,8 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
                                               const VecD &recv_buffer,
                                               const std::vector<int> &recv_displs,
                                               int my_rank) {
-    // Cross-rank D apply: op[i] += sin·φ·B_partner_old[k].
-    // cos_data now includes the endpoints, so the cosine pass already scaled op[i] to cos·op_old[i];
-    // this pass only ADDS the sine rotation. recv[k] holds the partner's pre-cos B-snapshot (packed
-    // before any cos mutation), so op[i] = cos·op_old[i] + sin·φ·partner_old — identical to before.
+    // op[i] is already cos-scaled, so this only ADDS the sine rotation op[i] += sin·φ·partner_old,
+    // where recv[k] is the partner's pre-cos B-snapshot.
     const size_t num_ranks = layer.cross_rank_rank_count();
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         if (static_cast<int>(rank) == my_rank) {
@@ -327,9 +298,8 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
     }
 }
 
-// In-flight cross-rank evolution exchange. Pack + Ialltoallv have already fired by the time
-// this struct is returned; the caller is expected to do local compute then call
-// finish_cross_rank_evolution_exchange to apply the received contributions.
+// In-flight cross-rank evolution exchange: pack + Ialltoallv fire up front so local compute overlaps;
+// finish_cross_rank_evolution_exchange applies the received contributions.
 struct InFlightCrossRankEvolution {
     CrossRankExchangeHandle handle;
     int my_rank = 0;
@@ -371,12 +341,9 @@ inline auto finish_cross_rank_evolution_exchange(VecD &op,
                                              in_flight.my_rank);
 }
 
-// Snapshot-free self-slot endpoint pass. assemble_partners lays out
-// d = [{out,−φ}]++[{in,+φ}] with P==Q, so d-entry k and k+P are the two endpoints of one Givens
-// rotation and each other's partner. Reading BOTH endpoints' (recovered pre-cos) values before writing
-// EITHER removes the read-after-write hazard that forced the sin_send/sin_recv snapshots — so neither is
-// needed. Pre-cos values are recovered from the live post-cos slots; rotations are index-disjoint, so
-// the pair loop is parallel-safe.
+// Snapshot-free self-slot endpoint pass: d-entries k and k+P are the two endpoints of one rotation, so
+// reading both (pre-cos recovered from the post-cos slots) before writing either avoids the RAW hazard.
+// Rotations are index-disjoint, so the pair loop is parallel-safe.
 auto apply_self_slot_derivative_paired(VecD &state,
                                        VecD &op,
                                        const LayerTraversal &layer,
@@ -398,7 +365,6 @@ auto apply_self_slot_derivative_paired(VecD &state,
         const double h1 = op[i1] * trig.cos_val;
         const double s2 = state[i2] * trig.sec_val;
         const double h2 = op[i2] * trig.cos_val;
-        // i1's partner is i2 and vice-versa.
         local.cos_terms += (s1 * h1) + (s2 * h2);
         local.sin_terms += (phi1 * s1 * h2) + (phi2 * s2 * h1);
         // INVERSE-rotation write-back (−sin); see apply_cross_rank_derivative_exchange_impl.
@@ -412,9 +378,8 @@ auto apply_self_slot_derivative_paired(VecD &state,
     return local;
 }
 
-// Per-thread pool for the derivative's pre-cos snapshot buffers, reused across layers so the reverse
-// walk does not malloc/free four vector<VecD> per layer (resize keeps capacity; snapshot semantics
-// unchanged). thread_local keeps each shard master's scratch private to its own core.
+// Per-thread pool for the derivative's pre-cos snapshot buffers, reused across layers to avoid
+// malloc/free per layer.
 struct DerivativeSnapshotScratch {
     std::vector<VecD> sin_send_state;
     std::vector<VecD> sin_send_op;
@@ -427,12 +392,8 @@ auto derivative_snapshot_scratch() -> DerivativeSnapshotScratch & {
     return scratch;
 }
 
-// Snapshot the pre-cos (state, op) values at every REMOTE rank's B and D endpoints before the cos pass
-// clobbers them. sin_send[r] is packed and sent in the cross-rank exchange; sin_recv[r] is this rank's own
-// pre-cos value applied when the partner payload arrives. The self slot (r == my_rank) needs no
-// snapshot — apply_self_slot_derivative_paired recovers its pre-cos values live from the post-cos slots
-// (state[i]=s_old·cos, op[i]=h_old·sec) — so its four slots are cleared. Buffers are pooled per-thread
-// (each shard master keeps its own); each k writes its own slot.
+// Snapshot pre-cos (state, op) at every REMOTE rank's B/D endpoints before the cos pass clobbers them
+// (sin_send is sent, sin_recv applied on receipt). The self slot needs none — it recovers live — so it is cleared.
 void snapshot_remote_endpoints(const VecD &state,
                                const VecD &op,
                                const LayerTraversal &layer,
@@ -481,13 +442,8 @@ void snapshot_remote_endpoints(const VecD &state,
 
 } // namespace
 
-// ─── Public API ─────────────────────────────────────────────────────────────
-
-// ─── Derivative & evolution dispatch ────────────────────────────────────────
-
-// Reverse-mode gradient contribution of one layer: applies the layer's inverse rotation to (state, op)
-// in place and returns this layer's term of the parameter gradient. Cross-rank endpoints are resolved
-// by MPI exchange; pre-cos values the cos pass would clobber are snapshotted as needed (see below).
+// Reverse-mode gradient contribution of one layer: applies the inverse rotation to (state, op) in place
+// and returns this layer's parameter-gradient term.
 auto state_operator_derivative_local_impl(VecD &state,
                                           VecD &op,
                                           const MPGraphView &graph,
@@ -501,9 +457,7 @@ auto state_operator_derivative_local_impl(VecD &state,
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = layer.cross_rank_rank_count();
 
-    // The cos pass clobbers state/op at every anticommuting (B/D) index, so the remote endpoints must
-    // be snapshotted pre-cos (sin_send sent, sin_recv applied on receipt); the self slot recovers its values
-    // live. See snapshot_remote_endpoints.
+    // The cos pass clobbers state/op at every B/D index, so remote endpoints are snapshotted pre-cos.
     auto &snap = derivative_snapshot_scratch();
     snapshot_remote_endpoints(state, op, layer, my_rank, R, snap);
     const auto &sin_send_state = snap.sin_send_state;
@@ -511,15 +465,12 @@ auto state_operator_derivative_local_impl(VecD &state,
     const auto &sin_recv_state = snap.sin_recv_state;
     const auto &sin_recv_op = snap.sin_recv_op;
 
-    // Fire the remote cross-rank exchange NOW (pack from the pre-cos sin_send snapshots, start the
-    // non-blocking Ialltoallv) so the network transfer overlaps the cos pass + self-slot below —
-    // mirroring the forward path. No-op at single rank. The transfer touches only send/recv
-    // buffers, so the cos pass mutating state/op concurrently is safe.
+    // Fire the remote exchange now so the transfer overlaps the cos pass + self-slot below (no-op at
+    // single rank; the transfer touches only buffers, so concurrent state/op mutation is safe).
     auto in_flight = begin_cross_rank_derivative_exchange(sin_send_state, sin_send_op, layer, comm);
 
-    // Cos pass over ALL anticommuting indices: A = Σ s_old·h_old (un-inflated), then state*=cos, op*=sec.
-    // The cosine set is always RECOMPUTED (or read from a transient/filtered word list) via the mandatory
-    // cos_acc callback for layer_idx — no layer stores its cos bitmap anymore.
+    // Cos pass over all anticommuting indices via the mandatory cos_acc callback: A = Σ s_old·h_old,
+    // then state*=cos, op*=sec.
     const double A = cos_acc(layer_idx, state.data(), op.data(), trig.cos_val, trig.sec_val);
 
     // Endpoint passes overwrite endpoints and accumulate A_ep, B via the snapshot-free paired path.
@@ -527,21 +478,13 @@ auto state_operator_derivative_local_impl(VecD &state,
     if (my_rank < R) {
         ep = apply_self_slot_derivative_paired(state, op, layer, my_rank, trig);
     }
-    // Wait for the transfer and apply remote partner payloads (runs after the cos pass, so remote
-    // D-endpoints are overwritten with snapshot-based values exactly as in the blocking order).
+    // Wait for the transfer and apply remote partner payloads (after the cos pass).
     const auto remote =
         finish_cross_rank_derivative_exchange(state, op, layer, sin_recv_state, sin_recv_op, trig, in_flight);
     ep = combine_endpoint_contrib(ep, remote);
 
-    // Reverse-mode contribution of layer j: dE/dθ_j = g·(−sin·A_ep + cos·B), where A_ep and B are
-    // built from the pre-layer endpoint values. Expressed in the post-cos accumulators the code holds:
-    //   • cos-only terms (in cos_data but not rotation endpoints) contribute −g·tan·(A − A_ep): the
-    //     A−A_ep difference isolates the cos-only products and tan supplies the sin/cos factor.
-    //   • each rotation endpoint contributes +g·B (B = Σ φ·s·h_partner). The endpoint's own A and A_ep
-    //     products are identical post-cos and cancel in A−A_ep, leaving only the cross (B) term.
-    // NOTE: B enters with a PLUS sign (g·B). The earlier −g·B negated every nonzero rotation gradient
-    // (the cos-only/tan part was already correct), which is why test_infinite_cutoff
-    // analytic gradients came out as the exact negative of the finite-difference reference.
+    // dE/dθ_j = −g·(tan·(A − A_ep) − B). NOTE: B enters with a PLUS sign; the earlier −g·B negated every
+    // nonzero rotation gradient (caught as sign-flipped analytic vs finite-difference gradients).
     return -trig.g_val * (trig.tan_val * (A - ep.cos_terms) - ep.sin_terms);
 }
 
@@ -570,32 +513,26 @@ auto evolve_step_traversal_impl(VecD &op,
     const int my_rank_int = mpi::rank(comm);
     const auto my_rank = static_cast<size_t>(my_rank_int);
 
-    // Snapshot self-B (cross_rank[my_rank] B-indices) BEFORE the cos pass.
-    // This must run unconditionally (not gated on MPI size) so single-rank works.
-    // The pack for remote ranks skips my_rank, so this is a separate local snapshot.
+    // Snapshot self-B (my_rank's B-indices) BEFORE the cos pass; runs unconditionally (remote pack
+    // skips my_rank) so single-rank works.
     const size_t self_b_count = (my_rank < layer.cross_rank_rank_count()) ? layer.cross_rank_sin_send_size(my_rank) : 0;
     VecD self_b_snapshot;
     self_b_snapshot.resize(self_b_count);
     if (self_b_count > 0) {
-        // Gather the pre-cos self-B values (each k reads op[i] into its own snapshot[k]).
         auto &snap = self_b_snapshot;
         layer.for_each_cross_rank_sin_send_range(my_rank, 0, self_b_count, [&snap, &op](size_t k, size_t i) {
             snap[k] = op[i];
         });
     }
 
-    // Pack B and start non-blocking exchange BEFORE the cos scan. B ⊆ cos_data now, so packing
-    // first is what guarantees the partner values are pre-cos. Overlaps transfer with cos compute.
+    // Pack + start the exchange BEFORE the cos scan so partner values are pre-cos and the transfer overlaps.
     auto in_flight = begin_cross_rank_evolution_exchange(op, layer, comm);
-    // Cos scaling via the mandatory callback (recompute fold / transient or filtered word list — no
-    // layer stores its cos bitmap anymore). MUST stay between begin_/finish_cross_rank_evolution_exchange
-    // so the MPI transfer overlaps it.
+    // Cos scaling via the mandatory callback; MUST stay between begin_/finish so the transfer overlaps it.
     cos_scale(layer_idx, op_data, cos_val);
     finish_cross_rank_evolution_exchange(op, layer, sin_val, in_flight);
 
-    // Apply self-slot D-entries using the pre-cos snapshot.
-    // op[d_index(my_rank,k)] is already post-cos (endpoints are in cos_data), so this only ADDS
-    // the sine rotation: op[i] += sin·φ_signed·self_b_snapshot[k].
+    // Apply self-slot D-entries: op[i] is already cos-scaled, so this only ADDS the sine rotation
+    // op[i] += sin·φ·self_b_snapshot[k].
     if (self_b_count > 0) {
         const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);
         layer.for_each_cross_rank_sin_recv_range(my_rank,

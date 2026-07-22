@@ -22,22 +22,15 @@
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/RecvLayout.h"
 
-// Variable-size all-to-all facade over caller-owned FLAT buffers. This is the ONE place (besides the
-// vector-of-vectors begin_alltoallv in MPICompat.h) that names MPI_Alltoall / MPI_[I]alltoallv /
-// MPI_Wait / MPI_Request, and the ONE place that states the "every rank must participate — never skip
-// on zero counts" deadlock discipline. Non-MPI builds get self-copy stubs so callers compile and run
-// unchanged. Consumers (replay exchange, pare exchange) hold no #ifdef monoprop_ENABLE_MPI.
+// Variable-size all-to-all facade over caller-owned FLAT buffers, so consumers (replay/pare exchange)
+// hold no #ifdef monoprop_ENABLE_MPI. States the "every rank must participate — never skip on zero
+// counts" deadlock discipline; non-MPI builds get self-copy stubs.
 
 namespace monoprop::mpi {
 
-// ─── count exchange ──────────────────────────────────────────────────────────
-
-/// Resolve the recv side of a send-count vector, reusing `cache` when the communicator size is
-/// unchanged (the send pattern of a replayed graph is fixed ⇒ recv layout is identical every call, so
-/// a hit removes one blocking count round-trip per layer per evaluation). Resolution order:
-///   1. cache hit (cache.comm_size == size and same rank count) → no MPI;
-///   2. otherwise → one MPI_Alltoall via alltoall_counts.
-/// The resolved layout is stored in `cache` and returned by reference.
+/// Resolve the recv side of a send-count vector, reusing `cache` when comm size is unchanged: a
+/// replayed graph's send pattern is fixed, so a hit removes one blocking count round-trip per layer
+/// per evaluation. The resolved layout is stored in `cache` and returned by reference.
 inline auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache)
     -> const RecvLayout & {
     const auto n = static_cast<int>(send_counts.size());
@@ -59,8 +52,6 @@ inline auto resolve_recv(std::span<const int> send_counts, const Comm &comm, Rec
     cache.comm_size = comm_size;
     return out;
 }
-
-// ─── payload exchange ────────────────────────────────────────────────────────
 
 /// Idempotent completion handle for a posted payload transfer. wait() finishes a non-blocking
 /// transfer; it is a no-op for the blocking path and for non-MPI builds. Move-only so a request is
@@ -99,11 +90,9 @@ private:
 #endif
 };
 
-/// Post a variable-size all-to-all over caller-owned FLAT send/recv buffers with the given per-rank
-/// counts/displacements. NEVER skipped on zero total: all ranks must participate in the collective
-/// (skipping on one while another has data deadlocks). Non-blocking (MPI_Ialltoallv) in an MPI build;
-/// the returned Ticket completes the transfer. Non-MPI build: per-rank copy of send into recv (recv
-/// layout must equal send layout, which holds at communicator size 1).
+/// Post a variable-size all-to-all over caller-owned FLAT buffers. NEVER skipped on zero total: all
+/// ranks must participate or the collective deadlocks. Non-blocking (MPI_Ialltoallv) in an MPI build
+/// (the Ticket completes it); non-MPI build does a per-rank self-copy (recv layout == send layout).
 template <class T>
 inline auto post_flat_alltoallv(const T *send,
                                 const int *send_counts,

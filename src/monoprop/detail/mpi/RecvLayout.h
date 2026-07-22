@@ -29,10 +29,8 @@ struct RecvLayout {
     int total = 0;
 };
 
-/// Per-layer cache of a resolved RecvLayout, keyed by communicator size. The send-count pattern of a
-/// replayed graph is fixed, so once resolved the recv counts/displs are identical on every subsequent
-/// evaluation; a cache hit (comm_size unchanged) skips the MPI_Alltoall count round entirely. Reset
-/// state is comm_size == -1.
+/// Per-layer cache of a resolved RecvLayout, keyed by communicator size: a replayed graph's send
+/// pattern is fixed, so a hit (comm_size unchanged) skips the count round. Reset state is comm_size == -1.
 struct RecvLayoutCache {
     RecvLayout layout;
     int comm_size = -1;

@@ -26,21 +26,11 @@
 
 #include "monoprop/detail/mpi/ShardBarrier.h"
 
-// In-process shared-memory SPMD transport. S participant threads (shard masters) each hold a
-// mpi::Comm{Kind::Shm, this, rank} and call the SAME sequence of collectives in program order — the
-// exact SPMD discipline an MPI rank set follows. Every collective is a two-phase barrier:
-// publish-my-slot → barrier → read-peers'-slots → barrier. This is the sole shared-memory analogue
-// of MPI_Alltoall / MPI_Alltoallv / MPI_Allreduce; the vector-of-vectors packing and the flat-buffer
-// facade stay in MPICompat.h / Exchange.h, which call these primitives, so this class is a pure
-// transport with no knowledge of the engine's payload types.
-//
-// Two properties the engine relies on are guaranteed here:
-//   • alltoallv delivers each source's block CONTIGUOUSLY in ASCENDING source-rank order — the exact
-//     ordering MPI_Alltoallv provides, on which the positional query/response pairing in Resolve.h
-//     depends (bit-exact term-index assignment across shard counts).
-//   • allreduce sums in ASCENDING rank order on every rank, so the result is bit-identical on all
-//     ranks and deterministic for a given S (stronger than MPI, whose reduction order is unspecified;
-//     the codebase already accepts rank-count-dependent FP results).
+// In-process shared-memory SPMD transport: S shard-master threads each call the same collective
+// sequence in program order, every collective a two-phase barrier (publish-slot → barrier →
+// read-peers → barrier). Two guarantees the engine relies on: alltoallv delivers each source's block
+// contiguously in ascending source-rank order (Resolve.h's positional pairing needs it), and allreduce
+// sums in ascending rank order so the result is bit-identical and deterministic per S.
 
 namespace monoprop::mpi {
 
@@ -64,9 +54,8 @@ public:
     }
 
     /// Variable all-to-all over caller-owned FLAT buffers (counts/displs in ELEMENTS, `elem` = element
-    /// size in bytes). Rank r's recv buffer is filled, for each source s ascending, with s's block
-    /// destined for r placed at recv_displs[s]. recv_counts[s] must equal what s sends to r (the
-    /// caller establishes this via alltoall_counts or a known transpose — same contract as MPI).
+    /// bytes). Fills recv per source s ascending at recv_displs[s]; recv_counts must hold the transpose
+    /// (via alltoall_counts or a known one) — same contract as MPI.
     auto alltoallv(int rank,
                    const void *send,
                    const int *send_displs,
@@ -93,13 +82,9 @@ public:
         sync();
     }
 
-    /// Fused count-resolve + payload all-to-all in ONE round (2 syncs, vs alltoall_counts + alltoallv's
-    /// 4). Publishes send_counts + the send buffer, then every rank transposes the published counts into
-    /// its own recv_counts, sizes its recv buffer, computes recv_displs, and scatters — all between the
-    /// two barriers. recv_counts / recv_displs (caller [n_] arrays) and `recv` (resized) are OUTPUTS.
-    /// Used by begin_alltoallv when the recv layout is not already known (the query round); the
-    /// known-layout rounds keep the plain alltoallv. Same contiguous ascending-source ordering as
-    /// alltoallv (the query/response positional pairing depends on it).
+    /// Fused count-resolve + payload all-to-all in ONE round (2 syncs vs 4). recv_counts / recv_displs
+    /// and `recv` (resized) are OUTPUTS. Used for the query round (recv layout unknown); same contiguous
+    /// ascending-source ordering as alltoallv, which the query/response positional pairing depends on.
     template <class T>
     auto alltoallv_resolve(int rank,
                            const T *send,
@@ -112,7 +97,7 @@ public:
         me.ptr = send;
         me.displs = send_displs;
         me.counts = send_counts;
-        sync(); // B1: every rank's send_counts + send buffer published
+        sync(); // B1: send buffers published
         size_t total = 0;
         for (int s = 0; s < n_; ++s) {
             const int c = slots_[static_cast<size_t>(s)].counts[rank]; // what s sends to me
@@ -160,13 +145,9 @@ public:
         return acc;
     }
 
-    /// In-place element-wise allreduce-sum of a double vector (all ranks pass the same length), summed
-    /// in ascending rank order so every rank ends with the bit-identical result. Slice-partitioned:
-    /// rank r reduces its contiguous element slice across all S inputs and writes the identical result
-    /// bits into every rank's buffer — O(len) work per rank instead of O(S*len), zero allocation. The
-    /// in-place discipline is safe because element k is read from all inputs and then overwritten by
-    /// exactly one rank (its slice owner), and slices are rounded to whole cache lines so no two ranks
-    /// store to the same line of any buffer.
+    /// In-place element-wise allreduce-sum of a double vector, summed in ascending rank order (bit-
+    /// identical on every rank). Slice-partitioned (O(len)/rank, zero alloc); safe in place because each
+    /// element is read then overwritten by its single slice owner, and slices are cache-line-rounded.
     auto allreduce_sum_inplace(int rank, double *values, size_t len) -> void {
         slots_[static_cast<size_t>(rank)].vec = values;
         sync();

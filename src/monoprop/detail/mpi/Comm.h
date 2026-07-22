@@ -32,16 +32,13 @@ class ShmComm;    // defined in ShmComm.h — the in-process shared-memory SPMD 
 class HybridComm; // defined in HybridComm.h — composes R MPI ranks x S shards into one flat world.
 
 /**
- * @brief Runtime-tagged communicator handle threaded through the whole engine in place of raw
- * MPI_Comm. The SAME SPMD code drives either real MPI (`Kind::Mpi`, across nodes) or an in-process
- * ShmComm (`Kind::Shm`, across shards pinned to cores on one node). Trivially copyable and passed by
- * value, exactly like the MPI_Comm it replaces.
+ * @brief Runtime-tagged communicator handle threaded through the engine in place of raw MPI_Comm: the
+ * same SPMD code drives real MPI (`Kind::Mpi`) or an in-process ShmComm (`Kind::Shm`). Trivially
+ * copyable, passed by value like the MPI_Comm it replaces.
  *
- * The implicit MPI_Comm constructor is deliberate: it keeps every existing call site, test, and the
- * Python binding (which hands over an MPI_Comm) compiling and behaving unchanged — a plain
- * `MPI_COMM_WORLD` / `MPI_COMM_SELF` / mpi4py comm becomes a `Kind::Mpi` handle. There is no implicit
- * conversion back to MPI_Comm (that would silently drop a Shm handle); read `.mpi` explicitly where a
- * raw communicator is genuinely required (e.g. the public `comm()` accessor, mpi4py interop).
+ * The implicit MPI_Comm constructor is deliberate — it keeps every call site / test / Python binding
+ * compiling unchanged. There is no implicit conversion back (that would silently drop a Shm handle);
+ * read `.mpi` explicitly where a raw communicator is required.
  */
 struct Comm {
     // Hybrid = R MPI ranks x S in-process shards presented as one flat P=R*S SPMD world; the engine

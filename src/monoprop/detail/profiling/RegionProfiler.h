@@ -14,18 +14,10 @@
 
 #pragma once
 
-// ─── RegionProfiler ────────────────────────────────────────────────────────────
-// A zero-overhead-when-disabled per-region WALL-TIME timer used for the shard- and MPI-scaling
-// analysis. Enabled by the environment variable `monoprop_PHASE_TIMERS` (read once at load); every
-// hook is a single predictable branch (an exported bool load) when disabled.
-//
-// One metric per named region: wall_ns — sum of ScopedRegion lifetimes. Each shard runs its
-// partition serially on one core, so within a shard a region's walls do not overlap and are additive.
-// The parser derives share = wall_ns / Σ wall_ns.
-//
-// The MUTABLE state (enable flag, accumulators) lives in Profiling.cpp and is EXPORTED, so the process
-// holds exactly one copy even though the header is compiled into both libmonoprop.so (core) and
-// _core.*.so (the nanobind extension). This header stays light (std + the export macro).
+// Zero-overhead-when-disabled per-region wall-time timer for shard/MPI-scaling analysis. Enabled by
+// monoprop_PHASE_TIMERS (read once at load); each hook is one predictable branch when disabled. Within a
+// shard a region's walls are additive (serial on one core). Mutable state (flag + accumulators) lives
+// EXPORTED in Profiling.cpp so both .so's (core + nanobind extension) share one copy.
 
 #include <array>
 #include <atomic>
@@ -74,18 +66,13 @@ struct RegionAcc {
     std::atomic<uint64_t> calls{0}; // ScopedRegion entries
 };
 
-// ── Single, process-wide state (defined in Profiling.cpp, exported so both .so's share it) ──
-// The enable flag is read once at load; the accumulator-array accessor is only invoked on hot paths
-// when profiling is enabled.
+// Single, process-wide state (defined in Profiling.cpp, exported so both .so's share it).
 monoprop_EXPORT extern bool g_profiling_enabled;
 monoprop_EXPORT auto profiling_accs() -> RegionAcc *;   // base of the kRegionCount-element array
 monoprop_EXPORT auto profiling_ensure_atexit() -> void; // register the one-shot stderr dump
 
-// ── Fold statistics (monoprop_FOLD_STATS) ──
-// Per-gate anticommutation-scan statistics from fused_find_and_collect, one relaxed-atomic publish
-// per (gate, shard): sizing data for candidate-merge discovery (is the whole fold-column set
-// sparse-tier, and how do its postings compare to the K/64 fold words?) and for the structural-
-// cutoff reject rate. Dumped by the same one-shot atexit dump as the region timers.
+// Fold statistics (monoprop_FOLD_STATS): per-gate anticommutation-scan sizing data from
+// fused_find_and_collect, one relaxed-atomic publish per (gate, shard); dumped by the same atexit dump.
 monoprop_EXPORT extern bool g_fold_stats_enabled;
 monoprop_EXPORT auto record_fold_stats(bool all_sparse,
                                        bool skipped,
@@ -98,7 +85,7 @@ inline auto acc(Region r) -> RegionAcc & {
     return profiling_accs()[std::to_underlying(r)];
 }
 
-// ── ScopedRegion: mark a named phase and accumulate its wall time. ──
+// ScopedRegion: mark a named phase and accumulate its wall time.
 class ScopedRegion {
 public:
     explicit ScopedRegion(Region r) noexcept : r_(r) {

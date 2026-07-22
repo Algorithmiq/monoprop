@@ -31,15 +31,10 @@
 #endif
 #include "monoprop/detail/shard/CpuTopology.h"
 
-// Intra-process shard runtime. Owns S single-threaded "master" threads, each pinned to a physical
-// core and each running an independent MonomialPropagator that holds one hash-partition of the
-// operator (built via a Kind::Shm comm). The masters execute the UNCHANGED SPMD engine — the same
-// code an MPI rank runs — with the ShmComm standing in for the network. This is the in-process
-// realisation of the Phase-0 MPI ceiling (one serial shard per core, spread across L3 domains).
-//
-// The facade MonomialPropagator fans a method call out to all masters via run_on_all(); because the
-// engine's per-gate/per-eval collectives are barrier-synchronised inside ShmComm, every master must
-// execute the call CONCURRENTLY, which is exactly what run_on_all guarantees.
+// Intra-process shard runtime: owns S single-threaded master threads, each pinned to a core and
+// running an independent MonomialPropagator over one hash-partition via a Kind::Shm comm — the
+// unchanged SPMD engine an MPI rank runs, with ShmComm standing in for the network. run_on_all must
+// fan a call out to ALL masters concurrently, since the engine's collectives are barrier-synced inside ShmComm.
 
 namespace monoprop {
 
@@ -51,15 +46,13 @@ namespace detail::shard {
 template <size_t NumModes>
 class ShardGroup {
 public:
-    // Constructs each shard's propagator with `factory(shard_comm)` ON its own master thread, so the
-    // operator's heap allocations are first-touched on the owning core/CCX (the locality that makes
-    // sharding win). `factory` must build a single-shard (shards=1) propagator wired to the given comm.
+    // Builds each shard's propagator via `factory(shard_comm)` ON its master thread, so heap allocations
+    // are first-touched on the owning core/CCX (the locality win). `factory` must build a shards=1 propagator.
     using Factory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
 
-    // `parent` is the enclosing communicator (size R). R == 1 ⇒ the S shards trade over an in-process
-    // ShmComm (single node). R > 1 ⇒ they trade over a HybridComm that composes the R ranks x S shards
-    // into one flat P = R*S SPMD world (the MPI hybrid). Either way the shard propagators see a
-    // P-partition comm and run the unchanged engine.
+    // `parent` is the enclosing communicator (size R): R == 1 ⇒ shards trade over an in-process ShmComm;
+    // R > 1 ⇒ a HybridComm folding R ranks x S shards into one flat P=R*S world. Shards run the unchanged
+    // engine over a P-partition comm either way.
     ShardGroup(int n_shards, const Factory &factory, mpi::Comm parent)
         : n_(n_shards),
           parent_(parent),
@@ -73,9 +66,8 @@ public:
         run_on_all([&](int r) { shards_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
     }
 
-    // Clone: rebuild the transport for THIS group (fresh threads + fresh ShmComm/HybridComm over the
-    // same parent), deep-copy each of `src`'s shards on the new master, then rebind the copy's comm to
-    // this group's transport (the copy inherited a handle to src's).
+    // Clone: rebuild this group's transport (fresh threads + ShmComm/HybridComm over the same parent),
+    // deep-copy each shard on the new master, then rebind the copy's comm (it inherited src's handle).
     ShardGroup(const ShardGroup &src)
         : n_(src.n_),
           parent_(src.parent_),
@@ -146,11 +138,9 @@ private:
                                                       static_cast<size_t>(group_count));
     }
 
-    // Under an MPI parent, find how many ranks share this host and which one we are, so each
-    // co-located rank pins its shards to a DISJOINT block of cores (two ranks sharing a core is
-    // catastrophic: MPI's busy-polling collectives starve the sibling rank's barrier spins).
-    // Collective over `parent` — every rank constructs the facade propagator collectively already.
-    // Clones copy the result instead of re-running it, so cloning stays a rank-local operation.
+    // Under an MPI parent, find how many ranks share this host and which we are, so each co-located rank
+    // pins its shards to a disjoint core block (see shard_cpusets). Collective over `parent`; clones copy
+    // the result instead of re-running it, keeping cloning rank-local.
     auto discover_node_peers_() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
@@ -163,8 +153,7 @@ private:
 #endif
     }
 
-    // Build the shared transport: an in-process ShmComm for a single-rank parent, or a HybridComm that
-    // folds the R parent ranks x S shards into one flat world when the parent spans multiple MPI ranks.
+    // Build the shared transport: ShmComm for a single-rank parent, HybridComm when the parent spans R>1 ranks.
     auto make_transport_() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {

@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Single definition of the RegionProfiler's process-wide mutable state (see RegionProfiler.h). Kept
-// in one TU, compiled into libmonoprop.so and exported, so the core and the nanobind extension share
-// one copy of the enable flag, the accumulators, and the atexit dump.
+// Single definition of the RegionProfiler's process-wide mutable state (see RegionProfiler.h), kept in
+// one TU so the core and the nanobind extension share one copy of the flags, accumulators, and dump.
 
 #include "monoprop/detail/profiling/RegionProfiler.h"
 
@@ -37,10 +36,9 @@ auto env_enabled() -> bool {
 
 std::array<RegionAcc, kRegionCount> g_accs{};
 
-// ── Fold-stats accumulators (monoprop_FOLD_STATS) ──
-// One publish per (gate, shard) from fused_find_and_collect. The ratio histogram buckets
-// log2(postings / word_count) for all-sparse gates: bucket 0 = zero postings, buckets 1..15 cover
-// ratios 2^-7 .. 2^7 (bucket 8 ≈ ratio 1, the candidate-merge break-even point), clamped at the ends.
+// Fold-stats accumulators (monoprop_FOLD_STATS), one publish per (gate, shard). The ratio histogram
+// buckets ~8+log2(postings/word_count) for all-sparse gates: bucket 0 = zero postings, bucket 8 ≈
+// ratio 1 (candidate-merge break-even), clamped to 1..15 at the ends.
 inline constexpr size_t kFoldRatioBuckets = 16;
 struct FoldStats {
     std::atomic<uint64_t> gates{0};          // fused scans recorded

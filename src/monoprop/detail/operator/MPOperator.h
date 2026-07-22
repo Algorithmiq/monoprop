@@ -31,13 +31,9 @@
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
-// Forward declarations of algebra helpers (namespace monoprop) so this header need not include
-// algebra/Algebra.h. That header pulls in TypeAliases.h (through the algebra models), and this
-// header is itself included at the bottom of TypeAliases.h, so including it here would form an
-// include cycle. The definitions are visible wherever the MPOperator methods below are actually
-// instantiated (those TUs pull in algebra/Algebra.h via MonomialPropagatorImpl.h). `Rows` is
-// either the generic MonomialList (plain vector) or the packed operator-row container; both are
-// read through the backend-agnostic row accessors.
+// Forward-declared (not #included) to break an include cycle with algebra/Algebra.h; the definitions
+// are visible wherever the MPOperator methods are instantiated (via MonomialPropagatorImpl.h). `Rows`
+// is either MonomialList or the packed operator-row container, read through the backend-agnostic accessors.
 namespace monoprop {
 template <size_t NumModes, typename Rows>
 auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ;
@@ -45,10 +41,9 @@ auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ;
 template <size_t NumModes>
 auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes>;
 
-// The two algebra-generic entry points this header calls: diagonal (Hartree-Fock) scoring and the
-// real<->double coefficient codec. Each binds the runtime Basis to its compile-time algebra model
-// internally (see algebra/Algebra.h), so the Majorana/Pauli choice lives in ONE place -- the
-// policy layer -- rather than as scattered `if (basis == Basis::Pauli)` branches here.
+// The two algebra-generic entry points this header calls (HF scoring + the real<->double coeff codec).
+// Each binds the runtime Basis to its algebra model internally, so the Majorana/Pauli choice lives in
+// ONE place (the policy layer) rather than scattered `if (basis == Basis::Pauli)` branches here.
 template <size_t NumModes, typename Rows>
 auto algebra_score_hf(Basis basis, const VecZ &paired_inds, const VecZ &hf, const Rows &store, VecD &out) -> void;
 
@@ -58,8 +53,7 @@ auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const 
 
 namespace monoprop::detail {
 
-/// Thrown by set-coefficient / update paths when a requested operator term is absent from the
-/// store. Dedicated type (rather than a generic std::runtime_error) so it can be caught specifically.
+/// Thrown by set-coefficient / update paths when a requested operator term is absent from the store.
 class OperatorTermNotFound : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -69,20 +63,15 @@ public:
 /// coefficient vectors, the initial-operator map, and the lazily-built even-parity scan inverted index.
 template <size_t NumModes>
 struct MPOperator {
-    // Operator rows are stored entropy-packed (position-list rows, ALWAYS — every NumModes);
-    // all row reads/writes go through the backend-agnostic accessors (materialize_row/assign_row/
-    // row_popcount/for_each_row_position) or the container's own packed API.
-    // The store is non-copyable/non-movable, so it lives on the heap: an MPOperator owns it by
-    // unique_ptr, keeping MPOperator itself cheaply movable. Always non-null.
+    // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
+    // itself cheaply movable). Always non-null. Rows go through the backend-agnostic accessors.
     std::unique_ptr<OperatorIndex<NumModes>> store = std::make_unique<OperatorIndex<NumModes>>();
     VecD op_coeffs = {};
     VecD state_coeffs = {};
     MonomialMap<NumModes> init_op_map = {};
     VecZ slater_determinant = {};
-    // Operator basis: Majorana monomials (default) or native Pauli strings. Bound to its
-    // compile-time algebra model (see algebra/Algebra.h) at each use — here it drives the
-    // coefficient codec (algebra_encode_coeff) and the ⟨b|·|b⟩ scoring (algebra_score_hf). Set once
-    // at propagator construction (MonomialPropagator ctor).
+    // Operator basis: Majorana monomials (default) or native Pauli strings. Bound to its algebra model
+    // at each use (drives the coeff codec and HF scoring); set once at propagator construction.
     Basis basis = Basis::Majorana;
     mutable std::optional<InvertedIndex<NumModes>> inverted_index_ = std::nullopt;
 
@@ -90,10 +79,8 @@ struct MPOperator {
     MPOperator(MPOperator &&) noexcept = default;
     MPOperator &operator=(MPOperator &&) noexcept = default;
 
-    // Deep copy via the copy constructor only (enables the simulator's deep copy / __deepcopy__).
-    // `store` is owned by unique_ptr and the OperatorIndex is non-copyable, so it is rebuilt via
-    // clone(); everything else is plain value data. Copy assignment stays implicitly deleted
-    // (unique_ptr member) -- copy construction is all deepcopy needs.
+    // Deep copy via the copy constructor only: the non-copyable `store` is rebuilt via clone(),
+    // everything else is plain value data. Copy assignment stays implicitly deleted (unique_ptr member).
     MPOperator(const MPOperator &other)
         : store(other.store->clone()),
           op_coeffs(other.op_coeffs),
@@ -112,9 +99,8 @@ struct MPOperator {
         }
     }
 
-    // After a bulk PARALLEL growth of `store` (slots [base, base+n) already filled by the caller),
-    // bring the even-parity inverted index back in sync via the atomics-free word-partitioned append,
-    // preserving the has_value() ⟹ rows()==store.size() invariant (rows()==base holds pre-growth).
+    // Resync the even-parity inverted index after a bulk parallel growth of `store`, preserving the
+    // has_value() ⟹ rows()==store.size() invariant.
     auto reindex_after_growth(size_t base, size_t n) -> void {
         if (inverted_index_.has_value()) {
             inverted_index_->append_rows_from_op_disjoint(*store, base, n);
@@ -132,12 +118,8 @@ struct MPOperator {
     /**
      * @brief Lazily materialize the operator coefficients aligned with the store's row indexing.
      *
-     * Resizes op_coeffs to the current term count and drains any pending terms from init_op_map into
-     * it: each pending (term, coeff) is looked up in the store and written at its row index, then
-     * erased from init_op_map (erase after the lookup loop — the flat_map is not iterable while
-     * mutating). A no-op once op_coeffs is already in sync with the store.
-     *
-     * @return Const reference to the row-indexed coefficient vector (valid until the operator grows).
+     * Drains pending init_op_map terms into op_coeffs, erasing them AFTER the lookup loop (the flat_map
+     * is not iterable while mutating). A no-op once op_coeffs is already in sync with the store.
      */
     auto get_operator() -> const VecD & {
         if (size() == op_coeffs.size()) {
@@ -150,8 +132,6 @@ struct MPOperator {
             return op_coeffs;
         }
 
-        // Match keys in ascending map order; the found entries are erased afterward (the flat_map is not
-        // safely mutable mid-iteration), so the erase order is deterministic (ascending map order).
         std::vector<Monomial<NumModes>> del;
         for (const auto &kv : init_op_map) {
             const auto &maj = kv.first;
@@ -172,12 +152,8 @@ struct MPOperator {
     /**
      * @brief Lazily materialize the state (initial reference) coefficients aligned with the store.
      *
-     * Extends state_coeffs to the current term count and scores ONLY the newly-appended terms
-     * [old_size, size()); existing entries are left untouched. A new term is nonzero only if it is
-     * fully paired with respect to the Slater determinant, in which case it receives that term's
-     * Hartree–Fock phase.
-     *
-     * @return Const reference to the state coefficient vector (valid until the operator grows).
+     * Scores ONLY the newly-appended terms [old_size, size()); a new term is nonzero only if fully
+     * paired with the Slater determinant, in which case it receives that term's Hartree-Fock phase.
      */
     auto get_state() -> const VecD & {
         if (state_coeffs.size() == size()) {
@@ -188,17 +164,13 @@ struct MPOperator {
         size_t new_elements = size() - cur_len;
         state_coeffs.resize(size(), 0.0);
 
-        // Only score the newly-appended terms [cur_len, size); already-set coeffs stay untouched.
         VecZ new_inds(new_elements);
         std::iota(new_inds.begin(), new_inds.end(), cur_len);
 
         const auto paired_inds = is_fully_paired<NumModes>(new_inds, *store);
 
-        // Score the diagonal ⟨b|·|b⟩ coefficient of each fully-paired term. The algebra picks the
-        // phase: a Z-only Pauli scores (−1)^{|Z∩occ|} with no Majorana pairing sign, whereas a
-        // Majorana term folds in the pairing sign (MajoranaAlgebra::hf_phase / PauliAlgebra::hf_phase).
-        // The occupancy mask marks slot 2q; for a paired term slots 2q and 2q+1 agree, so one hf_mask
-        // feeds either phase. algebra_score_hf binds the basis to its model once, then loops.
+        // Score the diagonal ⟨b|·|b⟩ coefficient of each fully-paired term; the algebra picks the phase
+        // (algebra_score_hf binds the basis to its model once, then loops).
         algebra_score_hf<NumModes>(basis, paired_inds, slater_determinant, *store, state_coeffs);
 
         return state_coeffs;
@@ -207,22 +179,12 @@ struct MPOperator {
     /**
      * @brief Rewrite the initial Hamiltonian from a new coefficient dictionary.
      *
-     * Places each term either directly on its existing evolved-operator row (new_op_coeffs) or in the
-     * pending map (new_op_map) for terms not yet materialized. The picture governs unknown terms:
-     *   - Heisenberg (schrodinger == false): a term absent from BOTH the pending map and the evolved
-     *     store is rejected (throws) — new Majoranas may have no paths in the evolution graph.
-     *   - Schrödinger: terms may be introduced freely, since the state was already evolved to build
-     *     the graph.
-     * Overwrites the operator's internal init_op_map and op_coeffs with the result.
-     *
-     * @param op_dict     New Hamiltonian terms (Fermionic operator → coefficient).
-     * @param schrodinger Whether the simulator is in the Schrödinger picture.
-     * @return Tuple {new_op_map (pending terms), new_op_coeffs (row-indexed coeffs),
-     *         new_grad_op (parallel (majorana, coeff) arrays of every supplied term)}.
+     * Each term lands on its existing evolved-operator row, or in the pending map if not yet
+     * materialized. Heisenberg REJECTS a term absent from both (new Majoranas may have no graph paths);
+     * Schrödinger admits them freely (the state was already evolved). Overwrites init_op_map/op_coeffs.
      */
     auto update_initial_operator(const FermiOperatorMap &op_dict, bool schrodinger)
         -> std::tuple<MonomialMap<NumModes>, VecD, std::pair<MonomialList<NumModes>, VecD>> {
-        // Update the Hamiltonian with new elements for the specified rank
         MonomialMap<NumModes> new_op_map;
         std::pair<MonomialList<NumModes>, VecD> new_grad_op;
         VecD new_op_coeffs(size(), 0.0);
@@ -233,8 +195,6 @@ struct MPOperator {
             const auto rank_init_op = init_op_map.find(maj);
             const auto coeff = algebra_encode_coeff<NumModes>(basis, v, maj);
 
-            // in heisenberg picture, we cannot change the initial hamiltonian if the majorana is not present
-            // this is because these paths from new majoranas may not be present in the evolution graph
             if (!schrodinger) {
                 if (rank_init_op != init_op_map.end()) {
                     new_op_map[maj] = coeff;
@@ -247,8 +207,6 @@ struct MPOperator {
                     throw OperatorTermNotFound(std::format("Operator term {} not found in the operator.", term_repr));
                 }
             }
-            // otherwise, in schrodinger picture, we can change the initial hamiltonian freely as the state has
-            // been evolved to construct the graph
             else {
                 if (rank_evolved_op) {
                     new_op_coeffs[*rank_evolved_op] = coeff;
@@ -261,22 +219,16 @@ struct MPOperator {
             new_grad_op.second.push_back(coeff);
         }
 
-        // Update the internal state for the specified rank
         init_op_map = new_op_map;
         op_coeffs = new_op_coeffs;
         return {std::move(new_op_map), std::move(new_op_coeffs), std::move(new_grad_op)};
     }
 };
 
-// Insert `n` provably-distinct, currently-absent terms into `op` in one deterministic batch — the
-// grow → scatter → index → resync quartet shared by every miss-insert site (cross-rank incoming misses
-// and deferred self-misses). Steps: grow the row store by `n` (returning the insert base = old size);
-// have the caller scatter each term's packed row + any side records via `per_slot(k, base)` (writing
-// the disjoint slot base+k); bulk-insert the keys from `key_at(k)`; resync the inverted index. The
-// base+k assignment is byte-identical to a serial loop because callers pass pairwise-distinct keys
-// (source ⊕ G over distinct terms, ⊕G injective); atomics-free (disjoint op slots / map shards /
-// inverted-index words). Call AFTER any pass that reads pre-insert op state — op.size() must equal the
-// returned base. `key_at(k) -> const Monomial<NumModes>&`, `per_slot(k, base) -> void`.
+// Insert `n` provably-distinct, currently-absent terms into `op` in one batch — the grow → scatter →
+// index → resync quartet shared by every miss-insert site. Callers pass pairwise-distinct keys, which
+// makes the disjoint-slot scatter atomics-free and byte-identical to a serial loop. Call AFTER any
+// pass that reads pre-insert op state (op.size() must equal the returned base).
 template <size_t NumModes, typename KeyAt, typename PerSlot>
 inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
     const size_t base = op.store->grow_rows_geometric(n);

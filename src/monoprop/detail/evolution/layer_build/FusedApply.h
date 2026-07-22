@@ -23,45 +23,32 @@
 
 namespace monoprop::detail {
 
-// ─── apply_fused_contract ─────────────────────────────────────────────────────
 // The drain paired with build_layer's fused emission: complete each rotation by adding its sine term
-// directly to op_coeffs — the ContractImmediately forward path at ALL rank counts, replacing the
-// transient LayerCore + evolve_step. The gate's cosine scale reaches the coefficients one of two ways:
-//   • fused_scale (k==0, the default): the scan already multiplied every anticommuting coefficient in
-//     place during its own pass (see fused_find_and_collect), so no cos pass runs here and `cos` is
-//     empty/ignored. Slots born AFTER that sweep — fresh inserts (self-rank misses and cross-rank
-//     resolver misses) — get the cos folded in by their apply arm below (c = cos·c + sin term), which
-//     is exactly the two-pass path's scale-then-add on those slots.
-//   • two-pass (k>0 / cos==0 fallback): the eager kernel `scale_cos_mask` runs here over the build's
-//     cos set (inserted endpoints included via append_inserted_endpoints_), then every arm is a plain
-//     add — byte-for-byte the historical path.
-// Same FP expression shape as evolve_step's D-apply (sin_val * static_cast<double>(phi) * value); the
-// pre-cos v_src/v_tgt values are scan-captured / 1/cos-recovered (see Engine.h). `param` is the
-// SCHRODINGER-SIGNED value the non-fused evolve_step receives; cos is even so cos(2·param) equals the
-// sweep's cos(2·build_angle) bit-for-bit. At R>1 a rotation's two endpoints can live on different
-// ranks: each rank applies only the ADD to the slot it owns (half rotations in fc.cross_half), with
-// the partner coeff already carried over the wire during the build exchange — no MPI of its own. Not
-// templated on NumModes — it operates purely on the resolved FusedContract + op_coeffs.
+// directly to op_coeffs (the ContractImmediately forward path at ALL rank counts). The gate's cosine
+// scale reaches the coefficients two ways:
+//   • fused_scale (k==0, default): the scan already scaled every anticommuting coeff in its own pass, so
+//     no cos pass runs; slots born AFTER that sweep (fresh inserts) fold cos in via their apply arm below.
+//   • two-pass (k>0 / cos==0 fallback): scale_cos_mask runs here over the build's cos set, then every arm
+//     is a plain add — byte-for-byte the historical path.
+// Same FP shape as evolve_step's D-apply. At R>1 each rank applies only the ADD to the slot it owns (half
+// rotations in fc.cross_half), the partner coeff already carried over the wire. Not templated on NumModes.
 inline auto apply_fused_contract(FusedContract &fc,
                                  VecD &op_coeffs,
                                  const CosMask &cos,
                                  double param,
                                  bool schrodinger,
                                  bool fused_scale) -> void {
-    // (1) INSERT records: v_tgt is the freshly-inserted term's PRE-cos coeff, available only now that
-    // op_coeffs has been extended (insert slots are never swept by the scan, so this read is pre-cos in
-    // both modes). Needed ONLY in the Schrödinger picture — Heisenberg fresh inserts have coeff 0
-    // (extend zero-fills the appended tail), so v_tgt stays its initialized 0.0 and the c[src] += …·v_tgt
-    // add is a no-op; skip the gather entirely. Parallel over the distinct insert targets.
+    // (1) INSERT records: v_tgt is the freshly-inserted term's PRE-cos coeff, readable only now op_coeffs
+    // is extended. Needed ONLY in Schrödinger — a Heisenberg fresh insert has coeff 0, so v_tgt stays 0.0
+    // and the c[src] add is a no-op; skip the gather.
     if (schrodinger) {
         for (size_t k = 0; k < fc.inserts.size(); ++k) {
             fc.inserts[k].v_tgt = op_coeffs[fc.inserts[k].tgt];
         }
     }
 
-    // (2) Two-pass mode only: cos scale over ALL anticommuting endpoints (inserts included) — the
-    // kernel identical to the non-fused cos_scale callback. In fused_scale mode the scan already did
-    // this in its own coefficient pass.
+    // (2) Two-pass mode only: cos scale over ALL anticommuting endpoints (inserts included). In fused_scale
+    // mode the scan already did this in its own coefficient pass.
     const double cos_val = std::cos(2 * param);
     const double sin_val = std::sin(2 * param);
     double *const c = op_coeffs.data();
@@ -70,15 +57,12 @@ inline auto apply_fused_contract(FusedContract &fc,
         scale_cos_mask(c, cos, cos_val);
     }
 
-    // (3) One parallel apply over hits ++ inserts ++ cross_half. Each op slot is touched by exactly one
-    // add (single-touch invariant: pivot leader/follower split + ⊕G-injective targets +
-    // drop_matched_cross_rank_followers), so the apply is order-free and thread-count
-    // invariant. Full rotations (hits/inserts) write BOTH local endpoints; half rotations (cross_half —
-    // resolver +φ and querier −φ) write only the single slot THIS rank owns, exactly like
-    // Evolution.cpp's cross-rank D-apply. In fused_scale mode a slot born after the sweep (insert
-    // full-rotation targets, resolver MISS halves) folds the gate's cos in here — c = cos·c + sin
-    // term — reproducing scale-then-add while preserving any nonzero post-extension value (Schrödinger
-    // HF score, or a pending initial-operator term drained into a fresh Heisenberg slot by the extend).
+    // (3) One parallel apply over hits ++ inserts ++ cross_half. Each op slot is touched by exactly one add
+    // (single-touch invariant: pivot split + ⊕G-injective targets + drop_matched_cross_rank_followers), so
+    // the apply is order-free and thread-count invariant. Full rotations write BOTH local endpoints; half
+    // rotations write only the slot THIS rank owns. In fused_scale mode a slot born after the sweep (insert
+    // targets, resolver MISS halves) folds the gate's cos in here (c = cos·c + sin), preserving any nonzero
+    // post-extension value.
     const size_t n_hit = fc.hits.size();
     const size_t n_full = n_hit + fc.inserts.size();
     const size_t n_cross = fc.cross_half.size();

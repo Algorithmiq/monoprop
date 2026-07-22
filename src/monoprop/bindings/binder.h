@@ -50,12 +50,7 @@ auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string;
 auto basis_str_2_enum(const std::string &basis) -> Basis;
 auto basis_enum_2_str(Basis basis) -> std::string;
 
-/**
- * @brief Binds the MonomialPropagator class to Python.
- *
- * @tparam NumModes The number of modes for the MonomialPropagator.
- * @param mod The module to which the class will be bound.
- */
+/// @brief Binds the MonomialPropagator class to Python.
 template <size_t NumModes>
 auto bind_monomial_propagator(nb::module_ &mod) -> void {
     using namespace monoprop;
@@ -115,8 +110,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "only_rotate_len_k"_a = 0,
             "Build the propagation graph, recording per-layer gate information");
 
-    // Deep copy (the operator store is deep-cloned; immutable graph layer cores are shared). Only
-    // __deepcopy__ is exposed.
+    // Deep copy (operator store deep-cloned; immutable graph layer cores shared). Only __deepcopy__ is exposed.
     cls.def(
         "__deepcopy__",
         [](const MonomialPropagator<NumModes> &self, nb::handle) { return MonomialPropagator<NumModes>(self); },
@@ -184,10 +178,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         [](const MonomialPropagator<NumModes> &self) -> std::string { return basis_enum_2_str(self.basis()); },
         "The operator basis: 'majorana' (default) or 'pauli'");
 
-    // Contract the graph, then decode every above-atol term back into a Python {indices: coeff} dict.
-    // evolved_operator_terms is shard-transparent: it merges every shard's disjoint hash partition, so
-    // this works whether the propagator is single-partition or shard-backed (the raw per-partition
-    // indexing() is unavailable on a shard facade).
+    // Contract the graph, then decode every above-atol term into a Python {indices: coeff} dict.
+    // evolved_operator_terms is shard-transparent (merges each shard's disjoint hash partition).
     cls.def(
         "evolved_operator",
         [](MonomialPropagator<NumModes> &self, const VecD &parameters, double atol) -> nb::dict {

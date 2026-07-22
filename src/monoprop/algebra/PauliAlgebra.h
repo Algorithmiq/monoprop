@@ -24,42 +24,31 @@
 #include "monoprop/Bitset.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
-#include "monoprop/algebra/AlgebraCommon.h" // is_paired / support_cutoff (basis-agnostic structure)
+#include "monoprop/algebra/AlgebraCommon.h"
 
 /*!
  * @file PauliAlgebra.h
  * @brief Pauli-native operator algebra over the Majorana bitset container.
  *
- * A qubit Pauli string P = i^{#Y} X^x Z^z is stored in the SAME container as a Majorana
- * monomial (`Monomial<NumModes> = Bitset<2*NumModes>`), under the per-qubit image of
- * `change_basis(JordanWigner(P))`. For qubit q (NumModes = number of qubits N):
- *   - X_q sets gamma-slot 2q, Y_q sets slot 2q+1, Z_q sets both slots {2q, 2q+1}.
- * `indices_to_bitset` maps slot k -> physical bit 2N-1-k (MSb0), so with m = N-1-q qubit q
- * owns the physically aligned pair {2m, 2m+1}. In the (u,v) symplectic split:
- *   - v (z-plane) lives on the EVEN physical bit (slot 2q+1):  v = w & E
- *   - u           lives on the ODD  physical bit (slot 2q):    u = (w >> 1) & E
- *   - x (x-plane) = u ^ v;   a qubit is Y iff (v=1, u=0);   Z-only iff x-plane is empty.
- * where E = even_bits<2*NumModes, LSb0>() is the physical-even-bit mask (the same mask
- * support_cutoff uses). Under this encoding support_cutoff's xor_sum = popcount(x-plane) and
- * or_sum = popcount(x|z) = qubit Pauli weight, and is_paired(P) holds iff P is Z-only -- which
- * is why the fully-paired keep-exception protects exactly the diagonal (expectation-carrying)
- * Paulis, matching the existing Jordan-Wigner path.
+ * A qubit Pauli string is stored in the SAME Monomial container as a Majorana monomial, under the
+ * per-qubit JW image: qubit q owns the physical pair {2m, 2m+1} (m = N-1-q). In the (u,v) symplectic
+ * split with E = pauli_even_mask (physical even bits): v (z-plane) = w & E, u = (w >> 1) & E,
+ * x-plane = u ^ v; a qubit is Y iff (v=1, u=0), Z-only iff x-plane empty. Hence support_cutoff's
+ * xor_sum = popcount(x-plane) and or_sum = qubit Pauli weight, and is_paired(P) holds iff P is Z-only
+ * -- the diagonal, expectation-carrying Paulis the fully-paired keep-exception protects.
  */
 
 namespace monoprop {
 
 /// @brief Physical-even-bit mask E (z-plane / v-plane selector) for the Pauli encoding.
-/// @tparam NumModes Number of qubits N; the Majorana container holds 2N bits.
 template <size_t NumModes>
 [[nodiscard]] inline constexpr auto pauli_even_mask() -> Monomial<NumModes> {
     return even_bits<2 * NumModes, LSb0>();
 }
 
 namespace detail {
-/// The (u,v) symplectic planes of one physical word of a Pauli bitset, with `e` the
-/// physical-even-bit mask (pauli_even_mask's word). `v` is the z-plane (even physical bits);
-/// `u` is the odd-bit plane shifted onto the even lane; the x-plane is `u ^ v`. Factors the
-/// per-word split shared by pauli_y_count and pauli_rotation_sign.
+/// The (u,v) symplectic planes of one physical word (`e` = pauli_even_mask's word); the split
+/// shared by pauli_y_count and pauli_rotation_sign.
 struct PauliUv {
     uint64_t v; ///< z-plane (even physical bits)
     uint64_t u; ///< odd-bit plane, aligned onto the even lane
@@ -70,11 +59,9 @@ struct PauliUv {
 } // namespace detail
 
 /*!
- * @brief The pair-swap involution J: swap the two physical bits of every qubit pair.
+ * @brief The pair-swap involution J: swap the two physical bits of every qubit pair (u <-> v).
  *
- * Swaps u <-> v per qubit, i.e. J(w) = ((w & E) << 1) | ((w >> 1) & E) per physical word.
- * Each qubit pair is {2m, 2m+1}, so the swap stays inside its word (no cross-word carry) and
- * never sets a bit above 2N-1. J is an involution: J(J(P)) == P.
+ * The swap stays inside each word (pairs are {2m, 2m+1}, no cross-word carry); J is an involution.
  */
 template <size_t NumModes>
 [[nodiscard]] auto pair_swap(const Monomial<NumModes> &p) -> Monomial<NumModes> {
@@ -103,10 +90,8 @@ template <size_t NumModes>
 }
 
 /*!
- * @brief Whether two Pauli strings anticommute (symplectic inner product is odd).
- *
- * Reference form: P.parity_and(pair_swap(G)) == (u_P . v_G + v_P . u_G) mod 2
- *                                            == (x_P . z_G + z_P . x_G) mod 2.
+ * @brief Whether two Pauli strings anticommute (symplectic inner product is odd):
+ *        P.parity_and(pair_swap(G)) == (x_P . z_G + z_P . x_G) mod 2.
  */
 template <size_t NumModes>
 [[nodiscard]] auto pauli_anticommutes(const Monomial<NumModes> &p, const Monomial<NumModes> &g) -> bool {
@@ -121,18 +106,16 @@ namespace detail {
 } // namespace detail
 
 /*!
- * @brief Precomputed per-generator context for the hot emit-sign kernel.
- *
- * Caches the generator, its popcount, its Y count, and the indices of its nonzero physical
- * words so pauli_rotation_sign() can skip words outside the generator's support.
+ * @brief Precomputed per-generator context for the hot emit-sign kernel: caches G, its popcount and
+ * Y count, and its nonzero physical words so pauli_rotation_sign() can skip words outside G's support.
  */
 template <size_t NumModes>
 struct PauliGenContext final {
     Monomial<NumModes> gen{};
-    size_t gen_pop = 0;                                             ///< gen.count()
-    size_t g_y = 0;                                                 ///< pauli_y_count(gen)
-    std::array<size_t, Monomial<NumModes>::num_words()> nz_words{}; ///< indices of gen's nonzero words
-    size_t nz_count = 0;                                            ///< number of valid entries in nz_words
+    size_t gen_pop = 0;
+    size_t g_y = 0;
+    std::array<size_t, Monomial<NumModes>::num_words()> nz_words{};
+    size_t nz_count = 0;
 };
 
 /*!
@@ -153,33 +136,28 @@ template <size_t NumModes>
 }
 
 /*!
- * @brief HOT kernel: the ROTATION sign +/-1 for the anticommuting product maj * gen, given
- * new_maj = maj ^ gen.
+ * @brief HOT kernel: the rotation sign +/-1 for the anticommuting product maj*gen (new_maj = maj^gen).
  *
- * Returns the sign the rotation O' = U†OU (U = exp(iθ·gen)) needs on the off-diagonal partner
- * term, i.e. the NEGATED raw product sign: pauli_rotation_sign == -pauli_emit_sign_antic(maj, gen)
- * (pinned by pauli_build_layer_dense_matrix_ground_truth / T7), so the emit site needs no extra
- * negation. Loops ONLY over the generator's nonzero words: outside gen's support maj and new_maj
- * agree (their per-word Y counts cancel in yMaj - yNew) and x_gen = 0 (the cross term contributes
- * nothing), leaving the exponent unchanged. e = g_y + sum_w(yMaj(w) - yNew(w)) +
- * 2*sum_w(v_maj(w) & x_gen(w)); the raw sign is (e mod 4 == 1 ? +1 : -1), so the rotation sign is
- * its negation, (e mod 4 == 1 ? -1 : +1).
+ * Returns the sign the rotation O' = U†OU (U = exp(iθ·gen)) needs on the off-diagonal partner term:
+ * the NEGATED raw product sign (pinned by T7), so the emit site needs no extra negation. Loops ONLY
+ * over gen's nonzero words (elsewhere maj/new_maj Y counts cancel and x_gen = 0). Exponent
+ * e = g_y + Σ_w(yMaj - yNew) + 2·Σ_w(v_maj & x_gen); raw sign = (e mod 4 == 1 ? +1 : -1), negated here.
  */
 template <size_t NumModes>
 [[gnu::always_inline]] inline auto pauli_rotation_sign(const PauliGenContext<NumModes> &ctx,
                                                        const Monomial<NumModes> &maj,
                                                        const Monomial<NumModes> &new_maj) -> int {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
-    long delta = static_cast<long>(ctx.g_y); // + yGen
-    long cross = 0;                          // zMaj . xGen
+    long delta = static_cast<long>(ctx.g_y);
+    long cross = 0;
     for (size_t k = 0; k < ctx.nz_count; ++k) {
         const size_t w = ctx.nz_words[k];
         const uint64_t e = e_mask.word(w);
         const auto [v_m, u_m] = detail::pauli_uv(maj.word(w), e);
         const auto [v_n, u_n] = detail::pauli_uv(new_maj.word(w), e);
         const auto [v_g, u_g] = detail::pauli_uv(ctx.gen.word(w), e);
-        delta += std::popcount(v_m & ~u_m); // + yMaj(w)
-        delta -= std::popcount(v_n & ~u_n); // - yNew(w)
+        delta += std::popcount(v_m & ~u_m);
+        delta -= std::popcount(v_n & ~u_n);
         const uint64_t x_g = u_g ^ v_g;
         cross += std::popcount(v_m & x_g);
     }
@@ -189,9 +167,7 @@ template <size_t NumModes>
 /*!
  * @brief Hartree-Fock phase (-1)^{|Z ∩ occupied|} for a Z-only (diagonal) Pauli.
  *
- * hf_mask marks the z-plane (even physical) bits of the occupied qubits, so
- * maj.count_and(hf_mask) counts the occupied qubits carrying a Z. Only meaningful for Z-only
- * terms (is_paired holds); for a non-diagonal Pauli <b|P|b> = 0 and the caller must not use this.
+ * Only meaningful for Z-only terms (is_paired holds); for a non-diagonal Pauli <b|P|b> = 0.
  */
 template <size_t NumModes>
 [[nodiscard]] auto pauli_hf_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &hf_mask) -> double {
@@ -199,10 +175,10 @@ template <size_t NumModes>
 }
 
 /*!
- * @brief Encode a Pauli coefficient (Hermitian representative) into its real storage value.
+ * @brief Encode a Pauli coefficient into its real storage value.
  *
- * Pauli strings are Hermitian, so their coefficients are already real; this is the identity on
- * the real part and rejects any stray imaginary component (mirrors encode_coeff's guard).
+ * Pauli strings are Hermitian so coeffs are already real: identity on the real part, rejecting any
+ * stray imaginary component.
  */
 [[nodiscard]] inline auto encode_pauli_coeff(const std::complex<double> &coeff) -> double {
     if (std::abs(coeff.imag()) > 1e-10) {

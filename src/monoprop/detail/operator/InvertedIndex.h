@@ -30,50 +30,28 @@ namespace monoprop::detail {
 /**
  * @brief Lazy transposed operator storage — an inverted index over Majorana columns.
  *
- * The main operator is stored row-major as K Majorana terms over 2N columns. This inverted index
- * stores the transpose: one bit-vector per Majorana column (mode), with bit r set iff term r
- * contains that mode — i.e. column c's postings are the set of terms touching mode c.
+ * Stores the transpose of the row-major operator: one bit-vector per column (mode), bit r set iff
+ * term r touches that mode. Its purpose is the anticommutation scan: XOR-combining a generator G's
+ * columns yields, per term M, |M ∩ G| mod 2 — the anticommutation bit for an EVEN generator; ODD
+ * generators add a per-row parity(|M|) correction, so the structure serves BOTH parities.
  *
- * Its purpose is the anticommutation scan: XOR-combining a generator G's selected columns yields,
- * per term M, the parity |M ∩ G| mod 2, which for an EVEN generator is exactly the anticommutation
- * bit because (|M| |G| − |M ∩ G|) mod 2 = |M ∩ G| mod 2 when |G| is even. ODD generators run the
- * same kernel plus a per-row parity(|M|) correction (ensure_row_parity / the g_odd path), so this
- * structure serves BOTH parities — see combine_columns_block.
- *
- * Each term is a k ≤ cutoff subset of 2N modes (k≈6 usually for chemistry), so every
- * column is sparse along the row axis (set fraction = per-mode frequency, a few
- * percent). Storing all columns as full-height bit-vectors is ~97% zeros. To cut
- * that without slowing the hot word-combine, columns are stored in two tiers:
- *
- *   - DENSE  (set density ≥ 1/kPromoteDensityInv): full-height uint64 bit-vector,
- *     XOR-combined by the register-accumulating word loop (even_parity_scan_pass1).
- *     This is where the bits AND the combine cost live, so it is byte-identical to
- *     the old structure — no scan regression.
- *   - SPARSE (below that, incl. empty): an ASCENDING set-row list (~4 B/set-bit),
- *     scatter-expanded into a dense scratch column at scan time. Every fill path
- *     appends rows in ascending order (the parallel fill by construction — see
- *     fill_rows), which the block-restricted cos recompute relies on.
- *
- * A column promotes SPARSE→DENSE (one-way; the operator is append-only) once its
- * density crosses 1/kPromoteDensityInv, the point where the row-list would cost
- * more than the dense bit-vector.
+ * Columns are chemistry-sparse (~few percent set), so they are stored in two tiers, bit-identical to
+ * all-dense: DENSE (density ≥ 1/kPromoteDensityInv) full-height uint64 vectors folded by the hot word
+ * loop; SPARSE (below that) an ASCENDING set-row list scatter-expanded at scan time. Promotion is
+ * one-way (the operator is append-only).
  */
 template <size_t NumModes>
 struct InvertedIndex {
     static constexpr size_t kNumColumns = Monomial<NumModes>::size();
-    // Promote a column to DENSE at set density ≥ 1/kPromoteDensityInv. Two crossovers matter:
-    //   - STORAGE (1/32): a uint32 row-list (4 B/set-bit) and a dense bit-vector (rows/8 B) cost the same.
-    //   - FOLD (1/64): below it a sparse column is scatter-expanded per block in combine_columns_block
-    //     (lower_bound + O(set-bits-in-block)); above it a dense column streams through the XOR loop.
-    // The threshold is the FOLD crossover, not the storage one: chemistry-density columns (popcount≈6
-    // over 2N≈256 ⇒ ~2–3% density) then store dense and fold in the already-parallel scan pass. Tiering
-    // is storage only — the result is bit-identical to storing every column dense.
+    // Promote a column to DENSE at set density ≥ 1/kPromoteDensityInv. The threshold is the FOLD
+    // crossover (1/64), not the storage one (1/32): chemistry-density columns (~2-3%) then store dense
+    // and fold in the parallel scan pass. Tiering is storage only — bit-identical to storing all dense.
     static constexpr size_t kPromoteDensityInv = 64;
 
     struct Column {
         std::vector<uint64_t> words{}; // full-height bit-vector; used iff is_dense
-        // Set-row indices (ascending; used iff !is_dense). mutable so the logically-const lazy
-        // normalization ensure_sorted_columns() can canonicalize order through a const inverted index.
+        // Ascending set-row indices (used iff !is_dense); mutable so ensure_sorted_columns() can
+        // canonicalize order through a const inverted index.
         mutable std::vector<TermIndex> set_rows{};
         bool is_dense = false;
     };
@@ -81,9 +59,8 @@ struct InvertedIndex {
     std::array<Column, kNumColumns> cols{};
     size_t row_count = 0;
 
-    // Lazily-built parity of |M| per row, packed 1 bit/row (word w, bit b == parity of row 64*w+b).
-    // Empty until the first odd-parity generator requests it; even-parity workloads never allocate it.
-    // mutable: a derived cache over the unchanged rows, populated lazily through a const inverted index.
+    // Lazily-built parity of |M| per row, packed 1 bit/row. Empty until the first odd-parity generator
+    // requests it (even-parity workloads never allocate it); mutable because it is a lazy derived cache.
     mutable std::vector<uint64_t> row_parity_{}; // empty == not built
 
     // Build the parity bitmap from the dense/sparse columns (called once, lazily). parity(|M|) is the
@@ -110,17 +87,13 @@ struct InvertedIndex {
     auto rows() const -> size_t { return row_count; }
     auto words() const -> size_t { return (row_count + 63) / 64; }
 
-    // ── Column fold accessors ─────────────────────────────────────────────────
     auto column_is_dense(size_t c) const -> bool { return cols[c].is_dense; }
     auto dense_column_data(size_t c) const -> const uint64_t * { return cols[c].words.data(); }
     auto sparse_column_rows(size_t c) const -> const std::vector<TermIndex> & { return cols[c].set_rows; }
 
-    // The fold-RECOMPUTE eval path (CosineRecompute.h, used above the fold-cache memory budget) walks the
-    // fold by disjoint WORD ranges across threads and lower_bounds each sparse column to a range's row
-    // prefix, so it needs the sparse rows in ascending order. Every fill path appends rows ascending —
-    // the serial kernel trivially, the row-block-parallel fill by chunk-order counting-sort layout — so
-    // this is normally an O(n) verify that finds them sorted and does nothing. Kept explicit and
-    // self-healing so a future fill change cannot silently feed the recompute unsorted rows. Idempotent.
+    // The fold-recompute eval path lower_bounds each sparse column to a word range's row prefix, so it
+    // needs ascending sparse rows. Every fill path already appends ascending, so this is normally an
+    // O(n) verify — kept self-healing so a future fill change cannot feed the recompute unsorted rows.
     auto ensure_sorted_columns() const -> void {
         for (auto &col : cols) {
             if (!col.is_dense && !std::ranges::is_sorted(col.set_rows)) {
@@ -140,9 +113,8 @@ struct InvertedIndex {
         col.is_dense = true;
     }
 
-    // Scatter the set bits of new rows [base, base+n) of `op` into the tiered columns: dense bits go
-    // straight to the word array, sparse rows append ascending (the fold-recompute path depends on
-    // ascending sparse rows — see ensure_sorted_columns).
+    // Scatter the set bits of new rows [base, base+n) of `op` into the tiered columns: dense bits to
+    // the word array, sparse rows appended ascending (see ensure_sorted_columns).
     template <typename Rows>
     auto fill_rows(const Rows &op, size_t base, size_t n) -> void {
         if (n == 0) {
@@ -164,8 +136,7 @@ struct InvertedIndex {
         }
     }
 
-    // The fill kernel over absolute rows [lo, hi): dense bits go straight to the word array,
-    // sparse rows append ascending.
+    // The fill kernel over absolute rows [lo, hi).
     template <typename Rows>
     auto fill_rows_range_serial_(const Rows &op, size_t lo, size_t hi) -> void {
         for (size_t row_idx = lo; row_idx < hi; ++row_idx) {
@@ -203,7 +174,7 @@ struct InvertedIndex {
         // Pass 1: per-column set-bit counts → decide tiers from the FINAL density, so the fill never has
         // to promote.
         using Counts = std::array<size_t, kNumColumns>;
-        Counts counts{}; // value-initialized → all zeros
+        Counts counts{};
         for (size_t row_idx = 0; row_idx < size; ++row_idx) {
             for_each_row_position<NumModes>(op, row_idx, [&counts](size_t bit) { ++counts[bit]; });
         }
@@ -228,7 +199,7 @@ struct InvertedIndex {
         ++row_count;
         const size_t required_words = (row_count + 63) / 64;
         // Crossing into a new 64-row word: every dense column needs the new (zero) word so the fold's
-        // [0, words()) range stays in bounds, even columns that get no bit in this row.
+        // [0, words()) range stays in bounds, even columns with no bit in this row.
         if (row_idx % 64 == 0) {
             for (auto &col : cols) {
                 if (col.is_dense) {
@@ -290,18 +261,14 @@ struct InvertedIndex {
     }
 };
 
-// ─── Block-restricted generator-column fold ────────────────────────────────────
-// XOR a generator's inverted index columns for fold words [bb, be) into blk[0 .. be-bb): dense columns
-// XOR their words directly; sparse (ascending) columns lower_bound to the block's row range and
-// scatter only those rows. XOR is associative/commutative, so any block decomposition reproduces
-// the full-width per-word fold bit-for-bit. This is THE fold-combine implementation: the build
-// scan (even_parity_scan_pass1), the replay cache (make_fold_cache) and the replay recompute
-// (*_cos_fold_recompute) all run it over their own block ranges.
+// XOR a generator's inverted-index columns for fold words [bb, be) into blk[0 .. be-bb): dense columns
+// XOR their words directly, sparse columns lower_bound to the block's row range. XOR associativity
+// means any block decomposition reproduces the full-width fold bit-for-bit. THE fold-combine kernel,
+// shared by the build scan, the replay cache (make_fold_cache) and the replay recompute.
 inline constexpr size_t kColumnBlockWords = 1024; // 8 KB block ≈ L1-resident (bench knee)
 
-// Per-thread reusable fold blocks (sized once to kColumnBlockWords). thread_local: parallel workers
-// each fill and consume their own copy. Two independent scratches because the build scan needs
-// the generator fold and a sparse pivot column expanded simultaneously.
+// Per-thread reusable fold blocks (thread_local: each worker owns its copy). Two independent scratches
+// because the build scan needs the generator fold and a sparse pivot column expanded simultaneously.
 inline auto column_block_scratch() -> std::vector<uint64_t> & {
     static thread_local std::vector<uint64_t> blk;
     if (blk.size() < kColumnBlockWords) {
@@ -324,9 +291,8 @@ template <size_t NumModes>
                                                          size_t bb,
                                                          size_t be) -> void {
     const size_t nb = be - bb;
-    // Initialize the scratch from the first dense column (memcpy) when there is one — XOR is
-    // commutative, so seeding with any one column and folding the rest is bit-identical to
-    // memset + XOR-all while saving one full pass over the block.
+    // Seed the scratch from the first dense column (memcpy) when there is one: XOR is commutative, so
+    // this is bit-identical to memset + XOR-all while saving one pass over the block.
     size_t dense_init = cols.size();
     for (size_t ci = 0; ci < cols.size(); ++ci) {
         if (sc.column_is_dense(cols[ci])) {

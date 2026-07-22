@@ -28,23 +28,13 @@
  * @file algebra/Algebra.h
  * @brief The @c Algebra policy: what the propagation backbone needs from an algebra.
  *
- * ESSENCE. The propagation backbone (the anticommutation scan, the cosine fold, the Givens
- * cos/sin split) is GENERIC over the algebra. Each algebra is a compile-time policy model
- * (@c MajoranaAlgebra, @c PauliAlgebra) that answers a small fixed set of questions about how a
- * @ref Monomial evolves under a rotation gate exp(iθ·G):
- *   - which columns to fold for the anticommutation detection (@c fold_generator: G itself for
- *     Majorana, J(G)=pair_swap(G) for Pauli) and whether an odd-|G| parity correction is needed;
- *   - the per-term rotation sign of maj·G (@c rotation_sign) and how it becomes the emitted sine
- *     phase (@c emit_phase: Majorana folds in the Hermitian phase, Pauli's is already ready);
- *   - the real<->complex coefficient codec and the diagonal (Hartree-Fock) scoring.
- *
- * The hot kernels are templated directly on the policy (`fused_find_and_collect<N, A>`), so the
- * runtime @ref Basis is bound to a compile-time model exactly once, at @c with_algebra. This
- * replaces the former `bool IsPauli` template flag and the scattered `if (basis==Basis::Pauli)`
- * branches: the algebra knowledge now lives in ONE place, the two models below.
- *
- * Each model just forwards to the kernels in MajoranaAlgebra.h / PauliAlgebra.h -- it adds no new
- * arithmetic, so the code the compiler emits per instantiation is identical to the old flag form.
+ * The backbone (anticommutation scan, cosine fold, Givens split) is GENERIC over the algebra. Each
+ * algebra is a compile-time policy model (@c MajoranaAlgebra, @c PauliAlgebra) answering a fixed set
+ * of questions about how a @ref Monomial evolves under a rotation exp(iθ·G): which columns to fold
+ * (and whether an odd-|G| parity correction is needed), the per-term rotation sign and emitted sine
+ * phase, the coeff codec, and the diagonal (HF) score. @c with_algebra binds the runtime @ref Basis
+ * to one model exactly once (replacing the former `bool IsPauli` flag and scattered basis branches);
+ * each model only forwards to the sibling-header kernels, so codegen matches the old flag form.
  */
 
 namespace monoprop {
@@ -144,8 +134,8 @@ struct PauliAlgebra {
 /*!
  * @brief The minimal surface the propagation backbone requires of an algebra model.
  *
- * Documents (and constrains) what a policy must provide. @c MajoranaAlgebra and @c PauliAlgebra
- * both satisfy it. Kept lightweight on purpose -- it checks the shape, not every return type.
+ * Deliberately lightweight: checks the shape, not every return type. @c MajoranaAlgebra and
+ * @c PauliAlgebra both satisfy it.
  */
 template <typename A>
 concept Algebra = requires {
@@ -161,10 +151,8 @@ static_assert(Algebra<PauliAlgebra<1>>);
 /*!
  * @brief Bind a runtime @ref Basis to its compile-time algebra model, once.
  *
- * Invokes `f.template operator()<A>()` with A = @c MajoranaAlgebra<NumModes> or
- * @c PauliAlgebra<NumModes>. This is the single runtime->policy branch: the hot backbone passes a
- * generic lambda here and is then fully compile-time specialized on the chosen algebra. Both arms
- * must return the same type.
+ * The single runtime->policy branch: the hot backbone passes a generic lambda and is then fully
+ * specialized on the chosen algebra. Both arms must return the same type.
  */
 template <size_t NumModes, class F>
 auto with_algebra(Basis basis, F &&f) {
@@ -174,10 +162,8 @@ auto with_algebra(Basis basis, F &&f) {
     return std::forward<F>(f).template operator()<MajoranaAlgebra<NumModes>>();
 }
 
-// ── Point dispatch helpers for cold sites that carry a runtime Basis ──────────────────────────
-// These centralize the (formerly scattered) basis branch in the policy layer: each forwards a
-// runtime Basis to the matching model. Cheap, cold call sites (per-layer or per-materialization),
-// so the runtime dispatch cost is irrelevant.
+// Point-dispatch helpers for cold sites (per-layer / per-materialization) that carry a runtime Basis:
+// each forwards to the matching model; the runtime dispatch cost is irrelevant at these cold sites.
 
 template <size_t NumModes>
 auto algebra_fold_generator(Basis basis, const Monomial<NumModes> &gen) -> Monomial<NumModes> {
@@ -204,11 +190,8 @@ auto algebra_hf_phase(Basis basis, const Monomial<NumModes> &maj, const Monomial
 /*!
  * @brief Score the diagonal (Hartree-Fock) coefficient of each fully-paired term into @p out.
  *
- * Writes `out[paired_inds[i]] = A::hf_phase(row_i, hf_mask)` for the algebra model A bound to
- * @p basis: a Z-only Pauli scores (-1)^{|Z n occ|} with no pairing sign, whereas a Majorana term
- * folds in the pairing sign. @c with_algebra hoists the runtime->policy branch OUT of the per-term
- * loop, so the loop is monomorphic in A -- identical codegen to the former hand-hoisted per-basis
- * loops (this replaced MajoranaAlgebra's get_hf_phases + MPOperator's parallel Pauli loop).
+ * @c with_algebra hoists the runtime->policy branch OUT of the per-term loop, so the loop is
+ * monomorphic in A (a Z-only Pauli scores (-1)^{|Z n occ|}; a Majorana term folds in the pairing sign).
  */
 template <size_t NumModes, typename Rows>
 auto algebra_score_hf(Basis basis, const VecZ &paired_inds, const VecZ &hf, const Rows &store, VecD &out) -> void {

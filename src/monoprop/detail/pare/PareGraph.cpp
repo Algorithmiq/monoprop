@@ -28,9 +28,8 @@ namespace monoprop {
 
 namespace {
 
-// ── Cross-rank exchange layout. The exchange ROUNDS are load-bearing for multi-rank correctness
-// even though we store NO positions — they propagate the keep-set across ranks. ──
-
+// Cross-rank exchange layout. The exchange ROUNDS are load-bearing for multi-rank correctness even
+// though we store NO positions — they propagate the keep-set across ranks.
 struct BuilderExchangeLayout final {
     std::vector<int> send_counts;
     std::vector<int> send_displs;
@@ -115,8 +114,7 @@ auto build_builder_exchange_layout(const Layer &layer, size_t my_rank, BuilderEx
 }
 
 auto resize_builder_exchange_buffers(const BuilderExchangeLayout &layout, BuilderExchangeBuffers &buffers) -> void {
-    // Always allocate at least 1 element so data() is never nullptr (some MPI
-    // implementations reject nullptr send/recv buffers even for zero-count calls).
+    // Size >= 1 so data() is never nullptr (some MPI impls reject nullptr buffers even at zero count).
     buffers.send_buffer.resize(layout.total_send == 0 ? 1 : layout.total_send);
     buffers.recv_buffer.resize(layout.total_recv == 0 ? 1 : layout.total_recv);
 }
@@ -153,10 +151,8 @@ auto pack_source_keep_flags(const Layer &layer,
 auto execute_builder_exchange(const BuilderExchangeLayout &layout,
                               BuilderExchangeBuffers &buffers,
                               const mpi::Comm &comm) -> void {
-    // Blocking one-shot keep-flag exchange. Recv counts are known locally (the per-rank transpose of
-    // the send counts), so no count round is needed — just post + wait via the facade, which also
-    // owns the "all ranks participate / never skip on zero counts" deadlock discipline. Buffers are
-    // always sized >= 1 (see resize_builder_exchange_buffers).
+    // Blocking one-shot keep-flag exchange; recv counts are the per-rank transpose of the send counts,
+    // so no count round is needed. All ranks must participate (facade discipline); buffers are >= 1.
     mpi::post_flat_alltoallv<int>(buffers.send_buffer.data(),
                                   layout.send_counts.data(),
                                   layout.send_displs.data(),
@@ -168,10 +164,8 @@ auto execute_builder_exchange(const BuilderExchangeLayout &layout,
         .wait();
 }
 
-// ── Cosine filter ─────────────────────────────────────────────────────────────
-// Filter the full cosine set to the kept nodes. Returns {{}, true} when nothing was pruned (the
-// replay then folds the full set); otherwise {filtered, false}. Blocks are independent, so large
-// layers filter in parallel over block ranges (per-range local lists concatenated in order).
+// Filter the full cosine set to the kept nodes: {{}, true} when nothing was pruned (replay folds the
+// full set), else {filtered, false}.
 inline auto keep_mask_for_block(const std::vector<char> &keep, size_t base, uint64_t present) -> uint64_t {
     uint64_t mask = 0;
     uint64_t b = present;
@@ -206,12 +200,9 @@ auto filter_layer_cosine_data(const CosMask &cos, const std::vector<char> &nodes
     return {std::move(filtered), false};
 }
 
-// Every D rotation the pared replay applies (`op[i] += sin·φ·partner`) requires its target i to have
-// been cos-scaled first, because cos now holds ALL anticommuting indices (endpoints included) and the
-// cos pass — not the D-apply — performs that scaling. The self slot (my_rank) is never pruned
-// (for_each_remote_rank skips it) and cross-rank D replays unmasked at >1 rank, so EVERY D target is
-// replayed. Mark them all into nodes_to_keep BEFORE the cosine filter runs so the pruned cos keeps
-// them (and so backward reachability keeps their pre-cos producers too).
+// The cos pass (not the D-apply) scales every D target, since cos holds ALL anticommuting indices, so
+// mark every D target kept BEFORE the cosine filter — the pruned cos and its backward-reachable
+// producers must retain them.
 auto mark_replayed_d_targets(const Layer &layer, std::vector<char> &nodes_to_keep) -> void {
     const size_t rank_count = layer.cross_rank_rank_count();
     for (size_t rank = 0; rank < rank_count; ++rank) {
@@ -226,9 +217,8 @@ auto mark_replayed_d_targets(const Layer &layer, std::vector<char> &nodes_to_kee
     }
 }
 
-// Per-rank body of propagate_cross_rank_d, extracted so the caller's loop stays short. Applies D
-// backward reachability to one remote rank's cross-rank D entries: fills the per-edge selection
-// flags and marks surviving D targets kept. See propagate_cross_rank_d for the full contract.
+// Per-rank body of propagate_cross_rank_d: applies D backward reachability to one remote rank's
+// cross-rank D entries — fills the per-edge selection flags and marks surviving D targets kept.
 auto propagate_cross_rank_d_for_rank(const Layer &layer,
                                      size_t rank,
                                      const BuilderExchangeLayout &source_keep_layout,
@@ -260,13 +250,9 @@ auto propagate_cross_rank_d_for_rank(const Layer &layer,
         });
 }
 
-// Phase 1 (before the selection exchange): propagate the keep-set across this rank's cross-rank D
-// entries by backward reachability and record per-edge selection flags. A D entry survives if its
-// target (local update index) is active, or the remote source is active (keep_src). For every
-// surviving D entry we set a selection flag telling the partner we need its B source — the
-// authoritative per-edge keep signal the partner uses to filter its matching B entry, guaranteeing
-// both endpoints of a cross-rank edge agree. NO positions are stored: this only mutates
-// nodes_to_keep and the selection send buffer.
+// Phase 1 (before the selection exchange): propagate the keep-set backward across this rank's
+// cross-rank D entries and record a per-edge selection flag for each B source the partner must keep,
+// so both endpoints of a cross-rank edge agree. Stores no positions.
 auto propagate_cross_rank_d(const Layer &layer,
                             size_t my_rank,
                             const BuilderExchangeLayout &source_keep_layout,
@@ -274,9 +260,8 @@ auto propagate_cross_rank_d(const Layer &layer,
                             const BuilderExchangeLayout &selection_layout,
                             VecI &selected_incoming_flags,
                             std::vector<char> &nodes_to_keep) -> void {
-    // Keep the buffer sized >= 1 so execute_builder_exchange can post a non-null send pointer even
-    // when this rank has outgoing-only cross-rank edges (total_send == 0); the padding slot is never
-    // indexed by a real edge nor sent (send_counts sum to total_send). Mirrors resize_builder_exchange_buffers.
+    // Size >= 1 so a non-null send pointer exists even with outgoing-only edges (total_send == 0); the
+    // padding slot is never indexed nor sent.
     selected_incoming_flags.assign(std::max<size_t>(1, selection_layout.total_send), 0);
     for_each_remote_rank(
         layer,
@@ -293,9 +278,8 @@ auto propagate_cross_rank_d(const Layer &layer,
         });
 }
 
-// Phase 2 (after the selection exchange): for each cross-rank B entry whose D the partner selected,
-// mark its source node so its own producers are kept in earlier (later-processed) layers. NO
-// positions are stored.
+// Phase 2 (after the selection exchange): for each B entry the partner selected, mark its source node
+// so its producers in earlier (later-processed) layers are kept. Stores no positions.
 auto propagate_cross_rank_b(const Layer &layer,
                             size_t my_rank,
                             const BuilderExchangeLayout &selection_layout,
@@ -319,10 +303,9 @@ auto propagate_cross_rank_b(const Layer &layer,
 
 } // namespace
 
-// Prune the graph to the subgraph that can reach the surviving output nodes (nonzero_inds): sweep the
-// keep-set backward through the layers, then emit each layer either unchanged (all cosines kept) or
-// with its cosine list filtered to the kept subset. full_cos_of_layer supplies a layer's full cosine
-// set lazily, so only the layers actually being filtered are materialized.
+// Prune the graph to the subgraph reaching the surviving output nodes: sweep the keep-set backward,
+// emitting each layer unchanged (all cosines kept) or with its cosine list filtered. full_cos_of_layer
+// supplies a layer's full cosine set lazily, so only filtered layers are materialized.
 auto pare_graph(const MPGraph &graph,
                 const VecZ &nonzero_inds,
                 size_t local_index_count,
@@ -344,18 +327,10 @@ auto pare_graph(const MPGraph &graph,
     BuilderExchangeBuffers source_keep_buffers;
     BuilderExchangeBuffers selection_buffers;
 
-    // Single backward sweep. Per cross-rank layer the keep-set crosses ranks in two phases:
-    //   (1) D-phase: each rank decides which of its cross-rank D entries survive (backward
-    //       reachability) and records a per-edge selection flag for the partner B source it needs;
-    //   (2) after exchanging selections, each rank keeps the source of every B entry a partner
-    //       selected.
-    // Keying B-entry survival on the partner's selection (not on whether the source node happens to
-    // be kept for some other reason) makes both endpoints of every cross-rank edge agree. Marking
-    // the surviving source nodes then propagates the dependency to earlier (later-processed) layers,
-    // so one reverse sweep suffices — matching the single-rank pure-backward-reachability semantics.
-    // The cross-rank lists themselves are NEVER pruned here (cross-rank replays unmasked at >1 rank);
-    // the exchange rounds exist only to keep nodes_to_keep correct across ranks so the per-layer cos
-    // pruning stays exact.
+    // Single backward sweep. Per cross-rank layer, two phases keep nodes_to_keep exact across ranks:
+    // (1) decide surviving D entries + flag the partner B source needed; (2) after exchange, keep every
+    // B source a partner selected (both endpoints agree). Cross-rank lists are NEVER pruned — they replay
+    // unmasked at >1 rank; the exchange rounds only keep nodes_to_keep correct so cos pruning stays exact.
     for (size_t iter = 0; iter < num_layers; ++iter) {
         const size_t layer_idx = schrodinger ? iter : (num_layers - 1 - iter);
         const auto &layer = graph.get_layer(layer_idx);
@@ -364,10 +339,8 @@ auto pare_graph(const MPGraph &graph,
         BuilderExchangeLayout selection_layout;
 
         if (num_ranks > 1) {
-            // All ranks must participate in MPI_Alltoallv regardless of whether this rank has local
-            // remote edges. Asymmetric participation (one rank skips while another calls) causes a
-            // deadlock. Build an empty layout for ranks with no local remote edges so counts arrays
-            // are sized correctly.
+            // All ranks must call MPI_Alltoallv even without local remote edges (asymmetric
+            // participation deadlocks); build an empty layout when there are none.
             if (has_remote_cross_rank) {
                 source_keep_layout = build_builder_exchange_layout(layer, my_rank, BuilderExchangeDirection::Outgoing);
                 selection_layout = build_builder_exchange_layout(layer, my_rank, BuilderExchangeDirection::Incoming);
@@ -395,18 +368,13 @@ auto pare_graph(const MPGraph &graph,
             selection_buffers.recv_buffer.clear();
         }
 
-        // Order is load-bearing for bit-exact pruning:
-        //   mark_replayed_d_targets → cosine filter → cross-rank D pass (phase 1).
-        // The D pass also sets nodes_to_keep for surviving cross-rank D targets, but those targets
-        // were already forced kept by mark_replayed_d_targets, so the cos filter sees the same
-        // nodes_to_keep whether the D pass runs before or after it — except for the keep_src
-        // backward marks (D source nodes feed EARLIER layers, never this layer's own cos). Keeping
-        // the original sequencing makes this bit-exact by construction.
+        // Order is load-bearing for bit-exact pruning: mark_replayed_d_targets → cosine filter →
+        // cross-rank D pass. The D targets are already forced kept by mark_replayed_d_targets, so the cos
+        // filter sees the same nodes_to_keep regardless of D-pass order; keeping the sequencing is exact.
         mark_replayed_d_targets(layer, nodes_to_keep);
 
-        // Cosine filter: materialize THIS layer's full cos lazily, prune to nodes_to_keep, discard
-        // the full set immediately. `preserves` ⇒ nothing trimmed ⇒ emit a FoldLayer (cos recomputed
-        // at replay); otherwise emit a PrunedLayer carrying the trimmed list.
+        // Materialize THIS layer's full cos lazily, prune to nodes_to_keep, discard it. preserves ⇒
+        // nothing trimmed ⇒ emit a FoldLayer (cos recomputed at replay); else a PrunedLayer.
         const CosMask full = full_cos_of_layer(layer_idx);
         auto [filtered, preserves] = filter_layer_cosine_data(full, nodes_to_keep);
 
@@ -422,10 +390,8 @@ auto pare_graph(const MPGraph &graph,
         }
 
         if (num_ranks > 1) {
-            // Round 2: exchange selections, then propagate the surviving B sources backward (exact
-            // per-edge agreement). Cross-rank entries replay UNMASKED in multi-rank — the cross-rank
-            // D/B propagation above is still required (it keeps nodes_to_keep exact across ranks so
-            // the cosine pruning stays exact) but no positions are stored.
+            // Round 2: exchange selections, then keep the surviving B sources backward. Cross-rank
+            // entries replay UNMASKED; this only keeps nodes_to_keep exact (no positions stored).
             execute_builder_exchange(selection_layout, selection_buffers, comm);
             if (has_remote_cross_rank) {
                 propagate_cross_rank_b(layer, my_rank, selection_layout, selection_buffers.recv_buffer, nodes_to_keep);

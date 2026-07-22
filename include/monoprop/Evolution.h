@@ -43,40 +43,25 @@ class MPGraphView;
 
 struct LayerCore;
 
-/**
- * @brief Perform a single-monomial evolution step using MPI communication.
- *
- * Each rank owns its local operator coefficients; cross-rank cycles are communicated via
- * Used by the in-built contraction and replay.
- */
+/// @brief Perform a single-monomial evolution step (MPI: each rank owns its local coefficients,
+/// cross-rank cycles are communicated). Used by the in-built contraction and replay.
 monoprop_EXPORT auto evolve_step(VecD &op,
                                  const Layer &layer,
                                  double param,
                                  const detail::LayerCosScale &cos_scale,
                                  mpi::Comm comm) -> void;
 
-/**
- * @brief Evolves an operator through the graph using MPI communication.
- *
- * This function applies a series of evolutions to an operator based on the
- * provided MP graph and parameters. Each rank processes its local data
- * and communicates as needed.
- *
- * @param coeffs The local rank's initial coefficients (state or operator)
- * @param graph The local rank's MPGraph containing the evolution circuit structure
- * @param params The parameters to use for each evolution step
- * @param comm MPI communicator
- * @return The evolved operator coefficients for this rank
- */
-// ── Recompute-routed forward evolution (cos scaling via the mandatory callback) ─
-// gradient functional replay. Callers pass a view (MPGraph::replay_view() / slice_view()).
+/// @brief Evolve an operator through the graph (per-rank local data + MPI as needed). Returns this
+/// rank's evolved coefficients.
+// Recompute-routed forward evolution (cos scaling via the mandatory callback). Callers pass a view
+// (MPGraph::replay_view() / slice_view()).
 monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
                                      const MPGraphView &graph,
                                      const VecD &params,
                                      const detail::LayerCosScale &cos_scale,
                                      mpi::Comm comm) -> VecD;
 
-// ── Recompute-routed reverse derivative (cos accumulation via the mandatory callback) ──
+// Recompute-routed reverse derivative (cos accumulation via the mandatory callback).
 monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
                                                      VecD &op,
                                                      const MPGraphView &graph,

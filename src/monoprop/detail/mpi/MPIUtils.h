@@ -48,9 +48,6 @@ inline auto read_majorana_from_words(const VecZ &buffer, size_t start) -> Monomi
 
 namespace monoprop {
 
-/**
- * @brief MPI utility functions for distributed MPOperator operations
- */
 // Deterministic owner rank for a term: hash(maj) % n_ranks. Stateless and identical on every rank,
 // so all ranks agree on which rank owns any given Majorana term without communication.
 template <size_t NumModes>

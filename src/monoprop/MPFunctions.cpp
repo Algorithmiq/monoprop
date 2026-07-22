@@ -20,8 +20,7 @@ namespace monoprop {
 
 namespace {
 
-// Reuse these buffers per thread so repeated ev/grad calls stay allocation-light
-// after the plan-building logic moved out of this translation unit.
+// Per-thread scratch so repeated ev/grad calls stay allocation-light.
 struct EvalScratch {
     VecD state;
     VecD op;
@@ -34,9 +33,8 @@ auto eval_scratch() -> EvalScratch & {
     return scratch;
 }
 
-// The graph is traversed in simulation order, while parameter_mapping is stored
-// in optimizer order. This helper writes either forward or reversed mapped
-// coefficients without rebuilding any metadata.
+// Graph is traversed in simulation order but parameter_mapping is stored in optimizer order; write the
+// mapped coefficients forward or reversed accordingly.
 void fill_mapped_params(VecD &result,
                         const VecD &parameters,
                         const VecZ &parameter_mapping,
@@ -51,8 +49,7 @@ void fill_mapped_params(VecD &result,
     }
 }
 
-// Forward-evolve a copy of the operator into scratch.op: map the raw params to per-layer angles, then
-// apply every layer's rotation. Shared setup for ev_impl and ev_and_grad_impl.
+// Forward-evolve a copy of the operator into scratch.op; shared setup for ev_impl and ev_and_grad_impl.
 auto prepare_evolved_operator(EvalScratch &scratch,
                               const VecD &op,
                               const VecD &params,
@@ -63,8 +60,7 @@ auto prepare_evolved_operator(EvalScratch &scratch,
                               const detail::LayerCosScale &cos_scale) -> void {
     fill_mapped_params(scratch.mapped_params, params, parameter_mapping, gen_coeffs, 1.0, true);
     scratch.op = op;
-    // Every functional supplies a non-empty cos_scale callback (the layer cosine set is always
-    // recomputed/transient, never read from a stored bitmap), so the cos pass routes through it.
+    // cos_scale is always non-empty (cosine set is recomputed/transient), so the cos pass routes through it.
     scratch.op = evolve_operator(std::move(scratch.op), graph, scratch.mapped_params, cos_scale, comm);
 }
 
@@ -88,9 +84,8 @@ auto ev_impl(double e_core,
     return e_core + mpi::allreduce_sum(inner_product(state, scratch.op), comm);
 }
 
-// Expectation value and its gradient w.r.t. the parameters. Forward-evolves the operator, then walks
-// the layers in reverse accumulating each parameter's derivative (allreduced across ranks). Empty
-// params ⇒ value only, with an empty gradient.
+// Expectation value and its gradient: forward-evolve, then walk layers in reverse accumulating each
+// parameter's derivative (allreduced). Empty params ⇒ value only, empty gradient.
 auto ev_and_grad_impl(double e_core,
                       const VecD &state,
                       const VecD &op,
@@ -105,9 +100,8 @@ auto ev_and_grad_impl(double e_core,
         return {e_core + mpi::allreduce_sum(inner_product(state, op), comm), VecD(0)};
     }
 
-    // The stored-cos fallback was removed: both callbacks are consumed on the with-parameters path
-    // (cos_scale in the forward prepare, cos_acc in the reverse sweep). Fail loudly rather than with a
-    // cryptic std::bad_function_call if a caller relied on the old empty-callback default.
+    // Both callbacks are required on the with-parameters path; fail loudly rather than with a cryptic
+    // std::bad_function_call.
     if (!cos_scale || !cos_acc) {
         throw std::invalid_argument("ev_and_grad requires both cos_scale (forward) and cos_acc (reverse) callbacks; "
                                     "the stored-cos fallback no longer exists.");
@@ -125,8 +119,7 @@ auto ev_and_grad_impl(double e_core,
     for (size_t i = 0; i < parameter_mapping.size(); ++i) {
         const auto idx = parameter_mapping.size() - 1 - i;
         const auto param_ind = parameter_mapping[i];
-        // cos_acc is always non-empty (see prepare_evolved_operator): the reverse-derivative
-        // cosine accumulation always routes through the recompute/transient callback.
+        // cos_acc is always non-empty (checked above): the reverse cosine accumulation routes through it.
         scratch.gradient[param_ind] +=
             state_operator_derivative_local(state_, op_, graph, idx, gen_coeffs[i], params[param_ind], cos_acc, comm);
     }

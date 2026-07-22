@@ -36,9 +36,8 @@ inline auto checked_mpi_int(size_t value, const char *what) -> int {
     return static_cast<int>(value);
 }
 
-// Bounds-check a TERM-SPACE index (an index into the operator's term list). Capped by the TermIndex
-// width: ~2^32 by default, ~2^64 under -Dmonoprop_WIDE_TERM_INDEX. This is the ceiling that the wide
-// build exists to lift, so it must track TermIndex — NOT a fixed 32-bit limit.
+// Bounds-check a term-space index. Capped by the TermIndex width (~2^32, or ~2^64 under
+// -Dmonoprop_WIDE_TERM_INDEX), so it must track TermIndex, NOT a fixed 32-bit limit.
 inline auto checked_term_index(size_t value, const char *what) -> TermIndex {
     if (value > static_cast<size_t>(std::numeric_limits<TermIndex>::max())) {
         throw std::overflow_error(
@@ -106,8 +105,8 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
     const size_t num_ranks = data.size();
     storage.ranges.resize(num_ranks);
 
-    // ── Pass 1 (serial, one iteration per rank — cheap): assign per-rank offsets/counts so the
-    // fill pass can write distinct slots in parallel, and accumulate the global totals. ──
+    // Pass 1 (serial, cheap): assign per-rank offsets/counts so the fill pass writes distinct slots in
+    // parallel, and accumulate global totals.
     size_t total_b = 0;
     size_t total_d = 0;
     for (size_t rank = 0; rank < num_ranks; ++rank) {
@@ -122,14 +121,11 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
         total_d += partner.sin_recv_entries.size();
     }
 
-    // ── Pass 2: reduce the binary-phase flag over every element (parallel within each rank; AND is
-    // order-independent, so the result is thread-count-independent). B indices are stored as u32 and
-    // checked at the store site (checked_term_index throws above the TermIndex ceiling), so no
-    // width reduction is needed here. ──
+    // Pass 2: reduce the binary-phase flag over every element (AND is order-independent ⇒
+    // thread-count-independent). B indices are width-checked at the store site, not here.
     bool uses_binary_phases = true;
     for (const auto &partner : data) {
-        // Only the phase needs scanning — the D index list is derived from B at read time, so it
-        // is neither width-checked nor stored.
+        // Only the phase needs scanning — the D index list is derived from B at read time.
         bool non_binary_phase = false;
         for (const auto &entry : partner.sin_recv_entries) {
             non_binary_phase = non_binary_phase || !is_binary_phase(entry.second);
@@ -142,10 +138,8 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
     // NOTE: D indices are not stored — derived from B on read (see cross_rank_sin_recv_index).
     storage.sin_recv_phases = make_packed_phase_storage(total_d, uses_binary_phases);
 
-    // ── Pass 3: fill the flat arrays. Within a rank every slot is distinct, so the index writes
-    // are race-free. For binary phases the packed bit-words are SHARED across rank boundaries, so
-    // set the (rare) negative-phase bits with an atomic OR — the word is zero-initialised, so a
-    // non-negative phase needs no write. Non-binary phases occupy one distinct byte per slot. ──
+    // Pass 3: fill the flat arrays. Within a rank slots are distinct (race-free). Binary phases set only
+    // the rare negative-phase bit in the zero-initialised packed word; non-binary phases get one byte per slot.
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         const auto &partner = data[rank];
         const size_t b_off = storage.ranges[rank].sin_send_offset;
@@ -155,15 +149,13 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
             storage.sin_send_indices[b_off + k] = checked_term_index(partner.sin_send_indices[k], "Cross-rank B index");
         }
 
-        // Single phased D list: phi is already signed (former D- carry -phi, former D+ carry +phi).
-        // Only the phase is stored; the D index is derived from B at read time (cross_rank_sin_recv_index).
+        // phi is already signed (former D- = -phi, former D+ = +phi); only the phase is stored, D index derived from B.
         for (size_t k = 0; k < partner.sin_recv_entries.size(); ++k) {
             const auto &[i, phi] = partner.sin_recv_entries[k];
             (void)i;
             const size_t slot = d_off + k;
             if (uses_binary_phases) {
-                // Pass 2 already proved every phase is binary; only -1 sets a bit (default is 0). Serial
-                // fill (one writer), so the packed phase word is set with a plain OR — no atomics.
+                // Every phase is binary (Pass 2); only -1 sets a bit. Serial fill (one writer) ⇒ plain OR, no atomics.
                 if (phi < 0) {
                     storage.sin_recv_phases.phase_words[packed_phase_word_index(slot)] |= packed_phase_bit_mask(slot);
                 }
@@ -182,9 +174,8 @@ inline auto cross_rank_sin_send_index(const PackedCrossRankStorage &storage, siz
     return static_cast<size_t>(storage.sin_send_indices[offset]);
 }
 
-// Derive the D index from B. Layout invariant (assemble_partners): B = [in(P)]++[out(Q)] and
-// D = [out(Q)]++[in(P)] with P=in_count, Q=sin_recv_count-P. Hence D[idx] = (idx<Q) ? B[P+idx] : B[idx-Q].
-// The D index list is therefore not stored (saves one full uint32 array ≈ half of cross_rank).
+// Derive the D index from B. Invariant B=[in(P)]++[out(Q)], D=[out(Q)]++[in(P)] (P=in_count,
+// Q=sin_recv_count-P): D[idx] = (idx<Q) ? B[P+idx] : B[idx-Q]. So D is not stored (saves ~half of cross_rank).
 inline auto cross_rank_sin_recv_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
     const auto &range = storage.ranges[rank];
     const size_t in_count = range.in_count;                   // P
@@ -209,8 +200,8 @@ inline auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layou
     return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
 }
 
-// build_layer_exchange_layout_impl: sums sin_send_count * scale per rank.
-// PartnerRangeLike must have a sin_send_count field (full-width size_t so checked_mpi_int catches overflow).
+// build_layer_exchange_layout_impl: per-rank counts = sin_send_count * scale. PartnerRangeLike needs a
+// full-width size_t sin_send_count so checked_mpi_int catches overflow.
 template <typename PartnerRangeLike>
 inline auto build_layer_exchange_layout_impl(const std::vector<PartnerRangeLike> &ranges, int scale)
     -> LayerExchangeLayout {
@@ -228,10 +219,8 @@ inline auto build_layer_exchange_layout_impl(const std::vector<PartnerRangeLike>
     return layout;
 }
 
-// build_layer_storage_unified: stores C = all anticommuting, with local cycles folded
-// into the self-rank partner slot (my_rank).  The exchange layout zeroes counts[my_rank]
-// so MPI_Alltoallv never touches the self-rank slot; the replay handles it as a local
-// buffer copy.  This matches paper Algorithm 3 (BuildDistributedLayer / ContractLayer).
+// build_layer_storage_unified: local cycles fold into the self-rank slot (my_rank); the exchange layout
+// zeroes counts[my_rank] so MPI_Alltoallv skips it (replay does a local copy). Paper Algorithm 3.
 inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore> {
     auto storage = std::make_shared<LayerCore>();
@@ -244,8 +233,7 @@ inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_pa
         std::vector<BCountOnly> ranges;
         ranges.reserve(all_partners.size());
         for (size_t r = 0; r < all_partners.size(); ++r) {
-            // Self-rank slot: zero MPI count (handled locally by the replay). Full-width count so
-            // checked_mpi_int (in build_layer_exchange_layout_impl) throws on overflow instead of wrapping.
+            // Self-rank slot: zero MPI count (replay handles it locally). Full-width count so checked_mpi_int catches overflow.
             const size_t cnt = (r == my_rank) ? size_t{0} : all_partners[r].sin_send_indices.size();
             ranges.push_back({cnt});
         }

@@ -58,45 +58,33 @@ constexpr auto odd_bits() -> Bitset<N> {
 } // namespace detail
 
 /// @brief Bitset with the even logical positions (0, 2, 4, …) set, truncated to N bits.
-/// @tparam N        Bit width.
-/// @tparam Ordering Bit-numbering convention. Under MSb0 (bit 0 = most significant) the logical even
-///                  positions are the physically odd bits, so the underlying pattern is swapped
-///                  relative to LSb0.
+/// Under MSb0 the logical even positions are physically odd, so the pattern is swapped vs LSb0.
 template <size_t N, typename Ordering>
 constexpr auto even_bits() -> Bitset<N> {
-    if constexpr (std::is_same_v<Ordering, MSb0>) { // MSb0
+    if constexpr (std::is_same_v<Ordering, MSb0>) {
         return detail::odd_bits<N>();
     }
-    else { // LSb0
+    else {
         return detail::even_bits<N>();
     }
 };
-/// @brief Bitset with the odd logical positions (1, 3, 5, …) set, truncated to N bits.
-/// @tparam N        Bit width.
-/// @tparam Ordering Bit-numbering convention; see even_bits() for the MSb0/LSb0 swap.
+/// @brief Bitset with the odd logical positions (1, 3, 5, …) set, truncated to N bits (see even_bits() for the MSb0/LSb0 swap).
 template <size_t N, typename Ordering>
 constexpr auto odd_bits() -> Bitset<N> {
-    if constexpr (std::is_same_v<Ordering, MSb0>) { // MSb0
+    if constexpr (std::is_same_v<Ordering, MSb0>) {
         return detail::even_bits<N>();
     }
-    else { // LSb0
+    else {
         return detail::odd_bits<N>();
     }
 };
 
-/*!
- * @brief Compute n-choose-2
- * @param n
- * @return size_t
- */
+/// @brief Compute n-choose-2.
 inline auto n_choose_2(std::integral auto n) -> size_t {
     return static_cast<size_t>(n * (n - 1) / 2);
 }
 
 /// @brief Join a range's elements into a string, inserting `separator` between consecutive elements.
-/// @param values    Range whose elements are formatted with std::format("{}", value).
-/// @param separator Text placed between elements (not before the first or after the last).
-/// @return The concatenated string; empty when `values` is empty.
 auto join_with_separator(std::ranges::range auto const &values, std::string_view separator) -> std::string {
     std::string joined;
     bool first = true;

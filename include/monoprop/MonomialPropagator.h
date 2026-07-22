@@ -46,13 +46,11 @@
 
 namespace monoprop {
 namespace detail {
-// Fused-contraction record sink (defined in layer_build/Common.h). build_evolve_result_ only takes a
-// pointer, so a forward declaration keeps this header decoupled from the layer-build internals.
+// Fused-contraction record sink (defined in layer_build/Common.h); forward-declared to stay decoupled.
 struct FusedContract;
 namespace shard {
-// Intra-process shard runtime (defined in detail/shard/ShardGroup.h, included from the impl at the
-// bottom of this header). Held by unique_ptr, so a forward declaration suffices here; the ctor,
-// copy-ctor, and dtor that need the complete type are defined out-of-line in the impl.
+// Intra-process shard runtime (defined in detail/shard/ShardGroup.h). Held by unique_ptr, so a forward
+// declaration suffices; the ctor/copy-ctor/dtor that need the complete type are out-of-line in the impl.
 template <size_t NumModes>
 class ShardGroup;
 } // namespace shard
@@ -74,65 +72,40 @@ public:
                        Basis basis = Basis::Majorana,
                        size_t shards = 0);
 
-    // Declared (not defaulted inline) because the shard_group_ member is a unique_ptr to an incomplete
-    // type here; both are defined in the impl where ShardGroup is complete. Still virtual + effectively
-    // defaulted, so the downstream subclass and the move-suppression contract below are unchanged.
+    // Declared (not defaulted inline) because shard_group_ is a unique_ptr to an incomplete type here;
+    // defined in the impl. Still virtual + effectively defaulted.
     virtual ~MonomialPropagator();
 
-    // The simulator is an independent deep-copyable value. This copy constructor (defined out-of-line
-    // in the impl) deep-clones the per-rank operator store (MPOperator's copy ctor repairs the index
-    // back-pointer) and shares the immutable graph layer cores via shared_ptr; the communicator handle
-    // is copied as-is. A shard-backed propagator (shards>1) is deep-copied by cloning its whole shard
-    // group (fresh threads + ShmComm). It is user-declared — rather than implicit — only because the
-    // shard_group_ unique_ptr member would otherwise delete it; the semantics are the same as the old
-    // implicit copy for the non-shard case. Copy assignment is implicitly deleted (unique_ptr store).
+    // Deep-copyable value: the copy ctor (out-of-line) deep-clones the per-rank operator store (MPOperator's
+    // copy ctor repairs the index back-pointer) and shares immutable graph cores via shared_ptr; a shard
+    // facade clones its whole shard group. User-declared only because the shard_group_ unique_ptr would
+    // otherwise delete it. Copy assignment is implicitly deleted (unique_ptr store).
     MonomialPropagator(const MonomialPropagator &other);
     auto operator=(const MonomialPropagator &) -> MonomialPropagator & = delete;
-    // NOTE: the user-declared virtual destructor above suppresses the implicit move constructor and
-    // move assignment, so `MonomialPropagator x = std::move(y);` selects the (deep-cloning) COPY
-    // constructor — a "move" is a full deep copy of the operator store, not a pointer steal. This is
-    // fine today (nothing moves a whole propagator); to make moves O(1), default the move members
-    // AFTER confirming MPOperator's move ctor repairs the index back-pointer the same way its copy
-    // ctor does (defaulting a move ctor would also delete the copy ctor, so declare all four).
+    // NOTE: the virtual destructor suppresses implicit moves, so a "move" selects the deep-cloning COPY
+    // ctor (not a pointer steal). Fine today; to make moves O(1), default all four special members after
+    // confirming MPOperator's move ctor repairs the index back-pointer.
 
     static constexpr auto num_modes{NumModes};
     static constexpr auto storage_num_modes{NumModes};
 
     auto logical_num_modes() const -> size_t { return logical_num_modes_; }
 
-    /**
-     * @brief Returns the size of the Operator
-     *
-     * Provides the number of Majorana operators in the Operator (local to this rank).
-     * To get global size, use MPI allreduce.
-     *
-     * @return Size of the Operator on this rank
-     */
+    /// @brief Number of Majorana operators in the operator, local to this rank (allreduce for global).
     auto size() const -> size_t { return shard_group_ ? sharded_size_() : mp_op_.size(); }
 
-    /**
-     * @brief Returns the size of the graph.
-     * To get global size, use MPI allreduce.
-     *
-     * @return the number of indices and cycles in the MBS graph (local to this rank).
-     */
+    /// @brief Number of (indices, cycles) in the MBS graph, local to this rank (allreduce for global).
     auto graph_size() const -> std::pair<size_t, size_t> {
         return shard_group_ ? sharded_graph_size_() : graph_.num_cos_inds_and_cycles();
     }
 
-    /**
-     * @brief Get the Majorana Branch Simulator graph (local to this rank).
-     *
-     * @return The MPGraph object representing the simulation graph for this rank.
-     */
+    /// @brief Get the Majorana Branch Simulator graph (local to this rank).
     auto graph() const -> const MPGraph & {
         require_unsharded_("graph()");
         return graph_;
     }
 
-    // Direct access to this rank's MPOperator: the per-rank coefficient vectors (get_state /
-    // get_operator), the packed term store, and the persistent even-parity inverted index. Used by tests
-    // to drive get_pared_graph directly and fold the per-layer full cosine set.
+    // Direct access to this rank's MPOperator (coeff vectors, packed term store, inverted index). Used by tests.
     auto mp_op() -> detail::MPOperator<NumModes> & {
         require_unsharded_("mp_op()");
         return mp_op_;
@@ -142,8 +115,7 @@ public:
         return mp_op_;
     }
 
-    // Memory breakdowns sum across shards on a facade (each field is additive over the disjoint
-    // hash-partitions), so introspection works whether or not the propagator sharded.
+    // Memory breakdowns sum across shards on a facade (fields are additive over disjoint hash-partitions).
     auto graph_memory_usage() const -> GraphMemoryBreakdown {
         if (shard_group_) {
             return sharded_graph_memory_usage_();
@@ -158,63 +130,26 @@ public:
         return detail::estimate_memory_usage(mp_op_);
     }
 
-    /**
-     * @brief Get the number of evolved Majoranas (graph layers).
-     *
-     * @return The number of Majorana operators that have been evolved (number of graph layers).
-     */
+    /// @brief Number of evolved Majoranas (graph layers).
     auto graph_layers() const -> size_t { return shard_group_ ? sharded_graph_layers_() : graph_.layers(); }
 
-    /**
-     * @brief Number of gates ingested into the graph.
-     *
-     * Derived from the layers as max(gate_index) + 1 over the active layers (0 if empty),
-     * so it stays correct after prefix layers are consumed by contract_partially/propagate.
-     * A single-term gate expands to one layer; a multi-term gate expands to several layers
-     * that share one gate index, so n_gates() <= graph_layers().
-     *
-     * @return The number of distinct gate indices recorded across the graph's layers.
-     */
+    /// @brief Number of gates ingested into the graph (distinct gate indices across active layers).
+    /// A multi-term gate expands to several layers sharing one gate index, so n_gates() <= graph_layers().
     auto n_gates() const -> size_t;
 
-    /**
-     * @brief The parameter mapping owned by the graph, in optimizer order.
-     *
-     * Entry i is the variational-parameter index driving the i-th graph layer (a generated
-     * Majorana monomial); this is the mapping the graph uses when binding parameters.
-     *
-     * @return The per-layer parameter mapping (length equals graph_layers()).
-     */
+    /// @brief The per-layer parameter mapping owned by the graph, in optimizer order (length = graph_layers()).
     auto parameter_mapping() const -> VecZ { return graph_gate_arrays_().first; }
 
-    /**
-     * @brief Re-wire which variational parameter drives each graph layer, in place.
-     *
-     * Relabels the graph layers' parameter indices without rebuilding the graph. The graph
-     * structure depends only on the generators, not on the parameter labels, so this is a
-     * cheap O(layers) relabel that changes only the parameter binding. Existing functionals
-     * created by expectation_value_functional() keep the mapping they captured at creation
-     * (they snapshot it), so rebuild a functional to pick up the new mapping.
-     *
-     * The mapping may be given at either granularity: per-layer (length graph_layers(), in
-     * optimizer order) or per-gate (length n_gates(), indexed by absolute gate index). A
-     * per-gate mapping is expanded to per-layer via each layer's stored gate index, which is
-     * order-agnostic and correct in both pictures and across build_graph calls. When the two
-     * lengths coincide (every gate is single-term in a single build) the per-layer reading is
-     * used; note that across multiple Heisenberg builds optimizer order differs from gate
-     * order even for single-term gates, so pass a per-gate mapping when tying by gate.
-     *
-     * @param parameter_mapping New parameter index per layer (length graph_layers()) or per
-     *        gate (length n_gates()).
-     */
+    /// @brief Re-wire which variational parameter drives each graph layer, in place.
+    ///
+    /// Cheap O(layers) relabel (graph structure depends only on generators, not parameter labels).
+    /// Existing functionals snapshot the mapping at creation, so rebuild one to pick up changes.
+    /// Accepts per-layer (length graph_layers(), optimizer order) or per-gate (length n_gates(),
+    /// expanded via each layer's stored gate index) granularity; when lengths coincide the per-layer
+    /// reading is used, so pass a per-gate mapping when tying by gate across multiple builds.
     auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
-    /**
-     * @brief Access this rank's indexing map.
-     *
-     * Returns the mapping from Majorana bitset terms to their coefficient indices
-     * for this rank.
-     */
+    /// @brief This rank's indexing map (Majorana bitset term → coefficient index).
     auto indexing() -> detail::OperatorIndex<NumModes> & {
         require_unsharded_("indexing()");
         return *mp_op_.store;
@@ -224,28 +159,16 @@ public:
         return *mp_op_.store;
     }
 
-    /**
-     * @brief Return graph layer data in Python-friendly structures.
-     *
-     * Provides a vector of tuples containing (cos_inds, local_cycles,
-     * cross_rank_out, cross_rank_in) for every layer in the evolution graph.
-     *
-     * Storage format:
-     * - local_cycles: Cycles (src, tgt, phase) where both indices are on this rank
-     * - cross_rank_sin_send[rank]: (indices, dummy_phases) for the send recipe B^{(r')} on this rank
-     * - cross_rank_sin_recv[rank]: (indices, signed_phases) for the apply recipe D^{(r')} (D- then D+)
-     */
+    /// @brief Return graph layer data in Python-friendly structures: per-layer
+    /// (cos_inds, local_cycles, cross_rank_out, cross_rank_in) tuples.
+    /// local_cycles: (src, tgt, phase) on this rank; cross_rank_sin_send/recv: the paper's B^{(r')}/D^{(r')} recipes.
     using LocalCycleData = std::tuple<size_t, size_t, int>;
     using CrossRankData = std::tuple<VecZ, VecI>; // (indices, phases)
     using LayerData =
         std::tuple<VecZ, std::vector<LocalCycleData>, std::vector<CrossRankData>, std::vector<CrossRankData>>;
     auto graph_data() const -> std::vector<LayerData>;
 
-    /**
-     * @brief Updates the lower absolute tolerance.
-     *
-     * @param new_lower_atol New lower absolute tolerance (std::nullopt for no tolerance)
-     */
+    /// @brief Update the lower absolute tolerance (std::nullopt for none).
     auto update_lower_atol(std::optional<double> new_lower_atol) -> void {
         if (upper_atol_.has_value() && new_lower_atol.has_value() && (new_lower_atol.value() > upper_atol_.value())) {
             throw std::runtime_error(
@@ -259,11 +182,7 @@ public:
         }
     }
 
-    /**
-     * @brief Updates the upper absolute tolerance.
-     *
-     * @param new_upper_atol New upper absolute tolerance (std::nullopt for no tolerance)
-     */
+    /// @brief Update the upper absolute tolerance (std::nullopt for none).
     auto update_upper_atol(std::optional<double> new_upper_atol) -> void {
         if (lower_atol_.has_value() && new_upper_atol.has_value() && new_upper_atol.value() < lower_atol_.value()) {
             throw std::runtime_error(
@@ -277,14 +196,7 @@ public:
         }
     }
 
-    /**
-     * @brief Updates the cutoff value and regenerates the cutoff function.
-     *
-     * This method updates the cutoff value and regenerates the cutoff function
-     * using the stored cutoff type and basis change information.
-     *
-     * @param new_cutoff New cutoff value
-     */
+    /// @brief Update the cutoff value and regenerate the cutoff function.
     auto update_cutoff(unsigned int new_cutoff) -> void {
         cutoff_ = new_cutoff;
         regenerate_cutoff_fn_();
@@ -293,14 +205,7 @@ public:
         }
     }
 
-    /**
-     * @brief Updates the cutoff type and regenerates the cutoff function.
-     *
-     * This method updates the cutoff type and regenerates the cutoff function
-     * using the current cutoff value and stored basis change information.
-     *
-     * @param new_cutoff_type New cutoff type
-     */
+    /// @brief Update the cutoff type and regenerate the cutoff function.
     auto update_cutoff_type(CutoffType new_cutoff_type) -> void {
         cutoff_type_ = new_cutoff_type;
         regenerate_cutoff_fn_();
@@ -309,14 +214,7 @@ public:
         }
     }
 
-    /**
-     * @brief Updates the basis change and regenerates the cutoff function.
-     *
-     * This method updates the basis transformation used by the cutoff function.
-     * Setting basis_change to std::nullopt will disable basis transformation.
-     *
-     * @param new_basis_change New basis change vectors (std::nullopt for no basis change)
-     */
+    /// @brief Update the basis change and regenerate the cutoff function (std::nullopt disables it).
     auto update_basis_change(std::optional<std::vector<VecZ>> new_basis_change) -> void {
         basis_change_ = new_basis_change;
         regenerate_cutoff_fn_();
@@ -325,99 +223,46 @@ public:
         }
     }
 
-    /**
-     * @brief Check if the simulation is in Schrodinger picture.
-     *
-     * @return True if in Schrodinger picture, false if in Heisenberg picture.
-     */
+    /// @brief Whether the simulation is in the Schrodinger picture (else Heisenberg).
     auto schrodinger() const -> bool { return schrodinger_; }
 
-    /**
-     * @brief The operator basis: Majorana monomials (default) or native Pauli strings.
-     *
-     * @return The Basis this propagator was constructed with.
-     */
+    /// @brief The operator basis: Majorana monomials (default) or native Pauli strings.
     auto basis() const -> Basis { return basis_; }
 
-    /**
-     * @brief Get the core term of the operator.
-     *
-     * @return The core term as a float.
-     */
+    /// @brief The core term of the operator.
     auto core_term() const -> double { return shard_group_ ? sharded_core_term_() : core_term_; }
 
-    /**
-     * @brief Get the current cutoff value.
-     *
-     * @return The current cutoff value.
-     */
+    /// @brief The current cutoff value.
     auto cutoff() const -> unsigned int { return cutoff_; }
 
-    /**
-     * @brief Get the current lower absolute tolerance.
-     *
-     * @return The current lower absolute tolerance (std::nullopt if not set).
-     */
+    /// @brief The current lower absolute tolerance (std::nullopt if unset).
     auto lower_atol() const -> std::optional<double> { return lower_atol_; }
 
-    /**
-     * @brief Get the current upper absolute tolerance.
-     *
-     * @return The current upper absolute tolerance (std::nullopt if not set).
-     */
+    /// @brief The current upper absolute tolerance (std::nullopt if unset).
     auto upper_atol() const -> std::optional<double> { return upper_atol_; }
 
-    /**
-     * @brief Get the current cutoff type.
-     *
-     * @return The current cutoff type.
-     */
+    /// @brief The current cutoff type.
     auto cutoff_type() const -> CutoffType { return cutoff_type_; }
 
-    /**
-     * @brief Get the current basis change.
-     *
-     * @return The current basis change (std::nullopt if not set).
-     */
+    /// @brief The current basis change (std::nullopt if unset).
     auto basis_change() const -> std::optional<std::vector<VecZ>> { return basis_change_; }
 
-    /**
-     * @brief Get the MPI communicator used by this simulator.
-     *
-     * @return The MPI_Comm associated with this simulator instance (MPI_COMM_SELF for a shard-backed
-     *         propagator, whose cross-shard transport is an in-process ShmComm rather than MPI).
-     */
+    /// @brief The MPI communicator (MPI_COMM_SELF for a shard-backed propagator, which uses an in-process ShmComm).
     auto comm() const -> MPI_Comm { return comm_.mpi; }
 
     /**
-     * @brief Build the propagation graph from a sequence of Majorana generators.
+     * @brief Build the propagation graph from a sequence of Majorana generators, one layer per
+     *        generator, recording each layer's gate info (angle = parameters[mapping[i]] * gen_coeffs[i]).
+     *        The graph accumulates across calls.
      *
-     * Appends one graph layer per Majorana generator, recording each layer's gate
-     * information (parameter_mapping[i] and gen_coeffs[i]) on the layer itself so that
-     * evaluation later needs only the variational `parameters`. The graph accumulates
-     * across successive calls.
+     * @param gate_indices Optional per-generator gate index, local and 0-based per call (offset
+     *        internally by the gate count already in the graph). Omit for one gate per generator (iota).
+     * @param parameters Optional; provide (covering the existing graph and these gates) to seed atol-based
+     *        truncation while extending a non-empty graph. Omit for a pure structural build.
+     * @param only_rotate_len_k If > 0, apply gates to monomials of length <= k even if they anticommute.
      *
-     * @param majoranas Majorana generators to apply (each a vector of indices).
-     * @param parameter_mapping Per-generator index into the variational parameter vector.
-     * @param gen_coeffs Per-generator coefficient g (angle = parameters[mapping[i]] * g).
-     * @param gate_indices Optional per-generator gate index (which ingested gate each
-     *        monomial belongs to), local and 0-based per call. Unlike parameter_mapping
-     *        these are offset internally by the gate count already in the graph, so callers
-     *        pass local indices and never track the running gate count. Omit (nullopt) for
-     *        one gate per generator (iota); required to be contiguous runs from 0.
-     * @param parameters Optional. When the graph is already non-empty and coefficient
-     *        information is needed for atol-based truncation while extending it, provide
-     *        the full parameter vector covering the existing graph *and* these new gates;
-     *        the seed coefficients are regenerated internally by contracting the existing
-     *        graph at `parameters` (there is no operator_coeffs input). Omit for a pure
-     *        structural build.
-     * @param only_rotate_len_k If > 0, apply gates to monomials of length <= k even if
-     *        they anticommute (see class docs).
-     *
-     * @note In the Heisenberg picture gates are applied back-to-front, so each call
-     *       consumes its sequence in reverse; splitting a circuit into forward chunks
-     *       across calls is NOT equivalent to one call. In the Schrodinger picture gates
-     *       are applied front-to-back, so a forward split IS equivalent.
+     * @note Heisenberg applies gates back-to-front (each call consumes its sequence in reverse), so a
+     *       forward split across calls is NOT equivalent; Schrodinger applies front-to-back, so it is.
      */
     auto build_graph(const std::vector<VecZ> &majoranas,
                      const VecZ &parameter_mapping,
@@ -426,79 +271,38 @@ public:
                      std::optional<VecD> parameters = std::nullopt,
                      int only_rotate_len_k = 0) -> void;
 
-    /**
-     * @brief Evolve and contract immediately, without storing a propagation graph.
-     *
-     * Memory-efficient path: applies the gates with the given `parameters` directly to the
-     * operator (Heisenberg) or state (Schrodinger) without retaining a graph.
-     *
-     * @param majoranas Majorana generators to apply.
-     * @param parameter_mapping Per-generator index into `parameters`.
-     * @param gen_coeffs Per-generator coefficient g.
-     * @param parameters Variational parameter values.
-     * @param only_rotate_len_k See build_graph.
-     */
+    /// @brief Evolve and contract immediately, without storing a graph (memory-efficient path).
+    /// Applies the gates at `parameters` directly to the operator (Heisenberg) or state (Schrodinger).
     auto propagate(const std::vector<VecZ> &majoranas,
                    const VecZ &parameter_mapping,
                    const VecD &gen_coeffs,
                    const VecD &parameters,
                    int only_rotate_len_k = 0) -> void;
 
-    /**
-     * @brief Compute the expectation value at the given variational parameters.
-     *
-     * Gate information (parameter mapping and generator coefficients) is owned by the
-     * graph, so only `parameters` is required.
-     */
+    /// @brief Compute the expectation value at the given variational parameters (gate info owned by the graph).
     auto expectation_value(const VecD &parameters) -> double;
 
-    /**
-     * @brief Compute the expectation value and its gradient at the given parameters.
-     */
+    /// @brief Compute the expectation value and its gradient at the given parameters.
     auto expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD>;
 
-    /**
-     * @brief Return a reusable callable computing the expectation value from parameters.
-     *
-     * @param pare_threshold Absolute-value cutoff for retaining edges in a masked execution
-     *        plan built for this functional. std::nullopt disables paring (exact graph).
-     */
+    /// @brief Return a reusable callable computing the expectation value from parameters.
+    /// @param pare_threshold Edge-retention cutoff for a masked plan; std::nullopt disables paring (exact graph).
     auto expectation_value_functional(std::optional<double> pare_threshold = std::nullopt)
         -> std::function<double(const VecD &)>;
 
-    /**
-     * @brief Return a reusable callable computing (expectation value, gradient) from parameters.
-     *
-     * @param pare_threshold See expectation_value_functional.
-     */
+    /// @brief Return a reusable callable computing (expectation value, gradient) from parameters.
+    /// @param pare_threshold See expectation_value_functional.
     auto expectation_value_and_gradient_functional(std::optional<double> pare_threshold = std::nullopt)
         -> std::function<std::pair<double, VecD>(const VecD &)>;
 
-    /**
-     * @brief Contract the evolution graph into the operator/state at the given parameters.
-     *
-     * Applies every gate in the current graph with the supplied `parameters` (gate mapping
-     * and generator coefficients are owned by the graph). In Heisenberg picture the gates are
-     * contracted into the operator; in Schrodinger picture into the state.
-     *
-     * @param parameters Variational parameter values.
-     * @param inplace If true, updates the simulator's internal state (consuming the graph);
-     *                if false, returns the evolved coefficients without modifying state.
-     * @return The evolved coefficients (evolved state in Schrodinger, evolved operator in
-     *         Heisenberg). The core term is not included in the returned vector.
-     */
+    /// @brief Contract the evolution graph into the operator (Heisenberg) or state (Schrodinger) at `parameters`.
+    /// @param inplace If true, consume the graph and update internal state; if false, return the evolved
+    ///        coefficients without modifying state (core term excluded from the returned vector).
     auto contract_partially(const VecD &parameters, bool inplace) -> VecD;
 
-    /**
-     * @brief The full evolved operator as decoded, rounded (indices, coefficient) terms.
-     *
-     * Contracts at `parameters` (non-inplace) and decodes every term whose stored-coefficient
-     * magnitude is >= `atol` back to (Majorana/Pauli index list, complex coefficient). When the
-     * propagator is shard-backed the terms are gathered from every shard's disjoint hash partition
-     * and concatenated, so the result is the whole operator regardless of the shard count. The core
-     * term is excluded (the Python binding adds it). This is the shard-transparent source for the
-     * `evolved_operator` binding, which cannot use the raw per-partition `indexing()`.
-     */
+    /// @brief The full evolved operator as decoded (indices, coefficient) terms with |coeff| >= atol.
+    /// Contracts at `parameters` (non-inplace); shard-transparent (gathers every shard's disjoint
+    /// partition). Core term excluded (the Python binding adds it).
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
@@ -516,8 +320,7 @@ protected:
                                         mpi::Comm comm,
                                         const detail::LayerCosScale &cos_scale = {},
                                         const detail::LayerCosAccumulate & = {}) -> double {
-        // cos_acc is unused for the energy path (no reverse sweep); accepted so both functionals share
-        // the same call arity in make_functional_.
+        // cos_acc unused for the energy path; accepted so both functionals share one call arity in make_functional_.
         return ev(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale);
     };
 
@@ -535,43 +338,29 @@ protected:
         return ev_and_grad(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale, cos_acc);
     };
 
-    // Static utility methods
     static auto expected_num_params(const VecZ &parameter_mapping) -> size_t;
 
     template <typename Fn, typename R = std::invoke_result_t<Fn, const VecD &>>
     static auto make_parameter_validated_functional(size_t expected_num_params, Fn func)
         -> std::function<R(const VecD &)>;
 
-    /**
-     * @brief Distributes op_dict across ranks and applies it to this rank's operator.
-     *
-     * Shared implementation of update_initial_operator. Returns the new initial-operator terms
-     * for this rank as a (Majorana terms, encoded coefficients) pair, so overrides that maintain
-     * caches keyed on the initial operator can refresh them from the return value.
-     */
+    /// @brief Distribute op_dict across ranks and apply it to this rank's operator (shared impl of
+    /// update_initial_operator). Returns this rank's new (Majorana terms, encoded coeffs) so caches can refresh.
     auto apply_initial_operator_(const FermiOperatorMap &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
 
-    // Data members
     bool schrodinger_;
     mpi::Comm comm_; // communicator handle (real MPI across nodes, or in-process ShmComm across shards)
     CutoffFn<NumModes> cutoff_fn_;
     detail::MPOperator<NumModes> mp_op_; // Single MPOperator for this MPI rank
     MPGraph graph_;                      // Single MPGraph for this MPI rank
-    // Persistent matched-follower scratch for the per-gate layer build (see MatchedEpochSet):
-    // reused across gates so no per-gate O(operator) allocate+memset. Pure scratch — carries no
-    // state between gates (each build bumps the epoch), so copies may share or reset it freely.
+    // Persistent matched-follower scratch for the per-gate layer build (see MatchedEpochSet): reused
+    // across gates (no per-gate allocate+memset). Pure scratch, carries no state between gates.
     detail::MatchedEpochSet matched_scratch_;
 
-    // Inline-width hint for the packed operator rows. The store reserves this many Majorana
-    // positions per row inline; terms with more positions spill losslessly into the overflow
-    // arena, so this is purely a memory/perf hint and never a correctness constraint. When the
-    // cutoff structurally bounds a surviving term's position count, we size rows to that bound
-    // instead of the maximum; CutoffEvaluator owns the cutoff -> bound mapping (max_positions_bound,
-    // which reports a bound only for the structural length/mode cutoffs and std::nullopt for an
-    // arbitrary cutoff_fn — including a basis-changed cutoff, whose bound is on the mapped term,
-    // not the stored one). In the Schrodinger picture the operator grows under a rule the cutoff
-    // does not bound, so we keep the full width.
-    // Protected so derived classes (MonomialPropagatorExtra) can size their operator identically.
+    // Inline-width hint for the packed operator rows (overflow spills losslessly, so it's a perf hint,
+    // never a correctness constraint). Sized to the cutoff's structural position bound when it has one
+    // (CutoffEvaluator::max_positions_bound; nullopt for arbitrary/basis-changed cutoffs and Schrodinger,
+    // where we keep the full width). Protected so derived classes size their operator identically.
     auto packed_inline_width_() const -> size_t;
 
 private:
@@ -587,22 +376,19 @@ private:
     CutoffType cutoff_type_;
     std::optional<std::vector<VecZ>> basis_change_;
 
-    // Operator basis (Majorana default / native Pauli). Immutable after construction; drives the
-    // coefficient encoding, the ⟨b|·|b⟩ scoring, and the scan/fold basis dispatch. Kept in the private
-    // block (below the frozen protected extension surface) so the downstream subclass layout is untouched.
+    // Operator basis (Majorana default / native Pauli), immutable after construction; drives coeff
+    // encoding, ⟨b|·|b⟩ scoring, and scan/fold dispatch. Kept private to leave the subclass layout untouched.
     Basis basis_{Basis::Majorana};
 
-    // Intra-process shard runtime. Null ⇒ this is an ordinary single-partition propagator (the default
-    // and the state of every shard's own propagator). Non-null ⇒ this is a shard FACADE: its own
-    // mp_op_/graph_ are unused and every operator method fans out to the S shard propagators the group
-    // owns (see the sharded_* helpers and the shard branches in the impl). Constructed only when the
-    // resolved shard count exceeds 1; requires a single MPI rank (shards and MPI ranks don't nest yet).
+    // Intra-process shard runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a shard FACADE
+    // whose own mp_op_/graph_ are unused and every method fans out to the S shard propagators. Constructed
+    // only when the resolved shard count exceeds 1; requires a single MPI rank (shards don't nest with MPI).
     std::unique_ptr<detail::shard::ShardGroup<NumModes>> shard_group_;
     // ShardGroup rebinds a cloned shard's comm_ to its own ShmComm during a deep copy.
     friend class detail::shard::ShardGroup<NumModes>;
 
-    // Resolve the effective shard count from the ctor `shards` arg (0 ⇒ env monoprop_SHARDS, else the
-    // auto policy), the basis, the thread budget, and the topology. Returns 1 for the ordinary path.
+    // Resolve the effective shard count from the ctor `shards` arg (0 ⇒ env/auto), basis, thread budget,
+    // and topology. Returns 1 for the ordinary path.
     static auto resolve_shard_count_(size_t requested, mpi::Comm comm) -> size_t;
     // Fan-out helpers for the inline accessors (defined in the impl, where ShardGroup is complete).
     auto sharded_size_() const -> size_t;
@@ -612,11 +398,9 @@ private:
     // Sum the per-shard memory breakdowns (each shard owns a disjoint hash-partition, so fields add).
     auto sharded_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes>;
     auto sharded_graph_memory_usage_() const -> GraphMemoryBreakdown;
-    // Run `fn` on every shard's propagator concurrently (via the ShardGroup masters); the caller
-    // guards on shard_group_ being set. Out-of-line because ShardGroup is incomplete in this header.
+    // Run `fn` on every shard's propagator concurrently. Out-of-line because ShardGroup is incomplete here.
     auto for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void;
-    // Raw per-shard data has no single meaningful value on a facade; guard the accessors that expose
-    // it. Inline-safe: only tests the unique_ptr for null (no ShardGroup member access).
+    // Guard accessors whose raw per-shard data has no single value on a facade. Inline-safe (only null-tests the ptr).
     auto require_unsharded_(const char *what) const -> void {
         if (shard_group_) {
             throw std::runtime_error(std::string(what)
@@ -639,11 +423,9 @@ private:
                                   const VecZ &gate_indices,
                                   int only_rotate_len_k) -> void;
 
-    // Per-gate replay index + rotation angle, shared by the graph-with-coeffs and contract-immediately
-    // drivers so the picture-direction logic lives in one place: Heisenberg replays gates in reverse
-    // (majoranas_size-1-i), Schrödinger forward (i); the applied angle is negated in the Schrödinger
-    // picture. Returns {build_angle (fed to the layer build), apply_angle (fed to the apply — the
-    // build angle, negated in the Schrödinger picture)}.
+    // Per-gate replay index + rotation angle (picture-direction logic in one place): Heisenberg replays
+    // in reverse (size-1-i), Schrödinger forward (i) with the applied angle negated. Returns
+    // {build_angle, apply_angle} (apply = build, negated in Schrödinger).
     auto gate_angle_(const VecD &mapped_params, size_t i, size_t majoranas_size) const -> std::pair<double, double> {
         const size_t idx = schrodinger_ ? i : majoranas_size - 1 - i;
         const double build_angle = mapped_params[idx];
@@ -666,25 +448,12 @@ private:
                                            const VecD &parameters,
                                            int only_rotate_len_k) -> void;
 
-    /**
-     * @brief Common function to propagate majoranas with timing
-     */
+    /// @brief Common gate loop over majoranas, with timing.
     template <typename EvolutionFunc>
     auto run_gate_loop_(const std::vector<VecZ> &majoranas, int only_rotate_len_k, EvolutionFunc evolution_func)
         -> void;
 
-    /**
-     * @brief Propagates the system by a single Majorana operator
-     *
-     * Applies the propagation corresponding to a single Majorana generator to the system,
-     * updating the internal MP graph structure and the operator representation.
-     *
-     * @param gen_vec Vector of indices representing the Majorana generator
-     * @param only_rotate_len_k Apply gates only to propagated monomials of exact length k (0 = no filtering).
-     *                           Defaults to 0.
-     * @param coeffs Optional coefficients for the propagation
-     * @param param Optional propagation parameter used by cutoff-aware update paths.
-     */
+    /// @brief Propagate the system by a single Majorana generator, updating the graph and operator.
     auto propagate_one_(const VecZ &gen_vec,
                         int only_rotate_len_k,
                         std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
@@ -693,9 +462,8 @@ private:
                         double gen_coeff = 0.0,
                         size_t gate_index = 0) -> void;
 
-    // fused_scale_coeffs (ContractImmediately only): the picture's MUTABLE coeff vector — hands the
-    // build write access for the k==0 fused cos sweep; the taken decision is reported via fused_scale
-    // so the apply acts on the same choice. See build_layer.
+    // fused_scale_coeffs (ContractImmediately only): the picture's mutable coeff vector for the k==0 fused
+    // cos sweep; the taken decision is reported via fused_scale so the apply matches. See build_layer.
     auto build_evolve_result_(const VecZ &gen_vec,
                               int only_rotate_len_k,
                               std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
@@ -705,16 +473,8 @@ private:
                               VecD *fused_scale_coeffs = nullptr,
                               bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
 
-    /**
-     * @brief Creates a functional (closure) for expectation value or gradient calculations.
-     *
-     * Derives the per-layer gate information (parameter mapping and generator coefficients)
-     * from the graph, and uses the cached pared plan when one is present (see pare()).
-     *
-     * @tparam Fn Function type for evaluation (ev or ev_and_grad)
-     * @param func The function to use for evaluation (ev or ev_and_grad)
-     * @return Function object that computes expectation value or expectation_value+gradient for parameters
-     */
+    /// @brief Build a closure for expectation-value or gradient evaluation. Derives per-layer gate info
+    /// from the graph and uses the cached pared plan when present (see pare()).
     template <typename Fn,
               typename R = std::invoke_result_t<Fn,
                                                 double,
@@ -727,13 +487,10 @@ private:
                                                 mpi::Comm>>
     auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
 
-    // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the gate
-    // information owned by the graph layers. Provably identical to the arrays that used to be
-    // supplied by callers, for both Heisenberg and Schrodinger pictures.
+    // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the graph layers' gate info.
     auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;
 
-    // Replay `graph` over `coeffs` recomputing each layer's cosine set from the persistent inverted index
-    // fold (main-built layers no longer store the cos bitmap). Used by contract_partially.
+    // Replay `graph` over `coeffs`, recomputing each layer's cosine set from the inverted-index fold. Used by contract_partially.
     auto evolve_operator_with_recompute_(VecD &&coeffs, const MPGraphView &graph, const VecD &params) -> VecD;
 };
 
