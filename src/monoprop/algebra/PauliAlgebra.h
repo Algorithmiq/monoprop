@@ -64,7 +64,9 @@ struct PauliUv {
     uint64_t v; ///< z-plane (even physical bits)
     uint64_t u; ///< odd-bit plane, aligned onto the even lane
 };
-[[nodiscard]] inline auto pauli_uv(uint64_t word, uint64_t e) -> PauliUv { return {word & e, (word >> 1) & e}; }
+[[nodiscard]] inline auto pauli_uv(uint64_t word, uint64_t e) -> PauliUv {
+    return {word & e, (word >> 1) & e};
+}
 } // namespace detail
 
 /*!
@@ -113,7 +115,9 @@ template <size_t NumModes>
 
 namespace detail {
 /// Reduce a (possibly negative) i-power exponent to [0, 4) for POWERS_OF_I indexing.
-[[nodiscard]] inline constexpr auto mod4(long e) -> int { return static_cast<int>(((e % 4) + 4) % 4); }
+[[nodiscard]] inline constexpr auto mod4(long e) -> int {
+    return static_cast<int>(((e % 4) + 4) % 4);
+}
 } // namespace detail
 
 /*!
@@ -125,10 +129,10 @@ namespace detail {
 template <size_t NumModes>
 struct PauliGenContext final {
     Monomial<NumModes> gen{};
-    size_t gen_pop = 0; ///< gen.count()
-    size_t g_y = 0;     ///< pauli_y_count(gen)
+    size_t gen_pop = 0;                                             ///< gen.count()
+    size_t g_y = 0;                                                 ///< pauli_y_count(gen)
     std::array<size_t, Monomial<NumModes>::num_words()> nz_words{}; ///< indices of gen's nonzero words
-    size_t nz_count = 0;                                              ///< number of valid entries in nz_words
+    size_t nz_count = 0;                                            ///< number of valid entries in nz_words
 };
 
 /*!
@@ -167,7 +171,7 @@ template <size_t NumModes>
                                                        const Monomial<NumModes> &new_maj) -> int {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     long delta = static_cast<long>(ctx.g_y); // + yGen
-    long cross = 0;                           // zMaj . xGen
+    long cross = 0;                          // zMaj . xGen
     for (size_t k = 0; k < ctx.nz_count; ++k) {
         const size_t w = ctx.nz_words[k];
         const uint64_t e = e_mask.word(w);
@@ -210,6 +214,8 @@ template <size_t NumModes>
 /*!
  * @brief Decode a real Pauli coefficient back to complex (identity, zero imaginary part).
  */
-[[nodiscard]] inline auto decode_pauli_coeff(double coeff) -> std::complex<double> { return {coeff, 0.0}; }
+[[nodiscard]] inline auto decode_pauli_coeff(double coeff) -> std::complex<double> {
+    return {coeff, 0.0};
+}
 
 } // namespace monoprop

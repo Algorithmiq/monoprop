@@ -25,8 +25,8 @@
 #include <cstdint>
 #include <random>
 
-#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 
 using namespace monoprop;
 using cd = std::complex<double>;
@@ -74,7 +74,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_length_and_support_thresholds) {
                 BOOST_TEST(support_cutoff<N>(m, c));
             }
         }
-        BOOST_TEST(length_cutoff<N>(m, 2 * N));       // length always <= 2N
+        BOOST_TEST(length_cutoff<N>(m, 2 * N));                // length always <= 2N
         BOOST_TEST(length_cutoff<N>(m, 0) == is_paired<N>(m)); // cutoff 0 keeps iff paired
     }
 }
@@ -147,7 +147,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_evaluator_dispatch_and_popcount) {
     unpaired.set(2);
     unpaired.set(4);
     unpaired.set(6);
-    BOOST_TEST(length_ev.passes_with_popcount(unpaired, 3)); // pc<=cutoff fast path
+    BOOST_TEST(length_ev.passes_with_popcount(unpaired, 3));  // pc<=cutoff fast path
     BOOST_TEST(!length_ev.passes_with_popcount(unpaired, 4)); // pc>cutoff -> direct eval -> false
     BOOST_TEST(length_ev.passes_with_popcount(unpaired, 4) == length_ev(unpaired));
 

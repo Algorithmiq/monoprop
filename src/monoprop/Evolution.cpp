@@ -1,3 +1,17 @@
+// Copyright 2026 Algorithmiq
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include "monoprop/Evolution.h"
 
 #include <bit>
@@ -93,9 +107,8 @@ struct CrossRankExchangeHandle {
 // payload transfer. All ranks must participate — never skip on zero counts (the facade owns that
 // deadlock discipline). The transfer is non-blocking; the returned handle's ticket completes it.
 // Buffers are always sized ≥ 1 (see resize_flat_exchange_buffers).
-inline auto begin_flat_exchange(const LayerExchangeLayout &layout,
-                                FlatExchangeBuffers &buffers,
-                                mpi::Comm comm) -> CrossRankExchangeHandle {
+inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers, mpi::Comm comm)
+    -> CrossRankExchangeHandle {
     CrossRankExchangeHandle handle;
     handle.layout = &layout;
     handle.buffers = &buffers;
@@ -315,9 +328,8 @@ struct InFlightCrossRankEvolution {
     bool active = false;
 };
 
-inline auto begin_cross_rank_evolution_exchange(VecD &op,
-                                                const LayerTraversal &layer,
-                                                mpi::Comm comm) -> InFlightCrossRankEvolution {
+inline auto begin_cross_rank_evolution_exchange(VecD &op, const LayerTraversal &layer, mpi::Comm comm)
+    -> InFlightCrossRankEvolution {
     InFlightCrossRankEvolution in_flight;
     const auto *layout = active_evolution_exchange_layout(layer, comm);
     if (layout == nullptr) {

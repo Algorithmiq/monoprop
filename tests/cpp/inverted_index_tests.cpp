@@ -1,11 +1,25 @@
+// Copyright 2026 Algorithmiq
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
 #include <cstdint>
 #include <vector>
 
-#include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/detail/operator/InvertedIndex.h"
 
 // Internals of the even-parity scan inverted index: the tiered column store (sparse row-lists vs dense
@@ -21,10 +35,14 @@ namespace {
 constexpr size_t N = 32; // 2N = 64 majorana columns
 using Sc = InvertedIndex<N>;
 using MSet = Monomial<N>;
-MSet bs(const VecZ &r) { return indices_to_bitset<N>(r); }
+MSet bs(const VecZ &r) {
+    return indices_to_bitset<N>(r);
+}
 // indices_to_bitset maps mode index m to bit position 2N-1-m, and the inverted index indexes its columns by
 // raw bit position — so mode m populates column col_of(m).
-constexpr size_t col_of(size_t mode) { return 2 * N - 1 - mode; }
+constexpr size_t col_of(size_t mode) {
+    return 2 * N - 1 - mode;
+}
 } // namespace
 
 // ensure_row_parity() builds the packed popcount(|M|)&1 bitmap over the current rows. Verify each
@@ -89,9 +107,9 @@ BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
 // scheduling (the fold-recompute path lower_bounds them). Build a many-mode operator kept below the
 // promote threshold so columns stay sparse, then assert every sparse list is sorted.
 BOOST_AUTO_TEST_CASE(inverted_index_parallel_fill_yields_ascending_sparse_rows) {
-    constexpr size_t M = 64;                    // 2M = 128 columns
+    constexpr size_t M = 64; // 2M = 128 columns
     using ScW = InvertedIndex<M>;
-    constexpr size_t kR = 16'385;               // just over the parallel floor
+    constexpr size_t kR = 16'385; // just over the parallel floor
     std::vector<Monomial<M>> op;
     op.reserve(kR);
     for (size_t i = 0; i < kR; ++i) {

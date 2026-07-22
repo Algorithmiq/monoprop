@@ -63,7 +63,9 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _shard_policy(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+def _shard_policy(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Force single-partition for tests marked ``unsharded``.
 
     Sharding is the default parallelism (``monoprop_SHARDS`` unset ⇒ one shard per core), so every

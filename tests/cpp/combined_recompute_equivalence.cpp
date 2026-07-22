@@ -53,8 +53,9 @@ template <size_t NumModes>
 void scale_cos_cached(const monoprop::detail::FoldCache<NumModes> &p, double *coeff, double cos_val) {
     const size_t mask_words = p.fold.mask_words;
     for (size_t wi = 0; wi < mask_words; ++wi) {
-        monoprop::detail::for_each_cos_index(
-            wi * 64, monoprop::detail::fold_word<NumModes>(p, wi), [&](size_t i) { coeff[i] *= cos_val; });
+        monoprop::detail::for_each_cos_index(wi * 64, monoprop::detail::fold_word<NumModes>(p, wi), [&](size_t i) {
+            coeff[i] *= cos_val;
+        });
     }
 }
 
@@ -159,8 +160,12 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
         std::vector<double> sa = state0, ha = ham0;
         std::vector<double> sb = state0, hb = ham0;
         const double ea = accumulate_cos_cached<kNumModes>(prepared, sa.data(), ha.data(), cos_val, sec_val);
-        const double eb = monoprop::detail::accumulate_cos_lazy<kNumModes>(
-            inverted_index, recipe, sb.data(), hb.data(), cos_val, sec_val);
+        const double eb = monoprop::detail::accumulate_cos_lazy<kNumModes>(inverted_index,
+                                                                           recipe,
+                                                                           sb.data(),
+                                                                           hb.data(),
+                                                                           cos_val,
+                                                                           sec_val);
 
         BOOST_TEST_INFO("layer " << li);
         BOOST_TEST(std::memcmp(sa.data(), sb.data(), n * sizeof(double)) == 0);

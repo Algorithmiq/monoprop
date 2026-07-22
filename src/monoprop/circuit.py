@@ -682,7 +682,9 @@ def expand_monomials(
     per_monomial: list[int] = []
     gate_indices: list[int] = []
     for gate_index, (gate, param) in enumerate(zip(gates, mapping, strict=True)):
-        for majorana, gen_coeff in _gate_layers(gate, num_qubits, native_pauli=native_pauli):
+        for majorana, gen_coeff in _gate_layers(
+            gate, num_qubits, native_pauli=native_pauli
+        ):
             majoranas.append(majorana)
             gen_coeffs.append(gen_coeff)
             per_monomial.append(param)

@@ -103,8 +103,16 @@ BOOST_AUTO_TEST_CASE(bitset_not_respects_top_mask) {
 // exact word multiples, sub-word crossings, and >= NumBits (which must zero the whole set).
 BOOST_AUTO_TEST_CASE(bitset_shift_right_cross_word) {
     const std::vector<size_t> pos{0, 5, 63, 64, 65, 130, 191};
-    for (size_t s : {size_t{0}, size_t{1}, size_t{37}, size_t{63}, size_t{64}, size_t{65}, size_t{128}, size_t{191},
-                     size_t{192}, size_t{300}}) {
+    for (size_t s : {size_t{0},
+                     size_t{1},
+                     size_t{37},
+                     size_t{63},
+                     size_t{64},
+                     size_t{65},
+                     size_t{128},
+                     size_t{191},
+                     size_t{192},
+                     size_t{300}}) {
         auto [bs, ref] = make_pair<192>(pos);
         bs >>= s;
         const std::bitset<192> expected = ref >> s;

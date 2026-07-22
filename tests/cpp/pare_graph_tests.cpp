@@ -35,8 +35,7 @@ constexpr size_t kNumModes = 8;
 // Full-cos provider mirroring the streaming provider the pare functional uses: fold the operator's
 // persistent even-parity inverted index truncated to each layer's scaled_count.
 template <size_t NumModes>
-auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_index, const Layer &layer)
-    -> CosMask {
+auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_index, const Layer &layer) -> CosMask {
     Monomial<NumModes> gen{};
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));

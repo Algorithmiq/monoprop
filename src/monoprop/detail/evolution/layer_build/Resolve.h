@@ -18,8 +18,8 @@
 #include <limits>
 #include <vector>
 
-#include "monoprop/algebra/Algebra.h" // is_paired / get_hf_mask (common) + algebra_hf_phase (fresh Schrödinger miss coeff)
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/Algebra.h" // is_paired / get_hf_mask (common) + algebra_hf_phase (fresh Schrödinger miss coeff)
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/operator/MPOperator.h"
@@ -40,13 +40,13 @@ namespace monoprop::detail {
 // So miss j (in fixed (s,q) order) gets index base+j, byte-identical to a serial current_size++ loop.
 template <size_t NumModes>
 struct IncomingProbe {
-    std::vector<size_t> goff;                     // rank_count+1 flat offsets: g = goff[s] + q
-    DefaultInitVector<uint32_t> sender_of;        // g → sender rank
+    std::vector<size_t> goff;                  // rank_count+1 flat offsets: g = goff[s] + q
+    DefaultInitVector<uint32_t> sender_of;     // g → sender rank
     DefaultInitVector<Monomial<NumModes>> maj; // g → deserialized query monomial
-    DefaultInitVector<int> phase_of;              // g → query phase
-    DefaultInitVector<size_t> idx_of;             // g → resolved index (HIT: < base; MISS: base+j)
-    std::vector<TermIndex> miss_g;                // j → the g that became miss j (Phase 4 reads maj[miss_g[j]])
-    size_t base = 0;                              // op size before the miss inserts (the miss-index base)
+    DefaultInitVector<int> phase_of;           // g → query phase
+    DefaultInitVector<size_t> idx_of;          // g → resolved index (HIT: < base; MISS: base+j)
+    std::vector<TermIndex> miss_g;             // j → the g that became miss j (Phase 4 reads maj[miss_g[j]])
+    size_t base = 0;                           // op size before the miss inserts (the miss-index base)
     size_t nq_total = 0;
 };
 

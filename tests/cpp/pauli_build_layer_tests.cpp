@@ -26,8 +26,8 @@
 #include <vector>
 
 #include "PauliTestOracle.h"
-#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 

@@ -20,11 +20,11 @@
 #include "monoprop/detail/EnvConfig.h" // config::get().shard_pinning
 
 #if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
-#include <pthread.h>
-#include <sched.h>
 #include <set>
 #include <sstream>
 #include <string>
@@ -274,8 +274,7 @@ inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
     return {};
 }
 
-inline auto shard_cpusets(size_t /*n*/, size_t /*group_index*/ = 0, size_t /*group_count*/ = 1)
-    -> std::vector<CpuSet> {
+inline auto shard_cpusets(size_t /*n*/, size_t /*group_index*/ = 0, size_t /*group_count*/ = 1) -> std::vector<CpuSet> {
     return {};
 }
 inline auto pin_this_thread(const CpuSet & /*set*/) -> void {}

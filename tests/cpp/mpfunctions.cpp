@@ -101,8 +101,8 @@ BOOST_AUTO_TEST_CASE(test_fermionic_to_binary_operator_multiple_terms) {
 
 constexpr size_t NumQubits2 = 2;
 static std::vector<std::pair<Monomial<NumQubits2>, int>> ds_get_multiplicative_phase = {{{0b0001}, 0},
-                                                                                           {{0b0101}, -1},
-                                                                                           {{0b1001}, 1}};
+                                                                                        {{0b0101}, -1},
+                                                                                        {{0b1001}, 1}};
 
 BOOST_DATA_TEST_CASE(get_multiplicative_phase_test, bdata::make(ds_get_multiplicative_phase), test_pair) {
     auto [majorana_set, expected_phase] = test_pair;

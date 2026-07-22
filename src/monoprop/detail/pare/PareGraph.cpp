@@ -76,9 +76,8 @@ auto has_remote_cross_rank_edges(const Layer &layer, size_t my_rank) -> bool {
     return has_remote_edges;
 }
 
-auto build_builder_exchange_layout(const Layer &layer,
-                                   size_t my_rank,
-                                   BuilderExchangeDirection direction) -> BuilderExchangeLayout {
+auto build_builder_exchange_layout(const Layer &layer, size_t my_rank, BuilderExchangeDirection direction)
+    -> BuilderExchangeLayout {
     BuilderExchangeLayout layout;
     layout.send_counts.resize(layer.cross_rank_rank_count(), 0);
     layout.send_displs.resize(layer.cross_rank_rank_count(), 0);
@@ -147,9 +146,8 @@ auto pack_source_keep_flags(const Layer &layer,
     });
 }
 
-auto execute_builder_exchange(const BuilderExchangeLayout &layout,
-                              BuilderExchangeBuffers &buffers,
-                              mpi::Comm comm) -> void {
+auto execute_builder_exchange(const BuilderExchangeLayout &layout, BuilderExchangeBuffers &buffers, mpi::Comm comm)
+    -> void {
     // Blocking one-shot keep-flag exchange. Recv counts are known locally (the per-rank transpose of
     // the send counts), so no count round is needed — just post + wait via the facade, which also
     // owns the "all ranks participate / never skip on zero counts" deadlock discipline. Buffers are

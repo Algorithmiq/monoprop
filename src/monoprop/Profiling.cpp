@@ -110,7 +110,9 @@ auto dump() -> void {
 bool g_profiling_enabled = env_enabled();
 bool g_fold_stats_enabled = config::get().fold_stats;
 
-auto profiling_accs() -> RegionAcc * { return g_accs.data(); }
+auto profiling_accs() -> RegionAcc * {
+    return g_accs.data();
+}
 
 auto record_fold_stats(bool all_sparse,
                        bool skipped,
@@ -135,8 +137,8 @@ auto record_fold_stats(bool all_sparse,
     size_t bucket = 0;
     if (postings != 0) {
         // b ≈ 8 + log2(postings/word_count), from bit widths (±1 bucket), clamped to 1..15.
-        const int diff = static_cast<int>(std::bit_width(static_cast<uint64_t>(postings))) -
-                         static_cast<int>(std::bit_width(static_cast<uint64_t>(word_count | 1)));
+        const int diff = static_cast<int>(std::bit_width(static_cast<uint64_t>(postings)))
+                         - static_cast<int>(std::bit_width(static_cast<uint64_t>(word_count | 1)));
         const int b = 8 + diff;
         bucket = static_cast<size_t>(std::clamp(b, 1, static_cast<int>(kFoldRatioBuckets) - 1));
     }

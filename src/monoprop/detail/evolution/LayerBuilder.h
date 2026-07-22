@@ -53,6 +53,6 @@
 // dependency order (Parallel → Common → Scan → Resolve → Engine). Include this for the full surface.
 
 #include "monoprop/detail/evolution/layer_build/Common.h"
-#include "monoprop/detail/evolution/layer_build/Scan.h"
-#include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/evolution/layer_build/Engine.h"
+#include "monoprop/detail/evolution/layer_build/Resolve.h"
+#include "monoprop/detail/evolution/layer_build/Scan.h"

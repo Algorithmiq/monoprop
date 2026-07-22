@@ -49,8 +49,11 @@ struct LayerCore;
  * Each rank owns its local operator coefficients; cross-rank cycles are communicated via
  * Used by the in-built contraction and replay.
  */
-monoprop_EXPORT auto evolve_step(VecD &op, const Layer &layer, double param, const detail::LayerCosScale &cos_scale, mpi::Comm comm)
-    -> void;
+monoprop_EXPORT auto evolve_step(VecD &op,
+                                 const Layer &layer,
+                                 double param,
+                                 const detail::LayerCosScale &cos_scale,
+                                 mpi::Comm comm) -> void;
 
 /**
  * @brief Evolves an operator through the graph using MPI communication.
@@ -68,20 +71,20 @@ monoprop_EXPORT auto evolve_step(VecD &op, const Layer &layer, double param, con
 // ── Recompute-routed forward evolution (cos scaling via the mandatory callback) ─
 // gradient functional replay. Callers pass a view (MPGraph::replay_view() / slice_view()).
 monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
-                     const MPGraphView &graph,
-                     const VecD &params,
-                     const detail::LayerCosScale &cos_scale,
-                     mpi::Comm comm) -> VecD;
+                                     const MPGraphView &graph,
+                                     const VecD &params,
+                                     const detail::LayerCosScale &cos_scale,
+                                     mpi::Comm comm) -> VecD;
 
 // ── Recompute-routed reverse derivative (cos accumulation via the mandatory callback) ──
 monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
-                                     VecD &op,
-                                     const MPGraphView &graph,
-                                     size_t layer_idx,
-                                     double gen_coeff,
-                                     double param,
-                                     const detail::LayerCosAccumulate &cos_acc,
-                                     mpi::Comm comm) -> double;
+                                                     VecD &op,
+                                                     const MPGraphView &graph,
+                                                     size_t layer_idx,
+                                                     double gen_coeff,
+                                                     double param,
+                                                     const detail::LayerCosAccumulate &cos_acc,
+                                                     mpi::Comm comm) -> double;
 } // namespace monoprop
 
 #include "monoprop/detail/evolution/EvolutionHelpers.h"

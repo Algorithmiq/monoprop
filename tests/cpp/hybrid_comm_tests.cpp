@@ -248,8 +248,15 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
                 }
                 off += my_len;
             }
-            hyb.alltoallv_resolve<int>(u, send.data(), sc.data(), sd.data(), recv, rc.data(), rd.data(),
-                                       sizeof(int), monoprop::mpi::datatype<int>::get());
+            hyb.alltoallv_resolve<int>(u,
+                                       send.data(),
+                                       sc.data(),
+                                       sd.data(),
+                                       recv,
+                                       rc.data(),
+                                       rd.data(),
+                                       sizeof(int),
+                                       monoprop::mpi::datatype<int>::get());
             int expected_total = 0;
             for (int src = 0; src < P; ++src) {
                 const int len = len_of(src);
@@ -304,8 +311,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global) {
             for (int u = 0; u < S; ++u) {
                 BOOST_REQUIRE_EQUAL(res[static_cast<size_t>(u)].size(), N);
                 for (size_t k = 0; k < N; ++k) {
-                    const double expect = static_cast<double>(P) * (P + 1) / 8.0
-                                          + static_cast<double>(P) * static_cast<double>(k);
+                    const double expect =
+                        static_cast<double>(P) * (P + 1) / 8.0 + static_cast<double>(P) * static_cast<double>(k);
                     BOOST_CHECK_CLOSE(res[static_cast<size_t>(u)][k], expect, 1e-12);
                     BOOST_CHECK_EQUAL(res[static_cast<size_t>(u)][k], res[0][k]); // bit-identical
                 }
@@ -333,8 +340,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_poison_releases_waiters) {
         BOOST_CHECK(errs[0] == nullptr);
         for (int u = 1; u < S; ++u) {
             BOOST_REQUIRE(errs[static_cast<size_t>(u)] != nullptr);
-            BOOST_CHECK_THROW(std::rethrow_exception(errs[static_cast<size_t>(u)]),
-                              monoprop::mpi::ShmCommPoisoned);
+            BOOST_CHECK_THROW(std::rethrow_exception(errs[static_cast<size_t>(u)]), monoprop::mpi::ShmCommPoisoned);
         }
     }
 }

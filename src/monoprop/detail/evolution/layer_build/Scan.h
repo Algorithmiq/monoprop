@@ -22,8 +22,8 @@
 #include <span>
 #include <vector>
 
-#include "monoprop/algebra/Algebra.h"
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
@@ -164,10 +164,8 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
 // cap, upper-atol freeze, lower-atol sine cutoff) and a STATIC part (structural cutoff on M' = M⊕G,
 // via CutoffEvaluator::passes_with_popcount). Every emitting path MUST use these helpers so the
 // gate semantics cannot drift between paths.
-inline auto rotation_dynamic_gate(int only_rotate_len_k,
-                                  size_t maj_pop,
-                                  const CutoffContext &ctx,
-                                  double abs_c) -> bool {
+inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t maj_pop, const CutoffContext &ctx, double abs_c)
+    -> bool {
     if (only_rotate_len_k > 0 && maj_pop > static_cast<size_t>(only_rotate_len_k)) {
         return false;
     }
@@ -454,7 +452,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         CosineWordBuilder cos_b;
         for (const auto &w : nz) {
             if (word_aligned_cos && fused_scale_coeffs != nullptr) {
-                // Fused cos sweep (ContractImmediately, k==0): cosine-scale inplace all anticommuting terms and emit survivors 
+                // Fused cos sweep (ContractImmediately, k==0): cosine-scale inplace all anticommuting terms and emit
+                // survivors
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
@@ -471,8 +470,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
             else if (word_aligned_cos) {
                 // No orbital gate: cosine-scale the whole word (all anticommuting terms), then per
-                // bit apply the ATOL coefficient gate BEFORE the popcount ROW read. Deferring popcount 
-                // until a term passes eliminates that many random packed-row cacheline loads. 
+                // bit apply the ATOL coefficient gate BEFORE the popcount ROW read. Deferring popcount
+                // until a term passes eliminates that many random packed-row cacheline loads.
                 cos_b.push_word(w.base, w.overlap);
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));

@@ -1,3 +1,17 @@
+// Copyright 2026 Algorithmiq
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include <boost/test/unit_test.hpp>
 
 #include <array>
@@ -34,7 +48,9 @@ using MSet = Monomial<N>;
 static_assert(!std::is_move_constructible_v<Store>, "OperatorIndex must remain non-movable");
 static_assert(!std::is_copy_constructible_v<Store>, "OperatorIndex must remain non-copyable");
 
-MSet bs(const VecZ &r) { return indices_to_bitset<N>(r); }
+MSet bs(const VecZ &r) {
+    return indices_to_bitset<N>(r);
+}
 } // namespace
 
 BOOST_AUTO_TEST_CASE(rows_roundtrip_dense_popcount_positions) {
@@ -68,15 +84,15 @@ BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
 }
 
 BOOST_AUTO_TEST_CASE(width_is_a_construction_invariant) {
-    Store s(4);                  // stride = 1 + 4, fixed at construction
+    Store s(4); // stride = 1 + 4, fixed at construction
     BOOST_TEST(s.inline_width() == 4u);
     s.push_back(bs({0, 2, 4, 6}));
-    s.reserve(20);               // capacity only -- width is never touched by reserve
+    s.reserve(20); // capacity only -- width is never touched by reserve
     BOOST_TEST(s.inline_width() == 4u);
 }
 
 BOOST_AUTO_TEST_CASE(overflow_is_lossless_above_width) {
-    Store s(2);                  // width 2; a 3-position row must overflow
+    Store s(2); // width 2; a 3-position row must overflow
     s.push_back(bs({0, 1, 2}));
     BOOST_TEST(s.overflow_count() == 1u);
     BOOST_TEST(s.popcount(0) == 3u);
@@ -95,7 +111,7 @@ BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
         a.push_back(bs({static_cast<size_t>(i % 62), static_cast<size_t>((i + 7) % 62)}));
         a.emplace(a.row(static_cast<size_t>(i)), static_cast<size_t>(i));
     }
-    auto f = a.find(a.row(50));             // find confirms against a's own rows after rehash
+    auto f = a.find(a.row(50)); // find confirms against a's own rows after rehash
     BOOST_TEST(f.has_value());
     BOOST_TEST(*f == 50u);
 }
@@ -104,13 +120,13 @@ BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
 // static_asserts above), so clone() must hand back a fresh, fully independent heap store whose
 // index confirms against the CLONE's own rows, not the source's.
 BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
-    Store a(4);                       // non-default width must carry over
+    Store a(4); // non-default width must carry over
     a.push_back(bs({0, 3, 5}));
     a.emplace(bs({0, 3, 5}), 0);
     a.push_back(bs({1, 2}));
     a.emplace(bs({1, 2}), 1);
 
-    auto b = a.clone();               // std::unique_ptr<Store>
+    auto b = a.clone(); // std::unique_ptr<Store>
     BOOST_TEST(b->size() == 2u);
     BOOST_TEST(b->index_size() == 2u);
     BOOST_TEST(b->inline_width() == 4u);
@@ -135,7 +151,7 @@ BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
 }
 
 BOOST_AUTO_TEST_CASE(clone_preserves_overflow_rows) {
-    Store a(2);                       // width 2; a 3-position row overflows losslessly
+    Store a(2); // width 2; a 3-position row overflows losslessly
     a.push_back(bs({0, 1, 2}));
     a.emplace(bs({0, 1, 2}), 0);
 
@@ -189,8 +205,8 @@ BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
     }
     BOOST_TEST(all_match);
     // Spot-check the two kinds explicitly.
-    BOOST_TEST(out[0] == 0u);                    // first present key -> row 0
-    BOOST_TEST(out[1] == Store::kNotFound);      // first absent key
+    BOOST_TEST(out[0] == 0u);               // first present key -> row 0
+    BOOST_TEST(out[1] == Store::kNotFound); // first absent key
 }
 
 // An empty store must report every key missing (find_batch's shard.count == 0 early-out).

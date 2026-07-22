@@ -45,8 +45,17 @@ auto make(const FermiOperatorMap &op,
           std::optional<std::vector<VecZ>> basis_change = std::nullopt,
           size_t logical_num_modes = N,
           Basis basis = Basis::Majorana) -> MP {
-    return MP(op, cutoff, VecZ{}, std::nullopt, MPI_COMM_SELF, lower_atol, upper_atol, cutoff_type, basis_change,
-              logical_num_modes, basis);
+    return MP(op,
+              cutoff,
+              VecZ{},
+              std::nullopt,
+              MPI_COMM_SELF,
+              lower_atol,
+              upper_atol,
+              cutoff_type,
+              basis_change,
+              logical_num_modes,
+              basis);
 }
 } // namespace
 
@@ -56,29 +65,45 @@ BOOST_AUTO_TEST_CASE(ctor_accepts_valid_config) {
 }
 
 BOOST_AUTO_TEST_CASE(ctor_logical_num_modes_out_of_range_throws) {
-    BOOST_CHECK_THROW(make(FermiOperatorMap{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt,
+    BOOST_CHECK_THROW(make(FermiOperatorMap{},
+                           2 * N,
+                           std::nullopt,
+                           std::nullopt,
+                           CutoffType::Length,
+                           std::nullopt,
                            /*logical=*/0),
                       std::runtime_error);
-    BOOST_CHECK_THROW(make(FermiOperatorMap{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt,
+    BOOST_CHECK_THROW(make(FermiOperatorMap{},
+                           2 * N,
+                           std::nullopt,
+                           std::nullopt,
+                           CutoffType::Length,
+                           std::nullopt,
                            /*logical=*/N + 1),
                       std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(ctor_pauli_requires_support_cutoff_throws) {
     // Pauli basis + Length cutoff is rejected (Length has no Pauli-weight meaning).
-    BOOST_CHECK_THROW(make(FermiOperatorMap{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, N,
-                           Basis::Pauli),
-                      std::invalid_argument);
+    BOOST_CHECK_THROW(
+        make(FermiOperatorMap{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, N, Basis::Pauli),
+        std::invalid_argument);
     // Pauli basis + Support cutoff is fine.
-    BOOST_CHECK_NO_THROW(make(FermiOperatorMap{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Support, std::nullopt,
-                              N, Basis::Pauli));
+    BOOST_CHECK_NO_THROW(make(FermiOperatorMap{},
+                              2 * N,
+                              std::nullopt,
+                              std::nullopt,
+                              CutoffType::Support,
+                              std::nullopt,
+                              N,
+                              Basis::Pauli));
 }
 
 BOOST_AUTO_TEST_CASE(ctor_pauli_forbids_basis_change_throws) {
     const std::vector<VecZ> some_basis(2 * N, VecZ{0});
-    BOOST_CHECK_THROW(make(FermiOperatorMap{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Support, some_basis, N,
-                           Basis::Pauli),
-                      std::invalid_argument);
+    BOOST_CHECK_THROW(
+        make(FermiOperatorMap{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Support, some_basis, N, Basis::Pauli),
+        std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(ctor_upper_atol_below_lower_atol_throws) {

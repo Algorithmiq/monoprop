@@ -70,7 +70,8 @@ struct MajoranaAlgebra {
     static auto generator(const GenContext &ctx) -> const Monomial<NumModes> & { return ctx.gen; }
 
     /// Ordering sign (-1)^x of maj·G via the per-layer mask (branch/scan-free). new_maj unused.
-    static auto rotation_sign(const GenContext &ctx, const Monomial<NumModes> &maj,
+    static auto rotation_sign(const GenContext &ctx,
+                              const Monomial<NumModes> &maj,
                               const Monomial<NumModes> & /*new_maj*/) -> int {
         return maj.parity_and(ctx.interleave_mask) ? -1 : 1;
     }
@@ -114,8 +115,8 @@ struct PauliAlgebra {
     static auto generator(const GenContext &ctx) -> const Monomial<NumModes> & { return ctx.pauli_ctx.gen; }
 
     /// Rotation-ready sign (already the negated raw product sign) from the hot Pauli kernel.
-    static auto rotation_sign(const GenContext &ctx, const Monomial<NumModes> &maj,
-                              const Monomial<NumModes> &new_maj) -> int {
+    static auto rotation_sign(const GenContext &ctx, const Monomial<NumModes> &maj, const Monomial<NumModes> &new_maj)
+        -> int {
         return pauli_rotation_sign<NumModes>(ctx.pauli_ctx, maj, new_maj);
     }
     /// Pauli's rotation sign is already the emitted sine phase -- no Hermitian fold.

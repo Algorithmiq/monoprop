@@ -19,8 +19,8 @@
 #include <vector>
 
 #include "monoprop/MPGraph.h"
-#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
@@ -35,7 +35,6 @@ monoprop_EXPORT auto map_params(const VecD &parameters,
                                 const VecD &gen_coeffs,
                                 double phase,
                                 bool reverse = false) -> VecD;
-
 
 monoprop_EXPORT auto ev(double e_core,
                         const VecD &state,
@@ -56,21 +55,20 @@ monoprop_EXPORT auto ev_and_grad(double e_core,
                                  const VecD &params,
                                  mpi::Comm comm = MPI_COMM_WORLD,
                                  const detail::LayerCosScale &cos_scale = {},
-                                 const detail::LayerCosAccumulate &cos_acc = {})
-    -> std::pair<double, VecD>;
+                                 const detail::LayerCosAccumulate &cos_acc = {}) -> std::pair<double, VecD>;
 
 monoprop_EXPORT auto pare_graph(const MPGraph &graph,
-                const VecZ &nonzero_inds,
-                size_t local_index_count,
-                bool schrodinger,
-                mpi::Comm comm,
-                const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph;
+                                const VecZ &nonzero_inds,
+                                size_t local_index_count,
+                                bool schrodinger,
+                                mpi::Comm comm,
+                                const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph;
 
 monoprop_EXPORT auto get_pared_graph(const VecD &state,
-                     const VecD &op,
-                     double threshold,
-                     const MPGraph &graph,
-                     bool schrodinger,
-                     mpi::Comm comm,
-                     const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph;
+                                     const VecD &op,
+                                     double threshold,
+                                     const MPGraph &graph,
+                                     bool schrodinger,
+                                     mpi::Comm comm,
+                                     const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph;
 } // namespace monoprop

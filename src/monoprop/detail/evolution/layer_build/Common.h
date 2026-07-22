@@ -203,7 +203,8 @@ inline auto build_fused_query_value(const VecZ &q, const std::vector<double> &v,
     out.clear();
     out.reserve(nq * kQueryWordsFused<NumModes>);
     for (size_t i = 0; i < nq; ++i) {
-        out.insert(out.end(), q.begin() + static_cast<std::ptrdiff_t>(i * W),
+        out.insert(out.end(),
+                   q.begin() + static_cast<std::ptrdiff_t>(i * W),
                    q.begin() + static_cast<std::ptrdiff_t>((i + 1) * W));
         out.push_back(encode_value(v[i]));
     }

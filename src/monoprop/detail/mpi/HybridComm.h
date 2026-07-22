@@ -49,7 +49,10 @@ public:
     // parent = the R-rank MPI communicator; n_local_shards = S (same on every rank — the facade ctor
     // allreduces S for a min==max consistency check before constructing this).
     HybridComm(MPI_Comm parent, int n_local_shards)
-        : parent_(parent), s_(n_local_shards), slots_(static_cast<size_t>(n_local_shards)), barrier_(n_local_shards) {
+        : parent_(parent),
+          s_(n_local_shards),
+          slots_(static_cast<size_t>(n_local_shards)),
+          barrier_(n_local_shards) {
         MPI_Comm_size(parent_, &r_);
         MPI_Comm_rank(parent_, &mpi_rank_);
         int provided = MPI_THREAD_SINGLE;
@@ -76,7 +79,7 @@ public:
     HybridComm(const HybridComm &) = delete;
     auto operator=(const HybridComm &) -> HybridComm & = delete;
 
-    auto size() const -> int { return r_ * s_; }                                      // P = R*S
+    auto size() const -> int { return r_ * s_; }                                            // P = R*S
     auto global_rank(int local_shard) const -> int { return mpi_rank_ * s_ + local_shard; } // rank-major
 
     // recv_counts[g] = amount global partition g sends to this (local_shard) partition, in the flat
@@ -241,8 +244,9 @@ public:
         for (int a = 0; a < r_; ++a) {
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
-                const int c = counts_recv_[(static_cast<size_t>(a) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
-                                           + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
+                const int c =
+                    counts_recv_[(static_cast<size_t>(a) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
+                                 + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
                 recv_counts[g] = c;
                 recv_displs[g] = static_cast<int>(total);
                 total += static_cast<size_t>(c);
@@ -420,10 +424,10 @@ private:
             mpi_recv_displs_[static_cast<size_t>(b)] =
                 mpi_recv_displs_[static_cast<size_t>(b - 1)] + mpi_recv_counts_[static_cast<size_t>(b - 1)];
         }
-        const size_t total_send =
-            static_cast<size_t>(mpi_send_displs_[static_cast<size_t>(r_ - 1)] + mpi_send_counts_[static_cast<size_t>(r_ - 1)]);
-        const size_t total_recv =
-            static_cast<size_t>(mpi_recv_displs_[static_cast<size_t>(r_ - 1)] + mpi_recv_counts_[static_cast<size_t>(r_ - 1)]);
+        const size_t total_send = static_cast<size_t>(mpi_send_displs_[static_cast<size_t>(r_ - 1)]
+                                                      + mpi_send_counts_[static_cast<size_t>(r_ - 1)]);
+        const size_t total_recv = static_cast<size_t>(mpi_recv_displs_[static_cast<size_t>(r_ - 1)]
+                                                      + mpi_recv_counts_[static_cast<size_t>(r_ - 1)]);
         // Grow-only, no zero-fill: pack_send_'s blocks tile [0, total_send) exactly (they are derived
         // from the same published count matrix as total_send), and MPI_Alltoallv fills every live byte
         // of stage_recv_ per mpi_recv_counts_ — stale bytes past a previous high-water mark are never
@@ -492,10 +496,10 @@ private:
     std::vector<Slot> slots_;
 
     // Shard-0-managed shared state (written by shard 0, read by all between barriers).
-    std::vector<int> counts_send_, counts_recv_;                           // S*S per rank, the counts alltoall
+    std::vector<int> counts_send_, counts_recv_; // S*S per rank, the counts alltoall
     std::vector<int> mpi_send_counts_, mpi_send_displs_, mpi_recv_counts_, mpi_recv_displs_; // [R]
-    std::vector<size_t> pack_off_, scatter_off_;   // [R*S*S] block starts (elements) in the staging buffers
-    std::vector<std::byte> stage_send_, stage_recv_;                       // aggregated MPI payload staging, HWM-sized
+    std::vector<size_t> pack_off_, scatter_off_;     // [R*S*S] block starts (elements) in the staging buffers
+    std::vector<std::byte> stage_send_, stage_recv_; // aggregated MPI payload staging, HWM-sized
     double red_f64_ = 0.0;
     uint64_t red_u64_ = 0;
     std::vector<double> red_vec_;

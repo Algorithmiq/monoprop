@@ -55,7 +55,6 @@ auto majorana_sim(const CaseData &data, size_t shards) -> MonomialPropagator<kNu
                                          shards);
 }
 
-
 BOOST_AUTO_TEST_CASE(shard_majorana_energy_matches_across_shard_counts) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto ref = majorana_sim(data, 1);
@@ -202,6 +201,5 @@ BOOST_AUTO_TEST_CASE(shard_pauli_energy_matches_across_shard_counts) {
         }
     }
 }
-
 
 } // namespace

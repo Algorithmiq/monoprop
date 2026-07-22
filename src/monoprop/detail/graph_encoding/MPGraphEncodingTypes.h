@@ -53,7 +53,10 @@ struct CosMask final {
     size_t total_count = 0; // number of set bits
     auto empty() const -> bool { return blocks.empty(); }
     auto span_count() const -> size_t { return blocks.size(); } // WORD count (parallel split unit)
-    auto reset() -> void { blocks.clear(); total_count = 0; }
+    auto reset() -> void {
+        blocks.clear();
+        total_count = 0;
+    }
     auto shrink_to_fit() -> void { blocks.shrink_to_fit(); }
 };
 
@@ -65,22 +68,33 @@ struct CosineWordBuilder final {
     size_t cur_base = std::numeric_limits<size_t>::max();
     uint64_t cur_bits = 0;
     auto flush() -> void {
-        if (cur_bits != 0) { list.blocks.emplace_back(cur_base, cur_bits); cur_bits = 0; }
+        if (cur_bits != 0) {
+            list.blocks.emplace_back(cur_base, cur_bits);
+            cur_bits = 0;
+        }
         cur_base = std::numeric_limits<size_t>::max();
     }
     auto push_index(size_t idx) -> void {
         const size_t base = (idx >> 6) << 6;
-        if (base != cur_base) { flush(); cur_base = base; }
+        if (base != cur_base) {
+            flush();
+            cur_base = base;
+        }
         cur_bits |= (uint64_t{1} << (idx & 63U));
         ++list.total_count;
     }
     auto push_word(size_t block_base, uint64_t bits) -> void { // block_base % 64 == 0
-        if (bits == 0) { return; }
+        if (bits == 0) {
+            return;
+        }
         flush();
         list.blocks.emplace_back(block_base, bits);
         list.total_count += static_cast<size_t>(std::popcount(bits));
     }
-    auto finish() -> CosMask { flush(); return std::move(list); }
+    auto finish() -> CosMask {
+        flush();
+        return std::move(list);
+    }
 };
 
 struct PackedPhaseStorage final {
@@ -117,9 +131,11 @@ struct CrossRankPartnerData {
 };
 
 struct CrossRankPartnerRange final {
-    size_t    sin_send_offset = 0; // into sin_send_indices; cumulative across ranks, so size_t (a layer's total may exceed 2^32 even when each rank's term count does not)
-    TermIndex sin_send_count  = 0; // == sin_recv_count (paper invariant); TermIndex-wide so one rank/layer can exceed 2^32
-    size_t    sin_recv_offset = 0; // into sin_recv_phases; cumulative across ranks, so size_t (see sin_send_offset)
+    size_t sin_send_offset = 0; // into sin_send_indices; cumulative across ranks, so size_t (a layer's total may exceed
+                                // 2^32 even when each rank's term count does not)
+    TermIndex sin_send_count =
+        0;                      // == sin_recv_count (paper invariant); TermIndex-wide so one rank/layer can exceed 2^32
+    size_t sin_recv_offset = 0; // into sin_recv_phases; cumulative across ranks, so size_t (see sin_send_offset)
     // Single phased D list: former D- entries (sign baked as -phi) come first, former D+ entries
     // (+phi) second, but no consumer needs the boundary — the signed phase carries everything.
     TermIndex sin_recv_count = 0;
@@ -129,13 +145,13 @@ struct CrossRankPartnerRange final {
 };
 
 struct PackedCrossRankStorage final {
-    std::vector<CrossRankPartnerRange> ranges;     // size == R
-    std::vector<TermIndex> sin_send_indices;              // D indices are derived from B on read, not stored
-    PackedPhaseStorage    sin_recv_phases;                // one phased entry per D index, sign baked in
+    std::vector<CrossRankPartnerRange> ranges; // size == R
+    std::vector<TermIndex> sin_send_indices;   // D indices are derived from B on read, not stored
+    PackedPhaseStorage sin_recv_phases;        // one phased entry per D index, sign baked in
 
     auto rank_count() const -> size_t { return ranges.size(); }
-    auto sin_send_size(size_t rank)  const -> size_t { return ranges[rank].sin_send_count; }
-    auto sin_recv_size(size_t rank)  const -> size_t { return ranges[rank].sin_recv_count; }
+    auto sin_send_size(size_t rank) const -> size_t { return ranges[rank].sin_send_count; }
+    auto sin_recv_size(size_t rank) const -> size_t { return ranges[rank].sin_recv_count; }
     // P = number of in-entries = number of rotations on this rank (each rotation has one in/target).
     // sin_recv_size = in_count + out_count counts BOTH endpoints, so it double-counts self-rank rotations.
     auto in_count(size_t rank) const -> size_t { return ranges[rank].in_count; }
@@ -145,7 +161,7 @@ struct PackedCrossRankStorage final {
 struct LayerCore final {
     PackedCrossRankStorage cross_rank;
     LayerExchangeLayout evolution_exchange_layout;
-    LayerExchangeLayout derivative_exchange_layout;  // precomputed 2x of evolution_exchange_layout
+    LayerExchangeLayout derivative_exchange_layout; // precomputed 2x of evolution_exchange_layout
 
     // ── Per-layer recompute metadata (NumModes-agnostic) ─────────────────────────────────────────
     // Lets the cosine-recompute path rebuild this layer's cosine set on the fly (an XOR-fold of the

@@ -28,8 +28,8 @@
 #include <string>
 #include <vector>
 
-#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 
 namespace pauli_oracle {
 

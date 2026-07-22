@@ -1,3 +1,17 @@
+// Copyright 2026 Algorithmiq
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #pragma once
 
 #include <cstddef>
@@ -106,14 +120,29 @@ inline auto post_flat_alltoallv(const T *send,
 #ifdef monoprop_ENABLE_MPI
     if (comm.kind == Comm::Kind::Hybrid) {
         // Synchronous (the MPI_Alltoallv runs inside); the Ticket's wait() is a no-op.
-        comm.hyb->alltoallv(
-            comm.shm_rank, send, send_counts, send_displs, recv, recv_counts, recv_displs, sizeof(T), datatype<T>::get());
+        comm.hyb->alltoallv(comm.shm_rank,
+                            send,
+                            send_counts,
+                            send_displs,
+                            recv,
+                            recv_counts,
+                            recv_displs,
+                            sizeof(T),
+                            datatype<T>::get());
         return Ticket{};
     }
     (void)num_ranks;
     MPI_Request request = MPI_REQUEST_NULL;
-    MPI_Ialltoallv(send, send_counts, send_displs, datatype<T>::get(),
-                   recv, recv_counts, recv_displs, datatype<T>::get(), comm.mpi, &request);
+    MPI_Ialltoallv(send,
+                   send_counts,
+                   send_displs,
+                   datatype<T>::get(),
+                   recv,
+                   recv_counts,
+                   recv_displs,
+                   datatype<T>::get(),
+                   comm.mpi,
+                   &request);
     return Ticket(request);
 #else
     (void)send_counts;

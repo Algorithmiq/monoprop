@@ -1,27 +1,41 @@
+// Copyright 2026 Algorithmiq
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #pragma once
 
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cassert>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iterator>
-#include <cassert>
 #include <limits>
 #include <map>
-#include <numeric>
-#include <stdexcept>
-#include <optional>
 #include <memory>
 #include <new>
+#include <numeric>
+#include <optional>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#include <format>
 #include <boost/unordered/unordered_flat_map.hpp>
+#include <format>
 
 #include "monoprop/Bitset.h"
 // The basis-agnostic monomial vocabulary (Monomial, MonomialList, MonomialMap, MonomialHash/Equal,
@@ -150,8 +164,7 @@ using CyclesType = std::vector<std::vector<std::pair<size_t, size_t>>>;
 // puts them in ordinary-lookup scope at the point those headers are parsed.
 namespace monoprop {
 template <size_t NumModes>
-[[nodiscard]] inline auto materialize_row(const detail::OperatorIndex<NumModes> &op, size_t i)
-    -> Monomial<NumModes> {
+[[nodiscard]] inline auto materialize_row(const detail::OperatorIndex<NumModes> &op, size_t i) -> Monomial<NumModes> {
     return op.row(i);
 }
 template <size_t NumModes>

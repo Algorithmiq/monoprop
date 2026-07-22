@@ -56,7 +56,7 @@ BOOST_AUTO_TEST_CASE(matched_epoch_tail_grow) {
     set.mark(3);
     BOOST_TEST(set.is_marked(3));
 
-    set.begin_gate(8); // grew from 4 to 8 slots
+    set.begin_gate(8);             // grew from 4 to 8 slots
     BOOST_TEST(!set.is_marked(3)); // old mark cleared by the epoch bump
     set.mark(7);                   // new tail slot works
     BOOST_TEST(set.is_marked(7));

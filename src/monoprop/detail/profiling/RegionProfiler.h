@@ -54,8 +54,16 @@ enum class Region : int {
 inline constexpr int kRegionCount = static_cast<int>(Region::COUNT);
 
 inline constexpr std::array<std::string_view, kRegionCount> kRegionNames{
-    "find",   "self_resolve", "mpi_exchange", "defer_insert", "gather",  "evolve",
-    "cos_recompute", "cos_scale", "fused_apply", "extend",
+    "find",
+    "self_resolve",
+    "mpi_exchange",
+    "defer_insert",
+    "gather",
+    "evolve",
+    "cos_recompute",
+    "cos_scale",
+    "fused_apply",
+    "extend",
 };
 
 using prof_clock = std::chrono::steady_clock;
@@ -85,7 +93,9 @@ monoprop_EXPORT auto record_fold_stats(bool all_sparse,
                                        size_t n_anti,
                                        size_t struct_rejects) -> void;
 
-inline auto acc(Region r) -> RegionAcc & { return profiling_accs()[static_cast<int>(r)]; }
+inline auto acc(Region r) -> RegionAcc & {
+    return profiling_accs()[static_cast<int>(r)];
+}
 
 // ── ScopedRegion: mark a named phase and accumulate its wall time. ──
 class ScopedRegion {

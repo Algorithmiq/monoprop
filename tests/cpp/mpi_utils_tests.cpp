@@ -42,7 +42,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
             const size_t r = find_rank<N>(maj, n_ranks);
             BOOST_TEST(r < n_ranks);
             BOOST_TEST(r == monomial_hash<N>(maj) % n_ranks); // matches the documented formula
-            BOOST_TEST(r == find_rank<N>(maj, n_ranks));       // deterministic
+            BOOST_TEST(r == find_rank<N>(maj, n_ranks));      // deterministic
         }
     }
 }

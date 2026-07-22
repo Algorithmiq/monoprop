@@ -62,7 +62,7 @@ BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
         1.0,
         -1.0,
         3.141592653589793,
-        -2.718281828459045e-300,           // near-denormal magnitude
+        -2.718281828459045e-300,            // near-denormal magnitude
         std::numeric_limits<double>::min(), // smallest normal
     };
     const size_t nq = values.size();

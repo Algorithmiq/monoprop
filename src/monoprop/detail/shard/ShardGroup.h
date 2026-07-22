@@ -61,7 +61,9 @@ public:
     // into one flat P = R*S SPMD world (the MPI hybrid). Either way the shard propagators see a
     // P-partition comm and run the unchanged engine.
     ShardGroup(int n_shards, const Factory &factory, mpi::Comm parent)
-        : n_(n_shards), parent_(parent), shards_(static_cast<size_t>(n_shards)),
+        : n_(n_shards),
+          parent_(parent),
+          shards_(static_cast<size_t>(n_shards)),
           errs_(static_cast<size_t>(n_shards)) {
         make_transport_();
         discover_node_peers_();
@@ -75,8 +77,12 @@ public:
     // same parent), deep-copy each of `src`'s shards on the new master, then rebind the copy's comm to
     // this group's transport (the copy inherited a handle to src's).
     ShardGroup(const ShardGroup &src)
-        : n_(src.n_), parent_(src.parent_), node_rank_(src.node_rank_), node_size_(src.node_size_),
-          shards_(static_cast<size_t>(src.n_)), errs_(static_cast<size_t>(src.n_)) {
+        : n_(src.n_),
+          parent_(src.parent_),
+          node_rank_(src.node_rank_),
+          node_size_(src.node_size_),
+          shards_(static_cast<size_t>(src.n_)),
+          errs_(static_cast<size_t>(src.n_)) {
         make_transport_();
         cpusets_ = topo_shard_cpusets(n_, node_rank_, node_size_);
         start_masters_();
@@ -135,8 +141,9 @@ private:
     // Free-function wrapper so the header compiles on non-Linux (where shard_cpusets returns {}).
     static auto topo_shard_cpusets(int n, int group_index, int group_count)
         -> std::vector<monoprop::detail::shard::CpuSet> {
-        return monoprop::detail::shard::shard_cpusets(
-            static_cast<size_t>(n), static_cast<size_t>(group_index), static_cast<size_t>(group_count));
+        return monoprop::detail::shard::shard_cpusets(static_cast<size_t>(n),
+                                                      static_cast<size_t>(group_index),
+                                                      static_cast<size_t>(group_count));
     }
 
     // Under an MPI parent, find how many ranks share this host and which one we are, so each
@@ -235,10 +242,10 @@ private:
     }
 
     int n_;
-    mpi::Comm parent_;                    // enclosing communicator (size R) — decides the transport
-    int node_rank_ = 0;                   // this rank's index among the ranks sharing the host
-    int node_size_ = 1;                   // how many parent ranks share the host (1 unless MPI R>1)
-    std::unique_ptr<mpi::ShmComm> shm_;   // set iff R == 1
+    mpi::Comm parent_;                  // enclosing communicator (size R) — decides the transport
+    int node_rank_ = 0;                 // this rank's index among the ranks sharing the host
+    int node_size_ = 1;                 // how many parent ranks share the host (1 unless MPI R>1)
+    std::unique_ptr<mpi::ShmComm> shm_; // set iff R == 1
 #ifdef monoprop_ENABLE_MPI
     std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1
 #endif

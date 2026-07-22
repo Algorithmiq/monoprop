@@ -22,8 +22,8 @@
 
 #include <vector>
 
-#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 
 using namespace monoprop;
 
