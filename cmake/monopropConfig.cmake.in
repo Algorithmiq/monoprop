@@ -21,7 +21,20 @@
 
 include(CMakeFindDependencyMacro)
 
-find_dependency(Boost 1.85 CONFIG REQUIRED)
+find_dependency(
+  Boost
+  1.85
+  CONFIG
+  REQUIRED
+)
+
+# monoprop::monoprop links Threads::Threads PUBLIC, so the imported target must be
+# recreated for downstream consumers (otherwise the exported link interface names a
+# target that does not exist).
+find_dependency(
+  Threads
+  REQUIRED
+)
 
 set(monoprop_ENABLE_MPI "@monoprop_ENABLE_MPI@")
 if(monoprop_ENABLE_MPI)
