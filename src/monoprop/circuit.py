@@ -82,7 +82,7 @@ class ExpGate:
     - :class:`~monoprop.majorana.MajoranaOperator` -- a Majorana generator carrying the
       *Hermitian* operator (its coefficients follow the same convention as an observable:
       imaginary for a weight-2 monomial, real for weight-4); it is antihermitian-normalized --
-      the Hermitian phase :math:`i^{\binom{w}{2}}` divided out -- by :func:`_gate_layers` when
+      the Hermitian phase $i^\binom w2$ divided out -- by :func:`_gate_layers` when
       the circuit is ingested. A coefficient that leaves a non-negligible imaginary residue
       after normalization is rejected as non-Hermitian.
     - :class:`~monoprop.pauli.PauliOperator` -- a qubit generator; each Pauli term is
@@ -91,7 +91,7 @@ class ExpGate:
     - :class:`~monoprop.fermi.FermiOperator` -- a fermionic generator; converted to its
       (Hermitian) Majorana form by :meth:`get_majorana_operator` right here in ``__init__``, so
       the gate *is* a ``"majorana"`` gate from then on. The fermionic-to-Majorana mapping already
-      carries the factors of :math:`\tfrac12` and the phases, so the resulting coefficients are
+      carries the factors of $\tfrac12$ and the phases, so the resulting coefficients are
       exactly the Hermitian convention above -- no separate fermionic normalization is needed.
 
     All three families thus take the **Hermitian** generator and normalize it identically; the
