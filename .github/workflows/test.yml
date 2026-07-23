@@ -70,7 +70,7 @@ jobs:
           else
             sudo apt-get update
             sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev
-            ./tools/install-deps.sh /opt/Software --skip-boost-test --skip-msgpack
+            ./tools/install-deps.sh /opt/Software
           fi
 
       - name: Set build environment variables
