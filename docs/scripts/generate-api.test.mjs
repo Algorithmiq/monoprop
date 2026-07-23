@@ -11,3 +11,10 @@ test('convertSphinxMarkup renders Sphinx math as markdown math', () => {
     'phase $i^{\\binom{w}{2}}$ and `monoprop.circuit.ExpGate`',
   );
 });
+
+test('convertSphinxMarkup escapes dollar signs inside math roles', () => {
+  assert.equal(
+    convertSphinxMarkup('sum :math:`x + $y$` and :math:`z`'),
+    'sum $x + \\$y\\$$ and $z$',
+  );
+});

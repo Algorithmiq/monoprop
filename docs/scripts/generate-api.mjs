@@ -40,6 +40,11 @@ function prunePrivate(map) {
   }
 }
 
+/** Escape characters that would terminate or nest markdown inline math. */
+function escapeInlineMath(content) {
+  return content.replaceAll('$', '\\$');
+}
+
 /** Recursively strip private classes/functions/submodules from a module node. */
 function pruneModule(mod) {
   prunePrivate(mod.classes ?? {});
@@ -63,7 +68,7 @@ export function convertSphinxMarkup(content) {
   return content.replaceAll(/:(\w+):`([^`]+)`/g, (match, role, inner) => {
     // Remove leading ~ if present (used in Sphinx for full qualified paths)
     const cleanName = inner.replace(/^~/, '');
-    if (role === 'math') return `$${cleanName}$`;
+    if (role === 'math') return `$${escapeInlineMath(cleanName)}$`;
     // Wrap non-math references in backticks for cross-reference resolution
     return `\`${cleanName}\``;
   });
