@@ -40,8 +40,8 @@ jobs:
           - "3.11"
           - "3.14"
         runner:
-          - ubuntu-latest
-          - ubuntu-24.04-arm
+          - ubuntu-26.04
+          - ubuntu-26.04-arm
           - macos-15
 
     runs-on: ${{ matrix.runner}}
@@ -69,8 +69,8 @@ jobs:
             brew install boost tbb open-mpi
           else
             sudo apt-get update
-            sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev
-            ./tools/install-deps.sh /opt/Software --skip-boost-test --skip-msgpack
+            sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev libboost-dev libboost-test-dev libmsgpack-cxx-dev
+            ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
           fi
 
       - name: Set build environment variables
@@ -153,8 +153,8 @@ jobs:
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
-    name: Check C++ on ubuntu-latest (coverage)
-    runs-on: ubuntu-latest
+    name: Check C++ on ubuntu-26.04 (coverage)
+    runs-on: ubuntu-26.04
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -175,8 +175,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
-          ./tools/install-deps.sh /opt/Software
+          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Configure
         run: |
@@ -252,7 +252,7 @@ jobs:
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
     name: Collect C++ coverage through the Python bindings
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     permissions:
       contents: read
@@ -284,8 +284,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev
-          ./tools/install-deps.sh /opt/Software --skip-boost-test --skip-msgpack
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Set build environment variables
         run: |
@@ -332,7 +332,7 @@ jobs:
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
     name: Upload coverage to Codecov
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs:
       - python-checks
       - cpp-checks
@@ -380,7 +380,7 @@ jobs:
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
     name: SonarQube analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs:
       - python-checks
       - cpp-checks
@@ -432,8 +432,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
-          ./tools/install-deps.sh /opt/Software
+          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Install matching Build Wrapper
         run: |
@@ -473,13 +473,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-26.04-arm
             compiler: gcc-14
             cmake_cxx_compiler: g++
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-26.04-arm
             compiler: clang-18
             cmake_cxx_compiler: clang++
-          - runner: ubuntu-latest
+          - runner: ubuntu-26.04
             compiler: clang-18
             cmake_cxx_compiler: clang++
           - runner: macos-15
@@ -523,8 +523,8 @@ jobs:
         if: ${{ matrix.runner != 'macos-15' }}
         run: |
           sudo apt-get update
-          sudo apt-get install libtbb-dev libopenmpi-dev openmpi-bin
-          ./tools/install-deps.sh /opt/Software
+          sudo apt-get install libtbb-dev libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Install dependencies
         if: ${{ matrix.runner == 'macos-15' }}
@@ -569,7 +569,7 @@ jobs:
       - sonarqube-analysis
       - cpp-checks-other
       - upload-coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       checks: write
 

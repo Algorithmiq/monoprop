@@ -28,7 +28,7 @@ env:
 jobs:
   check-pr-changes:
     name: Check PR changes for deploy workflow
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       should-run: ${{ steps.check.outputs.should-run }}
     steps:
@@ -99,7 +99,7 @@ jobs:
     name: Build source distribution
     needs: check-pr-changes
     if: ${{ github.event_name != 'pull_request' || needs.check-pr-changes.outputs.should-run == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -131,9 +131,9 @@ jobs:
           - archs: native
             platform: auto
           - os: linux-intel
-            runs-on: ubuntu-latest
+            runs-on: ubuntu-26.04
           - os: linux-arm
-            runs-on: ubuntu-24.04-arm
+            runs-on: ubuntu-26.04-arm
           - os: macos-arm
             runs-on: macos-15
 
@@ -163,7 +163,7 @@ jobs:
       - build-wheels
     if: github.event_name == 'release' && github.event.action == 'published'
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: pypi
     permissions:
       id-token: write

@@ -12,7 +12,7 @@ on:
 jobs:
   # the job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
   copilot-setup-steps:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     permissions:
       contents: read
@@ -26,7 +26,7 @@ jobs:
       - name: Install dependencies from APT
         run: |
           sudo apt-get update
-          sudo apt-get install -y just libtbb-dev libopenmpi-dev openmpi-bin
+          sudo apt-get install -y just libtbb-dev libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
 
       - name: Set gcc-14/g++-14 as default compilers
         run: |
@@ -41,7 +41,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          ./tools/install-deps.sh /opt/Software
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0

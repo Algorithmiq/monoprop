@@ -37,7 +37,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -48,7 +48,7 @@ jobs:
       - name: Install dependencies from APT
         run: |
           sudo apt-get update
-          sudo apt-get install -y just libtbb-dev libopenmpi-dev openmpi-bin
+          sudo apt-get install -y just libtbb-dev libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
 
       - name: Set gcc-14/g++-14 as default compilers
         run: |
@@ -63,7 +63,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          ./tools/install-deps.sh /opt/Software --skip-boost-test --skip-msgpack
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -117,7 +117,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
@@ -125,7 +125,7 @@ jobs:
 
   deploy-cloudflare:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       pull-requests: write
