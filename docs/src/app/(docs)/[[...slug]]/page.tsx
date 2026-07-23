@@ -11,22 +11,31 @@ import { notFound } from 'next/navigation';
 import { getMDXComponents } from '@/components/mdx';
 import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
 import { gitConfig } from '@/lib/shared';
 
-const repoRoot = path.resolve(process.cwd(), '..');
+const apiModules = new Set([
+  'majorana_propagator',
+  'pauli_propagator',
+  'monomial_propagator',
+  'circuit',
+  'fermi',
+  'pauli',
+  'qiskit_conversion',
+  'integral_conversion',
+  'utils',
+  'majorana',
+  'quantum_data',
+  'exceptions',
+]);
 
 function getPageGithubPath(page: (typeof source)['$inferPage']) {
   if (page.slugs[0] !== 'api') {
     return `docs/content/docs/${page.path}`;
   }
 
-  for (let i = page.slugs.length; i > 1; i -= 1) {
-    const sourcePath = `src/monoprop/${page.slugs.slice(1, i).join('/')}.py`;
-    if (existsSync(path.join(repoRoot, sourcePath))) {
-      return sourcePath;
-    }
+  const moduleName = page.slugs[1];
+  if (moduleName && apiModules.has(moduleName)) {
+    return `src/monoprop/${moduleName}.py`;
   }
 
   return 'src/monoprop/__init__.py';
