@@ -104,7 +104,7 @@ def integrals_to_fermion(h0: float, h1: ndarray, h2: ndarray) -> FermiOperator:
             ``(3, n_orb, n_orb, n_orb, n_orb)`` containing the alpha-alpha,
             beta-beta, and alpha-beta electron-repulsion integrals in
             chemist's notation,
-            $$(pq|rs)=\\int \\phi_p(r_1)\\phi_q(r_1) r_{12}^{-1}\\phi_r(r_2)\\phi_s(r_2)\\mathrm{d}r_1\\mathrm{d}r_2$$
+            :math:`(pq|rs)=\\int\\phi_p(r_1)\\phi_q(r_1)r_{12}^{-1}\\phi_r(r_2)\\phi_s(r_2)\\mathrm{d}r_1\\mathrm{d}r_2`
 
     Returns:
         Hamiltonian in FermiOperator format.
