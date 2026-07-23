@@ -1,0 +1,123 @@
+---
+title: Building from source
+description: Build the Python bindings and the C++ library and executables, with or without MPI.
+---
+
+monoprop has two build products, each with its own build system:
+
+- the **Python bindings** — the nanobind extension behind `import monoprop`,
+  built with scikit-build-core and driven by `uv` (or `pip`);
+- the **standalone C++ library and executables** — built directly with CMake
+  presets.
+
+MPI is **off by default** in every build path; you enable it explicitly. The
+mechanism differs by build:
+
+| Build | Enable MPI with |
+| --- | --- |
+| Python bindings (scikit-build / `uv` / `pip`) | `--config-settings=cmake.define.monoprop_ENABLE_MPI=ON` (or export `SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON"`) |
+| C++ (CMake presets) | use the `*-mpi` preset |
+
+The prebuilt wheels published to PyPI (`pip install monoprop`) are also built
+without MPI, so a from-source build is required for multi-rank runs.
+
+## Prerequisites
+
+- a C++23-compliant compiler; on Linux the minimum supported versions are **GCC 14** and **Clang 18**
+- CMake and Ninja
+- Python 3.11 or newer and the `uv` package manager (for the bindings)
+- an MPI implementation such as Open MPI (only for MPI builds)
+
+The repository ships a [DevContainer](https://containers.dev/) with all of the
+above pre-configured; opening the folder in VS Code and rebuilding the container is
+the quickest route to a working environment.
+
+## Building the Python bindings
+
+`uv` creates a virtual environment, installs the Python dependencies, and
+compiles the nanobind extension in editable mode. Re-run the sync command whenever
+the dependency graph or the C++ sources change.
+
+
+### Without MPI (default)
+
+```bash
+uv sync --all-extras -v
+```
+
+This produces a single-process build with no MPI dependency.
+
+### With MPI
+
+Pass a `config-settings` override to enable MPI:
+
+```bash
+uv sync --all-extras -v \
+    --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
+```
+
+The same override works with `pip` when installing from a checkout:
+
+```bash
+pip install . --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
+```
+
+### Verify the install
+
+```bash
+uv run python -c "import monoprop as mp; print(mp.__version__)"
+```
+
+### Running the bindings
+
+A serial run is just a normal Python invocation:
+
+```bash
+uv run python your_script.py
+```
+
+For a multi-rank run, launch the same script under `mpiexec` (requires an MPI
+build) and pass `comm=MPI.COMM_WORLD` to the simulator:
+
+```bash
+mpiexec -n 8 uv run python your_script.py
+```
+
+See [Parallelism and distribution](/features/parallelism) for the communicator options and the
+shared-memory thread controls.
+
+## Building the C++ library and executables
+
+The standalone build uses CMake presets (Ninja generator). It produces the
+`monoprop` library plus the example, benchmark, and test executables under
+`build/<preset>/bin/`.
+
+### Default preset (no MPI)
+
+```bash
+cmake --preset release-gcc
+cmake --build --preset release-gcc
+```
+
+### MPI preset
+
+Use the `-mpi` preset, which sets `monoprop_ENABLE_MPI=ON`:
+
+```bash
+cmake --preset release-gcc-mpi
+cmake --build --preset release-gcc-mpi
+```
+
+`debug-gcc` / `debug-gcc-mpi` presets are available for debug builds. To build a
+single target, pass `--target`:
+
+```bash
+cmake --build --preset release-gcc --target example.x
+```
+
+
+## See also
+
+- [Getting Started](/getting-started) — installing a prebuilt release from PyPI.
+- [Parallelism and distribution](/features/parallelism) — running across MPI ranks and shared-memory threads.
+- [How to Contribute](/how-to-contribute) — the full test and documentation workflow.

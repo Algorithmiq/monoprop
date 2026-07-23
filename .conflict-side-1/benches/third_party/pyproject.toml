@@ -1,0 +1,29 @@
+[project]
+name = "monoprop-benchmarks"
+version = "0.1.0"
+description = "Standalone benchmark scripts for monoprop"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "monoprop",
+    "qiskit==2.5.0",
+    "tqdm==4.68.3",
+    "ppvm==0.1.0",
+    "pauli-prop==0.2.0",
+    "cuquantum-python-cu12==26.6.0",
+    "cupy-cuda12x[ctk]==14.1.1",
+    "psutil>=7.2",
+    "matplotlib>=3.11",
+]
+
+[tool.uv]
+python-preference = "only-managed"
+
+[tool.uv.extra-build-variables.ppvm]
+RUSTFLAGS = "-C target-feature=+aes,+neon"
+
+[tool.ruff.lint.per-file-ignores]
+"**/*.py" = ["INP001"]
+
+[tool.uv.sources]
+monoprop = { path = "../..", editable = true }
+ppvm = { git = "https://github.com/QuEraComputing/ppvm.git", subdirectory = "ppvm-python", rev = "2570637b145949aadc085871400fdac9322fff54" }

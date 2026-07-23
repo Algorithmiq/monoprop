@@ -1,0 +1,77 @@
+Checks: >
+  *,
+  -abseil-*,
+  -altera-*,
+  -android-*,
+  -boost-*,
+  -darwin-*,
+  -fuchsia-*,
+  -google-*,
+  -hicpp-*,
+  -linuxkernel-*,
+  -llvm-*,
+  -llvmlibc-*,
+  -mpi-*,
+  -objc-*,
+  -openmp-*,
+  -zircon-*,
+  google-explicit-constructor,
+  -cert-*,
+  cert-err34-c,
+  cert-err52-cpp,
+  cert-err60-cpp,
+  -cppcoreguidelines-*,
+  cppcoreguidelines-avoid-goto,
+  cppcoreguidelines-rvalue-reference-param-not-moved,
+  cppcoreguidelines-slicing,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-signed-char-misuse,
+  -bugprone-unchecked-optional-access,
+  -clang-analyzer-*,
+  -concurrency-mt-unsafe,
+  -misc-const-correctness,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  -misc-non-private-member-variables-in-classes,
+  -misc-use-anonymous-namespace,
+  -misc-unused-using-decls,
+  -modernize-avoid-c-arrays,
+  -modernize-deprecated-ios-base-aliases,
+  -modernize-macro-to-enum,
+  -modernize-replace-auto-ptr,
+  -modernize-type-traits,
+  -modernize-use-auto,
+  -modernize-use-nodiscard,
+  -modernize-use-trailing-return-type,
+  -performance-avoid-endl,
+  -performance-enum-size,
+  -performance-noexcept-swap,
+  -portability-avoid-pragma-once,
+  -portability-simd-intrinsics,
+  -portability-std-allocator-const,
+  -readability-avoid-const-params-in-decls,
+  -readability-avoid-nested-conditional-operator,
+  -readability-braces-around-statements,
+  -readability-function-cognitive-complexity,
+  -readability-function-size,
+  -readability-identifier-length,
+  -readability-identifier-naming,
+  -readability-implicit-bool-conversion,
+  -readability-isolate-declaration,
+  -readability-magic-numbers,
+  -readability-suspicious-call-argument,
+  -readability-uppercase-literal-suffix
+# Match all project headers under include/ and src/
+HeaderFilterRegex: '^(include|src)/.*\.(h|hpp)$'
+CheckOptions:
+  - key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic
+    value: '1'
+  - key: readability-simplify-boolean-expr.SimplifyDeMorgan
+    value: '0'
+  # Treat BOOST_ASSERT / BOOST_VERIFY as assert-like macros
+  - key: bugprone-assert-side-effect.AssertMacros
+    value: 'BOOST_ASSERT,BOOST_VERIFY'
+  # Add const to auto-qualified pointer types (readability-qualified-auto)
+  - key: readability-qualified-auto.AddConstToQualified
+    value: '1'

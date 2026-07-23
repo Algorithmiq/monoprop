@@ -1,0 +1,6 @@
+[deps]
+ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+MajoranaPropagation = "c1ba0b60-2606-4ffc-8aea-7c4a0f2726e4"
+PauliPropagation = "293282d5-3c99-4fb6-92d0-fd3280a19750"

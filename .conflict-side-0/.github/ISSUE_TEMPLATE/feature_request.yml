@@ -1,0 +1,42 @@
+name: Feature request / Enhancement
+description: Suggest a new feature or improvement to monoprop
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! Please describe your idea clearly.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: |
+        What problem does this feature solve, or what use case does it enable?
+        Is this related to something that is currently impossible or inconvenient?
+      placeholder: I'm trying to do X, but currently I have to work around it by doing Y…
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed feature
+      description: A clear description of the feature or change you'd like to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: api_sketch
+    attributes:
+      label: Proposed API or usage example (optional)
+      description: If applicable, sketch how the feature would look from a user's perspective.
+      placeholder: |
+        import monoprop
+        # ...
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any other relevant information, including alternative approaches you considered and why your proposal is preferred.

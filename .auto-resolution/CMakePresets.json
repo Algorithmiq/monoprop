@@ -1,0 +1,145 @@
+{
+    "version": 8,
+    "configurePresets": [
+        {
+            "name": "release-gcc",
+            "displayName": "Release - Configure with GCC Compiler Kit",
+            "description": "Configure project with Release flags using g++",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_BUILD_TYPE": "Release"
+            },
+            "generator": "Ninja"
+        },
+        {
+            "name": "release-gcc-mpi",
+            "displayName": "Release - Configure with GCC Compiler Kit (MPI)",
+            "description": "Configure Release build with g++ and monoprop_ENABLE_MPI=ON",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_BUILD_TYPE": "Release",
+                "monoprop_ENABLE_MPI": "ON"
+            },
+            "generator": "Ninja"
+        },
+        {
+            "name": "debug-gcc",
+            "displayName": "Debug - Configure with GCC Compiler Kit",
+            "description": "Configure project with Debug flags using g++",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_BUILD_TYPE": "Debug"
+            },
+            "generator": "Ninja"
+        },
+        {
+            "name": "coverage-gcc",
+            "displayName": "Coverage - Configure with GCC Compiler Kit",
+            "description": "Configure project with Coverage flags using g++",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_BUILD_TYPE": "Coverage"
+            },
+            "generator": "Ninja"
+        },
+        {
+            "name": "Custom configure preset",
+            "displayName": "Custom configure preset",
+            "description": "Sets Ninja generator, build and install directory",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "release-gcc",
+            "displayName": "Release - Build with GCC Compiler Kit",
+            "description": "Build project with Release flags using g++",
+            "configurePreset": "release-gcc",
+            "jobs": 4,
+            "verbose": true,
+            "inheritConfigureEnvironment": true
+        },
+        {
+            "name": "release-gcc-mpi",
+            "displayName": "Release - Build with GCC Compiler Kit (MPI)",
+            "description": "Build Release project with g++ and MPI enabled",
+            "configurePreset": "release-gcc-mpi",
+            "jobs": 4,
+            "verbose": true,
+            "inheritConfigureEnvironment": true
+        },
+        {
+            "name": "debug-gcc",
+            "displayName": "Debug - Build with GCC Compiler Kit",
+            "description": "Build project with Debug flags using g++",
+            "configurePreset": "debug-gcc",
+            "jobs": 4,
+            "verbose": true,
+            "inheritConfigureEnvironment": true
+        },
+        {
+            "name": "coverage-gcc",
+            "displayName": "Coverage - Build with GCC Compiler Kit",
+            "description": "Build project with Coverage flags using g++",
+            "configurePreset": "coverage-gcc",
+            "jobs": 4,
+            "verbose": true,
+            "inheritConfigureEnvironment": true
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "release-gcc",
+            "displayName": "Test - Release configuration with GCC Compiler Kit",
+            "description": "Test project built with Release flags using g++",
+            "configurePreset": "release-gcc",
+            "output": {
+                "outputOnFailure": true
+            },
+            "inheritConfigureEnvironment": true
+        },
+        {
+            "name": "release-gcc-mpi",
+            "displayName": "Test - Release configuration with GCC Compiler Kit (MPI)",
+            "description": "Test Release build with g++ and MPI enabled",
+            "configurePreset": "release-gcc-mpi",
+            "output": {
+                "outputOnFailure": true
+            },
+            "environment": {
+                "OMPI_ALLOW_RUN_AS_ROOT": "1",
+                "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1"
+            },
+            "inheritConfigureEnvironment": true
+        },
+        {
+            "name": "debug-gcc",
+            "displayName": "Test - Debug configuration with GCC Compiler Kit",
+            "description": "Test project built with Debug flags using g++",
+            "configurePreset": "debug-gcc",
+            "output": {
+                "outputOnFailure": true
+            },
+            "inheritConfigureEnvironment": true
+        },
+        {
+            "name": "coverage-gcc",
+            "displayName": "Test - Coverage configuration with GCC Compiler Kit",
+            "description": "Test project built with Coverage flags using g++",
+            "configurePreset": "coverage-gcc",
+            "output": {
+                "outputOnFailure": true
+            },
+            "inheritConfigureEnvironment": true
+        }
+    ]
+}
