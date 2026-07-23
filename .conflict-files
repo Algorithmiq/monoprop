@@ -1,3 +1,0 @@
-ancestorEntries = [".github/workflows/test.yml"]
-ourEntries = [".github/workflows/test.yml"]
-theirEntries = [".github/workflows/test.yml"]

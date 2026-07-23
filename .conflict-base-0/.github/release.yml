@@ -1,8 +1,0 @@
-changelog:
-  exclude:
-    authors:
-      - dependabot[bot]
-    labels:
-      - dependencies
-      - ty-update
-      - ruff-update
