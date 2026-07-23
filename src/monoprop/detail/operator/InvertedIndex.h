@@ -43,9 +43,7 @@ namespace monoprop::detail {
 template <size_t NumModes>
 struct InvertedIndex {
     static constexpr size_t kNumColumns = Monomial<NumModes>::size();
-    // Promote a column to DENSE at set density ≥ 1/kPromoteDensityInv. The threshold is the FOLD
-    // crossover (1/64), not the storage one (1/32): chemistry-density columns (~2-3%) then store dense
-    // and fold in the parallel scan pass. Tiering is storage only — bit-identical to storing all dense.
+    // Promote a column to DENSE at set density ≥ 1/kPromoteDensityInv.
     static constexpr size_t kPromoteDensityInv = 64;
 
     struct Column {

@@ -644,9 +644,7 @@ def _gate_layers(
     its qubits within the ``num_qubits``-wide system (one layer per term). When ``native_pauli``
     is set the term is packed into the engine's native local symplectic frame
     (:func:`~monoprop.conversion_utils._pauli_to_local_slots`) with its real generator
-    coefficient passed through directly -- the engine's Pauli rotation kernel does the phase
-    bookkeeping, so no Jordan-Wigner map or antihermitian normalization is applied. Otherwise the
-    term is Jordan-Wigner mapped and antihermitian-normalized (the legacy Majorana-frame path).
+    coefficient passed through directly
     A ``"majorana"``-family :class:`ExpGate` carries the Hermitian generator, so its
     :class:`~monoprop.majorana.MajoranaOperator` terms are antihermitian-normalized (the
     ``i^{binom(w, 2)}`` phase divided out) -- unless the gate is flagged
@@ -662,9 +660,6 @@ def _gate_layers(
         layers: list[tuple[tuple[int, ...], float]] = []
         for pauli, coeff in generator.terms.items():
             if native_pauli:
-                # Native local packing: generator = per-qubit slots, gen_coeff = the raw real
-                # coefficient (no jw_coeff, no antihermitian normalization). Matches
-                # native_gate_arrays in tests/cpp/pauli_build_layer_tests.cpp.
                 slots = _pauli_to_local_slots(pauli.string, pauli.qubits)
                 layers.append((slots, _real_generator_coefficient(slots, coeff)))
                 continue
