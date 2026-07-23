@@ -227,14 +227,6 @@ jobs:
 
       - name: Collect coverage into a gcovr tracefile
         run: |
-          # --exclude-throw-branches / --exclude-unreachable-branches drop gcov's
-          # spurious C++ branches: an exception-unwinding ("throw") edge is emitted at
-          # essentially every call site, and provably-unreachable edges at others. They
-          # are never taken on the happy path, so they are noise -- not untested logic --
-          # yet they otherwise halve SonarCloud's new-code branch/condition coverage.
-          # These must be applied here at tracefile-collection time (when gcov output is
-          # parsed); the later --sonarqube/--cobertura merge reads the JSON and no longer
-          # re-classifies branches, so passing them there has no effect.
           pipx run gcovr \
             --gcov-executable gcov-14 \
             --gcov-ignore-parse-errors \
