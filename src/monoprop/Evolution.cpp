@@ -29,6 +29,17 @@ struct DerivativeContrib {
     double sin = 0.0;
 };
 
+struct DerivativeCosineCacheContext {
+    const double *data = nullptr;
+    size_t num_layers = 0;
+    size_t layer_stride = 0;
+};
+
+auto derivative_cosine_cache_context() -> DerivativeCosineCacheContext & {
+    static thread_local DerivativeCosineCacheContext ctx;
+    return ctx;
+}
+
 struct TrigValues {
     double cos_val;
     double sin_val;
@@ -50,12 +61,25 @@ auto combine_derivative_contrib(const DerivativeContrib &a, const DerivativeCont
     return {.cos = a.cos + b.cos, .sin = a.sin + b.sin};
 }
 
-auto accumulate_cosine_span(double *state_ptr, double *op_ptr, size_t count, double cos_val, double sec_val) -> double {
+auto accumulate_cosine_span(double *state_ptr,
+                            double *op_ptr,
+                            const double *cached_op_ptr,
+                            size_t count,
+                            double cos_val,
+                            double sec_val) -> double {
     double local = 0.0;
     for (size_t idx = 0; idx < count; ++idx) {
-        op_ptr[idx] *= sec_val;
-        local += state_ptr[idx] * op_ptr[idx];
-        state_ptr[idx] *= cos_val;
+        const double cached_state = state_ptr[idx];
+        if (cached_op_ptr != nullptr) {
+            const double cached_op = cached_op_ptr[idx];
+            local += cached_state * cached_op;
+            op_ptr[idx] = cached_op;
+        }
+        else {
+            op_ptr[idx] *= sec_val;
+            local += cached_state * op_ptr[idx];
+        }
+        state_ptr[idx] = cached_state * cos_val;
     }
     return local;
 }
@@ -68,6 +92,7 @@ auto scale_cosine_span(double *coeffs, size_t count, double cos_val) -> void {
 
 auto accumulate_cosine_span_range(double *state_data,
                                   double *operator_data,
+                                  const double *cached_op_data,
                                   const CompressedCosineData &cos_data,
                                   size_t begin,
                                   size_t end,
@@ -79,8 +104,13 @@ auto accumulate_cosine_span_range(double *state_data,
         cos_data,
         begin,
         end,
-        [&total, state_data, operator_data, cos_val, sec_val](size_t start, uint8_t count) {
-            total += accumulate_cosine_span(state_data + start, operator_data + start, count, cos_val, sec_val);
+        [&total, state_data, operator_data, cached_op_data, cos_val, sec_val](size_t start, uint8_t count) {
+            total += accumulate_cosine_span(state_data + start,
+                                            operator_data + start,
+                                            cached_op_data != nullptr ? (cached_op_data + start) : nullptr,
+                                            count,
+                                            cos_val,
+                                            sec_val);
         });
 
     return total;
@@ -412,17 +442,34 @@ auto synchronize_cross_rank_operator_impl(VecD &op,
         });
 }
 
-auto accumulate_cosine_derivative(VecD &state, VecD &op, const LayerTraversal &layer, double cos_val, double sec_val)
-    -> double {
+auto accumulate_cosine_derivative(VecD &state,
+                                  VecD &op,
+                                  const LayerTraversal &layer,
+                                  size_t layer_idx,
+                                  double cos_val,
+                                  double sec_val) -> double {
     const auto &cos_data = layer.cos_data();
     auto *const state_data = state.data();
     auto *const operator_data = op.data();
+    const auto &cache_ctx = derivative_cosine_cache_context();
+    const double *cached_layer_data = (cache_ctx.data != nullptr && layer_idx < cache_ctx.num_layers)
+                                          ? (cache_ctx.data + layer_idx * cache_ctx.layer_stride)
+                                          : nullptr;
     return threading::parallel_reduce_ranges(
         layer.cos_span_count(),
         0.0,
-        [state_data, operator_data, &cos_data, cos_val, sec_val](size_t begin, size_t end, double local) {
+        [state_data, operator_data, cached_layer_data, &cos_data, cos_val, sec_val](size_t begin,
+                                                                                    size_t end,
+                                                                                    double local) {
             return local
-                   + accumulate_cosine_span_range(state_data, operator_data, cos_data, begin, end, cos_val, sec_val);
+                   + accumulate_cosine_span_range(state_data,
+                                                  operator_data,
+                                                  cached_layer_data,
+                                                  cos_data,
+                                                  begin,
+                                                  end,
+                                                  cos_val,
+                                                  sec_val);
         },
         [](double lhs, double rhs) { return lhs + rhs; },
         threading::range_grain_size(layer.cos_span_count(), 1));
@@ -521,7 +568,7 @@ auto state_operator_derivative_local_impl(VecD &state,
     const TrigValues trig(param, gen_coeff);
     const auto layer = graph.get_layer_traversal(layer_idx);
 
-    double cos_contrib = accumulate_cosine_derivative(state, op, layer, trig.cos_val, trig.sec_val);
+    double cos_contrib = accumulate_cosine_derivative(state, op, layer, layer_idx, trig.cos_val, trig.sec_val);
     const auto cycle_contrib = accumulate_cycle_derivative(state, op, layer, trig.sin_val, trig.cos_val);
     const auto cross_rank_contrib = accumulate_cross_rank_derivatives_impl(state, op, layer, trig, comm);
     const auto derivative_contrib = combine_derivative_contrib(cycle_contrib, cross_rank_contrib);
@@ -568,6 +615,18 @@ auto state_operator_derivative_local(VecD &state,
                                      double param,
                                      MPI_Comm comm) -> double {
     return state_operator_derivative_local_impl(state, op, graph, layer_idx, gen_coeff, param, comm);
+}
+
+auto set_derivative_cosine_cache(const double *cache_data, size_t num_layers, size_t layer_stride) -> void {
+    auto &ctx = derivative_cosine_cache_context();
+    ctx.data = cache_data;
+    ctx.num_layers = num_layers;
+    ctx.layer_stride = layer_stride;
+}
+
+auto clear_derivative_cosine_cache() -> void {
+    auto &ctx = derivative_cosine_cache_context();
+    ctx = {};
 }
 
 template <typename GraphType>

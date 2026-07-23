@@ -28,6 +28,9 @@ struct EvalScratch {
     VecD op;
     VecD mapped_params;
     VecD gradient;
+    VecD cosine_cache;
+    size_t cosine_cache_stride = 0;
+    size_t cosine_cache_layers = 0;
 };
 
 auto eval_scratch() -> EvalScratch & {
@@ -62,7 +65,17 @@ auto prepare_evolved_operator(EvalScratch &scratch,
                               MPI_Comm comm) -> void {
     fill_mapped_params(scratch.mapped_params, params, parameter_mapping, gen_coeffs, 1.0, true);
     scratch.op = op;
-    scratch.op = evolve_operator(std::move(scratch.op), graph, scratch.mapped_params, comm);
+
+    scratch.cosine_cache_layers = graph.layers();
+    scratch.cosine_cache_stride = scratch.op.size();
+    scratch.cosine_cache.resize(scratch.cosine_cache_layers * scratch.cosine_cache_stride);
+
+    for (size_t layer_idx = 0; layer_idx < graph.layers(); ++layer_idx) {
+        std::copy_n(scratch.op.data(),
+                    scratch.cosine_cache_stride,
+                    scratch.cosine_cache.data() + (layer_idx * scratch.cosine_cache_stride));
+        evolve_step(scratch.op, graph, scratch.mapped_params[layer_idx], layer_idx, comm);
+    }
 }
 
 template <typename GraphType>
@@ -105,12 +118,14 @@ auto ev_and_grad_impl(double e_core,
     const auto expectation_value = mpi::allreduce_sum(inner_product(state_, op_), comm);
 
     scratch.gradient.assign(params.size(), 0.0);
+    set_derivative_cosine_cache(scratch.cosine_cache.data(), scratch.cosine_cache_layers, scratch.cosine_cache_stride);
     for (size_t i = 0; i < parameter_mapping.size(); ++i) {
         const auto idx = parameter_mapping.size() - 1 - i;
         const auto param_ind = parameter_mapping[i];
         scratch.gradient[param_ind] +=
             state_operator_derivative_local(state_, op_, graph, idx, gen_coeffs[i], params[param_ind], comm);
     }
+    clear_derivative_cosine_cache();
 
     mpi::allreduce_sum_inplace(scratch.gradient, comm);
     return {e_core + expectation_value, scratch.gradient};

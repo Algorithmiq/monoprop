@@ -23,6 +23,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -148,6 +149,14 @@ monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
                                                      double gen_coeff,
                                                      double param,
                                                      MPI_Comm comm = MPI_COMM_WORLD) -> double;
+
+// Provides optional per-layer forward cache for cosine-only derivative recovery.
+// The cache layout is [layer][coefficient], flattened with row stride = layer_stride.
+monoprop_EXPORT auto set_derivative_cosine_cache(const double *cache_data, size_t num_layers, size_t layer_stride)
+    -> void;
+
+// Clears any previously configured derivative cosine cache.
+monoprop_EXPORT auto clear_derivative_cosine_cache() -> void;
 /*!
  * @brief Evolves a single rank's operators against a Majorana generator
  *
