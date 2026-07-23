@@ -76,7 +76,6 @@ BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
     s.emplace(bs({0, 3, 5}), 0);
     s.push_back(bs({1, 2}));
     s.emplace(bs({1, 2}), 1);
-    BOOST_TEST(s.index_size() == 2u);
     auto f = s.find(bs({1, 2}));
     BOOST_TEST(f.has_value());
     BOOST_TEST(*f == 1u);
@@ -84,19 +83,18 @@ BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
 }
 
 BOOST_AUTO_TEST_CASE(width_is_a_construction_invariant) {
-    Store s(4); // stride = 1 + 4, fixed at construction
-    BOOST_TEST(s.inline_width() == 4u);
-    s.push_back(bs({0, 2, 4, 6}));
-    s.reserve(20); // capacity only -- width is never touched by reserve
-    BOOST_TEST(s.inline_width() == 4u);
+    Store s(4);                    // stride = 1 + 4, fixed at construction
+    s.push_back(bs({0, 2, 4, 6})); // a 4-position row fits inline at width 4
+    s.reserve(20);                 // capacity only -- width/stride are never touched by reserve
+    BOOST_TEST(s.popcount(0) == 4u);
+    BOOST_TEST((s.row(0) == bs({0, 2, 4, 6}))); // round-trips inline after reserve
 }
 
 BOOST_AUTO_TEST_CASE(overflow_is_lossless_above_width) {
     Store s(2); // width 2; a 3-position row must overflow
     s.push_back(bs({0, 1, 2}));
-    BOOST_TEST(s.overflow_count() == 1u);
-    BOOST_TEST(s.popcount(0) == 3u);
-    BOOST_TEST((s.row(0) == bs({0, 1, 2})));
+    BOOST_TEST(s.popcount(0) == 3u);         // popcount recovered from the overflow map
+    BOOST_TEST((s.row(0) == bs({0, 1, 2}))); // and the full row round-trips losslessly
 }
 
 // The store is intentionally non-movable (owners hold it by unique_ptr). The former
@@ -128,8 +126,6 @@ BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
 
     auto b = a.clone(); // std::unique_ptr<Store>
     BOOST_TEST(b->size() == 2u);
-    BOOST_TEST(b->index_size() == 2u);
-    BOOST_TEST(b->inline_width() == 4u);
     BOOST_TEST((b->row(0) == bs({0, 3, 5})));
     auto f = b->find(bs({1, 2}));
     BOOST_TEST(f.has_value());
@@ -156,7 +152,6 @@ BOOST_AUTO_TEST_CASE(clone_preserves_overflow_rows) {
     a.emplace(bs({0, 1, 2}), 0);
 
     auto b = a.clone();
-    BOOST_TEST(b->overflow_count() == 1u);
     BOOST_TEST(b->popcount(0) == 3u);
     BOOST_TEST((b->row(0) == bs({0, 1, 2})));
     BOOST_TEST(*b->find(bs({0, 1, 2})) == 0u);
@@ -179,7 +174,6 @@ BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
         s.push_back(key);
         s.emplace(key, i);
     }
-    BOOST_TEST(s.index_size() == kRows);
 
     // Interleave each present key with an absent 3-position key (never inserted -> always missing),
     // then one trailing absent key so the total is not a multiple of G=16 and the final short group

@@ -301,11 +301,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         if (word_count == 0) {
             return res;
         }
-        // Build the row_parity bitmap once, only for odd generators (even workloads never allocate it).
-        if (g_odd) {
-            inverted_index.ensure_row_parity();
-        }
-        const uint64_t *const row_parity_ptr = g_odd ? inverted_index.row_parity_word_ptr() : nullptr;
+        // The row_parity bitmap is built once on first use, and only for odd generators (even
+        // workloads never allocate it).
+        const uint64_t *const row_parity_ptr = g_odd ? inverted_index.row_parity_words() : nullptr;
         const size_t n = op.store->size();
         // The fused sweep writes fused_scale_coeffs[i] for every anticommuting i < n, so it must be the
         // very array the reads come from and cover the full operator — a violation corrupts 1/cos recovery,
