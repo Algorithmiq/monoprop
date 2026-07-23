@@ -259,10 +259,7 @@ jobs:
 
       - name: Convert C++ tracefile to Cobertura XML for Codecov
         run: |
-          # --merge-lines collapses gcov's per-instantiation duplicate line
-          # records into one aggregated line each so the report reflects true
-          # line coverage. Codecov unions this with the python-bindings C++
-          # report server-side (both carry the `cpp` flag).
+         
           pipx run gcovr \
             --root . \
             --merge-lines \
