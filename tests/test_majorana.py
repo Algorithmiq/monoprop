@@ -21,10 +21,12 @@ from monoprop.majorana import Majorana, MajoranaOperator
 
 
 class TestMajorana:
-    """The Majorana monomial value object: sorting, validation, equality, hashing."""
+    """The Majorana monomial value object: validation, equality, hashing."""
 
-    def test_indices_are_sorted(self):
-        assert Majorana(5, 4, 1).indices == (1, 4, 5)
+    def test_indices_must_already_be_sorted(self):
+        assert Majorana(1, 4, 5).indices == (1, 4, 5)
+        with pytest.raises(ValueError, match="sorted"):
+            Majorana(5, 4, 1)
 
     def test_empty_is_identity_monomial(self):
         assert Majorana().indices == ()
@@ -37,10 +39,19 @@ class TestMajorana:
         with pytest.raises(ValueError, match="distinct"):
             Majorana(2, 2)
 
+    def test_from_unsorted_returns_sorted_term_and_sign(self):
+        term, sign = Majorana.from_unsorted((5, 4, 1))
+        assert term == Majorana(1, 4, 5)
+        assert sign == -1.0
+
+        term_even, sign_even = Majorana.from_unsorted((2, 0, 1))
+        assert term_even == Majorana(0, 1, 2)
+        assert sign_even == 1.0
+
     def test_equal_terms_compare_and_hash_alike(self):
-        assert Majorana(4, 5) == Majorana(5, 4)
-        assert hash(Majorana(4, 5)) == hash(Majorana(5, 4))
-        assert {Majorana(4, 5), Majorana(5, 4)} == {Majorana(4, 5)}
+        assert Majorana(4, 5) == Majorana(4, 5)
+        assert hash(Majorana(4, 5)) == hash(Majorana(4, 5))
+        assert {Majorana(4, 5), Majorana(4, 5)} == {Majorana(4, 5)}
 
     def test_eq_with_non_majorana_is_false(self):
         assert (Majorana(0, 1) == (0, 1)) is False
@@ -77,12 +88,13 @@ def test_from_dense_arrays_groups_by_param_ind():
 
 
 def test_majorana_operator_normalizes_terms():
-    """Indices are sorted and duplicate monomials summed."""
+    """Unsorted terms are canonicalized with sign and duplicate monomials summed."""
     op = MajoranaOperator(
         {(1, 0): 1.0, (0, 1): 2.0, (2, 3): 1e-15},
         num_modes=4,
     )
-    assert op.terms == {(0, 1): 3.0, (2, 3): 1e-15}  # (1,0) and (0,1) merge
+    # The (1, 0) term is reordered to (0, 1) with a sign flip, and the duplicate (0, 1) terms are summed.
+    assert op.terms == {(0, 1): 1.0, (2, 3): 1e-15}
     assert len(op) == 2
     assert op.num_modes == 4
 

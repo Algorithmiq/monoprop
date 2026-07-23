@@ -29,8 +29,8 @@ class Majorana:
     """A single Majorana monomial: the ordered product ``m_{i_1} ... m_{i_w}``.
 
     A term is the atom a :class:`MajoranaOperator` is built from and the generator an
-    :class:`~monoprop.circuit.ExpGate` gate exponentiates. Indices are sorted on construction
-    (matching the operator's canonicalization) and must be distinct and non-negative. A
+    :class:`~monoprop.circuit.ExpGate` gate exponentiates. Indices must already be sorted,
+    distinct, and non-negative. A
     repeated index is rejected because ``m_i^2 = 1`` would silently change the monomial's
     weight -- almost always a mistake rather than an intended simplification.
 
@@ -47,17 +47,50 @@ class Majorana:
         """Initialize the Majorana monomial from its indices.
 
         Args:
-            *indices: The Majorana indices, in any order (they are sorted).
+            *indices: The Majorana indices, in sorted ascending order.
 
         Raises:
-            ValueError: If any index is negative or an index is repeated.
+            ValueError: If indices are not sorted, or any index is negative or repeated.
         """
-        ordered = tuple(sorted(int(i) for i in indices))
-        if ordered and ordered[0] < 0:
+        ordered = tuple(int(i) for i in indices)
+        if any(i < 0 for i in ordered):
             raise ValueError(f"Majorana indices must be non-negative; got {ordered}.")
+        if tuple(sorted(ordered)) != ordered:
+            raise ValueError(f"Majorana indices must be sorted; got {ordered}.")
         if len(set(ordered)) != len(ordered):
             raise ValueError(f"Majorana indices must be distinct; got {ordered}.")
         self.indices = ordered
+
+    @classmethod
+    def from_unsorted(cls, indices: Sequence[int]) -> tuple[Majorana, float]:
+        """Create a canonical term from an unsorted index sequence.
+
+        Returns the sorted :class:`Majorana` term together with the sign coming
+        from reordering the indices under Majorana anticommutation.
+
+        Args:
+            indices: Majorana indices in arbitrary order.
+
+        Returns:
+            ``(term, sign)``, where ``sign`` is ``+1.0`` or ``-1.0``.
+
+        Raises:
+            ValueError: If any index is negative or repeated.
+        """
+        values = tuple(int(i) for i in indices)
+        if any(i < 0 for i in values):
+            raise ValueError(f"Majorana indices must be non-negative; got {values}.")
+        if len(set(values)) != len(values):
+            raise ValueError(f"Majorana indices must be distinct; got {values}.")
+
+        inversions = 0
+        for i, left in enumerate(values):
+            for right in values[i + 1 :]:
+                inversions += int(left > right)
+
+        sorted_values = tuple(sorted(values))
+        sign = -1.0 if (inversions % 2) else 1.0
+        return cls(*sorted_values), sign
 
     def __eq__(self, other: object) -> bool:
         """Two Majorana terms are equal when their sorted indices match."""
@@ -99,11 +132,9 @@ class MajoranaOperator:
                 :class:`~monoprop.circuit.ExpGate`) -- bare :class:`Majorana` terms are not accepted
                 by ``ExpGate``, since the operator is what carries the mode count.
         """
-        # Route raw index tuples through Majorana so they get the same non-negative/distinct
-        # validation a Majorana key already carries (a bare tuple would otherwise slip past it).
+        # Route raw index tuples through phase-aware canonicalization in _accumulate.
         majoranas = [
-            (key if isinstance(key, Majorana) else Majorana(*key)).indices
-            for key in terms
+            key.indices if isinstance(key, Majorana) else tuple(key) for key in terms
         ]
         self.num_modes = num_modes
         self.terms = self._accumulate(majoranas, list(terms.values()))
@@ -130,11 +161,11 @@ class MajoranaOperator:
         majoranas: Sequence[Sequence[int]],
         coefficients: Sequence[complex],
     ) -> dict[tuple[int, ...], complex]:
-        """Sort and sum duplicates of a set of Majorana terms."""
+        """Canonicalize (with fermionic sign) and sum duplicates of Majorana terms."""
         accumulated: dict[tuple[int, ...], complex] = defaultdict(complex)
         for majorana, coefficient in zip(majoranas, coefficients, strict=True):
-            key = tuple(sorted(int(i) for i in majorana))
-            accumulated[key] += coefficient
+            canonical, sign = Majorana.from_unsorted(majorana)
+            accumulated[canonical.indices] += coefficient * sign
         return dict(accumulated)
 
     def get_majorana_operator(self) -> MajoranaOperator:
