@@ -66,17 +66,21 @@ jobs:
           fi
 
       - name: Set build environment variables
+        if: ${{ matrix.runner == 'macos-15' }}
         run: |
-          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            echo "MACOSX_DEPLOYMENT_TARGET=15.0" >> "$GITHUB_ENV"
-          else
-            echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
-          fi
+          echo "MACOSX_DEPLOYMENT_TARGET=15.0" >> "$GITHUB_ENV"
 
-      - name: Set TBB environment variables
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
         if: ${{ matrix.runner == 'ubuntu-26.04' }}
         run: |
-          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -167,14 +171,20 @@ jobs:
           sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
-      - name: Set TBB environment variables
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
         if: ${{ matrix.runner == 'ubuntu-26.04' }}
         run: |
-          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Configure
         run: |
-          export CMAKE_PREFIX_PATH=/opt/Software
           cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Coverage
 
       - name: Build
@@ -208,7 +218,7 @@ jobs:
 
           cmake -S find-package-smoke -B find-package-smoke/build \
             -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_PREFIX_PATH="/opt/Software;$PWD/monoprop-install"
+            -DCMAKE_PREFIX_PATH="$PWD/monoprop-install"
 
           cmake --build find-package-smoke/build
 
@@ -273,11 +283,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
-          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
 
-      - name: Set build environment variables
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
         run: |
-          echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -414,7 +430,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
-          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
+
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
+        run: |
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Install matching Build Wrapper
         run: |
@@ -424,7 +450,6 @@ jobs:
 
       - name: Configure for SonarQube CFamily analysis
         run: |
-          export CMAKE_PREFIX_PATH=/opt/Software
           cmake -S. -Bbuild-sonar -DCMAKE_CXX_COMPILER=g++
 
       - name: Build with Build Wrapper
@@ -510,10 +535,17 @@ jobs:
           sudo apt-get install libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
-      - name: Set TBB environment variables
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
         if: ${{ matrix.runner == 'ubuntu-26.04' }}
         run: |
-          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Install dependencies
         if: ${{ matrix.runner == 'macos-15' }}
@@ -523,7 +555,6 @@ jobs:
       - name: Configure
         if: ${{ matrix.runner != 'macos-15' }}
         run: |
-          export CMAKE_PREFIX_PATH=/opt/Software
           cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=${{ matrix.cmake_cxx_compiler }}
 
       - name: Configure

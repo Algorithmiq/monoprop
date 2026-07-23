@@ -53,7 +53,7 @@ jobs:
 
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
-      - name: Set environment variables
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
         run: |
           BEFORE_ENV=$(mktemp)
           AFTER_ENV=$(mktemp)

@@ -35,8 +35,16 @@ jobs:
         run: |
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
-          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
+        run: |
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
 
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
