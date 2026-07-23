@@ -40,13 +40,22 @@ class TestMajorana:
             Majorana(2, 2)
 
     def test_from_unsorted_returns_sorted_term_and_sign(self):
-        term, sign = Majorana.from_unsorted((5, 4, 1))
+        term, sign = Majorana.from_unsorted(5, 4, 1)
         assert term == Majorana(1, 4, 5)
         assert sign == -1.0
 
-        term_even, sign_even = Majorana.from_unsorted((2, 0, 1))
+        term_even, sign_even = Majorana.from_unsorted(2, 0, 1)
         assert term_even == Majorana(0, 1, 2)
         assert sign_even == 1.0
+
+    def test_from_unsorted_cancels_repeated_indices(self):
+        term, sign = Majorana.from_unsorted(3, 1, 1, 3)
+        assert term == Majorana()
+        assert sign == 1.0
+
+        term_mixed, sign_mixed = Majorana.from_unsorted(1, 2, 1)
+        assert term_mixed == Majorana(2)
+        assert sign_mixed == -1.0
 
     def test_equal_terms_compare_and_hash_alike(self):
         assert Majorana(4, 5) == Majorana(4, 5)
@@ -62,9 +71,9 @@ class TestMajorana:
 
 
 def test_majorana_operator_validates_raw_tuple_keys():
-    """A raw index-tuple key is routed through Majorana, so it gets the same validation."""
-    with pytest.raises(ValueError, match="distinct"):
-        MajoranaOperator({(0, 0): 1.0}, num_modes=2)
+    """A raw index-tuple key is canonicalized via from_unsorted and checked for non-negativity."""
+    op = MajoranaOperator({(0, 0): 1.0}, num_modes=2)
+    assert op.terms == {(): 1.0}
     with pytest.raises(ValueError, match="non-negative"):
         MajoranaOperator({(-1, 0): 1.0}, num_modes=2)
 

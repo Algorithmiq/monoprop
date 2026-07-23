@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from monoprop.conversion_utils import _parity, _remove_repeated_pairs
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
@@ -64,7 +66,7 @@ class Majorana:
         self.indices = indices
 
     @classmethod
-    def from_unsorted(cls, indices: Sequence[int]) -> tuple[Majorana, float]:
+    def from_unsorted(cls, *indices: int) -> tuple[Majorana, float]:
         """Create a canonical term from an unsorted index sequence.
 
         Returns the sorted :class:`Majorana` term together with the sign coming
@@ -76,22 +78,17 @@ class Majorana:
         Returns:
             ``(term, sign)``, where ``sign`` is ``+1.0`` or ``-1.0``.
 
+        Repeated indices are canceled in pairs using ``m_i^2 = 1``.
+
         Raises:
-            ValueError: If any index is negative or repeated.
+            ValueError: If any index is negative.
         """
-        values = tuple(int(i) for i in indices)
-        if any(i < 0 for i in values):
-            raise ValueError(f"Majorana indices must be non-negative; got {values}.")
-        if len(set(values)) != len(values):
-            raise ValueError(f"Majorana indices must be distinct; got {values}.")
-
-        inversions = 0
-        for i, left in enumerate(values):
-            for right in values[i + 1 :]:
-                inversions += int(left > right)
-
-        sorted_values = tuple(sorted(values))
-        sign = -1.0 if (inversions % 2) else 1.0
+        if any(i < 0 for i in indices):
+            # better to check as negative indices might cancel out
+            # (and should still not be allowed)
+            raise ValueError(f"Majorana indices must be non-negative; got {indices}.")
+        sorted_values = _remove_repeated_pairs(tuple(sorted(indices)))
+        sign = float(_parity(indices))
         return cls(*sorted_values), sign
 
     def __eq__(self, other: object) -> bool:
@@ -166,7 +163,7 @@ class MajoranaOperator:
         """Canonicalize (with fermionic sign) and sum duplicates of Majorana terms."""
         accumulated: dict[tuple[int, ...], complex] = defaultdict(complex)
         for majorana, coefficient in zip(majoranas, coefficients, strict=True):
-            canonical, sign = Majorana.from_unsorted(majorana)
+            canonical, sign = Majorana.from_unsorted(*majorana)
             accumulated[canonical.indices] += coefficient * sign
         return dict(accumulated)
 
