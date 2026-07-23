@@ -36,7 +36,7 @@ namespace monoprop::detail {
  * columns yields, per term M, |M ∩ G| mod 2 — the anticommutation bit for an EVEN generator; ODD
  * generators add a per-row parity(|M|) correction, so the structure serves BOTH parities.
  *
- * Columns are chemistry-sparse (~few percent set), so they are stored in two tiers, bit-identical to
+ * Columns are sparse (~few percent set), so they are stored in two tiers, bit-identical to
  * all-dense: DENSE (density ≥ 1/kPromoteDensityInv) full-height uint64 vectors folded by the hot word
  * loop; SPARSE (below that) an ASCENDING set-row list scatter-expanded at scan time. Promotion is
  * one-way (the operator is append-only).

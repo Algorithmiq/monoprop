@@ -292,9 +292,7 @@ public:
             insert_slot_(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
         }
     }
-    // Visits every indexed (row, index) pair in table order. Used by evolved_operator_terms (result
-    // decode for the bindings) and the copy tests; production hot reads go by index via
-    // row()/popcount()/for_each_position(). Order is table order — observable through the bindings.
+    // Visits every indexed (row, index) pair in table order.
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
         for (const Slot &e : table_.slots) {
