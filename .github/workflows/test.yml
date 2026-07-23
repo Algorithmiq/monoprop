@@ -230,6 +230,8 @@ jobs:
           pipx run gcovr \
             --gcov-executable gcov-14 \
             --gcov-ignore-parse-errors \
+            --exclude-throw-branches \
+            --exclude-unreachable-branches \
             --root . \
             --filter '^(src|include)/' \
             --exclude '^tests/' \
@@ -308,6 +310,8 @@ jobs:
           pipx run gcovr \
             --gcov-executable gcov-14 \
             --gcov-ignore-parse-errors \
+            --exclude-throw-branches \
+            --exclude-unreachable-branches \
             --root . \
             --filter '^(src|include)/' \
             --exclude '^tests/' \
