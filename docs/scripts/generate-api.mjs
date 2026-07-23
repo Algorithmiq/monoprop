@@ -61,7 +61,7 @@ function pruneModule(mod) {
 /**
  * Convert Sphinx-style cross-reference markup (e.g., `:meth:`name``) to markdown.
  * Patterns include `:meth:`, `:class:`, `:func:`, `:attr:` with optional ~ prefix
- * for module paths (e.g., `:meth:`~full.path.method_name``). Inline `:math:` roles
+ * for module paths (e.g. `:meth:`~full.path.method_name``). Inline `:math:` roles
  * are rendered as markdown math so remark-math/rehype-katex can typeset them.
  *
  * The converted format wraps the name in backticks, which fumadocs will try to
