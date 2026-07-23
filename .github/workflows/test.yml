@@ -46,6 +46,10 @@ jobs:
 
     runs-on: ${{ matrix.runner}}
 
+    defaults:
+      run:
+        shell: bash -l {0}
+
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -72,7 +76,7 @@ jobs:
       - name: Set TBB environment variables
         if: ${{ matrix.runner == 'ubuntu-26.04' }}
         run: |
-          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' >> /etc/bash.bashrc
+          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -147,6 +151,10 @@ jobs:
 
     name: Check C++ on ubuntu-26.04 (coverage)
     runs-on: ubuntu-26.04
+
+    defaults:
+      run:
+        shell: bash -l {0}
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -240,6 +248,10 @@ jobs:
     name: Collect C++ coverage through the Python bindings
     runs-on: ubuntu-26.04
 
+    defaults:
+      run:
+        shell: bash -l {0}
+
     permissions:
       contents: read
 
@@ -261,6 +273,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
+          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
 
       - name: Set build environment variables
         run: |
@@ -356,6 +369,9 @@ jobs:
 
     name: SonarQube analysis
     runs-on: ubuntu-26.04
+    defaults:
+      run:
+        shell: bash -l {0}
     needs:
       - python-checks
       - cpp-checks
@@ -398,6 +414,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
+          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
 
       - name: Install matching Build Wrapper
         run: |
@@ -433,6 +450,9 @@ jobs:
 
     name: Check C++ on ${{ matrix.runner }} (${{ matrix.compiler }})
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash -l {0}
     strategy:
       fail-fast: false
       matrix:
