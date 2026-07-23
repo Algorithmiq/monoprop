@@ -162,7 +162,7 @@ jobs:
       - name: Set TBB environment variables
         if: ${{ matrix.runner == 'ubuntu-26.04' }}
         run: |
-          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' >> /etc/bash.bashrc
+          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
 
       - name: Configure
         run: |
@@ -493,7 +493,7 @@ jobs:
       - name: Set TBB environment variables
         if: ${{ matrix.runner == 'ubuntu-26.04' }}
         run: |
-          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' >> /etc/bash.bashrc
+          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
 
       - name: Install dependencies
         if: ${{ matrix.runner == 'macos-15' }}

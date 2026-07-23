@@ -32,6 +32,8 @@ jobs:
         run: |
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
+          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
+
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
         with:
