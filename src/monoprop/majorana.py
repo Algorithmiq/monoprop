@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -52,14 +53,15 @@ class Majorana:
         Raises:
             ValueError: If indices are not sorted, or any index is negative or repeated.
         """
-        ordered = tuple(int(i) for i in indices)
-        if any(i < 0 for i in ordered):
-            raise ValueError(f"Majorana indices must be non-negative; got {ordered}.")
-        if tuple(sorted(ordered)) != ordered:
-            raise ValueError(f"Majorana indices must be sorted; got {ordered}.")
-        if len(set(ordered)) != len(ordered):
-            raise ValueError(f"Majorana indices must be distinct; got {ordered}.")
-        self.indices = ordered
+        if any(i < 0 for i in indices):
+            raise ValueError(f"Majorana indices must be non-negative; got {indices}.")
+        is_strictly_increasing = all(x < y for x, y in pairwise(indices))
+        if not is_strictly_increasing:
+            raise ValueError(
+                f"Majorana indices must be distinct and sorted; got {indices}."
+            )
+
+        self.indices = indices
 
     @classmethod
     def from_unsorted(cls, indices: Sequence[int]) -> tuple[Majorana, float]:
