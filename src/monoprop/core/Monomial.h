@@ -29,8 +29,8 @@
  * @brief The one basis-agnostic monomial container and its vocabulary.
  *
  * A monomial is ONE basis operator (a product of generators) stored as a fixed `Bitset<2*NumModes>`,
- * two bits per fermionic mode / qubit. The SAME container serves EITHER algebra (a Majorana product,
- * or its Jordan-Wigner Pauli-string image); the choice is a @ref Basis over the container (see
+ * two bits per fermionic mode / qubit. The SAME container serves EITHER algebra;
+ * the choice is a @ref Basis over the container (see
  * algebra/Algebra.h), never a distinct type. Collections: @ref MonomialList (no coefficients) and
  * @ref MonomialMap (monomial -> real coefficient). The evolved operator's own row storage is instead
  * the entropy-packed detail::OperatorIndex (see TypeAliases.h).

@@ -37,28 +37,11 @@ benchmarking.
 | `monoprop_NUM_THREADS` | one shard per physical core | Caps the number of shards. Set it to run fewer shards than cores. |
 | `monoprop_SHARDS` | `auto` | `auto` = one shard per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` shards; `off` = a single partition (no sharding). |
 | `monoprop_SHARD_PINNING` | `on` | `0`/`false`/`no` disables pinning each shard to a core. Has an effect only on Linux. |
-| `monoprop_PHASE_TIMERS` | `off` | `1`/`true` prints a per-phase wall-time breakdown to stderr at exit. |
 
 ```bash
 # Run 8 shards instead of one-per-core:
 export monoprop_NUM_THREADS=8
 ```
-
-When the CPU topology cannot be read (non-Linux, or a restricted `/sys`), the
-shard count falls back to half the hardware threads and the shards run unpinned
-— still correct, just without the cache-locality win. On a partial allocation
-(for example a cgroup-restricted Slurm job) the shard count and pinning follow
-the CPUs the process is actually allowed to use.
-
-### Portability
-
-Core-count detection and thread pinning are a Linux fast path (parsed from
-`/sys`, applied with `pthread_setaffinity_np`). macOS reports its physical-core
-count for accurate auto-sharding but does not pin threads; other platforms run
-the identical sharding semantics unpinned. This is deliberately kept to one
-small in-repo shim rather than a hardware-locality dependency such as hwloc:
-hwloc would replace only the topology parse, cannot pin threads on macOS anyway,
-and would re-introduce a bundled C dependency the project has otherwise shed.
 
 ## MPI distribution (multi-node)
 

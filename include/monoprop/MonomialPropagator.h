@@ -133,7 +133,7 @@ public:
     /// @brief Number of evolved Majoranas (graph layers).
     auto graph_layers() const -> size_t { return shard_group_ ? sharded_graph_layers_() : graph_.layers(); }
 
-    /// @brief Number of gates ingested into the graph (distinct gate indices across active layers).
+    /// @brief Number of distinct gates forming the surrogate graph.
     /// A multi-term gate expands to several layers sharing one gate index, so n_gates() <= graph_layers().
     auto n_gates() const -> size_t;
 
@@ -142,11 +142,8 @@ public:
 
     /// @brief Re-wire which variational parameter drives each graph layer, in place.
     ///
-    /// Cheap O(layers) relabel (graph structure depends only on generators, not parameter labels).
-    /// Existing functionals snapshot the mapping at creation, so rebuild one to pick up changes.
     /// Accepts per-layer (length graph_layers(), optimizer order) or per-gate (length n_gates(),
     /// expanded via each layer's stored gate index) granularity; when lengths coincide the per-layer
-    /// reading is used, so pass a per-gate mapping when tying by gate across multiple builds.
     auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
     /// @brief This rank's indexing map (Majorana bitset term → coefficient index).
@@ -226,7 +223,7 @@ public:
     /// @brief Whether the simulation is in the Schrodinger picture (else Heisenberg).
     auto schrodinger() const -> bool { return schrodinger_; }
 
-    /// @brief The operator basis: Majorana monomials (default) or native Pauli strings.
+    /// @brief The operator basis: Majorana monomials or native Pauli strings.
     auto basis() const -> Basis { return basis_; }
 
     /// @brief The core term of the operator.
@@ -271,7 +268,7 @@ public:
                      std::optional<VecD> parameters = std::nullopt,
                      int only_rotate_len_k = 0) -> void;
 
-    /// @brief Evolve and contract immediately, without storing a graph (memory-efficient path).
+    /// @brief Evolve and contract immediately, without storing a graph.
     /// Applies the gates at `parameters` directly to the operator (Heisenberg) or state (Schrodinger).
     auto propagate(const std::vector<VecZ> &majoranas,
                    const VecZ &parameter_mapping,
@@ -376,8 +373,7 @@ private:
     CutoffType cutoff_type_;
     std::optional<std::vector<VecZ>> basis_change_;
 
-    // Operator basis (Majorana default / native Pauli), immutable after construction; drives coeff
-    // encoding, ⟨b|·|b⟩ scoring, and scan/fold dispatch. Kept private to leave the subclass layout untouched.
+    // Operator basis (Majorana default / native Pauli), immutable after construction.
     Basis basis_{Basis::Majorana};
 
     // Intra-process shard runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a shard FACADE
@@ -432,8 +428,6 @@ private:
         return {build_angle, schrodinger_ ? -build_angle : build_angle};
     }
 
-    // Graph build that also contracts into a running coeffs vector seeded by the regenerated seed
-    // (used to inform atol truncation while extending a non-empty graph).
     auto evolve_mode_graph_with_coeffs_(const std::vector<VecZ> &majoranas,
                                         const VecZ &parameter_mapping,
                                         const VecD &gen_coeffs,
@@ -473,8 +467,7 @@ private:
                               VecD *fused_scale_coeffs = nullptr,
                               bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
 
-    /// @brief Build a closure for expectation-value or gradient evaluation. Derives per-layer gate info
-    /// from the graph and uses the cached pared plan when present (see pare()).
+    /// @brief Build a closure for expectation-value or gradient evaluation..
     template <typename Fn,
               typename R = std::invoke_result_t<Fn,
                                                 double,
@@ -490,7 +483,8 @@ private:
     // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the graph layers' gate info.
     auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;
 
-    // Replay `graph` over `coeffs`, recomputing each layer's cosine set from the inverted-index fold. Used by contract_partially.
+    // Replay `graph` over `coeffs`, recomputing each layer's cosine set from the inverted-index fold. Used by
+    // contract_partially.
     auto evolve_operator_with_recompute_(VecD &&coeffs, const MPGraphView &graph, const VecD &params) -> VecD;
 };
 

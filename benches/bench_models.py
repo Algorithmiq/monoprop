@@ -44,13 +44,10 @@ def test_model(
     steps = steps_fn(config)
     record_model_config(model, config)
 
-    # rounds=1/iterations=1: ``setup`` runs once and its build is the exact
-    # propagator ``run`` evolves in place, so we stash it to record its evolved
-    # term count and settled footprint after the timed section.
     state: dict[str, Any] = {}
 
     def setup():
-        state["baseline_rss"] = resting_rss_bytes()  # footprint before the build
+        state["baseline_rss"] = resting_rss_bytes()
         state["built"] = build_fn(config, comm=bench_comm)
         return (state["built"], steps), {}
 

@@ -14,17 +14,9 @@
 
 """RSS-based memory-measurement primitives for the benchmark suite.
 
-Import-only (no pytest, no MPI) so the logic stays unit-testable. Provides the
-RSS readers, the resting-footprint reader, and the background :class:`RssSampler`
-+ :func:`merge_peak_of_sum` used for the job's peak-of-sum physical memory.
-
 Two notes on what the per-test peak means:
 
-- **RSS.** We sample the process's resident set size directly. The default run is a
-  single sharded process (oneTBB-style shard threads, not MPI ranks), so RSS is the
-  exact physical footprint. Under MPI the peak-of-sum sums each rank's RSS, which
-  double-counts shared pages (libraries, MPI transport segments) across ranks -- so
-  the multi-rank figure is an upper bound, not a shared-once total.
+- **RSS.** We sample the process's resident set size directly.
 - **Peak-of-sum, not sum-of-peaks.** The peak is ``max over time`` of the summed
   RSS. Summing each rank's independently-timed peak counts transients that never
   coexisted. Comparable wall-clock timestamps let :func:`merge_peak_of_sum`
@@ -46,7 +38,7 @@ if TYPE_CHECKING:
     from types import TracebackType
     from typing import Self
 
-# RSS sampling cadence. monoprop's heavy work runs in C++ (shard threads) with the
+# RSS sampling cadence. monoprop's heavy work runs in C++  with the
 # GIL released, so the background sampler costs an idle core, not the timed thread.
 SAMPLE_INTERVAL_S = 0.005
 
@@ -67,29 +59,18 @@ def rss_bytes() -> int:
     """Return this process's current resident set size (RSS) in bytes.
 
     Read from ``/proc/self/status`` (``VmRSS``), which is a cheap single-line lookup
-    -- far lighter than walking ``smaps`` -- so the 5 ms sampler stays inexpensive.
     """
     return proc_field("/proc/self/status", "VmRSS:")
 
 
 def heap_trim() -> None:
-    """Ask the C allocator to return unused heap pages to the OS.
-
-    The allocator keeps freed pages in its per-arena heaps, so without trimming a
-    resting reading still includes transient build buffers. Best-effort: modern
-    allocators may decline, and the call is unsupported on some platforms.
-    """
+    """Ask the C allocator to return unused heap pages to the OS."""
     with contextlib.suppress(Exception):  # unsupported platform / allocator
         psutil.heap_trim()
 
 
 def resting_rss_bytes() -> int:
-    """Return current RSS after collecting garbage and trimming the C heap.
-
-    Unlike the per-operation peak (a mid-operation high-water mark), this is the
-    settled footprint once transients are freed -- the persistent-memory metric
-    the peak cannot see.
-    """
+    """Return current RSS after collecting garbage and trimming the C heap."""
     gc.collect()
     heap_trim()
     return rss_bytes()
@@ -143,9 +124,7 @@ def merge_peak_of_sum(per_rank: list[list[tuple[float, int]]]) -> int:
 
     ``per_rank[i]`` is rank ``i``'s samples. Walks all samples in time order,
     step-holding each rank's most recent reading, and tracks the maximum of the
-    running sum -- the largest summed footprint that actually coexisted. A serial
-    run (the default single sharded process) passes one series and gets back its
-    own peak.
+    running sum -- the largest summed footprint that actually coexisted.
     """
     # Seed each rank at its pre-op baseline sample; empty series contribute 0.
     current = [series[0][1] if series else 0 for series in per_rank]

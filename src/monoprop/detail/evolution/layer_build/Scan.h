@@ -217,9 +217,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     const size_t gen_pop = gen.count();
     const auto ectx = A::make_gen_context(gen);
 
-    // Structural-cutoff rejections this gate (partner failed structural cutoff, no upper-atol rescue).
-    // Published to the fold-stats accumulators only when monoprop_FOLD_STATS is set.
-    size_t struct_rejects = 0;
+    size_t struct_rejects = 0; // stats
 
     // Cutoff + emit for one anticommuting term. The dynamic gate (|M| only) runs BEFORE emit_term_products,
     // so a gate-rejected term computes no products. abs_c/v_src are passed in from the caller's coeff read

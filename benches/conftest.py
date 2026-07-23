@@ -81,9 +81,7 @@ def _reduce_sum(comm: Any, value: int) -> int:
     return value
 
 
-# Random-benchmark options as ``(name, default, help)`` (all int). This is the
-# single source of truth: the CLI options and the recorded hyperparameters (in
-# this display order) are both derived from it.
+# Random-benchmark options as ``(name, default, help)`` (all int).
 _RANDOM_OPTIONS = (
     ("gen-length", 4, "Majorana operators per generator."),
     ("obs-terms", 10000, "Observable terms."),
@@ -113,11 +111,7 @@ def _record(section: str, key: str, value: Any) -> None:
 
 
 def _results_path() -> Path | None:
-    """Return ``results/<label>.json``, or ``None`` when recording is off.
-
-    Recording is on only when ``just bench`` exported ``monoprop_BENCH_LABEL``
-    and ``monoprop_BENCH_RESULTS``.
-    """
+    """Return ``results/<label>.json``, or ``None`` when recording is off."""
     label = os.environ.get("monoprop_BENCH_LABEL")  # noqa: SIM112
     results = os.environ.get("monoprop_BENCH_RESULTS")  # noqa: SIM112
     if not label or not results:
@@ -145,8 +139,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     for name, default, help_text in _RANDOM_OPTIONS:
         group.addoption(f"--{name}", type=int, default=default, help=help_text)
 
-    # One override option per model config field, defaulting to the field's own
-    # default so the config classes stay the source of truth.
     models = parser.getgroup("monoprop-models", "monoprop fixed-model overrides")
     for model, (config_cls, _builder, _steps) in MODELS.items():
         for field in fields(config_cls):
@@ -263,15 +255,7 @@ def record_model_config() -> Callable[[str, Any], None]:
 
 @pytest.fixture
 def record_model_stats(bench_comm: Any) -> Callable[..., None]:
-    """Return ``record(model, propagator, baseline_rss)`` for fixed-model runs.
-
-    Records, for one evolved model operator, the same non-timing quantities the
-    random benchmarks capture in :func:`built_graph` -- keyed by model name rather
-    than picture: the term count and the settled (resting) RSS -- plus ``membase``,
-    the resting RSS sampled *before* the model was built, so a consumer can isolate
-    the operator's persistent footprint as ``memrest - membase``. All reductions are
-    collective; only rank 0 records.
-    """
+    """Return ``record(model, propagator, baseline_rss)`` for fixed-model runs."""
 
     def _do(model: str, propagator: Any, baseline_rss: int) -> None:
         _record("opsize", model, {"terms": _reduce_sum(bench_comm, propagator.size())})
