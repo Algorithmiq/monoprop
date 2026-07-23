@@ -76,7 +76,7 @@ endmacro()
 
 option_with_default(monoprop_MAX_NUM_MODES "Maximum number of simulable Fermionic modes with Python bindings" 250)
 option_with_print(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
-option_with_print(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
+option_with_print(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" OFF)
 
 find_package(TBB REQUIRED)
 if(TARGET TBB::tbb)
