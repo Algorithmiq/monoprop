@@ -51,25 +51,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set gcc-14/g++-14 as default compilers
-        if: ${{ matrix.runner != 'macos-15' }}
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
       - name: Install dependencies
         run: |
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
             brew install boost tbb open-mpi
           else
             sudo apt-get update
-            sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev libboost-dev libboost-test-dev libmsgpack-cxx-dev
+            sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
             ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
           fi
 
@@ -89,7 +77,6 @@ jobs:
 
       - name: Install package
         run: |
-          echo "Building with CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL on ${{ matrix.runner }}"
           uv sync --no-progress --group test --all-extras -v
 
       - name: Python environment information
@@ -161,21 +148,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set gcc-14/g++-14 as default compilers
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Configure
@@ -228,7 +204,7 @@ jobs:
       - name: Collect coverage into a gcovr tracefile
         run: |
           pipx run gcovr \
-            --gcov-executable gcov-14 \
+            --gcov-executable gcov \
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
             --exclude-unreachable-branches \
@@ -270,21 +246,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set gcc-14/g++-14 as default compilers
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Set build environment variables
@@ -308,7 +273,7 @@ jobs:
       - name: Collect coverage into a gcovr tracefile
         run: |
           pipx run gcovr \
-            --gcov-executable gcov-14 \
+            --gcov-executable gcov \
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
             --exclude-unreachable-branches \
@@ -418,21 +383,10 @@ jobs:
             --add-tracefile 'cpp-coverage-*.json' \
             --sonarqube coverage_cpp.xml
 
-      - name: Set gcc-14/g++-14 as default compilers
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Install matching Build Wrapper
@@ -523,7 +477,7 @@ jobs:
         if: ${{ matrix.runner != 'macos-15' }}
         run: |
           sudo apt-get update
-          sudo apt-get install libtbb-dev libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          sudo apt-get install libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Install dependencies
