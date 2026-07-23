@@ -1,6 +1,6 @@
 <!-- Use "Fixes #<issue>" to auto-close the related issue when this PR is merged. -->
 
-By opening this PR I confirm that I have read [CONTRIBUTING.md](CONTRIBUTING.md) and I agree to the terms of the [Contributor License Agreement](CLA.md).
+By opening this PR I confirm that I have read [CONTRIBUTING.md](github.com/Algorithmiq/monoprop/CONTRIBUTING.md) and I agree to the terms of the [Contributor License Agreement](github.com/Algorithmiq/monoprop/CLA.md).
 
 ## Summary
 
