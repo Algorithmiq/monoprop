@@ -100,6 +100,16 @@ def test_evolved_operator_returns_pauli_operator(initial_operator, serial_comm) 
     assert evolved.isclose(initial_operator)
 
 
+def test_update_initial_operator(serial_comm):
+    """Make sure the initial operator update works correctly with PauliOperator input."""
+    operator = PauliOperator({"Z": 1.0}, num_qubits=1)
+    mp = PauliPropagator(operator, initial_state=[], cutoff=1, comm=serial_comm)
+
+    updated_operator = PauliOperator({"Z": 2.75}, num_qubits=1)
+    mp.update_initial_operator(updated_operator)
+    assert mp.evolved_operator() == updated_operator
+
+
 class TestPauli:
     def test_default_qubits_are_range(self):
         p = Pauli("XYZ")
