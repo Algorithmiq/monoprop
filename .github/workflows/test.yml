@@ -89,8 +89,7 @@ jobs:
 
       - name: Install package
         run: |
-          echo "Building with CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL on ${{ matrix.runner }}"
-          uv sync --no-progress --group test --all-extras -v
+          uv sync --no-progress --group test --all-extras -v --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_CXX_UNIT_TESTS=ON"
 
       - name: Python environment information
         run: |

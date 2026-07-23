@@ -6,7 +6,7 @@
         {
             "label": "Install in Release mode",
             "type": "shell",
-            "command": "uv sync --all-extras -v",
+            "command": "uv sync --all-extras -v --config-settings-package='monoprop:cmake.define.monoprop_ENABLE_CXX_UNIT_TESTS=ON'",
             "problemMatcher": [],
             "group": {
                 "kind": "build",
@@ -16,7 +16,17 @@
         {
             "label": "Install in Debug mode",
             "type": "shell",
-            "command": "uv sync --all-extras -v --config-settings=cmake.build-type='Debug'",
+            "command": "uv sync --all-extras -v --config-settings-package='monoprop:cmake.build-type=Debug' --config-settings-package='monoprop:cmake.define.monoprop_ENABLE_CXX_UNIT_TESTS=ON'",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            }
+        },
+        {
+            "label": "Install in Coverage mode",
+            "type": "shell",
+            "command": "uv sync --all-extras -v --config-settings-package='monoprop:cmake.build-type=Coverage' --config-settings-package='monoprop:cmake.define.monoprop_ENABLE_CXX_UNIT_TESTS=ON'",
             "problemMatcher": [],
             "group": {
                 "kind": "build",

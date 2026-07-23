@@ -53,4 +53,4 @@ jobs:
         run: |
           export CPM_USE_LOCAL_PACKAGES=TRUE
           export CMAKE_PREFIX_PATH=/opt/Software
-          uv sync --all-extras
+          uv sync --all-extras --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_CXX_UNIT_TESTS=ON"

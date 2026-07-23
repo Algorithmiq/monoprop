@@ -81,7 +81,7 @@ jobs:
       - name: Install package
         run: |
           echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
-          CMAKE_PREFIX_PATH=/opt/Software uv sync --group docs --all-extras --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_CXX_UNIT_TESTS=OFF"
+          CMAKE_PREFIX_PATH=/opt/Software uv sync --group docs --all-extras
 
       # `just build-docs` runs, in order: docs-install (npm ci), gen-api
       # (docstrings -> API reference MDX), doctest-py (runnable docstring
