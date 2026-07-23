@@ -45,6 +45,11 @@ function escapeInlineMath(content) {
   return content.replaceAll('$', '\\$');
 }
 
+/** Undo fumadocs-python text escaping that breaks LaTeX grouping inside inline math. */
+function unescapeInlineMath(content) {
+  return content.replaceAll('\\{', '{').replaceAll('\\}', '}');
+}
+
 /** Recursively strip private classes/functions/submodules from a module node. */
 function pruneModule(mod) {
   prunePrivate(mod.classes ?? {});
@@ -68,7 +73,7 @@ export function convertSphinxMarkup(content) {
   return content.replaceAll(/:(\w+):`([^`]+)`/g, (match, role, inner) => {
     // Remove leading ~ if present (used in Sphinx for full qualified paths)
     const cleanName = inner.replace(/^~/, '');
-    if (role === 'math') return `$${escapeInlineMath(cleanName)}$`;
+    if (role === 'math') return `$${escapeInlineMath(unescapeInlineMath(cleanName))}$`;
     // Wrap non-math references in backticks for cross-reference resolution
     return `\`${cleanName}\``;
   });

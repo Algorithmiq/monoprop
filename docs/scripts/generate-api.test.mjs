@@ -18,3 +18,14 @@ test('convertSphinxMarkup escapes dollar signs inside math roles', () => {
     'sum $x + \\$y\\$$ and $z$',
   );
 });
+
+test('convertSphinxMarkup restores escaped braces inside math roles', () => {
+  assert.equal(
+    convertSphinxMarkup('phase :math:`i^\\{\\binom\\{w\\}\\{2\\}\\}`'),
+    'phase $i^{\\binom{w}{2}}$',
+  );
+  assert.equal(
+    convertSphinxMarkup('term :math:`m_\\{i_1\\} \\cdots m_\\{i_w\\}`'),
+    'term $m_{i_1} \\cdots m_{i_w}$',
+  );
+});
