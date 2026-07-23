@@ -46,10 +46,6 @@ jobs:
 
     runs-on: ${{ matrix.runner}}
 
-    defaults:
-      run:
-        shell: bash -l {0}
-
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -81,6 +77,11 @@ jobs:
           env | sort > "$AFTER_ENV"
 
           python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
+
+      - name: Set build environment variables
+        if: ${{ matrix.runner == 'ubuntu-26.04-arm' }}
+        run: |
+          echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -155,10 +156,6 @@ jobs:
 
     name: Check C++ on ubuntu-26.04 (coverage)
     runs-on: ubuntu-26.04
-
-    defaults:
-      run:
-        shell: bash -l {0}
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -257,11 +254,6 @@ jobs:
 
     name: Collect C++ coverage through the Python bindings
     runs-on: ubuntu-26.04
-
-    defaults:
-      run:
-        shell: bash -l {0}
-
     permissions:
       contents: read
 
@@ -385,9 +377,6 @@ jobs:
 
     name: SonarQube analysis
     runs-on: ubuntu-26.04
-    defaults:
-      run:
-        shell: bash -l {0}
     needs:
       - python-checks
       - cpp-checks
@@ -475,9 +464,6 @@ jobs:
 
     name: Check C++ on ${{ matrix.runner }} (${{ matrix.compiler }})
     runs-on: ${{ matrix.runner }}
-    defaults:
-      run:
-        shell: bash -l {0}
     strategy:
       fail-fast: false
       matrix:
@@ -546,6 +532,11 @@ jobs:
           env | sort > "$AFTER_ENV"
 
           python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
+
+      - name: Set build environment variables
+        if: ${{ matrix.runner == 'ubuntu-26.04-arm' }}
+        run: |
+          echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         if: ${{ matrix.runner == 'macos-15' }}
