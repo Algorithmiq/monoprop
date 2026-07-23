@@ -70,6 +70,25 @@ class TestPauliPropagatorCutoff:
             max(len(k) for k in op) == 2 * schrodinger_cutoff
         )  # 3 qubits * 2 Majoranas/qubit
 
+    def test_update_initial_operator(self, serial_comm):
+        operator = PauliOperator({"Z": 1.0}, num_qubits=1)
+        mp = PauliPropagator(
+            operator,
+            initial_state=[],
+            cutoff=1,
+            comm=serial_comm,
+        )
+
+        assert mp.expectation_value() == pytest.approx(1.0)
+
+        updated_operator = {
+            term: 2.75 * coeff
+            for term, coeff in operator.get_majorana_operator().terms.items()
+        }
+        mp.update_initial_operator(updated_operator)
+
+        assert mp.expectation_value() == pytest.approx(2.75)
+
 
 class TestPauli:
     def test_default_qubits_are_range(self):
