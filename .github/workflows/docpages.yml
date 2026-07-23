@@ -38,9 +38,6 @@ env:
 jobs:
   build:
     runs-on: ubuntu-26.04
-    defaults:
-      run:
-        shell: bash -l {0}
 
     steps:
       - name: Checkout
@@ -54,11 +51,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y just libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
 
-      - name: Install dependencies
-        run: |
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
-          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' | sudo tee -a /etc/bash.bashrc
+      - name: Set environment variables
+        run: |
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
