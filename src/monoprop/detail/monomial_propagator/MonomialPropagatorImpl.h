@@ -156,6 +156,9 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
     // terms spill to overflow losslessly).
     mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
     mp_op_.store->reserve(expected_local_terms);
+    // The store was just replaced; drop any prior lazy inverted index so inverted_index() rebuilds
+    // against the new store (append_term no longer keeps it in sync).
+    mp_op_.inverted_index_.reset();
 
     size_t i = 0;
     // The initial operator's Majorana monomials are DISTINCT, so emplace (insert-if-absent) == an
@@ -343,8 +346,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMa
         }
     }
 
-    auto res = mp_op_.update_initial_operator(new_op, schrodinger_);
-    return std::move(std::get<2>(res));
+    return mp_op_.update_initial_operator(new_op, schrodinger_);
 }
 
 template <size_t NumModes>
@@ -804,8 +806,8 @@ template <size_t NumModes>
 auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, const MPGraphView &graph, Basis basis)
     -> std::pair<detail::LayerCosScale, detail::LayerCosAccumulate> {
     // Fold layers recompute cos on the fly (LazyFold), never retained: the former persistent FoldCache
-    // was removed (<=5% gain, and GBs of RAM per large operator). Recompute needs columns sorted.
-    inverted_index.ensure_sorted_columns();
+    // was removed (<=5% gain, and GBs of RAM per large operator). Recompute lower_bounds each sparse
+    // column, which the row-order fill keeps ascending (asserted in InvertedIndex::fill_rows).
 
     struct LayerCos {
         bool recomputes_cos = false;

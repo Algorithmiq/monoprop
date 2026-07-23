@@ -151,11 +151,11 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pau
     dict[VecZ{0, 2}] = cd(1.5, 0.0); // present in store -> row coeff
     dict[VecZ{4, 6}] = cd(2.5, 0.0); // in init_op_map -> stays pending
 
-    auto [new_map, new_coeffs, grad] = op.update_initial_operator(dict, /*schrodinger=*/false);
-    BOOST_REQUIRE_EQUAL(new_coeffs.size(), 1U);
-    BOOST_CHECK_EQUAL(new_coeffs[0], encode_pauli_coeff(cd(1.5, 0.0))); // Pauli encode path
-    BOOST_CHECK(new_map.find(indices_to_bitset<8>({4, 6})) != new_map.end());
-    BOOST_CHECK(new_map.find(present) == new_map.end());
+    const auto grad = op.update_initial_operator(dict, /*schrodinger=*/false);
+    BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), 1U);
+    BOOST_CHECK_EQUAL(op.op_coeffs[0], encode_pauli_coeff(cd(1.5, 0.0))); // Pauli encode path
+    BOOST_CHECK(op.init_op_map.find(indices_to_bitset<8>({4, 6})) != op.init_op_map.end());
+    BOOST_CHECK(op.init_op_map.find(present) == op.init_op_map.end());
     BOOST_CHECK_EQUAL(grad.first.size(), 2U); // every supplied term recorded in the grad arrays
 }
 
@@ -175,8 +175,8 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_abse
     const auto fresh = indices_to_bitset<8>({1, 3, 5});
     dict[VecZ{1, 3, 5}] = cd(4.0, 0.0);
     // Schrödinger admits an unknown term (goes to pending) rather than throwing.
-    auto [new_map, new_coeffs, grad] = op.update_initial_operator(dict, /*schrodinger=*/true);
-    BOOST_CHECK(new_map.find(fresh) != new_map.end());
+    op.update_initial_operator(dict, /*schrodinger=*/true);
+    BOOST_CHECK(op.init_op_map.find(fresh) != op.init_op_map.end());
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identity_term) {
@@ -187,10 +187,10 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identit
 
     FermiOperatorMap dict;
     dict[VecZ{}] = cd(2.75, 0.0);
-    auto [new_map, new_coeffs, grad] = op.update_initial_operator(dict, /*schrodinger=*/false);
-    BOOST_REQUIRE_EQUAL(new_coeffs.size(), 1U);
-    BOOST_CHECK_EQUAL(new_coeffs[0], algebra_encode_coeff<8>(Basis::Majorana, cd(2.75, 0.0), identity));
-    BOOST_CHECK_EQUAL(new_coeffs[0], 2.75);
+    op.update_initial_operator(dict, /*schrodinger=*/false);
+    BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), 1U);
+    BOOST_CHECK_EQUAL(op.op_coeffs[0], algebra_encode_coeff<8>(Basis::Majorana, cd(2.75, 0.0), identity));
+    BOOST_CHECK_EQUAL(op.op_coeffs[0], 2.75);
 }
 
 // ── insert_absent_terms / inverted index / memory estimate / copy ────────────────────────────────
@@ -219,13 +219,14 @@ BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {
     BOOST_CHECK(op.store->find(e1).has_value());
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_append_term_keeps_inverted_index_in_sync) {
+BOOST_AUTO_TEST_CASE(mp_operator_append_term_after_materialization_rebuilds_inverted_index) {
     detail::MPOperator<8> op;
     op.append_term(indices_to_bitset<8>({0, 1}));
-    BOOST_CHECK_EQUAL(op.inverted_index().rows(), 1U); // builds the index (rows == size)
+    BOOST_CHECK_EQUAL(op.inverted_index().rows(), 1U); // materializes the index (rows == size)
 
-    op.append_term(indices_to_bitset<8>({2, 3})); // append_row path (index present)
-    // Still in sync, so inverted_index() returns without a full rebuild.
+    // append_term no longer syncs the index incrementally; the next inverted_index() sees it stale
+    // (rows() != store size) and rebuilds it against the grown store.
+    op.append_term(indices_to_bitset<8>({2, 3}));
     BOOST_CHECK_EQUAL(op.inverted_index().rows(), 2U);
 }
 

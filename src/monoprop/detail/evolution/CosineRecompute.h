@@ -72,8 +72,7 @@ inline auto make_fold_mask(const InvertedIndex<NumModes> &sc,
     // Scan.h); Majorana applies it when |G| is odd. Truncation bounds are basis-independent.
     s.g_odd = algebra_fold_needs_odd_correction<NumModes>(basis, gen);
     if (s.g_odd) {
-        sc.ensure_row_parity();
-        s.row_parity = sc.row_parity_word_ptr();
+        s.row_parity = sc.row_parity_words();
     }
     const size_t full = sc.words();
     s.mask_words = std::min(full, static_cast<size_t>((scaled_count + 63) / 64));
