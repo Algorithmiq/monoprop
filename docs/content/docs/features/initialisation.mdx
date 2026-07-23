@@ -18,10 +18,12 @@ picture they are applied to the observable.
 
 `schrodinger_cutoff` is the truncation applied to the initial state. It must be
 set higher than the regular `cutoff` for the Schrödinger-picture result to
-match the Heisenberg-picture one: under length truncation the two pictures agree
-on fermionic circuits when `schrodinger_cutoff = cutoff + 2` and when the gates are generated
-by length-4 Majorana monomials (see Appendix of
-[@chakraborty2026scalablequantumcircuitgeneration]).
+match the Heisenberg-picture one. A good value of the parameter depends on the circuit
+and observable, although setting `schrodinger_cutoff = cutoff + 2` for MajoranaPropagator and
+`schrodinger_cutoff = cutoff + 1` for PauliPropagator is usually a good starting point.
+For second-quantized Hamiltonians and usual Fermionic circuits coming from variational
+quantum computing, under length truncation the two pictures agree when
+`schrodinger_cutoff = cutoff + 2` (see Appendix of [@chakraborty2026scalablequantumcircuitgeneration]).
 
 ## Operator updates
 

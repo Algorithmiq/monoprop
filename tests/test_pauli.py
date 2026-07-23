@@ -55,6 +55,22 @@ class TestPauliPropagatorCutoff:
         with pytest.raises(ValueError, match="not Hermitian"):
             self._propagator(serial_comm).propagate(circuit)
 
+    @pytest.mark.parametrize("schrodinger_cutoff", [3, 4, 5])
+    def test_schrodinger_cutoff(self, schrodinger_cutoff, serial_comm):
+        """The Schrodinger cutoff is multiplied by 2 to convert from qubits to Majorana operators."""
+        mp = PauliPropagator(
+            PauliOperator({"ZZ": 1.0}, num_qubits=10),
+            initial_state=[],
+            cutoff=4,
+            schrodinger_cutoff=schrodinger_cutoff,
+            comm=serial_comm,
+        )
+        # it is more straightforwards to test in the Majorana
+        op = mp.evolved_operator().get_majorana_operator()
+        assert (
+            max(len(maj) for maj in op.terms) == 2 * schrodinger_cutoff
+        )  # 3 qubits * 2 Majoranas/qubit
+
 
 @pytest.mark.parametrize(
     "initial_operator",
@@ -82,6 +98,16 @@ def test_evolved_operator_returns_pauli_operator(initial_operator, serial_comm) 
     assert isinstance(evolved, PauliOperator)
     assert evolved.num_qubits == initial_operator.num_qubits
     assert evolved.isclose(initial_operator)
+
+
+def test_update_initial_operator(serial_comm):
+    """Make sure the initial operator update works correctly with PauliOperator input."""
+    operator = PauliOperator({"Z": 1.0}, num_qubits=1)
+    mp = PauliPropagator(operator, initial_state=[], cutoff=1, comm=serial_comm)
+
+    updated_operator = PauliOperator({"Z": 2.75}, num_qubits=1)
+    mp.update_initial_operator(updated_operator)
+    assert mp.evolved_operator() == updated_operator
 
 
 class TestPauli:

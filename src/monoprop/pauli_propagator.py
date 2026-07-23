@@ -73,8 +73,11 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             cutoff: Maximum Pauli weight (number of qubits touched) retained during
                 evolution. The fully-paired exception described in
                 :class:`~monoprop.monomial_propagator.MonomialPropagator` still applies.
-            schrodinger_cutoff: Optional Schrodinger-picture cutoff (enables that
-                picture).
+            schrodinger_cutoff: Optional cutoff for Schrodinger-picture evolution. If
+                provided, enables the Schrodinger picture, starting in a n initial state
+                with terms truncated with that parameter; if ``None``, the Heisenberg
+                picture is used. It is recommended that ``schrodinger_cutoff`` be slightly
+                larger than ``cutoff`` for comparable accuracy.
             lower_atol: Optional lower coefficient-truncation tolerance.
             upper_atol: Optional upper coefficient-retention tolerance.
             comm: Optional MPI communicator (must outlive the propagator).
@@ -82,6 +85,14 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         # The PauliOperator carries its own qubit count (a required constructor argument), so
         # the propagator reads it directly rather than validating it here.
         num_qubits = initial_operator.num_qubits
+
+        # we have to multiply the Schrodinger cutoff by 2, because the Majorana
+        # cutoff is measured in terms of Majorana operators, while PauliPropagator
+        # measures it in terms of qubits. Each qubit corresponds to 2 Majorana operators.
+        schrodinger_cutoff = (
+            None if schrodinger_cutoff is None else 2 * schrodinger_cutoff
+        )
+
         self._init_simulator(
             initial_operator.get_majorana_operator(),
             initial_state,
