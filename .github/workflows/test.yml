@@ -69,6 +69,11 @@ jobs:
             echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
           fi
 
+      - name: Set TBB environment variables
+        if: ${{ matrix.runner == 'ubuntu-26.04' }}
+        run: |
+          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' >> /etc/bash.bashrc
+
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
         with:
@@ -153,6 +158,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
+
+      - name: Set TBB environment variables
+        if: ${{ matrix.runner == 'ubuntu-26.04' }}
+        run: |
+          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' >> /etc/bash.bashrc
 
       - name: Configure
         run: |
@@ -479,6 +489,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
+
+      - name: Set TBB environment variables
+        if: ${{ matrix.runner == 'ubuntu-26.04' }}
+        run: |
+          echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' >> /etc/bash.bashrc
 
       - name: Install dependencies
         if: ${{ matrix.runner == 'macos-15' }}
