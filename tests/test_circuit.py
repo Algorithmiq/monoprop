@@ -374,7 +374,7 @@ def test_pared_functional_matches_unpared(fixture: str) -> None:
     prop = _propagator(problem)
     prop.build_graph(circuit)
 
-    pared = prop.expectation_value_functional(pare_threshold=1e-12)
+    pared = prop.expval_functional(pare_threshold=1e-12)
     np.testing.assert_allclose(
         pared(circuit.parameters), problem.exact_expval, atol=1e-9
     )
