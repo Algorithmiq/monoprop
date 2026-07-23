@@ -62,7 +62,7 @@ jobs:
           source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
           env | sort > "$AFTER_ENV"
 
-          python .github/scripts/diff-env.py
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0

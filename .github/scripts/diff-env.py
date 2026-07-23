@@ -3,12 +3,9 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
-
-before_path = Path(os.environ["BEFORE_ENV"])
-after_path = Path(os.environ["AFTER_ENV"])
-github_env = Path(os.environ["GITHUB_ENV"])
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -23,10 +20,20 @@ def parse_env(path: Path) -> dict[str, str]:
     return out
 
 
-before = parse_env(before_path)
-after = parse_env(after_path)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("before_path", type=Path)
+    parser.add_argument("after_path", type=Path)
+    args = parser.parse_args()
 
-changed = {k: v for k, v in after.items() if before.get(k) != v}
+    before = parse_env(args.before_path)
+    after = parse_env(args.after_path)
 
-with github_env.open("a", encoding="utf-8") as out:
-    out.writelines(f"{k}<<__EOF__\n{v}\n__EOF__\n" for k, v in sorted(changed.items()))
+    changed = {k: v for k, v in after.items() if before.get(k) != v}
+
+    github_env = Path(os.environ["GITHUB_ENV"])
+
+    with github_env.open("a", encoding="utf-8") as out:
+        out.writelines(
+            f"{k}<<__EOF__\n{v}\n__EOF__\n" for k, v in sorted(changed.items())
+        )
