@@ -11,7 +11,26 @@ import { notFound } from 'next/navigation';
 import { getMDXComponents } from '@/components/mdx';
 import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { gitConfig } from '@/lib/shared';
+
+const repoRoot = path.resolve(process.cwd(), '..');
+
+function getPageGithubPath(page: (typeof source)['$inferPage']) {
+  if (page.slugs[0] !== 'api') {
+    return `docs/content/docs/${page.path}`;
+  }
+
+  for (let i = page.slugs.length; i > 1; i -= 1) {
+    const sourcePath = `src/monoprop/${page.slugs.slice(1, i).join('/')}.py`;
+    if (existsSync(path.join(repoRoot, sourcePath))) {
+      return sourcePath;
+    }
+  }
+
+  return 'src/monoprop/__init__.py';
+}
 
 export default async function Page(props: PageProps<'/[[...slug]]'>) {
   const params = await props.params;
@@ -29,7 +48,7 @@ export default async function Page(props: PageProps<'/[[...slug]]'>) {
         <MarkdownCopyButton markdownUrl={markdownUrl} />
         <ViewOptionsPopover
           markdownUrl={markdownUrl}
-          githubUrl={`https://github.com/${gitConfig.user}/${gitConfig.repo}/blob/${gitConfig.branch}/docs/content/docs/${page.path}`}
+          githubUrl={`https://github.com/${gitConfig.user}/${gitConfig.repo}/blob/${gitConfig.branch}/${getPageGithubPath(page)}`}
         />
 
       </div>
