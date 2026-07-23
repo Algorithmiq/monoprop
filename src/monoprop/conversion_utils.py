@@ -74,6 +74,20 @@ def _pauli_to_majorana(pauli: str) -> tuple[tuple[int, ...], complex]:
     return tuple(reversed(new_p)), coeff
 
 
+# Map (flag_z, has_even, has_odd) -> (pauli_char, new_flag_z, coeff_mult)
+# Encodes the Jordan-Wigner transformation logic.
+_MAJORANA_TRANSFORM = {
+    (False, True, True): ("Z", False, -1j),
+    (False, True, False): ("X", True, 1),
+    (False, False, True): ("Y", True, 1),
+    (False, False, False): ("I", False, 1),
+    (True, True, True): ("I", True, -1j),
+    (True, True, False): ("Y", False, 1j),
+    (True, False, True): ("X", False, -1j),
+    (True, False, False): ("Z", True, 1),
+}
+
+
 def _majorana_to_pauli(
     majorana: tuple[int, ...], *, n_qubits: int
 ) -> tuple[str, complex]:
@@ -102,31 +116,12 @@ def _majorana_to_pauli(
         has_even = (2 * i) in majorana_set
         has_odd = (2 * i + 1) in majorana_set
 
-        if not flag_z:
-            if has_even and has_odd:
-                pauli[i] = "Z"
-                forward_coeff *= -1j
-            elif has_even and not has_odd:
-                pauli[i] = "X"
-                flag_z = True
-            elif not has_even and has_odd:
-                pauli[i] = "Y"
-                flag_z = True
-            # the only possibility left is has_even == has_odd == False but this is just
-            # setting identity again
-        elif has_even and has_odd:
-            # pauli[i] = "I" but this is already set
-            forward_coeff *= -1j
-        elif not has_even and not has_odd:
-            pauli[i] = "Z"
-        elif has_even:
-            pauli[i] = "Y"
-            flag_z = False
-            forward_coeff *= 1j
-        else:
-            pauli[i] = "X"
-            flag_z = False
-            forward_coeff *= -1j
+        pauli_char, new_flag_z, coeff_mult = _MAJORANA_TRANSFORM[
+            (flag_z, has_even, has_odd)
+        ]
+        pauli[i] = pauli_char
+        flag_z = new_flag_z
+        forward_coeff *= coeff_mult
 
     return "".join(pauli), forward_coeff.conjugate()
 
