@@ -151,7 +151,7 @@ inline auto query_read(const VecZ &buf, size_t q, Monomial<NumModes> &maj_out, i
 }
 
 // Read ONLY the trailing phase word of query q — no majorana reconstruction (used where only the phase is
-// needed, not the partner M'; see process_query_responses).
+// needed, not the partner M'; see process_responses).
 template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
 inline auto query_phase(const VecZ &buf, size_t q) -> int {
     return decode_phase(buf[q * QW + mpi_detail::kWords<NumModes>]);

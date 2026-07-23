@@ -129,6 +129,8 @@ struct LayerBuildEngine {
 
     // One partner-resolution pass: resolve self-rank queries inline, then (multi-rank) alltoallv-exchange
     // cross-rank queries and fold in the answers. is_leader_pass selects the leader vs. follower half.
+    // The cross-rank half is ONE control flow over a compile-time sink — GraphCrossSink feeds the LayerCore
+    // accumulator, ContractCrossSink applies the rotation in place; each monomorphizes to its former twin.
     auto run_exchange(bool is_leader_pass) -> void {
         {
             profiling::ScopedRegion prof_sr(profiling::Region::SelfResolve);
@@ -139,44 +141,30 @@ struct LayerBuildEngine {
         }
         profiling::ScopedRegion prof_mx(profiling::Region::MpiExchange);
         if (fused_ != nullptr) {
-            // Fused R>1 exchange. Round 1: queries A→B fused with the v_src value stream (one bit-cast
-            // trailing word per record), so ONE alltoallv replaces the former query+value pair.
-            combined_qv_.resize(R);
-            for (size_t r = 0; r < R; ++r) {
-                build_fused_query_value<NumModes>(queries_r[r], src_val_r[r], combined_qv_[r]);
-            }
-            std::vector<std::vector<size_t>> inc_q;
-            mpi::begin_alltoallv(combined_qv_, comm).wait_into(inc_q);
-            // Resolver: emit half-rotations into fused_ and return one VALUE per query — target coeff for a
-            // HIT, freshly-computed insert coeff for a MISS — in the SAME round (see resolve_incoming_queries_fused).
-            auto resp_val = resolve_incoming_queries_fused(inc_q,
-                                                           local_op,
-                                                           R,
-                                                           is_leader_pass,
-                                                           matched,
-                                                           combined_size,
-                                                           *op_coeffs_,
-                                                           schrodinger_,
-                                                           *fused_,
-                                                           fused_scale_,
-                                                           inv_cos_,
-                                                           basis_);
-            // Round 2: value responses B→A, using the known transpose recv counts (see response_recv_counts).
-            std::vector<int> resp_recv = response_recv_counts();
-            std::vector<std::vector<double>> inc_rval;
-            mpi::begin_alltoallv(resp_val, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_rval);
-            process_query_responses_fused<NumModes>(inc_rval, src_idx_r, queries_r, R, my_rank, *fused_);
-            return;
+            ContractCrossSink<NumModes> sink{*fused_, *op_coeffs_, fused_scale_, inv_cos_, schrodinger_, basis_};
+            exchange_cross_rank(sink, is_leader_pass);
         }
-        // Non-fused R>1 exchange (graph build / replay).
+        else {
+            GraphCrossSink<NumModes> sink{acc};
+            exchange_cross_rank(sink, is_leader_pass);
+        }
+    }
+
+    // Cross-rank exchange (R>1) shared across sinks. Round 1 sends this rank's queries — the sink decides
+    // whether to fuse a v_src value stream so ONE alltoallv carries both — and the resolver answers one
+    // record per query (a real index for graph build; a target coeff for fused contraction), inserting
+    // absent partners in the SAME round. Round 2 returns those answers (the known transpose recv counts
+    // skip the response count-Alltoall) and the querier folds them into its own side.
+    template <class Sink>
+    auto exchange_cross_rank(Sink &sink, bool is_leader_pass) -> void {
+        std::vector<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
         std::vector<std::vector<size_t>> inc_q;
-        mpi::begin_alltoallv(queries_r, comm).wait_into(inc_q);
-        auto resps = resolve_incoming_queries(inc_q, local_op, R, is_leader_pass, matched, combined_size, acc);
-        // One TermIndex response per query, with the known transpose recv counts (see response_recv_counts).
-        std::vector<int> resp_recv_counts = response_recv_counts();
-        std::vector<std::vector<TermIndex>> inc_r;
-        mpi::begin_alltoallv(resps, comm, /*skip_self=*/false, &resp_recv_counts).wait_into(inc_r);
-        process_query_responses<NumModes>(inc_r, src_idx_r, queries_r, R, my_rank, acc);
+        mpi::begin_alltoallv(send, comm).wait_into(inc_q);
+        auto resp = resolve_incoming<NumModes>(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
+        std::vector<int> resp_recv = response_recv_counts();
+        std::vector<std::vector<typename Sink::Response>> inc_r;
+        mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_r);
+        process_responses<NumModes>(inc_r, src_idx_r, queries_r, R, my_rank, sink);
     }
 
     // In-place compact the per-rank cross-rank follower query streams, dropping followers a leader
