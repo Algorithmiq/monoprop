@@ -307,8 +307,6 @@ jobs:
 
       - name: Collect coverage into a gcovr tracefile
         run: |
-          # See the native coverage job for why throw/unreachable branches are excluded
-          # here at tracefile-collection time rather than at the later merge step.
           pipx run gcovr \
             --gcov-executable gcov-14 \
             --gcov-ignore-parse-errors \
