@@ -52,5 +52,4 @@ jobs:
       - name: Install package
         run: |
           export CPM_USE_LOCAL_PACKAGES=TRUE
-          export CMAKE_PREFIX_PATH=/opt/Software
           uv sync --all-extras

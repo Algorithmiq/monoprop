@@ -169,7 +169,6 @@ jobs:
           ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
-        if: ${{ matrix.runner == 'ubuntu-26.04' }}
         run: |
           BEFORE_ENV=$(mktemp)
           AFTER_ENV=$(mktemp)
