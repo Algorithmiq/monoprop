@@ -35,7 +35,8 @@ class Majorana:
     :class:`~monoprop.circuit.ExpGate` gate exponentiates. Indices must already be sorted,
     distinct, and non-negative. A
     repeated index is rejected because ``m_i^2 = 1`` would silently change the monomial's
-    weight -- almost always a mistake rather than an intended simplification.
+    weight -- almost always a mistake rather than an intended simplification. Use
+    :meth:`from_unsorted` to create a canonical term from an unsorted and/or repeated index sequence.
 
     An immutable value object: equal indices compare equal and hash alike, so a term can be
     used as a dictionary key (as :attr:`MajoranaOperator.terms` does).
