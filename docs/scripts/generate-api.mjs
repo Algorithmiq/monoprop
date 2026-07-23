@@ -9,6 +9,7 @@
 //  3. emits a `meta.json` so the API section is ordered like the old reference.
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { convert, write, frontmatter } from 'fumadocs-python';
 
 const JSON_PATH = path.resolve('monoprop.json');
@@ -50,18 +51,20 @@ function pruneModule(mod) {
 /**
  * Convert Sphinx-style cross-reference markup (e.g., `:meth:`name``) to markdown.
  * Patterns include `:meth:`, `:class:`, `:func:`, `:attr:` with optional ~ prefix
- * for module paths (e.g., `:meth:`~full.path.method_name``).
+ * for module paths (e.g., `:meth:`~full.path.method_name``). Inline `:math:` roles
+ * are rendered as markdown math so remark-math/rehype-katex can typeset them.
  *
  * The converted format wraps the name in backticks, which fumadocs will try to
  * resolve as a cross-reference. Explicit links are preserved.
  */
-function convertSphinxMarkup(content) {
+export function convertSphinxMarkup(content) {
   // Match `:role:`~?name`` or `:role:`~?path.name``
-  // Captures: role (meth/class/func/attr), optional ~, name/path
-  return content.replaceAll(/:\w+:`([^`]+)`/g, (match, inner) => {
+  // Captures: role (e.g. math/class/meth), optional ~, name/path
+  return content.replaceAll(/:(\w+):`([^`]+)`/g, (match, role, inner) => {
     // Remove leading ~ if present (used in Sphinx for full qualified paths)
     const cleanName = inner.replace(/^~/, '');
-    // Wrap in backticks for cross-reference resolution
+    if (role === 'math') return `$${cleanName}$`;
+    // Wrap non-math references in backticks for cross-reference resolution
     return `\`${cleanName}\``;
   });
 }
@@ -143,7 +146,7 @@ function normalizeFunctionReturns(mod) {
   }
 }
 
-async function main() {
+export async function main() {
   const pkg = JSON.parse(await fs.readFile(JSON_PATH, 'utf8'));
 
   // Keep only the documented public submodules.
@@ -192,4 +195,6 @@ async function main() {
   console.log(`Wrote ${files.length} API pages to ${OUT_DIR}`);
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}
