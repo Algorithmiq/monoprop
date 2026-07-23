@@ -65,9 +65,10 @@ class TestPauliPropagatorCutoff:
             schrodinger_cutoff=schrodinger_cutoff,
             comm=serial_comm,
         )
-        op = mp.evolved_operator()
+        # it is more straightforwards to test in the Majorana
+        op = mp.evolved_operator().get_majorana_operator()
         assert (
-            max(len(k) for k in op) == 2 * schrodinger_cutoff
+            max(len(maj) for maj in op.terms) == 2 * schrodinger_cutoff
         )  # 3 qubits * 2 Majoranas/qubit
 
 
