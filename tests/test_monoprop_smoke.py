@@ -139,7 +139,6 @@ def test_bound_expectation_value_methods_accept_declared_arguments(
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
-@pytest.mark.unsharded  # graph_data() exposes raw per-layer structure with no single shard-facade value
 def test_bound_graph_methods_accept_declared_arguments(
     problem, serial_comm, schrodinger
 ):
@@ -153,7 +152,6 @@ def test_bound_graph_methods_accept_declared_arguments(
     assert core.size() > 0
     graph_size = core.graph_size()
     assert len(graph_size) == 2
-    assert core.graph_data() is not None
     assert core.graph_layers() is not None
 
     core.update_initial_operator(op_dict=problem.operator.terms)

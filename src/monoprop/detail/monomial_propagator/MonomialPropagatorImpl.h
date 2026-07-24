@@ -351,7 +351,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMa
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> {
-    require_unsharded_("graph_data()"); // per-shard layer data has no single facade value
+    // Per-partition layer data (local to this rank/shard); C++-only.
     std::vector<LayerData> layers;
     const auto num_layers = graph_.layers();
     layers.reserve(num_layers);

@@ -211,8 +211,6 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
 
     cls.def("graph_size", &MonomialPropagator<NumModes>::graph_size);
 
-    cls.def("graph_data", &MonomialPropagator<NumModes>::graph_data);
-
     cls.def("graph_layers", &MonomialPropagator<NumModes>::graph_layers);
     cls.def("n_gates", &MonomialPropagator<NumModes>::n_gates);
 
