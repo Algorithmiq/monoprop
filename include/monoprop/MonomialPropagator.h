@@ -100,20 +100,10 @@ public:
     }
 
     /// @brief Get the Majorana Branch Simulator graph (local to this rank).
-    auto graph() const -> const MPGraph & {
-        require_unsharded_("graph()");
-        return graph_;
-    }
+    auto graph() const -> const MPGraph & { return graph_; }
 
-    // Direct access to this rank's MPOperator (coeff vectors, packed term store, inverted index). Used by tests.
-    auto mp_op() -> detail::MPOperator<NumModes> & {
-        require_unsharded_("mp_op()");
-        return mp_op_;
-    }
-    auto mp_op() const -> const detail::MPOperator<NumModes> & {
-        require_unsharded_("mp_op()");
-        return mp_op_;
-    }
+    auto mp_op() -> detail::MPOperator<NumModes> & { return mp_op_; }
+    auto mp_op() const -> const detail::MPOperator<NumModes> & { return mp_op_; }
 
     // Memory breakdowns sum across shards on a facade (fields are additive over disjoint hash-partitions).
     auto graph_memory_usage() const -> GraphMemoryBreakdown {
@@ -146,19 +136,12 @@ public:
     /// expanded via each layer's stored gate index) granularity; when lengths coincide the per-layer
     auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
-    /// @brief This rank's indexing map (Majorana bitset term → coefficient index).
-    auto indexing() -> detail::OperatorIndex<NumModes> & {
-        require_unsharded_("indexing()");
-        return *mp_op_.store;
-    }
-    auto indexing() const -> const detail::OperatorIndex<NumModes> & {
-        require_unsharded_("indexing()");
-        return *mp_op_.store;
-    }
+    /// @brief This rank's indexing map (Majorana bitset term → coefficient index). C++-only.
+    auto indexing() -> detail::OperatorIndex<NumModes> & { return *mp_op_.store; }
+    auto indexing() const -> const detail::OperatorIndex<NumModes> & { return *mp_op_.store; }
 
-    /// @brief Return graph layer data in Python-friendly structures: per-layer
-    /// (cos_inds, local_cycles, cross_rank_out, cross_rank_in) tuples.
-    /// local_cycles: (src, tgt, phase) on this rank; cross_rank_sin_send/recv: the paper's B^{(r')}/D^{(r')} recipes.
+    /// @brief Return graph layer data as per-layer tuples (cos_inds, local_cycles, cross_rank_sin_send,
+    /// cross_rank_sin_recv), local to this rank/shard.
     using LocalCycleData = std::tuple<size_t, size_t, int>;
     using CrossRankData = std::tuple<VecZ, VecI>; // (indices, phases)
     using LayerData =
@@ -396,13 +379,6 @@ private:
     auto sharded_graph_memory_usage_() const -> GraphMemoryBreakdown;
     // Run `fn` on every shard's propagator concurrently. Out-of-line because ShardGroup is incomplete here.
     auto for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void;
-    // Guard accessors whose raw per-shard data has no single value on a facade. Inline-safe (only null-tests the ptr).
-    auto require_unsharded_(const char *what) const -> void {
-        if (shard_group_) {
-            throw std::runtime_error(std::string(what)
-                                     + " is unavailable on a shard-backed propagator; use per-shard access");
-        }
-    }
 
     auto regenerate_cutoff_fn_() -> void;
 

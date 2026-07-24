@@ -115,24 +115,3 @@ public:
     auto storage_memory_usage() const -> GraphMemoryBreakdown;
 };
 } // namespace monoprop
-
-namespace std {
-template <>
-struct formatter<monoprop::Layer> {
-    constexpr auto parse(format_parse_context &ctx) { return ctx.begin(); }
-    template <typename FormatContext>
-    auto format(const monoprop::Layer &layer, FormatContext &ctx) const {
-        size_t sin_send_count = 0;
-        size_t sin_recv_count = 0;
-        for (size_t rank = 0; rank < layer.cross_rank_rank_count(); ++rank) {
-            sin_send_count += layer.cross_rank_sin_send_size(rank);
-            sin_recv_count += layer.cross_rank_sin_recv_size(rank);
-        }
-        return std::format_to(ctx.out(),
-                              "Layer{{cos_inds={}, sin_send={}, sin_recv={}}}",
-                              layer.num_cos_inds(),
-                              sin_send_count,
-                              sin_recv_count);
-    }
-};
-} // namespace std

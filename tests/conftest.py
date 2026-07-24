@@ -54,28 +54,6 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     if is_vscode_run and hasattr(config.option, "with_mpi"):
         config.option.with_mpi = True
-    config.addinivalue_line(
-        "markers",
-        "unsharded: build propagators single-partition (sets monoprop_SHARDS=off). Operator sharding "
-        "is the auto-default, but tests that inspect raw per-partition internals (indexing/mp_op/graph, "
-        "which have no single value on a shard facade) must run unsharded.",
-    )
-
-
-@pytest.fixture(autouse=True)
-def _shard_policy(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Force single-partition for tests marked ``unsharded``.
-
-    Sharding is the default parallelism (``monoprop_SHARDS`` unset ⇒ one shard per core), so every
-    propagator built in the suite is shard-backed by default — which is exactly what we want to
-    exercise. The exception is white-box tests that reach into raw engine internals; those opt out
-    with ``@pytest.mark.unsharded`` (or a module-level ``pytestmark``). The env is read at propagator
-    construction, so setting it in an autouse fixture (before the test body) is sufficient.
-    """
-    if request.node.get_closest_marker("unsharded"):
-        monkeypatch.setenv("monoprop_SHARDS", "off")
 
 
 _COMM_PARAMS = (

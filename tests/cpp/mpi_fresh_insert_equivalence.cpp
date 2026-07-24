@@ -15,9 +15,9 @@
 // Multi-rank equivalence for the Schrödinger fused-resolve fresh-insert arms of Resolve.h /
 // FusedApply.h. The existing Heisenberg World tests (exact_upper_atol_rescue, mpi_distributed_layer
 // _equivalence) already drive the Heisenberg R>1 resolve/apply paths under mpiexec; the SCHRÖDINGER
-// picture takes a distinct branch in resolve_incoming_queries_fused — a fresh partner insert is
-// HF-scored (Majorana hf_phase, or the Pauli pauli_hf_phase sub-branch) rather than left at 0. These
-// arms only execute at world >= 2 and self-skip otherwise.
+// picture takes a distinct branch in ContractCrossSink::on_resolved (the fused cross-rank resolve, via
+// resolve_incoming) — a fresh partner insert is HF-scored (Majorana hf_phase, or the Pauli pauli_hf_phase
+// sub-branch) rather than left at 0. These arms only execute at world >= 2 and self-skip otherwise.
 //
 // The oracle is serial<->world bit-exact-to-fp equivalence, which is the load-bearing invariant of
 // the deterministic base+j miss-prefix: the same terms must be produced and summed to the same value
@@ -44,7 +44,7 @@ using pauli_oracle::slots_of_string;
 // ── Majorana, Schrödinger picture, coefficient-carrying (fused) propagate ────────────────────────
 // schrodinger_cutoff engages the Schrödinger picture; a low structural cutoff + upper_atol = 0
 // rescue forces most partner terms to be FRESH inserts, so the Schrödinger miss arm of
-// resolve_incoming_queries_fused (v_tgt = HF-scored, not 0) runs on nearly every partner.
+// ContractCrossSink::on_resolved (v_tgt = HF-scored, not 0) runs on nearly every partner.
 template <size_t NumModes>
 auto run_schrodinger_majorana(const CaseData& data, MPI_Comm comm) -> double {
     MonomialPropagator<NumModes> sim(data.hamiltonian,

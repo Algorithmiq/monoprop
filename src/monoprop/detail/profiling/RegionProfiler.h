@@ -33,7 +33,7 @@ namespace monoprop::profiling {
 enum class Region : int {
     Find = 0,     // fused_find_and_collect — anticommutation scan + cutoff + query emit
     SelfResolve,  // resolve_self_queries — resolve this rank's own query stream
-    MpiExchange,  // layer-build alltoallv + resolve_incoming_queries + response fold (R>1 only)
+    MpiExchange,  // layer-build alltoallv + resolve_incoming + response fold (R>1 only)
     DeferInsert,  // insert_deferred_self_misses — grow op, scatter, index bulk_insert, inverted index resync
     Gather,       // assemble_partners + build_layer_storage_unified
     Evolve,       // evolve_step — cosine scale callback + cross-rank evolution exchange + self-apply

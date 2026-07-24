@@ -98,7 +98,7 @@ name and cannot address suite-nested cases, tests use flat
   `large_cosine_storage_tests.cpp`, `gate_boundaries.cpp`.
 - **Graph encoding / packing**: `graph_encoding_tests.cpp` (CosineWordBuilder
   coalescer, checked_* overflow guards, packed-phase storage + int8 read,
-  build_layer_exchange_layout_impl, and both arms of the D-from-B derivation).
+  build_layer_exchange_layout, and both arms of the D-from-B derivation).
 - **Graph / paring**: `pare_graph_tests.cpp`, `mpi_pare.cpp`,
   `mp_graph_tests.cpp` (MPGraph slice_graph/slice_view transforms, the
   front_offset lazy-compaction arms, MPGraphView reverse mapping + OOB throw).

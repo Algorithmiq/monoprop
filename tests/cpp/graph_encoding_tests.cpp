@@ -17,7 +17,7 @@
 // construct their inputs directly and check them against hand-computed oracles. The
 // distributed round-trip / bit-packing paths are covered by large_cosine_storage_tests.cpp;
 // this file targets the pieces that file leaves uncovered: the CosineWordBuilder coalescer,
-// the checked_* overflow throws, build_layer_exchange_layout_impl, the int8 phase read, and
+// the checked_* overflow throws, build_layer_exchange_layout, the int8 phase read, and
 // both arms of the D-from-B derivation.
 
 #include <boost/test/unit_test.hpp>
@@ -76,7 +76,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_finish_flushes_pending_and_empt
     // Nothing pushed -> empty CosMask.
     CosineWordBuilder empty;
     const CosMask none = empty.finish();
-    BOOST_CHECK(none.empty());
+    BOOST_CHECK(none.blocks.empty());
     BOOST_CHECK_EQUAL(none.total_count, 0U);
 }
 
@@ -135,25 +135,55 @@ BOOST_AUTO_TEST_CASE(graph_encoding_packed_phase_at_reads_int8_values) {
     BOOST_CHECK_EQUAL(detail::packed_phase_at(storage, 2), 1);
 }
 
-// ── build_layer_exchange_layout_impl: counts*scale, prefix-sum displacements ────────────────────
+// ── build_layer_exchange_layout: counts*scale, prefix-sum displacements ────────────────────
 
 BOOST_AUTO_TEST_CASE(graph_encoding_exchange_layout_scale_and_displacements) {
-    struct RangeLike {
-        size_t sin_send_count;
-    };
-    const std::vector<RangeLike> ranges = {{3}, {0}, {5}};
+    const std::vector<size_t> send_counts = {3, 0, 5};
 
-    const auto s1 = detail::build_layer_exchange_layout_impl(ranges, /*scale=*/1);
+    const auto s1 = detail::build_layer_exchange_layout(send_counts, /*scale=*/1);
     BOOST_CHECK((s1.counts == std::vector<int>{3, 0, 5}));
     BOOST_CHECK((s1.displs == std::vector<int>{0, 3, 3})); // prefix sum: 0, 0+3, 3+0
     BOOST_CHECK_EQUAL(s1.total_count, 8U);
 
-    const auto s2 = detail::build_layer_exchange_layout_impl(ranges, /*scale=*/2);
+    const auto s2 = detail::build_layer_exchange_layout(send_counts, /*scale=*/2);
     BOOST_CHECK((s2.counts == std::vector<int>{6, 0, 10}));
     BOOST_CHECK((s2.displs == std::vector<int>{0, 6, 6}));
     BOOST_CHECK_EQUAL(s2.total_count, 16U);
 
     BOOST_CHECK_GT(detail::layer_exchange_layout_storage_bytes(s1), 0U);
+}
+
+// ── LayerCore::derivative_exchange_layout: the lazily-built 2x layout ─────────────────────────
+// Production only ever calls build_layer_exchange_layout with scale=1; the 2x layout reaches
+// MPI through this accessor, which is unreachable at comm size 1 (Evolution.cpp early-returns).
+// Without this case the whole derivative layout is untested in the default non-MPI suite.
+
+BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_is_twice_the_evolution_layout) {
+    LayerCore core;
+    core.evolution_exchange_layout = detail::build_layer_exchange_layout({3, 0, 5}, /*scale=*/1);
+
+    const auto &derivative = core.derivative_exchange_layout();
+    BOOST_CHECK((derivative.counts == std::vector<int>{6, 0, 10}));
+    BOOST_CHECK((derivative.displs == std::vector<int>{0, 6, 6}));
+    BOOST_CHECK_EQUAL(derivative.total_count, 16U);
+
+    // Cached: the second read returns the same object, so eval-time MPI holds a stable pointer.
+    BOOST_CHECK_EQUAL(&core.derivative_exchange_layout(), &derivative);
+
+    // Reset drops the cache (relabel copies cores and must not inherit eval-time state).
+    core.reset_derivative_exchange_layout();
+    BOOST_CHECK_EQUAL(core.derivative_exchange_layout().total_count, 16U);
+}
+
+BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_overflow_throws) {
+    // A count that fits int at 1x but not at 2x. build_layer_storage_unified runs this same derivation
+    // eagerly and discards it, so the overflow throws during build_graph rather than from inside the
+    // gradient collective window (where peers are already blocked in the recv-count round).
+    const size_t just_over_half = static_cast<size_t>(std::numeric_limits<int>::max()) / 2 + 1;
+
+    LayerCore core;
+    core.evolution_exchange_layout = detail::build_layer_exchange_layout({just_over_half}, 1); // 1x fits int
+    BOOST_CHECK_THROW(detail::build_derivative_exchange_layout(core.evolution_exchange_layout), std::overflow_error);
 }
 
 // ── D-from-B derivation: exercise BOTH arms of cross_rank_sin_recv_index ─────────────────────────
