@@ -18,8 +18,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-
-# import tracemalloc
 from time import perf_counter
 
 import numpy as np
@@ -105,33 +103,64 @@ def number_operator_majorana(site, spin, num_qubits):
     )
 
 
-def save_result(output_path, record):
-    """Append one benchmark result as a JSON line, creating the parent directory if needed."""
+SOURCE_LABEL = "monoprop"
+
+
+def save_result(
+    output_path,
+    n_spinful_sites,
+    n_layers,
+    values,
+    term_counts,
+    cumulative_runtimes,
+    memory_size,
+):
+    """Merge this run's per-step data into the shared results JSON file, keyed by source label."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("a") as f:
-        f.write(json.dumps(record) + "\n")
+    if output_path.exists():
+        with output_path.open() as f:
+            data = json.load(f)
+    else:
+        data = {
+            "n_spinful_sites": n_spinful_sites,
+            "n_layers": n_layers,
+            "step_range": list(range(n_layers + 1)),
+            "num_threads": {},
+            "runtime_seconds": {},
+            "expectation_value": {},
+            "num_terms": {},
+            "memory_MB": {},
+        }
+    data.setdefault("num_threads", {})[SOURCE_LABEL] = os.environ.get(
+        "monoprop_NUM_THREADS", "not set"
+    )
+    data["runtime_seconds"][SOURCE_LABEL] = cumulative_runtimes
+    data["expectation_value"][SOURCE_LABEL] = values
+    data["num_terms"][SOURCE_LABEL] = term_counts
+    data["memory_MB"][SOURCE_LABEL] = memory_size
+    with output_path.open("w") as f:
+        json.dump(data, f, indent=4)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark for 1D Hubbard model")
-    parser.add_argument("--case", "-c", help="Case pair to run.", type=int, default=0)
+    parser.add_argument(
+        "--n-spins", "-n", help="Number of spinful sites.", type=int, default=60
+    )
+    parser.add_argument(
+        "--max-layers", "-l", help="Number of Trotter layers.", type=int, default=20
+    )
     parser.add_argument(
         "--output",
         "-o",
-        help="Path to the JSONL file results are appended to.",
-        default=Path(__file__).with_name("monoprop_hubbard1d_benchmark_results.jsonl"),
+        help="Path to the shared JSON file results are merged into.",
+        default=Path(__file__).with_name("results.json"),
     )
 
     args = parser.parse_args()
 
-    spin_layer_cases = []
-    for i in [20, 40, 60]:
-        for j in range(10, 19, 2):
-            spin_layer_cases.append((i, j))
-
-    case_pair = args.case
-    n_spinful_sites, n_layers = spin_layer_cases[case_pair]
+    n_spinful_sites, n_layers = args.n_spins, args.max_layers
     trotter_steps = n_layers
     # Parameters
     t = 1.0
@@ -169,32 +198,33 @@ def main():
 
     values = np.empty(trotter_steps + 1)
     term_counts = np.empty(trotter_steps + 1, dtype=int)
-
-    values[0] = simulator.expectation_value()
-    term_counts[0] = simulator.size()
+    cumulative_runtimes = np.empty(trotter_steps + 1)
+    memory_size = np.empty(trotter_steps + 1)
 
     t_start = perf_counter()
+    values[0] = simulator.expectation_value()
+    cumulative_runtimes[0] = perf_counter() - t_start
+    term_counts[0] = simulator.size()
+    memory_size[0] = simulator._simulator.operator_memory_bytes() / 1024**2
     for step in range(trotter_steps):
+        step_start = perf_counter()
         simulator.propagate(fermi_circuit)
+        step_runtime = perf_counter() - step_start
         values[step + 1] = simulator.expectation_value()
         term_counts[step + 1] = simulator.size()
-    t_total = perf_counter() - t_start
-    memory_size = simulator._simulator.operator_memory_bytes() / 1024**2
-    # rss0 = proc.memory_info().rss
+        cumulative_runtimes[step + 1] = cumulative_runtimes[step] + step_runtime
+        memory_size[step + 1] = simulator._simulator.operator_memory_bytes() / 1024**2
     print(
-        f"{n_spinful_sites} n_spin {n_layers} layers {term_counts[-1]} num_terms {values[-1]} final overlap  runtime {t_total:.3f} seconds"
+        f"{n_spinful_sites} n_spin {n_layers} layers {term_counts[-1]} num_terms {values[-1]} final overlap  runtime {cumulative_runtimes[-1]:.3f} seconds"
     )
     save_result(
         args.output,
-        {
-            "n_spinful_sites": n_spinful_sites,
-            "n_layers": n_layers,
-            "num_threads": os.environ.get("monoprop_NUM_THREADS", "not set"),
-            "runtime_seconds": t_total,
-            "final_overlap": values[-1],
-            "num_terms": term_counts[-1],
-            "memory_MB": memory_size,
-        },
+        n_spinful_sites,
+        n_layers,
+        values.tolist(),
+        term_counts.tolist(),
+        cumulative_runtimes.tolist(),
+        memory_size.tolist(),
     )
 
 
