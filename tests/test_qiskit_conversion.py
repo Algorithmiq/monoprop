@@ -111,13 +111,13 @@ class TestFromQiskitOperator:
 
     def test_force_real_with_real_coefficients(self):
         op = SparsePauliOp.from_list([("XZ", 2.0 + 0j)])
-        result = from_qiskit_operator(op, force_real=True)
+        result = from_qiskit_operator(op)
         assert result.terms[Pauli("ZX", (0, 1))] == pytest.approx(2.0)
 
     def test_force_real_raises_for_complex_coefficients(self):
         op = SparsePauliOp.from_list([("XZ", 1.0 + 0.5j)])
         with pytest.raises(ValueError, match="complex terms"):
-            from_qiskit_operator(op, force_real=True)
+            from_qiskit_operator(op)
 
     def test_preserves_coefficient_magnitude(self):
         op = SparsePauliOp.from_list([("IZ", 0.75 + 0j)])

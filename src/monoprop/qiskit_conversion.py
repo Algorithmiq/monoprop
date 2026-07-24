@@ -48,14 +48,16 @@ VALID_PAULI_GATES = PAULI_EVOLUTION_EQUIVALENT.union({"PauliEvolution"})
 
 
 def from_qiskit_operator(
-    qiskit_op: SparsePauliOp, *, atol: float = 1e-8, force_real: bool = False
+    qiskit_op: SparsePauliOp, *, atol: float = 1e-8
 ) -> PauliOperator:
     """Convert a Qiskit operator to a PauliOperator.
+
+    Requires the operator to be Hermitian
 
     Args:
         qiskit_op: A qiskit Pauli operator.
         atol: Absolute tolerance for cutoff with qiskit's simplify()
-        force_real: Cast operator coefficients as real values. Default is `False`
+
     Returns:
         A PauliOperator instance representing the given operator.
     """
@@ -66,13 +68,12 @@ def from_qiskit_operator(
         s[::-1] for s in pauli_strings
     ]  # reverse the strings to match monoprop convention
     coeffs = qiskit_op.coeffs
-    if force_real:
-        coeffs = np.real_if_close(coeffs)  # type: ignore
-        if np.iscomplexobj(coeffs):
-            raise ValueError("Operator has complex terms")
+    coeffs = np.real_if_close(coeffs)  # type: ignore
+    if np.iscomplexobj(coeffs):
+        raise ValueError("Operator has complex terms")
     return PauliOperator._from_terms(
         pauli_strings,
-        list(coeffs),  # type: ignore[arg-type]
+        list(coeffs),
         num_qubits=qiskit_op.num_qubits,
     )
 
