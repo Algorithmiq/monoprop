@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-import numpy as np
-
 from monoprop.conversion_utils import _extend_pauli_string
 
 try:
@@ -67,30 +65,30 @@ def from_qiskit_operator(
     pauli_strings = [
         s[::-1] for s in pauli_strings
     ]  # reverse the strings to match monoprop convention
-    coeffs = qiskit_op.coeffs
-    coeffs = np.real_if_close(coeffs)  # type: ignore
-    if np.iscomplexobj(coeffs):
-        raise ValueError("Operator has complex terms")
     return PauliOperator._from_terms(
-        pauli_strings,
-        list(coeffs),
-        num_qubits=qiskit_op.num_qubits,
+        pauli_strings, list(qiskit_op.coeffs), num_qubits=qiskit_op.num_qubits
     )
 
 
 def to_qiskit_operator(
-    pauli_dict: dict[str, complex] | dict[str, float],
+    pauli_operator: PauliOperator | dict[str, float],
 ) -> SparsePauliOp:
     """Convert a dictionary of Pauli strings with their coefficients to a Qiskit operator.
 
     Args:
-        pauli_dict: A dictionary of Pauli strings with their coefficients,
+        pauli_operator: A dictionary of Pauli strings with their coefficients,
             in the right qubit order.
 
     Returns:
         the Qiskit operator.
     """
-    return SparsePauliOp.from_list([(k[::-1], v) for k, v in pauli_dict.items()])
+    if isinstance(pauli_operator, PauliOperator):
+        pauli_operator = {
+            _extend_pauli_string(p.s, p.num_qubits): coeff.real
+            for p, coeff in pauli_operator.terms.items()
+        }
+
+    return SparsePauliOp.from_list([(k[::-1], v) for k, v in pauli_operator.items()])
 
 
 def _place_operator(

@@ -46,15 +46,6 @@ class TestPauliPropagatorCutoff:
         mp = self._propagator(serial_comm)
         assert mp.num_qubits == 2  # "ZZ" operator
 
-    def test_non_hermitian_pauli_gate_rejected(self, serial_comm):
-        """An ExpGate with a complex (non-Hermitian) Pauli coefficient is rejected."""
-        circuit = Circuit(
-            (ExpGate(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=1)),),
-            parameters=(0.3,),
-        )
-        with pytest.raises(ValueError, match="not Hermitian"):
-            self._propagator(serial_comm).propagate(circuit)
-
     @pytest.mark.parametrize("schrodinger_cutoff", [3, 4, 5])
     def test_schrodinger_cutoff(self, schrodinger_cutoff, serial_comm):
         """The Schrodinger cutoff is multiplied by 2 to convert from qubits to Majorana operators."""
@@ -170,7 +161,7 @@ class TestPauliOperator:
         assert len(op) == 3
 
     def test_single_term(self):
-        op = PauliOperator({"XIYZ": 1 + 2j}, num_qubits=4)
+        op = PauliOperator({"XIYZ": 1}, num_qubits=4)
         assert op.num_qubits == 4
         assert len(op) == 1
 
@@ -281,6 +272,12 @@ class TestPauliOperator:
     def test_is_closely_equal_type_error(self):
         with pytest.raises(TypeError):
             PauliOperator({"X": 1.0}, num_qubits=1).isclose("not an operator")
+
+    def test_non_hermitian_pauli_gate_rejected(self):
+        """PauliOperator with a complex (non-Hermitian) coefficient is rejected."""
+
+        with pytest.raises(ValueError, match="Operator has complex terms"):
+            PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=1)
 
 
 class TestCircuit:
