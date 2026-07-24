@@ -31,17 +31,15 @@ namespace monoprop {
 // All layers share an immutable LayerCore; the pared graph reuses source cores (shared_ptr) + pruned cos.
 
 /// @brief Read-only view over an immutable LayerCore plus an optional pruned-cosine word list.
-/// Cross-rank data is always read verbatim (no logical→stored remap). cos_data() is valid only for
-/// pruned layers; recompute layers rebuild cosine from the inverted index.
+/// Cross-rank data is always read verbatim (no logical→stored remap). num_cos_inds() reports the stored
+/// count for pruned layers; recompute layers report 0 and rebuild cosine from the inverted index.
 struct LayerTraversal final {
     explicit LayerTraversal(const LayerCore &core, const CosMask *pruned_cos = nullptr)
         : core_(&core),
           pruned_cos_(pruned_cos) {}
 
-    // cos_data() valid only for pruned layers; recompute layers report num_cos_inds()/cos_span_count()==0.
-    auto cos_data() const -> const CosMask & { return *pruned_cos_; }
+    // num_cos_inds() reports 0 for recompute layers (no stored cosine); pruned layers report the stored count.
     auto num_cos_inds() const -> size_t { return pruned_cos_ != nullptr ? pruned_cos_->total_count : 0; }
-    auto cos_span_count() const -> size_t { return pruned_cos_ != nullptr ? pruned_cos_->span_count() : 0; }
 
     // Per-layer recompute metadata, read straight off the underlying LayerCore core.
     auto scaled_count() const -> uint64_t { return core_->scaled_count; }
@@ -51,6 +49,7 @@ struct LayerTraversal final {
 
     auto cross_rank_sin_send_size(size_t rank) const -> size_t { return core_->cross_rank.sin_send_size(rank); }
     auto cross_rank_sin_recv_size(size_t rank) const -> size_t { return core_->cross_rank.sin_recv_size(rank); }
+    auto cross_rank_in_count(size_t rank) const -> size_t { return core_->cross_rank.in_count(rank); }
 
     // O(1) random access into the verbatim D list (paired self-slot derivative fetches d[k], d[k+P]).
     auto cross_rank_sin_recv_index_at(size_t rank, size_t idx) const -> size_t {
@@ -77,76 +76,13 @@ struct LayerTraversal final {
     }
 
     auto evolution_exchange_layout() const -> const LayerExchangeLayout & { return core_->evolution_exchange_layout; }
-    auto derivative_exchange_layout() const -> const LayerExchangeLayout & { return core_->derivative_exchange_layout; }
+    auto derivative_exchange_layout() const -> const LayerExchangeLayout & {
+        return core_->derivative_exchange_layout();
+    }
 
     auto param_index() const -> size_t { return core_->param_index; }
     auto gen_coeff() const -> double { return core_->gen_coeff; }
     auto gate_index() const -> size_t { return core_->gate_index; }
-
-private:
-    const LayerCore *core_;
-    const CosMask *pruned_cos_;
-};
-
-/// @brief Owning graph layer: a shared immutable LayerCore, plus an owned cosine list for pruned layers.
-/// Read-only accessors delegate to a cheap LayerTraversal so replay logic lives in one place.
-struct Layer final {
-    Layer() : core_(std::make_shared<LayerCore>()) {}
-
-    explicit Layer(std::shared_ptr<const LayerCore> core) : core_(std::move(core)) {}
-    // Pruned layer: carries an explicitly-stored (possibly empty) filtered cosine list.
-    Layer(std::shared_ptr<const LayerCore> core, CosMask pruned_cos)
-        : core_(std::move(core)),
-          pruned_cos_(std::move(pruned_cos)) {}
-
-    auto core() const -> const LayerCore & { return *core_; }
-    auto shared_core() const -> std::shared_ptr<const LayerCore> { return core_; }
-    auto pruned_cos() const -> const CosMask * { return pruned_cos_ ? &*pruned_cos_ : nullptr; }
-
-    auto traversal() const -> LayerTraversal { return LayerTraversal(core(), pruned_cos()); }
-
-    // Delegate to traversal(); returned references point into the owned LayerCore (not the temporary
-    // traversal), so they stay valid.
-    auto num_cos_inds() const -> size_t { return traversal().num_cos_inds(); }
-    auto cos_span_count() const -> size_t { return traversal().cos_span_count(); }
-    auto scaled_count() const -> uint64_t { return traversal().scaled_count(); }
-    auto generator_words() const -> const std::vector<uint64_t> & { return traversal().generator_words(); }
-
-    auto cross_rank_rank_count() const -> size_t { return traversal().cross_rank_rank_count(); }
-    auto cross_rank_sin_send_size(size_t rank) const -> size_t { return traversal().cross_rank_sin_send_size(rank); }
-    auto cross_rank_sin_recv_size(size_t rank) const -> size_t { return traversal().cross_rank_sin_recv_size(rank); }
-    auto cross_rank_in_count(size_t rank) const -> size_t { return core().cross_rank.in_count(rank); }
-
-    template <typename Func>
-    auto for_each_cross_rank_sin_send_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
-        traversal().for_each_cross_rank_sin_send_range(rank, begin, end, std::forward<Func>(func));
-    }
-
-    template <typename Func>
-    auto for_each_cross_rank_sin_recv_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
-        traversal().for_each_cross_rank_sin_recv_range(rank, begin, end, std::forward<Func>(func));
-    }
-
-    auto evolution_exchange_layout() const -> const LayerExchangeLayout & {
-        return traversal().evolution_exchange_layout();
-    }
-
-    // Gate information owned by this layer (see LayerCore): set at build time, read by evaluation.
-    auto param_index() const -> size_t { return traversal().param_index(); }
-    auto gen_coeff() const -> double { return traversal().gen_coeff(); }
-    auto gate_index() const -> size_t { return traversal().gate_index(); }
-
-    auto empty() const -> bool {
-        if (num_cos_inds() != 0) {
-            return false;
-        }
-        for (size_t rank = 0; rank < cross_rank_rank_count(); ++rank) {
-            if (cross_rank_sin_send_size(rank) != 0 || cross_rank_sin_recv_size(rank) != 0) {
-                return false;
-            }
-        }
-        return true;
-    }
 
     // Rotations (Givens cycles) = sum of per-rank in-counts (one in-entry per rotation). sin_recv_size
     // would double-count self-rank rotations (in+out).
@@ -167,6 +103,28 @@ struct Layer final {
         }
         return count;
     }
+
+private:
+    const LayerCore *core_;
+    const CosMask *pruned_cos_;
+};
+
+/// @brief Owning graph layer: a shared immutable LayerCore, plus an owned cosine list for pruned layers.
+/// All read-only access goes through traversal(); this type only adds ownership over the core + pruned cos.
+struct Layer final {
+    Layer() : core_(std::make_shared<LayerCore>()) {}
+
+    explicit Layer(std::shared_ptr<const LayerCore> core) : core_(std::move(core)) {}
+    // Pruned layer: carries an explicitly-stored (possibly empty) filtered cosine list.
+    Layer(std::shared_ptr<const LayerCore> core, CosMask pruned_cos)
+        : core_(std::move(core)),
+          pruned_cos_(std::move(pruned_cos)) {}
+
+    auto core() const -> const LayerCore & { return *core_; }
+    auto shared_core() const -> std::shared_ptr<const LayerCore> { return core_; }
+    auto pruned_cos() const -> const CosMask * { return pruned_cos_ ? &*pruned_cos_ : nullptr; }
+
+    auto traversal() const -> LayerTraversal { return LayerTraversal(core(), pruned_cos()); }
 
 private:
     std::shared_ptr<const LayerCore> core_;

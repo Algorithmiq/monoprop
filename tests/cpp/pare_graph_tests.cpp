@@ -35,7 +35,8 @@ constexpr size_t kNumModes = 8;
 // Full-cos provider mirroring the streaming provider the pare functional uses: fold the operator's
 // persistent even-parity inverted index truncated to each layer's scaled_count.
 template <size_t NumModes>
-auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_index, const Layer &layer) -> CosMask {
+auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_index, const LayerTraversal &layer)
+    -> CosMask {
     Monomial<NumModes> gen{};
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
@@ -78,7 +79,7 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
 
     // Provider: real recomputed cos for layer 0 PLUS the synthetic index; real recomputed cos for all others.
     auto provider = [&](size_t i) -> CosMask {
-        CosMask cos = recompute_cos<kNumModes>(inverted_index, graph.get_layer(i));
+        CosMask cos = recompute_cos<kNumModes>(inverted_index, graph.get_layer_traversal(i));
         if (i == marked_layer) {
             bool merged = false;
             for (auto &b : cos.blocks) {

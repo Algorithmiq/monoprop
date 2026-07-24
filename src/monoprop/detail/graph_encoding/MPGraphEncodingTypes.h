@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -47,13 +48,7 @@ namespace monoprop {
 struct CosMask final {
     std::vector<std::pair<size_t, uint64_t>> blocks;
     size_t total_count = 0; // number of set bits
-    auto empty() const -> bool { return blocks.empty(); }
     auto span_count() const -> size_t { return blocks.size(); } // WORD count (parallel split unit)
-    auto reset() -> void {
-        blocks.clear();
-        total_count = 0;
-    }
-    auto shrink_to_fit() -> void { blocks.shrink_to_fit(); }
 };
 
 // Coalesces ascending absolute indices (or whole word-aligned blocks) into a CosMask. Indices/blocks
@@ -97,7 +92,6 @@ struct PackedPhaseStorage final {
     std::vector<uint64_t> phase_words;
     std::vector<int8_t> phase_values;
 
-    auto size() const -> size_t { return total_count; }
     auto empty() const -> bool { return total_count == 0; }
 };
 
@@ -116,7 +110,6 @@ struct CrossRankPartnerData {
     // Size of the in-block (P). Layout invariant b=[in(P)]++[out(Q)], d=[out(Q)]++[in(P)]: D indices are
     // derived from B (not stored); D PHASES differ per endpoint and ARE stored. See cross_rank_sin_recv_index.
     size_t in_count = 0;
-    bool empty() const { return sin_send_indices.empty() && sin_recv_entries.empty(); }
 };
 
 struct CrossRankPartnerRange final {
@@ -141,13 +134,16 @@ struct PackedCrossRankStorage final {
     auto sin_recv_size(size_t rank) const -> size_t { return ranges[rank].sin_recv_count; }
     // P = in-entries = rotations on this rank; sin_recv_size counts both endpoints (double-counts self-rank).
     auto in_count(size_t rank) const -> size_t { return ranges[rank].in_count; }
-    auto empty() const -> bool { return sin_recv_phases.empty() && sin_send_indices.empty(); }
 };
 
 struct LayerCore final {
     PackedCrossRankStorage cross_rank;
     LayerExchangeLayout evolution_exchange_layout;
-    LayerExchangeLayout derivative_exchange_layout; // precomputed 2x of evolution_exchange_layout
+
+    // Derivative exchange layout = 2x the evolution layout (each rotation endpoint carries both the op
+    // and state payload). Built lazily on the first derivative read (gradient path only), so energy-only
+    // runs never allocate it. Definition in MPGraphEncodingStorage.h (needs the checked_mpi_int guard).
+    auto derivative_exchange_layout() const -> const LayerExchangeLayout &;
 
     // Per-layer recompute metadata: lets the cosine-recompute path rebuild this layer's cosine set on the
     // fly (XOR-fold of the generator's inverted-index columns) instead of storing it.
@@ -163,6 +159,11 @@ struct LayerCore final {
     // Index of the ingested gate this layer came from (shared by layers from one multi-term gate;
     // absolute across build_graph calls). Enables per-gate parameter_mapping relabelling.
     size_t gate_index = 0;
+
+private:
+    // Lazily-materialized 2x-scaled evolution layout; see derivative_exchange_layout(). mutable because
+    // it is filled through const traversal handles at eval time (mirrors LayerExchangeLayout::recv_cache).
+    mutable std::optional<LayerExchangeLayout> derivative_exchange_layout_cache_;
 };
 
 } // namespace monoprop

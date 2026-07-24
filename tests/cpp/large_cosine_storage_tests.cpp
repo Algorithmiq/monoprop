@@ -56,20 +56,21 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
     pruned_cos.total_count = large_count;
 
     Layer layer{storage, std::move(pruned_cos)};
+    const auto lt = layer.traversal();
 
     // The >u32 cosine count round-trips through the stored pruned cos (CosMask::total_count).
-    BOOST_CHECK_EQUAL(layer.num_cos_inds(), large_count);
+    BOOST_CHECK_EQUAL(lt.num_cos_inds(), large_count);
 
     // Cross-rank is read verbatim from the core (never masked): B[0] = in-block[0] = 200.
     size_t b_idx = static_cast<size_t>(-1);
-    layer.for_each_cross_rank_sin_send_range(1, 0, 1, [&](size_t, size_t i) { b_idx = i; });
+    lt.for_each_cross_rank_sin_send_range(1, 0, 1, [&](size_t, size_t i) { b_idx = i; });
     BOOST_CHECK_EQUAL(b_idx, 200UL);
 
     // D[0] is derived from B: Q = sin_recv_count - in_count = 20 - 12 = 8, so D[0] = out-block[0] = 100,
     // stored phase = -(out_phases[0]) = -(+1) = -1.
     size_t d_idx = static_cast<size_t>(-1);
     int d_phi = 0;
-    layer.for_each_cross_rank_sin_recv_range(1, 0, 1, [&](size_t, size_t i, int phi) {
+    lt.for_each_cross_rank_sin_recv_range(1, 0, 1, [&](size_t, size_t i, int phi) {
         d_idx = i;
         d_phi = phi;
     });

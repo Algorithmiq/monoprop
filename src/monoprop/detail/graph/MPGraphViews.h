@@ -55,8 +55,6 @@ struct GraphMemoryBreakdown final {
 /// vector must outlive the view.
 class MPGraphView {
 public:
-    MPGraphView() = default;
-
     MPGraphView(const std::vector<Layer> &layers, size_t base, size_t count, bool reverse)
         : layers_(&layers),
           base_(base),

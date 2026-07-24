@@ -767,7 +767,7 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
         // Per-gate mapping indexed by absolute gate index: relabel each layer via its own
         // stored gate index (order-agnostic, correct in both pictures and across builds).
         for (size_t layer = 0; layer < count; ++layer) {
-            relabel(layer, parameter_mapping[graph_.get_layer(layer).gate_index()]);
+            relabel(layer, parameter_mapping[graph_.get_layer_traversal(layer).gate_index()]);
         }
     }
     else {
@@ -825,8 +825,9 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
         }
         else {
             entry.recomputes_cos = true;
-            const auto gen = detail::generator_from_words<NumModes>(layer.generator_words());
-            entry.recipe = detail::make_lazy_fold<NumModes>(inverted_index, gen, layer.scaled_count(), basis);
+            const auto t = layer.traversal();
+            const auto gen = detail::generator_from_words<NumModes>(t.generator_words());
+            entry.recipe = detail::make_lazy_fold<NumModes>(inverted_index, gen, t.scaled_count(), basis);
         }
         cache->push_back(std::move(entry));
     }
@@ -875,7 +876,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     std::shared_ptr<const MPGraph> graph;
     if (pare_threshold.has_value()) {
         auto full_cos_of_layer = [this, &inverted_index](size_t i) -> CosMask {
-            const auto &layer = graph_.get_layer(i);
+            const auto layer = graph_.get_layer_traversal(i);
             const auto gen = detail::generator_from_words<NumModes>(layer.generator_words());
             const auto combined = detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count(), basis_);
             return detail::fold_to_cos_mask<NumModes>(combined);

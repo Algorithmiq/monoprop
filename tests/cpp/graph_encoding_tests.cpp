@@ -17,7 +17,7 @@
 // construct their inputs directly and check them against hand-computed oracles. The
 // distributed round-trip / bit-packing paths are covered by large_cosine_storage_tests.cpp;
 // this file targets the pieces that file leaves uncovered: the CosineWordBuilder coalescer,
-// the checked_* overflow throws, build_layer_exchange_layout_impl, the int8 phase read, and
+// the checked_* overflow throws, build_layer_exchange_layout, the int8 phase read, and
 // both arms of the D-from-B derivation.
 
 #include <boost/test/unit_test.hpp>
@@ -76,7 +76,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_finish_flushes_pending_and_empt
     // Nothing pushed -> empty CosMask.
     CosineWordBuilder empty;
     const CosMask none = empty.finish();
-    BOOST_CHECK(none.empty());
+    BOOST_CHECK(none.blocks.empty());
     BOOST_CHECK_EQUAL(none.total_count, 0U);
 }
 
@@ -135,20 +135,17 @@ BOOST_AUTO_TEST_CASE(graph_encoding_packed_phase_at_reads_int8_values) {
     BOOST_CHECK_EQUAL(detail::packed_phase_at(storage, 2), 1);
 }
 
-// ── build_layer_exchange_layout_impl: counts*scale, prefix-sum displacements ────────────────────
+// ── build_layer_exchange_layout: counts*scale, prefix-sum displacements ────────────────────
 
 BOOST_AUTO_TEST_CASE(graph_encoding_exchange_layout_scale_and_displacements) {
-    struct RangeLike {
-        size_t sin_send_count;
-    };
-    const std::vector<RangeLike> ranges = {{3}, {0}, {5}};
+    const std::vector<size_t> send_counts = {3, 0, 5};
 
-    const auto s1 = detail::build_layer_exchange_layout_impl(ranges, /*scale=*/1);
+    const auto s1 = detail::build_layer_exchange_layout(send_counts, /*scale=*/1);
     BOOST_CHECK((s1.counts == std::vector<int>{3, 0, 5}));
     BOOST_CHECK((s1.displs == std::vector<int>{0, 3, 3})); // prefix sum: 0, 0+3, 3+0
     BOOST_CHECK_EQUAL(s1.total_count, 8U);
 
-    const auto s2 = detail::build_layer_exchange_layout_impl(ranges, /*scale=*/2);
+    const auto s2 = detail::build_layer_exchange_layout(send_counts, /*scale=*/2);
     BOOST_CHECK((s2.counts == std::vector<int>{6, 0, 10}));
     BOOST_CHECK((s2.displs == std::vector<int>{0, 6, 6}));
     BOOST_CHECK_EQUAL(s2.total_count, 16U);

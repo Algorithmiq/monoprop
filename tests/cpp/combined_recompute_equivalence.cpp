@@ -39,7 +39,7 @@ namespace {
 constexpr size_t kNumModes = 8;
 
 template <size_t NumModes>
-auto generator_of(const Layer &layer) -> Monomial<NumModes> {
+auto generator_of(const LayerTraversal &layer) -> Monomial<NumModes> {
     Monomial<NumModes> gen{};
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
@@ -101,7 +101,7 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
 
     size_t odd_layers = 0;
     for (size_t li = 0; li < graph.layers(); ++li) {
-        const auto &layer = graph.get_layer(li);
+        const auto layer = graph.get_layer_traversal(li);
         if (layer.generator_words().empty()) {
             continue;
         }
@@ -149,7 +149,7 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
     const double sec_val = 0.4157;
 
     for (size_t li = 0; li < graph.layers(); ++li) {
-        const auto &layer = graph.get_layer(li);
+        const auto layer = graph.get_layer_traversal(li);
         if (layer.generator_words().empty()) {
             continue;
         }

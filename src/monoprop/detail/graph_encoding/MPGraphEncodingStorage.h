@@ -200,17 +200,15 @@ inline auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layou
     return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
 }
 
-// build_layer_exchange_layout_impl: per-rank counts = sin_send_count * scale. PartnerRangeLike needs a
-// full-width size_t sin_send_count so checked_mpi_int catches overflow.
-template <typename PartnerRangeLike>
-inline auto build_layer_exchange_layout_impl(const std::vector<PartnerRangeLike> &ranges, int scale)
-    -> LayerExchangeLayout {
+// build_layer_exchange_layout: per-rank MPI counts = send_counts[r] * scale, with prefix-sum
+// displacements. send_counts is full-width (size_t) so checked_mpi_int catches overflow.
+inline auto build_layer_exchange_layout(const std::vector<size_t> &send_counts, int scale) -> LayerExchangeLayout {
     LayerExchangeLayout layout;
-    layout.counts.resize(ranges.size());
-    layout.displs.resize(ranges.size());
+    layout.counts.resize(send_counts.size());
+    layout.displs.resize(send_counts.size());
     size_t total = 0;
-    for (size_t r = 0; r < ranges.size(); ++r) {
-        const size_t count = static_cast<size_t>(scale) * static_cast<size_t>(ranges[r].sin_send_count);
+    for (size_t r = 0; r < send_counts.size(); ++r) {
+        const size_t count = static_cast<size_t>(scale) * send_counts[r];
         layout.counts[r] = checked_mpi_int(count, "Layer exchange count");
         layout.displs[r] = checked_mpi_int(total, "Layer exchange displacement");
         total += count;
@@ -227,18 +225,15 @@ inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_pa
 
     // Build exchange layout excluding self-rank (counts[my_rank] = 0).
     {
-        struct BCountOnly {
-            size_t sin_send_count;
-        };
-        std::vector<BCountOnly> ranges;
-        ranges.reserve(all_partners.size());
+        std::vector<size_t> send_counts;
+        send_counts.reserve(all_partners.size());
         for (size_t r = 0; r < all_partners.size(); ++r) {
             // Self-rank slot: zero MPI count (replay handles it locally). Full-width count so checked_mpi_int catches overflow.
-            const size_t cnt = (r == my_rank) ? size_t{0} : all_partners[r].sin_send_indices.size();
-            ranges.push_back({cnt});
+            send_counts.push_back((r == my_rank) ? size_t{0} : all_partners[r].sin_send_indices.size());
         }
-        storage->evolution_exchange_layout = build_layer_exchange_layout_impl(ranges, 1);
-        storage->derivative_exchange_layout = build_layer_exchange_layout_impl(ranges, 2);
+        storage->evolution_exchange_layout = build_layer_exchange_layout(send_counts, 1);
+        // The derivative layout (2x) is derived lazily from evolution_exchange_layout on first read;
+        // see LayerCore::derivative_exchange_layout below.
     }
 
     // Local cycles are folded into the self-rank cross_rank slot (no PackedLocalCycleStorage).
@@ -247,3 +242,30 @@ inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_pa
 }
 
 } // namespace monoprop::detail
+
+namespace monoprop {
+
+// Derivative layout = 2x the evolution layout: each rotation endpoint carries both the op and state
+// payload. Derived lazily (gradient path only) by doubling the already-validated evolution counts, so
+// energy-only runs never pay for it. Its recv_cache is rebuilt lazily on first use, exactly as the
+// stored layout's was, so the cached MPI resolve is preserved across evals.
+inline auto LayerCore::derivative_exchange_layout() const -> const LayerExchangeLayout & {
+    if (!derivative_exchange_layout_cache_) {
+        LayerExchangeLayout layout;
+        const size_t n = evolution_exchange_layout.counts.size();
+        layout.counts.resize(n);
+        layout.displs.resize(n);
+        size_t total = 0;
+        for (size_t r = 0; r < n; ++r) {
+            const size_t count = size_t{2} * static_cast<size_t>(evolution_exchange_layout.counts[r]);
+            layout.counts[r] = detail::checked_mpi_int(count, "Layer exchange count");
+            layout.displs[r] = detail::checked_mpi_int(total, "Layer exchange displacement");
+            total += count;
+        }
+        layout.total_count = total;
+        derivative_exchange_layout_cache_ = std::move(layout);
+    }
+    return *derivative_exchange_layout_cache_;
+}
+
+} // namespace monoprop

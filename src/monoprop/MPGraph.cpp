@@ -56,14 +56,6 @@ auto layer_storage_memory_usage(const LayerCore &storage) -> GraphMemoryBreakdow
     return breakdown;
 }
 
-auto add_breakdown(GraphMemoryBreakdown &target, const GraphMemoryBreakdown &source) -> void {
-    target.layer_descriptor_bytes += source.layer_descriptor_bytes;
-    target.layer_storage_object_bytes += source.layer_storage_object_bytes;
-    target.cos_data_bytes += source.cos_data_bytes;
-    target.cross_rank_bytes += source.cross_rank_bytes;
-    target.exchange_layout_bytes += source.exchange_layout_bytes;
-}
-
 } // namespace
 
 auto MPGraph::slice_graph(size_t key, bool contract) -> MPGraph {
@@ -109,7 +101,7 @@ auto MPGraph::num_cos_inds_and_cycles() const -> std::pair<size_t, size_t> {
     size_t total_ci = 0;
 
     for (auto it = active_begin_iterator(); it != active_end_iterator(); ++it) {
-        const auto &layer = *it;
+        const auto layer = it->traversal();
         total_cy += layer.total_cycles();
         // num_cos_inds counts cosine-ONLY terms (cos-scaled but not rotation endpoints) = total anti
         // endpoints minus rotation endpoints; saturate to guard the unsigned subtract.
@@ -129,7 +121,7 @@ auto MPGraph::storage_memory_usage() const -> GraphMemoryBreakdown {
     for (auto it = active_begin_iterator(); it != active_end_iterator(); ++it) {
         const auto storage = it->shared_core();
         if (storage != nullptr && seen_storage.insert(storage.get()).second) {
-            add_breakdown(breakdown, layer_storage_memory_usage(*storage));
+            breakdown += layer_storage_memory_usage(*storage);
         }
         // Pruned cos is stored per-layer (on PrunedLayer), not on the shared core, so accumulate it
         // per active layer without the shared-core dedup. FoldLayer stores no cos.

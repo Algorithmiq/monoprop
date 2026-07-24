@@ -38,12 +38,12 @@ BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_heisenberg_prefix_no_contract) {
     auto sliced = graph.slice_graph(3, /*contract=*/false);
 
     BOOST_REQUIRE_EQUAL(sliced.layers(), 3U);
-    BOOST_CHECK_EQUAL(sliced.get_layer(0).gate_index(), 0U);
-    BOOST_CHECK_EQUAL(sliced.get_layer(1).gate_index(), 1U);
-    BOOST_CHECK_EQUAL(sliced.get_layer(2).gate_index(), 2U);
+    BOOST_CHECK_EQUAL(sliced.get_layer(0).traversal().gate_index(), 0U);
+    BOOST_CHECK_EQUAL(sliced.get_layer(1).traversal().gate_index(), 1U);
+    BOOST_CHECK_EQUAL(sliced.get_layer(2).traversal().gate_index(), 2U);
     // Non-contracting slice leaves the source untouched.
     BOOST_CHECK_EQUAL(graph.layers(), 5U);
-    BOOST_CHECK_EQUAL(graph.get_layer(0).gate_index(), 0U);
+    BOOST_CHECK_EQUAL(graph.get_layer(0).traversal().gate_index(), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_schrodinger_contract_newest_first_copy_and_resize) {
@@ -54,14 +54,14 @@ BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_schrodinger_contract_newest_first_copy
 
     // sliced = layers_[active_end-1-i] = layers_[4], layers_[3] = gates 0, 1 (oldest-first).
     BOOST_REQUIRE_EQUAL(sliced.layers(), 2U);
-    BOOST_CHECK_EQUAL(sliced.get_layer(0).gate_index(), 0U);
-    BOOST_CHECK_EQUAL(sliced.get_layer(1).gate_index(), 1U);
+    BOOST_CHECK_EQUAL(sliced.get_layer(0).traversal().gate_index(), 0U);
+    BOOST_CHECK_EQUAL(sliced.get_layer(1).traversal().gate_index(), 1U);
 
     // Contract resized layers_ to the newest 3 (gates 4,3,2, still newest-first).
     BOOST_REQUIRE_EQUAL(graph.layers(), 3U);
-    BOOST_CHECK_EQUAL(graph.get_layer(0).gate_index(), 4U);
-    BOOST_CHECK_EQUAL(graph.get_layer(1).gate_index(), 3U);
-    BOOST_CHECK_EQUAL(graph.get_layer(2).gate_index(), 2U);
+    BOOST_CHECK_EQUAL(graph.get_layer(0).traversal().gate_index(), 4U);
+    BOOST_CHECK_EQUAL(graph.get_layer(1).traversal().gate_index(), 3U);
+    BOOST_CHECK_EQUAL(graph.get_layer(2).traversal().gate_index(), 2U);
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_key_clamped_to_size) {
@@ -79,7 +79,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_contract_clear_arm_when_prefix_covers_all) {
     // Graph is still usable after a full clear.
     graph.append(std::make_shared<LayerCore>(), 0, 0.0, /*gate_index=*/42);
     BOOST_REQUIRE_EQUAL(graph.layers(), 1U);
-    BOOST_CHECK_EQUAL(graph.get_layer(0).gate_index(), 42U);
+    BOOST_CHECK_EQUAL(graph.get_layer(0).traversal().gate_index(), 42U);
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_contract_noop_arm_keeps_dead_prefix_lazy) {
@@ -87,8 +87,8 @@ BOOST_AUTO_TEST_CASE(mp_graph_contract_noop_arm_keeps_dead_prefix_lazy) {
     (void)graph.slice_graph(3, /*contract=*/true); // front_offset 3 < 4096 -> no physical compaction
     BOOST_REQUIRE_EQUAL(graph.layers(), 97U);
     // Active window now starts at the 4th gate.
-    BOOST_CHECK_EQUAL(graph.get_layer(0).gate_index(), 3U);
-    BOOST_CHECK_EQUAL(graph.get_layer(96).gate_index(), 99U);
+    BOOST_CHECK_EQUAL(graph.get_layer(0).traversal().gate_index(), 3U);
+    BOOST_CHECK_EQUAL(graph.get_layer(96).traversal().gate_index(), 99U);
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_contract_erase_arm_above_threshold) {
@@ -96,12 +96,12 @@ BOOST_AUTO_TEST_CASE(mp_graph_contract_erase_arm_above_threshold) {
     auto graph = graph_with_gates(/*schrodinger=*/false, 8200);
     auto sliced = graph.slice_graph(4100, /*contract=*/true); // 4100 >= 4096 and 8200 >= 8200 -> erase
     BOOST_CHECK_EQUAL(sliced.layers(), 4100U);
-    BOOST_CHECK_EQUAL(sliced.get_layer(0).gate_index(), 0U);
+    BOOST_CHECK_EQUAL(sliced.get_layer(0).traversal().gate_index(), 0U);
 
     BOOST_REQUIRE_EQUAL(graph.layers(), 4100U);
     // After the physical erase the dead prefix is gone; index 0 is the first surviving gate.
-    BOOST_CHECK_EQUAL(graph.get_layer(0).gate_index(), 4100U);
-    BOOST_CHECK_EQUAL(graph.get_layer(4099).gate_index(), 8199U);
+    BOOST_CHECK_EQUAL(graph.get_layer(0).traversal().gate_index(), 4100U);
+    BOOST_CHECK_EQUAL(graph.get_layer(4099).traversal().gate_index(), 8199U);
 }
 
 // ── slice_view (through MPGraph) ─────────────────────────────────────────────────────────────────
@@ -110,9 +110,9 @@ BOOST_AUTO_TEST_CASE(mp_graph_slice_view_heisenberg_forward_window) {
     auto graph = graph_with_gates(/*schrodinger=*/false, 5);
     auto view = graph.slice_view(3);
     BOOST_REQUIRE_EQUAL(view.layers(), 3U);
-    BOOST_CHECK_EQUAL(view.get_layer(0).gate_index(), 0U);
-    BOOST_CHECK_EQUAL(view.get_layer(1).gate_index(), 1U);
-    BOOST_CHECK_EQUAL(view.get_layer(2).gate_index(), 2U);
+    BOOST_CHECK_EQUAL(view.get_layer(0).traversal().gate_index(), 0U);
+    BOOST_CHECK_EQUAL(view.get_layer(1).traversal().gate_index(), 1U);
+    BOOST_CHECK_EQUAL(view.get_layer(2).traversal().gate_index(), 2U);
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_slice_view_schrodinger_reversed_window) {
@@ -121,9 +121,9 @@ BOOST_AUTO_TEST_CASE(mp_graph_slice_view_schrodinger_reversed_window) {
     auto graph = graph_with_gates(/*schrodinger=*/true, 5);
     auto view = graph.slice_view(3);
     BOOST_REQUIRE_EQUAL(view.layers(), 3U);
-    BOOST_CHECK_EQUAL(view.get_layer(0).gate_index(), 0U);
-    BOOST_CHECK_EQUAL(view.get_layer(1).gate_index(), 1U);
-    BOOST_CHECK_EQUAL(view.get_layer(2).gate_index(), 2U);
+    BOOST_CHECK_EQUAL(view.get_layer(0).traversal().gate_index(), 0U);
+    BOOST_CHECK_EQUAL(view.get_layer(1).traversal().gate_index(), 1U);
+    BOOST_CHECK_EQUAL(view.get_layer(2).traversal().gate_index(), 2U);
 }
 
 // ── MPGraphView directly: the reverse mapping and the OOB throw ──────────────────────────────────
@@ -137,8 +137,8 @@ BOOST_AUTO_TEST_CASE(mp_graph_view_reverse_flag_flips_index_mapping) {
     const MPGraphView fwd(layers, /*base=*/0, /*count=*/4, /*reverse=*/false);
     const MPGraphView rev(layers, /*base=*/0, /*count=*/4, /*reverse=*/true);
     for (std::size_t i = 0; i < 4; ++i) {
-        BOOST_CHECK_EQUAL(fwd.get_layer(i).gate_index(), 10U + i);
-        BOOST_CHECK_EQUAL(rev.get_layer(i).gate_index(), 13U - i);
+        BOOST_CHECK_EQUAL(fwd.get_layer(i).traversal().gate_index(), 10U + i);
+        BOOST_CHECK_EQUAL(rev.get_layer(i).traversal().gate_index(), 13U - i);
     }
     BOOST_CHECK_THROW(fwd.get_layer(4), std::out_of_range);
     BOOST_CHECK_THROW(rev.get_layer(4), std::out_of_range);
