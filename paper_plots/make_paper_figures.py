@@ -213,8 +213,9 @@ def _plot_curves(ax, records, cutoffs, metric):
 def _plot_ratio(ax, records, cutoffs, metric):
     """Julia / monoprop at each shared N, per cutoff, plus the =1x baseline.
 
-    A ratio is a derived quantity (neither package), so it borrows the "monoprop"
-    solid/filled key for a clean single curve per cutoff.
+    The ratio is Julia's cost measured against monoprop, so it wears the Julia
+    key (dashed line / hollow circle) — matching the Julia curves in the absolute
+    panels.
     """
     for cutoff in cutoffs:
         color = CUTOFF_COLORS.get(cutoff, "#666666")
@@ -226,7 +227,7 @@ def _plot_ratio(ax, records, cutoffs, metric):
         ys = [jul[x] / mono[x] for x in xs if mono[x]]
         if not xs:
             continue
-        ax.plot(xs, ys, **_curve_style("monoprop", color))
+        ax.plot(xs, ys, **_curve_style("julia", color))
     ax.axhline(1.0, color="#555555", lw=1.4, zorder=2)
     ax.annotate("monoprop $=1\\times$", xy=(0.985, 1.0),
                 xycoords=("axes fraction", "data"), xytext=(0, 4),
@@ -290,8 +291,9 @@ def fig2_divergence_scaling(records, layers, outdir):
     fig.tight_layout(rect=(0, 0.10, 1, 0.99))
     # cutoff-only legend (all curves are ratios → one style), centred below.
     cut_handles = [Line2D([0], [0], color=CUTOFF_COLORS.get(c, "#666"), lw=LEGEND_LW,
-                          marker="o", ms=LEGEND_MS, markeredgewidth=MARKER_EDGE,
+                          ls="--", marker="o", ms=LEGEND_MS, markeredgewidth=MARKER_EDGE,
                           markeredgecolor=CUTOFF_COLORS.get(c, "#666"),
+                          markerfacecolor="white",
                           label=f"cutoff {c}") for c in cutoffs]
     fig.legend(handles=cut_handles, loc="lower center",
                bbox_to_anchor=(0.5, 0.02), ncol=len(cutoffs), frameon=False,
@@ -350,7 +352,7 @@ def fig4_scaling_and_divergence(records, layers, outdir):
     for ax, (metric, ylabel) in zip(axes[1], rat_panels):
         _plot_ratio(ax, records, cutoffs, metric)
         _finish_axis(ax, "number of qubits  $N$", ylabel, "")
-        _slope_guides(ax, xs_all, [1, 2, 3])
+        _slope_guides(ax, xs_all, [1, 2], anchor_frac=0.04)
 
     fig.tight_layout(rect=(0, 0.09, 1, 0.99))
     _two_part_legend(fig, cutoffs, y_cut=0.055, y_eng=0.012)
