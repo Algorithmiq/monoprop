@@ -48,22 +48,78 @@ function pruneModule(mod) {
 }
 
 /**
- * Convert Sphinx-style cross-reference markup (e.g., `:meth:`name``) to markdown.
- * Patterns include `:meth:`, `:class:`, `:func:`, `:attr:` with optional ~ prefix
- * for module paths (e.g., `:meth:`~full.path.method_name``).
- *
- * The converted format wraps the name in backticks, which fumadocs will try to
- * resolve as a cross-reference. Explicit links are preserved.
+ * Turn a fully-qualified symbol path into the URL of the page that documents
+ * it. Mirrors fumadocs-python's `getHref`, then drops the leading `monoprop`
+ * segment that `write` strips from file paths (the same realignment applied to
+ * the rendered content below).
  */
-function convertSphinxMarkup(content) {
-  // Match `:role:`~?name`` or `:role:`~?path.name``
-  // Captures: role (meth/class/func/attr), optional ~, name/path
-  return content.replaceAll(/:\w+:`([^`]+)`/g, (match, inner) => {
-    // Remove leading ~ if present (used in Sphinx for full qualified paths)
-    const cleanName = inner.replace(/^~/, '');
-    // Wrap in backticks for cross-reference resolution
-    return `\`${cleanName}\``;
+function pageUrl(dottedPath) {
+  const url =
+    '/' +
+    [...BASE_URL.split('/'), ...dottedPath.split('.')].filter((v) => v.length > 0).join('/');
+  return url.replace(`${BASE_URL}/monoprop`, BASE_URL);
+}
+
+/**
+ * Build a map from fully-qualified symbol path to the doc URL that documents it.
+ *
+ * Classes and modules get their own page. Functions, methods and attributes are
+ * rendered inline on their parent's page with no per-member anchor (see the
+ * `PyFunction`/`PyAttribute` components), so they resolve to that parent page.
+ */
+function buildXrefMap(pkg) {
+  const map = new Map();
+  const visit = (mod) => {
+    map.set(mod.path, pageUrl(mod.path));
+    for (const fn of Object.values(mod.functions ?? {})) map.set(fn.path, pageUrl(mod.path));
+    for (const attr of mod.attributes ?? []) map.set(`${mod.path}.${attr.name}`, pageUrl(mod.path));
+    for (const cls of Object.values(mod.classes ?? {})) {
+      const clsUrl = pageUrl(cls.path);
+      map.set(cls.path, clsUrl);
+      for (const fn of Object.values(cls.functions ?? {})) map.set(fn.path, clsUrl);
+      for (const attr of cls.attributes ?? []) map.set(`${cls.path}.${attr.name}`, clsUrl);
+    }
+    for (const sub of Object.values(mod.modules ?? {})) visit(sub);
+  };
+  visit(pkg);
+  return map;
+}
+
+/**
+ * Resolve cross-references in rendered MDX into real links, using `xref`
+ * (fully-qualified path -> page URL). Two input syntaxes are supported:
+ *
+ *  1. Markdown reference links whose target is a Python path -- the idiomatic
+ *     griffe/mkdocstrings form, and the one docstrings should migrate to:
+ *       `[Circuit][monoprop.circuit.Circuit]`  ->  `[Circuit](/api/circuit/Circuit)`
+ *       `[monoprop.circuit.Circuit][]`          ->  `[...](/api/circuit/Circuit)`
+ *
+ *  2. Legacy Sphinx roles (`:class:`, `:meth:`, `:func:`, `:attr:`), so a
+ *     partial migration still builds. A qualified target becomes a link; a bare
+ *     or unknown one degrades to a code span (the previous behaviour). With a
+ *     leading `~` the display text is shortened to the final path segment.
+ *
+ * Unresolved targets are collected in `unresolved` (surfaced by the caller) and
+ * left untouched rather than silently dropped.
+ */
+function resolveXrefs(content, xref, unresolved) {
+  content = content.replaceAll(/\[([^\]]+)\]\[([^\]]*)\]/g, (match, display, target) => {
+    const fqn = (target || display).trim().replace(/^`|`$/g, '');
+    const url = xref.get(fqn);
+    if (url) return `[${display}](${url})`;
+    unresolved.add(fqn);
+    return match;
   });
+
+  content = content.replaceAll(/:\w+:`([^`]+)`/g, (match, inner) => {
+    const shortDisplay = inner.startsWith('~');
+    const fqn = inner.replace(/^~/, '');
+    const display = shortDisplay ? fqn.split('.').pop() : fqn;
+    const url = xref.get(fqn);
+    return url ? `[${display}](${url})` : `\`${display}\``;
+  });
+
+  return content;
 }
 
 /** Collapse internal whitespace/newlines to a single line. */
@@ -154,11 +210,15 @@ async function main() {
   pruneModule(pkg);
   normalizeFunctionReturns(pkg);
 
+  const xref = buildXrefMap(pkg);
+  const unresolved = new Set();
+
   const files = convert(pkg, { baseUrl: BASE_URL });
 
   for (const file of files) {
-    // Convert Sphinx-style markup to markdown before other processing
-    file.content = convertSphinxMarkup(file.content);
+    // Resolve cross-references (Markdown `[text][path]` and legacy Sphinx
+    // roles) into real links before other processing.
+    file.content = resolveXrefs(file.content, xref, unresolved);
 
     // `convert` keeps the package name ("monoprop") in hrefs, but `write`
     // strips that leading segment from file paths. Realign the links.
@@ -175,6 +235,13 @@ async function main() {
       file.frontmatter.title = 'Python API';
       file.frontmatter.description = 'Generated reference for the public monoprop Python package.';
     }
+  }
+
+  if (unresolved.size > 0) {
+    console.warn(
+      `Warning: ${unresolved.size} cross-reference target(s) did not resolve and were left as-is:\n  ` +
+        [...unresolved].sort().join('\n  '),
+    );
   }
 
   await fs.rm(OUT_DIR, { recursive: true, force: true });
