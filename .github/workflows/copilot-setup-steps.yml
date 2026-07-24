@@ -39,4 +39,4 @@ jobs:
 
       - name: Install package
         run: |
-          uv sync --all-groups --all-extras -v
+          uv sync --all-extras
