@@ -240,15 +240,11 @@ class PauliOperator:
         return MajoranaOperator._from_terms(majoranas, coefficients, self.num_qubits)
 
     def get_local_operator(self) -> MajoranaOperator:
-        """Pack the operator into the native local symplectic frame (no Jordan-Wigner).
+        """Pack the operator into the pauli basis.
 
         Each term maps to its per-qubit gamma-slots -- ``X_q -> {2q}``, ``Y_q -> {2q+1}``,
         ``Z_q -> {2q, 2q+1}`` (see :func:`~monoprop.conversion_utils._pauli_to_local_slots`) --
-        carrying its (real, Hermitian) coefficient. Unlike :meth:`get_majorana_operator` this
-        introduces no ``Z`` prefix string, so the packed popcount is ``O(weight)``, independent
-        of ``num_qubits``. The returned :class:`~monoprop.majorana.MajoranaOperator` is used only
-        as a term container: its index tuples are the engine's ``Basis::Pauli`` encoding, not
-        Jordan-Wigner Majorana indices.
+        carrying its (real, Hermitian) coefficient.
 
         Raises:
             ValueError: If ``num_qubits`` is unset.
