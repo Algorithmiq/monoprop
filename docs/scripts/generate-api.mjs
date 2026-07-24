@@ -72,6 +72,30 @@ function foldToOneLine(text) {
 }
 
 /**
+ * Unescape braces within LaTeX/KaTeX math expressions.
+ *
+ * Upstream markdown serialization escapes braces (`\{` and `\}`), but KaTeX
+ * requires unescaped braces for proper grouping (subscripts, superscripts, and
+ * command arguments). This function selectively unescapes braces only inside
+ * `$...$` (inline) and `$$...$$` (display) math spans.
+ *
+ * Examples:
+ * - `$r_\{12\}$` -> `$r_{12}$`
+ * - `$$^\{-1\}$$` -> `$$^{-1}$$`
+ * - `$\mathrm\{d\}$` -> `$\mathrm{d}$`
+ */
+function normalizeMathGroupingEscapes(content) {
+  const normalizeMathSegment = (math) =>
+    math
+      .replace(/\\\{/g, '{')
+      .replace(/\\\}/g, '}');
+
+  return content.replace(/\$\$[\s\S]*?\$\$|\$(?:\\.|[^$\\])+\$/g, (math) =>
+    normalizeMathSegment(math),
+  );
+}
+
+/**
  * Extract the raw `Returns:` block from a function source docstring.
  * We prefer source extraction because some upstream parsed `returns.description`
  * values are already truncated to the first wrapped line.
@@ -163,6 +187,10 @@ async function main() {
     // `convert` keeps the package name ("monoprop") in hrefs, but `write`
     // strips that leading segment from file paths. Realign the links.
     file.content = file.content.replaceAll(`${BASE_URL}/monoprop`, BASE_URL);
+
+    // Fumadocs parameter rendering can escape braces in math arguments
+    // (e.g. `\mathrm\{d\}`), which breaks KaTeX grouping.
+    file.content = normalizeMathGroupingEscapes(file.content);
 
     // Add titles to the frontmatter for the modules we documented. The title
     // is used in the sidebar and in the page's <title> tag.
