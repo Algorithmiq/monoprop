@@ -12,33 +12,52 @@ function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_l
 
     obs = VectorMajoranaSum(MajoranaSum(N_spinful_sites, :nup, site_index))
 
-    res = zeros(n_layers + 1)
-    res[1] = overlapwithfock(obs, fock_state)
+    values = zeros(n_layers + 1)
+    term_counts = zeros(Int, n_layers + 1)
+    cumulative_runtimes = zeros(n_layers + 1)
+    memory_size = zeros(n_layers + 1)
 
-
-    loop_elapsed = @elapsed for k = 1:n_layers
-        propagate!(circ_single, obs, thetas_single, min_abs_coeff=min_abs_coeff, max_unpaired=max_unpaired)
-        res[k+1] = overlapwithfock(obs, fock_state)
+    cumulative_runtimes[1] = @elapsed (values[1] = overlapwithfock(obs, fock_state))
+    term_counts[1] = length(obs)
+    memory_size[1] = Base.summarysize(obs) / 1024^2
+    for k = 1:n_layers
+        step_runtime = @elapsed propagate!(circ_single, obs, thetas_single, min_abs_coeff=min_abs_coeff, max_unpaired=max_unpaired)
+        values[k+1] = overlapwithfock(obs, fock_state)
+        term_counts[k+1] = length(obs)
+        cumulative_runtimes[k+1] = cumulative_runtimes[k] + step_runtime
+        memory_size[k+1] = Base.summarysize(obs) / 1024^2
     end
-    memory_size = Base.summarysize(obs) / 1024^2
-    return res, length(obs), loop_elapsed, memory_size
+
+    return values, term_counts, cumulative_runtimes, memory_size
 
 
 end
-function save_result(output_path, N_spinful_sites, n_layers, obs_length, final_res, loop_elapsed, memory_size)
-    """Append one benchmark result as a JSON line, creating the parent directory if needed."""
-    record = Dict(
-        "n_spinful_sites" => N_spinful_sites,
-        "n_layers" => n_layers,
-        "num_terms" => obs_length,
-        "final_overlap" => final_res,
-        "runtime_seconds" => loop_elapsed,
-        "memory_MB" => memory_size,
-    )
+function save_result(output_path, source, N_spinful_sites, n_layers, term_counts, values, cumulative_runtimes, memory_size, num_threads)
+    """Merge this run's per-step data into the shared results JSON file, keyed by source label."""
+    data = if isfile(output_path)
+        JSON.parsefile(output_path)
+    else
+        Dict(
+            "n_spinful_sites" => N_spinful_sites,
+            "n_layers" => n_layers,
+            "step_range" => collect(0:n_layers),
+            "num_threads" => Dict(),
+            "runtime_seconds" => Dict(),
+            "expectation_value" => Dict(),
+            "num_terms" => Dict(),
+            "memory_MB" => Dict(),
+        )
+    end
+    data["num_threads"] = get(data, "num_threads", Dict())
+    data["num_threads"][source] = num_threads
+    data["runtime_seconds"][source] = cumulative_runtimes
+    data["expectation_value"][source] = values
+    data["num_terms"][source] = term_counts
+    data["memory_MB"][source] = memory_size
 
-    open(output_path, "a") do io
-        JSON.print(io, record)
-        println(io)
+    mkpath(dirname(output_path))
+    open(output_path, "w") do io
+        JSON.print(io, data, 4)
     end
 end
 
@@ -48,28 +67,27 @@ function main(args)
     s = ArgParseSettings(description="Arguments for the 1D Hubbard model benchmark.")
 
     @add_arg_table! s begin
-        "--case", "-c"
-        help = "Case pair to run."
+        "--n-spins", "-n"
+        help = "Number of spinful sites."
         arg_type = Int
-        default = 1
+        default = 60
+        dest_name = "n_spins"
+        "--max-layers", "-l"
+        help = "Number of Trotter layers."
+        arg_type = Int
+        default = 20
+        dest_name = "max_layers"
         "--output", "-o"
-        help = "Path to the JSONL file results are appended to."
+        help = "Path to the shared JSON file results are merged into."
         arg_type = String
-        default = joinpath(@__DIR__, "julia_hubbard1d_benchmark_results.jsonl")
+        default = joinpath(@__DIR__, "results.json")
 
     end
 
     parsed_args = parse_args(s) # the result is a Dict{String,Any}
 
-    spin_layers_pairs = []
-    for i in [20, 40, 60]
-        for j in range(10, 18, 2)
-            push!(spin_layers_pairs, (i, j))
-        end
-    end
-
-    case_pair = parsed_args["case"]
-    N_spinful_sites, n_layers = spin_layers_pairs[case_pair]
+    N_spinful_sites = parsed_args["n_spins"]
+    n_layers = parsed_args["max_layers"]
 
     t = 1.
     U = 1.5
@@ -107,11 +125,10 @@ function main(args)
 
     println("Number of threads: $(Threads.nthreads())")
 
-    res, obs_length, loop_elapsed, memory_size = experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
-    final_res = res[end]
-    println("$N_spinful_sites n_spin $n_layers layers $obs_length num_terms $final_res final overlap $loop_elapsed seconds")
+    values, term_counts, cumulative_runtimes, memory_size = experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
+    println("$N_spinful_sites n_spin $n_layers layers $(term_counts[end]) num_terms $(values[end]) final overlap $(cumulative_runtimes[end]) seconds")
 
-    save_result(parsed_args["output"], N_spinful_sites, n_layers, obs_length, final_res, loop_elapsed, memory_size)
+    save_result(parsed_args["output"], "MajoranaPropagation.jl", N_spinful_sites, n_layers, term_counts, values, cumulative_runtimes, memory_size, Threads.nthreads())
 
 end
 
