@@ -21,7 +21,7 @@ is a weighted sum of terms that also carries the system ``num_modes`` / ``num_qu
 **exponential gate** wraps a generator *operator* that gets exponentiated; and a **circuit**
 is an ordered sequence of such gates.
 
-A gate is an explicit exponential of a generator *operator* -- :class:`ExpGate` accepts only
+A gate is an explicit exponential of a generator *operator* -- `[ExpGate][]` accepts only
 operator objects (never a bare term), because those carry the system size. There is a
 **single** :class:`ExpGate` gate type; it *abstracts over the family* the same way :class:`Circuit`
 does -- the **generator type** it is handed decides how it is normalized:
@@ -232,7 +232,7 @@ class Circuit:
     :class:`ExpGate` for qubit problems (consumed by
     [PauliPropagator][monoprop.pauli_propagator.PauliPropagator]). The two families cannot be mixed in one
     circuit -- construction rejects it. A fermionic generator is converted to its Majorana form
-    in :meth:`ExpGate.__init__`, so every gate is already ``"pauli"`` or ``"majorana"``.
+    in [ExpGate.__init__][], so every gate is already ``"pauli"`` or ``"majorana"``.
 
     Bundles everything the propagator needs to build or evaluate an evolution:
 

@@ -64,21 +64,25 @@ function pageUrl(dottedPath) {
  * Build a map from fully-qualified symbol path to the doc URL that documents it.
  *
  * Classes and modules get their own page. Functions, methods and attributes are
- * rendered inline on their parent's page with no per-member anchor (see the
- * `PyFunction`/`PyAttribute` components), so they resolve to that parent page.
+ * rendered inline on their parent's page; the `getMDXComponents` wrappers give
+ * each `PyFunction`/`PyAttribute` card an `id` equal to its member name, so those
+ * members resolve to their parent page with a `#<name>` fragment that jumps to
+ * the definition.
  */
 function buildXrefMap(pkg) {
   const map = new Map();
+
+  // A module or class page: itself at the page top, its inline members at `#<name>`.
+  const addScope = (node, pageUrl) => {
+    map.set(node.path, pageUrl);
+    for (const fn of Object.values(node.functions ?? {})) map.set(fn.path, `${pageUrl}#${fn.name}`);
+    for (const attr of node.attributes ?? [])
+      map.set(`${node.path}.${attr.name}`, `${pageUrl}#${attr.name}`);
+  };
+
   const visit = (mod) => {
-    map.set(mod.path, pageUrl(mod.path));
-    for (const fn of Object.values(mod.functions ?? {})) map.set(fn.path, pageUrl(mod.path));
-    for (const attr of mod.attributes ?? []) map.set(`${mod.path}.${attr.name}`, pageUrl(mod.path));
-    for (const cls of Object.values(mod.classes ?? {})) {
-      const clsUrl = pageUrl(cls.path);
-      map.set(cls.path, clsUrl);
-      for (const fn of Object.values(cls.functions ?? {})) map.set(fn.path, clsUrl);
-      for (const attr of cls.attributes ?? []) map.set(`${cls.path}.${attr.name}`, clsUrl);
-    }
+    addScope(mod, pageUrl(mod.path));
+    for (const cls of Object.values(mod.classes ?? {})) addScope(cls, pageUrl(cls.path));
     for (const sub of Object.values(mod.modules ?? {})) visit(sub);
   };
   visit(pkg);
@@ -86,28 +90,67 @@ function buildXrefMap(pkg) {
 }
 
 /**
- * Resolve cross-references in rendered MDX into real links, using `xref`
- * (fully-qualified path -> page URL). Two input syntaxes are supported:
+ * Derive the fully-qualified scope a rendered page documents, from its file
+ * path (before `write` strips the leading package segment):
+ *   `monoprop/circuit/index.mdx`   -> `monoprop.circuit`            (module)
+ *   `monoprop/circuit/ExpGate.mdx` -> `monoprop.circuit.ExpGate`    (class)
+ *   `monoprop/index.mdx`           -> `monoprop`                    (package)
+ */
+function scopeFromPath(filePath) {
+  return filePath
+    .replace(/\/index\.mdx$/, '')
+    .replace(/\.mdx$/, '')
+    .split('/')
+    .join('.');
+}
+
+/**
+ * Resolve a cross-reference target to a page URL, or `null`. A fully-qualified
+ * target hits `xref` directly; an unqualified (or class-relative) target is
+ * resolved against the current page's scope, walking outward from the nearest
+ * enclosing symbol to the package root. Nearest scope wins, so resolution is
+ * deterministic -- a bare name only ever binds to something reachable from its
+ * own scope chain, never to a same-named symbol in an unrelated module.
+ */
+function resolve(name, scope, xref) {
+  if (xref.has(name)) return xref.get(name);
+  const parts = scope.split('.');
+  for (let i = parts.length; i > 0; i--) {
+    const url = xref.get(`${parts.slice(0, i).join('.')}.${name}`);
+    if (url) return url;
+  }
+  return null;
+}
+
+/**
+ * Resolve cross-references in a rendered MDX page into real links. `scope` is
+ * the page's fully-qualified scope (see `scopeFromPath`). Two input syntaxes
+ * are supported:
  *
- *  1. Markdown reference links whose target is a Python path -- the idiomatic
- *     griffe/mkdocstrings form, and the one docstrings should migrate to:
+ *  1. Markdown reference links -- the idiomatic griffe/mkdocstrings form, and
+ *     the one docstrings should migrate to. The target is a Python path,
+ *     resolved fully-qualified or relative to `scope`:
  *       `[Circuit][monoprop.circuit.Circuit]`  ->  `[Circuit](/api/circuit/Circuit)`
- *       `[monoprop.circuit.Circuit][]`          ->  `[...](/api/circuit/Circuit)`
+ *       `[ExpGate][]`  (on a page scoped to `monoprop.circuit`)  ->  `[ExpGate](/api/circuit/ExpGate)`
+ *     `[X][]` is shorthand for target == display. Unresolved targets are
+ *     collected in `unresolved` (surfaced by the caller) and left untouched.
  *
  *  2. Legacy Sphinx roles (`:class:`, `:meth:`, `:func:`, `:attr:`), so a
- *     partial migration still builds. A qualified target becomes a link; a bare
- *     or unknown one degrades to a code span (the previous behaviour). With a
- *     leading `~` the display text is shortened to the final path segment.
- *
- * Unresolved targets are collected in `unresolved` (surfaced by the caller) and
- * left untouched rather than silently dropped.
+ *     partial migration still builds. A fully-qualified target becomes a link;
+ *     a bare or unknown one degrades quietly to a code span (the previous
+ *     behaviour -- these are transitional and expected). With a leading `~` the
+ *     display text is shortened to the final path segment.
  */
-function resolveXrefs(content, xref, unresolved) {
+function resolveXrefs(content, xref, unresolved, scope) {
+  // Render the display text as a code span (symbol names read as code), avoiding
+  // a double-wrap if the docstring already backticked it.
+  const code = (text) => (/^`.*`$/.test(text) ? text : `\`${text}\``);
+
   content = content.replaceAll(/\[([^\]]+)\]\[([^\]]*)\]/g, (match, display, target) => {
-    const fqn = (target || display).trim().replace(/^`|`$/g, '');
-    const url = xref.get(fqn);
-    if (url) return `[${display}](${url})`;
-    unresolved.add(fqn);
+    const name = (target || display).trim().replace(/^`|`$/g, '');
+    const url = resolve(name, scope, xref);
+    if (url) return `[${code(display)}](${url})`;
+    unresolved.add(name);
     return match;
   });
 
@@ -116,7 +159,7 @@ function resolveXrefs(content, xref, unresolved) {
     const fqn = inner.replace(/^~/, '');
     const display = shortDisplay ? fqn.split('.').pop() : fqn;
     const url = xref.get(fqn);
-    return url ? `[${display}](${url})` : `\`${display}\``;
+    return url ? `[${code(display)}](${url})` : `\`${display}\``;
   });
 
   return content;
@@ -217,8 +260,9 @@ async function main() {
 
   for (const file of files) {
     // Resolve cross-references (Markdown `[text][path]` and legacy Sphinx
-    // roles) into real links before other processing.
-    file.content = resolveXrefs(file.content, xref, unresolved);
+    // roles) into real links before other processing. Bare/relative targets
+    // resolve against the page's own scope.
+    file.content = resolveXrefs(file.content, xref, unresolved, scopeFromPath(file.path));
 
     // `convert` keeps the package name ("monoprop") in hrefs, but `write`
     // strips that leading segment from file paths. Realign the links.
