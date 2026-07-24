@@ -28,14 +28,14 @@ if TYPE_CHECKING:
 class Majorana:
     r"""A single Majorana monomial: the ordered product $m_{i_1} \cdots m_{i_w}$.
 
-    A term is the atom a :class:`MajoranaOperator` is built from and the generator an
+    A term is the atom a [MajoranaOperator][] is built from and the generator an
     [ExpGate][monoprop.circuit.ExpGate] gate exponentiates. Indices are sorted on construction
     (matching the operator's canonicalization) and must be distinct and non-negative. A
     repeated index is rejected because ``m_i^2 = 1`` would silently change the monomial's
     weight -- almost always a mistake rather than an intended simplification.
 
     An immutable value object: equal indices compare equal and hash alike, so a term can be
-    used as a dictionary key (as :attr:`MajoranaOperator.terms` does).
+    used as a dictionary key (as [MajoranaOperator.terms][] does).
 
     Attributes:
         indices: The sorted, distinct Majorana indices of the monomial.
@@ -78,9 +78,9 @@ class MajoranaOperator:
     """A weighted sum of Majorana monomials.
 
     Constructed from a ``{term: coefficient}`` mapping, where each key is a
-    :class:`Majorana` term (or, equivalently, a raw index tuple). Terms are normalized:
+    [Majorana][] term (or, equivalently, a raw index tuple). Terms are normalized:
     indices within each monomial are sorted and duplicate monomials are summed. The resulting
-    :attr:`terms` mapping (Majorana-index tuple to complex coefficient) is what the propagator
+    [terms][] mapping (Majorana-index tuple to complex coefficient) is what the propagator
     hands to the C++ engine.
     """
 
@@ -92,11 +92,11 @@ class MajoranaOperator:
         """Initialize the Majorana operator from a term mapping.
 
         Args:
-            terms: Mapping from :class:`Majorana` terms (or raw index tuples) to coefficients.
+            terms: Mapping from [Majorana][] terms (or raw index tuples) to coefficients.
             num_modes: Number of modes in the system. Required: an operator carries its own
                 mode count so a propagator can be built from it directly. A gate generator is
-                also authored as a :class:`MajoranaOperator` (wrapped in
-                [ExpGate][monoprop.circuit.ExpGate]) -- bare :class:`Majorana` terms are not accepted
+                also authored as a [MajoranaOperator][] (wrapped in
+                [ExpGate][monoprop.circuit.ExpGate]) -- bare [Majorana][] terms are not accepted
                 by ``ExpGate``, since the operator is what carries the mode count.
         """
         # Route raw index tuples through Majorana so they get the same non-negative/distinct
@@ -118,7 +118,7 @@ class MajoranaOperator:
         """Build from parallel ``majoranas``/``coefficients`` lists (internal).
 
         Unlike the dict constructor this accepts colliding monomials and sums them, which the
-        Jordan-Wigner and fermionic conversions (:meth:`get_majorana_operator`) rely on.
+        Jordan-Wigner and fermionic conversions ([get_majorana_operator][]) rely on.
         """
         obj = cls.__new__(cls)
         obj.num_modes = num_modes
@@ -175,7 +175,7 @@ class MajoranaOperator:
             True if the operators have the same mode count and matching terms, else False.
 
         Raises:
-            TypeError: If ``other`` is not a :class:`MajoranaOperator`.
+            TypeError: If ``other`` is not a [MajoranaOperator][].
         """
         if not isinstance(other, MajoranaOperator):
             raise TypeError(
