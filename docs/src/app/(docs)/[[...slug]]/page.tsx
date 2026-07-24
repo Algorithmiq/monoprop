@@ -13,29 +13,14 @@ import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { gitConfig } from '@/lib/shared';
 
-const apiModules = new Set([
-  'majorana_propagator',
-  'pauli_propagator',
-  'monomial_propagator',
-  'circuit',
-  'fermi',
-  'pauli',
-  'qiskit_conversion',
-  'integral_conversion',
-  'utils',
-  'majorana',
-  'quantum_data',
-  'exceptions',
-]);
-
 function getPageGithubPath(page: (typeof source)['$inferPage']) {
-  if (page.slugs[0] !== 'api') {
-    return `docs/content/docs/${page.path}`;
+  const fromFrontmatter = page.data?.githubPath;
+  if (typeof fromFrontmatter === 'string' && fromFrontmatter.length > 0) {
+    return fromFrontmatter;
   }
 
-  const moduleName = page.slugs[1];
-  if (moduleName && apiModules.has(moduleName)) {
-    return `src/monoprop/${moduleName}.py`;
+  if (page.slugs[0] !== 'api') {
+    return `docs/content/docs/${page.path}`;
   }
 
   return 'src/monoprop/__init__.py';

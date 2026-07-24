@@ -9,7 +9,7 @@
 //  3. emits a `meta.json` so the API section is ordered like the old reference.
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { convert, write, frontmatter } from 'fumadocs-python';
+import { convert, write } from 'fumadocs-python';
 
 const JSON_PATH = path.resolve('monoprop.json');
 const OUT_DIR = path.resolve('content/docs/api');
@@ -31,6 +31,7 @@ const MODULES = [
   ['exceptions', 'Exceptions'],
 ];
 const KEEP = new Set(MODULES.map(([name]) => name));
+const MODULE_GITHUB_PATHS = new Map(MODULES.map(([name]) => [name, `src/monoprop/${name}.py`]));
 
 /** Drop single-underscore (non-dunder) members from a {name: node} map. */
 function prunePrivate(map) {
@@ -164,6 +165,15 @@ async function main() {
     // strips that leading segment from file paths. Realign the links.
     file.content = file.content.replaceAll(`${BASE_URL}/monoprop`, BASE_URL);
 
+    // Attach source paths to frontmatter so docs can build GitHub links
+    // without duplicating the module list in app code.
+    const modulePrefixMatch = file.path.match(/^monoprop\/([^/]+)(?:\/|$)/);
+    const moduleName = modulePrefixMatch?.[1];
+    const githubPath = moduleName ? MODULE_GITHUB_PATHS.get(moduleName) : undefined;
+    if (githubPath) {
+      file.frontmatter.githubPath = githubPath;
+    }
+
     // Add titles to the frontmatter for the modules we documented. The title
     // is used in the sidebar and in the page's <title> tag.
     const m = file.path.match(/^monoprop\/([^/]+)\/index\.mdx$/);
@@ -174,6 +184,7 @@ async function main() {
     if (file.path === 'monoprop/index.mdx') {
       file.frontmatter.title = 'Python API';
       file.frontmatter.description = 'Generated reference for the public monoprop Python package.';
+      file.frontmatter.githubPath = 'src/monoprop/__init__.py';
     }
   }
 
