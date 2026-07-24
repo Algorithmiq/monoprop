@@ -129,170 +129,18 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
         [&](size_t j, size_t base) { assign_row<NumModes>(*op.store, base + j, pr.maj[pr.miss_g[j]]); });
 }
 
-// ── Cross-rank resolve/process sinks (R>1) ───────────────────────────────────────────────────────
-// A partner-resolution pass's cross-rank half is identical in SHAPE for the graph-build and fused
-// ContractImmediately paths — probe every incoming query, scatter one record per query, insert absent
-// partners, then turn each answer into a querier-side record — differing ONLY in what each resolved
-// query records and what value it answers with. These two sinks capture that difference so resolve_incoming
-// / process_responses (and LayerBuildEngine::exchange_cross_rank) carry a SINGLE control flow; each sink
-// monomorphizes to exactly the former twin's code.
-
-// Graph-build cross-rank sink: records the resolver-side PartnerAcc in_entries and the querier-side
-// out_entries; answers each query with its resolved local index (post insert-on-miss). The send buffer is
-// the plain query stream. See the ORDERING CONTRACT: the B/D exchange is positional — responses[s][q] must
-// answer incoming[s][q], so every query yields exactly one resolution (never skip/reorder/partition).
-template <size_t NumModes>
-struct GraphCrossSink {
-    static constexpr size_t kStride = kQueryWords<NumModes>;
-    using Response = TermIndex;
-    static auto init_response() -> Response { return std::numeric_limits<TermIndex>::max(); }
-
-    std::vector<PartnerAcc> &acc;
-    std::vector<size_t> in_base_; // per-rank base into acc[s].in_entries (set in prepare)
-
-    // Send buffer = the plain query stream, exchanged as-is (no value fusion).
-    auto send_buffer(std::vector<VecZ> &queries,
-                     std::vector<std::vector<double>> & /*vals*/,
-                     std::vector<VecZ> & /*scratch*/) -> std::vector<VecZ> & {
-        return queries;
-    }
-
-    // Resolve side: resize each resolver IN block once (indexed scatter, no ordering hazard).
-    auto prepare(const IncomingProbe<NumModes> & /*pr*/,
-                 size_t rank_count,
-                 MPOperator<NumModes> & /*op*/,
-                 const std::vector<std::vector<Response>> &responses) -> void {
-        in_base_.assign(rank_count, 0);
-        for (size_t s = 0; s < rank_count; ++s) {
-            in_base_[s] = acc[s].in_entries.size();
-            acc[s].in_entries.resize(in_base_[s] + responses[s].size());
-        }
-    }
-    // Record the resolver IN entry in query order; answer with the REAL local index (post phase-2).
-    auto on_resolved(size_t g,
-                     size_t s,
-                     size_t q,
-                     size_t ip,
-                     const IncomingProbe<NumModes> &pr,
-                     const std::vector<VecZ> & /*incoming*/) -> Response {
-        acc[s].in_entries[in_base_[s] + q] = {ip, pr.phase_of[g]};
-        return static_cast<TermIndex>(ip);
-    }
-
-    // Process side: turn each resolver response into a querier OUT entry (source idx + query phase) in
-    // response (== q) order. resize once + indexed scatter; the resolver's insert-on-miss makes found_idx
-    // always real, so it is unused downstream (hence the assert, not a branch).
-    auto process_reserve(const std::vector<std::vector<Response>> & /*inc_r*/,
-                         size_t /*rank_count*/,
-                         size_t /*my_rank*/) -> void {}
-    auto on_response_block(size_t r,
-                           const std::vector<Response> &resp,
-                           const std::vector<size_t> &srcs,
-                           const VecZ &qbuf) -> void {
-        auto &out = acc[r].out_entries;
-        const size_t base = out.size();
-        const size_t nq = resp.size();
-        out.resize(base + nq);
-        for (size_t q = 0; q < nq; ++q) {
-            assert(resp[q] != std::numeric_limits<TermIndex>::max() && "resolver must insert absent cross-rank terms");
-            out[base + q] = {srcs[q], query_phase<NumModes>(qbuf, q)};
-        }
-    }
-};
-
-// Fused ContractImmediately cross-rank sink: emits one resolver +φ half-rotation per query into
-// fc.cross_half (on the target it owns) and answers with a VALUE = the querier half's v_partner (target
-// coeff), so the whole rotation is applied in-place with no transient LayerCore:
-//   HIT  (ip < base): the target's PRE-cos coeff — op_coeffs[ip], or ·inv_cos under the fused cos sweep.
-//   MISS (ip = base+j): the fresh term's picture coeff — 0 in Heisenberg; is_paired ? hf_phase : 0 in
-//        Schrödinger — computed here from the query's majorana, so it flows back in THIS round (no 2nd exchange).
-// The send buffer fuses each query with its v_src (one bit-cast trailing word) so ONE alltoallv carries both.
-template <size_t NumModes>
-struct ContractCrossSink {
-    static constexpr size_t kStride = kQueryWordsFused<NumModes>;
-    using Response = double;
-    static auto init_response() -> Response { return 0.0; }
-
-    FusedContract &fc;
-    const VecD &op_coeffs;
-    bool fused_scale;
-    double inv_cos;
-    bool schrodinger;
-    Basis basis;
-
-    size_t cross_base_ = 0;        // base into fc.cross_half for this pass's resolver halves
-    Monomial<NumModes> hf_mask_{}; // Schrödinger fresh-insert scoring mask (empty in Heisenberg)
-
-    // Send buffer = queries interleaved with their v_src value stream into the kQueryWordsFused-wide
-    // `scratch` (combined_qv_), reused across gates, so a SINGLE alltoallv carries query + value.
-    auto send_buffer(std::vector<VecZ> &queries, std::vector<std::vector<double>> &vals, std::vector<VecZ> &scratch)
-        -> std::vector<VecZ> & {
-        scratch.resize(queries.size());
-        for (size_t r = 0; r < queries.size(); ++r) {
-            build_fused_query_value<NumModes>(queries[r], vals[r], scratch[r]);
-        }
-        return scratch;
-    }
-
-    // Resolve side: precompute the HF mask once (Schrödinger only), then resize cross_half for exactly one
-    // resolver +φ half per incoming query (deterministic indexed scatter keyed by flat g).
-    auto prepare(const IncomingProbe<NumModes> &pr,
-                 size_t /*rank_count*/,
-                 MPOperator<NumModes> &op,
-                 const std::vector<std::vector<Response>> & /*responses*/) -> void {
-        hf_mask_ = schrodinger ? get_hf_mask<NumModes>(op.slater_determinant) : Monomial<NumModes>{};
-        cross_base_ = fc.cross_half.size();
-        fc.cross_half.resize(cross_base_ + pr.nq_total);
-    }
-    // Compute v_tgt (HIT / Schrödinger-miss / Heisenberg-miss), emit the resolver +φ half on the target
-    // slot this rank owns, and answer with v_tgt. A MISS half's slot is a fresh insert (born after the
-    // sweep) — flag is_insert so the apply folds the gate's cos into the slot; hit halves take the plain add.
-    auto on_resolved(size_t g,
-                     size_t s,
-                     size_t q,
-                     size_t ip,
-                     const IncomingProbe<NumModes> &pr,
-                     const std::vector<VecZ> &incoming) -> Response {
-        double v_tgt;
-        if (ip < pr.base) {
-            v_tgt = fused_scale ? op_coeffs[ip] * inv_cos : op_coeffs[ip];
-        }
-        else if (schrodinger) {
-            v_tgt = is_paired<NumModes>(pr.maj[g]) ? algebra_hf_phase<NumModes>(basis, pr.maj[g], hf_mask_) : 0.0;
-        }
-        else {
-            v_tgt = 0.0; // Heisenberg fresh insert
-        }
-        fc.cross_half[cross_base_ + g] = HalfRotationRec{ip,
-                                                         query_value<NumModes>(incoming[s], q),
-                                                         static_cast<int32_t>(pr.phase_of[g]),
-                                                         /*is_insert=*/ip >= pr.base};
-        return v_tgt;
-    }
-
-    // Process side: turn each resolver value response into a querier −φ half on the source slot this rank
-    // owns (a pre-gate term the sweep covered ⇒ is_insert=false; a Heisenberg 0 ⇒ a no-op add). Reserve the
-    // exact querier-half count up front (the resolver already resized its own block) so these don't realloc.
-    auto process_reserve(const std::vector<std::vector<Response>> &inc_r, size_t rank_count, size_t my_rank) -> void {
-        size_t incoming = 0;
-        for (size_t r = 0; r < rank_count; ++r) {
-            if (r != my_rank) {
-                incoming += inc_r[r].size();
-            }
-        }
-        fc.cross_half.reserve(fc.cross_half.size() + incoming);
-    }
-    auto on_response_block(size_t /*r*/,
-                           const std::vector<Response> &rval,
-                           const std::vector<size_t> &srcs,
-                           const VecZ &qbuf) -> void {
-        const size_t nq = rval.size();
-        for (size_t q = 0; q < nq; ++q) {
-            const auto nphase = static_cast<int32_t>(-query_phase<NumModes>(qbuf, q));
-            fc.cross_half.push_back(HalfRotationRec{srcs[q], rval[q], nphase, /*is_insert=*/false});
-        }
-    }
-};
+// resolve_incoming / process_responses are the picture-independent cross-rank exchange skeletons. The
+// per-query divergence — what each resolved query records and what value it answers with — is supplied by
+// a compile-time cross-rank SINK. The two concrete sinks (GraphSink / ContractSink) live with the engine
+// (Engine.h): each also carries the self-resolve + finalize policy, so one control flow serves both the
+// graph-build and fused ContractImmediately paths. A sink must provide:
+//   static constexpr size_t kStride;           // query record stride (kQueryWords / kQueryWordsFused)
+//   using Response; static Response init_response();
+//   send_buffer(queries, vals, scratch) -> std::vector<VecZ>&      // round-1 payload (plain / value-fused)
+//   prepare(pr, rank_count, op, responses)                         // size the resolver-side records
+//   on_resolved(g, s, q, ip, pr, incoming) -> Response            // record + answer one query
+//   process_reserve(inc_r, rank_count, my_rank)                   // reserve the querier-side records
+//   on_response_block(r, resp, srcs, qbuf)                        // fold one rank's answers back
 
 // Resolver rank (any cross-rank sink): for each query from sender s, look up M' locally; found → answer
 // with its index/value, absent → INSERT it in the SAME round (the resolver is the sole inserter of
