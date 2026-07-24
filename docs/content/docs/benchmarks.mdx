@@ -17,20 +17,10 @@ The scripts are designed to be run in a controlled environment,
 ensuring fair comparisons between different engines.
 
 
-
-#### SPECS
-
-The benchmark is run on Leonardo (CINECA), in a single node with the following specifications:
-
-- CPU: AMD EPYC 7V13 64-Core Processor, 24vCPUs allocated, 1 thread per core
-- RAM: 216 GB
-- GPU: NVIDIA A100 80GB
-
-
 ### Majorana Propagation
 
 The chosen problem is the 1D Hubbard model, tracking the runtime, expectation value,
-and operator size at each Trotter step. The number of spin sites is 60.
+and operator size at each Trotter step.
 
 ![Benchmark results for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: number of terms, final overlap, runtime, and memory vs layers](/benchmarks/majorana_results.png)
 
@@ -38,6 +28,13 @@ Number of terms, final overlap, runtime, and memory vs. circuit layers for the 1
 model, comparing `monoprop` against `MajoranaPropagation.jl`. See the
 section below for details on the setup and how to reproduce these results.
 
+
+#### SPECS
+
+The benchmark is run on Leonardo (CINECA), in a single node with the following specifications:
+
+- Cores: 8 Intel Xeon Platinum 8358 CPU, 2.60GHz (Ice Lake)
+- RAM: 100 GB
 
 The end-to-end workflow is:
 
@@ -123,7 +120,7 @@ system size grow.
 ### Pauli Propagation
 
 The chosen problem is the Trotterized time evolution of a 2D transverse-field Ising model (TFIM), tracking the runtime,
-expectation value, and operator size at each Trotter step. The number of qubits is 100, arranged in a 10×10 grid.
+expectation value, and operator size at each Trotter step.
 
 
 ![Benchmark results for Pauli Propagation engines: Runtime and Memory per Trotter step](/benchmarks/pauli_results.png)
@@ -131,6 +128,13 @@ expectation value, and operator size at each Trotter step. The number of qubits 
 Runtime and memory usage per Trotter step for the 2D TFIM problem, comparing `monoprop` against
 other Pauli propagation engines. See the [Pauli Propagation](#pauli-propagation) section below for
 details on the setup and how to reproduce these results.
+
+
+#### SPECS
+
+- CPU: AMD Ryzen Threadripper PRO 7955WX 16-Cores
+- RAM: 128 GB in dual channel
+- GPU: Nvidia RTX 5090 with 32 GB VRAM
 
 
 The end-to-end workflow is:
@@ -254,7 +258,7 @@ and outperforms all other CPU-only engines in both time and memory as the operat
 ## Internal benchmarks
 
 The `monoprop` repository includes a pytest suite measuring the **time** and
-**peak resident memory (RSS)** of monoprop's core operations.
+**peak physical memory (PSS)** of monoprop's core operations.
 The suite is separated from the test suite and can be run with `just bench`.
 See below for more detailed instructions.
 
@@ -270,7 +274,7 @@ just bench serial                              # serial run, column "serial"
 just bench-smoke                               # quick sanity check (tiny sizes)
 just bench serial --num-modes 64 --bench-rounds 10
 
-monoprop_NUM_THREADS=10 just bench serial-t10  # cap the shard count at 10
+monoprop_NUM_THREADS=10 just bench serial-t10  # set oneTBB worker count
 
 uv run --group bench python benches/report.py  # rebuild report, no re-run
 ```
@@ -278,8 +282,8 @@ uv run --group bench python benches/report.py  # rebuild report, no re-run
 ### MPI
 
 Communicator-aware: operations are barrier-wrapped so the timed cost is the
-**makespan** across ranks, and memory is the **peak of the RSS summed across
-ranks**.
+**makespan** across ranks, and memory is the **peak of the PSS summed across
+ranks** (shared pages counted once), not the sum of per-rank peaks.
 
 ```bash
 just bench-build-mpi                           # build once (MPI on)

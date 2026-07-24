@@ -41,7 +41,7 @@ append!(step_parameters, fill(theta_zz, length(topology)))
 append!(step_parameters, fill(theta_z, nq))
 append!(step_parameters, fill(theta_x, nq))
 
-pauli_sum = VectorPauliSum(PauliSum(nq))
+pauli_sum = PauliSum(nq)
 add!(pauli_sum, [:Z, :Z], collect(obs_qubits), 1.0)
 
 num_terms = Int[]
