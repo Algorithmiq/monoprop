@@ -347,12 +347,13 @@ def fig4_scaling_and_divergence(records, layers, outdir):
         _plot_curves(ax, records, cutoffs, metric)
         _finish_axis(ax, "", ylabel, "")
 
-    rat_panels = [("seconds", "time overhead  ($\\times$ monoprop)"),
-                  ("memory_mb", "memory overhead  ($\\times$ monoprop)")]
-    for ax, (metric, ylabel) in zip(axes[1], rat_panels):
+    # N^2 is off-scale for the sub-linear memory overhead → guide N^1 only there.
+    rat_panels = [("seconds", "time overhead  ($\\times$ monoprop)", [1, 2]),
+                  ("memory_mb", "memory overhead  ($\\times$ monoprop)", [1])]
+    for ax, (metric, ylabel, guides) in zip(axes[1], rat_panels):
         _plot_ratio(ax, records, cutoffs, metric)
         _finish_axis(ax, "number of qubits  $N$", ylabel, "")
-        _slope_guides(ax, xs_all, [1, 2], anchor_frac=0.04)
+        _slope_guides(ax, xs_all, guides, anchor_frac=0.04)
 
     fig.tight_layout(rect=(0, 0.09, 1, 0.99))
     _two_part_legend(fig, cutoffs, y_cut=0.055, y_eng=0.012)
