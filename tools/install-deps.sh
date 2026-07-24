@@ -132,6 +132,25 @@ EOF
             sudo apt-get -y install intel-oneapi-tbb-devel hwloc
             sudo apt-get -y remove gpg-agent wget
         fi
+        # If running in GitHub Actions, propagate the oneAPI environment variables
+        # set by setvars.sh into GITHUB_ENV so subsequent steps pick them up.
+        local setvars="/opt/intel/oneapi/setvars.sh"
+        if [ -n "${GITHUB_ENV:-}" ] && [ -f "$setvars" ]; then
+            echo "Propagating Intel oneAPI environment variables to GITHUB_ENV..."
+            local tmpbefore tmpafter
+            tmpbefore=$(mktemp)
+            tmpafter=$(mktemp)
+            env | sort > "$tmpbefore"
+            # shellcheck disable=SC1090
+            source "$setvars" > /dev/null 2>&1 || true
+            env | sort > "$tmpafter"
+            while IFS= read -r line; do
+                [[ "$line" != *"="* ]] && continue
+                local key="${line%%=*}" val="${line#*=}"
+                printf '%s<<__EOF__\n%s\n__EOF__\n' "$key" "$val" >> "$GITHUB_ENV"
+            done < <(comm -13 "$tmpbefore" "$tmpafter")
+            rm -f "$tmpbefore" "$tmpafter"
+        fi
         return 0
     fi
 
@@ -148,6 +167,11 @@ EOF
       -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX"
     cmake --build tbb_src/build --target install --parallel
     rm -rf tbb_src
+    # If running in GitHub Actions, export CMAKE_PREFIX_PATH so subsequent steps
+    # can locate the TBB installation built from source.
+    if [ -n "${GITHUB_ENV:-}" ]; then
+        printf 'CMAKE_PREFIX_PATH<<__EOF__\n%s\n__EOF__\n' "$INSTALL_PREFIX" >> "$GITHUB_ENV"
+    fi
 }
 
 install_boost() {

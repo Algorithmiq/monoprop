@@ -12,7 +12,7 @@ on:
 jobs:
   # the job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
   copilot-setup-steps:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     permissions:
       contents: read
@@ -26,22 +26,11 @@ jobs:
       - name: Install dependencies from APT
         run: |
           sudo apt-get update
-          sudo apt-get install -y just libtbb-dev libopenmpi-dev openmpi-bin
-
-      - name: Set gcc-14/g++-14 as default compilers
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
+          sudo apt-get install -y just libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
 
       - name: Install dependencies
         run: |
-          ./tools/install-deps.sh /opt/Software
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -52,5 +41,4 @@ jobs:
       - name: Install package
         run: |
           export CPM_USE_LOCAL_PACKAGES=TRUE
-          export CMAKE_PREFIX_PATH=/opt/Software
           uv sync --all-extras

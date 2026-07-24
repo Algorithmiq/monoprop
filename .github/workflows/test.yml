@@ -40,8 +40,8 @@ jobs:
           - "3.11"
           - "3.14"
         runner:
-          - ubuntu-latest
-          - ubuntu-24.04-arm
+          - ubuntu-26.04
+          - ubuntu-26.04-arm
           - macos-15
 
     runs-on: ${{ matrix.runner}}
@@ -51,35 +51,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set gcc-14/g++-14 as default compilers
-        if: ${{ matrix.runner != 'macos-15' }}
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
       - name: Install dependencies
         run: |
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
             brew install boost tbb open-mpi
           else
             sudo apt-get update
-            sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev
-            ./tools/install-deps.sh /opt/Software --skip-boost-test --skip-msgpack
+            sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+            ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
           fi
 
       - name: Set build environment variables
+        if: ${{ matrix.runner == 'macos-15' }}
         run: |
-          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            echo "MACOSX_DEPLOYMENT_TARGET=15.0" >> "$GITHUB_ENV"
-          else
-            echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
-          fi
+          echo "MACOSX_DEPLOYMENT_TARGET=15.0" >> "$GITHUB_ENV"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -89,7 +74,6 @@ jobs:
 
       - name: Install package
         run: |
-          echo "Building with CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL on ${{ matrix.runner }}"
           uv sync --no-progress --group test --all-extras -v
 
       - name: Python environment information
@@ -153,8 +137,8 @@ jobs:
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
-    name: Check C++ on ubuntu-latest (coverage)
-    runs-on: ubuntu-latest
+    name: Check C++ on ubuntu-26.04 (coverage)
+    runs-on: ubuntu-26.04
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -175,12 +159,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
-          ./tools/install-deps.sh /opt/Software
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Configure
         run: |
-          export CMAKE_PREFIX_PATH=/opt/Software
           cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Coverage
 
       - name: Build
@@ -190,7 +173,7 @@ jobs:
         env:
           OMPI_MCA_rmaps_base_oversubscribe: "1"
         run: |
-          ctest --test-dir build --output-junit ../ctest-ubuntu_latest.xml
+          ctest --test-dir build --output-junit ../ctest-ubuntu_26_04.xml
 
       - name: Verify CMake install and find_package(monoprop)
         run: |
@@ -214,21 +197,21 @@ jobs:
 
           cmake -S find-package-smoke -B find-package-smoke/build \
             -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_PREFIX_PATH="/opt/Software;$PWD/monoprop-install"
+            -DCMAKE_PREFIX_PATH="$PWD/monoprop-install"
 
           cmake --build find-package-smoke/build
 
       - name: Upload C++ Test Results as artifacts
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: test_results_cpp_ubuntu_latest
+          name: test_results_cpp_ubuntu_26_04
           path: ctest-*.xml
           retention-days: 1
 
       - name: Collect coverage into a gcovr tracefile
         run: |
           pipx run gcovr \
-            --gcov-executable gcov-14 \
+            --gcov-executable gcov \
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
             --exclude-unreachable-branches \
@@ -252,7 +235,7 @@ jobs:
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
     name: Collect C++ coverage through the Python bindings
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     permissions:
       contents: read
@@ -270,26 +253,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set gcc-14/g++-14 as default compilers
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev
-          ./tools/install-deps.sh /opt/Software --skip-boost-test --skip-msgpack
-
-      - name: Set build environment variables
-        run: |
-          echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -308,7 +276,7 @@ jobs:
       - name: Collect coverage into a gcovr tracefile
         run: |
           pipx run gcovr \
-            --gcov-executable gcov-14 \
+            --gcov-executable gcov \
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
             --exclude-unreachable-branches \
@@ -332,7 +300,7 @@ jobs:
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
     name: Upload coverage to Codecov
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs:
       - python-checks
       - cpp-checks
@@ -380,7 +348,7 @@ jobs:
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
     name: SonarQube analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs:
       - python-checks
       - cpp-checks
@@ -418,22 +386,11 @@ jobs:
             --add-tracefile 'cpp-coverage-*.json' \
             --sonarqube coverage_cpp.xml
 
-      - name: Set gcc-14/g++-14 as default compilers
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
-          ./tools/install-deps.sh /opt/Software
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Install matching Build Wrapper
         run: |
@@ -443,7 +400,6 @@ jobs:
 
       - name: Configure for SonarQube CFamily analysis
         run: |
-          export CMAKE_PREFIX_PATH=/opt/Software
           cmake -S. -Bbuild-sonar -DCMAKE_CXX_COMPILER=g++
 
       - name: Build with Build Wrapper
@@ -473,13 +429,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-26.04-arm
             compiler: gcc-14
             cmake_cxx_compiler: g++
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-26.04-arm
             compiler: clang-18
             cmake_cxx_compiler: clang++
-          - runner: ubuntu-latest
+          - runner: ubuntu-26.04
             compiler: clang-18
             cmake_cxx_compiler: clang++
           - runner: macos-15
@@ -523,8 +479,8 @@ jobs:
         if: ${{ matrix.runner != 'macos-15' }}
         run: |
           sudo apt-get update
-          sudo apt-get install libtbb-dev libopenmpi-dev openmpi-bin
-          ./tools/install-deps.sh /opt/Software
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
       - name: Install dependencies
         if: ${{ matrix.runner == 'macos-15' }}
@@ -534,7 +490,6 @@ jobs:
       - name: Configure
         if: ${{ matrix.runner != 'macos-15' }}
         run: |
-          export CMAKE_PREFIX_PATH=/opt/Software
           cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=${{ matrix.cmake_cxx_compiler }}
 
       - name: Configure
@@ -569,7 +524,7 @@ jobs:
       - sonarqube-analysis
       - cpp-checks-other
       - upload-coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       checks: write
 
