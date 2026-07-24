@@ -26,10 +26,10 @@ if TYPE_CHECKING:
 
 
 class Majorana:
-    """A single Majorana monomial: the ordered product ``m_{i_1} ... m_{i_w}``.
+    r"""A single Majorana monomial: the ordered product $m_{i_1} \cdots m_{i_w}$.
 
     A term is the atom a :class:`MajoranaOperator` is built from and the generator an
-    :class:`~monoprop.circuit.ExpGate` gate exponentiates. Indices are sorted on construction
+    [ExpGate][monoprop.circuit.ExpGate] gate exponentiates. Indices are sorted on construction
     (matching the operator's canonicalization) and must be distinct and non-negative. A
     repeated index is rejected because ``m_i^2 = 1`` would silently change the monomial's
     weight -- almost always a mistake rather than an intended simplification.
@@ -96,7 +96,7 @@ class MajoranaOperator:
             num_modes: Number of modes in the system. Required: an operator carries its own
                 mode count so a propagator can be built from it directly. A gate generator is
                 also authored as a :class:`MajoranaOperator` (wrapped in
-                :class:`~monoprop.circuit.ExpGate`) -- bare :class:`Majorana` terms are not accepted
+                [ExpGate][monoprop.circuit.ExpGate]) -- bare :class:`Majorana` terms are not accepted
                 by ``ExpGate``, since the operator is what carries the mode count.
         """
         # Route raw index tuples through Majorana so they get the same non-negative/distinct

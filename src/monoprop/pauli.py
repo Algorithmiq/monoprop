@@ -34,7 +34,7 @@ class Pauli:
     """A single Pauli term: Pauli letters placed on specific qubits.
 
     A term is the atom a :class:`PauliOperator` is built from and the generator an
-    :class:`~monoprop.circuit.ExpGate` gate exponentiates. The placement is *local* -- the
+    [ExpGate][monoprop.circuit.ExpGate] gate exponentiates. The placement is *local* -- the
     string names only the qubits the term acts on -- so the same term can appear in operators
     of any width; the total ``num_qubits`` lives on the operator, not the term.
 
@@ -108,7 +108,7 @@ class PauliOperator:
     term (or, equivalently, a raw full-width Pauli string like ``"ZZ"``, which is read as a
     term on qubits ``0..len-1``). The total qubit count lives here, on the operator, and is
     required so a propagator can be built from it directly. A gate generator is also authored
-    as a :class:`PauliOperator` (wrapped in :class:`~monoprop.circuit.ExpGate`) -- bare
+    as a :class:`PauliOperator` (wrapped in [ExpGate][monoprop.circuit.ExpGate]) -- bare
     :class:`Pauli` terms are not accepted by ``ExpGate``, since the operator is what carries the
     qubit count.
     """

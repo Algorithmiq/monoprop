@@ -14,8 +14,9 @@
 
 """Monomial propagator base class.
 
-Shared engine for the two concrete simulators (:class:`~monoprop.majorana_propagator.
-MajoranaPropagator` and :class:`~monoprop.pauli_propagator.PauliPropagator`). Both wrap the
+Shared engine for the two concrete simulators
+([MajoranaPropagator][monoprop.majorana_propagator.MajoranaPropagator] and
+[PauliPropagator][monoprop.pauli_propagator.PauliPropagator]). Both wrap the
 compiled C++ Majorana simulator and differ only in how they are constructed (which operator
 family they accept); the graph building, evaluation, and introspection surface lives here.
 
@@ -60,7 +61,7 @@ class MonomialPropagator(ABC):
     The propagation graph owns the gate information; evaluation methods
     (:meth:`expectation_value`, :meth:`gradient`, ...) take only ``parameters``.
     Concrete subclasses implement :meth:`__init__` (resolving their operator family to a
-    :class:`~monoprop.majorana.MajoranaOperator` and calling :meth:`_init_simulator`)
+    [MajoranaOperator][monoprop.majorana.MajoranaOperator] and calling :meth:`_init_simulator`)
     and :meth:`_circuit_gates` (validating the circuit's gate family).
 
     .. note::
@@ -97,7 +98,7 @@ class MonomialPropagator(ABC):
         """Dispatch to the compiled per-mode simulator and record shared state.
 
         Called by each concrete subclass's ``__init__`` once it has resolved its operator
-        family to a :class:`~monoprop.majorana.MajoranaOperator`. The cutoff ``basis_change``
+        family to a [MajoranaOperator][monoprop.majorana.MajoranaOperator]. The cutoff ``basis_change``
         is an internal detail chosen by the subclass (``None`` for a native Majorana
         propagator, Jordan-Wigner for a qubit one) -- it is not part of the public surface.
         The operator carries its own mode count (a required constructor argument), so the
@@ -169,10 +170,10 @@ class MonomialPropagator(ABC):
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Validate the circuit's gate family and return its gates for expansion.
 
-        There is a single :class:`~monoprop.circuit.Circuit` type; the family is carried by
-        the gates (see :attr:`~monoprop.circuit.Circuit.family`). Each concrete propagator
+        There is a single [Circuit][monoprop.circuit.Circuit] type; the family is carried by
+        the gates (see [family][monoprop.circuit.Circuit.family]). Each concrete propagator
         accepts one family and rejects the other; the shared conversion lives in
-        :func:`~monoprop.circuit.expand_monomials`.
+        [expand_monomials][monoprop.circuit.expand_monomials].
         """
         raise NotImplementedError
 
@@ -239,7 +240,7 @@ class MonomialPropagator(ABC):
         independently.
 
         Args:
-            circuit: Gates to append, as a :class:`~monoprop.circuit.Circuit`.
+            circuit: Gates to append, as a [Circuit][monoprop.circuit.Circuit].
             seed_parameters: The full parameter vector covering the whole accumulated graph,
                 used to regenerate the coefficient seed (by contracting the existing graph) so
                 coefficient truncation sees realistic coefficients when extending. Only needed
@@ -304,7 +305,7 @@ class MonomialPropagator(ABC):
 
         Args:
             circuit: Gates to apply and the angle values to apply them at, as a
-                :class:`~monoprop.circuit.Circuit`.
+                [Circuit][monoprop.circuit.Circuit].
             only_rotate_len_k: See :meth:`build_graph`.
         """
         only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
@@ -347,7 +348,7 @@ class MonomialPropagator(ABC):
         generated Majorana monomial), in the same order as the parameter vector passed to
         :meth:`expectation_value`. This is the graph's native (per-monomial) mapping, which
         is finer-grained than the per-gate mapping of the authoring
-        :class:`~monoprop.circuit.Circuit` when gates bundle several monomials.
+        [Circuit][monoprop.circuit.Circuit] when gates bundle several monomials.
         """
         return list(self._simulator.parameter_mapping)
 
@@ -364,7 +365,7 @@ class MonomialPropagator(ABC):
           relabels each layer directly.
         - **per gate** (length :attr:`n_gates`, indexed by gate): expanded to per-layer via
           each layer's gate, so a multi-term gate's layers stay tied. This is the
-          granularity of the authoring :class:`~monoprop.circuit.Circuit`'s mapping.
+          granularity of the authoring [Circuit][monoprop.circuit.Circuit]'s mapping.
 
         When the two lengths coincide the per-layer reading is used. Functionals created
         earlier keep the mapping they were built with; rebuild a functional to pick up the
@@ -396,7 +397,7 @@ class MonomialPropagator(ABC):
 
         Args:
             parameters: Variational parameter values, as a sequence in parameter-index
-                order, or a :class:`~monoprop.circuit.Circuit` (its parameters are used).
+                order, or a [Circuit][monoprop.circuit.Circuit] (its parameters are used).
                 ``None`` evaluates the current operator with an empty parameter vector.
 
         Returns:
@@ -627,7 +628,7 @@ class MonomialPropagator(ABC):
     def cutoff_type(self) -> str:
         """Current cutoff type (``"length"`` or ``"support"``).
 
-        Read-only on the base; :class:`~monoprop.majorana_propagator.MajoranaPropagator`
+        Read-only on the base; [MajoranaPropagator][monoprop.majorana_propagator.MajoranaPropagator]
         exposes a setter since either scheme is valid there.
         """
         return self._simulator.cutoff_type
@@ -635,7 +636,7 @@ class MonomialPropagator(ABC):
     def _bind(self, parameters: ParameterValues) -> list[float]:
         """Resolve ``parameters`` into a dense vector in parameter-index order.
 
-        Accepts a :class:`~monoprop.circuit.Circuit` (its ``parameters`` are used), a plain
+        Accepts a [Circuit][monoprop.circuit.Circuit] (its ``parameters`` are used), a plain
         sequence of floats, or ``None`` (an empty vector).
         """
         if isinstance(parameters, Circuit):
