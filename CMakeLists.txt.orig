@@ -42,7 +42,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-<<<<<<< New base: build: only allow to build as python extension
+<<<<<<< New base: chore: c++ unit tests off by default
 set(
   monoprop_MAX_NUM_MODES
   "250"
@@ -92,6 +92,7 @@ endmacro()
 
 option_with_default(monoprop_MAX_NUM_MODES "Maximum number of simulable Fermionic modes with Python bindings" 250)
 option_with_print(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
+option_with_print(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
 find_package(TBB REQUIRED)
 if(TARGET TBB::tbb)
@@ -135,7 +136,7 @@ endmacro()
 
 option_with_default(monoprop_MAX_NUM_MODES "Maximum number of simulable Fermionic modes with Python bindings" 250)
 option_with_print(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
-option_with_print(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
+option_with_print(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" OFF)
 
 find_package(TBB REQUIRED)
 if(TARGET TBB::tbb)
@@ -144,7 +145,7 @@ if(TARGET TBB::tbb)
     STATUS
     "Found TBB: ${TBB_LOCATION} (found version \"${TBB_VERSION}\")"
   )
->>>>>>> Current commit: build: only allow to build as python extension
+>>>>>>> Current commit: chore: c++ unit tests off by default
 endif()
 
 find_package(Threads REQUIRED)
@@ -154,27 +155,6 @@ if(monoprop_ENABLE_MPI)
 endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
-
-<<<<<<< New base: build: only allow to build as python extension
-# PROJECT_VERSION_FULL comes from dynamic_version(), which is skipped under scikit-build-core.
-if(NOT DEFINED SKBUILD)
-  message(STATUS "${PROJECT_NAME} version: ${PROJECT_VERSION_FULL}")
-endif()
-||||||| Common ancestor
-if(DEFINED SKBUILD)
-  message(
-    STATUS
-    "Maximum simulable Fermionic modes with Python bindings: ${monoprop_MAX_NUM_MODES}"
-  )
-else()
-  message(STATUS "${PROJECT_NAME} version: ${PROJECT_VERSION_FULL}")
-endif()
-=======
-message(
-  STATUS
-  "Maximum simulable Fermionic modes with Python bindings: ${monoprop_MAX_NUM_MODES}"
-)
->>>>>>> Current commit: build: only allow to build as python extension
 
 # report on compiler flags in use
 message(STATUS "Configuring a ${CMAKE_BUILD_TYPE} build")
@@ -196,14 +176,15 @@ message(
   "   Project defaults       : ${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION} ${monoprop_CXX_FLAGS}"
 )
 message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
+message(
+  STATUS
+  "Maximum simulable Fermionic modes with Python bindings: ${monoprop_MAX_NUM_MODES}"
+)
+
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
-<<<<<<< New base: build: only allow to build as python extension
 message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
 message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
-||||||| Common ancestor
-=======
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
->>>>>>> Current commit: build: only allow to build as python extension
 
 include(GNUInstallDirs)
 
