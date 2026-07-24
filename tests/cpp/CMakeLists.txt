@@ -1,7 +1,6 @@
-#
-# Compile monoprop C++ test suite
-#
 find_package(Boost 1.85 COMPONENTS unit_test_framework REQUIRED)
+
+include(${PROJECT_SOURCE_DIR}/cmake/CPM.cmake)
 
 cpmaddpackage(
   NAME "msgpack-cxx"

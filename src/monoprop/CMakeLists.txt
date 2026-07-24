@@ -123,6 +123,4 @@ install(
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/monoprop
 )
 
-if(DEFINED SKBUILD)
-  add_subdirectory(bindings)
-endif()
+add_subdirectory(bindings)
