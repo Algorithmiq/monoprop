@@ -88,15 +88,15 @@ def _to_qiskit_operator(pauli_dict: dict[str, float], num_qubits: int) -> Sparse
 def to_qiskit_operator(
     pauli_operator: PauliOperator, num_qubits: int | None = None
 ) -> SparsePauliOp:
-    """Convert a dictionary of Pauli strings with their coefficients to a Qiskit operator.
+    """Convert a PauliOperator to a Qiskit SparsePauliOp.
 
     Args:
-        pauli_operator: A PauliOperator instance,
+        pauli_operator: A PauliOperator instance.
         num_qubits: Number of qubits in the system. If None, it will be inferred from the
             PauliOperator.
 
     Returns:
-        the Qiskit operator.
+        The Qiskit operator.
     """
     num_qubits = num_qubits if num_qubits is not None else pauli_operator.num_qubits
     if num_qubits is None:
