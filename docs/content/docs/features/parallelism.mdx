@@ -5,7 +5,7 @@ description: Scaling across MPI ranks and shared-memory threads.
 
 monoprop scales in two complementary ways: across MPI ranks (distributing the
 operator) and across threads within each rank (shared-memory parallelism).
-The MPI distribution shards both the operator and the graph across ranks,
+The MPI distribution shares both the operator and the graph across ranks,
 which can allow variational optimisation and simulation of larger systems
 than would fit in memory on a single node.
 
