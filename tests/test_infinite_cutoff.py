@@ -105,7 +105,7 @@ def test_gradient(problem, schrodinger, pare_threshold, comm):
     test_expval, test_gradient = fn(xk)
     assert np.isclose(test_expval, true_expval, atol=1e-6)
     assert np.allclose(test_gradient, fd_gradient, atol=1e-6)
-    test_gradient2 = mp.gradient(xk)
+    test_gradient2 = mp.grad(xk)
     assert np.allclose(test_gradient2, fd_gradient, atol=1e-6)
 
 

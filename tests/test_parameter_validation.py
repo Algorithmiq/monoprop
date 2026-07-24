@@ -67,7 +67,7 @@ class TestGraphAndParameterValidation:
     def test_wrong_parameter_length_raises(self, serial_comm, parameters):
         mp, _ = _two_gate_graph(serial_comm)
         with pytest.raises(RuntimeError, match="Parameter length"):
-            mp.expectation_value(parameters)
+            mp.expval(parameters)
 
     def test_non_contiguous_mapping_raises(self):
         """A param scheme with an index gap is rejected at circuit construction."""

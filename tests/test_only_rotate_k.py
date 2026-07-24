@@ -115,7 +115,7 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     if inplace:
         mp.propagate(non_orbital)
         mp.propagate(orbital, only_rotate_len_k=4)
-        test_expval = mp.expectation_value()
+        test_expval = mp.expval()
     else:
         mp.build_graph(non_orbital)
         mp.build_graph(orbital, only_rotate_len_k=4)

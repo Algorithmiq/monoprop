@@ -107,5 +107,5 @@ def test_qiskit_with_mp(
         cutoff=6,
     )
     mp.propagate(circuit)
-    test_expval = mp.expectation_value()
+    test_expval = mp.expval()
     assert np.isclose(test_expval, qiskit_result, atol=1e-6)
