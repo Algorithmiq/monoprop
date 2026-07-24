@@ -326,7 +326,7 @@ def fig4_scaling_and_divergence(records, layers, outdir):
     shared N axis."""
     cutoffs = sorted({r["cutoff"] for r in records})
     xs_all = sorted({r["num_qubits"] for r in records})
-    fig, axes = plt.subplots(2, 2, figsize=(9.6, 8.2), sharex=True)
+    fig, axes = plt.subplots(2, 2, figsize=(13.0, 7.8), sharex=True)
 
     abs_panels = [("seconds", f"time  (s, {layers} layers)"),
                   ("memory_mb", "memory  (MB)")]
