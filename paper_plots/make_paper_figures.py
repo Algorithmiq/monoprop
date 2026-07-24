@@ -66,6 +66,28 @@ CUTOFF_COLORS = {2: "#0072B2", 4: "#E69F00", 6: "#009E73", 8: "#CC79A7", 10: "#D
 ENGINE_STYLE = {"monoprop": ("-", "o"), "julia": ("--", "s")}
 ENGINE_LABEL = {"monoprop": "monoprop", "julia": "PauliPropagation.jl"}
 
+# Shared mark spec — a package is drawn identically in EVERY figure (monoprop =
+# solid line / filled circle, PauliPropagation.jl = dashed line / open square), so
+# one legend key reads the same across all figures. Thin lines, small clean markers.
+LINE_WIDTH = 1.4
+MARKER_SIZE = 4.0
+MARKER_EDGE = 0.9
+LEGEND_LW = 1.6
+LEGEND_MS = 5.0
+
+
+def _curve_style(fam, color):
+    """The one place a package's line+marker style is defined; used everywhere."""
+    ls, marker = ENGINE_STYLE[fam]
+    return dict(
+        ls=ls, marker=marker, color=color,
+        lw=LINE_WIDTH, ms=MARKER_SIZE, markeredgewidth=MARKER_EDGE,
+        markeredgecolor=color,
+        markerfacecolor=(color if fam == "monoprop" else "white"),
+        solid_capstyle="round", dash_capstyle="round", zorder=3,
+    )
+
+
 FIT_NMIN, FIT_NMAX = 128, 512   # clean, pre-cliff power-law window
 GUIDE = "#b0b0b0"
 GRID = "#d5d5d5"
@@ -140,13 +162,15 @@ def _two_part_legend(fig, cutoffs, *, engines=("monoprop", "julia"),
     Titles are omitted — the entries are self-explanatory and titles would crowd
     the band; the mapping is stated once in each figure's caption/README."""
     cut_handles = [
-        Line2D([0], [0], color=CUTOFF_COLORS.get(c, "#666"), lw=2.4, marker="o",
-               ms=6, markeredgewidth=1.1, label=f"cutoff {c}")
+        Line2D([0], [0], color=CUTOFF_COLORS.get(c, "#666"), lw=LEGEND_LW,
+               marker="o", ms=LEGEND_MS, markeredgewidth=MARKER_EDGE,
+               markeredgecolor=CUTOFF_COLORS.get(c, "#666"), label=f"cutoff {c}")
         for c in cutoffs
     ]
     eng_handles = [
-        Line2D([0], [0], color="#555555", lw=2.0, ls=ENGINE_STYLE[e][0],
-               marker=ENGINE_STYLE[e][1], ms=6, markeredgewidth=1.1,
+        Line2D([0], [0], color="#555555", lw=LEGEND_LW, ls=ENGINE_STYLE[e][0],
+               marker=ENGINE_STYLE[e][1], ms=LEGEND_MS, markeredgewidth=MARKER_EDGE,
+               markeredgecolor="#555555",
                markerfacecolor="#555555" if e == "monoprop" else "white",
                label=ENGINE_LABEL[e])
         for e in engines
@@ -165,14 +189,10 @@ def _plot_curves(ax, records, cutoffs, metric):
     for cutoff in cutoffs:
         color = CUTOFF_COLORS.get(cutoff, "#666666")
         for fam in ("monoprop", "julia"):
-            ls, marker = ENGINE_STYLE[fam]
             xs, ys = _series(records, fam, cutoff, metric)
             if not xs:
                 continue
-            ax.plot(xs, ys, ls=ls, marker=marker, color=color, lw=2, ms=5.5,
-                    markeredgewidth=1.1,
-                    markerfacecolor=color if fam == "monoprop" else "white",
-                    zorder=3)
+            ax.plot(xs, ys, **_curve_style(fam, color))
             p = _fit_exponent(xs, ys)
             if p is not None:
                 fits[(cutoff, fam)] = p
@@ -240,8 +260,8 @@ def fig2_divergence_scaling(records, layers, outdir):
             ys = [jul[x] / mono[x] for x in xs if mono[x]]
             if not xs:
                 continue
-            ax.plot(xs, ys, ls="-", marker="o", color=color, lw=2, ms=5.5,
-                    markeredgewidth=1.1, markerfacecolor=color, zorder=3)
+            # A ratio is neither package → the "monoprop" solid/filled key.
+            ax.plot(xs, ys, **_curve_style("monoprop", color))
         ax.axhline(1.0, color="#555555", lw=1.4, zorder=2)
         ax.annotate("monoprop $=1\\times$", xy=(0.985, 1.0),
                     xycoords=("axes fraction", "data"), xytext=(0, 4),
@@ -250,8 +270,10 @@ def fig2_divergence_scaling(records, layers, outdir):
         _finish_axis(ax, "number of qubits  $N$", ylabel, "")
     fig.tight_layout(rect=(0, 0.10, 1, 0.99))
     # cutoff-only legend (all curves are ratios → one style), centred below.
-    cut_handles = [Line2D([0], [0], color=CUTOFF_COLORS.get(c, "#666"), lw=2.4,
-                          marker="o", ms=6, label=f"cutoff {c}") for c in cutoffs]
+    cut_handles = [Line2D([0], [0], color=CUTOFF_COLORS.get(c, "#666"), lw=LEGEND_LW,
+                          marker="o", ms=LEGEND_MS, markeredgewidth=MARKER_EDGE,
+                          markeredgecolor=CUTOFF_COLORS.get(c, "#666"),
+                          label=f"cutoff {c}") for c in cutoffs]
     fig.legend(handles=cut_handles, loc="lower center",
                bbox_to_anchor=(0.5, 0.02), ncol=len(cutoffs), frameon=False,
                handlelength=2.2, columnspacing=2.2)
@@ -274,14 +296,10 @@ def fig3_per_term_memory(records, outdir):
     for cutoff in cutoffs:
         color = CUTOFF_COLORS.get(cutoff, "#666666")
         for fam in ("monoprop", "julia"):
-            ls, marker = ENGINE_STYLE[fam]
             xs, ys = _series(records, fam, cutoff, "bytes_per_term")
             if not xs:
                 continue
-            ax.plot(xs, ys, ls=ls, marker=marker, color=color, lw=2, ms=5.5,
-                    markeredgewidth=1.1,
-                    markerfacecolor=color if fam == "monoprop" else "white",
-                    zorder=3)
+            ax.plot(xs, ys, **_curve_style(fam, color))
     ax.set_xscale("log", base=2)
     ax.set_xlim(xlo, xhi)
     ax.set_xlabel("number of qubits  $N$")
