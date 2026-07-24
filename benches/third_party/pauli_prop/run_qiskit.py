@@ -22,11 +22,18 @@ from qiskit.circuit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 from tqdm import tqdm
 
-from _common import RESULTS_FILE, RssPeakSampler, load_settings, update_results
+from _common import (
+    RESULTS_FILE,
+    RssPeakSampler,
+    ensure_results_file,
+    load_settings,
+    update_results,
+)
 
 LABEL = "Qiskit pauli-prop"
 
 settings = load_settings()
+ensure_results_file(settings)
 
 step_circ = QuantumCircuit(settings.nq)
 for i, k in settings.grid_edges:
@@ -44,7 +51,12 @@ qiskit_obs = SparsePauliOp.from_sparse_list(
 # term budget, so we reuse monoprop's own term count at each step (already in results.json,
 # since run_model.sh always runs run_monoprop.py first) to keep the comparison apples-to-apples.
 with open(RESULTS_FILE) as file:
-    monoprop_num_terms = json.load(file)["num_terms"]["monoprop"]
+    monoprop_num_terms = json.load(file)["num_terms"].get("monoprop")
+if monoprop_num_terms is None:
+    raise RuntimeError(
+        "run_qiskit.py needs monoprop's per-step term counts, which aren't in results.json yet — "
+        "run run_monoprop.py (or run_model.sh) first."
+    )
 
 runtime: list[float] = []
 memory: list[float] = []

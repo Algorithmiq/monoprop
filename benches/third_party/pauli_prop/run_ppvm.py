@@ -19,11 +19,12 @@ import time
 from ppvm import PauliSum
 from tqdm import tqdm
 
-from _common import RssPeakSampler, load_settings, update_results
+from _common import RssPeakSampler, ensure_results_file, load_settings, update_results
 
 LABEL = "QuEra ppvm"
 
 settings = load_settings()
+ensure_results_file(settings)
 
 ppvm_obs = PauliSum.new(
     n_qubits=settings.nq,

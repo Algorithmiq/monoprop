@@ -29,7 +29,7 @@ from cuquantum.pauliprop.experimental import (
 )
 from tqdm import tqdm
 
-from _common import load_settings, update_results
+from _common import ensure_results_file, load_settings, update_results
 
 LABEL = "cuPauliProp (GPU)"
 
@@ -117,6 +117,7 @@ class _PoolPeakHook(cp.cuda.MemoryHook):
 
 
 settings = load_settings()
+ensure_results_file(settings)
 
 cupp_handle = LibraryHandle()
 

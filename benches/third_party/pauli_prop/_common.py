@@ -85,25 +85,49 @@ def load_settings() -> Settings:
     )
 
 
+_RESULTS_KEYS = (
+    "step_range",
+    "num_terms",
+    "runtime",
+    "memory",
+    "native_memory",
+    "expvals",
+)
+
+
 def init_results(settings: Settings) -> None:
     """(Re)create results.json's skeleton from settings.json.
 
-    Called once, by run_monoprop.py, since it always runs first (see run_model.sh); every other
-    engine script only ever reads-modifies-writes what's already there via update_results().
+    Called unconditionally by run_monoprop.py, since it's meant to start every full run from
+    scratch. Every other engine script instead calls ensure_results_file(), which only creates
+    the skeleton if results.json is missing/invalid, so it doesn't clobber earlier engines'
+    results when run after them.
     """
     RESULTS_FILE.write_text(
         json.dumps(
-            {
-                "step_range": list(settings.step_range),
-                "num_terms": {},
-                "runtime": {},
-                "memory": {},
-                "native_memory": {},
-                "expvals": {},
-            },
+            dict.fromkeys(_RESULTS_KEYS[1:], {})
+            | {"step_range": list(settings.step_range)},
             indent=4,
         )
     )
+
+
+def ensure_results_file(settings: Settings) -> None:
+    """Make sure results.json exists and has the expected shape before this engine starts.
+
+    Lets every engine script be run standalone, in any order, without results.json already
+    existing: without this, a missing/invalid/stale results.json would only surface as a
+    confusing JSONDecodeError from update_results() at the very end — after the engine already
+    ran its full (possibly expensive) simulation. Unlike init_results(), this leaves an
+    already-valid results.json (e.g. with other engines' results already in it) untouched.
+    """
+    try:
+        with open(RESULTS_FILE) as file:
+            data = json.load(file)
+        if not all(key in data for key in _RESULTS_KEYS):
+            raise ValueError("results.json is missing expected keys")
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        init_results(settings)
 
 
 def update_results(
