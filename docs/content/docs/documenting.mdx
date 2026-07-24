@@ -61,6 +61,37 @@ References are defined in `docs/bibliography.bib`. Cite them with `[@key]`:
 This follows the approach of [@smith2024].
 ```
 
+### Cross-references to the API
+
+Link to any documented Python symbol with the mkdocstrings-style reference
+syntax `[Symbol][]` — the same form used inside docstrings (see below). The
+symbol resolves to its API-reference page automatically, so you never hard-code
+an `/api/...` URL:
+
+```mdx
+The top-level classes are [MajoranaPropagator][] and [PauliPropagator][].
+```
+
+- **Do not wrap the name in backticks** in the `[Symbol][]` form: write
+  `[MajoranaPropagator][]`, not `` [`MajoranaPropagator`][] ``. The renderer adds
+  the code-span styling for you (backticks would split the reference and stop it
+  resolving).
+- **Bare names must be unambiguous.** `[MajoranaPropagator][]` works because the
+  name is unique across the public API. If a name is defined in more than one
+  module, give the fully-qualified path as an explicit target — and this is also
+  how you set custom display text:
+
+  ```mdx
+  See [the operator class][monoprop.majorana.MajoranaOperator] for details.
+  ```
+
+- **Unresolved references** are left as literal text and print a
+  `remark-xref: unresolved cross-reference …` warning during the build, so typos
+  surface instead of silently producing a broken link.
+
+Links to other documentation *pages* are still ordinary Markdown links, e.g.
+`[Building from source](/building)`.
+
 ### Code examples and doctests
 
 Python code blocks in documentation pages are validated as doctests. Write them
@@ -110,6 +141,11 @@ def my_function(x: int) -> str:
         '1'
     """
 ```
+
+Docstrings may cross-reference other symbols with the same `[Symbol][]` /
+`[Display][fully.qualified.path]` syntax described in
+[Cross-references to the API](#cross-references-to-the-api); griffe resolves
+them into links when the reference is regenerated.
 
 ## Tutorial notebooks
 
