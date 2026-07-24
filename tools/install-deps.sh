@@ -147,6 +147,9 @@ EOF
             while IFS= read -r line; do
                 [[ "$line" != *"="* ]] && continue
                 local key="${line%%=*}" val="${line#*=}"
+                # Skip shell-internal variables that change between any two env
+                # captures and are not meaningful for the build.
+                [[ "$key" == "_" || "$key" == "SHLVL" || "$key" =~ ^BASH_ ]] && continue
                 printf '%s<<__EOF__\n%s\n__EOF__\n' "$key" "$val" >> "$GITHUB_ENV"
             done < <(comm -13 "$tmpbefore" "$tmpafter")
             rm -f "$tmpbefore" "$tmpafter"
