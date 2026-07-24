@@ -72,20 +72,23 @@ function foldToOneLine(text) {
 }
 
 /**
- * Repair KaTeX argument-group braces that were escaped by upstream markdown
- * serialization, but only inside `$...$` and `$$...$$` math spans.
+ * Unescape braces within LaTeX/KaTeX math expressions.
+ *
+ * Upstream markdown serialization escapes braces (`\{` and `\}`), but KaTeX
+ * requires unescaped braces for proper grouping (subscripts, superscripts, and
+ * command arguments). This function selectively unescapes braces only inside
+ * `$...$` (inline) and `$$...$$` (display) math spans.
  *
  * Examples:
- * - `r_\{12\}` -> `r_{12}`
- * - `^\{-1\}` -> `^{-1}`
- * - `\mathrm\{d\}` -> `\mathrm{d}`
+ * - `$r_\{12\}$` -> `$r_{12}$`
+ * - `$$^\{-1\}$$` -> `$$^{-1}$$`
+ * - `$\mathrm\{d\}$` -> `$\mathrm{d}$`
  */
 function normalizeMathGroupingEscapes(content) {
   const normalizeMathSegment = (math) =>
     math
-      .replace(/_\\\{([^{}]*)\\\}/g, '_{$1}')
-      .replace(/\^\\\{([^{}]*)\\\}/g, '^{$1}')
-      .replace(/\\([A-Za-z]+)\\\{([^{}]*)\\\}/g, '\\$1{$2}');
+      .replace(/\\\{/g, '{')
+      .replace(/\\\}/g, '}');
 
   return content.replace(/\$\$[\s\S]*?\$\$|\$(?:\\.|[^$\\])+\$/g, (math) =>
     normalizeMathSegment(math),
