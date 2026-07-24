@@ -179,20 +179,6 @@ def _plot_curves(ax, records, cutoffs, metric):
     return fits
 
 
-def _exponent_box(ax, cutoffs, fits, loc="upper left"):
-    lines = [f"fitted  $N{{=}}${FIT_NMIN}–{FIT_NMAX}:"]
-    for c in cutoffs:
-        m, j = fits.get((c, "monoprop")), fits.get((c, "julia"))
-        if m is not None and j is not None:
-            lines.append(f"c{c}:  mono $N^{{{m:.1f}}}$   Julia $N^{{{j:.1f}}}$")
-    x, ha = (0.03, "left") if "left" in loc else (0.97, "right")
-    y = 0.97 if "upper" in loc else 0.03
-    va = "top" if "upper" in loc else "bottom"
-    ax.text(x, y, "\n".join(lines), transform=ax.transAxes, fontsize=8.3,
-            va=va, ha=ha, bbox=dict(boxstyle="round,pad=0.4", fc="white",
-                                    ec="#cccccc", alpha=0.92))
-
-
 def _finish_axis(ax, xlabel, ylabel, title, logy=True, base2=True):
     if base2:
         ax.set_xscale("log", base=2)
@@ -229,10 +215,9 @@ def fig1_absolute_scaling(records, layers, outdir):
         ("memory_mb", "memory  (MB)"),
     ]
     for ax, (metric, ylabel) in zip(axes, panels):
-        fits = _plot_curves(ax, records, cutoffs, metric)
+        _plot_curves(ax, records, cutoffs, metric)
         _finish_axis(ax, "number of qubits  $N$", ylabel, "")
         _slope_guides(ax, xs_all, [1, 2, 3])
-        _exponent_box(ax, cutoffs, fits)
     fig.tight_layout(rect=(0, 0.17, 1, 0.99))
     _two_part_legend(fig, cutoffs, y_cut=0.085, y_eng=0.02)
     return _save(fig, outdir, "fig1_absolute_scaling")
@@ -245,7 +230,6 @@ def fig2_divergence_scaling(records, layers, outdir):
     panels = [("seconds", "time overhead  ($\\times$ monoprop)"),
               ("memory_mb", "memory overhead  ($\\times$ monoprop)")]
     for ax, (metric, ylabel) in zip(axes, panels):
-        ratio_fits = []
         for cutoff in cutoffs:
             color = CUTOFF_COLORS.get(cutoff, "#666666")
             mono = {r["num_qubits"]: r[metric] for r in records
@@ -258,23 +242,12 @@ def fig2_divergence_scaling(records, layers, outdir):
                 continue
             ax.plot(xs, ys, ls="-", marker="o", color=color, lw=2, ms=5.5,
                     markeredgewidth=1.1, markerfacecolor=color, zorder=3)
-            p = _fit_exponent(xs, ys)
-            if p is not None:
-                ratio_fits.append((cutoff, p))
         ax.axhline(1.0, color="#555555", lw=1.4, zorder=2)
         ax.annotate("monoprop $=1\\times$", xy=(0.985, 1.0),
                     xycoords=("axes fraction", "data"), xytext=(0, 4),
                     textcoords="offset points", ha="right", va="bottom",
                     fontsize=8.3, color="#555555", fontweight="bold")
         _finish_axis(ax, "number of qubits  $N$", ylabel, "")
-        if ratio_fits:
-            lines = ["divergence exponent"]
-            lines.append(f"(fit $N{{=}}${FIT_NMIN}–{FIT_NMAX}):")
-            lines += [f"c{c}:  $\\propto N^{{{p:.1f}}}$" for c, p in ratio_fits]
-            ax.text(0.03, 0.97, "\n".join(lines), transform=ax.transAxes,
-                    fontsize=8.3, va="top", ha="left",
-                    bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="#cccccc",
-                              alpha=0.92))
     fig.tight_layout(rect=(0, 0.10, 1, 0.99))
     # cutoff-only legend (all curves are ratios → one style), centred below.
     cut_handles = [Line2D([0], [0], color=CUTOFF_COLORS.get(c, "#666"), lw=2.4,

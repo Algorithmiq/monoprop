@@ -39,12 +39,11 @@ support, shows neither the growth nor the cliff.
 
 ### Coverage
 
-monoprop covers all cutoffs to N=1024. PauliPropagation.jl covers cutoff 2 & 4 to
-N=1024 and cutoff 6 to N=800 — each further c6 point costs >1 h on an isolated node
-because of the cliff (the N=1024 c6 term count is nonetheless known exactly from the
-identical-term-set property; only its Julia *timing* is expensive). Timings were taken
-on **exclusive** Leonardo DCGP nodes (`--exclusive --mem=0`); shared nodes were found
-to be overloaded and corrupt timing.
+Both engines cover all cutoffs to N=1024. The far end is expensive on the Julia side
+because of the cliff — the N=1024 c6 point alone took ~2.7 h of isolated-node time
+(≈9 770 s) versus ~4 s for monoprop — so those points were run as dedicated jobs.
+Timings were taken on **exclusive** Leonardo DCGP nodes (`--exclusive --mem=0`);
+shared nodes were found to be overloaded and corrupt timing.
 
 ## Figures
 
@@ -54,16 +53,15 @@ dashed line / open marker). Vector `.pdf` (for the paper) + `.png` twin (preview
 `figures/`.
 
 **`fig1_absolute_scaling`** — Absolute time (left) and total operator memory (right)
-vs N, log–log. Faint grey guides show slopes `N¹/N²/N³`; the box gives the fitted
-power-law exponent per engine over the clean pre-cliff window N=128–512 (monoprop
-`N^1.2–1.6`, Julia `N^2.5–2.8` in time). The Julia curves visibly steepen past N≈512
-(the key-width cliff).
+vs N, log–log. Faint grey guides show slopes `N¹/N²/N³` for reference. The monoprop
+curves track `N^1.2–1.6` (time) while the Julia curves track `N^2.5–2.8` over the clean
+pre-cliff window N=128–512, then visibly steepen past N≈512 (the key-width cliff).
 
 **`fig2_divergence_scaling`** — *The headline.* Julia ÷ monoprop for time (left) and
 memory (right) vs N, log–log, against the monoprop = 1× baseline. Each curve is the
 cost multiplier at the same operator; its log–log slope is the **divergence exponent**
-(= the gap between the two absolute exponents in Fig. 1), annotated in the box. The
-steep jump past N≈512 is the super-linear key-width cliff regime.
+(= the gap between the two absolute exponents in Fig. 1). The steep jump past N≈512 is
+the super-linear key-width cliff regime, reaching >1000× in time by N=1024.
 
 **`fig3_per_term_memory`** — The *mechanism*: memory per term vs N. monoprop sits in a
 bounded band (`O(cutoff)` symplectic support); PauliPropagation.jl climbs a staircase
@@ -76,8 +74,8 @@ as its 2-bits/qubit packed key widens across word boundaries (shaded `64→…�
 > the identical operator for both engines ($\texttt{atol}=0$ keeps the term sets
 > equal), single-threaded. Colour encodes the weight cutoff; solid/filled marks are
 > monoprop, dashed/open marks are PauliPropagation.jl. Grey dashed lines are
-> $N^1,N^2,N^3$ slope guides. Fitted exponents (box) use $N=128$–$512$, before the
-> key-width cliff at $N\approx512$.
+> $N^1,N^2,N^3$ slope guides. The Julia curves steepen past the key-width cliff at
+> $N\approx512$.
 
 > **Fig. 2.** The monoprop advantage diverges as a power law in $N$. Each curve is the
 > PauliPropagation.jl cost divided by monoprop's on the same operator; monoprop is the
