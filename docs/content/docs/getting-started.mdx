@@ -52,7 +52,7 @@ is the observable); see
 import numpy as np
 from monoprop import MajoranaPropagator, ExpGate, Circuit, MajoranaOperator
 
-observable = MajoranaOperator({(0, 1, 2, 4): 1.0}, 8)
+observable = MajoranaOperator({(0, 1, 2, 4): 1.0}, num_modes=8)
 # A gate generator carries the Hermitian operator, the same convention as an observable:
 # M_γ = i·m_4 m_5 is a length-2 monomial, so its coefficient is imaginary. monoprop
 # divides out the Hermitian phase i for you when the circuit is ingested.
