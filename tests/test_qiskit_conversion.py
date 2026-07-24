@@ -143,44 +143,51 @@ class TestFromQiskitOperator:
 @pytest.mark.qiskit
 class TestToQiskitOperator:
     def test_single_term_reverses_string(self):
-        result = to_qiskit_operator({"XZ": 1.0})
+        result = to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=2))
         labels = list(result.paulis.to_labels(array=True))
         assert "ZX" in labels
 
     def test_single_term_coefficient(self):
-        result = to_qiskit_operator({"XZ": 1.5})
+        result = to_qiskit_operator(PauliOperator({"XZ": 1.5}, num_qubits=2))
         assert result.coeffs[0] == pytest.approx(1.5)
 
     def test_returns_sparse_pauli_op(self):
-        result = to_qiskit_operator({"X": 1.0})
+        result = to_qiskit_operator(PauliOperator({"X": 1.0}, num_qubits=1))
         assert isinstance(result, SparsePauliOp)
 
     def test_multiple_terms_reversed(self):
-        result = to_qiskit_operator({"XZ": 1.0, "IY": 0.5})
+        result = to_qiskit_operator(PauliOperator({"XZ": 1.0, "IY": 0.5}, num_qubits=2))
         labels = list(result.paulis.to_labels(array=True))
         assert "ZX" in labels
         assert "YI" in labels
 
     def test_multiple_terms_coefficients(self):
-        result = to_qiskit_operator({"XZ": 1.0, "IY": 0.5})
+        result = to_qiskit_operator(PauliOperator({"XZ": 1.0, "IY": 0.5}, num_qubits=2))
         label_to_coeff = dict(zip(result.paulis.to_labels(array=True), result.coeffs))
         assert label_to_coeff["ZX"] == pytest.approx(1.0)
         assert label_to_coeff["YI"] == pytest.approx(0.5)
 
-    def test_complex_coefficients(self):
-        result = to_qiskit_operator({"XZ": 1.0 + 0.5j})
-        assert result.coeffs[0] == pytest.approx(1.0 + 0.5j)
+    def test_complex_coefficients_rejected_by_pauli_operator(self):
+        with pytest.raises(ValueError, match="complex terms"):
+            PauliOperator({"XZ": 1.0 + 0.5j}, num_qubits=2)
 
     def test_single_qubit_term(self):
-        result = to_qiskit_operator({"Z": 2.0})
+        result = to_qiskit_operator(PauliOperator({"Z": 2.0}, num_qubits=1))
         labels = list(result.paulis.to_labels(array=True))
         assert "Z" in labels
         assert result.coeffs[0] == pytest.approx(2.0)
 
     def test_identity_string_preserved(self):
-        result = to_qiskit_operator({"II": 0.5})
+        result = to_qiskit_operator(PauliOperator({"II": 0.5}, num_qubits=2))
         labels = list(result.paulis.to_labels(array=True))
         assert "II" in labels
+
+    def test_missing_num_qubits(self):
+        with pytest.raises(ValueError, match="Number of qubits must be specified"):
+            to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=None))
+
+    def test_default_operator_missing_num_qubits(self):
+        to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=None), num_qubits=2)
 
 
 @requires_qiskit

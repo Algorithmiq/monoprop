@@ -70,25 +70,46 @@ def from_qiskit_operator(
     )
 
 
+def _to_qiskit_operator(pauli_dict: dict[str, float], num_qubits: int) -> SparsePauliOp:
+    """Convert a dictionary of Pauli strings with their coefficients to a Qiskit operator.
+
+    Args:
+        pauli_dict: A dictionary mapping Pauli strings to their coefficients.
+        num_qubits: Number of qubits in the system.
+
+    Returns:
+        The Qiskit operator.
+    """
+    return SparsePauliOp.from_list(
+        [(s[::-1], c) for s, c in pauli_dict.items()], num_qubits=num_qubits
+    )
+
+
 def to_qiskit_operator(
-    pauli_operator: PauliOperator | dict[str, float],
+    pauli_operator: PauliOperator, num_qubits: int | None = None
 ) -> SparsePauliOp:
     """Convert a dictionary of Pauli strings with their coefficients to a Qiskit operator.
 
     Args:
-        pauli_operator: A dictionary of Pauli strings with their coefficients,
-            in the right qubit order.
+        pauli_operator: A PauliOperator instance,
+        num_qubits: Number of qubits in the system. If None, it will be inferred from the
+            PauliOperator.
 
     Returns:
         the Qiskit operator.
     """
-    if isinstance(pauli_operator, PauliOperator):
-        pauli_operator = {
-            _extend_pauli_string(p.s, p.num_qubits): coeff.real
-            for p, coeff in pauli_operator.terms.items()
-        }
+    num_qubits = num_qubits if num_qubits is not None else pauli_operator.num_qubits
+    if num_qubits is None:
+        raise ValueError(
+            "Number of qubits must be specified either in the PauliOperator or as an argument."
+        )
 
-    return SparsePauliOp.from_list([(k[::-1], v) for k, v in pauli_operator.items()])
+    operator = {
+        _extend_pauli_string(p.string, p.qubits, num_qubits): coeff
+        for p, coeff in pauli_operator.terms.items()
+    }
+
+    return _to_qiskit_operator(operator, num_qubits=num_qubits)
 
 
 def _place_operator(
@@ -172,7 +193,7 @@ def from_qiskit_circuit(
 
 def _extend_generator_minimally(
     generator: PauliOperator,
-) -> tuple[dict[str, complex], list[int]]:
+) -> tuple[dict[str, float], list[int]]:
     qubits = sorted({q for p in generator.terms for q in p.qubits})
     localizing_qubit_map = {q: i for i, q in enumerate(qubits)}
     result = {
@@ -220,7 +241,8 @@ def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
         pauli_dict, qubits = _extend_generator_minimally(generator)
         qiskit_circuit.append(
             PauliEvolutionGate(
-                to_qiskit_operator(pauli_dict), time=circuit.parameters[param_index]
+                _to_qiskit_operator(pauli_dict, num_qubits=len(qubits)),
+                time=circuit.parameters[param_index],
             ),
             qubits,
         )

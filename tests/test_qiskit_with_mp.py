@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from monoprop import PauliPropagator
+from monoprop.pauli import PauliOperator
 from monoprop.qiskit_conversion import from_qiskit_circuit, from_qiskit_operator
 
 try:
@@ -42,7 +43,8 @@ def hamiltonian_lih(lazy_shared_datadir) -> SparsePauliOp:
     path = lazy_shared_datadir / "hamiltonian_lih.json"
     with path.open() as f:
         hamiltonian = json.load(f)
-    return to_qiskit_operator(hamiltonian)
+    num_qubits = max((len(label) for label in hamiltonian), default=0)
+    return to_qiskit_operator(PauliOperator(hamiltonian, num_qubits=num_qubits))
 
 
 @pytest.fixture
