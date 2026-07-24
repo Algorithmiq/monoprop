@@ -124,45 +124,28 @@ function resolve(name, scope, xref) {
 
 /**
  * Resolve cross-references in a rendered MDX page into real links. `scope` is
- * the page's fully-qualified scope (see `scopeFromPath`). Two input syntaxes
- * are supported:
+ * the page's fully-qualified scope (see `scopeFromPath`).
  *
- *  1. Markdown reference links -- the idiomatic griffe/mkdocstrings form, and
- *     the one docstrings should migrate to. The target is a Python path,
- *     resolved fully-qualified or relative to `scope`:
- *       `[Circuit][monoprop.circuit.Circuit]`  ->  `[Circuit](/api/circuit/Circuit)`
- *       `[ExpGate][]`  (on a page scoped to `monoprop.circuit`)  ->  `[ExpGate](/api/circuit/ExpGate)`
- *     `[X][]` is shorthand for target == display. Unresolved targets are
- *     collected in `unresolved` (surfaced by the caller) and left untouched.
- *
- *  2. Legacy Sphinx roles (`:class:`, `:meth:`, `:func:`, `:attr:`), so a
- *     partial migration still builds. A fully-qualified target becomes a link;
- *     a bare or unknown one degrades quietly to a code span (the previous
- *     behaviour -- these are transitional and expected). With a leading `~` the
- *     display text is shortened to the final path segment.
+ * The input is the griffe/mkdocstrings Markdown reference-link form. The target
+ * is a Python path, resolved fully-qualified or relative to `scope`:
+ *   `[Circuit][monoprop.circuit.Circuit]`  ->  `[Circuit](/api/circuit/Circuit)`
+ *   `[ExpGate][]`  (on a page scoped to `monoprop.circuit`)  ->  `[ExpGate](/api/circuit/ExpGate)`
+ * `[X][]` is shorthand for target == display. The display text is rendered as a
+ * code span (symbol names read as code). Unresolved targets are collected in
+ * `unresolved` (surfaced by the caller) and left untouched.
  */
 function resolveXrefs(content, xref, unresolved, scope) {
-  // Render the display text as a code span (symbol names read as code), avoiding
-  // a double-wrap if the docstring already backticked it.
+  // Wrap the display text in a code span, avoiding a double-wrap if the
+  // docstring already backticked it.
   const code = (text) => (/^`.*`$/.test(text) ? text : `\`${text}\``);
 
-  content = content.replaceAll(/\[([^\]]+)\]\[([^\]]*)\]/g, (match, display, target) => {
+  return content.replaceAll(/\[([^\]]+)\]\[([^\]]*)\]/g, (match, display, target) => {
     const name = (target || display).trim().replace(/^`|`$/g, '');
     const url = resolve(name, scope, xref);
     if (url) return `[${code(display)}](${url})`;
     unresolved.add(name);
     return match;
   });
-
-  content = content.replaceAll(/:\w+:`([^`]+)`/g, (match, inner) => {
-    const shortDisplay = inner.startsWith('~');
-    const fqn = inner.replace(/^~/, '');
-    const display = shortDisplay ? fqn.split('.').pop() : fqn;
-    const url = xref.get(fqn);
-    return url ? `[${code(display)}](${url})` : `\`${display}\``;
-  });
-
-  return content;
 }
 
 /** Collapse internal whitespace/newlines to a single line. */
@@ -259,9 +242,8 @@ async function main() {
   const files = convert(pkg, { baseUrl: BASE_URL });
 
   for (const file of files) {
-    // Resolve cross-references (Markdown `[text][path]` and legacy Sphinx
-    // roles) into real links before other processing. Bare/relative targets
-    // resolve against the page's own scope.
+    // Resolve Markdown `[text][path]` cross-references into real links before
+    // other processing. Bare/relative targets resolve against the page's own scope.
     file.content = resolveXrefs(file.content, xref, unresolved, scopeFromPath(file.path));
 
     // `convert` keeps the package name ("monoprop") in hrefs, but `write`
