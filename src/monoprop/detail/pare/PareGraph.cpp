@@ -49,13 +49,6 @@ enum class BuilderExchangeDirection {
     Incoming,
 };
 
-inline auto cross_rank_sin_send_size(const LayerTraversal &layer, size_t rank) -> size_t {
-    return layer.cross_rank_sin_send_size(rank);
-}
-inline auto cross_rank_sin_recv_size(const LayerTraversal &layer, size_t rank) -> size_t {
-    return layer.cross_rank_sin_recv_size(rank);
-}
-
 template <typename Func>
 auto for_each_remote_rank(const LayerTraversal &layer, size_t my_rank, Func &&func) -> void {
     for (size_t rank = 0; rank < layer.cross_rank_rank_count(); ++rank) {
@@ -68,7 +61,7 @@ auto for_each_remote_rank(const LayerTraversal &layer, size_t my_rank, Func &&fu
 auto has_remote_cross_rank_edges(const LayerTraversal &layer, size_t my_rank) -> bool {
     bool has_remote_edges = false;
     for_each_remote_rank(layer, my_rank, [&layer, &has_remote_edges](size_t rank) {
-        if (cross_rank_sin_send_size(layer, rank) != 0 || cross_rank_sin_recv_size(layer, rank) != 0) {
+        if (layer.cross_rank_sin_send_size(rank) != 0 || layer.cross_rank_sin_recv_size(rank) != 0) {
             has_remote_edges = true;
         }
     });
@@ -88,11 +81,11 @@ auto build_builder_exchange_layout(const LayerTraversal &layer, size_t my_rank, 
     for_each_remote_rank(layer, my_rank, [&layer, &direction, &layout, &total_send, &total_recv](size_t rank) {
         // In this layout the "outgoing" direction maps to B (send) and the "incoming" to D (recv).
         const size_t send_count = direction == BuilderExchangeDirection::Outgoing
-                                      ? cross_rank_sin_send_size(layer, rank)
-                                      : cross_rank_sin_recv_size(layer, rank);
+                                      ? layer.cross_rank_sin_send_size(rank)
+                                      : layer.cross_rank_sin_recv_size(rank);
         const size_t recv_count = direction == BuilderExchangeDirection::Outgoing
-                                      ? cross_rank_sin_recv_size(layer, rank)
-                                      : cross_rank_sin_send_size(layer, rank);
+                                      ? layer.cross_rank_sin_recv_size(rank)
+                                      : layer.cross_rank_sin_send_size(rank);
         layout.send_counts[rank] = detail::checked_mpi_int(send_count, "Pare builder send count");
         layout.recv_counts[rank] = detail::checked_mpi_int(recv_count, "Pare builder receive count");
         total_send += send_count;
@@ -137,7 +130,7 @@ auto pack_source_keep_flags(const LayerTraversal &layer,
                             VecI &send_buffer) -> void {
     for_each_remote_rank(layer, my_rank, [&layer, &layout, &nodes_to_keep, &send_buffer](size_t rank) {
         const auto base = static_cast<size_t>(layout.send_displs[rank]);
-        const size_t count = cross_rank_sin_send_size(layer, rank);
+        const size_t count = layer.cross_rank_sin_send_size(rank);
         layer.for_each_cross_rank_sin_send_range(
             rank,
             0,
@@ -208,7 +201,7 @@ auto mark_replayed_d_targets(const LayerTraversal &layer, std::vector<char> &nod
     for (size_t rank = 0; rank < rank_count; ++rank) {
         layer.for_each_cross_rank_sin_recv_range(rank,
                                                  0,
-                                                 cross_rank_sin_recv_size(layer, rank),
+                                                 layer.cross_rank_sin_recv_size(rank),
                                                  [&nodes_to_keep](size_t /*logical_idx*/, size_t tgt_idx, int) {
                                                      if (tgt_idx < nodes_to_keep.size()) {
                                                          nodes_to_keep[tgt_idx] = 1;
@@ -231,7 +224,7 @@ auto propagate_cross_rank_d_for_rank(const LayerTraversal &layer,
     layer.for_each_cross_rank_sin_recv_range(
         rank,
         0,
-        cross_rank_sin_recv_size(layer, rank),
+        layer.cross_rank_sin_recv_size(rank),
         [&nodes_to_keep, &remote_base, &remote_src_keep, &notify_base, &selected_incoming_flags](size_t logical_idx,
                                                                                                  size_t tgt_idx,
                                                                                                  int) {
@@ -290,7 +283,7 @@ auto propagate_cross_rank_b(const LayerTraversal &layer,
         layer.for_each_cross_rank_sin_send_range(
             rank,
             0,
-            cross_rank_sin_send_size(layer, rank),
+            layer.cross_rank_sin_send_size(rank),
             [&base, &selection_recv, &nodes_to_keep](size_t logical_idx, size_t src_idx) {
                 const bool selected =
                     base + logical_idx < selection_recv.size() && selection_recv[base + logical_idx] != 0;

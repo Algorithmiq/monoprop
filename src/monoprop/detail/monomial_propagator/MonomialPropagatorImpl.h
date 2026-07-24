@@ -747,6 +747,9 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
     auto relabel = [this](size_t layer, size_t new_param_index) {
         auto &target = graph_.get_layer(layer);
         auto new_core = std::make_shared<LayerCore>(target.core());
+        // The copy inherits the source's lazily-built derivative layout, which is eval-time cache, not
+        // data. Drop it so the new core's state does not depend on whether a gradient ran before this.
+        new_core->reset_derivative_exchange_layout();
         new_core->param_index = new_param_index;
         if (const CosMask *pruned = target.pruned_cos()) {
             target = Layer(std::move(new_core), *pruned);

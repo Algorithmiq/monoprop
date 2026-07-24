@@ -96,6 +96,32 @@ BOOST_AUTO_TEST_CASE(set_parameter_mapping_per_layer_still_works) {
     BOOST_TEST(std::ranges::all_of(sim.parameter_mapping(), [](size_t p) { return p == 0; }));
 }
 
+// relabel copies each LayerCore, which carries the lazily-built derivative exchange layout. That layout
+// is eval-time cache, not data, so a mapping set AFTER a gradient must behave exactly like one set before
+// it: same values, and no inherited cache in the fresh cores.
+BOOST_AUTO_TEST_CASE(set_parameter_mapping_after_gradient_matches_before) {
+    const std::vector<VecZ> majs{{0}, {1}, {2}};
+    const VecD params{0.3, 0.4};
+
+    auto before = make_sim();
+    before.build_graph(majs, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
+    before.set_parameter_mapping(VecZ{0, 1});
+    const auto [value_before, grad_before] = before.expectation_value_and_gradient(params);
+
+    auto after = make_sim();
+    after.build_graph(majs, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
+    // Materialize the derivative layout first, THEN relabel: the copied cores must not inherit it.
+    static_cast<void>(after.expectation_value_and_gradient(VecD{0.1, 0.2, 0.5}));
+    after.set_parameter_mapping(VecZ{0, 1});
+    const auto [value_after, grad_after] = after.expectation_value_and_gradient(params);
+
+    BOOST_TEST(value_after == value_before, boost::test_tools::tolerance(1e-12));
+    BOOST_REQUIRE_EQUAL(grad_after.size(), grad_before.size());
+    for (size_t i = 0; i < grad_before.size(); ++i) {
+        BOOST_TEST(grad_after[i] == grad_before[i], boost::test_tools::tolerance(1e-12));
+    }
+}
+
 BOOST_AUTO_TEST_CASE(set_parameter_mapping_rejects_bad_length) {
     auto sim = make_sim();
     const std::vector<VecZ> majs{{0}, {1}, {2}};

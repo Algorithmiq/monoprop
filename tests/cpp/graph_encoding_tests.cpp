@@ -153,6 +153,39 @@ BOOST_AUTO_TEST_CASE(graph_encoding_exchange_layout_scale_and_displacements) {
     BOOST_CHECK_GT(detail::layer_exchange_layout_storage_bytes(s1), 0U);
 }
 
+// ── LayerCore::derivative_exchange_layout: the lazily-built 2x layout ─────────────────────────
+// Production only ever calls build_layer_exchange_layout with scale=1; the 2x layout reaches
+// MPI through this accessor, which is unreachable at comm size 1 (Evolution.cpp early-returns).
+// Without this case the whole derivative layout is untested in the default non-MPI suite.
+
+BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_is_twice_the_evolution_layout) {
+    LayerCore core;
+    core.evolution_exchange_layout = detail::build_layer_exchange_layout({3, 0, 5}, /*scale=*/1);
+
+    const auto &derivative = core.derivative_exchange_layout();
+    BOOST_CHECK((derivative.counts == std::vector<int>{6, 0, 10}));
+    BOOST_CHECK((derivative.displs == std::vector<int>{0, 6, 6}));
+    BOOST_CHECK_EQUAL(derivative.total_count, 16U);
+
+    // Cached: the second read returns the same object, so eval-time MPI holds a stable pointer.
+    BOOST_CHECK_EQUAL(&core.derivative_exchange_layout(), &derivative);
+
+    // Reset drops the cache (relabel copies cores and must not inherit eval-time state).
+    core.reset_derivative_exchange_layout();
+    BOOST_CHECK_EQUAL(core.derivative_exchange_layout().total_count, 16U);
+}
+
+BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_overflow_throws) {
+    // A count that fits int at 1x but not at 2x. build_layer_storage_unified runs this same derivation
+    // eagerly and discards it, so the overflow throws during build_graph rather than from inside the
+    // gradient collective window (where peers are already blocked in the recv-count round).
+    const size_t just_over_half = static_cast<size_t>(std::numeric_limits<int>::max()) / 2 + 1;
+
+    LayerCore core;
+    core.evolution_exchange_layout = detail::build_layer_exchange_layout({just_over_half}, 1); // 1x fits int
+    BOOST_CHECK_THROW(detail::build_derivative_exchange_layout(core.evolution_exchange_layout), std::overflow_error);
+}
+
 // ── D-from-B derivation: exercise BOTH arms of cross_rank_sin_recv_index ─────────────────────────
 
 BOOST_AUTO_TEST_CASE(graph_encoding_d_from_b_derivation_both_arms) {

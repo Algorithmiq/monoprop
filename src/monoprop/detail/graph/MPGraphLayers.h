@@ -29,6 +29,10 @@ namespace monoprop {
 //   PRUNED    (has value) — cosine pre-filtered to a backward-reachable subset, stored explicitly
 //                           (an EMPTY stored list is still PRUNED — replay as nothing, do NOT recompute).
 // All layers share an immutable LayerCore; the pared graph reuses source cores (shared_ptr) + pruned cos.
+// "Immutable" means immutable IN VALUE: a core carries two eval-time caches filled through const handles
+// (LayerExchangeLayout::recv_cache and the lazy derivative layout), so materializing them on a core two
+// threads share is a data race. No shipped path does that — shards own their propagators and the Python
+// bindings hold the GIL — but a C++ caller evaluating two aliasing propagators concurrently must not.
 
 /// @brief Read-only view over an immutable LayerCore plus an optional pruned-cosine word list.
 /// Cross-rank data is always read verbatim (no logical→stored remap). num_cos_inds() reports the stored

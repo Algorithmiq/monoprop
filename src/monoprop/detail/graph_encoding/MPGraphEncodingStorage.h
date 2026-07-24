@@ -28,13 +28,8 @@
 
 namespace monoprop::detail {
 
-inline auto checked_mpi_int(size_t value, const char *what) -> int {
-    if (value > static_cast<size_t>(std::numeric_limits<int>::max())) {
-        throw std::overflow_error(
-            std::format("{} {} exceeds the MPI int limit {}.", what, value, std::numeric_limits<int>::max()));
-    }
-    return static_cast<int>(value);
-}
+// checked_mpi_int and build_layer_exchange_layout live in MPGraphEncodingTypes.h, next to the
+// LayerExchangeLayout they guard and build.
 
 // Bounds-check a term-space index. Capped by the TermIndex width (~2^32, or ~2^64 under
 // -Dmonoprop_WIDE_TERM_INDEX), so it must track TermIndex, NOT a fixed 32-bit limit.
@@ -200,23 +195,6 @@ inline auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layou
     return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
 }
 
-// build_layer_exchange_layout: per-rank MPI counts = send_counts[r] * scale, with prefix-sum
-// displacements. send_counts is full-width (size_t) so checked_mpi_int catches overflow.
-inline auto build_layer_exchange_layout(const std::vector<size_t> &send_counts, int scale) -> LayerExchangeLayout {
-    LayerExchangeLayout layout;
-    layout.counts.resize(send_counts.size());
-    layout.displs.resize(send_counts.size());
-    size_t total = 0;
-    for (size_t r = 0; r < send_counts.size(); ++r) {
-        const size_t count = static_cast<size_t>(scale) * send_counts[r];
-        layout.counts[r] = checked_mpi_int(count, "Layer exchange count");
-        layout.displs[r] = checked_mpi_int(total, "Layer exchange displacement");
-        total += count;
-    }
-    layout.total_count = total;
-    return layout;
-}
-
 // build_layer_storage_unified: local cycles fold into the self-rank slot (my_rank); the exchange layout
 // zeroes counts[my_rank] so MPI_Alltoallv skips it (replay does a local copy). Paper Algorithm 3.
 inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
@@ -232,40 +210,25 @@ inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_pa
             send_counts.push_back((r == my_rank) ? size_t{0} : all_partners[r].sin_send_indices.size());
         }
         storage->evolution_exchange_layout = build_layer_exchange_layout(send_counts, 1);
-        // The derivative layout (2x) is derived lazily from evolution_exchange_layout on first read;
-        // see LayerCore::derivative_exchange_layout below.
+
+        // The derivative layout (2x) is ALLOCATED lazily on first gradient read, but validated here: an
+        // overflow must throw during build_graph, not from inside the gradient collective window, where
+        // peers are already committed and blocked in mpi::resolve_recv's count round -> distributed hang
+        // instead of an error. Discarding the result keeps energy-only runs allocation-free at rest.
+        static_cast<void>(build_derivative_exchange_layout(storage->evolution_exchange_layout));
     }
 
     // Local cycles are folded into the self-rank cross_rank slot (no PackedLocalCycleStorage).
     storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
+
+    // The exchange layouts are indexed by the same rank space the packing loops iterate
+    // (cross_rank_rank_count()); assert it here, where both are built, rather than two hops away.
+    if (storage->evolution_exchange_layout.counts.size() != storage->cross_rank.rank_count()) {
+        throw std::logic_error(std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
+                                           storage->evolution_exchange_layout.counts.size(),
+                                           storage->cross_rank.rank_count()));
+    }
     return storage;
 }
 
 } // namespace monoprop::detail
-
-namespace monoprop {
-
-// Derivative layout = 2x the evolution layout: each rotation endpoint carries both the op and state
-// payload. Derived lazily (gradient path only) by doubling the already-validated evolution counts, so
-// energy-only runs never pay for it. Its recv_cache is rebuilt lazily on first use, exactly as the
-// stored layout's was, so the cached MPI resolve is preserved across evals.
-inline auto LayerCore::derivative_exchange_layout() const -> const LayerExchangeLayout & {
-    if (!derivative_exchange_layout_cache_) {
-        LayerExchangeLayout layout;
-        const size_t n = evolution_exchange_layout.counts.size();
-        layout.counts.resize(n);
-        layout.displs.resize(n);
-        size_t total = 0;
-        for (size_t r = 0; r < n; ++r) {
-            const size_t count = size_t{2} * static_cast<size_t>(evolution_exchange_layout.counts[r]);
-            layout.counts[r] = detail::checked_mpi_int(count, "Layer exchange count");
-            layout.displs[r] = detail::checked_mpi_int(total, "Layer exchange displacement");
-            total += count;
-        }
-        layout.total_count = total;
-        derivative_exchange_layout_cache_ = std::move(layout);
-    }
-    return *derivative_exchange_layout_cache_;
-}
-
-} // namespace monoprop
