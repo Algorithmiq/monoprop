@@ -19,7 +19,6 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -92,21 +91,21 @@ struct MPOperator {
 
     auto size() const -> size_t { return store->size(); }
 
-    auto append_term(const Monomial<NumModes> &maj) -> void {
-        store->push_back(maj);
-        if (inverted_index_.has_value()) {
-            inverted_index_->append_row(maj);
-        }
-    }
+    // Append one term to the store. The lazy inverted index is NOT kept in sync here: appends happen
+    // during setup, before the index is first materialized, so a later append simply makes
+    // inverted_index() rebuild via its rows() != store->size() guard.
+    auto append_term(const Monomial<NumModes> &maj) -> void { store->push_back(maj); }
 
-    // Resync the even-parity inverted index after a bulk parallel growth of `store`, preserving the
+    // Resync the even-parity inverted index after a bulk growth of `store`, preserving the
     // has_value() ⟹ rows()==store.size() invariant.
     auto reindex_after_growth(size_t base, size_t n) -> void {
         if (inverted_index_.has_value()) {
-            inverted_index_->append_rows_from_op_disjoint(*store, base, n);
+            inverted_index_->append_rows(*store, base, n);
         }
     }
 
+    // The lazily-built even-parity inverted index, rebuilt whenever it is stale (rows() != store size).
+    // That rebuild is also the only mechanism that resyncs an append_term made after materialization.
     auto inverted_index() const -> const InvertedIndex<NumModes> & {
         if (!inverted_index_.has_value() || inverted_index_->rows() != store->size()) {
             inverted_index_.emplace();
@@ -181,10 +180,11 @@ struct MPOperator {
      *
      * Each term lands on its existing evolved-operator row, or in the pending map if not yet
      * materialized. Heisenberg REJECTS a term absent from both (new Majoranas may have no graph paths);
-     * Schrödinger admits them freely (the state was already evolved). Overwrites init_op_map/op_coeffs.
+     * Schrödinger admits them freely (the state was already evolved). Overwrites init_op_map/op_coeffs
+     * and returns the gradient operator (the supplied terms and their encoded coefficients, in order).
      */
     auto update_initial_operator(const FermiOperatorMap &op_dict, bool schrodinger)
-        -> std::tuple<MonomialMap<NumModes>, VecD, std::pair<MonomialList<NumModes>, VecD>> {
+        -> std::pair<MonomialList<NumModes>, VecD> {
         MonomialMap<NumModes> new_op_map;
         std::pair<MonomialList<NumModes>, VecD> new_grad_op;
         VecD new_op_coeffs(size(), 0.0);
@@ -219,15 +219,15 @@ struct MPOperator {
             new_grad_op.second.push_back(coeff);
         }
 
-        init_op_map = new_op_map;
-        op_coeffs = new_op_coeffs;
-        return {std::move(new_op_map), std::move(new_op_coeffs), std::move(new_grad_op)};
+        init_op_map = std::move(new_op_map);
+        op_coeffs = std::move(new_op_coeffs);
+        return new_grad_op;
     }
 };
 
 // Insert `n` provably-distinct, currently-absent terms into `op` in one batch — the grow → scatter →
-// index → resync quartet shared by every miss-insert site. Callers pass pairwise-distinct keys, which
-// makes the disjoint-slot scatter atomics-free and byte-identical to a serial loop. Call AFTER any
+// index → resync quartet shared by every miss-insert site. Callers pass pairwise-distinct keys, so
+// bulk_insert can skip duplicate probes and slot k deterministically lands at base+k. Call AFTER any
 // pass that reads pre-insert op state (op.size() must equal the returned base).
 template <size_t NumModes, typename KeyAt, typename PerSlot>
 inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {

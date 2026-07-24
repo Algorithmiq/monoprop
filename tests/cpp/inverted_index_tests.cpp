@@ -45,7 +45,7 @@ constexpr size_t col_of(size_t mode) {
 }
 } // namespace
 
-// ensure_row_parity() builds the packed popcount(|M|)&1 bitmap over the current rows. Verify each
+// row_parity_words() builds the packed popcount(|M|)&1 bitmap over the current rows. Verify each
 // bit against the known parity of the row it was built from.
 BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
     const std::vector<MSet> op{
@@ -58,8 +58,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
     sc.rebuild(op);
     BOOST_TEST(sc.rows() == op.size());
 
-    sc.ensure_row_parity();
-    const uint64_t *parity = sc.row_parity_word_ptr();
+    const uint64_t *parity = sc.row_parity_words();
     bool all_match = true;
     for (size_t i = 0; i < op.size(); ++i) {
         const bool bit = ((parity[i >> 6] >> (i & 63U)) & 1U) != 0;
@@ -68,9 +67,8 @@ BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
         }
     }
     BOOST_TEST(all_match);
-    // ensure_row_parity is idempotent (a lazy cache): a second call must not change the bitmap.
-    sc.ensure_row_parity();
-    BOOST_TEST(((sc.row_parity_word_ptr()[0] >> 1U) & 1U) == 1U); // row 1 is odd
+    // row_parity_words is idempotent (a lazy cache): a second call must not change the bitmap.
+    BOOST_TEST(((sc.row_parity_words()[0] >> 1U) & 1U) == 1U); // row 1 is odd
 }
 
 // A column crosses to DENSE when set_rows.size() * kPromoteDensityInv >= row_count (density >= 1/64);
@@ -102,14 +100,13 @@ BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
     BOOST_TEST(sc.sparse_column_rows(col_of(1))[0] == 0u);
 }
 
-// Above the serial floor (kFillSerialMin = 16384) rebuild takes the row-block-parallel fill when the
-// pool has >1 worker. Its contract is that sparse row-lists come out ASCENDING regardless of thread
-// scheduling (the fold-recompute path lower_bounds them). Build a many-mode operator kept below the
-// promote threshold so columns stay sparse, then assert every sparse list is sorted.
-BOOST_AUTO_TEST_CASE(inverted_index_parallel_fill_yields_ascending_sparse_rows) {
+// rebuild fills columns in row order, so sparse row-lists come out ASCENDING — the invariant the fold
+// recompute relies on (combine_columns_block lower_bounds them). Build a many-mode operator kept below
+// the promote threshold so columns stay sparse, then assert every sparse list is sorted.
+BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
     constexpr size_t M = 64; // 2M = 128 columns
     using ScW = InvertedIndex<M>;
-    constexpr size_t kR = 16'385; // just over the parallel floor
+    constexpr size_t kR = 16'385; // large operator, many sparse columns
     std::vector<Monomial<M>> op;
     op.reserve(kR);
     for (size_t i = 0; i < kR; ++i) {

@@ -146,9 +146,7 @@ template <size_t NumModes>
 }
 template <size_t NumModes>
 inline auto assign_row(detail::OperatorIndex<NumModes> &op, size_t i, const Monomial<NumModes> &maj) -> void {
-    // All callers write freshly grown, never-before-written rows, so use the fresh path that skips the
-    // overflow pre-read/erase (UB-adjacent on default-init rows in the parallel scatter).
-    op.set_fresh(i, maj);
+    op.set(i, maj);
 }
 template <size_t NumModes>
 [[nodiscard]] inline auto row_popcount(const detail::OperatorIndex<NumModes> &op, size_t i) -> size_t {
