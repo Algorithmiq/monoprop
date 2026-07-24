@@ -13,7 +13,7 @@ Pauli propagation** — a backend for classically simulating and variationally
 optimising quantum circuits. Rather than storing the full quantum state, it
 expands an operator in the Majorana basis and propagates it through a circuit,
 truncating terms that contribute little. It scales to large systems by sharding
-the operator across cores (one serial shard per core) and across nodes with MPI.
+the operator across cores and across nodes with MPI.
 
 > [!WARNING]
 > This package is under active development. This project follows [Semantic Versioning](https://semver.org/). While in `0.x.y`, breaking changes may occur in minor releases.

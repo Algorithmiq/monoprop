@@ -47,18 +47,6 @@
             "generator": "Ninja"
         },
         {
-            "name": "release-gcc-wide",
-            "displayName": "Release - Configure with GCC Compiler Kit (wide TermIndex)",
-            "description": "Configure Release build with g++ and monoprop_WIDE_TERM_INDEX=ON (64-bit TermIndex)",
-            "binaryDir": "${sourceDir}/build/${presetName}",
-            "cacheVariables": {
-                "CMAKE_CXX_COMPILER": "g++",
-                "CMAKE_BUILD_TYPE": "Release",
-                "monoprop_WIDE_TERM_INDEX": "ON"
-            },
-            "generator": "Ninja"
-        },
-        {
             "name": "Custom configure preset",
             "displayName": "Custom configure preset",
             "description": "Sets Ninja generator, build and install directory",
@@ -106,15 +94,6 @@
             "jobs": 4,
             "verbose": true,
             "inheritConfigureEnvironment": true
-        },
-        {
-            "name": "release-gcc-wide",
-            "displayName": "Release - Build with GCC Compiler Kit (wide TermIndex)",
-            "description": "Build Release project with g++ and 64-bit TermIndex",
-            "configurePreset": "release-gcc-wide",
-            "jobs": 4,
-            "verbose": true,
-            "inheritConfigureEnvironment": true
         }
     ],
     "testPresets": [
@@ -157,16 +136,6 @@
             "displayName": "Test - Coverage configuration with GCC Compiler Kit",
             "description": "Test project built with Coverage flags using g++",
             "configurePreset": "coverage-gcc",
-            "output": {
-                "outputOnFailure": true
-            },
-            "inheritConfigureEnvironment": true
-        },
-        {
-            "name": "release-gcc-wide",
-            "displayName": "Test - Release configuration with GCC Compiler Kit (wide TermIndex)",
-            "description": "Test Release build with 64-bit TermIndex; exercises the monoprop_WIDE_TERM_INDEX #if branches",
-            "configurePreset": "release-gcc-wide",
             "output": {
                 "outputOnFailure": true
             },

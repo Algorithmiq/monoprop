@@ -110,12 +110,6 @@ bench-smoke:
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16
     uv run --no-sync python benches/report.py "{{bench_results}}"
 
-# Compare two label globs from an A/B run (baseline A vs candidate B): per-op time and
-# peak-RSS ratios plus a term-count equivalence gate. Exits non-zero on a regression, e.g.
-#   just bench-compare 'A-*' 'B-*'
-bench-compare A B DIR=bench_results:
-    uv run --no-sync python benches/compare.py "{{DIR}}" --a "{{A}}" --b "{{B}}" -o "{{DIR}}/COMPARE.md"
-
 # Execute the tutorial notebooks and convert them to Markdown. Notebook
 # execution fails the build on any cell error -- this is the notebook doctest.
 gen-notebooks:

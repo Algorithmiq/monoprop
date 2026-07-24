@@ -65,7 +65,6 @@ if(monoprop_WIDE_TERM_INDEX)
   add_compile_definitions(monoprop_WIDE_TERM_INDEX)
 endif()
 
-# The shared-memory/shard transports (detail/mpi/ShmComm.h, HybridComm.h, detail/shard) use std::thread.
 find_package(Threads REQUIRED)
 
 if(monoprop_ENABLE_MPI)
