@@ -3,6 +3,8 @@ using BenchmarkTools
 using ArgParse
 using JSON
 
+include(joinpath(@__DIR__, "..", "bench_common.jl"))
+
 
 function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
     site_index = N_spinful_sites ÷ 2
@@ -16,23 +18,32 @@ function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_l
     term_counts = zeros(Int, n_layers + 1)
     cumulative_runtimes = zeros(n_layers + 1)
     memory_size = zeros(n_layers + 1)
+    native_memory_size = zeros(n_layers + 1)
 
+    sampler = start_sampler()
+
+    reset!(sampler)
     cumulative_runtimes[1] = @elapsed (values[1] = overlapwithfock(obs, fock_state))
     term_counts[1] = length(obs)
-    memory_size[1] = Base.summarysize(obs) / 1024^2
+    memory_size[1] = peak_mb(sampler)
+    native_memory_size[1] = Base.summarysize(obs) / 1024^2
     for k = 1:n_layers
+        reset!(sampler)
         step_runtime = @elapsed propagate!(circ_single, obs, thetas_single, min_abs_coeff=min_abs_coeff, max_unpaired=max_unpaired)
         values[k+1] = overlapwithfock(obs, fock_state)
         term_counts[k+1] = length(obs)
         cumulative_runtimes[k+1] = cumulative_runtimes[k] + step_runtime
-        memory_size[k+1] = Base.summarysize(obs) / 1024^2
+        memory_size[k+1] = peak_mb(sampler)
+        native_memory_size[k+1] = Base.summarysize(obs) / 1024^2
     end
 
-    return values, term_counts, cumulative_runtimes, memory_size
+    stop!(sampler)
+
+    return values, term_counts, cumulative_runtimes, memory_size, native_memory_size
 
 
 end
-function save_result(output_path, source, N_spinful_sites, n_layers, term_counts, values, cumulative_runtimes, memory_size, num_threads)
+function save_result(output_path, source, N_spinful_sites, n_layers, term_counts, values, cumulative_runtimes, memory_size, native_memory_size, num_threads)
     """Merge this run's per-step data into the shared results JSON file, keyed by source label."""
     data = if isfile(output_path)
         JSON.parsefile(output_path)
@@ -46,6 +57,7 @@ function save_result(output_path, source, N_spinful_sites, n_layers, term_counts
             "expectation_value" => Dict(),
             "num_terms" => Dict(),
             "memory_MB" => Dict(),
+            "native_memory_MB" => Dict(),
         )
     end
     data["num_threads"] = get(data, "num_threads", Dict())
@@ -54,6 +66,8 @@ function save_result(output_path, source, N_spinful_sites, n_layers, term_counts
     data["expectation_value"][source] = values
     data["num_terms"][source] = term_counts
     data["memory_MB"][source] = memory_size
+    data["native_memory_MB"] = get(data, "native_memory_MB", Dict())
+    data["native_memory_MB"][source] = native_memory_size
 
     mkpath(dirname(output_path))
     open(output_path, "w") do io
@@ -125,10 +139,10 @@ function main(args)
 
     println("Number of threads: $(Threads.nthreads())")
 
-    values, term_counts, cumulative_runtimes, memory_size = experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
+    values, term_counts, cumulative_runtimes, memory_size, native_memory_size = experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
     println("$N_spinful_sites n_spin $n_layers layers $(term_counts[end]) num_terms $(values[end]) final overlap $(cumulative_runtimes[end]) seconds")
 
-    save_result(parsed_args["output"], "MajoranaPropagation.jl", N_spinful_sites, n_layers, term_counts, values, cumulative_runtimes, memory_size, Threads.nthreads())
+    save_result(parsed_args["output"], "MajoranaPropagation.jl", N_spinful_sites, n_layers, term_counts, values, cumulative_runtimes, memory_size, native_memory_size, Threads.nthreads())
 
 end
 

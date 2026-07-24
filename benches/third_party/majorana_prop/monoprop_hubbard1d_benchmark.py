@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from time import perf_counter
 
@@ -26,7 +27,8 @@ from monoprop.fermi import FermiOperator
 
 os.environ["YAQS_LOG_LEVEL"] = "INFO"
 
-# proc = psutil.Process(os.getpid())
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from bench_common import RssPeakSampler  # noqa: E402
 
 
 def mode(site, spin):
@@ -114,6 +116,7 @@ def save_result(
     term_counts,
     cumulative_runtimes,
     memory_size,
+    native_memory_size,
 ):
     """Merge this run's per-step data into the shared results JSON file, keyed by source label."""
     output_path = Path(output_path)
@@ -131,6 +134,7 @@ def save_result(
             "expectation_value": {},
             "num_terms": {},
             "memory_MB": {},
+            "native_memory_MB": {},
         }
     data.setdefault("num_threads", {})[SOURCE_LABEL] = os.environ.get(
         "monoprop_NUM_THREADS", "not set"
@@ -139,6 +143,7 @@ def save_result(
     data["expectation_value"][SOURCE_LABEL] = values
     data["num_terms"][SOURCE_LABEL] = term_counts
     data["memory_MB"][SOURCE_LABEL] = memory_size
+    data.setdefault("native_memory_MB", {})[SOURCE_LABEL] = native_memory_size
     with output_path.open("w") as f:
         json.dump(data, f, indent=4)
 
@@ -200,20 +205,28 @@ def main():
     term_counts = np.empty(trotter_steps + 1, dtype=int)
     cumulative_runtimes = np.empty(trotter_steps + 1)
     memory_size = np.empty(trotter_steps + 1)
+    native_memory_size = np.empty(trotter_steps + 1)
 
-    t_start = perf_counter()
-    values[0] = simulator.expectation_value()
-    cumulative_runtimes[0] = perf_counter() - t_start
-    term_counts[0] = simulator.size()
-    memory_size[0] = simulator._simulator.operator_memory_bytes() / 1024**2
-    for step in range(trotter_steps):
-        step_start = perf_counter()
-        simulator.propagate(fermi_circuit)
-        step_runtime = perf_counter() - step_start
-        values[step + 1] = simulator.expectation_value()
-        term_counts[step + 1] = simulator.size()
-        cumulative_runtimes[step + 1] = cumulative_runtimes[step] + step_runtime
-        memory_size[step + 1] = simulator._simulator.operator_memory_bytes() / 1024**2
+    with RssPeakSampler() as sampler:
+        sampler.reset()
+        t_start = perf_counter()
+        values[0] = simulator.expectation_value()
+        cumulative_runtimes[0] = perf_counter() - t_start
+        term_counts[0] = simulator.size()
+        memory_size[0] = sampler.peak_mb()
+        native_memory_size[0] = simulator._simulator.operator_memory_bytes() / 1024**2
+        for step in range(trotter_steps):
+            sampler.reset()
+            step_start = perf_counter()
+            simulator.propagate(fermi_circuit)
+            step_runtime = perf_counter() - step_start
+            values[step + 1] = simulator.expectation_value()
+            term_counts[step + 1] = simulator.size()
+            cumulative_runtimes[step + 1] = cumulative_runtimes[step] + step_runtime
+            memory_size[step + 1] = sampler.peak_mb()
+            native_memory_size[step + 1] = (
+                simulator._simulator.operator_memory_bytes() / 1024**2
+            )
     print(
         f"{n_spinful_sites} n_spin {n_layers} layers {term_counts[-1]} num_terms {values[-1]} final overlap  runtime {cumulative_runtimes[-1]:.3f} seconds"
     )
@@ -225,6 +238,7 @@ def main():
         term_counts.tolist(),
         cumulative_runtimes.tolist(),
         memory_size.tolist(),
+        native_memory_size.tolist(),
     )
 
 
