@@ -200,8 +200,9 @@ class MajoranaOperator:
         Returns:
             True if all pairs of terms commute, else False.
         """
-        for left, right in itertools.combinations(self.terms, 2):
-            overlap = len(set(left) & set(right))
+        ops_sets = [set(key) for key in self.terms]
+        for left, right in itertools.combinations(ops_sets, 2):
+            overlap = len(left & right)
             if (len(left) * len(right) - overlap) % 2 != 0:
                 return False
         return True

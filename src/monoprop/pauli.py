@@ -246,13 +246,11 @@ class PauliOperator:
         Returns:
             True if all pairs of terms commute, else False.
         """
-        for left, right in itertools.combinations(self.terms, 2):
-            left_ops = dict(zip(left.qubits, left.string, strict=True))
-            right_ops = dict(zip(right.qubits, right.string, strict=True))
+        ops_dicts = [dict(zip(op.qubits, op.string, strict=True)) for op in self.terms]
+        for left_ops, right_ops in itertools.combinations(ops_dicts, 2):
             anticommute_count = sum(
-                1
+                left_ops[qubit] != right_ops[qubit]
                 for qubit in left_ops.keys() & right_ops.keys()
-                if left_ops[qubit] != right_ops[qubit]
             )
             if anticommute_count % 2 != 0:
                 return False
