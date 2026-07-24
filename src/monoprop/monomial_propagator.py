@@ -118,9 +118,6 @@ class MonomialPropagator(ABC):
         # System qubit count for expanding Pauli gates; set by PauliPropagator from the
         # observable. None for a native Majorana propagator (its gates need no qubit count).
         self._num_qubits = None
-        # Whether gates are Pauli generators packed in the native local symplectic frame
-        # (X_q->slot 2q, Y_q->slot 2q+1, Z_q->{2q,2q+1}) rather than Jordan-Wigner Majorana
-        # images. Set True by PauliPropagator; drives _gate_layers' native branch.
         self._pauli_native = basis == "pauli"
         self._initial_state = list(initial_state)
         # dispatch() is typed to return the base `type[_SimulatorAdapter]`, whose __init__ takes

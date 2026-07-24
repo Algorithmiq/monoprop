@@ -642,7 +642,7 @@ def _gate_layers(
 
     A ``"pauli"``-family :class:`ExpGate` places each :class:`~monoprop.pauli.Pauli` term on
     its qubits within the ``num_qubits``-wide system (one layer per term). When ``native_pauli``
-    is set the term is packed into the engine's native local symplectic frame
+    is set the term is packed into the engine's native local pauli form
     (:func:`~monoprop.conversion_utils._pauli_to_local_slots`) with its real generator
     coefficient passed through directly
     A ``"majorana"``-family :class:`ExpGate` carries the Hermitian generator, so its

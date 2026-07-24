@@ -84,16 +84,9 @@ class PauliPropagator(MonomialPropagator):
         # The PauliOperator carries its own qubit count (a required constructor argument), so
         # the propagator reads it directly rather than validating it here.
         num_qubits = initial_operator.num_qubits
-        # Store and evolve in the engine's native local symplectic (Pauli) frame: each qubit
-        # occupies its own two gamma-slots, so a weight-w term has popcount <= 2w, independent of
-        # num_qubits. This replaces the Jordan-Wigner Majorana image (whose Z-string made a single
-        # X_q span O(num_qubits) slots). The native path requires cutoff_type="support" (the
-        # support cutoff then measures Pauli weight directly) and forbids a basis_change.
-        #
-        # The Heisenberg ``cutoff`` above is measured in Pauli weight (qubits) directly, but the
-        # Schrodinger-picture cutoff truncates the initial state by raw gamma-slot popcount (2
-        # slots per qubit). Double it so a user-supplied qubit weight maps to the right slot
-        # budget, matching the qubit units of ``cutoff``.
+        # we have to multiply the Schrodinger cutoff by 2, because the Majorana
+        # cutoff is measured in terms of Majorana operators, while PauliPropagator
+        # measures it in terms of qubits. Each qubit corresponds to 2 Majorana operators.
         schrodinger_cutoff = (
             None if schrodinger_cutoff is None else 2 * schrodinger_cutoff
         )
@@ -129,14 +122,6 @@ class PauliPropagator(MonomialPropagator):
         atol: float = 1e-12,
     ) -> PauliOperator:
         """Return the evolved operator as a :class:`~monoprop.pauli.PauliOperator`.
-
-        The engine stores terms in the native local symplectic frame; this decodes each stored
-        gamma-slot tuple back to its Pauli letters (``X_q`` from slot ``2q``, ``Y_q`` from slot
-        ``2q+1``, ``Z_q`` from both -- see
-        :func:`~monoprop.conversion_utils._local_slots_to_pauli`), so the result is a qubit
-        operator rather than raw slot indices. The identity (core) term, if present, decodes to
-        the empty Pauli. See :meth:`~monoprop.monomial_propagator.MonomialPropagator.evolved_operator`
-        for the ``parameters``/``atol`` semantics.
 
         Args:
             parameters: Variational parameter values.
