@@ -1,0 +1,38 @@
+Figure captions — single-layer Pauli propagation: monoprop vs PauliPropagation.jl
+==================================================================================
+
+LaTeX-ready captions for the three figures in this directory. Math is written in
+LaTeX markup (e.g. $N$, $N^2$, $\approx$); drop each verbatim into a \caption{}.
+
+Encoding shared by Fig. 1 and Fig. 3: colour = weight cutoff (Okabe-Ito,
+colourblind-safe, fixed order); line style/marker = engine (monoprop = solid line /
+filled circle, PauliPropagation.jl = dashed line / open square). Fig. 2 plots a
+ratio, so it carries the colour = cutoff legend only.
+
+
+Fig. 1  (fig1_absolute_scaling)
+-------------------------------
+Single-layer Pauli propagation on a kicked-Ising chain: absolute wall-clock time
+(left) and total operator memory (right) versus qubit count $N$, on the identical
+operator for both engines ($\texttt{atol}=0$ keeps the term sets equal),
+single-threaded. Colour encodes the weight cutoff; solid/filled marks are monoprop,
+dashed/open marks are PauliPropagation.jl. Grey dashed lines are $N^1,N^2,N^3$ slope
+guides. The Julia curves steepen past the key-width cliff at $N\approx512$.
+
+
+Fig. 2  (fig2_divergence_scaling)
+---------------------------------
+The monoprop advantage diverges as a power law in $N$. Each curve is the
+PauliPropagation.jl cost divided by monoprop's on the same operator; monoprop is the
+$1\times$ baseline. Time (left) and memory (right). The log--log slope is the
+divergence exponent, equal to the difference of the two absolute exponents in Fig. 1.
+Beyond $N\approx512$, PauliPropagation.jl's packed key exceeds its fast integer width
+and the divergence becomes super-linear (the steep jump).
+
+
+Fig. 3  (fig3_per_term_memory)
+------------------------------
+Per-term memory. monoprop stores each term in $O(\text{cutoff})$ symplectic support
+(bounded band); PauliPropagation.jl packs each Pauli into a BitInteger key at 2
+bits/qubit, stepping up at each word boundary (shaded). This is the mechanism behind
+Figs. 1--2.
