@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
@@ -234,3 +235,25 @@ class PauliOperator:
             majoranas.append(majorana)
             coefficients.append(jw_coeff * coeff)
         return MajoranaOperator._from_terms(majoranas, coefficients, self.num_qubits)
+
+    def all_pairwise_commute(self) -> bool:
+        r"""Whether every pair of Pauli terms in the operator commutes.
+
+        Returns ``True`` exactly when for every pair of Pauli terms $P_1, P_2$ are commuting
+        Equivalently, the number of qubits for which $P_1$ and $P_2$ have different
+        non-identity letters is even.
+
+        Returns:
+            True if all pairs of terms commute, else False.
+        """
+        for left, right in itertools.combinations(self.terms, 2):
+            left_ops = dict(zip(left.qubits, left.string, strict=True))
+            right_ops = dict(zip(right.qubits, right.string, strict=True))
+            anticommute_count = sum(
+                1
+                for qubit in left_ops.keys() & right_ops.keys()
+                if left_ops[qubit] != right_ops[qubit]
+            )
+            if anticommute_count % 2 != 0:
+                return False
+        return True

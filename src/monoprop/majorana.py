@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
@@ -189,3 +190,18 @@ class MajoranaOperator:
             )
             for key in self.terms | other.terms
         )
+
+    def all_pairwise_commute(self) -> bool:
+        r"""Whether every pair of Majorana monomials in the operator commutes.
+
+        For Majorana monomials $M_1$ and $M_2$ with supports $S_1$ and $S_2$, they
+        commute if $|S_1||S_2| - |S_1 \cap S_2|$ is even.
+
+        Returns:
+            True if all pairs of terms commute, else False.
+        """
+        for left, right in itertools.combinations(self.terms, 2):
+            overlap = len(set(left) & set(right))
+            if (len(left) * len(right) - overlap) % 2 != 0:
+                return False
+        return True

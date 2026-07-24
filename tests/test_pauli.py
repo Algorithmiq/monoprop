@@ -229,6 +229,27 @@ class TestPauliOperator:
         assert mon_op.terms == {(0, 1): pytest.approx(-1.0j)}
 
     @pytest.mark.parametrize(
+        ("terms", "expected"),
+        [
+            pytest.param({}, True, id="empty"),
+            pytest.param({Pauli("X", 0): 1.0}, True, id="single_term"),
+            pytest.param(
+                {Pauli("XX", (0, 1)): 1.0, Pauli("ZZ", (0, 1)): 1.0},
+                True,
+                id="different_letters_on_two_shared_qubits",
+            ),
+            pytest.param(
+                {Pauli("X", 0): 1.0, Pauli("Z", 0): 1.0},
+                False,
+                id="different_letters_on_one_shared_qubit",
+            ),
+        ],
+    )
+    def test_all_pairwise_commute(self, terms, expected):
+        """Pairwise commutation follows the parity of differing shared Pauli letters."""
+        assert PauliOperator(terms, num_qubits=2).all_pairwise_commute() is expected
+
+    @pytest.mark.parametrize(
         ("left", "right", "expected"),
         [
             pytest.param(
