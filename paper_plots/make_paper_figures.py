@@ -63,7 +63,7 @@ plt.rcParams.update({
 
 # Okabe–Ito, CVD-safe, assigned to cutoff in fixed order (never cycled).
 CUTOFF_COLORS = {2: "#0072B2", 4: "#E69F00", 6: "#009E73", 8: "#CC79A7", 10: "#D55E00"}
-ENGINE_STYLE = {"monoprop": ("-", "o"), "julia": ("--", "s")}
+ENGINE_STYLE = {"monoprop": ("-", "o"), "julia": ("--", "o")}
 ENGINE_LABEL = {"monoprop": "monoprop", "julia": "PauliPropagation.jl"}
 
 # Shared mark spec — a package is drawn identically in EVERY figure (monoprop =
@@ -143,16 +143,27 @@ def _fit_exponent(xs, ys, nmin=FIT_NMIN, nmax=FIT_NMAX):
 
 
 def _slope_guides(ax, xs_all, exponents, anchor_frac=0.60):
-    """Faint reference lines of the given integer slopes on a log-log axis."""
+    """Faint reference lines of the given integer slopes on a log-log axis.
+
+    The guides never rescale the axis: the data y-limits are captured up front and
+    restored afterwards, so a steep N^3 guide can't blow the view up and squash the
+    data. Each label is pinned where its guide exits the top of the frame."""
     lo, hi = min(xs_all), max(xs_all)
     y0, y1 = ax.get_ylim()
+    lly0, lly1 = math.log(y0), math.log(y1)
+    ya = math.exp(lly0 + anchor_frac * (lly1 - lly0))
     for p in exponents:
-        ya = math.exp(math.log(y0) + anchor_frac * (math.log(y1) - math.log(y0)))
-        gy = [ya, ya * (hi / lo) ** p]
-        ax.plot([lo, hi], gy, color=GUIDE, lw=0.9, ls=(0, (4, 3)), zorder=0)
-        ax.annotate(f"$N^{{{p}}}$", xy=(hi, gy[1]), xytext=(-2, 2),
+        y_end = ya * (hi / lo) ** p
+        ax.plot([lo, hi], [ya, y_end], color=GUIDE, lw=0.9, ls=(0, (4, 3)), zorder=0)
+        if y_end <= y1:                       # guide stays in frame → label at its end
+            lx, ly, dy, va = hi, y_end, 2, "bottom"
+        else:                                 # guide leaves the top → label at the exit
+            frac = (lly1 - math.log(ya)) / (math.log(y_end) - math.log(ya))
+            lx, ly, dy, va = lo * (hi / lo) ** frac, y1, -2, "top"
+        ax.annotate(f"$N^{{{p}}}$", xy=(lx, ly), xytext=(-2, dy),
                     textcoords="offset points", fontsize=8, color="#8a8a8a",
-                    ha="right", va="bottom")
+                    ha="right", va=va)
+    ax.set_ylim(y0, y1)
 
 
 def _two_part_legend(fig, cutoffs, *, engines=("monoprop", "julia"),
@@ -333,13 +344,13 @@ def fig4_scaling_and_divergence(records, layers, outdir):
     for ax, (metric, ylabel) in zip(axes[0], abs_panels):
         _plot_curves(ax, records, cutoffs, metric)
         _finish_axis(ax, "", ylabel, "")
-        _slope_guides(ax, xs_all, [1, 2, 3])
 
     rat_panels = [("seconds", "time overhead  ($\\times$ monoprop)"),
                   ("memory_mb", "memory overhead  ($\\times$ monoprop)")]
     for ax, (metric, ylabel) in zip(axes[1], rat_panels):
         _plot_ratio(ax, records, cutoffs, metric)
         _finish_axis(ax, "number of qubits  $N$", ylabel, "")
+        _slope_guides(ax, xs_all, [1, 2, 3])
 
     fig.tight_layout(rect=(0, 0.09, 1, 0.99))
     _two_part_legend(fig, cutoffs, y_cut=0.055, y_eng=0.012)
