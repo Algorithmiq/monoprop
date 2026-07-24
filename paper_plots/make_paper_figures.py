@@ -199,6 +199,30 @@ def _plot_curves(ax, records, cutoffs, metric):
     return fits
 
 
+def _plot_ratio(ax, records, cutoffs, metric):
+    """Julia / monoprop at each shared N, per cutoff, plus the =1x baseline.
+
+    A ratio is a derived quantity (neither package), so it borrows the "monoprop"
+    solid/filled key for a clean single curve per cutoff.
+    """
+    for cutoff in cutoffs:
+        color = CUTOFF_COLORS.get(cutoff, "#666666")
+        mono = {r["num_qubits"]: r[metric] for r in records
+                if r["engine_family"] == "monoprop" and r["cutoff"] == cutoff}
+        jul = {r["num_qubits"]: r[metric] for r in records
+               if r["engine_family"] == "julia" and r["cutoff"] == cutoff}
+        xs = sorted(set(mono) & set(jul))
+        ys = [jul[x] / mono[x] for x in xs if mono[x]]
+        if not xs:
+            continue
+        ax.plot(xs, ys, **_curve_style("monoprop", color))
+    ax.axhline(1.0, color="#555555", lw=1.4, zorder=2)
+    ax.annotate("monoprop $=1\\times$", xy=(0.985, 1.0),
+                xycoords=("axes fraction", "data"), xytext=(0, 4),
+                textcoords="offset points", ha="right", va="bottom",
+                fontsize=8.3, color="#555555", fontweight="bold")
+
+
 def _finish_axis(ax, xlabel, ylabel, title, logy=True, base2=True):
     if base2:
         ax.set_xscale("log", base=2)
@@ -250,23 +274,7 @@ def fig2_divergence_scaling(records, layers, outdir):
     panels = [("seconds", "time overhead  ($\\times$ monoprop)"),
               ("memory_mb", "memory overhead  ($\\times$ monoprop)")]
     for ax, (metric, ylabel) in zip(axes, panels):
-        for cutoff in cutoffs:
-            color = CUTOFF_COLORS.get(cutoff, "#666666")
-            mono = {r["num_qubits"]: r[metric] for r in records
-                    if r["engine_family"] == "monoprop" and r["cutoff"] == cutoff}
-            jul = {r["num_qubits"]: r[metric] for r in records
-                   if r["engine_family"] == "julia" and r["cutoff"] == cutoff}
-            xs = sorted(set(mono) & set(jul))
-            ys = [jul[x] / mono[x] for x in xs if mono[x]]
-            if not xs:
-                continue
-            # A ratio is neither package → the "monoprop" solid/filled key.
-            ax.plot(xs, ys, **_curve_style("monoprop", color))
-        ax.axhline(1.0, color="#555555", lw=1.4, zorder=2)
-        ax.annotate("monoprop $=1\\times$", xy=(0.985, 1.0),
-                    xycoords=("axes fraction", "data"), xytext=(0, 4),
-                    textcoords="offset points", ha="right", va="bottom",
-                    fontsize=8.3, color="#555555", fontweight="bold")
+        _plot_ratio(ax, records, cutoffs, metric)
         _finish_axis(ax, "number of qubits  $N$", ylabel, "")
     fig.tight_layout(rect=(0, 0.10, 1, 0.99))
     # cutoff-only legend (all curves are ratios → one style), centred below.
@@ -311,6 +319,33 @@ def fig3_per_term_memory(records, outdir):
     return _save(fig, outdir, "fig3_per_term_memory")
 
 
+def fig4_scaling_and_divergence(records, layers, outdir):
+    """2×2 merge of Fig 1 + Fig 2: absolute scaling (top row) sitting directly above
+    its divergence ratio (bottom row); columns are time (left) and memory (right),
+    so each column reads top-to-bottom as "absolute cost, then its overhead", on a
+    shared N axis."""
+    cutoffs = sorted({r["cutoff"] for r in records})
+    xs_all = sorted({r["num_qubits"] for r in records})
+    fig, axes = plt.subplots(2, 2, figsize=(9.6, 8.2), sharex=True)
+
+    abs_panels = [("seconds", f"time  (s, {layers} layers)"),
+                  ("memory_mb", "memory  (MB)")]
+    for ax, (metric, ylabel) in zip(axes[0], abs_panels):
+        _plot_curves(ax, records, cutoffs, metric)
+        _finish_axis(ax, "", ylabel, "")
+        _slope_guides(ax, xs_all, [1, 2, 3])
+
+    rat_panels = [("seconds", "time overhead  ($\\times$ monoprop)"),
+                  ("memory_mb", "memory overhead  ($\\times$ monoprop)")]
+    for ax, (metric, ylabel) in zip(axes[1], rat_panels):
+        _plot_ratio(ax, records, cutoffs, metric)
+        _finish_axis(ax, "number of qubits  $N$", ylabel, "")
+
+    fig.tight_layout(rect=(0, 0.09, 1, 0.99))
+    _two_part_legend(fig, cutoffs, y_cut=0.055, y_eng=0.012)
+    return _save(fig, outdir, "fig4_scaling_and_divergence")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("results", nargs="+", help="JSONL result file(s)")
@@ -325,6 +360,7 @@ def main() -> None:
     outputs += fig1_absolute_scaling(records, layers, args.outdir)
     outputs += fig2_divergence_scaling(records, layers, args.outdir)
     outputs += fig3_per_term_memory(records, args.outdir)
+    outputs += fig4_scaling_and_divergence(records, layers, args.outdir)
 
     print("wrote:")
     for o in outputs:

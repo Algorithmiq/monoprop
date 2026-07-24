@@ -36,3 +36,15 @@ Per-term memory. monoprop stores each term in $O(\text{cutoff})$ symplectic supp
 (bounded band); PauliPropagation.jl packs each Pauli into a BitInteger key at 2
 bits/qubit, stepping up at each word boundary (shaded). This is the mechanism behind
 Figs. 1--2.
+
+
+Fig. 4  (fig4_scaling_and_divergence)  --  combined Fig. 1 + Fig. 2
+------------------------------------------------------------------
+Scaling and its divergence in one view. Columns are time (left) and memory (right);
+the top row is absolute cost versus qubit count $N$ for both engines (grey dashed
+$N^1,N^2,N^3$ slope guides), and the bottom row is the same quantity as the
+PauliPropagation.jl / monoprop overhead ratio (monoprop $=1\times$ baseline), on a
+shared $N$ axis. On the identical operator ($\texttt{atol}=0$ keeps the term sets
+equal), single-threaded. Colour encodes the weight cutoff; solid/filled marks are
+monoprop, dashed/open marks are PauliPropagation.jl. The overhead grows as a power
+law in $N$ and turns super-linear past the key-width cliff at $N\approx512$.

@@ -67,6 +67,12 @@ the super-linear key-width cliff regime, reaching >1000× in time by N=1024.
 bounded band (`O(cutoff)` symplectic support); PauliPropagation.jl climbs a staircase
 as its 2-bits/qubit packed key widens across word boundaries (shaded `64→…→2048`-bit).
 
+**`fig4_scaling_and_divergence`** — Figs. 1 and 2 merged into one 2×2 block: columns
+are time (left) / memory (right), the top row is the absolute scaling and the bottom
+row the matching Julia ÷ monoprop overhead ratio, sharing the N axis so each column
+reads "absolute cost, then its overhead". Use this as the single combined figure when
+one panel-of-four is preferred over two separate figures.
+
 ### Suggested LaTeX captions
 
 > **Fig. 1.** Single-layer Pauli propagation on a kicked-Ising chain: absolute
@@ -88,6 +94,14 @@ as its 2-bits/qubit packed key widens across word boundaries (shaded `64→…�
 > symplectic support (bounded band); PauliPropagation.jl packs each Pauli into a
 > BitInteger key at 2 bits/qubit, stepping up at each word boundary (shaded). This is
 > the mechanism behind Figs. 1–2.
+
+> **Fig. 4.** (Figs. 1 and 2 combined.) Columns are time (left) and memory (right);
+> the top row is absolute cost versus $N$ for both engines ($N^1,N^2,N^3$ slope
+> guides), the bottom row the PauliPropagation.jl / monoprop overhead ratio (monoprop
+> $=1\times$), on a shared $N$ axis. Same operator ($\texttt{atol}=0$), single-threaded;
+> colour = cutoff, solid/filled = monoprop, dashed/open = PauliPropagation.jl. The
+> overhead grows as a power law and turns super-linear past the key-width cliff at
+> $N\approx512$.
 
 ## Reproduce
 
@@ -138,5 +152,6 @@ data/*.jsonl              merged, validated benchmark data (N=32..1024)
 scripts/                  reproduction drivers (copies of the canonical study files)
   monoprop_single_layer.py, julia_pauli_single_layer.jl, Project.toml, Manifest.toml
 figures/                  fig1_absolute_scaling, fig2_divergence_scaling,
-                          fig3_per_term_memory  (each .pdf + .png)
+                          fig3_per_term_memory, fig4_scaling_and_divergence
+                          (each .pdf + .png); captions.txt (LaTeX-ready captions)
 ```
