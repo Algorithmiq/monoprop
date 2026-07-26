@@ -14,7 +14,7 @@
 
 """Pauli propagator.
 
-Concrete :class:`~monoprop.monomial_propagator.MonomialPropagator` that accepts qubit (Pauli)
+Concrete [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] that accepts qubit (Pauli)
 operators and gates.
 """
 
@@ -38,9 +38,9 @@ if TYPE_CHECKING:
 class PauliPropagator(MonomialPropagator):
     """Classical simulator for qubit (Pauli) operators.
 
-    Accepts a :class:`~monoprop.pauli.PauliOperator` observable and a
-    :class:`~monoprop.circuit.Circuit` of qubit (Pauli) :class:`~monoprop.circuit.ExpGate` gates.
-    See :class:`~monoprop.monomial_propagator.MonomialPropagator` for the shared building,
+    Accepts a [PauliOperator][monoprop.pauli.PauliOperator] observable and a
+    [Circuit][monoprop.circuit.Circuit] of qubit (Pauli) [ExpGate][monoprop.circuit.ExpGate] gates.
+    See [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] for the shared building,
     evaluation, and introspection surface.
 
     The cutoff is measured as qubit Pauli weight (the number of qubits a retained term
@@ -60,17 +60,17 @@ class PauliPropagator(MonomialPropagator):
     ) -> None:
         """Initialize the qubit propagator.
 
-        See :class:`~monoprop.monomial_propagator.MonomialPropagator` for the shared
+        See [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] for the shared
         arguments. The cutoff is always measured as Pauli weight, so ``cutoff`` bounds the
         number of qubits a retained term touches.
 
         Args:
             initial_operator: Initial qubit operator as a
-                :class:`~monoprop.pauli.PauliOperator`.
+                [PauliOperator][monoprop.pauli.PauliOperator].
             initial_state: Computational-basis reference (indices of qubits set to 1).
             cutoff: Maximum Pauli weight (number of qubits touched) retained during
                 evolution. The fully-paired exception described in
-                :class:`~monoprop.monomial_propagator.MonomialPropagator` still applies.
+                [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] still applies.
             schrodinger_cutoff: Optional cutoff for Schrodinger-picture evolution. If
                 provided, enables the Schrodinger picture, starting in a n initial state
                 with terms truncated with that parameter; if ``None``, the Heisenberg
@@ -119,7 +119,7 @@ class PauliPropagator(MonomialPropagator):
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.
 
         A ``PauliPropagator`` rejects a Majorana/fermionic circuit. The Jordan-Wigner mapping
-        and antihermitian normalization live in :func:`~monoprop.circuit.expand_monomials`;
+        and antihermitian normalization live in [expand_monomials][monoprop.circuit.expand_monomials];
         the propagator's ``num_qubits`` (from the observable) reaches the expander via
         ``self._num_qubits``.
         """
