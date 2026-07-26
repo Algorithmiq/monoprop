@@ -160,15 +160,13 @@ jobs:
           disable_search: true
           fail_ci_if_error: true
 
-      - name: Upload Test Results as artifacts
+      - name: Upload Python coverage data as artifact
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: test_results_${{ steps.test-group-label.outputs.label }}
+          name: python_coverage_data_${{ steps.test-group-label.outputs.label }}
           # Only the raw coverage.py binary is kept for the SonarQube job's
           # `coverage combine`
-          path: |
-            pytest-*.xml
-            coverage-${{ steps.test-group-label.outputs.label }}
+          path: coverage-${{ steps.test-group-label.outputs.label }}
           retention-days: 1
 
   cpp-checks:
@@ -239,13 +237,6 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PWD/monoprop-install"
 
           cmake --build find-package-smoke/build
-
-      - name: Upload C++ Test Results as artifacts
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: test_results_cpp_ubuntu_latest
-          path: ctest-*.xml
-          retention-days: 1
 
       - name: Collect coverage into a gcovr tracefile
         run: |
@@ -579,14 +570,6 @@ jobs:
           OMPI_MCA_rmaps_base_oversubscribe: "1"
         run: |
           ctest --test-dir build --output-junit ../ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
-
-      - name: Upload Test Results as artifacts
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: test_results_cpp_${{ matrix.runner }}_${{ matrix.compiler }}
-          path: |
-            ctest-*.xml
-          retention-days: 1
 
       - name: Upload test results to Codecov
         uses: codecov/codecov-action@v7
