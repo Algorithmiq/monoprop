@@ -25,7 +25,7 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 Key files:
 - `src/monoprop/monomial_propagator.py`: Main Python API
 - `include/monoprop/MonomialPropagator.h`: Core C++ simulator (1000+ lines)
-- `src/monoprop/bindings/bindings.cpp.in`: generated template for Python bindings, using the nanobind library.
+- `src/monoprop/bindings/bindings.cpp.in`: template for Python bindings, using the nanobind library. The corresponding source file is generated when configuring the project.
 
 
 ### Environment Management
