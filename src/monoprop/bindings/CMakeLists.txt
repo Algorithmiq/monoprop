@@ -1,14 +1,3 @@
-set(Python_FIND_VIRTUALENV FIRST)
-find_package(
-  Python
-  3.11
-  REQUIRED
-  COMPONENTS
-    Interpreter
-    Development.Module
-    ${SKBUILD_SABI_COMPONENT}
-)
-
 if(monoprop_ENABLE_MPI)
   include(${PROJECT_SOURCE_DIR}/cmake/custom/FindPythonModule.cmake)
   find_python_module(mpi4py REQUIRED)

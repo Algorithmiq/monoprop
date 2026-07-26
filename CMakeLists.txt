@@ -58,6 +58,19 @@ if(monoprop_WIDE_TERM_INDEX)
   add_compile_definitions(monoprop_WIDE_TERM_INDEX)
 endif()
 
+option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" OFF)
+
+set(Python_FIND_VIRTUALENV FIRST)
+find_package(
+  Python
+  3.11
+  REQUIRED
+  COMPONENTS
+    Interpreter
+    Development.Module
+    ${SKBUILD_SABI_COMPONENT}
+)
+
 find_package(Threads REQUIRED)
 
 if(monoprop_ENABLE_MPI)
