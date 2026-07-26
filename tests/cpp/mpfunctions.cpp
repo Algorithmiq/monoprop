@@ -139,7 +139,7 @@ BOOST_DATA_TEST_CASE(is_fully_paired_test, bdata::make(ds_is_fully_paired_test),
     BOOST_CHECK(std::is_permutation(result.cbegin(), result.cend(), test_case.expected_result.cbegin()));
 }
 
-// even_bits/odd_bits from Utilities.h under both bit orderings (formerly utilities.cpp).
+// even_bits/odd_bits from Utilities.h under both bit orderings.
 BOOST_AUTO_TEST_CASE(bit_flipping_utilities) {
     auto val1 = even_bits<10, LSb0>();
     auto val2 = odd_bits<10, LSb0>();

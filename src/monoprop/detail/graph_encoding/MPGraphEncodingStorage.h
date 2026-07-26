@@ -144,7 +144,7 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
             storage.sin_send_indices[b_off + k] = checked_term_index(partner.sin_send_indices[k], "Cross-rank B index");
         }
 
-        // phi is already signed (former D- = -phi, former D+ = +phi); only the phase is stored, D index derived from B.
+        // phi is already signed; only the phase is stored, D index derived from B.
         for (size_t k = 0; k < partner.sin_recv_entries.size(); ++k) {
             const auto &[i, phi] = partner.sin_recv_entries[k];
             (void)i;
@@ -206,7 +206,8 @@ inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_pa
         std::vector<size_t> send_counts;
         send_counts.reserve(all_partners.size());
         for (size_t r = 0; r < all_partners.size(); ++r) {
-            // Self-rank slot: zero MPI count (replay handles it locally). Full-width count so checked_mpi_int catches overflow.
+            // Self-rank slot: zero MPI count (replay handles it locally). Full-width count so checked_mpi_int catches
+            // overflow.
             send_counts.push_back((r == my_rank) ? size_t{0} : all_partners[r].sin_send_indices.size());
         }
         storage->evolution_exchange_layout = build_layer_exchange_layout(send_counts, 1);

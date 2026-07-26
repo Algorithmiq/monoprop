@@ -589,8 +589,7 @@ def _validate_commuting_pauli_generator(generator: PauliOperator) -> None:
     multi-term generator as a *product* of one rotation per term
     (``exp(theta*g_1*P_1) * exp(theta*g_2*P_2) * ...``). That product equals
     ``exp(theta * sum_i g_i*P_i)`` only when the Pauli terms mutually commute; otherwise the
-    evolution would be silently Trotterized. Fail loudly instead (mirroring the check the old
-    ``PauliEvGate`` enforced).
+    evolution would be silently Trotterized. Fail loudly instead.
 
     Raises:
         ValueError: If any two terms of ``generator`` anticommute.

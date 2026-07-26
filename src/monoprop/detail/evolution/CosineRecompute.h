@@ -82,8 +82,8 @@ inline auto make_fold_mask(const InvertedIndex<NumModes> &sc,
 }
 
 /// A layer's cosine fold materialised into one buffer (the generator's columns XOR-combined over
-/// fold.mask_words words). Backs the pare materializer and the recompute-equivalence test oracle; not a
-/// runtime replay cache (retired — see the fold-recompute note below).
+/// fold.mask_words words). Backs the pare materializer and the recompute-equivalence test oracle; the
+/// runtime replay path is LazyFold below, not this.
 template <size_t NumModes>
 struct FoldCache {
     std::vector<uint64_t> combined; // the generator's columns XOR-combined over [0, fold.mask_words)
@@ -142,9 +142,8 @@ template <typename BitOp>
 }
 
 // Fold RECOMPUTE — the SOLE runtime replay path: recompute each layer's fold on the fly rather than hold
-// a per-layer buffer (multi-GB, and so cold that streaming it matched the recompute — measured 2026-07-20,
-// so the persistent cache was retired). Fused with the scatter and parallelised over disjoint fold-word
-// ranges (race-free; XOR associative → byte-identical to make_fold_cache); cache-blocked into L1 sub-blocks.
+// a per-layer buffer. Fused with the scatter and parallelised over disjoint fold-word ranges (race-free;
+// XOR associative → byte-identical to make_fold_cache); cache-blocked into L1 sub-blocks.
 
 /// Metadata to recompute a layer's cosine fold on the fly (the sole runtime replay path): the
 /// generator's ≤|G| inverted index column indices plus the cos truncation bounds — no per-layer buffer.

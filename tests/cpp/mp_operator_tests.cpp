@@ -224,7 +224,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_append_term_after_materialization_rebuilds_inve
     op.append_term(indices_to_bitset<8>({0, 1}));
     BOOST_CHECK_EQUAL(op.inverted_index().rows(), 1U); // materializes the index (rows == size)
 
-    // append_term no longer syncs the index incrementally; the next inverted_index() sees it stale
+    // append_term does not sync the index incrementally; the next inverted_index() sees it stale
     // (rows() != store size) and rebuilds it against the grown store.
     op.append_term(indices_to_bitset<8>({2, 3}));
     BOOST_CHECK_EQUAL(op.inverted_index().rows(), 2U);

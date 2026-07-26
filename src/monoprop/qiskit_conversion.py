@@ -197,8 +197,7 @@ def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
 
     Args:
         circuit: A :class:`~monoprop.circuit.Circuit` representing the given circuit.
-        num_qubits: Total number of qubits (the circuit no longer carries it; supply the
-            observable's ``num_qubits``).
+        num_qubits: Total number of qubits (supply the observable's ``num_qubits``).
 
     Returns:
         A qiskit quantum circuit.
