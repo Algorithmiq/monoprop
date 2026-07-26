@@ -122,7 +122,7 @@ def test_build_report_includes_hyperparameters(tmp_path: Path) -> None:
     # Each hyperparameter row is present with its value.
     assert "| num_generators | 100 |" in md
     assert "| cutoff | 6 |" in md
-    # lower_atol is no longer a random hyperparameter (it is per-model now).
+    # lower_atol is per-model, not a sampled hyperparameter.
     assert "| lower_atol |" not in md
     # Hyperparameters sit between Configuration and the picture sections.
     assert md.index("## Hyperparameters") < md.index("## Heisenberg")

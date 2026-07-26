@@ -64,7 +64,7 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 // ── Layer-build sink policies ────────────────────────────────────────────────────────────────────
 // LayerBuildEngine is templated on one of these. A sink owns the divergent state and supplies the three
 // emission surfaces — self-resolve, cross-rank resolve/process, deferred self-insert — plus finalize.
-// Each monomorphizes to the former runtime-branched code, so there is no fused/graph branch at run time.
+// Each sink monomorphizes separately, so there is no fused/graph branch at run time.
 
 // Graph-build sink (paper Algorithm 2 layer): accumulates the per-rank PartnerAcc B/D endpoints and
 // assembles a LayerCore at finalize. wants_values=false — the scan captures no coeffs and every resolved

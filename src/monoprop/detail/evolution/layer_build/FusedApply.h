@@ -28,7 +28,7 @@ namespace monoprop::detail {
 //   • fused_scale (k==0, default): the scan already scaled every anticommuting coeff in its own pass, so
 //     no cos pass runs; slots born AFTER that sweep (fresh inserts) fold cos in via their apply arm below.
 //   • two-pass (k>0 / cos==0 fallback): scale_cos_mask runs here over the build's cos set, then every arm
-//     is a plain add — byte-for-byte the historical path.
+//     is a plain add.
 // Same FP shape as evolve_step's D-apply. At R>1 each rank applies only the ADD to the slot it owns (half
 // rotations in fc.cross_half), the partner coeff already carried over the wire. Not templated on NumModes.
 inline auto apply_fused_contract(FusedContract &fc,

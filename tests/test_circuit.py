@@ -624,8 +624,8 @@ def test_build_graph_twice_with_seed_regeneration(fixture: str) -> None:
 
     prop = _schrodinger_propagator(problem)
     prop.build_graph(Circuit(_rebase(gates[:split])))
-    # seed_parameters on the second call exercises the internal seed regeneration
-    # (the former operator_coeffs round-trip) used for coefficient-informed truncation.
+    # seed_parameters on the second call exercises the internal seed regeneration used
+    # for coefficient-informed truncation.
     prop.build_graph(Circuit(_rebase(gates[split:])), seed_parameters=params)
 
     np.testing.assert_allclose(prop.expectation_value(params), problem.exact_expval)
@@ -659,7 +659,7 @@ def test_empty_default_mapping_gate_dropped_and_evaluable() -> None:
     prop = _small_propagator()
     prop.build_graph(circuit)
     assert prop.graph_layers == 1
-    prop.expectation_value(circuit.parameters)  # previously raised a length mismatch
+    prop.expectation_value(circuit.parameters)  # no parameter-length mismatch
 
 
 def test_empty_gate_in_middle_builds_contiguously() -> None:
@@ -676,7 +676,7 @@ def test_empty_gate_in_middle_builds_contiguously() -> None:
     )
     assert len(circuit.gates) == 2
     prop = _small_propagator()
-    prop.build_graph(circuit)  # previously raised "gate_indices must be contiguous"
+    prop.build_graph(circuit)  # gate indices stay contiguous across the drop
     assert prop.graph_layers == 2
 
 

@@ -157,7 +157,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
     mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
     mp_op_.store->reserve(expected_local_terms);
     // The store was just replaced; drop any prior lazy inverted index so inverted_index() rebuilds
-    // against the new store (append_term no longer keeps it in sync).
+    // against the new store.
     mp_op_.inverted_index_.reset();
 
     size_t i = 0;
@@ -304,8 +304,8 @@ auto MonomialPropagator<NumModes>::for_each_shard_(const std::function<void(Mono
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
     constexpr size_t kMax = detail::OperatorIndex<NumModes>::kMaxInlinePositions;
-    // No cutoff-derived bound (Schrödinger state rows, or an opaque cutoff fn): keep the historical
-    // default width so those stores stay byte-identical.
+    // No cutoff-derived bound (Schrödinger state rows, or an opaque cutoff fn): fall back to
+    // kDefaultInlinePositions.
     constexpr size_t kDefault = detail::OperatorIndex<NumModes>::kDefaultInlinePositions;
     if (schrodinger_) {
         return kDefault;
@@ -814,9 +814,8 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
 template <size_t NumModes>
 auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, const MPGraphView &graph, Basis basis)
     -> std::pair<detail::LayerCosScale, detail::LayerCosAccumulate> {
-    // Fold layers recompute cos on the fly (LazyFold), never retained: the former persistent FoldCache
-    // was removed (<=5% gain, and GBs of RAM per large operator). Recompute lower_bounds each sparse
-    // column, which the row-order fill keeps ascending (asserted in InvertedIndex::fill_rows).
+    // Fold layers recompute cos on the fly (LazyFold), never retained. Recompute lower_bounds each
+    // sparse column, which the row-order fill keeps ascending (asserted in InvertedIndex::fill_rows).
 
     struct LayerCos {
         bool recomputes_cos = false;

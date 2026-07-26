@@ -158,8 +158,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
 
 // Back-to-back alltoallvs with per-round varying counts (zeros, growth, shrink-after-growth) on ONE
 // HybridComm: exercises high-water-mark staging reuse (a missed overwrite of a stale staged byte
-// would surface as a wrong tag), the precomputed offset tables under reuse, and the removed trailing
-// barriers under immediately-following collectives.
+// would surface as a wrong tag), the precomputed offset tables under reuse, and the absence of
+// trailing barriers under immediately-following collectives.
 BOOST_AUTO_TEST_CASE(hybrid_comm_repeated_alltoallv_varying_sizes) {
     if (world_size() < 2) {
         return;

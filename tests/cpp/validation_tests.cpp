@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // Direct coverage of the (live) parameter validators in Validation.cpp. These pure throw-or-return
-// functions guard the public build/propagate/functional API but were previously exercised only
-// indirectly through Python. Each case pins one accept path and one reject path.
+// functions guard the public build/propagate/functional API. Each case pins one accept path and one
+// reject path.
 
 #include <boost/test/unit_test.hpp>
 

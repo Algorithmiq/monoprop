@@ -55,7 +55,7 @@ def test_infinite_cutoff(
 
         case "with_coeffs":
             # Coefficient-informed build: the seed is regenerated internally from the
-            # circuit's parameters (replacing the old operator_coeffs round-trip).
+            # circuit's own parameters.
             mp.build_graph(circuit)
             test_expval = mp.expectation_value_functional(
                 pare_threshold=pare_threshold

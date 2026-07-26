@@ -14,7 +14,7 @@
 
 // Coverage of the MonomialPropagator constructor/API guard rails (ctor argument validation, the
 // operator-index range check, the propagate()-on-a-stored-graph guard, and MPGraph::get_layer bounds).
-// These throw paths define the public contract and were previously only reached from Python.
+// These throw paths define the public contract.
 
 #include <boost/test/unit_test.hpp>
 

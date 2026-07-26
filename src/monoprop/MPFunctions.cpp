@@ -103,8 +103,7 @@ auto ev_and_grad_impl(double e_core,
     // Both callbacks are required on the with-parameters path; fail loudly rather than with a cryptic
     // std::bad_function_call.
     if (!cos_scale || !cos_acc) {
-        throw std::invalid_argument("ev_and_grad requires both cos_scale (forward) and cos_acc (reverse) callbacks; "
-                                    "the stored-cos fallback no longer exists.");
+        throw std::invalid_argument("ev_and_grad requires both cos_scale (forward) and cos_acc (reverse) callbacks.");
     }
 
     auto &scratch = eval_scratch();

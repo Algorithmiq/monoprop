@@ -27,7 +27,6 @@
 using namespace monoprop;
 using namespace monoprop::detail;
 
-// Preserved from the former index_map_tests.cpp.
 BOOST_AUTO_TEST_CASE(operator_index_term_index_width_matches_build) {
 #if defined(monoprop_WIDE_TERM_INDEX)
     static_assert(sizeof(TermIndex) == 8, "wide build must use 64-bit TermIndex");
@@ -97,9 +96,8 @@ BOOST_AUTO_TEST_CASE(overflow_is_lossless_above_width) {
     BOOST_TEST((s.row(0) == bs({0, 1, 2}))); // and the full row round-trips losslessly
 }
 
-// The store is intentionally non-movable (owners hold it by unique_ptr). The former
-// `index_survives_store_move` case exercised a move that no longer exists by design; index
-// integrity in its final, stable location is covered by the find/emplace round-trip below.
+// The store is intentionally non-movable (owners hold it by unique_ptr), so index integrity in its
+// final, stable location is what matters: the find/emplace round-trip below covers it.
 BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
     Store a;
     // Insert 64 distinct rows (varying both positions) to force >=1 rehash in the flat_set.

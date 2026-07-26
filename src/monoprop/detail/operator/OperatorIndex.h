@@ -59,13 +59,12 @@ public:
     using key_type = Monomial<NumModes>;
     using mapped_type = size_t;
 
-    // Position element: u8 when 2N<=256 (byte-identical to the original packed layout), widening
-    // only for larger mode counts so positions never truncate.
+    // Position element: u8 when 2N<=256, widening only for larger mode counts so positions never
+    // truncate.
     using PosT = std::
         conditional_t<(2 * NumModes <= 256), uint8_t, std::conditional_t<(2 * NumModes <= 65536), uint16_t, uint32_t>>;
 
     // Default inline width when no cutoff-derived bound is supplied (e.g. Schrödinger state rows).
-    // Kept at the historical value so default-constructed stores are byte-identical.
     static constexpr size_t kDefaultInlinePositions = 11;
     // Ceiling on the caller-requested inline width. A weight-w Pauli needs 2w positions; 32 covers the
     // common case inline at the supported Pauli cutoffs (2*cutoff <= 32 for cutoff <= 16).
@@ -274,7 +273,7 @@ public:
         size_t s = spread(h) & table_.mask;
         while (table_.slots[s].idx != kEmptySlot) {
             if (table_.slots[s].h == h && row_eq_key(static_cast<size_t>(table_.slots[s].idx), key)) {
-                return; // key already present — no-op (matches the former set semantics)
+                return; // key already present — no-op (insert-if-absent)
             }
             s = (s + 1) & table_.mask;
         }

@@ -97,7 +97,7 @@ namespace monoprop {
 // the primary replay path.
 struct CosMask final {
     std::vector<std::pair<size_t, uint64_t>> blocks;
-    size_t total_count = 0; // number of set bits
+    size_t total_count = 0;                                     // number of set bits
     auto span_count() const -> size_t { return blocks.size(); } // WORD count (parallel split unit)
 };
 
@@ -151,10 +151,9 @@ struct PackedPhaseStorage final {
 
 /// Build-time input for one partner rank's per-layer cross-rank data.
 /// sin_send_indices: local indices whose op[i] we send (in(P) sources then out(Q) sources).
-/// sin_recv_entries: (local_target_idx, signed phi) pairs — the single phased D list (former D- then D+).
+/// sin_recv_entries: (local_target_idx, signed phi) pairs — the single phased D list.
 struct CrossRankPartnerData {
-    // default-init storage: assemble_partners overwrites every element in parallel, so the serial
-    // resize() zero-fill was pure waste.
+    // default-init storage: assemble_partners overwrites every element in parallel, so no zero-fill.
     DefaultInitVector<size_t> sin_send_indices;
     DefaultInitVector<std::pair<size_t, int>> sin_recv_entries;
     // Size of the in-block (P). Layout invariant b=[in(P)]++[out(Q)], d=[out(Q)]++[in(P)]: D indices are
@@ -168,7 +167,7 @@ struct CrossRankPartnerRange final {
     TermIndex sin_send_count =
         0;                      // == sin_recv_count (paper invariant); TermIndex-wide so one rank/layer can exceed 2^32
     size_t sin_recv_offset = 0; // into sin_recv_phases; cumulative across ranks, so size_t (see sin_send_offset)
-    // Single phased D list (former D- then D+); the signed phase carries everything, no boundary stored.
+    // Single phased D list; the signed phase carries everything, no boundary stored.
     TermIndex sin_recv_count = 0;
     // Size of the in-block P within B. D index k = (k<Q) ? B[P+k] : B[k-Q], Q=sin_recv_count-P (derive D from B).
     TermIndex in_count = 0;

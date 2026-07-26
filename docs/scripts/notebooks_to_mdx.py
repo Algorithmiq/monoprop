@@ -17,7 +17,7 @@
 Each notebook in ``docs/notebooks/<name>/<name>.ipynb`` is executed top to
 bottom and rendered to ``docs/content/docs/tutorials/<name>.md``.  Execution
 fails the build on the first cell error (``allow_errors=False``); this is the
-notebook-level "doctest" that the Sphinx ``notebook_test`` tag used to provide.
+notebook-level "doctest".
 
 Output images (matplotlib figures, …) and images referenced from markdown cells
 are inlined as base64 data URIs so the static export is fully self-contained.
@@ -41,7 +41,7 @@ from nbconvert.preprocessors import ExecutePreprocessor
 DOCS_DIR = Path(__file__).resolve().parent.parent
 NB_DIR = DOCS_DIR / "notebooks"
 OUT_DIR = DOCS_DIR / "content" / "docs" / "tutorials"
-TIMEOUT = 600  # seconds per cell, matching the old `nb_execution_timeout`
+TIMEOUT = 600  # seconds per cell
 
 _IMG_REF = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 _H1 = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)

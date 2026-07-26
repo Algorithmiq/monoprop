@@ -15,10 +15,9 @@
 // Guardrail: the live recompute replay must agree bit-for-bit with the materialised-fold reference.
 //   - RECOMPUTE (live runtime path): make_lazy_fold  + scale_cos_lazy / accumulate_cos_lazy
 //   - REFERENCE (materialised oracle): make_fold_cache + scale_cos_cached / accumulate_cos_cached
-// build_cos_callbacks always recomputes (the persistent runtime FoldCache was retired; it bought <=5%
-// per eval and lost for large operators while costing GB — see CosineRecompute.h). This pins the
-// recompute path against the reference on every layer of a real propagated operator, so a refactor of
-// the shared word-scan cannot silently diverge them.
+// build_cos_callbacks always recomputes. This pins the recompute path against the reference on every
+// layer of a real propagated operator, so a refactor of the shared word-scan cannot silently diverge
+// them.
 
 #include <boost/test/unit_test.hpp>
 
@@ -175,11 +174,11 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
     }
 }
 
-// Snapshot invariance (formerly snapshot_invariance.cpp): calling the energy functional twice with
-// identical parameters must agree to tight tolerance. Each shard folds its partition serially in a
-// fixed order, so repeated evaluations agree exactly; the tolerance check pins the CONTRACT (tight
-// numerical agreement), not the reduction implementation. It lives here because it is the same
-// recompute machinery exercised above, evaluated twice.
+// Snapshot invariance: calling the energy functional twice with identical parameters must agree to
+// tight tolerance. Each shard folds its partition serially in a fixed order, so repeated evaluations
+// agree exactly; the tolerance check pins the CONTRACT (tight numerical agreement), not the reduction
+// implementation. It lives here because it is the same recompute machinery exercised above, evaluated
+// twice.
 BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto sim = build_simulator<n_modes>(data, cfg);

@@ -33,8 +33,7 @@
  * of questions about how a @ref Monomial evolves under a rotation exp(iθ·G): which columns to fold
  * (and whether an odd-|G| parity correction is needed), the per-term rotation sign and emitted sine
  * phase, the coeff codec, and the diagonal (HF) score. @c with_algebra binds the runtime @ref Basis
- * to one model exactly once (replacing the former `bool IsPauli` flag and scattered basis branches);
- * each model only forwards to the sibling-header kernels, so codegen matches the old flag form.
+ * to one model exactly once; each model only forwards to the sibling-header kernels.
  */
 
 namespace monoprop {
