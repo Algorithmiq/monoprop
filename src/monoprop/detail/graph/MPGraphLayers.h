@@ -43,7 +43,13 @@ struct LayerTraversal final {
           pruned_cos_(pruned_cos) {}
 
     // num_cos_inds() reports 0 for recompute layers (no stored cosine); pruned layers report the stored count.
+    // Check has_stored_cos() first: a normally-built layer is ALWAYS a recompute layer, so reading this
+    // alone reports zero cosine indices for every non-pared graph.
     auto num_cos_inds() const -> size_t { return pruned_cos_ != nullptr ? pruned_cos_->total_count : 0; }
+
+    /// Whether this layer carries a stored (pruned) cosine set, as opposed to recomputing it from the
+    /// operator's inverted index. Only a pared layer does.
+    auto has_stored_cos() const -> bool { return pruned_cos_ != nullptr; }
 
     // Per-layer recompute metadata, read straight off the underlying LayerCore core.
     auto scaled_count() const -> uint64_t { return core_->scaled_count; }

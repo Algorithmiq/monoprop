@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import Circuit, MajoranaPropagator
+from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.fermi import MajoranaOperator
 from tests.cases import CasesFermionicProblem, FermionicProblem
 
@@ -164,6 +164,8 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
     )
     mp.build_graph(circuit)
     assert mp.graph_size()[1] == 1
+    # Cosine-ONLY indices: both terms are rotation endpoints here, so zero is the real count
+    # (graph_size()[0] used to be structurally zero for every graph -- see MonomialPropagator).
     assert mp.graph_size()[0] == 0
     assert mp.size() == 2
 
@@ -210,8 +212,44 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
         mp.build_graph(circuit)
 
         assert mp.graph_size()[1] == 1
+        # Cosine-ONLY: both terms are rotation endpoints, so zero is the real count.
         assert mp.graph_size()[0] == 0
         assert mp.size() == 2
 
         test_op = mp.evolved_operator(sequence.parameters)
         _check_dicts(test_op, final_operator)
+
+
+def test_graph_size_counts_real_cosine_indices(serial_comm):
+    """``graph_size()[0]`` is the real cosine-only count, not a structural zero.
+
+    The engine read the count off the per-layer *stored* cosine set, which only a pared layer has,
+    so it was zero for every normally-built graph. A cutoff tight enough to truncate the weight-6
+    sine partners of these weight-4 terms leaves their sources cos-scaled with no endpoint, which
+    must show up as a positive count -- and relaxing the cutoff must drive it back to zero.
+    """
+    n_modes = 6
+    operator = MajoranaOperator({(0, 1, 2, 3): 1.0, (4, 5, 6, 7): 1.0}, n_modes)
+    circuit = Circuit(
+        [
+            ExpGate(MajoranaOperator({(3, 4, 5, 6): 1.0}, n_modes)),
+            ExpGate(MajoranaOperator({(1, 8, 9, 10): 1.0}, n_modes)),
+        ],
+        parameters=[0.3, 0.4],
+    )
+
+    def sized(cutoff: int) -> tuple[int, int]:
+        mp = MajoranaPropagator(operator, [], cutoff=cutoff, comm=serial_comm)
+        mp.build_graph(circuit)
+        return mp.graph_size()
+
+    truncated = sized(4)
+    exact = sized(2 * n_modes)
+
+    assert (
+        truncated[0] > 0
+    )  # weight-6 partners truncated; their sources stay cos-scaled
+    assert (
+        exact[0] == 0
+    )  # nothing truncated, so every cos index is also a rotation endpoint
+    assert exact[1] > truncated[1]

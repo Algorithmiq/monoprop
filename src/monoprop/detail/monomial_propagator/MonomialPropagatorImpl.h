@@ -387,6 +387,35 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
 }
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::cos_index_count_() const -> size_t {
+    // A normally-built layer stores no cosine set, so LayerTraversal::num_cos_inds() reports 0 for it and
+    // reading that alone made graph_size()[0] structurally zero for every non-pared graph. Recompute the
+    // fold here, where the operator's inverted index is in reach, exactly as graph_data() does; only a
+    // pared layer has a stored count to read instead.
+    //
+    // Cosine-ONLY = cos-scaled but not a rotation endpoint, so subtract the endpoints (saturating: the
+    // counts come from independent sources and the difference is defined to be non-negative).
+    size_t total = 0;
+    const auto num_layers = graph_.layers();
+    for (size_t i = 0; i < num_layers; ++i) {
+        const auto traversal = graph_.get_layer_traversal(i);
+        size_t cos_total = 0;
+        if (traversal.has_stored_cos()) {
+            cos_total = traversal.num_cos_inds();
+        }
+        else if (const auto &gw = traversal.generator_words(); !gw.empty()) {
+            const auto gen = detail::generator_from_words<NumModes>(gw);
+            const auto fold =
+                detail::make_fold_cache<NumModes>(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
+            cos_total = detail::fold_popcount<NumModes>(fold);
+        }
+        const size_t endpoints = traversal.total_rotation_endpoints();
+        total += (cos_total > endpoints) ? (cos_total - endpoints) : 0;
+    }
+    return total;
+}
+
+template <size_t NumModes>
 auto MonomialPropagator<NumModes>::validate_cutoff_config_(CutoffType cutoff_type,
                                                            const std::optional<std::vector<VecZ>> &basis_change) const
     -> void {

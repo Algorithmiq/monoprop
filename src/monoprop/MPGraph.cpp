@@ -96,21 +96,12 @@ auto MPGraph::slice_view(size_t key) const -> MPGraphView {
     return MPGraphView(layers_, active_begin_index(), k, false);
 }
 
-auto MPGraph::num_cos_inds_and_cycles() const -> std::pair<size_t, size_t> {
-    size_t total_cy = 0;
-    size_t total_ci = 0;
-
+auto MPGraph::total_cycles() const -> size_t {
+    size_t total = 0;
     for (auto it = active_begin_iterator(); it != active_end_iterator(); ++it) {
-        const auto layer = it->traversal();
-        total_cy += layer.total_cycles();
-        // num_cos_inds counts cosine-ONLY terms (cos-scaled but not rotation endpoints) = total anti
-        // endpoints minus rotation endpoints; saturate to guard the unsigned subtract.
-        const size_t cos_total = layer.num_cos_inds();
-        const size_t endpoints = layer.total_rotation_endpoints();
-        total_ci += (cos_total > endpoints) ? (cos_total - endpoints) : 0;
+        total += it->traversal().total_cycles();
     }
-
-    return {total_ci, total_cy};
+    return total;
 }
 
 auto MPGraph::storage_memory_usage() const -> GraphMemoryBreakdown {

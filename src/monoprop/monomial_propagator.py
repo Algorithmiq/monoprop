@@ -579,8 +579,11 @@ class MonomialPropagator(ABC):
         """Size metrics of the evolution graph.
 
         Returns:
-            A tuple ``(n_cos_indices, n_cycles)``: the number of cosine indices and the
-            number of cycles in the MP graph.
+            A tuple ``(n_cos_indices, n_cycles)``: the number of *cosine-only* indices --
+            terms scaled by a cosine without being a rotation endpoint -- and the number of
+            rotation cycles in the MP graph. The cosine-only count is legitimately ``0`` when
+            nothing is truncated, since every anticommuting term's sine partner then survives
+            as an endpoint; a tight ``cutoff`` drops those partners and makes it positive.
         """
         return self._simulator.graph_size()
 

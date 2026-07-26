@@ -98,9 +98,9 @@ public:
     auto layers() const -> size_t { return active_end_index() - active_begin_index(); }
 
     /// @brief Get the layer at `layer_idx`.
-    auto get_layer(size_t layer_idx) -> Layer & { return layers_[checked_layer_offset(layer_idx)]; }
+    auto get_layer(size_t layer_idx) -> Layer& { return layers_[checked_layer_offset(layer_idx)]; }
 
-    auto get_layer(size_t layer_idx) const -> const Layer & { return layers_[checked_layer_offset(layer_idx)]; }
+    auto get_layer(size_t layer_idx) const -> const Layer& { return layers_[checked_layer_offset(layer_idx)]; }
 
     auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
 
@@ -110,8 +110,12 @@ public:
     /// @brief Whether the graph is in the Schrodinger picture.
     auto is_schrodinger() const -> bool { return schrodinger_; }
 
-    /// @brief The number of (cos_inds, cycles) across all layers.
-    auto num_cos_inds_and_cycles() const -> std::pair<size_t, size_t>;
+    /// @brief Total rotation cycles across all layers.
+    ///
+    /// The companion cosine-index count is NOT here: a normally-built layer stores no cosine set, so it
+    /// can only be recomputed from the operator's inverted index, which the graph has no access to. See
+    /// MonomialPropagator::graph_size().
+    auto total_cycles() const -> size_t;
     auto storage_memory_usage() const -> GraphMemoryBreakdown;
 };
 } // namespace monoprop

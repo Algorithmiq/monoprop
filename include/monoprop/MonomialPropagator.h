@@ -93,9 +93,10 @@ public:
     /// @brief Number of Majorana operators in the operator, local to this rank (allreduce for global).
     auto size() const -> size_t { return shard_group_ ? sharded_size_() : mp_op_.size(); }
 
-    /// @brief Number of (indices, cycles) in the MBS graph, local to this rank (allreduce for global).
+    /// @brief Number of (cosine-only indices, cycles) in the MBS graph, local to this rank (allreduce
+    /// for global). "Cosine-only" = cos-scaled but not a rotation endpoint.
     auto graph_size() const -> std::pair<size_t, size_t> {
-        return shard_group_ ? sharded_graph_size_() : graph_.num_cos_inds_and_cycles();
+        return shard_group_ ? sharded_graph_size_() : std::pair{cos_index_count_(), graph_.total_cycles()};
     }
 
     /// @brief Get the Majorana Branch Simulator graph (local to this rank).
@@ -380,6 +381,9 @@ private:
     auto sharded_graph_memory_usage_() const -> GraphMemoryBreakdown;
     // Run `fn` on every shard's propagator concurrently. Out-of-line because ShardGroup is incomplete here.
     auto for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void;
+
+    /// @brief Cosine-only index count across the active layers (see graph_size()).
+    auto cos_index_count_() const -> size_t;
 
     auto regenerate_cutoff_fn_() -> void;
 

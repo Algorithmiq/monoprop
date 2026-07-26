@@ -279,6 +279,17 @@ inline auto fold_to_cos_mask(const FoldCache<NumModes> &p) -> CosMask {
     }
     return c;
 }
+/// How many cosine indices a fold covers, without materialising them. For diagnostics (graph_size);
+/// the same count fold_to_cos_mask would report, with no blocks vector.
+template <size_t NumModes>
+inline auto fold_popcount(const FoldCache<NumModes> &p) -> size_t {
+    size_t total = 0;
+    for (size_t wi = 0; wi < p.fold.mask_words; ++wi) {
+        total += static_cast<size_t>(std::popcount(fold_word<NumModes>(p, wi)));
+    }
+    return total;
+}
+
 template <size_t NumModes>
 inline auto fold_to_indices(const FoldCache<NumModes> &p) -> VecZ {
     VecZ inds;

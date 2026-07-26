@@ -49,3 +49,32 @@ BOOST_DATA_TEST_CASE_F(ExampleDataFix,
     };
     test_evolve_build_graph_with_coeffs<n_modes>(data, cfg, pare, data.actual_expval);
 }
+
+// graph_size()'s cosine count must be the real one. LayerTraversal::num_cos_inds() reports 0 unless the
+// layer carries a STORED (pruned) cosine set, which no normally-built layer does, so reading it alone
+// made graph_size().first structurally zero for every non-pared graph. It is now recomputed from the
+// operator's inverted index, where that data actually lives.
+//
+// Cosine-ONLY means cos-scaled but not a rotation endpoint, so it is legitimately zero when nothing is
+// truncated (every anticommuting term's sine partner survives and is an endpoint). A tight cutoff drops
+// those partners and the count must become positive.
+BOOST_AUTO_TEST_CASE(graph_size_reports_real_cosine_only_count) {
+    constexpr size_t N = 8;
+    const auto data = test_utils::load_case_data<N>("random_exact.msgpack");
+
+    const auto sized = [&](unsigned int cutoff) {
+        auto sim = MonomialPropagator<N>(data.hamiltonian, cutoff, data.hartree_fock, std::nullopt, MPI_COMM_SELF);
+        sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+        return sim.graph_size();
+    };
+
+    // Truncating cutoff: some cos-scaled terms lose their sine partner, so cosine-only is positive.
+    const auto truncated = sized(8);
+    BOOST_CHECK_GT(truncated.first, 0U);
+    BOOST_CHECK_GT(truncated.second, 0U);
+
+    // Exact cutoff: every cos index is also a rotation endpoint, so cosine-only is genuinely zero.
+    const auto exact = sized(2 * N);
+    BOOST_CHECK_EQUAL(exact.first, 0U);
+    BOOST_CHECK_GT(exact.second, truncated.second);
+}
