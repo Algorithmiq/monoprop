@@ -321,8 +321,13 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global) {
     }
 }
 
-// Poison releases barrier waiters on every rank (each rank poisons locally, so no rank's shard 0
-// ever enters MPI and there is no cross-rank collective to hang in). The test completing proves it.
+// Poison releases barrier waiters on every rank. Shard 0 poisons and returns BEFORE entering a
+// collective, so no rank is committed to an MPI call and a clean exception is safe -- HybridComm's
+// shard-0 guard deliberately does not fire here. The test completing proves the waiters are released.
+//
+// The complementary case -- shard 0 poisoned while INSIDE a collective its peers are entering -- now
+// calls MPI_Abort (see HybridComm::guard_shard0_), and so cannot be written as a ctest case: it takes
+// the whole test binary down by design. Previously it hung every peer rank inside MPI forever.
 BOOST_AUTO_TEST_CASE(hybrid_comm_poison_releases_waiters) {
     if (world_size() < 2) {
         return;

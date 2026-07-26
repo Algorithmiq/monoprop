@@ -18,7 +18,11 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <print>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -71,8 +75,91 @@ public:
     auto size() const -> int { return r_ * s_; }
     auto global_rank(int local_shard) const -> int { return mpi_rank_ * s_ + local_shard; }
 
-    // recv_counts[g] = amount global partition g sends to this partition. 2 barriers + one S*S-int MPI_Alltoall.
+    // Shard 0 is this rank's ONLY participant in the collectives on parent_, so once it is inside one
+    // this rank is committed: the peer ranks' shard-0 threads will enter theirs and block. A rank-local
+    // failure here -- a peer shard poisoning the barrier (ShardGroup::master_loop_ does that when any
+    // shard throws), or a count overflow in size_staging_ -- cannot be turned into an exception without
+    // leaving every other rank waiting inside MPI forever, with no timeout and MPI_Abort the only exit.
+    //
+    // So abort the job with the underlying error instead. Multi-rank runs trade a clean Python traceback
+    // for terminating; a silent hang is strictly worse, and the error text still names the real cause.
+    // This also fires when every rank fails identically (each would otherwise have raised cleanly) --
+    // telling the two cases apart would need a collective, which is exactly the per-layer cost this
+    // must not add. Single-rank sharded runs use ShmComm, not HybridComm, and keep their exceptions.
+    template <class Body>
+    auto guard_shard0_(int local_shard, const char *verb, Body &&body) -> decltype(body()) {
+        if (local_shard != 0) {
+            return body();
+        }
+        try {
+            return body();
+        }
+        catch (const std::exception &e) {
+            abort_rank_(verb, e.what());
+        }
+        catch (...) {
+            abort_rank_(verb, "unknown error");
+        }
+    }
+
     auto alltoall_counts(int local_shard, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
+        guard_shard0_(local_shard, "alltoall_counts", [&] {
+            alltoall_counts_impl_(local_shard, send_counts, recv_counts);
+        });
+    }
+
+    auto alltoallv(int local_shard,
+                   const void *send,
+                   const int *send_counts /*[P]*/,
+                   const int *send_displs /*[P]*/,
+                   void *recv,
+                   const int *recv_counts /*[P]*/,
+                   const int *recv_displs /*[P]*/,
+                   size_t elem,
+                   MPI_Datatype dt) -> void {
+        guard_shard0_(local_shard, "alltoallv", [&] {
+            alltoallv_impl_(local_shard, send, send_counts, send_displs, recv, recv_counts, recv_displs, elem, dt);
+        });
+    }
+
+    template <class T>
+    auto alltoallv_resolve(int local_shard,
+                           const T *send,
+                           const int *send_counts /*[P]*/,
+                           const int *send_displs /*[P]*/,
+                           std::vector<T> &recv,
+                           int *recv_counts /*[P]*/,
+                           int *recv_displs /*[P]*/,
+                           size_t elem,
+                           MPI_Datatype dt) -> void {
+        guard_shard0_(local_shard, "alltoallv_resolve", [&] {
+            alltoallv_resolve_impl_<T>(local_shard,
+                                       send,
+                                       send_counts,
+                                       send_displs,
+                                       recv,
+                                       recv_counts,
+                                       recv_displs,
+                                       elem,
+                                       dt);
+        });
+    }
+
+    template <class T>
+    auto allreduce_sum(int local_shard, T local_val) -> T {
+        return guard_shard0_(local_shard, "allreduce_sum", [&] {
+            return allreduce_sum_impl_<T>(local_shard, local_val);
+        });
+    }
+
+    auto allreduce_sum_inplace(int local_shard, double *values, size_t len) -> void {
+        guard_shard0_(local_shard, "allreduce_sum_inplace", [&] {
+            allreduce_sum_inplace_impl_(local_shard, values, len);
+        });
+    }
+
+    // recv_counts[g] = amount global partition g sends to this partition. 2 barriers + one S*S-int MPI_Alltoall.
+    auto alltoall_counts_impl_(int local_shard, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
         const size_t u = static_cast<size_t>(local_shard);
         slots_[u].counts = send_counts;
         sync();
@@ -108,15 +195,15 @@ public:
 
     // Flat variable all-to-all over caller-owned buffers (counts/displs in ELEMENTS, `elem` = element
     // bytes, `dt` = MPI datatype). recv_counts must already hold the transpose — same contract as MPI_Alltoallv.
-    auto alltoallv(int local_shard,
-                   const void *send,
-                   const int *send_counts /*[P]*/,
-                   const int *send_displs /*[P]*/,
-                   void *recv,
-                   const int *recv_counts /*[P]*/,
-                   const int *recv_displs /*[P]*/,
-                   size_t elem,
-                   MPI_Datatype dt) -> void {
+    auto alltoallv_impl_(int local_shard,
+                         const void *send,
+                         const int *send_counts /*[P]*/,
+                         const int *send_displs /*[P]*/,
+                         void *recv,
+                         const int *recv_counts /*[P]*/,
+                         const int *recv_displs /*[P]*/,
+                         size_t elem,
+                         MPI_Datatype dt) -> void {
         const size_t u = static_cast<size_t>(local_shard);
         Slot &me = slots_[u];
         me.ptr = send;
@@ -174,15 +261,15 @@ public:
     // B1→B2 window (4 syncs instead of 6). recv_counts / recv_displs and `recv` (resized) are OUTPUTS.
     // Bit-identical to alltoall_counts + alltoallv.
     template <class T>
-    auto alltoallv_resolve(int local_shard,
-                           const T *send,
-                           const int *send_counts /*[P]*/,
-                           const int *send_displs /*[P]*/,
-                           std::vector<T> &recv,
-                           int *recv_counts /*[P]*/,
-                           int *recv_displs /*[P]*/,
-                           size_t elem,
-                           MPI_Datatype dt) -> void {
+    auto alltoallv_resolve_impl_(int local_shard,
+                                 const T *send,
+                                 const int *send_counts /*[P]*/,
+                                 const int *send_displs /*[P]*/,
+                                 std::vector<T> &recv,
+                                 int *recv_counts /*[P]*/,
+                                 int *recv_displs /*[P]*/,
+                                 size_t elem,
+                                 MPI_Datatype dt) -> void {
         const size_t u = static_cast<size_t>(local_shard);
         Slot &me = slots_[u];
         me.ptr = send;
@@ -257,7 +344,7 @@ public:
     }
 
     template <class T>
-    auto allreduce_sum(int local_shard, T local_val) -> T {
+    auto allreduce_sum_impl_(int local_shard, T local_val) -> T {
         Slot &me = slots_[static_cast<size_t>(local_shard)];
         if constexpr (std::is_floating_point_v<T>) {
             me.f64 = static_cast<double>(local_val);
@@ -297,7 +384,7 @@ public:
     // In-place element-wise allreduce-sum across the flat P-world, slice-partitioned across shards in
     // ascending order (bit-identical to a sequential sum). red_vec_ sizing gets its own barrier phase so
     // no shard writes into a buffer that may still reallocate.
-    auto allreduce_sum_inplace(int local_shard, double *values, size_t len) -> void {
+    auto allreduce_sum_inplace_impl_(int local_shard, double *values, size_t len) -> void {
         slots_[static_cast<size_t>(local_shard)].vec = values;
         sync(); // all inputs published
         if (local_shard == 0) {
@@ -445,6 +532,20 @@ private:
             throw std::runtime_error("HybridComm: aggregated per-rank count overflows int (message too large)");
         }
         return static_cast<int>(v);
+    }
+
+    /// Terminate the whole job because this rank cannot reach a collective its peers are entering.
+    /// See guard_shard0_ for why an exception is not an option here.
+    [[noreturn]] auto abort_rank_(const char *verb, const char *what) -> void {
+        std::print(stderr,
+                   "monoprop: rank {} cannot complete the collective '{}' ({}). Its peer ranks are "
+                   "blocked inside MPI with no way to be released, so the job is aborted rather than hung.\n",
+                   mpi_rank_,
+                   verb,
+                   what);
+        std::fflush(stderr);
+        MPI_Abort(parent_, 1);
+        std::abort(); // MPI_Abort is not marked [[noreturn]]; unreachable in practice
     }
 
     // Intra-rank barrier between the s_ shards (shard 0 brackets its MPI call between two). See ShardBarrier.
