@@ -443,6 +443,59 @@ BOOST_AUTO_TEST_CASE(inverted_index_demotes_columns_the_growing_bitmap_outgrows)
                boost::test_tools::per_element());
 }
 
+// Dense bitmaps must carry NO growth slack. memory_bytes()/tier_memory_bytes() charge capacity(),
+// correctly, because that is resident memory -- and a bitmap extended once per layer by plain
+// vector::resize grows capacity geometrically, ending up with up to ~2x the words it needs. The exact
+// word count is known from row_count before each fill, so the dense tier must come out at exactly
+// (dense columns) x dense_bytes(), after INCREMENTAL growth and not merely after a rebuild.
+//
+// The row count is deliberately not a power of two: that is the alignment where a doubling allocator
+// strands the most, and where a probe at 2^20 rows would have shown a misleading 0.4%.
+BOOST_AUTO_TEST_CASE(inverted_index_dense_bitmaps_carry_no_growth_slack) {
+    constexpr size_t M = 64;
+    using ScW = InvertedIndex<M>;
+    constexpr size_t kR = 9'000; // 141 words per bitmap
+    const auto op = strided_operator<M>(kR);
+
+    ScW grown;
+    for (size_t have = 0; have < kR;) {
+        const size_t next = std::min(kR, have + 1 + have / 3); // ~1.33x per layer, Trotter-like
+        grown.append_rows(op, have, next - have);
+        have = next;
+    }
+    BOOST_TEST(grown.rows() == kR);
+    BOOST_TEST(grown.dense_bytes() == 141u * sizeof(uint64_t));
+
+    size_t dense_columns = 0;
+    for (size_t c = 0; c < Monomial<M>::size(); ++c) {
+        dense_columns += static_cast<size_t>(grown.column_is_dense(c));
+    }
+    BOOST_TEST(dense_columns > 0u); // the fixture really does hold bitmaps
+    // THE assertion: not one byte of capacity beyond the exact bitmaps.
+    BOOST_TEST(grown.tier_memory_bytes()[0] == dense_columns * grown.dense_bytes());
+
+    // The lazy parity bitmap grows by the same mechanism and is charged the same way, so it gets the
+    // same treatment. Build it partway through so the later appends must actually extend it.
+    ScW two;
+    two.append_rows(op, 0, 1'000);
+    BOOST_TEST(two.row_parity_words() != nullptr);
+    two.append_rows(op, 1'000, kR - 1'000);
+    BOOST_TEST(two.rows() == kR);
+    // Everything memory_bytes() counts that the two tiers do not is the parity bitmap.
+    const auto tiers = two.tier_memory_bytes();
+    BOOST_TEST(two.memory_bytes() - tiers[0] - tiers[1] == two.words() * sizeof(uint64_t));
+    // ...and extending it in place must not have corrupted it.
+    const uint64_t *parity = two.row_parity_words();
+    bool parity_matches = true;
+    for (size_t i = 0; i < kR; ++i) {
+        const bool bit = ((parity[i >> 6] >> (i & 63U)) & 1U) != 0;
+        if (bit != static_cast<bool>(op[i].count() & 1U)) {
+            parity_matches = false;
+        }
+    }
+    BOOST_TEST(parity_matches);
+}
+
 // combine_columns_block must reproduce the full-width reference fold for ANY block decomposition:
 // XOR is associative, so splitting the row range cannot change the result. Block widths that do not
 // divide the word count, and a width of 1, are the cases most likely to expose an off-by-one in the
