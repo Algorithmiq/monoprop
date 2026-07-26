@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <ranges>
 #include <numeric>
 #include <optional>
 #include <span>
@@ -255,6 +256,18 @@ struct MPOperatorMemoryBreakdown final {
     size_t slater_determinant_bytes = 0;
     size_t inverted_index_bytes = 0;
 
+    // Diagnostics: breakdowns OF the fields above, deliberately excluded from total_bytes() so they
+    // can never double-count. They exist to size compression choices, which turn on *which part* of a
+    // field holds the bytes -- a field total cannot answer that.
+    size_t inverted_index_dense_bytes = 0;  ///< of inverted_index_bytes: full-height bitmap columns
+    size_t inverted_index_sparse_bytes = 0; ///< of inverted_index_bytes: ascending set-row lists
+    size_t inverted_index_dense_columns = 0;
+    size_t inverted_index_delta_bytes = 0;  ///< inverted index if every column were delta+varint coded
+    size_t inverted_index_oracle_bytes = 0; ///< ... picking min(bitmap, delta) per column
+    size_t inverted_index_delta_wins = 0;   ///< columns where delta beats the current representation
+    size_t operator_terms_slack_bytes = 0; ///< of operator_terms_bytes: unused geometric-growth capacity
+    size_t state_coeffs_nonzero = 0;       ///< entries of state_coeffs that are not exactly 0.0
+
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
                + slater_determinant_bytes + inverted_index_bytes;
@@ -269,6 +282,14 @@ struct MPOperatorMemoryBreakdown final {
         init_operator_bytes += o.init_operator_bytes;
         slater_determinant_bytes += o.slater_determinant_bytes;
         inverted_index_bytes += o.inverted_index_bytes;
+        inverted_index_dense_bytes += o.inverted_index_dense_bytes;
+        inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
+        inverted_index_dense_columns += o.inverted_index_dense_columns;
+        inverted_index_delta_bytes += o.inverted_index_delta_bytes;
+        inverted_index_oracle_bytes += o.inverted_index_oracle_bytes;
+        inverted_index_delta_wins += o.inverted_index_delta_wins;
+        operator_terms_slack_bytes += o.operator_terms_slack_bytes;
+        state_coeffs_nonzero += o.state_coeffs_nonzero;
         return *this;
     }
 };
@@ -285,7 +306,18 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
     breakdown.slater_determinant_bytes = op.slater_determinant.capacity() * sizeof(size_t);
     if (op.inverted_index_.has_value()) {
         breakdown.inverted_index_bytes = op.inverted_index_->memory_bytes();
+        const auto tiers = op.inverted_index_->tier_memory_bytes();
+        breakdown.inverted_index_dense_bytes = tiers[0];
+        breakdown.inverted_index_sparse_bytes = tiers[1];
+        breakdown.inverted_index_dense_columns = tiers[2];
+        const auto delta = op.inverted_index_->delta_coded_bytes();
+        breakdown.inverted_index_delta_bytes = delta[0];
+        breakdown.inverted_index_oracle_bytes = delta[1];
+        breakdown.inverted_index_delta_wins = delta[2];
     }
+    breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
+    breakdown.state_coeffs_nonzero =
+        static_cast<size_t>(std::ranges::count_if(op.state_coeffs, [](double c) { return c != 0.0; }));
     return breakdown;
 }
 

@@ -222,5 +222,28 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             [](const MonomialPropagator<NumModes> &self) { return self.operator_memory_usage().total_bytes(); });
     cls.def("graph_memory_bytes",
             [](const MonomialPropagator<NumModes> &self) { return self.graph_memory_usage().total_bytes(); });
+
+    // Per-field operator memory split (shard-aggregated). total_bytes() alone cannot say whether the
+    // row store or the transposed inverted index dominates, which is what sizing decisions turn on.
+    cls.def("operator_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
+        const auto b = self.operator_memory_usage();
+        return std::map<std::string, size_t>{{"operator_terms_bytes", b.operator_terms_bytes},
+                                             {"op_coeffs_bytes", b.op_coeffs_bytes},
+                                             {"state_coeffs_bytes", b.state_coeffs_bytes},
+                                             {"indexing_bytes", b.indexing_bytes},
+                                             {"init_operator_bytes", b.init_operator_bytes},
+                                             {"slater_determinant_bytes", b.slater_determinant_bytes},
+                                             {"inverted_index_bytes", b.inverted_index_bytes},
+                                             {"total_bytes", b.total_bytes()},
+                                             // Diagnostics (NOT part of total_bytes; see the struct).
+                                             {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
+                                             {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
+                                             {"d_invidx_dense_columns", b.inverted_index_dense_columns},
+                                             {"d_invidx_delta_bytes", b.inverted_index_delta_bytes},
+                                             {"d_invidx_oracle_bytes", b.inverted_index_oracle_bytes},
+                                             {"d_invidx_delta_wins", b.inverted_index_delta_wins},
+                                             {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
+                                             {"d_state_coeffs_nonzero", b.state_coeffs_nonzero}};
+    });
 }
 } // namespace monoprop::bindings::detail

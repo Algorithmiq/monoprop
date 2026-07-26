@@ -101,6 +101,7 @@ _RESULTS: dict[str, Any] = {
     "memrest": {},  # picture / model -> resting RSS bytes
     "membase": {},  # fixed model -> resting RSS bytes before the model is built
     "configs": {},  # fixed model -> config dataclass fields
+    "opmem": {},  # fixed model -> per-field operator memory split (bytes)
 }
 
 
@@ -259,6 +260,19 @@ def record_model_stats(bench_comm: Any) -> Callable[..., None]:
 
     def _do(model: str, propagator: Any, baseline_rss: int) -> None:
         _record("opsize", model, {"terms": _reduce_sum(bench_comm, propagator.size())})
+
+        # Per-field operator memory split. total_bytes() alone cannot say whether the packed
+        # row store or the transposed inverted index dominates -- sparse InvertedIndex columns
+        # cost a TermIndex (4B) per set bit against ~1-2B per set bit in the rows -- and that
+        # ratio is what row-representation sizing decisions turn on.
+        # The C++ bindings hang off ._simulator; the Python front-end does not re-export them.
+        breakdown = getattr(propagator._simulator, "operator_memory_breakdown", None)
+        if breakdown is not None:  # None => binding predates operator_memory_breakdown()
+            _record(
+                "opmem",
+                model,
+                {k: _reduce_sum(bench_comm, v) for k, v in breakdown().items()},
+            )
 
         resting = _reduce_sum(bench_comm, resting_rss_bytes())
         if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
