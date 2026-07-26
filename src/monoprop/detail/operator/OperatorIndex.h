@@ -301,6 +301,12 @@ public:
             }
         }
     }
+    /// Diagnostic: the part of @ref memory_bytes that is unused geometric-growth capacity.
+    /// Growth is 1.5x and never exact-fit, so this is bounded by ~1/3 of the row bytes.
+    [[nodiscard]] auto slack_bytes() const -> size_t {
+        return rows_.capacity() * sizeof(PosT) - std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT);
+    }
+
     auto index_estimated_memory_bytes() const -> size_t {
         return sizeof(OperatorIndex) + table_.slots.capacity() * sizeof(Slot);
     }

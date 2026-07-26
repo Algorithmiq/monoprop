@@ -209,6 +209,19 @@ struct InvertedIndex {
         total += row_parity_.capacity() * sizeof(uint64_t);
         return total;
     }
+
+    /// Diagnostic tier split of @ref memory_bytes: {dense_bytes, sparse_bytes, dense_columns}.
+    /// The two tiers respond to different compression techniques (a full-height bitmap vs an
+    /// ascending index list), so sizing that choice requires knowing which tier holds the bytes.
+    auto tier_memory_bytes() const -> std::array<size_t, 3> {
+        std::array<size_t, 3> out{0, 0, 0};
+        for (const auto &col : cols) {
+            out[0] += col.words.capacity() * sizeof(uint64_t);
+            out[1] += col.set_rows.capacity() * sizeof(TermIndex);
+            out[2] += static_cast<size_t>(col.is_dense);
+        }
+        return out;
+    }
 };
 
 // XOR a generator's inverted-index columns for fold words [bb, be) into blk[0 .. be-bb): dense columns
