@@ -13,6 +13,19 @@ import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { gitConfig } from '@/lib/shared';
 
+function getPageGithubPath(page: (typeof source)['$inferPage']) {
+  const fromFrontmatter = page.data?.githubPath;
+  if (typeof fromFrontmatter === 'string' && fromFrontmatter.length > 0) {
+    return fromFrontmatter;
+  }
+
+  if (page.slugs[0] !== 'api') {
+    return `docs/content/docs/${page.path}`;
+  }
+
+  return 'src/monoprop/__init__.py';
+}
+
 export default async function Page(props: PageProps<'/[[...slug]]'>) {
   const params = await props.params;
   const page = source.getPage(params.slug);
@@ -29,7 +42,7 @@ export default async function Page(props: PageProps<'/[[...slug]]'>) {
         <MarkdownCopyButton markdownUrl={markdownUrl} />
         <ViewOptionsPopover
           markdownUrl={markdownUrl}
-          githubUrl={`https://github.com/${gitConfig.user}/${gitConfig.repo}/blob/${gitConfig.branch}/docs/content/docs/${page.path}`}
+          githubUrl={`https://github.com/${gitConfig.user}/${gitConfig.repo}/blob/${gitConfig.branch}/${getPageGithubPath(page)}`}
         />
 
       </div>

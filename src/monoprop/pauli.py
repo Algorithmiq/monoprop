@@ -33,18 +33,18 @@ _VALID_PAULI_CHARS = frozenset("IXYZ")
 class Pauli:
     """A single Pauli term: Pauli letters placed on specific qubits.
 
-    A term is the atom a :class:`PauliOperator` is built from and the generator an
-    :class:`~monoprop.circuit.ExpGate` gate exponentiates. The placement is *local* -- the
+    A term is the atom a [PauliOperator][] is built from and the generator an
+    [ExpGate][monoprop.circuit.ExpGate] gate exponentiates. The placement is *local* -- the
     string names only the qubits the term acts on -- so the same term can appear in operators
     of any width; the total ``num_qubits`` lives on the operator, not the term.
 
     Terms are canonicalized on construction: identity (``I``) letters are dropped and the
     remaining ``(qubit, letter)`` pairs are sorted by qubit, so ``Pauli("XY", (1, 0))`` and
     ``Pauli("YX", (0, 1))`` compare equal and hash alike -- an immutable value object usable
-    as a dictionary key (as :attr:`PauliOperator.terms` does).
+    as a dictionary key (as [PauliOperator.terms][] does).
 
     Attributes:
-        string: The non-identity Pauli letters, ordered to match :attr:`qubits`.
+        string: The non-identity Pauli letters, ordered to match [qubits][].
         qubits: The (sorted, distinct) qubit indices the letters act on.
     """
 
@@ -104,12 +104,12 @@ class Pauli:
 class PauliOperator:
     """A weighted sum of Pauli terms.
 
-    Constructed from a ``{term: coefficient}`` mapping, where each key is a :class:`Pauli`
+    Constructed from a ``{term: coefficient}`` mapping, where each key is a [Pauli][]
     term (or, equivalently, a raw full-width Pauli string like ``"ZZ"``, which is read as a
     term on qubits ``0..len-1``). The total qubit count lives here, on the operator, and is
     required so a propagator can be built from it directly. A gate generator is also authored
-    as a :class:`PauliOperator` (wrapped in :class:`~monoprop.circuit.ExpGate`) -- bare
-    :class:`Pauli` terms are not accepted by ``ExpGate``, since the operator is what carries the
+    as a [PauliOperator][] (wrapped in [ExpGate][monoprop.circuit.ExpGate]) -- bare
+    [Pauli][] terms are not accepted by ``ExpGate``, since the operator is what carries the
     qubit count.
     """
 
@@ -121,13 +121,13 @@ class PauliOperator:
         """Initialize the Pauli operator from a term mapping.
 
         Args:
-            terms: Mapping from :class:`Pauli` terms (or raw full-width strings) to their
+            terms: Mapping from [Pauli][] terms (or raw full-width strings) to their
                 coefficients.
             num_qubits: Total number of qubits the operator acts on. An operator carries its
                 own qubit count so a propagator can be built from it directly; every term must
                 act within ``0..num_qubits-1``. ``None`` defers the qubit count (only reachable
-                via :meth:`_from_terms`, e.g. while building a generator whose width is not yet
-                known); :meth:`get_majorana_operator` then raises.
+                via `_from_terms`, e.g. while building a generator whose width is not yet
+                known); [get_majorana_operator][] then raises.
 
         Raises:
             ValueError: If a term acts on a qubit index ``>= num_qubits``.
@@ -194,7 +194,7 @@ class PauliOperator:
             True if the operators have the same qubit count and matching terms, else False.
 
         Raises:
-            TypeError: If ``other`` is not a :class:`PauliOperator`.
+            TypeError: If ``other`` is not a [PauliOperator][].
         """
         if not isinstance(other, PauliOperator):
             raise TypeError(

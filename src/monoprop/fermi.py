@@ -189,7 +189,7 @@ class FermiOperator:
             A boolean.
 
         Raises:
-            TypeError: If ``other`` is not a :class:`FermiOperator`.
+            TypeError: If ``other`` is not a [FermiOperator][].
         """
         if not isinstance(other, FermiOperator):
             raise TypeError(

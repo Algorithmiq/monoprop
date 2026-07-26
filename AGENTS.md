@@ -12,6 +12,7 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - PR titles must adhere to the same conventional commits format.
 - Prefix PR descriptions and comments on PRs with the line ":robot: _AI text below_ :robot:" to indicate you are an agent speaking on a user's behalf.
 - Python docstrings use Google style. C++ docstrings use Doxygen style.
+- In prose docs (`docs/content/docs/**.mdx`) and Python docstrings, link to API symbols with the mkdocstrings-style `[Symbol][]` reference (or `[Display][fully.qualified.path]`) — never hard-code `/api/...` URLs. Do not backtick the name in the `[Symbol][]` form. See `docs/content/docs/documenting.mdx`.
 
 
 ## Architecture Overview

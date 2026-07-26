@@ -10,10 +10,10 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { convert, write, frontmatter } from 'fumadocs-python';
+import { API_BASE_URL, buildXrefMap, pageUrl, resolve } from './xref.mjs';
 
 const JSON_PATH = path.resolve('monoprop.json');
 const OUT_DIR = path.resolve('content/docs/api');
-const BASE_URL = '/api';
 
 // Public modules, in the order they should appear in the sidebar
 const MODULES = [
@@ -31,6 +31,7 @@ const MODULES = [
   ['exceptions', 'Exceptions'],
 ];
 const KEEP = new Set(MODULES.map(([name]) => name));
+const MODULE_GITHUB_PATHS = new Map(MODULES.map(([name]) => [name, `src/monoprop/${name}.py`]));
 
 /** Drop single-underscore (non-dunder) members from a {name: node} map. */
 function prunePrivate(map) {
@@ -48,21 +49,43 @@ function pruneModule(mod) {
 }
 
 /**
- * Convert Sphinx-style cross-reference markup (e.g., `:meth:`name``) to markdown.
- * Patterns include `:meth:`, `:class:`, `:func:`, `:attr:` with optional ~ prefix
- * for module paths (e.g., `:meth:`~full.path.method_name``).
- *
- * The converted format wraps the name in backticks, which fumadocs will try to
- * resolve as a cross-reference. Explicit links are preserved.
+ * Derive the fully-qualified scope a rendered page documents, from its file
+ * path (before `write` strips the leading package segment):
+ *   `monoprop/circuit/index.mdx`   -> `monoprop.circuit`            (module)
+ *   `monoprop/circuit/ExpGate.mdx` -> `monoprop.circuit.ExpGate`    (class)
+ *   `monoprop/index.mdx`           -> `monoprop`                    (package)
  */
-function convertSphinxMarkup(content) {
-  // Match `:role:`~?name`` or `:role:`~?path.name``
-  // Captures: role (meth/class/func/attr), optional ~, name/path
-  return content.replaceAll(/:\w+:`([^`]+)`/g, (match, inner) => {
-    // Remove leading ~ if present (used in Sphinx for full qualified paths)
-    const cleanName = inner.replace(/^~/, '');
-    // Wrap in backticks for cross-reference resolution
-    return `\`${cleanName}\``;
+function scopeFromPath(filePath) {
+  return filePath
+    .replace(/\/index\.mdx$/, '')
+    .replace(/\.mdx$/, '')
+    .split('/')
+    .join('.');
+}
+
+/**
+ * Resolve cross-references in a rendered MDX page into real links. `scope` is
+ * the page's fully-qualified scope (see `scopeFromPath`).
+ *
+ * The input is the griffe/mkdocstrings Markdown reference-link form. The target
+ * is a Python path, resolved fully-qualified or relative to `scope`:
+ *   `[Circuit][monoprop.circuit.Circuit]`  ->  `[Circuit](/api/circuit/Circuit)`
+ *   `[ExpGate][]`  (on a page scoped to `monoprop.circuit`)  ->  `[ExpGate](/api/circuit/ExpGate)`
+ * `[X][]` is shorthand for target == display. The display text is rendered as a
+ * code span (symbol names read as code). Unresolved targets are collected in
+ * `unresolved` (surfaced by the caller) and left untouched.
+ */
+function resolveXrefs(content, xref, unresolved, scope) {
+  // Wrap the display text in a code span, avoiding a double-wrap if the
+  // docstring already backticked it.
+  const code = (text) => (/^`.*`$/.test(text) ? text : `\`${text}\``);
+
+  return content.replaceAll(/\[([^\]]+)\]\[([^\]]*)\]/g, (match, display, target) => {
+    const name = (target || display).trim().replace(/^`|`$/g, '');
+    const url = resolve(name, scope, xref);
+    if (url) return `[${code(display)}](${url})`;
+    unresolved.add(name);
+    return match;
   });
 }
 
@@ -178,16 +201,28 @@ async function main() {
   pruneModule(pkg);
   normalizeFunctionReturns(pkg);
 
-  const files = convert(pkg, { baseUrl: BASE_URL });
+  const xref = buildXrefMap(pkg);
+  const unresolved = new Set();
+
+  const files = convert(pkg, { baseUrl: API_BASE_URL });
 
   for (const file of files) {
-    // Convert Sphinx-style markup to markdown before other processing
-    file.content = convertSphinxMarkup(file.content);
+    // Resolve Markdown `[text][path]` cross-references into real links before
+    // other processing. Bare/relative targets resolve against the page's own scope.
+    file.content = resolveXrefs(file.content, xref, unresolved, scopeFromPath(file.path));
 
     // `convert` keeps the package name ("monoprop") in hrefs, but `write`
     // strips that leading segment from file paths. Realign the links.
-    file.content = file.content.replaceAll(`${BASE_URL}/monoprop`, BASE_URL);
+    file.content = file.content.replaceAll(`${API_BASE_URL}/monoprop`, API_BASE_URL);
 
+    // Attach source paths to frontmatter so docs can build GitHub links
+    // without duplicating the module list in app code.
+    const modulePrefixMatch = file.path.match(/^monoprop\/([^/]+)(?:\/|$)/);
+    const moduleName = modulePrefixMatch?.[1];
+    const githubPath = moduleName ? MODULE_GITHUB_PATHS.get(moduleName) : undefined;
+    if (githubPath) {
+      file.frontmatter.githubPath = githubPath;
+    }
     // Fumadocs parameter rendering can escape braces in math arguments
     // (e.g. `\mathrm\{d\}`), which breaks KaTeX grouping.
     file.content = normalizeMathGroupingEscapes(file.content);
@@ -202,7 +237,15 @@ async function main() {
     if (file.path === 'monoprop/index.mdx') {
       file.frontmatter.title = 'Python API';
       file.frontmatter.description = 'Generated reference for the public monoprop Python package.';
+      file.frontmatter.githubPath = 'src/monoprop/__init__.py';
     }
+  }
+
+  if (unresolved.size > 0) {
+    console.warn(
+      `Warning: ${unresolved.size} cross-reference target(s) did not resolve and were left as-is:\n  ` +
+        [...unresolved].sort().join('\n  '),
+    );
   }
 
   await fs.rm(OUT_DIR, { recursive: true, force: true });
