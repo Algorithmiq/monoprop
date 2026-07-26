@@ -44,7 +44,18 @@ public:
  * Rows: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c = ascending set-bit
  * positions. stride_ is fixed for the container's life so row offsets stay stable. inline_width_ is a
  * construction invariant: any width is correct — over-long rows spill losslessly to an overflow map —
- * so callers pass the cutoff that bounds the common case. The hand-rolled index exists for one
+ * so callers pass the cutoff that bounds the common case.
+ *
+ * Rows live in a SEGMENTED arena: a vector of fixed-size, page-scale chunks, never one growing buffer.
+ * A single buffer had to grow geometrically (1.5×), because an exact fit would realloc-and-copy the
+ * whole operator on every Trotter layer — and geometric growth left up to 1/3 of the row bytes as dead
+ * capacity (measured at 29–32% on the hubbard and pauli models). Chunking bounds that dead capacity at
+ * one chunk per store instead of a fraction of the store, with no realloc, no copy spike (shrinking a
+ * single buffer would be worse still: the old and new buffers are live at once, and the benchmarks
+ * measure PEAK memory), and stable row addresses as a bonus. Fixed stride is preserved WITHIN a chunk,
+ * so a row is one chunk-table load away and find_batch can still prefetch it.
+ *
+ * The hand-rolled index exists for one
  * capability boost::unordered_flat_set cannot expose: find_batch, a group-prefetch pipelined lookup
  * that overlaps DRAM misses, which the latency-bound resolve phases need.
  *
@@ -90,11 +101,27 @@ public:
     // operator store must not depend on evolution headers).
     static constexpr size_t kNotFound = std::numeric_limits<size_t>::max();
 
+    // Arena geometry. Rows per chunk is the smallest power of two spanning at least one 4 KiB page, so
+    // chunk bytes land in [4 KiB, 8 KiB) for every stride and the arena's worst-case dead capacity (one
+    // chunk minus one row) is ~one page PER STORE. That absolute bound is the point: the default
+    // parallelism is one shard -- hence one store -- per physical core, so a chunk sized as a fraction
+    // of a big store would multiply its slack by the core count on the many-shard configurations.
+    static constexpr size_t kChunkTargetBytes = 4096;
+    static constexpr size_t kMinChunkRows = 64;
+    static constexpr size_t kMaxChunkRows = 4096;
+    static constexpr auto chunk_rows_for_(size_t stride) -> size_t {
+        const size_t row_bytes = stride * sizeof(PosT);
+        const size_t rows = std::bit_ceil((kChunkTargetBytes + row_bytes - 1) / row_bytes);
+        return std::clamp(rows, kMinChunkRows, kMaxChunkRows);
+    }
+
     // The inline width (hence stride) is a construction invariant: any width is correct, since
     // over-long rows spill to overflow losslessly.
     explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
-          stride_(1 + inline_width_) {}
+          stride_(1 + inline_width_),
+          chunk_log_(static_cast<size_t>(std::countr_zero(chunk_rows_for_(stride_)))),
+          chunk_mask_(chunk_rows_for_(stride_) - 1) {}
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
     OperatorIndex(OperatorIndex &&) = delete;
@@ -104,8 +131,15 @@ public:
     // Called only on an idle store, so it needs no synchronization.
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
         auto out = std::make_unique<OperatorIndex>(inline_width_);
-        out->rows_ = rows_;
+        // Copy only the LIVE rows: the clone gets a right-sized arena rather than the source's tail
+        // slack. Chunk geometry is derived from inline_width_, so both sides chunk identically.
+        out->reserve_rows(size_);
         out->size_ = size_;
+        for (size_t c = 0; c < out->chunks_.size(); ++c) {
+            const size_t first = c << chunk_log_;
+            const size_t rows_here = std::min(chunk_mask_ + 1, size_ - first);
+            std::copy_n(chunks_[c].get(), rows_here * stride_, out->chunks_[c].get());
+        }
         out->overflow_ = overflow_;
         out->reserve_index(table_.count);
         // The clone's rows/overflow are already in place, so it can re-derive each key's hash from its
@@ -127,17 +161,15 @@ public:
         reserve_index(n);
     }
     // Grow the row store by `n` rows, returning the pre-growth size (the caller's insert base). Growth
-    // is GEOMETRIC (1.5×), never exact-fit: an exact fit would realloc the whole operator every layer.
-    // The reserve-then-resize split is load-bearing (reserve grows capacity, resize sets logical size).
+    // is CHUNK-granular: append however many fixed-size chunks the new rows need. No geometric
+    // over-allocation is required (nothing is ever reallocated or copied), so the only dead capacity is
+    // the tail of the last chunk. The name is kept for its call sites; "geometric" describes the growth
+    // policy this arena replaced.
     auto grow_rows_geometric(size_t n) -> size_t {
         const size_t base = size_;
-        if (capacity() < base + n) {
-            const size_t cap = capacity();
-            reserve_rows(std::max(base + n, cap + cap / 2 + 1));
-        }
-        // Default-init grow, NOT a zeroing resize: every freshly grown row is overwritten by set()
-        // before any read, so a tail zero-fill would be wasted bandwidth.
-        rows_.resize((base + n) * stride_);
+        reserve_rows(base + n);
+        // Chunks are allocated with make_unique_for_overwrite: default-init, NOT zeroed. Every freshly
+        // grown row is overwritten by set() before any read, so a zero-fill would be wasted bandwidth.
         size_ = base + n;
         return base;
     }
@@ -199,7 +231,8 @@ public:
         return overflow_.at(i).count();
     }
     [[nodiscard]] auto memory_bytes() const -> size_t {
-        size_t total = rows_.capacity() * sizeof(PosT);
+        size_t total = chunks_.size() * (chunk_mask_ + 1) * stride_ * sizeof(PosT);
+        total += chunks_.capacity() * sizeof(typename decltype(chunks_)::value_type);
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
         return total;
     }
@@ -319,10 +352,14 @@ public:
             }
         }
     }
-    /// Diagnostic: the part of @ref memory_bytes that is unused geometric-growth capacity.
-    /// Growth is 1.5x and never exact-fit, so this is bounded by ~1/3 of the row bytes.
+    /// Diagnostic: the part of @ref memory_bytes that is allocated but unused row capacity. With the
+    /// segmented arena that is the tail of the last chunk plus the chunk table's spare slots, so it is
+    /// bounded by ~one page per store rather than by a fraction of the row bytes.
     [[nodiscard]] auto slack_bytes() const -> size_t {
-        return rows_.capacity() * sizeof(PosT) - std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT);
+        const size_t rows_slack = (capacity() - size_) * stride_ * sizeof(PosT);
+        const size_t table_slack =
+            (chunks_.capacity() - chunks_.size()) * sizeof(typename decltype(chunks_)::value_type);
+        return rows_slack + table_slack;
     }
 
     auto index_estimated_memory_bytes() const -> size_t {
@@ -408,13 +445,25 @@ private:
         }
     }
 
-    // Single point of row addressing: every reader and writer goes through these. `stride_` is fixed
-    // for the container's life, so the returned span [p, p + stride_) is the whole row.
-    [[nodiscard]] auto row_ptr(size_t i) const -> const PosT * { return &rows_[i * stride_]; }
-    [[nodiscard]] auto row_ptr(size_t i) -> PosT * { return &rows_[i * stride_]; }
+    // Single point of row addressing: every reader and writer goes through these. Stride is fixed
+    // within a chunk, so the returned span [p, p + stride_) is the whole row -- which is what lets
+    // find_batch prefetch a candidate row from its index alone. One extra load, from a chunk table
+    // small enough to stay resident (a 1.17M-row store at stride 7 tables 1143 chunks = 9 KiB).
+    [[nodiscard]] auto row_ptr(size_t i) const -> const PosT * {
+        return chunks_[i >> chunk_log_].get() + (i & chunk_mask_) * stride_;
+    }
+    [[nodiscard]] auto row_ptr(size_t i) -> PosT * {
+        return chunks_[i >> chunk_log_].get() + (i & chunk_mask_) * stride_;
+    }
 
-    [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
-    auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
+    [[nodiscard]] auto capacity() const -> size_t { return chunks_.size() << chunk_log_; }
+    auto reserve_rows(size_t n) -> void {
+        const size_t need = (n + chunk_mask_) >> chunk_log_;
+        chunks_.reserve(need);
+        while (chunks_.size() < need) {
+            chunks_.push_back(std::make_unique_for_overwrite<PosT[]>((chunk_mask_ + 1) * stride_));
+        }
+    }
     auto reserve_index(size_t n) -> void { rehash_to(slots_for_(n + 1)); }
 
     // Insert (idx, h) into the table with NO dup probe — callers on this path insert provably distinct
@@ -456,12 +505,15 @@ private:
         }
     }
 
-    // DefaultInitVector: grow_rows_geometric and push_back skip the tail zero-fill — set() overwrites
-    // each row's header and positions before any read, and never pre-reads the (indeterminate) header.
-    DefaultInitVector<PosT> rows_ = {};
+    // Segmented row arena. Chunks are allocated for-overwrite (default-init, no zero-fill): set()
+    // overwrites each row's header and positions before any read, and never pre-reads the
+    // (indeterminate) header. Never reallocated, so row addresses are stable for the store's life.
+    std::vector<std::unique_ptr<PosT[]>> chunks_ = {};
     size_t size_ = 0;
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;
+    size_t chunk_log_ = static_cast<size_t>(std::countr_zero(chunk_rows_for_(1 + kMaxInlinePositions)));
+    size_t chunk_mask_ = chunk_rows_for_(1 + kMaxInlinePositions) - 1;
     // Lossless side-map for rows whose popcount exceeds inline_width_. Single-writer: never accessed
     // concurrently (parallelism is cross-shard), so it needs no lock.
     std::unordered_map<size_t, value_type> overflow_ = {};

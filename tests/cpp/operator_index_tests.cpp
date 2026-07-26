@@ -317,6 +317,180 @@ BOOST_AUTO_TEST_CASE(bulk_insert_across_layers_finds_every_key) {
     BOOST_TEST(!s.find(bs({0, 1, 2})).has_value()); // never inserted
 }
 
+// ---------------------------------------------------------------------------------------------
+// Segmented row arena. Rows live in fixed page-scale chunks rather than one geometrically grown
+// buffer, so every row access is one chunk-table load away and slack is bounded by one chunk. Width
+// 32 gives stride 33 -> 128 rows/chunk, the tightest boundary spacing available, so these cases
+// cross several chunk boundaries in a few hundred rows.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+constexpr size_t kNarrowWidth = 32; // stride 33 -> 128 rows per chunk at PosT = uint8_t
+} // namespace
+
+// Every row must round-trip at every index, including the indices either side of a chunk boundary.
+BOOST_AUTO_TEST_CASE(rows_round_trip_across_chunk_boundaries) {
+    constexpr size_t kRows = 400; // > 3 chunks of 128
+    Store s(kNarrowWidth);
+    for (size_t i = 0; i < kRows; ++i) {
+        s.push_back(key3(i));
+    }
+    BOOST_TEST(s.size() == kRows);
+    bool ok = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        if (!(s.row(i) == key3(i)) || s.popcount(i) != 3u) {
+            ok = false;
+        }
+        std::vector<size_t> pos;
+        s.for_each_position(i, [&](size_t b) { pos.push_back(b); });
+        if (pos.size() != 3u) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    // Spot-check the boundary neighbourhoods explicitly: a chunk-addressing off-by-one shows up here
+    // as a row read from the wrong chunk (or the wrong offset within the right one).
+    for (size_t i : {size_t{126}, size_t{127}, size_t{128}, size_t{129}, size_t{255}, size_t{256}, size_t{257}}) {
+        BOOST_TEST((s.row(i) == key3(i)));
+    }
+}
+
+// One grow_rows_geometric call spanning several chunks must allocate them all, and the rows written
+// into it must be readable across every boundary it crossed.
+BOOST_AUTO_TEST_CASE(single_grow_spanning_many_chunks) {
+    Store s(kNarrowWidth);
+    BOOST_TEST(s.grow_rows_geometric(1) == 0u);
+    s.set(0, key3(0));
+    const size_t base = s.grow_rows_geometric(300); // crosses two boundaries in one call
+    BOOST_TEST(base == 1u);
+    for (size_t k = 0; k < 300; ++k) {
+        s.set(base + k, key3(base + k));
+    }
+    bool ok = true;
+    for (size_t i = 0; i < 301; ++i) {
+        if (!(s.row(i) == key3(i))) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+}
+
+// A zero-popcount row, a maximum-inline-popcount row and an overflow row, placed on and around a
+// chunk boundary. set() must not pre-read the (indeterminate) header of a freshly allocated chunk.
+BOOST_AUTO_TEST_CASE(edge_popcount_rows_at_a_chunk_boundary) {
+    Store s(kNarrowWidth);
+    const auto full = [] { // 32 positions: exactly the inline width
+        VecZ r;
+        for (size_t j = 0; j < 32; ++j) {
+            r.push_back(j);
+        }
+        return bs(r);
+    }();
+    const auto over = [] { // 33 positions: one past the inline width -> overflow side-map
+        VecZ r;
+        for (size_t j = 0; j < 33; ++j) {
+            r.push_back(j);
+        }
+        return bs(r);
+    }();
+    const MSet empty{}; // popcount 0
+
+    for (size_t i = 0; i < 132; ++i) {
+        s.push_back(key3(i));
+    }
+    s.set(126, empty);
+    s.set(127, full); // last row of chunk 0
+    s.set(128, over); // first row of chunk 1 -> overflow
+    s.set(129, empty);
+
+    BOOST_TEST(s.popcount(126) == 0u);
+    BOOST_TEST((s.row(126) == empty));
+    BOOST_TEST(s.popcount(127) == 32u);
+    BOOST_TEST((s.row(127) == full));
+    BOOST_TEST(s.popcount(128) == 33u); // recovered from overflow, not from the header
+    BOOST_TEST((s.row(128) == over));
+    BOOST_TEST(s.popcount(129) == 0u);
+    BOOST_TEST((s.row(130) == key3(130))); // untouched neighbours survive
+    // Overwriting the overflow row with an inline one must drop the stale side-map entry.
+    s.set(128, key3(128));
+    BOOST_TEST(s.popcount(128) == 3u);
+    BOOST_TEST((s.row(128) == key3(128)));
+}
+
+// A rehash walks entries in table order, so it re-derives row hashes from rows scattered over every
+// chunk. Drive enough emplaces to force several rehashes while the arena spans multiple chunks.
+BOOST_AUTO_TEST_CASE(rehash_crosses_chunk_boundaries) {
+    constexpr size_t kRows = 600; // ~5 chunks of 128, and 16 -> 1024 slots: six doublings
+    Store s(kNarrowWidth);
+    for (size_t i = 0; i < kRows; ++i) {
+        s.push_back(key3(i));
+        s.emplace(key3(i), i);
+    }
+    bool ok = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        const auto f = s.find(key3(i));
+        if (!f || *f != i) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    // find_batch's prefetch addresses a candidate row through the chunk table; it must agree with find.
+    std::vector<MSet> q;
+    for (size_t i = 0; i < kRows; ++i) {
+        q.push_back(key3(i));
+    }
+    std::vector<size_t> out(kRows, 424242);
+    s.find_batch(q.data(), kRows, out.data());
+    bool batch_ok = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        if (out[i] != i) {
+            batch_ok = false;
+        }
+    }
+    BOOST_TEST(batch_ok);
+}
+
+// clone() copies the arena chunk by chunk. Every row must survive, the clone must stay independent,
+// and its index must confirm against its own rows.
+BOOST_AUTO_TEST_CASE(clone_copies_every_chunk) {
+    constexpr size_t kRows = 400;
+    Store a(kNarrowWidth);
+    for (size_t i = 0; i < kRows; ++i) {
+        a.push_back(key3(i));
+        a.emplace(key3(i), i);
+    }
+    const auto b = a.clone();
+    BOOST_TEST(b->size() == kRows);
+    bool ok = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        const auto f = b->find(key3(i));
+        if (!(b->row(i) == key3(i)) || !f || *f != i) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    // Independence across a chunk boundary: mutating the source must not perturb the clone.
+    a.set(200, bs({1, 2, 3}));
+    BOOST_TEST((b->row(200) == key3(200)));
+}
+
+// The whole point of the arena: dead row capacity is bounded in ABSOLUTE bytes (about one chunk),
+// not as a fraction of the store. A propagator runs one store per physical core, so the bound has to
+// hold per store at every size -- the geometric buffer this replaced left up to ~1/3 of the rows.
+BOOST_AUTO_TEST_CASE(arena_slack_is_bounded_by_one_chunk) {
+    constexpr size_t kBound = 2 * Store::kChunkTargetBytes + 1024; // chunk bytes stay under 2 pages
+    for (size_t width : {size_t{1}, size_t{4}, kNarrowWidth}) {
+        Store s(width);
+        for (size_t n : {size_t{1}, size_t{130}, size_t{700}, size_t{3000}}) {
+            while (s.size() < n) {
+                s.push_back(key3(s.size()));
+            }
+            BOOST_TEST(s.slack_bytes() < kBound);
+            BOOST_TEST(s.memory_bytes() >= s.size() * (1 + width) * sizeof(Store::PosT));
+        }
+    }
+}
+
 // An empty store must report every key missing (find_batch's shard.count == 0 early-out).
 BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
     Store s;
