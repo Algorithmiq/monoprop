@@ -210,52 +210,6 @@ struct InvertedIndex {
         return total;
     }
 
-    /// Diagnostic: what the columns would cost delta+varint coded, and what an oracle that picked
-    /// the cheaper of {full bitmap, delta-coded postings} per column would cost. Returns
-    /// {delta_bytes_all_columns, oracle_bytes, columns_delta_wins}. Answers whether raising the
-    /// dense-promotion threshold is worth anything before any codec is written.
-    auto delta_coded_bytes() const -> std::array<size_t, 3> {
-        constexpr size_t kBlock = 128;      // postings per skip block (keeps lower_bound O(log) + scan)
-        constexpr size_t kBlockHeader = 8;  // absolute first value + byte offset
-        const size_t dense_bytes = ((row_count + 63) / 64) * sizeof(uint64_t);
-        std::array<size_t, 3> out{0, 0, 0};
-        std::vector<TermIndex> rows;
-        for (const auto &col : cols) {
-            rows.clear();
-            if (col.is_dense) {
-                for (size_t w = 0; w < col.words.size(); ++w) {
-                    for (uint64_t x = col.words[w]; x != 0; x &= x - 1) {
-                        rows.push_back(static_cast<TermIndex>(w * 64 + std::countr_zero(x)));
-                    }
-                }
-            }
-            else {
-                rows.assign(col.set_rows.begin(), col.set_rows.end());
-            }
-            size_t delta = 0;
-            size_t prev = 0;
-            for (size_t i = 0; i < rows.size(); ++i) {
-                if (i % kBlock == 0) {
-                    delta += kBlockHeader; // block starts absolute, so no gap byte for this posting
-                }
-                else {
-                    // LEB128 length of the gap (gaps are >=1 since set_rows is strictly ascending).
-                    size_t gap = static_cast<size_t>(rows[i]) - prev;
-                    do {
-                        ++delta;
-                        gap >>= 7;
-                    } while (gap != 0);
-                }
-                prev = rows[i];
-            }
-            const size_t here = col.is_dense ? dense_bytes : col.set_rows.capacity() * sizeof(TermIndex);
-            out[0] += delta;
-            out[1] += std::min(delta, here);
-            out[2] += static_cast<size_t>(delta < here);
-        }
-        return out;
-    }
-
     /// Diagnostic tier split of @ref memory_bytes: {dense_bytes, sparse_bytes, dense_columns}.
     /// The two tiers respond to different compression techniques (a full-height bitmap vs an
     /// ascending index list), so sizing that choice requires knowing which tier holds the bytes.

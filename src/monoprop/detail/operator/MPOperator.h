@@ -341,10 +341,7 @@ struct MPOperatorMemoryBreakdown final {
     size_t inverted_index_dense_bytes = 0;  ///< of inverted_index_bytes: full-height bitmap columns
     size_t inverted_index_sparse_bytes = 0; ///< of inverted_index_bytes: ascending set-row lists
     size_t inverted_index_dense_columns = 0;
-    size_t inverted_index_delta_bytes = 0;  ///< inverted index if every column were delta+varint coded
-    size_t inverted_index_oracle_bytes = 0; ///< ... picking min(bitmap, delta) per column
-    size_t inverted_index_delta_wins = 0;   ///< columns where delta beats the current representation
-    size_t operator_terms_slack_bytes = 0;  ///< of operator_terms_bytes: unused geometric-growth capacity
+    size_t operator_terms_slack_bytes = 0; ///< of operator_terms_bytes: unused geometric-growth capacity
     /// of state_coeffs_bytes: entries of the state that are not exactly 0.0 -- the sparse HF entry count
     /// at rest, or the dense vector's true nonzero count once a live (Schrödinger) vector exists.
     size_t state_coeffs_nonzero = 0;
@@ -366,9 +363,6 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_dense_bytes += o.inverted_index_dense_bytes;
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
-        inverted_index_delta_bytes += o.inverted_index_delta_bytes;
-        inverted_index_oracle_bytes += o.inverted_index_oracle_bytes;
-        inverted_index_delta_wins += o.inverted_index_delta_wins;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
         state_coeffs_nonzero += o.state_coeffs_nonzero;
         return *this;
@@ -395,10 +389,6 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
         breakdown.inverted_index_dense_bytes = tiers[0];
         breakdown.inverted_index_sparse_bytes = tiers[1];
         breakdown.inverted_index_dense_columns = tiers[2];
-        const auto delta = op.inverted_index_->delta_coded_bytes();
-        breakdown.inverted_index_delta_bytes = delta[0];
-        breakdown.inverted_index_oracle_bytes = delta[1];
-        breakdown.inverted_index_delta_wins = delta[2];
     }
     breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
     // HF phases are unit-magnitude, so at rest the scored-entry count IS the nonzero count; once a dense
