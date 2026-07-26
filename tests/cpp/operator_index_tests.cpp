@@ -90,7 +90,7 @@ BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
 }
 
 BOOST_AUTO_TEST_CASE(width_is_a_construction_invariant) {
-    Store s(4);                    // stride = 1 + 4, fixed at construction
+    Store s(4);                    // stride derived from width 4, fixed at construction
     s.push_back(bs({0, 2, 4, 6})); // a 4-position row fits inline at width 4
     s.reserve(20);                 // capacity only -- width/stride are never touched by reserve
     BOOST_TEST(s.popcount(0) == 4u);
@@ -320,12 +320,12 @@ BOOST_AUTO_TEST_CASE(bulk_insert_across_layers_finds_every_key) {
 // ---------------------------------------------------------------------------------------------
 // Segmented row arena. Rows live in fixed page-scale chunks rather than one geometrically grown
 // buffer, so every row access is one chunk-table load away and slack is bounded by one chunk. Width
-// 32 gives stride 33 -> 128 rows/chunk, the tightest boundary spacing available, so these cases
+// 32 gives the widest stride available, hence the tightest chunk boundary spacing, so these cases
 // cross several chunk boundaries in a few hundred rows.
 // ---------------------------------------------------------------------------------------------
 
 namespace {
-constexpr size_t kNarrowWidth = 32; // stride 33 -> 128 rows per chunk at PosT = uint8_t
+constexpr size_t kNarrowWidth = 32; // the widest inline row -> the fewest rows per chunk
 } // namespace
 
 // Every row must round-trip at every index, including the indices either side of a chunk boundary.
@@ -486,9 +486,138 @@ BOOST_AUTO_TEST_CASE(arena_slack_is_bounded_by_one_chunk) {
                 s.push_back(key3(s.size()));
             }
             BOOST_TEST(s.slack_bytes() < kBound);
-            BOOST_TEST(s.memory_bytes() >= s.size() * (1 + width) * sizeof(Store::PosT));
+            BOOST_TEST(s.memory_bytes() >= s.size() * Store::stride_for_(width) * sizeof(Store::PosT));
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Headerless rows. Positions occupy [0, 2N), so PosT normally has spare codepoints for a terminator
+// and an overflow sentinel, and the leading popcount slot is dropped: stride == inline_width_. The
+// one exception is 2 * NumModes == 256 (NumModes == 128 exactly), where every uint8_t codepoint is a
+// valid position; those widths keep the header, selected by `if constexpr`, NOT by narrowing PosT
+// (which would double the row width at NumModes == 128 -- a far bigger cost than this saves).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+using Store128 = OperatorIndex<128>; // 2 * 128 == 256: no spare codepoint, so the header stays
+using MSet128 = Monomial<128>;
+
+static_assert(std::is_same_v<Store::PosT, std::uint8_t>);
+static_assert(std::is_same_v<Store128::PosT, std::uint8_t>);
+static_assert(Store::kHeaderless, "2N == 64 leaves 192 spare codepoints for the sentinels");
+static_assert(Store::stride_for_(6) == 6, "the headerless layout drops the popcount slot");
+static_assert(!Store128::kHeaderless, "2N == 256 has no spare codepoint and must keep the header");
+static_assert(Store128::stride_for_(6) == 7, "the header layout still costs one slot per row");
+
+MSet128 bs128(const VecZ &r) {
+    return indices_to_bitset<128>(r);
+}
+} // namespace
+
+// The headerless row shapes, all four of them: exactly full (no room for a terminator, recognised by
+// the scan hitting the width limit), short (terminator written), empty (terminator at slot 0), and
+// overflow (sentinel at slot 0). A full row must not run the scan on into the row that follows it.
+BOOST_AUTO_TEST_CASE(headerless_row_shapes_round_trip) {
+    Store s(3); // headerless: stride 3, so a 3-position row has no terminator slot
+    const auto full = bs({0, 1, 2});
+    // bs({0}) sets raw bit 2N-1 == 63, one below kTerminator == 64: the top valid position must never
+    // be mistaken for the terminator.
+    const auto top = bs({0});
+    const MSet empty{};
+    const auto over = bs({0, 1, 2, 3}); // 4 > 3 -> overflow side-map
+
+    s.push_back(full);
+    s.push_back(top);
+    s.push_back(empty);
+    s.push_back(over);
+    s.push_back(full); // a full row as the LAST row too
+
+    BOOST_TEST(s.popcount(0) == 3u); // stops at the width limit, not in row 1
+    BOOST_TEST((s.row(0) == full));
+    BOOST_TEST(s.popcount(1) == 1u);
+    BOOST_TEST((s.row(1) == top));
+    BOOST_TEST(s.popcount(2) == 0u);
+    BOOST_TEST((s.row(2) == empty));
+    BOOST_TEST(s.popcount(3) == 4u); // from the overflow map
+    BOOST_TEST((s.row(3) == over));
+    BOOST_TEST(s.popcount(4) == 3u);
+    BOOST_TEST((s.row(4) == full));
+
+    std::vector<size_t> pos;
+    s.for_each_position(1, [&](size_t b) { pos.push_back(b); });
+    BOOST_TEST(pos.size() == 1u);
+    BOOST_TEST(pos[0] == 63u); // the top valid position, adjacent to the terminator codepoint
+
+    // Every shape must also be findable through the index (row_eq_key sees the same shapes).
+    for (size_t i = 0; i < s.size(); ++i) {
+        s.emplace(s.row(i), i);
+    }
+    BOOST_TEST(*s.find(full) == 0u); // first insert wins; emplace is a no-op on a duplicate
+    BOOST_TEST(*s.find(top) == 1u);
+    BOOST_TEST(*s.find(empty) == 2u);
+    BOOST_TEST(*s.find(over) == 3u);
+
+    // Rewriting a full row as a short one must plant the terminator (no stale third position).
+    s.set(0, top);
+    BOOST_TEST(s.popcount(0) == 1u);
+    BOOST_TEST((s.row(0) == top));
+    // ... and rewriting the overflow row inline must drop the side-map entry.
+    s.set(3, full);
+    BOOST_TEST(s.popcount(3) == 3u);
+    BOOST_TEST((s.row(3) == full));
+}
+
+// The 2N == 256 width keeps the popcount header. Same four row shapes, exercised through the
+// `if constexpr` else-branch so the retained layout cannot rot.
+BOOST_AUTO_TEST_CASE(header_layout_round_trips_when_no_codepoint_is_spare) {
+    Store128 s(4); // header + 4 positions
+    const auto three = bs128({0, 3, 5});
+    const auto full = bs128({1, 2, 250, 255}); // exactly 4; index 255 is raw position 0
+    const MSet128 empty{};
+    const auto over = bs128({0, 1, 2, 3, 4}); // 5 > 4 -> overflow
+
+    s.push_back(three);
+    s.push_back(full);
+    s.push_back(empty);
+    s.push_back(over);
+
+    BOOST_TEST(s.popcount(0) == 3u);
+    BOOST_TEST((s.row(0) == three));
+    BOOST_TEST(s.popcount(1) == 4u);
+    BOOST_TEST((s.row(1) == full));
+    BOOST_TEST(s.popcount(2) == 0u);
+    BOOST_TEST((s.row(2) == empty));
+    BOOST_TEST(s.popcount(3) == 5u);
+    BOOST_TEST((s.row(3) == over));
+
+    for (size_t i = 0; i < s.size(); ++i) {
+        s.emplace(s.row(i), i);
+    }
+    BOOST_TEST(*s.find(three) == 0u);
+    BOOST_TEST(*s.find(full) == 1u);
+    BOOST_TEST(*s.find(empty) == 2u);
+    BOOST_TEST(*s.find(over) == 3u);
+
+    // Enough rows to force rehashes (which re-derive hashes from rows) across chunk boundaries.
+    for (size_t i = 4; i < 500; ++i) {
+        const auto k = bs128({i % 21, 21 + (i / 21) % 21, 42 + (i / 441) % 21});
+        s.push_back(k);
+        s.emplace(k, i);
+    }
+    bool ok = true;
+    for (size_t i = 4; i < 500; ++i) {
+        const auto k = bs128({i % 21, 21 + (i / 21) % 21, 42 + (i / 441) % 21});
+        const auto f = s.find(k);
+        if (!f || *f != i) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    const auto c = s.clone();
+    BOOST_TEST(c->size() == s.size());
+    BOOST_TEST((c->row(1) == full));
+    BOOST_TEST(*c->find(over) == 3u);
 }
 
 // An empty store must report every key missing (find_batch's shard.count == 0 early-out).

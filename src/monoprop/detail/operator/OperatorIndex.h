@@ -41,10 +41,12 @@ public:
  * @brief Operator-term store: entropy-packed position-list rows plus a keyless open-addressing hash
  * index over those rows, in one self-contained object.
  *
- * Rows: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c = ascending set-bit
- * positions. stride_ is fixed for the container's life so row offsets stay stable. inline_width_ is a
- * construction invariant: any width is correct — over-long rows spill losslessly to an overflow map —
- * so callers pass the cutoff that bounds the common case.
+ * Rows are ascending set-bit positions, HEADERLESS wherever PosT has a codepoint to spare above the
+ * valid positions [0, 2N): a sentinel terminator ends a short row and a sentinel at slot 0 marks an
+ * overflow row, so stride_ == inline_width_ with no leading popcount slot (see kHeaderless — only
+ * 2*NumModes == 256 has to keep the header). stride_ is fixed for the container's life so row offsets
+ * stay stable. inline_width_ is a construction invariant: any width is correct — over-long rows spill
+ * losslessly to an overflow map — so callers pass the cutoff that bounds the common case.
  *
  * Rows live in a SEGMENTED arena: a vector of fixed-size, page-scale chunks, never one growing buffer.
  * A single buffer had to grow geometrically (1.5×), because an exact fit would realloc-and-copy the
@@ -55,9 +57,9 @@ public:
  * measure PEAK memory), and stable row addresses as a bonus. Fixed stride is preserved WITHIN a chunk,
  * so a row is one chunk-table load away and find_batch can still prefetch it.
  *
- * The hand-rolled index exists for one
- * capability boost::unordered_flat_set cannot expose: find_batch, a group-prefetch pipelined lookup
- * that overlaps DRAM misses, which the latency-bound resolve phases need.
+ * The hand-rolled index exists for one capability boost::unordered_flat_set cannot expose: find_batch,
+ * a group-prefetch pipelined lookup that overlaps DRAM misses, which the latency-bound resolve phases
+ * need. Its slots are split Swiss/F14 style into a TermIndex array plus a 1-byte tag array.
  *
  * Single-writer: one shard owns its store on one thread (parallelism is cross-shard, up in ShardGroup),
  * so no method locks. Non-copyable/non-movable and heap-owned via unique_ptr; clone() is the single
@@ -93,6 +95,27 @@ public:
     static_assert(kMaxInlinePositions < std::numeric_limits<PosT>::max(),
                   "kOverflowMarker sentinel must not collide with a valid popcount");
 
+    // Row header elision. Positions occupy codepoints [0, 2N), so PosT usually has spare codepoints
+    // above them that can act as sentinels: a TERMINATOR marking "the row ends here" replaces the
+    // leading popcount slot outright, and an OVERFLOW codepoint at slot 0 replaces kOverflowMarker.
+    // That is stride = inline_width_ rather than 1 + inline_width_ -- one byte off every row.
+    //
+    // The exception is 2 * NumModes == 256 with PosT = uint8_t (NumModes == 128 exactly): every
+    // codepoint is a valid position, so there is no sentinel to spare and such widths keep the header.
+    // Narrowing PosT's selection boundary instead would DOUBLE the row width at NumModes == 128, a far
+    // bigger regression than this saves, so the layout is chosen per width with `if constexpr`.
+    //
+    // 2 * NumModes is even and so is the codepoint count, so the spare count is never exactly 1: a
+    // headerless width always has BOTH sentinels, and the "signal overflow with a full row" fallback
+    // that a single spare codepoint would force is unreachable. A row holding exactly inline_width_
+    // positions carries no terminator and is recognised by the scan hitting the width limit.
+    static constexpr size_t kPosCodepoints = static_cast<size_t>(std::numeric_limits<PosT>::max()) + 1;
+    static constexpr size_t kSparePosCodepoints = kPosCodepoints - 2 * NumModes;
+    static_assert(kSparePosCodepoints != 1, "a single spare position codepoint should be impossible");
+    static constexpr bool kHeaderless = kSparePosCodepoints >= 2;
+    static constexpr PosT kTerminator = static_cast<PosT>(2 * NumModes);
+    static constexpr PosT kOverflowPos = static_cast<PosT>(kHeaderless ? 2 * NumModes + 1 : 0);
+
     // Valid term indices are < kIndexCeiling (check_index_fits throws at the ceiling), so the
     // all-ones TermIndex is free to mark an empty slot.
     static constexpr size_t kIndexCeiling = static_cast<size_t>(std::numeric_limits<TermIndex>::max());
@@ -115,11 +138,15 @@ public:
         return std::clamp(rows, kMinChunkRows, kMaxChunkRows);
     }
 
+    // Stride for a given inline width: the positions, plus a leading popcount slot only for the widths
+    // that have no spare sentinel codepoint (see kHeaderless).
+    static constexpr auto stride_for_(size_t inline_width) -> size_t { return inline_width + (kHeaderless ? 0 : 1); }
+
     // The inline width (hence stride) is a construction invariant: any width is correct, since
     // over-long rows spill to overflow losslessly.
     explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
-          stride_(1 + inline_width_),
+          stride_(stride_for_(inline_width_)),
           chunk_log_(static_cast<size_t>(std::countr_zero(chunk_rows_for_(stride_)))),
           chunk_mask_(chunk_rows_for_(stride_) - 1) {}
     OperatorIndex(const OperatorIndex &) = delete;
@@ -176,56 +203,67 @@ public:
 
     auto push_back(const value_type &maj) -> void { set(grow_rows_geometric(1), maj); }
 
-    // Write row i from `maj` (grown-but-uninitialized or a prior value). Never pre-reads the row header
-    // (freshly grown headers are indeterminate); a stale overflow entry at i, if any, is dropped — cheap
-    // when the overflow map is empty, which is the common case.
+    // Write row i from `maj` (grown-but-uninitialized or a prior value). Never pre-reads the row's own
+    // header/terminator (freshly grown rows are indeterminate); a stale overflow entry at i, if any, is
+    // dropped — cheap when the overflow map is empty, which is the common case.
     auto set(size_t i, const value_type &maj) -> void {
         const size_t c = maj.count();
         PosT *row = row_ptr(i);
         if (c > inline_width_) {
-            row[0] = kOverflowMarker;
+            row[0] = kHeaderless ? kOverflowPos : kOverflowMarker;
             overflow_[i] = maj;
             return;
         }
         if (!overflow_.empty()) {
             overflow_.erase(i);
         }
-        row[0] = static_cast<PosT>(c);
-        PosT *out = row + 1;
+        PosT *out = positions_of(row);
+        if constexpr (!kHeaderless) {
+            row[0] = static_cast<PosT>(c);
+        }
         for (size_t b = maj.find_first(); b < maj.size(); b = maj.find_next(b)) {
             *out++ = static_cast<PosT>(b);
+        }
+        if constexpr (kHeaderless) {
+            // A row holding exactly inline_width_ positions is full: there is no slot for a terminator
+            // and none is needed, since the scan stops at the width limit.
+            if (c < inline_width_) {
+                *out = kTerminator;
+            }
         }
     }
 
     [[nodiscard]] auto row(size_t i) const -> value_type {
         const PosT *row = row_ptr(i);
-        if (row[0] == kOverflowMarker) {
+        const size_t c = inline_count(row);
+        if (c == kOverflowRow) {
             return overflow_.at(i);
         }
         value_type maj;
-        const PosT c = row[0];
+        const PosT *pos = positions_of(row);
         for (size_t j = 0; j < c; ++j) {
-            maj.set(row[1 + j]);
+            maj.set(pos[j]);
         }
         return maj;
     }
     template <typename Fn>
     auto for_each_position(size_t i, Fn &&fn) const -> void {
         const PosT *row = row_ptr(i);
-        if (row[0] == kOverflowMarker) {
+        const size_t c = inline_count(row);
+        if (c == kOverflowRow) {
             const auto &m = overflow_.at(i);
             for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
                 fn(b);
             }
             return;
         }
-        const PosT c = row[0];
+        const PosT *pos = positions_of(row);
         for (size_t j = 0; j < c; ++j) {
-            fn(static_cast<size_t>(row[1 + j]));
+            fn(static_cast<size_t>(pos[j]));
         }
     }
     [[nodiscard]] auto popcount(size_t i) const -> size_t {
-        if (const PosT c = row_ptr(i)[0]; c != kOverflowMarker) {
+        if (const size_t c = inline_count(row_ptr(i)); c != kOverflowRow) {
             return c;
         }
         return overflow_.at(i).count();
@@ -445,6 +483,33 @@ private:
         }
     }
 
+    // inline_count()'s "this row spilled to the overflow side-map" result.
+    static constexpr size_t kOverflowRow = std::numeric_limits<size_t>::max();
+
+    // The two primitives that hide the header/headerless split from every row reader: where a row's
+    // positions start, and how many of them there are.
+    [[nodiscard]] static constexpr auto positions_of(const PosT *row) -> const PosT * {
+        return row + (kHeaderless ? 0 : 1);
+    }
+    [[nodiscard]] static constexpr auto positions_of(PosT *row) -> PosT * { return row + (kHeaderless ? 0 : 1); }
+    [[nodiscard]] auto inline_count(const PosT *row) const -> size_t {
+        if constexpr (kHeaderless) {
+            if (row[0] == kOverflowPos) {
+                return kOverflowRow;
+            }
+            // Scan to the terminator, or to the width limit for an exactly-full row. Bounded by
+            // inline_width_ elements, all within the row's own (already-touched) cache line(s).
+            size_t c = 0;
+            while (c < inline_width_ && row[c] != kTerminator) {
+                ++c;
+            }
+            return c;
+        }
+        else {
+            return row[0] == kOverflowMarker ? kOverflowRow : static_cast<size_t>(row[0]);
+        }
+    }
+
     // Single point of row addressing: every reader and writer goes through these. Stride is fixed
     // within a chunk, so the returned span [p, p + stride_) is the whole row -- which is what lets
     // find_batch prefetch a candidate row from its index alone. One extra load, from a chunk table
@@ -483,19 +548,41 @@ private:
     // popcount byte first, so a false h prefilter match usually costs one byte compare.
     [[nodiscard]] auto row_eq_key(size_t i, const key_type &q) const -> bool {
         const PosT *row = row_ptr(i);
-        if (row[0] == kOverflowMarker) {
-            return overflow_.at(i) == q;
+        if constexpr (kHeaderless) {
+            if (row[0] == kOverflowPos) {
+                return overflow_.at(i) == q;
+            }
+            // SINGLE pass, deliberately not inline_count() + a position walk: this is the confirm on
+            // every index hit, and counting first then re-walking measured ~10% slower on find_batch.
+            // Testing positions as they are scanned costs the same reads as the header layout's
+            // "read popcount, then walk", and rejects a wrong row on its first mismatching position.
+            size_t c = 0;
+            for (; c < inline_width_; ++c) {
+                const PosT p = row[c];
+                if (p == kTerminator) {
+                    break;
+                }
+                if (!q.test(p)) {
+                    return false;
+                }
+            }
+            return q.count() == c;
         }
-        const PosT c = row[0];
-        if (q.count() != static_cast<size_t>(c)) {
-            return false;
-        }
-        for (size_t j = 0; j < c; ++j) {
-            if (!q.test(row[1 + j])) {
+        else {
+            if (row[0] == kOverflowMarker) {
+                return overflow_.at(i) == q;
+            }
+            const size_t c = static_cast<size_t>(row[0]);
+            if (q.count() != c) {
                 return false;
             }
+            for (size_t j = 0; j < c; ++j) {
+                if (!q.test(row[1 + j])) {
+                    return false;
+                }
+            }
+            return true;
         }
-        return true;
     }
 
     static auto check_index_fits(size_t value) -> void {
