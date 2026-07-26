@@ -361,7 +361,7 @@ jobs:
             --cobertura cpp-coverage-python.xml
 
       - name: Upload C++ coverage to Codecov
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: cpp-coverage-python.xml
