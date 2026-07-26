@@ -14,8 +14,9 @@
 
 """Monomial propagator base class.
 
-Shared engine for the two concrete simulators (:class:`~monoprop.majorana_propagator.
-MajoranaPropagator` and :class:`~monoprop.pauli_propagator.PauliPropagator`). Both wrap the
+Shared engine for the two concrete simulators
+([MajoranaPropagator][monoprop.majorana_propagator.MajoranaPropagator] and
+[PauliPropagator][monoprop.pauli_propagator.PauliPropagator]). Both wrap the
 compiled C++ Majorana simulator and differ only in how they are constructed (which operator
 family they accept); the graph building, evaluation, and introspection surface lives here.
 
@@ -58,15 +59,15 @@ class MonomialPropagator(ABC):
     """Abstract base for the classical monomial-propagation simulators.
 
     The propagation graph owns the gate information; evaluation methods
-    (:meth:`expectation_value`, :meth:`gradient`, ...) take only ``parameters``.
-    Concrete subclasses implement :meth:`__init__` (resolving their operator family to a
-    :class:`~monoprop.majorana.MajoranaOperator` and calling :meth:`_init_simulator`)
-    and :meth:`_circuit_gates` (validating the circuit's gate family).
+    ([expectation_value][], [gradient][], ...) take only ``parameters``.
+    Concrete subclasses implement ``__init__`` (resolving their operator family to a
+    [MajoranaOperator][monoprop.majorana.MajoranaOperator] and calling `_init_simulator`)
+    and `_circuit_gates` (validating the circuit's gate family).
 
     .. note::
         **Incremental building and gate order.** In the Heisenberg picture the
         Heisenberg evolution applies gates back-to-front, so each
-        :meth:`build_graph` / :meth:`propagate` call consumes its gate
+        [build_graph][] / [propagate][] call consumes its gate
         sequence in reverse. Splitting one circuit into forward chunks across several
         calls is therefore *not* equivalent to a single call with the whole sequence:
         the chunks are each reversed but not globally reordered. In the Schrodinger
@@ -97,7 +98,7 @@ class MonomialPropagator(ABC):
         """Dispatch to the compiled per-mode simulator and record shared state.
 
         Called by each concrete subclass's ``__init__`` once it has resolved its operator
-        family to a :class:`~monoprop.majorana.MajoranaOperator`. The cutoff ``basis_change``
+        family to a [MajoranaOperator][monoprop.majorana.MajoranaOperator]. The cutoff ``basis_change``
         is an internal detail chosen by the subclass (``None`` for a native Majorana
         propagator, Jordan-Wigner for a qubit one) -- it is not part of the public surface.
         The operator carries its own mode count (a required constructor argument), so the
@@ -143,15 +144,15 @@ class MonomialPropagator(ABC):
         """Construct a propagator from a circuit and propagate it in one step.
 
         Uses ``circuit.initial_state`` as the reference state and evolves ``circuit`` *in
-        place* via :meth:`propagate` -- a one-shot contraction that stores **no** graph. The
+        place* via [propagate][] -- a one-shot contraction that stores **no** graph. The
         observable (``initial_operator``) and truncation settings (``cutoff`` and the rest of
         ``config``) are supplied separately -- they are not part of the circuit.
 
-        Read the result off the evolved operator/state with :meth:`evolved_operator` (or
-        :meth:`expectation_value`) taking **no** parameters -- the circuit's angles are already
+        Read the result off the evolved operator/state with [evolved_operator][] (or
+        [expectation_value][]) taking **no** parameters -- the circuit's angles are already
         applied. This is the memory-lean path for a single evaluation; if you instead need a
         reusable graph to re-evaluate at many angles (or to take gradients), construct the
-        propagator directly and call :meth:`build_graph`.
+        propagator directly and call [build_graph][].
 
         Args:
             circuit: The circuit whose gates and initial state define the evolution.
@@ -169,10 +170,10 @@ class MonomialPropagator(ABC):
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Validate the circuit's gate family and return its gates for expansion.
 
-        There is a single :class:`~monoprop.circuit.Circuit` type; the family is carried by
-        the gates (see :attr:`~monoprop.circuit.Circuit.family`). Each concrete propagator
+        There is a single [Circuit][monoprop.circuit.Circuit] type; the family is carried by
+        the gates (see [family][monoprop.circuit.Circuit.family]). Each concrete propagator
         accepts one family and rejects the other; the shared conversion lives in
-        :func:`~monoprop.circuit.expand_monomials`.
+        [expand_monomials][monoprop.circuit.expand_monomials].
         """
         raise NotImplementedError
 
@@ -239,7 +240,7 @@ class MonomialPropagator(ABC):
         independently.
 
         Args:
-            circuit: Gates to append, as a :class:`~monoprop.circuit.Circuit`.
+            circuit: Gates to append, as a [Circuit][monoprop.circuit.Circuit].
             seed_parameters: The full parameter vector covering the whole accumulated graph,
                 used to regenerate the coefficient seed (by contracting the existing graph) so
                 coefficient truncation sees realistic coefficients when extending. Only needed
@@ -298,14 +299,14 @@ class MonomialPropagator(ABC):
     ) -> None:
         """Evolve and contract immediately, without storing a graph.
 
-        More memory-efficient than :meth:`build_graph` because it does not retain
+        More memory-efficient than [build_graph][] because it does not retain
         the propagation graph; use it for a single contraction at the circuit's parameters
         rather than repeated re-evaluation.
 
         Args:
             circuit: Gates to apply and the angle values to apply them at, as a
-                :class:`~monoprop.circuit.Circuit`.
-            only_rotate_len_k: See :meth:`build_graph`.
+                [Circuit][monoprop.circuit.Circuit].
+            only_rotate_len_k: See [build_graph][].
         """
         only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
             only_rotate_len_k
@@ -335,7 +336,7 @@ class MonomialPropagator(ABC):
 
         A single-term gate expands to one graph layer; a multi-term gate expands to several
         layers sharing one gate, so ``n_gates <= graph_layers``. Stays correct after a graph
-        prefix is consumed by :meth:`contract_partially` / :meth:`propagate`.
+        prefix is consumed by [contract_partially][] / [propagate][].
         """
         return self._simulator.n_gates()
 
@@ -345,9 +346,9 @@ class MonomialPropagator(ABC):
 
         Entry ``i`` is the variational-parameter index driving the ``i``-th graph layer (a
         generated Majorana monomial), in the same order as the parameter vector passed to
-        :meth:`expectation_value`. This is the graph's native (per-monomial) mapping, which
+        [expectation_value][]. This is the graph's native (per-monomial) mapping, which
         is finer-grained than the per-gate mapping of the authoring
-        :class:`~monoprop.circuit.Circuit` when gates bundle several monomials.
+        [Circuit][monoprop.circuit.Circuit] when gates bundle several monomials.
         """
         return list(self._simulator.parameter_mapping)
 
@@ -360,11 +361,11 @@ class MonomialPropagator(ABC):
         graph. The mapping may be given at either granularity and must be contiguous
         ``0..n-1``:
 
-        - **per graph layer** (length :attr:`graph_layers`, in the parameter-vector order):
+        - **per graph layer** (length [graph_layers][], in the parameter-vector order):
           relabels each layer directly.
-        - **per gate** (length :attr:`n_gates`, indexed by gate): expanded to per-layer via
+        - **per gate** (length [n_gates][], indexed by gate): expanded to per-layer via
           each layer's gate, so a multi-term gate's layers stay tied. This is the
-          granularity of the authoring :class:`~monoprop.circuit.Circuit`'s mapping.
+          granularity of the authoring [Circuit][monoprop.circuit.Circuit]'s mapping.
 
         When the two lengths coincide the per-layer reading is used. Functionals created
         earlier keep the mapping they were built with; rebuild a functional to pick up the
@@ -396,7 +397,7 @@ class MonomialPropagator(ABC):
 
         Args:
             parameters: Variational parameter values, as a sequence in parameter-index
-                order, or a :class:`~monoprop.circuit.Circuit` (its parameters are used).
+                order, or a [Circuit][monoprop.circuit.Circuit] (its parameters are used).
                 ``None`` evaluates the current operator with an empty parameter vector.
 
         Returns:
@@ -413,7 +414,7 @@ class MonomialPropagator(ABC):
         Both quantities are computed in a single backward pass over the graph.
 
         Args:
-            parameters: Variational parameter values (see :meth:`expectation_value`).
+            parameters: Variational parameter values (see [expectation_value][]).
 
         Returns:
             A tuple ``(expectation_value, gradient)``, where ``gradient`` is a NumPy
@@ -431,14 +432,14 @@ class MonomialPropagator(ABC):
         """Compute the gradient at ``parameters``.
 
         Args:
-            parameters: Variational parameter values (see :meth:`expectation_value`).
+            parameters: Variational parameter values (see [expectation_value][]).
 
         Returns:
             The gradient as a NumPy array of ``float64`` values, in canonical
             parameter-axis order.
 
         Note:
-            Internally calls :meth:`expectation_value_and_gradient` and returns only its
+            Internally calls [expectation_value_and_gradient][] and returns only its
             gradient component.
         """
         return self.expectation_value_and_gradient(parameters)[1]
@@ -470,12 +471,12 @@ class MonomialPropagator(ABC):
     ) -> Callable[..., tuple]:
         """Return a reusable callable computing (expectation value, gradient).
 
-        Like :meth:`expectation_value_functional`, but the returned callable computes
+        Like [expectation_value_functional][], but the returned callable computes
         both the expectation value and the full parameter gradient in a single backward
         pass over the graph.
 
         Args:
-            pare_threshold: See :meth:`expectation_value_functional`.
+            pare_threshold: See [expectation_value_functional][].
 
         Returns:
             A callable ``fn(parameters=None) -> (float, np.ndarray)``, where the
@@ -504,7 +505,7 @@ class MonomialPropagator(ABC):
         be baked in once instead of being replayed on every evaluation.
 
         Args:
-            parameters: Variational parameter values (see :meth:`expectation_value`).
+            parameters: Variational parameter values (see [expectation_value][]).
             inplace: If ``True`` (default), update the internal state, consuming the
                 graph. If ``False``, leave the stored graph untouched and only return
                 the contracted coefficients, so the same graph can be reused with other
@@ -527,11 +528,11 @@ class MonomialPropagator(ABC):
     ) -> dict[tuple[int, ...], complex]:
         """Return the evolved operator/state as a dict, without modifying state.
 
-        Equivalent to :meth:`contract_partially` with ``inplace=False``, returned as a
+        Equivalent to [contract_partially][] with ``inplace=False``, returned as a
         mapping keyed by Majorana indices and without touching the simulator state.
 
         Args:
-            parameters: Variational parameter values (see :meth:`expectation_value`).
+            parameters: Variational parameter values (see [expectation_value][]).
             atol: Absolute tolerance for filtering small coefficients; terms with
                 ``|coeff| < atol`` are dropped. Defaults to ``1e-12``; set to ``0.0`` to
                 keep all terms.
@@ -627,7 +628,7 @@ class MonomialPropagator(ABC):
     def cutoff_type(self) -> str:
         """Current cutoff type (``"length"`` or ``"support"``).
 
-        Read-only on the base; :class:`~monoprop.majorana_propagator.MajoranaPropagator`
+        Read-only on the base; [MajoranaPropagator][monoprop.majorana_propagator.MajoranaPropagator]
         exposes a setter since either scheme is valid there.
         """
         return self._simulator.cutoff_type
@@ -635,7 +636,7 @@ class MonomialPropagator(ABC):
     def _bind(self, parameters: ParameterValues) -> list[float]:
         """Resolve ``parameters`` into a dense vector in parameter-index order.
 
-        Accepts a :class:`~monoprop.circuit.Circuit` (its ``parameters`` are used), a plain
+        Accepts a [Circuit][monoprop.circuit.Circuit] (its ``parameters`` are used), a plain
         sequence of floats, or ``None`` (an empty vector).
         """
         if isinstance(parameters, Circuit):
