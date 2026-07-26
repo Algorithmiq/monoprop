@@ -15,6 +15,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -50,6 +51,12 @@ static_assert(!std::is_copy_constructible_v<Store>, "OperatorIndex must remain n
 
 MSet bs(const VecZ &r) {
     return indices_to_bitset<N>(r);
+}
+
+// A bijection from [0, 21^3) to distinct 3-position monomials: three disjoint position bands inside
+// the 2N = 64 valid indices, so every key is genuinely distinct and stays inline at any width >= 3.
+MSet key3(size_t i) {
+    return bs({i % 21, 21 + (i / 21) % 21, 42 + (i / 441) % 21});
 }
 } // namespace
 
@@ -201,6 +208,113 @@ BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
     // Spot-check the two kinds explicitly.
     BOOST_TEST(out[0] == 0u);               // first present key -> row 0
     BOOST_TEST(out[1] == Store::kNotFound); // first absent key
+}
+
+// ---------------------------------------------------------------------------------------------
+// Split (index + 1-byte tag) table. The table no longer stores a reconstructible 32-bit hash, so a
+// rehash re-derives every surviving entry's hash from its row. These cases pin that path.
+// ---------------------------------------------------------------------------------------------
+
+// The slot is one TermIndex plus one tag byte, so the index arrays must measure exactly
+// slot_count * (sizeof(TermIndex) + 1) bytes at a power-of-two slot count. Width-agnostic: this
+// holds for both the default u32 and the -Dmonoprop_WIDE_TERM_INDEX u64 build.
+BOOST_AUTO_TEST_CASE(index_slot_is_term_index_plus_one_tag_byte) {
+    constexpr size_t kSlotBytes = sizeof(TermIndex) + 1;
+    Store s;
+    for (size_t n : {size_t{0}, size_t{100}, size_t{5000}}) {
+        for (size_t i = s.size(); i < n; ++i) {
+            s.push_back(key3(i));
+            s.emplace(key3(i), i);
+        }
+        const size_t array_bytes = s.index_estimated_memory_bytes() - sizeof(Store);
+        BOOST_TEST(array_bytes % kSlotBytes == 0u);
+        const size_t slots = array_bytes / kSlotBytes;
+        BOOST_TEST(std::has_single_bit(slots));
+        BOOST_TEST(slots * 7u >= s.size() * 10u); // load factor stayed at or under 0.7
+    }
+}
+
+// Many rehashes, each re-deriving hashes from rows: every key must still be findable, and find_batch
+// must still agree with find (a 1/256 tag collision resolves through the exact-find fallback).
+BOOST_AUTO_TEST_CASE(rehash_rederives_hashes_from_rows) {
+    constexpr size_t kRows = 4000; // 16 -> 8192 slots: nine doublings
+    Store s;
+    std::vector<MSet> keys;
+    keys.reserve(kRows);
+    for (size_t i = 0; i < kRows; ++i) {
+        keys.push_back(key3(i));
+        s.push_back(keys.back());
+        s.emplace(keys.back(), i); // emplace drives rehash_if_needed one entry at a time
+    }
+    bool all_found = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        const auto f = s.find(keys[i]);
+        if (!f || *f != i) {
+            all_found = false;
+        }
+    }
+    BOOST_TEST(all_found);
+
+    std::vector<size_t> out(kRows, 424242);
+    s.find_batch(keys.data(), kRows, out.data());
+    bool batch_agrees = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        if (out[i] != i) {
+            batch_agrees = false;
+        }
+    }
+    BOOST_TEST(batch_agrees);
+}
+
+// row_hash() of an overflow row must go through the side-map, not the (kOverflowMarker) header.
+// Width 1 sends every 2-position row to overflow, so this rehashes a table of overflow-only rows.
+BOOST_AUTO_TEST_CASE(rehash_rederives_hashes_of_overflow_rows) {
+    constexpr size_t kRows = 300;
+    Store s(1); // width 1: any 2-position row overflows
+    for (size_t i = 0; i < kRows; ++i) {
+        const auto key = bs({i % 30, 30 + (i / 30) % 30});
+        s.push_back(key);
+        s.emplace(key, i);
+    }
+    bool ok = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        const auto key = bs({i % 30, 30 + (i / 30) % 30});
+        const auto f = s.find(key);
+        if (!f || *f != i || s.popcount(i) != 2u || !(s.row(i) == key)) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    // ... and the clone of an all-overflow store re-derives them against its OWN rows.
+    const auto c = s.clone();
+    BOOST_TEST(*c->find(bs({7, 37})) == 217u); // i=217 -> {217%30=7, 30+(217/30)%30=37}
+}
+
+// bulk_insert right-sizes the table up front, then inserts without rehashing. Driven in successive
+// "layers" so the reserve path is exercised against a table that already holds entries.
+BOOST_AUTO_TEST_CASE(bulk_insert_across_layers_finds_every_key) {
+    Store s;
+    const auto key_of = [](size_t i) { return key3(i); };
+    size_t total = 0;
+    for (size_t layer_n : {size_t{1}, size_t{17}, size_t{500}, size_t{2500}}) {
+        const size_t base = s.grow_rows_geometric(layer_n);
+        BOOST_TEST(base == total);
+        for (size_t k = 0; k < layer_n; ++k) {
+            s.set(base + k, key_of(base + k));
+        }
+        s.bulk_insert(layer_n, base, [&](size_t k) { return key_of(base + k); });
+        total += layer_n;
+    }
+    BOOST_TEST(s.size() == total);
+    bool ok = true;
+    for (size_t i = 0; i < total; ++i) {
+        const auto f = s.find(key_of(i));
+        if (!f || *f != i) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    BOOST_TEST(!s.find(bs({0, 1, 2})).has_value()); // never inserted
 }
 
 // An empty store must report every key missing (find_batch's shard.count == 0 early-out).

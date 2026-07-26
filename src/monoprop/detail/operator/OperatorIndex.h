@@ -51,6 +51,11 @@ public:
  * Single-writer: one shard owns its store on one thread (parallelism is cross-shard, up in ShardGroup),
  * so no method locks. Non-copyable/non-movable and heap-owned via unique_ptr; clone() is the single
  * deep-copy (called only on an idle store).
+ *
+ * Index contract: a row's key is immutable once indexed. The table stores an 8-bit tag rather than a
+ * reconstructible hash, so a rehash re-derives each entry's hash from its row (see row_hash); set()ing
+ * a *different* key into an already-indexed row therefore leaves the table inconsistent. Production
+ * writes rows only in the grow → assign → bulk_insert order, which never violates this.
  */
 template <size_t NumModes>
 class OperatorIndex {
@@ -103,9 +108,11 @@ public:
         out->size_ = size_;
         out->overflow_ = overflow_;
         out->reserve_index(table_.count);
-        for (const Slot &e : table_.slots) {
-            if (e.idx != kEmptySlot) {
-                out->insert_slot_(e.idx, e.h);
+        // The clone's rows/overflow are already in place, so it can re-derive each key's hash from its
+        // own rows -- the split table stores only an 8-bit tag, not a reconstructible 32-bit hash.
+        for (const TermIndex e : table_.idx) {
+            if (e != kEmptySlot) {
+                out->insert_slot_(e, out->row_hash(static_cast<size_t>(e)));
             }
         }
         return out;
@@ -142,7 +149,7 @@ public:
     // when the overflow map is empty, which is the common case.
     auto set(size_t i, const value_type &maj) -> void {
         const size_t c = maj.count();
-        PosT *row = &rows_[i * stride_];
+        PosT *row = row_ptr(i);
         if (c > inline_width_) {
             row[0] = kOverflowMarker;
             overflow_[i] = maj;
@@ -159,34 +166,34 @@ public:
     }
 
     [[nodiscard]] auto row(size_t i) const -> value_type {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
+        const PosT *row = row_ptr(i);
+        if (row[0] == kOverflowMarker) {
             return overflow_.at(i);
         }
         value_type maj;
-        const PosT *pos = &rows_[i * stride_ + 1];
+        const PosT c = row[0];
         for (size_t j = 0; j < c; ++j) {
-            maj.set(pos[j]);
+            maj.set(row[1 + j]);
         }
         return maj;
     }
     template <typename Fn>
     auto for_each_position(size_t i, Fn &&fn) const -> void {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
+        const PosT *row = row_ptr(i);
+        if (row[0] == kOverflowMarker) {
             const auto &m = overflow_.at(i);
             for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
                 fn(b);
             }
             return;
         }
-        const PosT *pos = &rows_[i * stride_ + 1];
+        const PosT c = row[0];
         for (size_t j = 0; j < c; ++j) {
-            fn(static_cast<size_t>(pos[j]));
+            fn(static_cast<size_t>(row[1 + j]));
         }
     }
     [[nodiscard]] auto popcount(size_t i) const -> size_t {
-        if (const PosT c = rows_[i * stride_]; c != kOverflowMarker) {
+        if (const PosT c = row_ptr(i)[0]; c != kOverflowMarker) {
             return c;
         }
         return overflow_.at(i).count();
@@ -203,32 +210,36 @@ public:
         if (table_.count == 0) {
             return std::nullopt;
         }
+        const uint8_t t = tag_of(h);
         size_t s = spread(h) & table_.mask;
         for (;; s = (s + 1) & table_.mask) {
-            const Slot &e = table_.slots[s];
-            if (e.idx == kEmptySlot) {
+            const TermIndex e = table_.idx[s];
+            if (e == kEmptySlot) {
                 return std::nullopt;
             }
-            if (e.h == h && row_eq_key(static_cast<size_t>(e.idx), key)) {
-                return static_cast<size_t>(e.idx);
+            if (table_.tags[s] == t && row_eq_key(static_cast<size_t>(e), key)) {
+                return static_cast<size_t>(e);
             }
         }
     }
 
     // Group-prefetch batch find: out[i] = row index of keys[i], or kMissingIndex. Same result as n
-    // find() calls, but overlaps DRAM misses via a per-group hash/probe/confirm pipeline. An h
+    // find() calls, but overlaps DRAM misses via a per-group hash/probe/confirm pipeline. A tag
     // collision falls back to an exact find. MUST NOT run concurrently with inserts.
     auto find_batch(const key_type *keys, size_t n, size_t *out) const -> void {
         static constexpr size_t G = 16; // keys prefetched together per pipeline pass
-        std::array<uint32_t, G> hh;
+        std::array<uint8_t, G> tt;
         std::array<size_t, G> sp;
         std::array<TermIndex, G> cand;
         for (size_t base = 0; base < n; base += G) {
             const size_t g = std::min(G, n - base);
             for (size_t j = 0; j < g; ++j) {
-                hh[j] = fold_hash(keys[base + j]);
-                sp[j] = spread(hh[j]);
-                __builtin_prefetch(&table_.slots[sp[j] & table_.mask], 0, 0);
+                const uint32_t h = fold_hash(keys[base + j]);
+                tt[j] = tag_of(h);
+                sp[j] = spread(h);
+                // Both halves of the split slot are on the probe's critical path.
+                __builtin_prefetch(&table_.idx[sp[j] & table_.mask], 0, 0);
+                __builtin_prefetch(&table_.tags[sp[j] & table_.mask], 0, 0);
             }
             for (size_t j = 0; j < g; ++j) {
                 cand[j] = kEmptySlot;
@@ -237,17 +248,17 @@ public:
                 }
                 size_t s = sp[j] & table_.mask;
                 for (;; s = (s + 1) & table_.mask) {
-                    const Slot &e = table_.slots[s];
-                    if (e.idx == kEmptySlot) {
+                    const TermIndex e = table_.idx[s];
+                    if (e == kEmptySlot) {
                         break;
                     }
-                    if (e.h == hh[j]) {
-                        cand[j] = e.idx;
+                    if (table_.tags[s] == tt[j]) {
+                        cand[j] = e;
                         break;
                     }
                 }
                 if (cand[j] != kEmptySlot) {
-                    __builtin_prefetch(&rows_[static_cast<size_t>(cand[j]) * stride_], 0, 0);
+                    __builtin_prefetch(row_ptr(static_cast<size_t>(cand[j])), 0, 0);
                 }
             }
             for (size_t j = 0; j < g; ++j) {
@@ -255,7 +266,7 @@ public:
                     out[base + j] = static_cast<size_t>(cand[j]);
                 }
                 else if (cand[j] != kEmptySlot) {
-                    // h collision: the first h-match wasn't the key — resolve exactly.
+                    // tag collision: the first tag match wasn't the key — resolve exactly.
                     const auto v = find(keys[base + j]);
                     out[base + j] = v ? *v : kNotFound;
                 }
@@ -270,15 +281,17 @@ public:
     auto emplace(const key_type &key, mapped_type value) -> void {
         check_index_fits(value);
         const uint32_t h = fold_hash(key);
-        table_.rehash_if_needed();
+        rehash_if_needed();
+        const uint8_t t = tag_of(h);
         size_t s = spread(h) & table_.mask;
-        while (table_.slots[s].idx != kEmptySlot) {
-            if (table_.slots[s].h == h && row_eq_key(static_cast<size_t>(table_.slots[s].idx), key)) {
+        while (table_.idx[s] != kEmptySlot) {
+            if (table_.tags[s] == t && row_eq_key(static_cast<size_t>(table_.idx[s]), key)) {
                 return; // key already present — no-op (matches the former set semantics)
             }
             s = (s + 1) & table_.mask;
         }
-        table_.slots[s] = Slot{static_cast<TermIndex>(value), h};
+        table_.idx[s] = static_cast<TermIndex>(value);
+        table_.tags[s] = t;
         ++table_.count;
     }
     // Insert n distinct rows with consecutive indices [base, base+n). Rows MUST already be written.
@@ -288,6 +301,11 @@ public:
             return;
         }
         check_index_fits(base + n - 1);
+        // Right-size the table ONCE up front, to the exact post-insert entry count. Without this the
+        // table doubles its way up from kMinSlots (~17 rehashes over a 10^6-term build) and every
+        // rehash now re-derives each key's hash from its row -- a cost this reserve removes entirely:
+        // the loop below provably never rehashes.
+        reserve_index(table_.count + n);
         for (size_t k = 0; k < n; ++k) {
             insert_slot_(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
         }
@@ -295,9 +313,9 @@ public:
     // Visits every indexed (row, index) pair in table order.
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
-        for (const Slot &e : table_.slots) {
-            if (e.idx != kEmptySlot) {
-                fn(row(static_cast<size_t>(e.idx)), static_cast<size_t>(e.idx));
+        for (const TermIndex e : table_.idx) {
+            if (e != kEmptySlot) {
+                fn(row(static_cast<size_t>(e)), static_cast<size_t>(e));
             }
         }
     }
@@ -308,15 +326,11 @@ public:
     }
 
     auto index_estimated_memory_bytes() const -> size_t {
-        return sizeof(OperatorIndex) + table_.slots.capacity() * sizeof(Slot);
+        return sizeof(OperatorIndex) + table_.idx.capacity() * sizeof(TermIndex)
+               + table_.tags.capacity() * sizeof(uint8_t);
     }
 
 private:
-    struct Slot {
-        TermIndex idx = kEmptySlot;
-        uint32_t h = 0;
-    };
-
     static uint32_t fold_hash(const key_type &q) noexcept {
         const size_t full = MonomialHash<NumModes>{}(q);
         return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
@@ -332,72 +346,103 @@ private:
         x ^= x >> 31;
         return static_cast<size_t>(x);
     }
+    // 8-bit equality pre-filter derived from the 32-bit fold. Bucketing goes through spread(), which
+    // avalanches every input bit, so the low byte is statistically independent of the bucket index; a
+    // tag match that is not a key match costs one extra row_eq_key at a rate of 1/256.
+    static constexpr auto tag_of(uint32_t h) noexcept -> uint8_t { return static_cast<uint8_t>(h); }
+
+    /// Re-derive the fold hash of the key stored in row @p i. The table keeps only an 8-bit tag, so a
+    /// rehash cannot re-place entries from the table alone; the term index IS a pointer to the key, and
+    /// this is how a rehash recovers the full hash. Costs one row materialization per entry moved.
+    [[nodiscard]] auto row_hash(size_t i) const -> uint32_t { return fold_hash(row(i)); }
 
     // One open-addressing table: power-of-2 slot count, linear probing, max load factor 0.7
     // (the group-prefetch win erodes at high load — longer probe chains add un-prefetched reads).
+    //
+    // SPLIT (Swiss/F14) layout: a TermIndex array plus a parallel 1-byte tag array, 5 B/slot in the
+    // default build against the 8 B an interleaved {TermIndex, uint32_t} slot cost (padding included).
+    // The saving is a flat 37.5% at any load factor, and the tag array is far denser per cache line
+    // than interleaved slots. `idx[s] == kEmptySlot` alone marks an empty slot, so `tags[s]` is read
+    // only after the index says the slot is occupied.
     struct Table {
-        std::vector<Slot> slots = std::vector<Slot>(kMinSlots, Slot{});
+        std::vector<TermIndex> idx = std::vector<TermIndex>(kMinSlots, kEmptySlot);
+        std::vector<uint8_t> tags = std::vector<uint8_t>(kMinSlots, uint8_t{0});
         size_t mask = kMinSlots - 1;
         size_t count = 0;
 
-        auto rehash_if_needed() -> void {
-            if ((count + 1) * 10 >= slots.size() * 7) {
-                rehash_to(slots.size() * 2);
-            }
-        }
-        auto rehash_to(size_t new_cap) -> void {
-            new_cap = std::bit_ceil(std::max<size_t>(new_cap, kMinSlots));
-            if (new_cap <= slots.size()) {
-                return;
-            }
-            std::vector<Slot> old = std::move(slots);
-            slots.assign(new_cap, Slot{});
-            mask = new_cap - 1;
-            for (const Slot &e : old) {
-                if (e.idx == kEmptySlot) {
-                    continue;
-                }
-                size_t s = spread(e.h) & mask;
-                while (slots[s].idx != kEmptySlot) {
-                    s = (s + 1) & mask;
-                }
-                slots[s] = e;
-            }
-        }
+        [[nodiscard]] auto slot_count() const -> size_t { return idx.size(); }
     };
     static constexpr size_t kMinSlots = 16;
     // Slot count for `n` entries at ≤0.7 load.
     static auto slots_for_(size_t n) -> size_t { return std::bit_ceil(std::max<size_t>(kMinSlots, n * 10 / 7 + 1)); }
 
+    auto rehash_if_needed() -> void {
+        if ((table_.count + 1) * 10 >= table_.slot_count() * 7) {
+            rehash_to(table_.slot_count() * 2);
+        }
+    }
+    // Grow to >= new_cap slots (rounded up to a power of two) and re-place every entry. Unlike the
+    // former 8-byte layout this cannot re-probe from a stored hash, so each surviving entry's hash is
+    // re-derived from its row via row_hash(). bulk_insert/reserve_index right-size the table up front
+    // so the dominant build path pays this at most once per size class.
+    auto rehash_to(size_t new_cap) -> void {
+        new_cap = std::bit_ceil(std::max<size_t>(new_cap, kMinSlots));
+        if (new_cap <= table_.slot_count()) {
+            return;
+        }
+        const std::vector<TermIndex> old = std::move(table_.idx);
+        table_.idx.assign(new_cap, kEmptySlot);
+        table_.tags.assign(new_cap, uint8_t{0});
+        table_.mask = new_cap - 1;
+        for (const TermIndex e : old) {
+            if (e == kEmptySlot) {
+                continue;
+            }
+            const uint32_t h = row_hash(static_cast<size_t>(e));
+            size_t s = spread(h) & table_.mask;
+            while (table_.idx[s] != kEmptySlot) {
+                s = (s + 1) & table_.mask;
+            }
+            table_.idx[s] = e;
+            table_.tags[s] = tag_of(h);
+        }
+    }
+
+    // Single point of row addressing: every reader and writer goes through these. `stride_` is fixed
+    // for the container's life, so the returned span [p, p + stride_) is the whole row.
+    [[nodiscard]] auto row_ptr(size_t i) const -> const PosT * { return &rows_[i * stride_]; }
+    [[nodiscard]] auto row_ptr(size_t i) -> PosT * { return &rows_[i * stride_]; }
+
     [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
     auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
-    auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
+    auto reserve_index(size_t n) -> void { rehash_to(slots_for_(n + 1)); }
 
     // Insert (idx, h) into the table with NO dup probe — callers on this path insert provably distinct
     // keys (⊕G-injective miss batches, clone re-insertion). Grows the table first if needed.
     auto insert_slot_(TermIndex idx, uint32_t h) -> void {
-        table_.rehash_if_needed();
+        rehash_if_needed();
         size_t s = spread(h) & table_.mask;
-        while (table_.slots[s].idx != kEmptySlot) {
+        while (table_.idx[s] != kEmptySlot) {
             s = (s + 1) & table_.mask;
         }
-        table_.slots[s] = Slot{idx, h};
+        table_.idx[s] = idx;
+        table_.tags[s] = tag_of(h);
         ++table_.count;
     }
 
     // Compare row i against key q without materializing the row (the find confirm). Reads the
     // popcount byte first, so a false h prefilter match usually costs one byte compare.
     [[nodiscard]] auto row_eq_key(size_t i, const key_type &q) const -> bool {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
+        const PosT *row = row_ptr(i);
+        if (row[0] == kOverflowMarker) {
             return overflow_.at(i) == q;
         }
+        const PosT c = row[0];
         if (q.count() != static_cast<size_t>(c)) {
             return false;
         }
-        const PosT *pos = &rows_[i * stride_ + 1];
         for (size_t j = 0; j < c; ++j) {
-            if (!q.test(pos[j])) {
+            if (!q.test(row[1 + j])) {
                 return false;
             }
         }
