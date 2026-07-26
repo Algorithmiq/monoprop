@@ -17,7 +17,9 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <format>
 #include <optional>
+#include <stdexcept>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -33,6 +35,10 @@ namespace monoprop {
 
 /**
  * @brief Converts a vector of Majorana indices to a bitset representation
+ *
+ * @warning Unchecked: `2 * NumModes - 1 - bit_loc` underflows for an out-of-range index and
+ * Monomial::set is noexcept, so the result is an out-of-bounds write. Use
+ * indices_to_bitset_checked() for anything that reaches this from user input.
  */
 template <size_t NumModes>
 auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
@@ -41,6 +47,28 @@ auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
         bs.set(2 * NumModes - 1 - bit_loc); // MSb0 convention: index 0 maps to the top bit
     }
     return bs;
+}
+
+/**
+ * @brief indices_to_bitset() with a bound on each index.
+ *
+ * The bound is the LOGICAL width (`2 * logical_num_modes`), not the storage width `2 * NumModes`:
+ * a propagator over fewer modes than its instantiation must still reject indices outside its own
+ * system. Every conversion of externally-supplied indices (initial operator, gate generators,
+ * basis-change rows) goes through here.
+ *
+ * @throws std::runtime_error naming the offending index (matching the constructor's existing
+ * contract, so the Python-visible exception type is unchanged).
+ */
+template <size_t NumModes>
+auto indices_to_bitset_checked(const VecZ &arr, size_t max_index) -> Monomial<NumModes> {
+    for (const auto &bit_loc : arr) {
+        if (bit_loc >= max_index) {
+            throw std::runtime_error(
+                std::format("Majorana/Pauli index {} is out of range; must be less than {}.", bit_loc, max_index));
+        }
+    }
+    return indices_to_bitset<NumModes>(arr);
 }
 
 /**

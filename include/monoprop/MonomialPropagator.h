@@ -186,6 +186,7 @@ public:
 
     /// @brief Update the cutoff type and regenerate the cutoff function.
     auto update_cutoff_type(CutoffType new_cutoff_type) -> void {
+        validate_cutoff_config_(new_cutoff_type, basis_change_);
         cutoff_type_ = new_cutoff_type;
         regenerate_cutoff_fn_();
         if (shard_group_) {
@@ -195,6 +196,7 @@ public:
 
     /// @brief Update the basis change and regenerate the cutoff function (std::nullopt disables it).
     auto update_basis_change(std::optional<std::vector<VecZ>> new_basis_change) -> void {
+        validate_cutoff_config_(cutoff_type_, new_basis_change);
         basis_change_ = new_basis_change;
         regenerate_cutoff_fn_();
         if (shard_group_) {
@@ -380,6 +382,12 @@ private:
     auto for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void;
 
     auto regenerate_cutoff_fn_() -> void;
+
+    /// @brief Reject a (cutoff_type, basis_change) pair this algebra or system size cannot honour.
+    /// Shared by the constructor and the update_* setters, which previously wrote straight through
+    /// to regenerate_cutoff_fn_() and could install a configuration construction rejects.
+    auto validate_cutoff_config_(CutoffType cutoff_type, const std::optional<std::vector<VecZ>> &basis_change) const
+        -> void;
 
     auto initialize_operator_caches_() -> void;
 

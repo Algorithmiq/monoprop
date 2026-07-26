@@ -1,0 +1,91 @@
+# Copyright 2026 Algorithmiq
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Coverage for the cutoff basis change.
+
+The front-ends construct with ``basis_change=None``, so the only way in is the engine's
+``basis_change`` setter. It writes straight through to the cutoff regeneration, which indexes
+``[0, 2*num_modes)`` unconditionally -- these tests pin both the physics and the guards.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from monoprop import (
+    Circuit,
+    MajoranaOperator,
+    MajoranaPropagator,
+    PauliOperator,
+    PauliPropagator,
+    jordan_wigner_basis_change,
+)
+
+N_MODES = 6
+
+
+def _propagator() -> MajoranaPropagator:
+    return MajoranaPropagator(
+        MajoranaOperator({(0,): 1.0}, N_MODES), [], cutoff=N_MODES // 2
+    )
+
+
+def test_basis_change() -> None:
+    """A Jordan-Wigner cutoff basis reproduces the exact single-rotation result."""
+    propagator = _propagator()
+    propagator._simulator.basis_change = jordan_wigner_basis_change(N_MODES)
+    propagator.propagate(
+        Circuit.from_dense_arrays(
+            majoranas=[(5,)], gen_coeffs=[-1.0], param_inds=[0], parameters=[1.0]
+        )
+    )
+
+    evolved = propagator.evolved_operator()
+
+    assert list(evolved) == [(0,)]
+    assert np.isclose(evolved[(0,)].real, np.cos(2 * 1.0))
+
+
+@pytest.mark.parametrize(
+    ("basis_change", "match"),
+    [
+        ([[0]], "exactly 2\\*logical_num_modes"),
+        ([[0]] * (2 * N_MODES - 1), "exactly 2\\*logical_num_modes"),
+        ([[2 * N_MODES]] * (2 * N_MODES), "out of range"),
+    ],
+)
+def test_malformed_basis_change_rejected(basis_change, match) -> None:
+    """A basis change that would be read out of bounds is rejected, not silently indexed.
+
+    The Python setter that used to validate this was removed, leaving the raw engine property
+    exposed: a short list made the cutoff regeneration index past the end of the vector, and a
+    row naming a slot outside the system underflowed into an out-of-bounds bitset write.
+    """
+    with pytest.raises((ValueError, RuntimeError), match=match):
+        _propagator()._simulator.basis_change = basis_change
+
+
+def test_pauli_propagator_rejects_basis_change_and_length_cutoff() -> None:
+    """The Pauli algebra's structural constraints hold after construction too.
+
+    Both setters wrote straight through to the cutoff regeneration, so a Pauli propagator could
+    be given a configuration its constructor rejects.
+    """
+    propagator = PauliPropagator(PauliOperator({"ZZ": 1.0}, num_qubits=2), [], cutoff=2)
+
+    with pytest.raises(ValueError, match="does not accept a basis_change"):
+        propagator._simulator.basis_change = jordan_wigner_basis_change(2)
+    with pytest.raises(ValueError, match="requires cutoff_type == Support"):
+        propagator._simulator.cutoff_type = "length"

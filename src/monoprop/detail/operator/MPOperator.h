@@ -232,6 +232,9 @@ struct MPOperator {
         VecD new_op_coeffs(size(), 0.0);
 
         for (const auto &[k, v] : op_dict) {
+            // Unchecked by design: the only caller is MonomialPropagator::apply_initial_operator_,
+            // which bounds-checks against its logical_num_modes_ (unavailable here) and re-derives
+            // these keys from the resulting bitsets.
             const auto maj = indices_to_bitset<NumModes>(k);
             const auto rank_evolved_op = store->find(maj);
             const auto rank_init_op = init_op_map.find(maj);

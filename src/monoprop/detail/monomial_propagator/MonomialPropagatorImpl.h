@@ -68,17 +68,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
             std::format("logical_num_modes ({}) must be in the range [1, {}].", logical_num_modes_, NumModes));
     }
 
-    // Enforce each algebra's structural constraints (see algebra/Algebra.h).
-    with_algebra<NumModes>(basis_, [&]<class A>() {
-        if (A::requires_support_cutoff && cutoff_type_ != CutoffType::Support) {
-            throw std::invalid_argument("Pauli basis requires cutoff_type == Support "
-                                        "(Length has no Pauli-weight meaning under the Pauli encoding).");
-        }
-        if (!A::allows_basis_change && basis_change_.has_value()) {
-            throw std::invalid_argument("Pauli basis does not accept a basis_change "
-                                        "(the encoding is already the Jordan-Wigner image).");
-        }
-    });
+    validate_cutoff_config_(cutoff_type_, basis_change_);
 
     // Record the basis on the operator so its coefficient encoding / HF scoring match this picture.
     mp_op_.basis = basis_;
@@ -124,13 +114,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
 
     double core_term = 0.0;
     for (const auto &[indices, coefficient] : initial_operator) {
-        for (const auto &index : indices) {
-            if (index >= 2 * logical_num_modes_) {
-                throw std::runtime_error(
-                    std::format("Operator term contains an index greater than {}", 2 * logical_num_modes_));
-            }
-        }
-        const auto majorana_bitset = indices_to_bitset<NumModes>(indices);
+        const auto majorana_bitset = indices_to_bitset_checked<NumModes>(indices, 2 * logical_num_modes_);
         const auto encoded_coeff = algebra_encode_coeff<NumModes>(basis_, coefficient, majorana_bitset);
 
         // Store the core term separately as it is orders of magnitude larger than the other terms
@@ -335,7 +319,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMa
 
     FermiOperatorMap new_op;
     for (const auto &[ind, coeff] : op_dict) {
-        const auto maj = indices_to_bitset<NumModes>(ind);
+        const auto maj = indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
         if (ind.empty()) { // Core term, store in all
             core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, maj);
             continue;
@@ -403,12 +387,37 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
 }
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::validate_cutoff_config_(CutoffType cutoff_type,
+                                                           const std::optional<std::vector<VecZ>> &basis_change) const
+    -> void {
+    // Enforce each algebra's structural constraints (see algebra/Algebra.h).
+    with_algebra<NumModes>(basis_, [&]<class A>() {
+        if (A::requires_support_cutoff && cutoff_type != CutoffType::Support) {
+            throw std::invalid_argument("Pauli basis requires cutoff_type == Support "
+                                        "(Length has no Pauli-weight meaning under the Pauli encoding).");
+        }
+        if (!A::allows_basis_change && basis_change.has_value()) {
+            throw std::invalid_argument("Pauli basis does not accept a basis_change "
+                                        "(the encoding is already the Jordan-Wigner image).");
+        }
+    });
+    // regenerate_cutoff_fn_ indexes rows [0, 2*logical_num_modes) unconditionally, so a short
+    // basis_change is an out-of-bounds read. This was checked only in Python, on a path that no
+    // longer exists.
+    if (basis_change.has_value() && basis_change->size() != 2 * logical_num_modes_) {
+        throw std::invalid_argument(std::format("basis_change must have exactly 2*logical_num_modes ({}) rows; got {}.",
+                                                2 * logical_num_modes_,
+                                                basis_change->size()));
+    }
+}
+
+template <size_t NumModes>
 auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
     if (basis_change_.has_value()) {
         MonomialList<NumModes> basis;
         basis.reserve(2 * logical_num_modes_);
         for (size_t i = 0; i < 2 * logical_num_modes_; ++i) {
-            basis.push_back(indices_to_bitset<NumModes>(basis_change_.value()[i]));
+            basis.push_back(indices_to_bitset_checked<NumModes>(basis_change_.value()[i], 2 * logical_num_modes_));
         }
         cutoff_fn_ = detail::cutoff_function_basis_change<NumModes>(cutoff_type_, cutoff_, basis, logical_num_modes_);
     }
@@ -670,7 +679,10 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                                         detail::FusedContract *fused_contract,
                                                         VecD *fused_scale_coeffs,
                                                         bool *fused_scale) -> std::shared_ptr<LayerCore> {
-    const auto gen_maj = indices_to_bitset<NumModes>(gen_vec);
+    // The single choke point for every gate generator reaching the engine (build_graph and
+    // propagate both funnel here), and the only place they are bounds-checked: nothing between
+    // the public entry points and here constrains a generator's indices.
+    const auto gen_maj = indices_to_bitset_checked<NumModes>(gen_vec, 2 * logical_num_modes_);
 
     // Unified build pass (paper Algorithm 2): both parities go through the parity-corrected inverted-
     // index scan (odd generators add the g_odd parity(|M|) correction). The builder writes the
