@@ -15,9 +15,9 @@
 """Majorana propagator.
 
 Concrete [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] that accepts Majorana (or
-fermionic) operators and gates. Gate information (the Majorana generators, their coefficients,
-and the parameter each drives) is owned by the propagation graph, so evaluation methods take
-only ``parameters``.
+fermionic) operators and gates. Here, each propagated term is a Majorana monomial, and gate information
+(generators, coefficients, and parameter wiring) is owned by the graph so evaluation methods
+take only ``parameters``.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 
 class MajoranaPropagator(MonomialPropagator):
-    """Classical simulator for Majorana operators.
+    """Classical simulator for Majorana monomial operator evolution.
 
     Accepts a [MajoranaOperator][monoprop.majorana.MajoranaOperator] (or any object implementing
     ``get_majorana_operator()``, such as a [FermiOperator][monoprop.fermi.FermiOperator])
@@ -63,7 +63,7 @@ class MajoranaPropagator(MonomialPropagator):
         """Initialize the propagator.
 
         Creates a simulator for quantum-system evolution in the Majorana
-        representation. Both Heisenberg (operator evolution, the default) and
+        representation, i.e. over Majorana monomials. Both Heisenberg (operator evolution, the default) and
         Schrodinger (state evolution) pictures are supported, with configurable
         truncation.
 
@@ -127,10 +127,7 @@ class MajoranaPropagator(MonomialPropagator):
         [expand_monomials][monoprop.circuit.expand_monomials].
         """
         if circuit.family == "pauli":
-            raise TypeError(
-                "MajoranaPropagator cannot consume a qubit circuit; its gates are Pauli. "
-                "Use PauliPropagator for qubit circuits."
-            )
+            raise TypeError("MajoranaPropagator cannot consume this circuit family.")
         return circuit.gates
 
     @MonomialPropagator.cutoff_type.setter

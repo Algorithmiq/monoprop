@@ -15,7 +15,7 @@
 """Pauli propagator.
 
 Concrete [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] that accepts qubit (Pauli)
-operators and gates.
+operators and gates. Here, each propagated term is a Pauli operator.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 
 class PauliPropagator(MonomialPropagator):
-    """Classical simulator for qubit (Pauli) operators.
+    """Classical simulator for Pauli operator qubit evolution.
 
     Accepts a [PauliOperator][monoprop.pauli.PauliOperator] observable and a
     [Circuit][monoprop.circuit.Circuit] of qubit (Pauli) [ExpGate][monoprop.circuit.ExpGate] gates.
@@ -62,7 +62,7 @@ class PauliPropagator(MonomialPropagator):
 
         See [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] for the shared
         arguments. The cutoff is always measured as Pauli weight, so ``cutoff`` bounds the
-        number of qubits a retained term touches.
+        number of qubits a retained Pauli operator term touches.
 
         Args:
             initial_operator: Initial qubit operator as a
@@ -84,9 +84,8 @@ class PauliPropagator(MonomialPropagator):
         # the propagator reads it directly rather than validating it here.
         num_qubits = initial_operator.num_qubits
 
-        # we have to multiply the Schrodinger cutoff by 2, because the Majorana
-        # cutoff is measured in terms of Majorana operators, while PauliPropagator
-        # measures it in terms of qubits. Each qubit corresponds to 2 Majorana operators.
+        # We multiply the Schrodinger cutoff by 2 because the internal engine tracks
+        # two internal operators per qubit, while PauliPropagator exposes qubit units.
         schrodinger_cutoff = (
             None if schrodinger_cutoff is None else 2 * schrodinger_cutoff
         )
@@ -110,7 +109,7 @@ class PauliPropagator(MonomialPropagator):
     def num_qubits(self) -> int:
         """Number of qubits the propagator acts on."""
         # Always set in __init__ (which raises if the observable has no qubit count); the base
-        # declares it Optional for the native Majorana propagator.
+        # declares it Optional for propagators whose gate expansion does not need qubit count.
         if self._num_qubits is None:
             raise RuntimeError("PauliPropagator has no qubit count set.")
         return self._num_qubits
@@ -118,14 +117,11 @@ class PauliPropagator(MonomialPropagator):
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.
 
-        A ``PauliPropagator`` rejects a Majorana/fermionic circuit. The Jordan-Wigner mapping
+        A ``PauliPropagator`` rejects non-qubit circuits. The Jordan-Wigner mapping
         and antihermitian normalization live in [expand_monomials][monoprop.circuit.expand_monomials];
         the propagator's ``num_qubits`` (from the observable) reaches the expander via
         ``self._num_qubits``.
         """
         if circuit.family == "majorana":
-            raise TypeError(
-                "PauliPropagator requires a qubit circuit; its gates are Majorana/fermionic. "
-                "Use MajoranaPropagator for those."
-            )
+            raise TypeError("PauliPropagator requires a qubit circuit.")
         return circuit.gates

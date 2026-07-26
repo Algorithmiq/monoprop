@@ -17,10 +17,10 @@
 Shared engine for the two concrete simulators
 ([MajoranaPropagator][monoprop.majorana_propagator.MajoranaPropagator] and
 [PauliPropagator][monoprop.pauli_propagator.PauliPropagator]). Both wrap the
-compiled C++ Majorana simulator and differ only in how they are constructed (which operator
+compiled C++ simulator and differ only in how they are constructed (which operator
 family they accept); the graph building, evaluation, and introspection surface lives here.
 
-Gate information (the Majorana generators, their coefficients, and the parameter each drives)
+Gate information (the generators, their coefficients, and the parameter each drives)
 is owned by the propagation graph, so evaluation methods take only ``parameters``.
 """
 
@@ -249,9 +249,9 @@ class MonomialPropagator(ABC):
                 omitted while extending, the new layers are built structurally (coefficient
                 truncation is skipped for them); the engine validates the length of an explicit
                 seed.
-            only_rotate_len_k: If provided, apply gates to monomials of length <= k in the
+            only_rotate_len_k: If provided, apply gates to terms of length <= k in the
                 evolved operator even if they anticommute. Useful when many free-fermionic
-                gates (generators that are length-2 Majorana monomials) are applied before
+                gates (generators that are length-2 terms) are applied before
                 expectation-value estimation in Schrodinger-picture simulations.
         """
         self._check_initial_state(circuit)
@@ -345,10 +345,10 @@ class MonomialPropagator(ABC):
         """The parameter mapping owned by the graph, one entry per graph layer.
 
         Entry ``i`` is the variational-parameter index driving the ``i``-th graph layer (a
-        generated Majorana monomial), in the same order as the parameter vector passed to
-        [expectation_value][]. This is the graph's native (per-monomial) mapping, which
+        generated term), in the same order as the parameter vector passed to
+        [expectation_value][]. This is the graph's native (per-term) mapping, which
         is finer-grained than the per-gate mapping of the authoring
-        [Circuit][monoprop.circuit.Circuit] when gates bundle several monomials.
+        [Circuit][monoprop.circuit.Circuit] when gates bundle several terms.
         """
         return list(self._simulator.parameter_mapping)
 
@@ -529,7 +529,7 @@ class MonomialPropagator(ABC):
         """Return the evolved operator/state as a dict, without modifying state.
 
         Equivalent to [contract_partially][] with ``inplace=False``, returned as a
-        mapping keyed by Majorana indices and without touching the simulator state.
+        mapping keyed by term indices and without touching the simulator state.
 
         Args:
             parameters: Variational parameter values (see [expectation_value][]).
@@ -539,7 +539,7 @@ class MonomialPropagator(ABC):
 
         Returns:
             The evolved operator (Heisenberg picture) or the evolved state (Schrodinger
-            picture) as a dict mapping Majorana-index tuples to complex coefficients.
+            picture) as a dict mapping term-index tuples to complex coefficients.
         """
         return self._simulator.evolved_operator(self._bind(parameters), atol)
 
@@ -551,11 +551,11 @@ class MonomialPropagator(ABC):
         Re-weights the initial operator the graph is evaluated against, without touching
         the evolution graph or rebuilding the simulator. Only the initial operator is
         affected -- the gates and their generator coefficients are unchanged -- and only
-        Majorana terms already present in the initial operator can be updated (no new
+        terms already present in the initial operator can be updated (no new
         terms are introduced).
 
         Args:
-            new_operator: Mapping from Majorana-index tuples to their new complex
+            new_operator: Mapping from term-index tuples to their new complex
                 coefficients.
 
         Raises:
@@ -565,10 +565,10 @@ class MonomialPropagator(ABC):
         self._simulator.update_initial_operator(new_operator)
 
     def size(self) -> int:
-        """Number of Majorana terms currently tracked.
+        """Number of terms currently tracked.
 
         Returns:
-            The number of distinct Majorana monomial terms in the simulator's current
+            The number of distinct terms in the simulator's current
             representation.
         """
         return self._simulator.size()
@@ -589,7 +589,7 @@ class MonomialPropagator(ABC):
 
     @property
     def graph_layers(self) -> int:
-        """Number of evolved Majoranas (graph layers)."""
+        """Number of evolved generators (graph layers)."""
         return self._simulator.graph_layers()
 
     @property
