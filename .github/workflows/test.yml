@@ -31,7 +31,7 @@ jobs:
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
-    name: Check bindings for ${{ matrix.python-version }} on ${{ matrix.runner }}
+    name: Check project for ${{ matrix.python-version }} on ${{ matrix.runner }}
 
     strategy:
       fail-fast: false
@@ -125,7 +125,7 @@ jobs:
           done
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage-${{ steps.test-group-label.outputs.label }}.xml
@@ -224,7 +224,7 @@ jobs:
             --cobertura cpp-coverage-native.xml
 
       - name: Upload C++ coverage to Codecov
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: cpp-coverage-native.xml
@@ -483,7 +483,7 @@ jobs:
         run: ctest --preset release-gcc-wide -L serial --output-junit ../../ctest-ubuntu_26_04-wide.xml
 
       - name: Upload test results to Codecov
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ctest-ubuntu_26_04-wide.xml
