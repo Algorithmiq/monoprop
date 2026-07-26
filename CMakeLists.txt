@@ -68,6 +68,19 @@ find_package(
     ${SKBUILD_SABI_COMPONENT}
 )
 
+option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" OFF)
+
+set(Python_FIND_VIRTUALENV FIRST)
+find_package(
+  Python
+  3.11
+  REQUIRED
+  COMPONENTS
+    Interpreter
+    Development.Module
+    ${SKBUILD_SABI_COMPONENT}
+)
+
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED QUIET)
 pkg_check_modules(HWLOC REQUIRED QUIET IMPORTED_TARGET hwloc>=2.9)

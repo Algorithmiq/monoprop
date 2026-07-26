@@ -42,7 +42,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-<<<<<<< New base: chore: c++ unit tests off by default
+<<<<<<< New base: build(cmake): push python-finding to root CMakeLists.txt
 set(
   monoprop_MAX_NUM_MODES
   "250"
@@ -92,7 +92,7 @@ endmacro()
 
 option_with_default(monoprop_MAX_NUM_MODES "Maximum number of simulable Fermionic modes with Python bindings" 250)
 option_with_print(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
-option_with_print(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
+option_with_print(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" OFF)
 
 find_package(TBB REQUIRED)
 if(TARGET TBB::tbb)
@@ -138,6 +138,17 @@ option_with_default(monoprop_MAX_NUM_MODES "Maximum number of simulable Fermioni
 option_with_print(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
 option_with_print(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" OFF)
 
+set(Python_FIND_VIRTUALENV FIRST)
+find_package(
+  Python
+  3.11
+  REQUIRED
+  COMPONENTS
+    Interpreter
+    Development.Module
+    ${SKBUILD_SABI_COMPONENT}
+)
+
 find_package(TBB REQUIRED)
 if(TARGET TBB::tbb)
   get_target_property(TBB_LOCATION TBB::tbb LOCATION)
@@ -145,7 +156,7 @@ if(TARGET TBB::tbb)
     STATUS
     "Found TBB: ${TBB_LOCATION} (found version \"${TBB_VERSION}\")"
   )
->>>>>>> Current commit: chore: c++ unit tests off by default
+>>>>>>> Current commit: build(cmake): push python-finding to root CMakeLists.txt
 endif()
 
 find_package(Threads REQUIRED)
