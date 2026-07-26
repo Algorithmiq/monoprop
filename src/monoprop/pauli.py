@@ -239,9 +239,9 @@ class PauliOperator:
     def all_pairwise_commute(self) -> bool:
         r"""Whether every pair of Pauli terms in the operator commutes.
 
-        Returns ``True`` exactly when for every pair of Pauli terms $P_1, P_2$ are commuting
-        Equivalently, the number of qubits for which $P_1$ and $P_2$ have different
-        non-identity letters is even.
+        Returns ``True`` exactly when for every pair of [Pauli][monoprop.pauli.Pauli]
+        terms $P_1, P_2$ are commuting. Equivalently, the number of qubits for which
+        $P_1$ and $P_2$ have different non-identity letters is even.
 
         Returns:
             True if all pairs of terms commute, else False.

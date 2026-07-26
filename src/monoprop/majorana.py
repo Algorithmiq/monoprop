@@ -195,7 +195,7 @@ class MajoranaOperator:
     def all_pairwise_commute(self) -> bool:
         r"""Whether every pair of Majorana monomials in the operator commutes.
 
-        For Majorana monomials $M_1$ and $M_2$ with supports $S_1$ and $S_2$, they
+        For [Majorana monomials][monoprop.majorana.Majorana] $M_1$ and $M_2$ with supports $S_1$ and $S_2$, they
         commute if $|S_1||S_2| - |S_1 \cap S_2|$ is even.
 
         Returns:
