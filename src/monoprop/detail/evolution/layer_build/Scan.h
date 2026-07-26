@@ -167,12 +167,12 @@ inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t maj_pop, const C
 // phase_factor is the basis-specific multiplicative sign: Majorana interleave_phase (folds hermitian_phase
 // in later), Pauli pauli_rotation_sign (already rotation-ready — no extra flip at emit).
 template <size_t NumModes, Algebra A>
-[[gnu::always_inline]] inline void emit_term_products(const OperatorIndex<NumModes> &ham,
+[[gnu::always_inline]] inline auto emit_term_products(const OperatorIndex<NumModes> &ham,
                                                       size_t i,
                                                       const typename A::GenContext &ctx,
                                                       Monomial<NumModes> &new_maj,
                                                       size_t &overlap,
-                                                      int &phase_factor) {
+                                                      int &phase_factor) -> void {
     Monomial<NumModes> maj; // zero-init, W words, lives in registers
     ham.for_each_position(i, [&](size_t pos) { maj.set(pos); });
     const Monomial<NumModes> &gen = A::generator(ctx);

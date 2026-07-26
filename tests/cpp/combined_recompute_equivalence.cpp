@@ -191,3 +191,60 @@ BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix)
     BOOST_CHECK_SMALL(e1 - e2, 1e-13);
     BOOST_TEST_MESSAGE("snapshot_invariance energy=" << e1);
 }
+
+// A LazyFold outlives the index it was built from: build_cos_callbacks retains one per graph layer
+// inside a functional's closure, and a later build_graph grows the operator. It must therefore hold no
+// pointer into InvertedIndex::row_parity_, which append_rows resizes and an index rebuild frees.
+//
+// This pins both halves: that the buffer really does move under growth (so a cached pointer would
+// dangle), and that a LazyFold built BEFORE the growth still folds exactly like a FoldCache built
+// after it.
+BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    SimulatorConfig cfg{.comm = MPI_COMM_SELF};
+    auto sim = build_simulator<kNumModes>(data, cfg);
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+
+    // Find an odd-|G| layer: row_parity_ is only consulted for those (Pauli and even |G| never touch it).
+    const auto &graph = sim.graph();
+    size_t odd_layer = graph.layers();
+    for (size_t li = 0; li < graph.layers(); ++li) {
+        const auto layer = graph.get_layer_traversal(li);
+        if (!layer.generator_words().empty() && generator_of<kNumModes>(layer).count() % 2 != 0) {
+            odd_layer = li;
+            break;
+        }
+    }
+    BOOST_REQUIRE(odd_layer < graph.layers());
+
+    const auto layer = graph.get_layer_traversal(odd_layer);
+    const auto gen = generator_of<kNumModes>(layer);
+    const auto scaled_count = layer.scaled_count();
+
+    // Materialise row_parity_ and remember where it lives, then build the long-lived fold.
+    const uint64_t *before = sim.mp_op().inverted_index().row_parity_words();
+    BOOST_REQUIRE(before != nullptr);
+    auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count);
+
+    // Grow the operator the way a second build_graph does, forcing the index (and its row parity) to
+    // be rebuilt onto fresh storage.
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    const uint64_t *after = sim.mp_op().inverted_index().row_parity_words();
+    BOOST_REQUIRE(after != nullptr);
+    BOOST_TEST(before != after); // a pointer cached in the fold would now dangle
+
+    const size_t n = sim.mp_op().size();
+    std::vector<double> baseline(n);
+    for (size_t i = 0; i < n; ++i) {
+        baseline[i] = 1.0 + static_cast<double>(i) * 1e-3;
+    }
+    const double cos_val = 0.6234;
+
+    auto prepared = monoprop::detail::make_fold_cache<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count);
+    std::vector<double> expected = baseline;
+    std::vector<double> actual = baseline;
+    scale_cos_cached<kNumModes>(prepared, expected.data(), cos_val);
+    monoprop::detail::scale_cos_lazy<kNumModes>(sim.mp_op().inverted_index(), recipe, actual.data(), cos_val);
+
+    BOOST_TEST(std::memcmp(expected.data(), actual.data(), n * sizeof(double)) == 0);
+}

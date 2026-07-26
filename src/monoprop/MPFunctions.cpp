@@ -35,12 +35,12 @@ auto eval_scratch() -> EvalScratch & {
 
 // Graph is traversed in simulation order but parameter_mapping is stored in optimizer order; write the
 // mapped coefficients forward or reversed accordingly.
-void fill_mapped_params(VecD &result,
+auto fill_mapped_params(VecD &result,
                         const VecD &parameters,
                         const VecZ &parameter_mapping,
                         const VecD &gen_coeffs,
                         double phase,
-                        bool reverse) {
+                        bool reverse) -> void {
     const size_t count = parameter_mapping.size();
     result.resize(count);
     for (size_t i = 0; i < count; ++i) {

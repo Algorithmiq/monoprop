@@ -52,12 +52,17 @@ inline auto generator_from_words(const std::vector<uint64_t> &gw) -> Monomial<Nu
     return gen;
 }
 
-/// Fold-word parameters shared by FoldCache and LazyFold: the odd-|G| row-parity correction and the
-/// scaled_count truncation, applied per word by apply_fold_mask.
+/// Fold-word parameters shared by FoldCache and LazyFold: whether the odd-|G| row-parity correction
+/// applies and the scaled_count truncation, applied per word by apply_fold_mask.
+///
+/// Deliberately holds no pointer into the index. row_parity_ is a lazily built, mutable vector that
+/// append_rows resizes and an index rebuild frees, so a pointer cached here would dangle: a
+/// LazyFold lives inside a retained functional closure (build_cos_callbacks keeps one per graph
+/// layer), which outlives any number of build_graph calls. Fetch it at use time instead --
+/// fold_row_parity() below, hoisted once per layer, costs one empty() test.
 struct FoldMask {
-    bool g_odd = false;
-    const uint64_t *row_parity = nullptr; // null for even |G|
-    size_t mask_words = 0;                // min(inverted index words, ceil(scaled_count/64))
+    bool g_odd = false;    // false for Pauli and for even |G|
+    size_t mask_words = 0; // min(inverted index words, ceil(scaled_count/64))
     size_t last_word = 0;
     uint64_t last_mask = ~uint64_t{0};
 };
@@ -71,9 +76,6 @@ inline auto make_fold_mask(const InvertedIndex<NumModes> &sc,
     // Pauli anticommutation folds J(G)'s columns and never needs the odd-|G| parity correction (see
     // Scan.h); Majorana applies it when |G| is odd. Truncation bounds are basis-independent.
     s.g_odd = algebra_fold_needs_odd_correction<NumModes>(basis, gen);
-    if (s.g_odd) {
-        s.row_parity = sc.row_parity_words();
-    }
     const size_t full = sc.words();
     s.mask_words = std::min(full, static_cast<size_t>((scaled_count + 63) / 64));
     s.last_word = (s.mask_words == 0) ? 0 : s.mask_words - 1;
@@ -88,7 +90,17 @@ template <size_t NumModes>
 struct FoldCache {
     std::vector<uint64_t> combined; // the generator's columns XOR-combined over [0, fold.mask_words)
     FoldMask fold;
+    // Safe to hold here (unlike in FoldMask): every FoldCache is built and consumed within one call,
+    // with no operator growth in between.
+    const uint64_t *row_parity = nullptr;
 };
+
+/// The odd-|G| row-parity words for a fold, or nullptr when the correction does not apply.
+/// Per-layer: one empty() test plus a data() load, hoisted out of the per-word loop.
+template <size_t NumModes>
+inline auto fold_row_parity(const InvertedIndex<NumModes> &sc, const FoldMask &f) -> const uint64_t * {
+    return f.g_odd ? sc.row_parity_words() : nullptr;
+}
 
 template <size_t NumModes>
 auto make_fold_cache(const InvertedIndex<NumModes> &sc,
@@ -97,6 +109,7 @@ auto make_fold_cache(const InvertedIndex<NumModes> &sc,
                      Basis basis = Basis::Majorana) -> FoldCache<NumModes> {
     FoldCache<NumModes> p;
     p.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
+    p.row_parity = fold_row_parity<NumModes>(sc, p.fold);
     // generator_words stores the REAL G; re-derive the fold generator (J(G) for Pauli) as the scan did.
     const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);
     const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
@@ -116,9 +129,14 @@ auto make_fold_cache(const InvertedIndex<NumModes> &sc,
 
 // The one fold-word mask rule (shared by fold_word and recipe_fold_word, matching even_parity_scan_pass1):
 // apply the odd-|G| row_parity correction, then the last-word scaled_count truncation mask.
-[[gnu::always_inline]] inline uint64_t apply_fold_mask(uint64_t bits, size_t wi, const FoldMask &f) {
+// `row_parity` is passed in rather than read off the mask so callers hoist it out of the loop and no
+// long-lived mask holds a pointer into the index (see FoldMask).
+[[gnu::always_inline]] inline auto apply_fold_mask(uint64_t bits,
+                                                   size_t wi,
+                                                   const FoldMask &f,
+                                                   const uint64_t *row_parity) -> uint64_t {
     if (f.g_odd) {
-        bits ^= f.row_parity[wi];
+        bits ^= row_parity[wi];
     }
     if (wi == f.last_word) {
         bits &= f.last_mask;
@@ -127,14 +145,14 @@ auto make_fold_cache(const InvertedIndex<NumModes> &sc,
 }
 
 template <size_t NumModes>
-[[gnu::always_inline]] inline uint64_t fold_word(const FoldCache<NumModes> &p, size_t wi) {
-    return apply_fold_mask(p.combined[wi], wi, p.fold);
+[[gnu::always_inline]] inline auto fold_word(const FoldCache<NumModes> &p, size_t wi) -> uint64_t {
+    return apply_fold_mask(p.combined[wi], wi, p.fold, p.row_parity);
 }
 
 // Visit each set bit of `bits` ascending, calling op(base + bit). The single bit-scatter kernel behind
 // every cos scale/accumulate loop; always_inline so the per-bit op has no call overhead.
 template <typename BitOp>
-[[gnu::always_inline]] inline void for_each_cos_index(size_t base, uint64_t bits, BitOp op) {
+[[gnu::always_inline]] inline auto for_each_cos_index(size_t base, uint64_t bits, BitOp op) -> void {
     while (bits) {
         op(base + static_cast<size_t>(std::countr_zero(bits)));
         bits &= bits - 1;
@@ -147,9 +165,14 @@ template <typename BitOp>
 
 /// Metadata to recompute a layer's cosine fold on the fly (the sole runtime replay path): the
 /// generator's ≤|G| inverted index column indices plus the cos truncation bounds — no per-layer buffer.
+///
+/// `columns` is sized to |G| (typically 2-4) rather than reusing EvenParityGeneratorColumns' fixed
+/// std::array<size_t, 2*NumModes>: that array is right for the build scan (a stack temporary), but a
+/// LazyFold is RETAINED, one per graph layer per functional per shard, so at NumModes=256 the fixed
+/// form spent 4 KB per layer to hold a handful of indices.
 template <size_t NumModes>
 struct LazyFold {
-    EvenParityGeneratorColumns<NumModes> columns{};
+    std::vector<size_t> columns;
     FoldMask fold;
 };
 
@@ -161,29 +184,34 @@ auto make_lazy_fold(const InvertedIndex<NumModes> &sc,
     LazyFold<NumModes> r;
     r.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
     const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);
-    r.columns = build_even_parity_generator_columns<NumModes>(fold_gen);
+    const auto columns = build_even_parity_generator_columns<NumModes>(fold_gen);
+    r.columns.assign(columns.indices.begin(), columns.indices.begin() + columns.count);
     return r;
 }
 
 // The recompute analogue of fold_word: apply the odd-|G| parity correction and last-word scaled_count
-// mask to a freshly-built block word `blk[wi - bb]` (bb = the block's first fold word).
+// mask to a freshly-built block word `blk[wi - bb]` (bb = the block's first fold word). `row_parity` is
+// hoisted by the caller (see FoldMask).
 template <size_t NumModes>
-[[gnu::always_inline]] inline uint64_t recipe_fold_word(const LazyFold<NumModes> &r,
-                                                        const uint64_t *blk,
-                                                        size_t bb,
-                                                        size_t wi) {
-    return apply_fold_mask(blk[wi - bb], wi, r.fold);
+[[gnu::always_inline]] inline auto recipe_fold_word(const LazyFold<NumModes> &r,
+                                                    const uint64_t *blk,
+                                                    size_t bb,
+                                                    size_t wi,
+                                                    const uint64_t *row_parity) -> uint64_t {
+    return apply_fold_mask(blk[wi - bb], wi, r.fold, row_parity);
 }
 
 template <size_t NumModes>
-void scale_cos_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, double *coeff, double cos_val) {
+auto scale_cos_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, double *coeff, double cos_val)
+    -> void {
     const size_t mask_words = r.fold.mask_words;
+    const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
     std::vector<uint64_t> &blk = column_block_scratch();
     for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
-        combine_columns_block<NumModes>(sc, {r.columns.indices.data(), r.columns.count}, blk.data(), bb, be);
+        combine_columns_block<NumModes>(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
         for (size_t wi = bb; wi < be; ++wi) {
-            for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi), [&](size_t i) {
+            for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
                 coeff[i] *= cos_val;
             });
         }
@@ -191,20 +219,21 @@ void scale_cos_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> 
 }
 
 template <size_t NumModes>
-double accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
-                           const LazyFold<NumModes> &r,
-                           double *state,
-                           double *ham,
-                           double cos_val,
-                           double sec_val) {
+auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
+                         const LazyFold<NumModes> &r,
+                         double *state,
+                         double *ham,
+                         double cos_val,
+                         double sec_val) -> double {
     const size_t mask_words = r.fold.mask_words;
+    const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
     double loc = 0.0;
     std::vector<uint64_t> &blk = column_block_scratch();
     for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
-        combine_columns_block<NumModes>(sc, {r.columns.indices.data(), r.columns.count}, blk.data(), bb, be);
+        combine_columns_block<NumModes>(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
         for (size_t wi = bb; wi < be; ++wi) {
-            for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi), [&](size_t i) {
+            for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
                 loc += state[i] * ham[i];
                 ham[i] *= sec_val;
                 state[i] *= cos_val;
@@ -216,14 +245,15 @@ double accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
 
 // Scale/accumulate over a CosMask. Build- and pare-produced lists have 64-aligned disjoint blocks, so
 // the block-range split is race-free.
-inline void scale_cos_mask(double *coeff, const CosMask &cos, double cos_val) {
+inline auto scale_cos_mask(double *coeff, const CosMask &cos, double cos_val) -> void {
     const size_t n = cos.blocks.size();
     for (size_t k = 0; k < n; ++k) {
         const auto [base, bits] = cos.blocks[k];
         for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
     }
 }
-inline double accumulate_cos_mask(double *state, double *ham, const CosMask &cos, double cos_val, double sec_val) {
+inline auto accumulate_cos_mask(double *state, double *ham, const CosMask &cos, double cos_val, double sec_val)
+    -> double {
     const size_t n = cos.blocks.size();
     double loc = 0.0;
     for (size_t k = 0; k < n; ++k) {
