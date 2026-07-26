@@ -443,11 +443,12 @@ BOOST_AUTO_TEST_CASE(inverted_index_demotes_columns_the_growing_bitmap_outgrows)
                boost::test_tools::per_element());
 }
 
-// Dense bitmaps must carry NO growth slack. memory_bytes()/tier_memory_bytes() charge capacity(),
-// correctly, because that is resident memory -- and a bitmap extended once per layer by plain
-// vector::resize grows capacity geometrically, ending up with up to ~2x the words it needs. The exact
-// word count is known from row_count before each fill, so the dense tier must come out at exactly
-// (dense columns) x dense_bytes(), after INCREMENTAL growth and not merely after a rebuild.
+// Dense bitmaps must carry BOUNDED growth slack -- bounded by one CHUNK per column, not by a fraction
+// of the bitmap. memory_bytes()/tier_memory_bytes() charge capacity(), correctly, because that is
+// resident memory, and a flat bitmap extended once per layer by plain vector::resize grows capacity
+// geometrically, ending up with up to ~2x the words it needs. Chunking answers that without the
+// alternative failure mode (see inverted_index_dense_growth_never_copies_earlier_chunks): only the tail
+// chunk is ever short, so only it is ever reallocated.
 //
 // The row count is deliberately not a power of two: that is the alignment where a doubling allocator
 // strands the most, and where a probe at 2^20 rows would have shown a misleading 0.4%.
@@ -471,8 +472,12 @@ BOOST_AUTO_TEST_CASE(inverted_index_dense_bitmaps_carry_no_growth_slack) {
         dense_columns += static_cast<size_t>(grown.column_is_dense(c));
     }
     BOOST_TEST(dense_columns > 0u); // the fixture really does hold bitmaps
-    // THE assertion: not one byte of capacity beyond the exact bitmaps.
-    BOOST_TEST(grown.tier_memory_bytes()[0] == dense_columns * grown.dense_bytes());
+    // THE assertion: the whole dense tier is within one tail chunk's geometric overshoot of the exact
+    // bitmaps. 141 words is a fraction of a chunk, so a chunk rounded up to kDenseChunkWords would blow
+    // this by 7x -- chunks are sized to their share for exactly that reason.
+    const size_t exact = dense_columns * grown.dense_bytes();
+    BOOST_TEST(grown.tier_memory_bytes()[0] >= exact);
+    BOOST_TEST(grown.tier_memory_bytes()[0] <= 2 * exact);
 
     // The lazy parity bitmap grows by the same mechanism and is charged the same way, so it gets the
     // same treatment. Build it partway through so the later appends must actually extend it.
@@ -494,6 +499,89 @@ BOOST_AUTO_TEST_CASE(inverted_index_dense_bitmaps_carry_no_growth_slack) {
         }
     }
     BOOST_TEST(parity_matches);
+}
+
+// Extending a dense bitmap must not move the words already written. That is the ONE property the
+// chunking exists for: fill_rows extends every dense column once per gate, i.e. O(10^4) times per run,
+// so an extension that reallocates costs O(dense columns x rows) PER GATE rather than amortizing over
+// the run. A flat bitmap with capacity pinned to size does exactly that, and measured 2.7-3.2x on the
+// two bench models once the tier rule was biased far enough to produce dense columns at all.
+//
+// The assertion is a captured chunk pointer that must not change across ~1,300 appends past that
+// chunk's completion -- allocator- and timing-independent, unlike a byte count or a wall-clock probe.
+// The pre-existing growth tests append ~30 times over a bitmap of 141 words, i.e. a fraction of ONE
+// chunk, and so cannot see this at all.
+BOOST_AUTO_TEST_CASE(inverted_index_dense_growth_never_copies_earlier_chunks) {
+    constexpr size_t M = 64;
+    using ScW = InvertedIndex<M>;
+    constexpr size_t kStep = 100;
+    constexpr size_t kAppends = 2'000;      // 200,000 rows = 3,125 words = 4 chunks
+    constexpr size_t kR = kStep * kAppends; // ...so chunk 0 completes ~1/3 of the way in
+
+    std::vector<Monomial<M>> op(kR);
+    for (size_t r = 0; r < kR; ++r) {
+        op[r].set(0); // fully set: dense at every row count, so the tier never flips under the test
+        if (r % 1'000 == 0) {
+            op[r].set(7); // ...and one column far below the crossover, so the mixed path is exercised
+        }
+    }
+
+    ScW sc;
+    const uint64_t *chunk0 = nullptr;
+    size_t moves = 0;
+    size_t observations = 0;
+    for (size_t a = 0; a < kAppends; ++a) {
+        sc.append_rows(op, a * kStep, kStep);
+        BOOST_TEST_REQUIRE(sc.column_is_dense(0));
+        if (sc.words() <= ScW::kDenseChunkWords) {
+            continue; // chunk 0 is still the tail, and the tail is allowed to be reallocated
+        }
+        const uint64_t *const now = sc.dense_chunk(0, 0);
+        ++observations;
+        if (chunk0 == nullptr) {
+            chunk0 = now;
+        }
+        else if (now != chunk0) {
+            ++moves;
+        }
+    }
+    BOOST_TEST(observations > 1'000u); // the test really did keep appending after chunk 0 completed
+    BOOST_TEST(moves == 0u);           // THE assertion; the flat exact-reserve bitmap moves on every one
+
+    // Growth must also not have corrupted a bit, at block widths that STRADDLE chunk boundaries. Every
+    // production fold block is chunk-aligned, so an absolute word index into a chunk-relative pointer
+    // would pass the whole suite and silently mis-fold only here -- and only on a multi-chunk index,
+    // which no other fixture builds.
+    const std::vector<size_t> gen{0, 7, 33};
+    const auto ref = reference_fold(sc, gen);
+    bool all_match = true;
+    for (size_t block_words : {size_t{1},
+                               size_t{3},
+                               size_t{17},
+                               ScW::kDenseChunkWords - 1,
+                               ScW::kDenseChunkWords,
+                               ScW::kDenseChunkWords + 1,
+                               size_t{3'000}}) {
+        if (blocked_fold(sc, gen, block_words) != ref) {
+            all_match = false;
+        }
+    }
+    BOOST_TEST(all_match);
+    BOOST_TEST(std::ranges::any_of(ref, [](uint64_t w) { return w != 0; })); // not trivially zero
+
+    // ...and the slack the chunking buys does not scale with the row count: it is one tail chunk either
+    // way, so a 10x taller bitmap must not carry ~10x the slack. This is the property the flat geometric
+    // bitmap lacked (a fixed ~33% of the whole thing) and the reason a fraction is the wrong bound.
+    ScW tenth;
+    tenth.append_rows(op, 0, kR / 10);
+    const auto slack = [](const ScW &s) {
+        size_t dense_columns = 0;
+        for (size_t c = 0; c < Monomial<M>::size(); ++c) {
+            dense_columns += static_cast<size_t>(s.column_is_dense(c));
+        }
+        return s.tier_memory_bytes()[0] - dense_columns * s.dense_bytes();
+    };
+    BOOST_TEST(slack(sc) <= 4 * slack(tenth) + 1'024u); // 10x the rows, nowhere near 10x the slack
 }
 
 // combine_columns_block must reproduce the full-width reference fold for ANY block decomposition:

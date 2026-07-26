@@ -59,6 +59,9 @@ inline auto leb128_encode(std::vector<uint8_t> &out, size_t value) -> void {
     out.push_back(static_cast<uint8_t>(value));
 }
 
+/// Words per fold block, and per DENSE-BITMAP CHUNK — deliberately the same number, see below.
+inline constexpr size_t kColumnBlockWords = 1024; // 8 KB block ≈ L1-resident (bench knee)
+
 /// Grow @p words to exactly @p n zero-filled words, leaving capacity == n.
 ///
 /// vector::resize on its own grows capacity GEOMETRICALLY, so a bitmap extended once per Trotter layer
@@ -69,6 +72,11 @@ inline auto leb128_encode(std::vector<uint8_t> &out, size_t value) -> void {
 /// Reserving up front rather than shrinking afterwards is deliberate: a shrink holds the old and new
 /// buffers simultaneously, and these vectors grow at peak operator size, which is the worst possible
 /// moment to double one. This path never holds two buffers for longer than the growth itself.
+///
+/// ONLY for the one-per-index row-parity bitmap, which is extended once per gate but is a single
+/// vector. Do NOT use it on a per-column structure: pinning capacity == size makes every extension
+/// realloc-and-copy, so a per-column caller pays O(columns x rows) PER GATE. The dense bitmaps are
+/// chunked (@ref InvertedIndex::grow_dense) for exactly that reason.
 inline auto grow_words_exact(std::vector<uint64_t> &words, size_t n) -> void {
     if (words.size() >= n) {
         return;
@@ -142,8 +150,28 @@ struct InvertedIndex {
     };
     static constexpr size_t kBlockHeaderBytes = sizeof(SkipEntry);
 
+    // Words per dense-bitmap chunk. Equal to kColumnBlockWords ON PURPOSE: every production fold walks
+    // the index in kColumnBlockWords-aligned blocks, so a block maps to exactly one chunk and the hot
+    // XOR loop is byte-for-byte the flat-bitmap loop. A smaller chunk would split it into runs.
+    static constexpr size_t kDenseChunkWords = kColumnBlockWords;
+
     struct Column {
-        std::vector<uint64_t> words{}; // full-height bit-vector; used iff is_dense
+        // Full-height bit-vector (used iff is_dense), SEGMENTED into fixed kDenseChunkWords chunks.
+        //
+        // Segmented rather than flat because fill_rows extends EVERY dense column once per gate, i.e.
+        // O(10^4) times per run. A flat vector answers that either with geometric slack (up to ~2x the
+        // words it needs, all of it resident) or, if capacity is pinned to size, with a full realloc +
+        // copy of every dense bitmap on every gate — O(dense_columns x rows) per gate against the
+        // O(dense_columns x rows) that geometric growth amortizes over the WHOLE run. Appending chunks
+        // has neither cost: the words already written are never moved, and the slack is one partial
+        // chunk per column regardless of row count.
+        //
+        // An EMPTY chunk is ABSENT, meaning all-zero. It is never allocated, and the fold reads it as a
+        // zero source, so a column that only starts being touched deep into the light cone pays nothing
+        // for its leading gap. dense_word_ref is the only writer and materialises zero-filled, which is
+        // what makes "absent == all-zero" an invariant rather than a convention.
+        std::vector<std::vector<uint64_t>> chunks{};
+        size_t dense_words = 0; // logical height; chunks.size() == ceil(dense_words / kDenseChunkWords)
         // Delta+LEB128 coded postings (used iff !is_dense): one `skips` header per block of
         // kPostingsPerBlock postings, and in `gaps` the LEB128 gap from the previous posting for
         // every non-block-leading one. Rows MUST stay strictly ascending — every gap is then ≥ 1 and
@@ -171,7 +199,7 @@ struct InvertedIndex {
     // (the XOR over all mode columns of row r). Only odd-|G| generators call it; even-parity workloads
     // never allocate it. Const because the bitmap is a lazy derived cache.
     //
-    // Same LIFETIME rule as dense_column_data: append_rows extends this bitmap, which reallocates it.
+    // Same LIFETIME rule as dense_chunk: append_rows extends this bitmap, which reallocates it.
     // make_fold_mask stores this pointer in FoldMask and the replay closures outlive that call, so they
     // depend on the index being fully built before the folds are captured.
     auto row_parity_words() const -> const uint64_t * {
@@ -183,8 +211,15 @@ struct InvertedIndex {
             for (size_t c = 0; c < kNumColumns; ++c) {
                 const Column &col = cols[c];
                 if (col.is_dense) {
-                    for (size_t w = 0; w < nwords && w < col.words.size(); ++w)
-                        row_parity_[w] ^= col.words[w];
+                    for_each_dense_run(c, 0, std::min(nwords, col.dense_words),
+                                       [this](size_t base, const uint64_t *src, size_t n) {
+                                           if (src == nullptr) {
+                                               return; // absent chunk is all-zero; x ^ 0 == x
+                                           }
+                                           for (size_t w = 0; w < n; ++w) {
+                                               row_parity_[base + w] ^= src[w];
+                                           }
+                                       });
                 }
                 else {
                     for_each_sparse_row(c, [this](TermIndex r) { row_parity_[r >> 6] ^= (uint64_t{1} << (r & 63)); });
@@ -199,15 +234,89 @@ struct InvertedIndex {
 
     auto column_is_dense(size_t c) const -> bool { return cols[c].is_dense; }
 
-    /// Base pointer of column @p c's bitmap.
+    /// Base pointer of chunk @p k of column @p c's bitmap, or nullptr when the chunk is ABSENT — which
+    /// means all-zero, not out of range. Callers must fold it as zero (`x ^ 0 == x`), never skip the
+    /// range. @p k must be < the chunk count implied by the column's height.
     ///
-    /// LIFETIME: valid only while the index is not GROWN. Any of fill_rows (which extends every bitmap),
-    /// promote_to_dense / demote_to_sparse (which replace or free one), or MPOperator::inverted_index()
-    /// finding the index stale (which destroys and rebuilds the whole object) invalidates it. Callers
-    /// that hold column pointers across calls — make_fold_mask stores one for row_parity, and the replay
-    /// closures keep LazyFold recipes — rely on the index being fully materialized BEFORE the folds are
-    /// captured and not grown afterwards. That ordering, not any guarantee here, is what makes them safe.
-    auto dense_column_data(size_t c) const -> const uint64_t * { return cols[c].words.data(); }
+    /// LIFETIME: a chunk's words are stable across growth — that is the point of chunking — but the
+    /// CHUNK TABLE reallocates when the column gains chunks, and promote_to_dense / demote_to_sparse
+    /// (which build or free the whole bitmap) or MPOperator::inverted_index() finding the index stale
+    /// (which destroys and rebuilds the object) invalidate everything. Callers that hold pointers across
+    /// calls — make_fold_mask stores one for row_parity, and the replay closures keep LazyFold recipes —
+    /// rely on the index being fully materialized BEFORE the folds are captured and not grown afterwards.
+    /// That ordering, not any guarantee here, is what makes them safe.
+    auto dense_chunk(size_t c, size_t k) const -> const uint64_t * {
+        const std::vector<uint64_t> &chunk = cols[c].chunks[k];
+        return chunk.empty() ? nullptr : chunk.data();
+    }
+
+    /// Invoke @p fn(absolute_word_base, chunk_words_or_nullptr, run_length) over the maximal
+    /// chunk-contiguous runs covering words [lo, hi) of DENSE column @p c, ascending. THE dense-bitmap
+    /// walk: the fold kernel, the parity builder and the row walker all go through it, so "absent chunk
+    /// == all-zero" is honoured in one shape rather than re-derived per caller. A range that lies inside
+    /// one chunk — which every production fold block does, since kDenseChunkWords == kColumnBlockWords —
+    /// yields exactly one run, leaving the caller's inner loop identical to a flat bitmap's.
+    template <typename Fn>
+    auto for_each_dense_run(size_t c, size_t lo, size_t hi, Fn &&fn) const -> void {
+        for (size_t w = lo; w < hi;) {
+            const size_t k = w / kDenseChunkWords;
+            const size_t chunk_base = k * kDenseChunkWords;
+            const size_t run_end = std::min(hi, chunk_base + kDenseChunkWords);
+            const uint64_t *const words = dense_chunk(c, k);
+            fn(w, words == nullptr ? nullptr : words + (w - chunk_base), run_end - w);
+            w = run_end;
+        }
+    }
+
+    /// Words chunk @p k holds at a bitmap height of @p dense_words: a full chunk, or the remainder for
+    /// the last one. A chunk is sized to its SHARE rather than to kDenseChunkWords so a bitmap shorter
+    /// than one chunk costs its own height — the models' per-shard bitmaps are a few hundred words, i.e.
+    /// a fraction of a chunk, and rounding those up to 8 KB would cost more than the slack being removed.
+    static auto chunk_share(size_t dense_words, size_t k) -> size_t {
+        return std::min(kDenseChunkWords, dense_words - k * kDenseChunkWords);
+    }
+
+    /// Extend @p col's bitmap to @p n words: append chunk slots and extend the last EXISTING chunk to
+    /// its new share. Nothing else moves, which is the whole reason the bitmap is chunked — see
+    /// @ref Column::chunks. Only the final chunk is ever short, so only it is ever reallocated, and its
+    /// growth is geometric within one chunk: O(log kDenseChunkWords) copies of ≤ 8 KB per chunk over a
+    /// column's whole life, against a full-bitmap copy per gate. The slack that buys is bounded by one
+    /// chunk's overshoot no matter how many rows the operator reaches.
+    static auto grow_dense(Column &col, size_t n) -> void {
+        if (n <= col.dense_words) {
+            return;
+        }
+        const size_t had = col.chunks.size();
+        col.dense_words = n;
+        col.chunks.resize((n + kDenseChunkWords - 1) / kDenseChunkWords);
+        if (had == 0 || col.chunks[had - 1].empty()) {
+            return;
+        }
+        std::vector<uint64_t> &tail = col.chunks[had - 1];
+        const size_t want = chunk_share(n, had - 1);
+        if (tail.size() >= want) {
+            return;
+        }
+        if (tail.capacity() < want) {
+            // GEOMETRIC, so a tail extended once per gate is not reallocated once per gate — pinning
+            // capacity to size is exactly what made the flat bitmap copy itself on every gate. But
+            // CLAMPED to one chunk, because plain doubling from an odd size sails past the share and
+            // leaves up to a whole chunk of capacity the column will never use.
+            tail.reserve(std::min(kDenseChunkWords, std::max(2 * tail.capacity(), want)));
+        }
+        tail.resize(want, 0);
+    }
+
+    /// Word @p w of @p col, materialising its chunk zero-filled on first write. THE only mutator of a
+    /// dense chunk, so "absent == all-zero" holds by construction.
+    static auto dense_word_ref(Column &col, size_t w) -> uint64_t & {
+        const size_t k = w / kDenseChunkWords;
+        std::vector<uint64_t> &chunk = col.chunks[k];
+        if (chunk.empty()) {
+            chunk.assign(chunk_share(col.dense_words, k), 0);
+        }
+        return chunk[w - k * kDenseChunkWords];
+    }
 
     // ---- SPARSE-tier access ---------------------------------------------------------------------
     // The sparse tier is reached ONLY through these three entry points, never through its container:
@@ -334,12 +443,16 @@ struct InvertedIndex {
     /// Invoke @p fn(TermIndex) for every set row of a DENSE column @p c, ASCENDING.
     template <typename Fn>
     auto for_each_dense_row(size_t c, Fn &&fn) const -> void {
-        const Column &col = cols[c];
-        for (size_t w = 0; w < col.words.size(); ++w) {
-            for (uint64_t x = col.words[w]; x != 0; x &= x - 1) {
-                fn(static_cast<TermIndex>(w * 64 + static_cast<size_t>(std::countr_zero(x))));
+        for_each_dense_run(c, 0, cols[c].dense_words, [&fn](size_t base, const uint64_t *words, size_t n) {
+            if (words == nullptr) {
+                return; // absent chunk holds no set rows
             }
-        }
+            for (size_t w = 0; w < n; ++w) {
+                for (uint64_t x = words[w]; x != 0; x &= x - 1) {
+                    fn(static_cast<TermIndex>((base + w) * 64 + static_cast<size_t>(std::countr_zero(x))));
+                }
+            }
+        });
     }
 
     /// Invoke @p fn(TermIndex) for every set row of column @p c, ASCENDING, WHICHEVER tier holds it.
@@ -388,11 +501,19 @@ struct InvertedIndex {
 
     /// Expand column @p c's postings into a full-height bitmap and release the encoded form. Lossless
     /// by construction: it replays the same decode the fold uses.
+    ///
+    /// Only the chunks the postings actually land in are allocated, so the transient here is the
+    /// column's OCCUPIED height rather than its full one — the bitmap is built beside the still-live
+    /// postings, and that pairing is a peak-RSS cost, not just a resting one.
     auto promote_to_dense(size_t c) -> void {
         Column &col = cols[c];
-        std::vector<uint64_t> dense(words(), 0);
-        for_each_sparse_row(c, [&dense](TermIndex r) { dense[r >> 6] |= uint64_t{1} << (r & 63U); });
-        col.words = std::move(dense);
+        Column dense;
+        grow_dense(dense, words());
+        for_each_sparse_row(c, [&dense](TermIndex r) {
+            dense_word_ref(dense, r >> 6) |= uint64_t{1} << (r & 63U);
+        });
+        col.chunks = std::move(dense.chunks);
+        col.dense_words = dense.dense_words;
         col.gaps.clear();
         col.gaps.shrink_to_fit();
         col.skips.clear();
@@ -411,9 +532,14 @@ struct InvertedIndex {
         Column &col = cols[c];
         assert(col.is_dense && encoded_bytes == encoded_bytes_if_coded(c));
         size_t postings = 0;
-        for (uint64_t w : col.words) {
-            postings += static_cast<size_t>(std::popcount(w));
-        }
+        for_each_dense_run(c, 0, col.dense_words, [&postings](size_t, const uint64_t *words, size_t n) {
+            if (words == nullptr) {
+                return;
+            }
+            for (size_t w = 0; w < n; ++w) {
+                postings += static_cast<size_t>(std::popcount(words[w]));
+            }
+        });
         const size_t blocks = (postings + kPostingsPerBlock - 1) / kPostingsPerBlock;
         Column coded;
         coded.skips.reserve(blocks);
@@ -424,8 +550,9 @@ struct InvertedIndex {
         col.skips = std::move(coded.skips);
         col.last_row = coded.last_row;
         col.count = coded.count;
-        col.words.clear();
-        col.words.shrink_to_fit();
+        col.chunks.clear();
+        col.chunks.shrink_to_fit();
+        col.dense_words = 0;
         col.is_dense = false;
     }
 
@@ -451,7 +578,7 @@ struct InvertedIndex {
             Column &col = cols[c];
             if (col.is_dense) {
                 const size_t encoded = encoded_bytes_if_coded(c);
-                if (!col.words.empty() && sparse_beats_dense(encoded)) {
+                if (col.dense_words != 0 && sparse_beats_dense(encoded)) {
                     demote_to_sparse(c, encoded);
                 }
             }
@@ -476,9 +603,11 @@ struct InvertedIndex {
         }
         const size_t new_total_rows = base + n;
         const size_t required_words = (new_total_rows + 63) / 64;
+        // Chunked, so this is O(chunks gained) per column and copies nothing. It is the single hottest
+        // reason the bitmaps are segmented: this loop runs once per gate over every dense column.
         for (auto &col : cols) {
             if (col.is_dense) {
-                grow_words_exact(col.words, required_words);
+                grow_dense(col, required_words);
             }
         }
         for (size_t row_idx = base; row_idx < new_total_rows; ++row_idx) {
@@ -487,7 +616,7 @@ struct InvertedIndex {
             for_each_row_position<NumModes>(op, row_idx, [this, w, row_bit, row_idx](size_t bit) {
                 Column &col = cols[bit];
                 if (col.is_dense) {
-                    col.words[w] |= row_bit;
+                    dense_word_ref(col, w) |= row_bit;
                 }
                 else {
                     append_sparse_row(col, static_cast<TermIndex>(row_idx));
@@ -554,7 +683,7 @@ struct InvertedIndex {
             const size_t blocks = (count + kPostingsPerBlock - 1) / kPostingsPerBlock;
             if (!sparse_beats_dense(blocks * kBlockHeaderBytes + gap_bytes[c])) {
                 col.is_dense = true;
-                col.words.assign(required_words, 0);
+                grow_dense(col, required_words); // chunks materialize lazily in pass 2
             }
             else {
                 // Exact reserve: pass 1 predicted what the encoder emits, so the streams never
@@ -588,10 +717,22 @@ struct InvertedIndex {
         }
     }
 
+    /// Bytes column @p c's DENSE tier actually occupies: the materialized chunks plus the chunk table,
+    /// container slack included. Absent chunks cost nothing but their table slot. THE dense sizing hook,
+    /// mirroring @ref sparse_column_bytes, so the accounting cannot drift from the representation.
+    auto dense_column_bytes(size_t c) const -> size_t {
+        const Column &col = cols[c];
+        size_t total = col.chunks.capacity() * sizeof(std::vector<uint64_t>);
+        for (const std::vector<uint64_t> &chunk : col.chunks) {
+            total += chunk.capacity() * sizeof(uint64_t);
+        }
+        return total;
+    }
+
     auto memory_bytes() const -> size_t {
         size_t total = 0;
         for (size_t c = 0; c < kNumColumns; ++c) {
-            total += cols[c].words.capacity() * sizeof(uint64_t);
+            total += dense_column_bytes(c);
             total += sparse_column_bytes(c);
         }
         total += row_parity_.capacity() * sizeof(uint64_t);
@@ -630,7 +771,7 @@ struct InvertedIndex {
     auto tier_memory_bytes() const -> std::array<size_t, 3> {
         std::array<size_t, 3> out{0, 0, 0};
         for (size_t c = 0; c < kNumColumns; ++c) {
-            out[0] += cols[c].words.capacity() * sizeof(uint64_t);
+            out[0] += dense_column_bytes(c);
             out[1] += sparse_column_bytes(c);
             out[2] += static_cast<size_t>(cols[c].is_dense);
         }
@@ -642,7 +783,11 @@ struct InvertedIndex {
 // XOR their words directly, sparse columns lower_bound to the block's row range. XOR associativity
 // means any block decomposition reproduces the full-width fold bit-for-bit. THE fold-combine kernel,
 // shared by the build scan, the replay cache (make_fold_cache) and the replay recompute.
-inline constexpr size_t kColumnBlockWords = 1024; // 8 KB block ≈ L1-resident (bench knee)
+//
+// [bb, be) is NOT assumed chunk-aligned: make_fold_cache passes one range spanning the whole index, and
+// the decomposition test deliberately folds at widths that straddle chunks. Dense columns are therefore
+// walked as chunk-contiguous runs (for_each_dense_run) — which is a single run, i.e. today's flat loop,
+// for the kColumnBlockWords-aligned blocks every production scan uses.
 
 // Reusable fold blocks (thread_local: each shard master owns its copy). Two independent scratches
 // because the build scan needs the generator fold and a sparse pivot column expanded simultaneously.
@@ -678,7 +823,15 @@ template <size_t NumModes>
         }
     }
     if (dense_init < cols.size()) {
-        std::memcpy(blk, sc.dense_column_data(cols[dense_init]) + bb, nb * sizeof(uint64_t));
+        // An absent chunk contributes zeros, which is what memset+XOR-all would have left there.
+        sc.for_each_dense_run(cols[dense_init], bb, be, [blk, bb](size_t w, const uint64_t *src, size_t n) {
+            if (src != nullptr) {
+                std::memcpy(blk + (w - bb), src, n * sizeof(uint64_t));
+            }
+            else {
+                std::memset(blk + (w - bb), 0, n * sizeof(uint64_t));
+            }
+        });
     }
     else {
         std::memset(blk, 0, nb * sizeof(uint64_t));
@@ -691,10 +844,15 @@ template <size_t NumModes>
         }
         const size_t c = cols[ci];
         if (sc.column_is_dense(c)) {
-            const uint64_t *d = sc.dense_column_data(c);
-            for (size_t wi = bb; wi < be; ++wi) {
-                blk[wi - bb] ^= d[wi];
-            }
+            sc.for_each_dense_run(c, bb, be, [blk, bb](size_t w, const uint64_t *src, size_t n) {
+                if (src == nullptr) {
+                    return; // x ^ 0 == x
+                }
+                uint64_t *dst = blk + (w - bb);
+                for (size_t i = 0; i < n; ++i) {
+                    dst[i] ^= src[i];
+                }
+            });
         }
         else {
             sc.for_each_sparse_row_in_range(c, lo, hi, [blk, bb](TermIndex r) {
