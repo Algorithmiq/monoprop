@@ -261,7 +261,7 @@ jobs:
 
       - name: Convert C++ tracefile to Cobertura XML for Codecov
         run: |
-         
+
           pipx run gcovr \
             --root . \
             --merge-lines \
