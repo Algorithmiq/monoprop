@@ -59,6 +59,26 @@ inline auto leb128_encode(std::vector<uint8_t> &out, size_t value) -> void {
     out.push_back(static_cast<uint8_t>(value));
 }
 
+/// Grow @p words to exactly @p n zero-filled words, leaving capacity == n.
+///
+/// vector::resize on its own grows capacity GEOMETRICALLY, so a bitmap extended once per Trotter layer
+/// ends up carrying up to ~2x the words it needs — and memory_bytes() charges capacity(), correctly,
+/// because that is real resident memory. Every caller here knows the exact word count from row_count
+/// before it fills anything, so reserve that and the slack never appears.
+///
+/// Reserving up front rather than shrinking afterwards is deliberate: a shrink holds the old and new
+/// buffers simultaneously, and these vectors grow at peak operator size, which is the worst possible
+/// moment to double one. This path never holds two buffers for longer than the growth itself.
+inline auto grow_words_exact(std::vector<uint64_t> &words, size_t n) -> void {
+    if (words.size() >= n) {
+        return;
+    }
+    if (words.capacity() < n) {
+        words.reserve(n); // an exact request, unlike resize's geometric guess
+    }
+    words.resize(n, 0);
+}
+
 /// Decode one value, advancing @p cursor past it.
 [[gnu::always_inline]] inline auto leb128_decode(const uint8_t *&cursor) -> size_t {
     size_t value = 0;
@@ -150,10 +170,16 @@ struct InvertedIndex {
     // Base pointer of the per-row parity bitmap, built once on first use: bit r = popcount(row r) & 1
     // (the XOR over all mode columns of row r). Only odd-|G| generators call it; even-parity workloads
     // never allocate it. Const because the bitmap is a lazy derived cache.
+    //
+    // Same LIFETIME rule as dense_column_data: append_rows extends this bitmap, which reallocates it.
+    // make_fold_mask stores this pointer in FoldMask and the replay closures outlive that call, so they
+    // depend on the index being fully built before the folds are captured.
     auto row_parity_words() const -> const uint64_t * {
         if (row_parity_.empty() && row_count != 0) {
             const size_t nwords = (row_count + 63) / 64;
-            row_parity_.assign(nwords, 0);
+            // A fresh vector, not assign(): assign would keep whatever capacity a previous, larger
+            // bitmap left behind, and memory_bytes() would go on charging for it.
+            row_parity_ = std::vector<uint64_t>(nwords, 0);
             for (size_t c = 0; c < kNumColumns; ++c) {
                 const Column &col = cols[c];
                 if (col.is_dense) {
@@ -172,6 +198,15 @@ struct InvertedIndex {
     auto words() const -> size_t { return (row_count + 63) / 64; }
 
     auto column_is_dense(size_t c) const -> bool { return cols[c].is_dense; }
+
+    /// Base pointer of column @p c's bitmap.
+    ///
+    /// LIFETIME: valid only while the index is not GROWN. Any of fill_rows (which extends every bitmap),
+    /// promote_to_dense / demote_to_sparse (which replace or free one), or MPOperator::inverted_index()
+    /// finding the index stale (which destroys and rebuilds the whole object) invalidates it. Callers
+    /// that hold column pointers across calls — make_fold_mask stores one for row_parity, and the replay
+    /// closures keep LazyFold recipes — rely on the index being fully materialized BEFORE the folds are
+    /// captured and not grown afterwards. That ordering, not any guarantee here, is what makes them safe.
     auto dense_column_data(size_t c) const -> const uint64_t * { return cols[c].words.data(); }
 
     // ---- SPARSE-tier access ---------------------------------------------------------------------
@@ -442,8 +477,8 @@ struct InvertedIndex {
         const size_t new_total_rows = base + n;
         const size_t required_words = (new_total_rows + 63) / 64;
         for (auto &col : cols) {
-            if (col.is_dense && col.words.size() < required_words) {
-                col.words.resize(required_words, 0);
+            if (col.is_dense) {
+                grow_words_exact(col.words, required_words);
             }
         }
         for (size_t row_idx = base; row_idx < new_total_rows; ++row_idx) {
@@ -483,7 +518,7 @@ struct InvertedIndex {
         for (auto &col : cols) {
             col = Column{};
         }
-        row_parity_.clear();
+        row_parity_ = {}; // release, not clear: a retained capacity is memory memory_bytes() still charges
         row_count = size;
         // Pass 1 below decides every tier from the FINAL row count, which is exactly what a re-tier
         // would conclude — so seed the baseline here and let the fill skip its two-way pass.
@@ -543,7 +578,7 @@ struct InvertedIndex {
         row_count = base + n;
         fill_rows(op, base, n);
         if (!row_parity_.empty()) {
-            row_parity_.resize((row_count + 63) / 64, 0);
+            grow_words_exact(row_parity_, (row_count + 63) / 64);
             for (size_t j = 0; j < n; ++j) {
                 const size_t r = base + j;
                 if (row_popcount<NumModes>(op, r) & 1u) {
