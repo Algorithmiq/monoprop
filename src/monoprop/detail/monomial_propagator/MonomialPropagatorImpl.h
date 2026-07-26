@@ -422,15 +422,25 @@ auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
     // Pre-warm the lazy operator/state/inverted index caches (results discarded) so later eval-time
     // recompute hits them already built, then trim the now-stable coeff vectors' slack.
     (void)mp_op_.get_operator();
-    (void)mp_op_.get_state();
+    // Heisenberg warms the SPARSE state only: the HF scores are nonzero on a vanishing fraction of rows,
+    // and materializing a dense vector here would reinstate the 99.9%-zero array the sparse form exists
+    // to avoid. Schrödinger's dense vector IS the live coefficient vector evolution mutates, so it must
+    // exist up front.
+    if (schrodinger_) {
+        (void)mp_op_.dense_state();
+    }
+    else {
+        (void)mp_op_.sparse_state();
+    }
     (void)mp_op_.inverted_index();
     mp_op_.op_coeffs.shrink_to_fit();
-    mp_op_.state_coeffs.shrink_to_fit();
+    mp_op_.shrink_state_to_fit();
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::current_picture_coeffs_() -> const VecD & {
-    return schrodinger_ ? mp_op_.get_state() : mp_op_.get_operator();
+    // Only the Schrödinger arm needs a dense state, and there it is the live evolved vector.
+    return schrodinger_ ? mp_op_.dense_state() : mp_op_.get_operator();
 }
 
 template <size_t NumModes>
@@ -860,7 +870,11 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     auto gen_coeffs = std::move(gate_arrays.second);
     const auto num_params = expected_num_params(parameter_mapping);
 
-    VecD state = mp_op_.get_state();
+    // ev/ev_and_grad and get_pared_graph all want a dense state (ev_and_grad back-evolves it in place,
+    // which destroys sparsity at the first layer), so exactly ONE dense vector is built here and moved
+    // into the functional. Heisenberg scatters a fresh one from the sparse HF scores -- the operator
+    // keeps no dense copy of its own; Schrödinger must copy the live evolved vector.
+    VecD state = schrodinger_ ? VecD(mp_op_.dense_state()) : mp_op_.materialize_state();
     VecD op = mp_op_.get_operator();
     const auto core_term = this->core_term();
     const auto comm = comm_;
@@ -1013,7 +1027,7 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
     // Inplace contraction slices into an owned MPGraph, so it must be bound to a named local before
     // viewing (never view a temporary); slice_view() views this graph's still-live layers directly.
     if (schrodinger_) {
-        const auto &state = mp_op_.get_state();
+        const auto &state = mp_op_.dense_state();
         const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, -1.0);
         VecD evolved_state;
         if (inplace) {

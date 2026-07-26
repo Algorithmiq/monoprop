@@ -20,7 +20,9 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <complex>
+#include <utility>
 #include <vector>
 
 #include "monoprop/algebra/Algebra.h"
@@ -59,9 +61,29 @@ auto expected_state(detail::MPOperator<8> &op, Basis basis, const VecZ &hf) -> V
     return expected;
 }
 
+// Independent expected SPARSE state: the ascending rows that score nonzero, and their phases.
+auto expected_sparse_state(detail::MPOperator<8> &op, Basis basis, const VecZ &hf) -> std::pair<VecZ, VecD> {
+    const auto dense = expected_state(op, basis, hf);
+    std::pair<VecZ, VecD> expected;
+    for (size_t i = 0; i < dense.size(); ++i) {
+        if (dense[i] != 0.0) {
+            expected.first.push_back(i);
+            expected.second.push_back(dense[i]);
+        }
+    }
+    return expected;
+}
+
+// Compare a SparseState view against (rows, values) oracle vectors.
+auto sparse_state_equals(const detail::MPOperator<8>::SparseState &sparse, const std::pair<VecZ, VecD> &expected)
+    -> bool {
+    return std::ranges::equal(sparse.rows, expected.first, {}, [](TermIndex r) { return static_cast<size_t>(r); })
+           && std::ranges::equal(sparse.values, expected.second);
+}
+
 } // namespace
 
-// ── get_state: paired-only scoring, ±1 phases, both algebra branches ─────────────────────────────
+// ── state scoring: paired-only, ±1 phases, both algebra branches, sparse and dense surfaces ──────
 
 BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_pauli) {
     const VecZ hf = {0, 1}; // occupied modes
@@ -81,9 +103,18 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_paul
         op.append_term(paired_mode0);
         op.append_term(unpaired);
 
-        const VecD &state = op.get_state();
+        // The sparse form is the resting representation: paired rows only, ascending.
+        const auto sparse = op.sparse_state();
+        BOOST_CHECK(sparse_state_equals(sparse, expected_sparse_state(op, basis, hf)));
+        BOOST_REQUIRE_EQUAL(sparse.rows.size(), 2U); // rows 0 and 1; the unpaired row 2 is absent
+        BOOST_CHECK_EQUAL(sparse.rows[0], 0U);
+        BOOST_CHECK_EQUAL(sparse.rows[1], 1U);
+
+        // Both dense surfaces must scatter to exactly the same vector.
+        const VecD state = op.materialize_state();
         BOOST_REQUIRE_EQUAL(state.size(), 3U);
         BOOST_CHECK(state == expected_state(op, basis, hf));
+        BOOST_CHECK(op.dense_state() == state);
 
         // Structural, oracle-independent: paired rows carry a unit phase, the unpaired row is zero.
         BOOST_CHECK_EQUAL(std::abs(state[0]), 1.0);
@@ -101,21 +132,32 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) 
     a.set(0);
     a.set(1); // paired
     op.append_term(a);
-    const VecD first = op.get_state(); // scores row 0
+    const VecD first = op.dense_state(); // scores row 0
     BOOST_REQUIRE_EQUAL(first.size(), 1U);
     const double a_score = first[0];
+    BOOST_CHECK_EQUAL(op.hf_scored_rows_, 1U);
+
+    // Stand in for evolution mutating the live (Schrödinger) vector; the incremental pass must not
+    // rewrite an already-scored row, so this value has to survive.
+    op.state_coeffs[0] = 7.5;
 
     Monomial<8> b;
     b.set(2);
     b.set(3); // paired
     op.append_term(b);
-    const VecD &second = op.get_state(); // must score only row 1, leave row 0 untouched
+    const VecD second = op.dense_state(); // must score only row 1, leave row 0 untouched
     BOOST_REQUIRE_EQUAL(second.size(), 2U);
-    BOOST_CHECK_EQUAL(second[0], a_score); // unchanged
-    BOOST_CHECK(second == expected_state(op, Basis::Majorana, hf));
+    BOOST_CHECK_EQUAL(second[0], 7.5); // unchanged
+    BOOST_CHECK_EQUAL(second[1], expected_state(op, Basis::Majorana, hf)[1]);
+
+    // The sparse set was EXTENDED, not rebuilt: row 0 still carries its original HF score.
+    const auto sparse = op.sparse_state();
+    BOOST_CHECK(sparse_state_equals(sparse, expected_sparse_state(op, Basis::Majorana, hf)));
+    BOOST_REQUIRE_EQUAL(sparse.rows.size(), 2U);
+    BOOST_CHECK_EQUAL(sparse.values[0], a_score);
 
     // Idempotent when nothing was appended.
-    BOOST_CHECK(op.get_state() == second);
+    BOOST_CHECK(op.dense_state() == second);
 }
 
 // ── get_operator: lazy sizing + init-map drain ───────────────────────────────────────────────────
@@ -248,11 +290,14 @@ BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_pre
 BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {
     auto op = build_indexed_op({indices_to_bitset<8>({0, 1}), indices_to_bitset<8>({2, 3})});
     op.slater_determinant = {0};
-    (void)op.get_state();
+    (void)op.sparse_state();
 
     detail::MPOperator<8> copy(op); // deep copy via clone()
     BOOST_CHECK_EQUAL(copy.size(), op.size());
-    BOOST_CHECK(copy.state_coeffs == op.state_coeffs);
+    BOOST_CHECK_EQUAL(copy.hf_scored_rows_, op.hf_scored_rows_);
+    BOOST_CHECK(copy.hf_rows_ == op.hf_rows_);
+    BOOST_CHECK(copy.hf_vals_ == op.hf_vals_);
+    BOOST_CHECK(copy.materialize_state() == op.materialize_state());
     BOOST_CHECK(copy.store->find(indices_to_bitset<8>({0, 1})).has_value());
     // Mutating the copy must not touch the original (independent stores).
     copy.append_term(indices_to_bitset<8>({4, 5}));

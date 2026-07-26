@@ -324,7 +324,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_dense_matrix_ground_truth) {
 // Heisenberg ⟨HF|O_evolved|HF⟩ after a contract-immediately propagate: core + Σ state·op.
 template <size_t N>
 auto heisenberg_expval(MonomialPropagator<N> &sim) -> double {
-    const auto &st = sim.mp_op().get_state();
+    const VecD st = sim.mp_op().materialize_state();
     const auto &op = sim.mp_op().get_operator();
     double s = 0.0;
     for (size_t i = 0; i < op.size(); ++i) {
@@ -452,7 +452,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
     auto ctr = build_pauli_sim<N>(obs, 3, std::nullopt, slater);
     ctr.build_graph(nat_majs, circ.param_map, nat_gcs);
     const auto evolved = ctr.contract_partially(circ.params, /*inplace=*/false);
-    const auto &st = ctr.mp_op().get_state();
+    const VecD st = ctr.mp_op().materialize_state();
     double s = 0.0;
     for (size_t i = 0; i < evolved.size(); ++i) {
         s += st[i] * evolved[i];

@@ -89,7 +89,7 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
 
     const auto &inverted_index = sim.mp_op().inverted_index();
     const auto &graph = sim.graph();
-    const size_t n = sim.mp_op().get_state().size();
+    const size_t n = sim.mp_op().size();
     BOOST_REQUIRE(n > 0);
 
     // Distinct, non-degenerate coefficients so a missed/extra index shows up.
@@ -136,7 +136,7 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
 
     const auto &inverted_index = sim.mp_op().inverted_index();
     const auto &graph = sim.graph();
-    const size_t n = sim.mp_op().get_state().size();
+    const size_t n = sim.mp_op().size();
     BOOST_REQUIRE(n > 0);
 
     std::vector<double> state0(n);

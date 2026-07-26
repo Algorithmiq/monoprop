@@ -15,9 +15,9 @@
 #pragma once
 
 #include <algorithm>
-#include <ranges>
 #include <numeric>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -44,8 +44,8 @@ auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes>;
 // The two algebra-generic entry points this header calls (HF scoring + the real<->double coeff codec).
 // Each binds the runtime Basis to its algebra model internally, so the Majorana/Pauli choice lives in
 // ONE place (the policy layer) rather than scattered `if (basis == Basis::Pauli)` branches here.
-template <size_t NumModes, typename Rows>
-auto algebra_score_hf(Basis basis, const VecZ &paired_inds, const VecZ &hf, const Rows &store, VecD &out) -> void;
+template <size_t NumModes, typename Rows, typename Sink>
+auto algebra_score_hf(Basis basis, const VecZ &paired_inds, const VecZ &hf, const Rows &store, Sink &&sink) -> void;
 
 template <size_t NumModes>
 auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const Monomial<NumModes> &maj) -> double;
@@ -67,6 +67,16 @@ struct MPOperator {
     // itself cheaply movable). Always non-null. Rows go through the backend-agnostic accessors.
     std::unique_ptr<OperatorIndex<NumModes>> store = std::make_unique<OperatorIndex<NumModes>>();
     VecD op_coeffs = {};
+    // ── The reference (Hartree-Fock) state, in its resting SPARSE form ───────────────────────────
+    // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
+    // ~0.07% of the rows -- a dense vector here is 99.9% zeros. hf_rows_ is strictly ASCENDING: rows are
+    // scored in ascending order and the set is only ever appended to.
+    std::vector<TermIndex> hf_rows_ = {};
+    VecD hf_vals_ = {};         ///< parallel to hf_rows_; every entry is a unit phase (+-1), never 0
+    size_t hf_scored_rows_ = 0; ///< rows [0, hf_scored_rows_) have been scored into hf_rows_/hf_vals_
+    // The DENSE state vector. Heisenberg: stays empty (the sparse form above is the whole truth) unless
+    // a caller explicitly asks dense_state() to cache one. SCHRODINGER: this is the live coefficient
+    // vector that evolution mutates in place, seeded by dense_state()'s first materialization.
     VecD state_coeffs = {};
     MonomialMap<NumModes> init_op_map = {};
     VecZ slater_determinant = {};
@@ -84,6 +94,9 @@ struct MPOperator {
     MPOperator(const MPOperator &other)
         : store(other.store->clone()),
           op_coeffs(other.op_coeffs),
+          hf_rows_(other.hf_rows_),
+          hf_vals_(other.hf_vals_),
+          hf_scored_rows_(other.hf_scored_rows_),
           state_coeffs(other.state_coeffs),
           init_op_map(other.init_op_map),
           slater_determinant(other.slater_determinant),
@@ -149,31 +162,59 @@ struct MPOperator {
         return op_coeffs;
     }
 
+    /// A read-only view of the sparse reference state: ascending rows and their matching scores.
+    struct SparseState {
+        std::span<const TermIndex> rows; ///< strictly ascending row indices with a nonzero score
+        std::span<const double> values;  ///< parallel to `rows`
+    };
+
     /**
-     * @brief Lazily materialize the state (initial reference) coefficients aligned with the store.
+     * @brief The reference (initial) state in its sparse form, scored up to date.
      *
-     * Scores ONLY the newly-appended terms [old_size, size()); a new term is nonzero only if fully
-     * paired with the Slater determinant, in which case it receives that term's Hartree-Fock phase.
+     * The cheap accessor: no per-row storage is touched for the ~99.9% of rows that score zero.
      */
-    auto get_state() -> const VecD & {
+    auto sparse_state() -> SparseState {
+        score_new_state_rows_();
+        return SparseState{std::span<const TermIndex>(hf_rows_), std::span<const double>(hf_vals_)};
+    }
+
+    /**
+     * @brief Scatter the sparse state into a FRESH dense vector of length size(); nothing is cached.
+     *
+     * For consumers that genuinely need a dense `VecD` (the evaluation functional). Prefer this over
+     * dense_state() in the Heisenberg picture: it leaves no dense copy behind on the operator.
+     */
+    auto materialize_state() -> VecD {
+        score_new_state_rows_();
+        VecD dense(size(), 0.0);
+        scatter_state_rows_from_(0, dense);
+        return dense;
+    }
+
+    /**
+     * @brief The dense state vector, materialized once and then CACHED in `state_coeffs`.
+     *
+     * This is the Schrödinger picture's live coefficient vector: the first call seeds it from the HF
+     * scores, and evolution then overwrites it in place. Subsequent calls only EXTEND it -- rows scored
+     * before are left exactly as the caller (or evolution) left them, and just the newly-appended rows
+     * receive their HF score. Heisenberg callers that only need a value should use materialize_state().
+     */
+    auto dense_state() -> const VecD & {
+        score_new_state_rows_();
         if (state_coeffs.size() == size()) {
             return state_coeffs;
         }
-
-        size_t cur_len = state_coeffs.size();
-        size_t new_elements = size() - cur_len;
+        const size_t cur_len = state_coeffs.size();
         state_coeffs.resize(size(), 0.0);
-
-        VecZ new_inds(new_elements);
-        std::iota(new_inds.begin(), new_inds.end(), cur_len);
-
-        const auto paired_inds = is_fully_paired<NumModes>(new_inds, *store);
-
-        // Score the diagonal ⟨b|·|b⟩ coefficient of each fully-paired term; the algebra picks the phase
-        // (algebra_score_hf binds the basis to its model once, then loops).
-        algebra_score_hf<NumModes>(basis, paired_inds, slater_determinant, *store, state_coeffs);
-
+        scatter_state_rows_from_(cur_len, state_coeffs);
         return state_coeffs;
+    }
+
+    /// Trim the slack of every state representation once the term count has stabilized.
+    auto shrink_state_to_fit() -> void {
+        hf_rows_.shrink_to_fit();
+        hf_vals_.shrink_to_fit();
+        state_coeffs.shrink_to_fit();
     }
 
     /**
@@ -224,6 +265,44 @@ struct MPOperator {
         op_coeffs = std::move(new_op_coeffs);
         return new_grad_op;
     }
+
+    /**
+     * @brief Score the newly-appended terms [hf_scored_rows_, size()) into the sparse HF set.
+     *
+     * A new term is nonzero only if fully paired with the Slater determinant, in which case it receives
+     * that term's Hartree-Fock phase. Already-scored rows are never revisited, and because the new rows
+     * are scored in ascending order and only appended, hf_rows_ stays globally ascending.
+     */
+    auto score_new_state_rows_() -> void {
+        if (hf_scored_rows_ == size()) {
+            return;
+        }
+
+        VecZ new_inds(size() - hf_scored_rows_);
+        std::iota(new_inds.begin(), new_inds.end(), hf_scored_rows_);
+
+        const auto paired_inds = is_fully_paired<NumModes>(new_inds, *store);
+        hf_rows_.reserve(hf_rows_.size() + paired_inds.size());
+        hf_vals_.reserve(hf_vals_.size() + paired_inds.size());
+
+        // Score the diagonal ⟨b|·|b⟩ coefficient of each fully-paired term; the algebra picks the phase
+        // (algebra_score_hf binds the basis to its model once, then loops).
+        algebra_score_hf<NumModes>(basis, paired_inds, slater_determinant, *store, [this](size_t row, double phase) {
+            hf_rows_.push_back(static_cast<TermIndex>(row));
+            hf_vals_.push_back(phase);
+        });
+
+        hf_scored_rows_ = size();
+    }
+
+    /// Write the scored entries with row >= @p first_row into @p out (sized >= size()); ascending
+    /// hf_rows_ makes the starting entry a binary search rather than a full scan.
+    auto scatter_state_rows_from_(size_t first_row, VecD &out) const -> void {
+        const auto first = std::ranges::lower_bound(hf_rows_, static_cast<TermIndex>(first_row));
+        for (auto it = first; it != hf_rows_.end(); ++it) {
+            out[*it] = hf_vals_[static_cast<size_t>(std::distance(hf_rows_.begin(), it))];
+        }
+    }
 };
 
 // Insert `n` provably-distinct, currently-absent terms into `op` in one batch — the grow → scatter →
@@ -265,8 +344,10 @@ struct MPOperatorMemoryBreakdown final {
     size_t inverted_index_delta_bytes = 0;  ///< inverted index if every column were delta+varint coded
     size_t inverted_index_oracle_bytes = 0; ///< ... picking min(bitmap, delta) per column
     size_t inverted_index_delta_wins = 0;   ///< columns where delta beats the current representation
-    size_t operator_terms_slack_bytes = 0; ///< of operator_terms_bytes: unused geometric-growth capacity
-    size_t state_coeffs_nonzero = 0;       ///< entries of state_coeffs that are not exactly 0.0
+    size_t operator_terms_slack_bytes = 0;  ///< of operator_terms_bytes: unused geometric-growth capacity
+    /// of state_coeffs_bytes: entries of the state that are not exactly 0.0 -- the sparse HF entry count
+    /// at rest, or the dense vector's true nonzero count once a live (Schrödinger) vector exists.
+    size_t state_coeffs_nonzero = 0;
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
@@ -300,7 +381,11 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
     // Packed rows store stride bytes/row (+ overflow side-map), not sizeof(Monomial); ask directly.
     breakdown.operator_terms_bytes = op.store->memory_bytes();
     breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
-    breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double);
+    // Every representation of the state at once: the sparse HF set (the resting form) plus the dense
+    // vector, which is empty unless a live Schrödinger vector or an explicit dense_state() cache exists.
+    breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)
+                                   + op.hf_rows_.capacity() * sizeof(TermIndex)
+                                   + op.hf_vals_.capacity() * sizeof(double);
     breakdown.indexing_bytes = op.store->index_estimated_memory_bytes();
     breakdown.init_operator_bytes = unordered_flat_map_storage_bytes(op.init_op_map);
     breakdown.slater_determinant_bytes = op.slater_determinant.capacity() * sizeof(size_t);
@@ -316,8 +401,12 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
         breakdown.inverted_index_delta_wins = delta[2];
     }
     breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
+    // HF phases are unit-magnitude, so at rest the scored-entry count IS the nonzero count; once a dense
+    // vector exists it has been evolved and only a scan can answer.
     breakdown.state_coeffs_nonzero =
-        static_cast<size_t>(std::ranges::count_if(op.state_coeffs, [](double c) { return c != 0.0; }));
+        op.state_coeffs.empty()
+            ? op.hf_rows_.size()
+            : static_cast<size_t>(std::ranges::count_if(op.state_coeffs, [](double c) { return c != 0.0; }));
     return breakdown;
 }
 

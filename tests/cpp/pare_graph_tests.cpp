@@ -14,6 +14,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <functional>
@@ -61,8 +62,16 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
 
     const auto &graph = sim.graph();
     const auto &inverted_index = sim.mp_op().inverted_index();
-    const VecD state = sim.mp_op().get_state();
+    const VecD state = sim.mp_op().materialize_state();
     BOOST_REQUIRE(state.size() > 0);
+
+    // The Heisenberg picture keeps NO dense state: the sparse HF set is the resting representation and
+    // materialize_state() hands back a caller-owned vector without caching one on the operator. The
+    // sparse entry count must be exactly the dense vector's nonzero count.
+    BOOST_CHECK(sim.mp_op().state_coeffs.empty());
+    const auto sparse = sim.mp_op().sparse_state();
+    BOOST_CHECK_EQUAL(sparse.rows.size(),
+                      static_cast<size_t>(std::ranges::count_if(state, [](double c) { return c != 0.0; })));
 
     // Single-rank, the cumulative rotation endpoints (D-targets) across all layers cover the entire
     // operator index space, and mark_replayed_d_targets force-keeps every one of them — so a real

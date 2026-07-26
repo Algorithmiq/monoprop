@@ -188,18 +188,22 @@ auto algebra_hf_phase(Basis basis, const Monomial<NumModes> &maj, const Monomial
 }
 
 /*!
- * @brief Score the diagonal (Hartree-Fock) coefficient of each fully-paired term into @p out.
+ * @brief Score the diagonal (Hartree-Fock) coefficient of each fully-paired term.
+ *
+ * Emits `sink(row, phase)` per entry, in ascending @p paired_inds order. A sink (rather than a dense
+ * `out[row] = ...`) keeps the caller free to store the result sparsely: the scored set is a vanishing
+ * fraction of the rows, so a dense destination would be almost entirely zeros.
  *
  * @c with_algebra hoists the runtime->policy branch OUT of the per-term loop, so the loop is
  * monomorphic in A (a Z-only Pauli scores (-1)^{|Z n occ|}; a Majorana term folds in the pairing sign).
  */
-template <size_t NumModes, typename Rows>
-auto algebra_score_hf(Basis basis, const VecZ &paired_inds, const VecZ &hf, const Rows &store, VecD &out) -> void {
+template <size_t NumModes, typename Rows, typename Sink>
+auto algebra_score_hf(Basis basis, const VecZ &paired_inds, const VecZ &hf, const Rows &store, Sink &&sink) -> void {
     with_algebra<NumModes>(basis, [&]<class A>() {
         const auto hf_mask = get_hf_mask<NumModes>(hf);
         for (size_t i = 0; i < paired_inds.size(); ++i) {
             const auto &row = materialize_row<NumModes>(store, paired_inds[i]);
-            out[paired_inds[i]] = A::hf_phase(row, hf_mask);
+            sink(paired_inds[i], A::hf_phase(row, hf_mask));
         }
     });
 }
