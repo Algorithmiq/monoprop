@@ -3,10 +3,7 @@
 
 [![Documentation](https://github.com/Algorithmiq/monoprop/actions/workflows/docpages.yml/badge.svg)](https://docs.algorithmiq.fi/monoprop)
 [![Test monoprop](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml/badge.svg)](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml)
-[![CLA assistant](https://cla-assistant.io/readme/badge/Algorithmiq/monoprop)](https://cla-assistant.io/Algorithmiq/monoprop)
-
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Algorithmiq_monoprop&metric=alert_status&token=b8f15100fbda929efa33b226a723216e0163cfc9)](https://sonarcloud.io/summary/new_code?id=Algorithmiq_monoprop)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=Algorithmiq_monoprop&metric=coverage&token=b8f15100fbda929efa33b226a723216e0163cfc9)](https://sonarcloud.io/summary/new_code?id=Algorithmiq_monoprop)
+[![codecov](https://codecov.io/gh/Algorithmiq/monoprop/graph/badge.svg?token=1GgmPnNUxk)](https://codecov.io/gh/Algorithmiq/monoprop)
 
 `monoprop` is a high-performance C++ library with Python bindings for **Majorana and
 Pauli propagation** — a backend for classically simulating and variationally
