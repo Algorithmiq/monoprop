@@ -15,7 +15,9 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cmath>
+#include <complex>
 #include <map>
+#include <stdexcept>
 #include <string>
 
 #include "PauliTestOracle.h"
@@ -203,3 +205,43 @@ BOOST_AUTO_TEST_CASE(shard_pauli_energy_matches_across_shard_counts) {
 }
 
 } // namespace
+
+// A shard factory that throws must surface the exception, not std::terminate. The ctor starts the
+// master threads BEFORE building the shards on them (for first-touch locality), so an escaping
+// exception used to unwind past joinable threads without ~ShardGroup ever setting stop_. Every
+// MonomialPropagator ctor validation reaches this path, as does an allocation failure.
+BOOST_AUTO_TEST_CASE(shard_factory_exception_propagates_without_terminate) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    // logical_num_modes = 0 is rejected by each shard's own constructor, on its own master thread.
+    BOOST_CHECK_THROW(MonomialPropagator<kNumModes>(data.hamiltonian,
+                                                    kCutoff,
+                                                    data.hartree_fock,
+                                                    std::nullopt,
+                                                    MPI_COMM_SELF,
+                                                    std::nullopt,
+                                                    std::nullopt,
+                                                    CutoffType::Length,
+                                                    std::nullopt,
+                                                    /*logical_num_modes=*/0,
+                                                    Basis::Majorana,
+                                                    /*shards=*/4),
+                      std::runtime_error);
+
+    // An out-of-range operator index takes the same path, and the group stays usable afterwards.
+    auto bad_op = data.hamiltonian;
+    bad_op[VecZ{2 * kNumModes}] = std::complex<double>(1.0, 0.0);
+    BOOST_CHECK_THROW(MonomialPropagator<kNumModes>(bad_op,
+                                                    kCutoff,
+                                                    data.hartree_fock,
+                                                    std::nullopt,
+                                                    MPI_COMM_SELF,
+                                                    std::nullopt,
+                                                    std::nullopt,
+                                                    CutoffType::Length,
+                                                    std::nullopt,
+                                                    kNumModes,
+                                                    Basis::Majorana,
+                                                    /*shards=*/4),
+                      std::runtime_error);
+    BOOST_CHECK_NO_THROW(majorana_sim(data, 4));
+}

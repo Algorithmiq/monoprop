@@ -116,11 +116,16 @@ inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
     std::set<int> seen_cores;                 // sibling-group key (min sibling) already recorded
     std::vector<std::vector<int>> l3_members; // cpu-set per distinct L3 domain, in discovery order
 
-    for (int cpu = 0;; ++cpu) {
+    // Scan a bounded id range rather than stopping at the first gap: online CPU ids are NOT contiguous
+    // (offlined or hot-plugged CPUs leave holes), and breaking on the first unreadable id truncated the
+    // core list to whatever preceded the hole — which then silently under-parallelizes AUTO sharding and
+    // pins those few shards to the low CPUs.
+    const int scan_limit = filter ? *allowed.rbegin() + 1 : CPU_SETSIZE;
+    for (int cpu = 0; cpu < scan_limit; ++cpu) {
         const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(cpu);
         const std::string sib = topo_detail::read_line(base + "/topology/thread_siblings_list");
         if (sib.empty()) {
-            break; // no more CPUs
+            continue; // this id is offline or absent; later ids may still be online
         }
         const auto siblings = topo_detail::parse_cpulist(sib);
         const int group_key = siblings.empty() ? cpu : *std::min_element(siblings.begin(), siblings.end());

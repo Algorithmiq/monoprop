@@ -201,7 +201,8 @@ public:
                 }
             }
             MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
-            // Size staging from counts_recv_ (transpose layout: recv of shard t from (rank, su) at rank*S*S + t*S + su).
+            // Size staging from counts_recv_ (transpose layout: recv of shard t from (rank, su) at rank*S*S + t*S +
+            // su).
             size_staging_impl_(elem, [this](int t, int rank, int su) -> int {
                 return counts_recv_[(static_cast<size_t>(rank) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
                                     + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
@@ -354,7 +355,8 @@ private:
     }
 
     // Shard 0: aggregate the published count matrices into per-rank counts/displs, size staging, and
-    // precompute the pack/scatter offset tables (overflow-guarded: S^2-block sums can pass INT_MAX).
+    // precompute the pack/scatter offset tables. Overflow-guarded throughout: both the S^2-block
+    // per-rank sums and their prefix sums across the R ranks can pass INT_MAX.
     // Default recv-count source is shard t's published recv_counts; alltoallv_resolve passes an accessor
     // reading the just-computed counts_recv_ instead, so no shard need publish recv_counts.
     auto size_staging_(size_t elem) -> void {
@@ -378,18 +380,20 @@ private:
             mpi_send_counts_[static_cast<size_t>(b)] = checked_int_(send_sum);
             mpi_recv_counts_[static_cast<size_t>(b)] = checked_int_(recv_sum);
         }
-        mpi_send_displs_[0] = 0; // ctor-sized, not re-zeroed per call — element 0 must be set explicitly
-        mpi_recv_displs_[0] = 0;
-        for (int b = 1; b < r_; ++b) {
-            mpi_send_displs_[static_cast<size_t>(b)] =
-                mpi_send_displs_[static_cast<size_t>(b - 1)] + mpi_send_counts_[static_cast<size_t>(b - 1)];
-            mpi_recv_displs_[static_cast<size_t>(b)] =
-                mpi_recv_displs_[static_cast<size_t>(b - 1)] + mpi_recv_counts_[static_cast<size_t>(b - 1)];
+        // Prefix sums accumulate WIDE and narrow through checked_int_: each per-rank count above fits in
+        // an int, but their running total need not, and a plain int accumulator would be UB on overflow
+        // before being cast to size_t to size the staging buffers (a wrapped positive value would
+        // silently under-size them and MPI_Alltoallv would run past the end).
+        long long send_running = 0;
+        long long recv_running = 0;
+        for (int b = 0; b < r_; ++b) {
+            mpi_send_displs_[static_cast<size_t>(b)] = checked_int_(send_running);
+            mpi_recv_displs_[static_cast<size_t>(b)] = checked_int_(recv_running);
+            send_running += mpi_send_counts_[static_cast<size_t>(b)];
+            recv_running += mpi_recv_counts_[static_cast<size_t>(b)];
         }
-        const size_t total_send = static_cast<size_t>(mpi_send_displs_[static_cast<size_t>(r_ - 1)]
-                                                      + mpi_send_counts_[static_cast<size_t>(r_ - 1)]);
-        const size_t total_recv = static_cast<size_t>(mpi_recv_displs_[static_cast<size_t>(r_ - 1)]
-                                                      + mpi_recv_counts_[static_cast<size_t>(r_ - 1)]);
+        const size_t total_send = static_cast<size_t>(checked_int_(send_running));
+        const size_t total_recv = static_cast<size_t>(checked_int_(recv_running));
         // Grow-only, no zero-fill: pack_send_'s blocks tile [0, total_send) exactly and MPI_Alltoallv
         // fills every live byte of stage_recv_, so stale bytes past a prior high-water mark are never read.
         grow_(stage_send_, total_send * elem);

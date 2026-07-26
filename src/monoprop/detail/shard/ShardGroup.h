@@ -63,7 +63,16 @@ public:
         cpusets_ = topo_shard_cpusets(n_, node_rank_, node_size_);
         start_masters_();
         // First job: build each shard on its master (pinned, cache-warm on the owning core).
-        run_on_all([&](int r) { shards_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
+        // The masters are already running, so an exception here (any MonomialPropagator ctor
+        // validation) must not escape before they are stopped: ~ShardGroup would never run, stop_ would
+        // stay false, and destroying joinable threads during unwinding calls std::terminate.
+        try {
+            run_on_all([&](int r) { shards_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
+        }
+        catch (...) {
+            stop_and_join_();
+            throw;
+        }
     }
 
     // Clone: rebuild this group's transport (fresh threads + ShmComm/HybridComm over the same parent),
@@ -78,26 +87,21 @@ public:
         make_transport_();
         cpusets_ = topo_shard_cpusets(n_, node_rank_, node_size_);
         start_masters_();
-        run_on_all([&](int r) {
-            auto p = std::make_unique<MonomialPropagator<NumModes>>(*src.shards_[static_cast<size_t>(r)]);
-            p->comm_ = comm_for_(r); // ShardGroup is a friend of MonomialPropagator
-            shards_[static_cast<size_t>(r)] = std::move(p);
-        });
+        try { // see the primary ctor: a throw past live masters would std::terminate
+            run_on_all([&](int r) {
+                auto p = std::make_unique<MonomialPropagator<NumModes>>(*src.shards_[static_cast<size_t>(r)]);
+                p->comm_ = comm_for_(r); // ShardGroup is a friend of MonomialPropagator
+                shards_[static_cast<size_t>(r)] = std::move(p);
+            });
+        }
+        catch (...) {
+            stop_and_join_();
+            throw;
+        }
     }
     auto operator=(const ShardGroup &) -> ShardGroup & = delete;
 
-    ~ShardGroup() {
-        {
-            std::lock_guard lk(m_);
-            stop_ = true;
-        }
-        cv_start_.notify_all();
-        for (auto &t : masters_) {
-            if (t.joinable()) {
-                t.join();
-            }
-        }
-    }
+    ~ShardGroup() { stop_and_join_(); }
 
     auto shard_count() const -> int { return n_; }
     auto shard(int s) -> MonomialPropagator<NumModes> & { return *shards_[static_cast<size_t>(s)]; }
@@ -130,6 +134,23 @@ public:
     }
 
 private:
+    // Stop every master and join it. Shared by the destructor and the constructors' failure paths, which
+    // must not let an exception escape past live threads. Poison first so a master parked in a barrier is
+    // released rather than joined-on forever.
+    auto stop_and_join_() noexcept -> void {
+        transport_poison_();
+        {
+            std::lock_guard lk(m_);
+            stop_ = true;
+        }
+        cv_start_.notify_all();
+        for (auto &t : masters_) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+    }
+
     // Free-function wrapper so the header compiles on non-Linux (where shard_cpusets returns {}).
     static auto topo_shard_cpusets(int n, int group_index, int group_count)
         -> std::vector<monoprop::detail::shard::CpuSet> {

@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <limits>
 #include <print>
 #include <stdexcept>
 #include <type_traits>
@@ -45,6 +46,21 @@ class CollectiveArgumentError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
+
+/// Narrow a running count/displacement total to the int MPI takes, throwing rather than overflowing.
+///
+/// Per-rank counts are individually int-sized, but their prefix sums need not be: accumulate in
+/// `long long` and funnel each result through here. A signed int accumulator would be UB on overflow,
+/// and the wrapped value then sizes a buffer or becomes a negative displacement.
+inline auto checked_mpi_count(long long value, const char *what = "Aggregate MPI count") -> int {
+    if (value < 0 || value > static_cast<long long>(std::numeric_limits<int>::max())) {
+        throw CollectiveArgumentError(std::format("{} {} does not fit in the MPI int limit {} (message too large).",
+                                                  what,
+                                                  value,
+                                                  std::numeric_limits<int>::max()));
+    }
+    return static_cast<int>(value);
+}
 
 // lifecycle (MPI only; ShmComm needs no global init)
 
@@ -354,14 +370,13 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
         alltoall_counts(h.send_counts.data(), h.recv_counts.data(), num_ranks, comm);
     }
 
-    h.recv_displs[0] = 0;
-    for (int i = 1; i < num_ranks; ++i) {
-        h.recv_displs[static_cast<size_t>(i)] =
-            h.recv_displs[static_cast<size_t>(i - 1)] + h.recv_counts[static_cast<size_t>(i - 1)];
+    // Wide accumulator + checked narrowing: see checked_mpi_count. Mirrors resolve_recv's prefix sum.
+    long long running = 0;
+    for (int i = 0; i < num_ranks; ++i) {
+        h.recv_displs[static_cast<size_t>(i)] = checked_mpi_count(running, "Recv displacement");
+        running += h.recv_counts[static_cast<size_t>(i)];
     }
-    const int total_recv =
-        h.recv_displs[static_cast<size_t>(num_ranks - 1)] + h.recv_counts[static_cast<size_t>(num_ranks - 1)];
-    h.recv_buffer.resize(static_cast<size_t>(total_recv));
+    h.recv_buffer.resize(static_cast<size_t>(checked_mpi_count(running, "Total recv count")));
 
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoallv(comm.shm_rank,

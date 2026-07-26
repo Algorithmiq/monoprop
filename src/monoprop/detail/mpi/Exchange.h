@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstddef>
+#include <format>
 #include <span>
 #include <utility>
 #include <vector>
@@ -35,6 +36,17 @@ inline auto resolve_recv(std::span<const int> send_counts, const Comm &comm, Rec
     -> const RecvLayout & {
     const auto n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);
+    // alltoall_counts moves comm_size ints each way regardless of `n`, so a send vector that is not
+    // exactly one entry per rank reads and writes out of bounds. The layouts live on a
+    // shared_ptr<const LayerCore> that outlives propagator copies and pare rebuilds, so a graph
+    // replayed on a differently-sized comm would otherwise reach the collective with the old width.
+    if (n != comm_size) {
+        throw CollectiveArgumentError(
+            std::format("Exchange layout has {} send counts but the communicator has {} ranks — a graph built for one "
+                        "communicator cannot be replayed on another of a different size.",
+                        n,
+                        comm_size));
+    }
     if (cache.comm_size == comm_size && static_cast<int>(cache.layout.counts.size()) == n) {
         return cache.layout;
     }
@@ -43,12 +55,14 @@ inline auto resolve_recv(std::span<const int> send_counts, const Comm &comm, Rec
     out.counts.resize(static_cast<size_t>(n));
     alltoall_counts(send_counts.data(), out.counts.data(), n, comm);
     out.displs.resize(static_cast<size_t>(n));
-    int total = 0;
+    // Accumulate wide: the per-rank counts are each int-sized, but their running total need not be, and
+    // out.total sizes the recv buffer. Signed int overflow here would be UB, then a garbage resize.
+    long long total = 0;
     for (int i = 0; i < n; ++i) {
-        out.displs[static_cast<size_t>(i)] = total;
+        out.displs[static_cast<size_t>(i)] = checked_mpi_count(total);
         total += out.counts[static_cast<size_t>(i)];
     }
-    out.total = total;
+    out.total = checked_mpi_count(total);
     cache.comm_size = comm_size;
     return out;
 }
@@ -56,6 +70,11 @@ inline auto resolve_recv(std::span<const int> send_counts, const Comm &comm, Rec
 /// Idempotent completion handle for a posted payload transfer. wait() finishes a non-blocking
 /// transfer; it is a no-op for the blocking path and for non-MPI builds. Move-only so a request is
 /// waited on exactly once.
+///
+/// Owns its request: the destructor completes anything still in flight. A posted MPI_Ialltoallv keeps
+/// writing into the caller's recv buffer until it completes, so simply dropping the handle -- which is
+/// what an exception between the post and the wait does -- would leave MPI writing into a
+/// thread_local buffer that the next exchange reallocates.
 class [[nodiscard("call wait() on the Ticket to complete the posted transfer")]] Ticket {
 public:
     Ticket() = default;
@@ -64,13 +83,16 @@ public:
     Ticket(Ticket &&other) noexcept { *this = std::move(other); }
     auto operator=(Ticket &&other) noexcept -> Ticket & {
 #ifdef monoprop_ENABLE_MPI
-        request_ = other.request_;
-        other.request_ = MPI_REQUEST_NULL;
+        if (this != &other) {
+            wait(); // never drop a request this handle already owns
+            request_ = other.request_;
+            other.request_ = MPI_REQUEST_NULL;
+        }
 #endif
         (void)other;
         return *this;
     }
-    ~Ticket() = default;
+    ~Ticket() { wait(); }
 
     auto wait() -> void {
 #ifdef monoprop_ENABLE_MPI

@@ -23,7 +23,10 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <cstddef>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "monoprop/detail/shard/CpuTopology.h"
@@ -87,6 +90,46 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
 
 using shard::topo_detail::parse_cpulist;
 using shard::topo_detail::read_line;
+
+// Enumeration must not stop at the first gap in the CPU id space. Online ids are not contiguous
+// (offlined or hot-plugged CPUs leave holes), and breaking on the first unreadable id truncated the
+// core list to whatever preceded the hole -- which then drives the AUTO shard count.
+//
+// Re-derive the expected sibling groups directly from /sys over the whole allowed range and require
+// enumeration to find all of them. A host with no hole still catches a regression to `break` if any id
+// below the maximum allowed one is unreadable; a host with one proves it outright.
+BOOST_AUTO_TEST_CASE(cpu_topology_enumeration_spans_gaps_in_the_id_space) {
+    const auto allowed = shard::topo_detail::allowed_cpus();
+    if (allowed.empty()) {
+        return; // affinity unreadable; enumeration accepts every CPU and there is nothing to compare
+    }
+
+    std::set<int> expected_groups; // one key (min sibling) per physical core with an allowed sibling
+    for (int cpu = 0; cpu <= *allowed.rbegin(); ++cpu) {
+        const std::string sib =
+            read_line("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings_list");
+        if (sib.empty()) {
+            continue;
+        }
+        const auto siblings = parse_cpulist(sib);
+        if (siblings.empty()) {
+            continue;
+        }
+        if (std::any_of(siblings.begin(), siblings.end(), [&](int s) { return allowed.contains(s); })) {
+            expected_groups.insert(*std::min_element(siblings.begin(), siblings.end()));
+        }
+    }
+    if (expected_groups.empty()) {
+        return; // /sys unreadable on this host
+    }
+
+    const auto cores = shard::enumerate_physical_cores();
+    BOOST_CHECK_EQUAL(cores.size(), expected_groups.size());
+    // And every representative stays inside the allowed mask.
+    for (const auto &core : cores) {
+        BOOST_TEST(allowed.contains(core.cpu));
+    }
+}
 
 BOOST_AUTO_TEST_CASE(cpu_topology_parse_cpulist_shapes) {
     // Single id, explicit range, and a mixed comma list of both.
