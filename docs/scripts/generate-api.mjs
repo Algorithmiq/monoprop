@@ -9,7 +9,7 @@
 //  3. emits a `meta.json` so the API section is ordered like the old reference.
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { convert, write, frontmatter } from 'fumadocs-python';
+import { convert, write } from 'fumadocs-python';
 
 const JSON_PATH = path.resolve('monoprop.json');
 const OUT_DIR = path.resolve('content/docs/api');
@@ -31,6 +31,7 @@ const MODULES = [
   ['exceptions', 'Exceptions'],
 ];
 const KEEP = new Set(MODULES.map(([name]) => name));
+const MODULE_GITHUB_PATHS = new Map(MODULES.map(([name]) => [name, `src/monoprop/${name}.py`]));
 
 /** Drop single-underscore (non-dunder) members from a {name: node} map. */
 function prunePrivate(map) {
@@ -69,6 +70,30 @@ function convertSphinxMarkup(content) {
 /** Collapse internal whitespace/newlines to a single line. */
 function foldToOneLine(text) {
   return String(text).replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Unescape braces within LaTeX/KaTeX math expressions.
+ *
+ * Upstream markdown serialization escapes braces (`\{` and `\}`), but KaTeX
+ * requires unescaped braces for proper grouping (subscripts, superscripts, and
+ * command arguments). This function selectively unescapes braces only inside
+ * `$...$` (inline) and `$$...$$` (display) math spans.
+ *
+ * Examples:
+ * - `$r_\{12\}$` -> `$r_{12}$`
+ * - `$$^\{-1\}$$` -> `$$^{-1}$$`
+ * - `$\mathrm\{d\}$` -> `$\mathrm{d}$`
+ */
+function normalizeMathGroupingEscapes(content) {
+  const normalizeMathSegment = (math) =>
+    math
+      .replace(/\\\{/g, '{')
+      .replace(/\\\}/g, '}');
+
+  return content.replace(/\$\$[\s\S]*?\$\$|\$(?:\\.|[^$\\])+\$/g, (math) =>
+    normalizeMathSegment(math),
+  );
 }
 
 /**
@@ -164,6 +189,18 @@ async function main() {
     // strips that leading segment from file paths. Realign the links.
     file.content = file.content.replaceAll(`${BASE_URL}/monoprop`, BASE_URL);
 
+    // Attach source paths to frontmatter so docs can build GitHub links
+    // without duplicating the module list in app code.
+    const modulePrefixMatch = file.path.match(/^monoprop\/([^/]+)(?:\/|$)/);
+    const moduleName = modulePrefixMatch?.[1];
+    const githubPath = moduleName ? MODULE_GITHUB_PATHS.get(moduleName) : undefined;
+    if (githubPath) {
+      file.frontmatter.githubPath = githubPath;
+    }
+    // Fumadocs parameter rendering can escape braces in math arguments
+    // (e.g. `\mathrm\{d\}`), which breaks KaTeX grouping.
+    file.content = normalizeMathGroupingEscapes(file.content);
+
     // Add titles to the frontmatter for the modules we documented. The title
     // is used in the sidebar and in the page's <title> tag.
     const m = file.path.match(/^monoprop\/([^/]+)\/index\.mdx$/);
@@ -174,6 +211,7 @@ async function main() {
     if (file.path === 'monoprop/index.mdx') {
       file.frontmatter.title = 'Python API';
       file.frontmatter.description = 'Generated reference for the public monoprop Python package.';
+      file.frontmatter.githubPath = 'src/monoprop/__init__.py';
     }
   }
 

@@ -82,7 +82,7 @@ class ExpGate:
     - :class:`~monoprop.majorana.MajoranaOperator` -- a Majorana generator carrying the
       *Hermitian* operator (its coefficients follow the same convention as an observable:
       imaginary for a weight-2 monomial, real for weight-4); it is antihermitian-normalized --
-      the Hermitian phase :math:`i^{\binom{w}{2}}` divided out -- by :func:`_gate_layers` when
+      the Hermitian phase $i^{\binom{w}{2}}$ divided out -- by :func:`_gate_layers` when
       the circuit is ingested. A coefficient that leaves a non-negligible imaginary residue
       after normalization is rejected as non-Hermitian.
     - :class:`~monoprop.pauli.PauliOperator` -- a qubit generator; each Pauli term is
@@ -91,7 +91,7 @@ class ExpGate:
     - :class:`~monoprop.fermi.FermiOperator` -- a fermionic generator; converted to its
       (Hermitian) Majorana form by :meth:`get_majorana_operator` right here in ``__init__``, so
       the gate *is* a ``"majorana"`` gate from then on. The fermionic-to-Majorana mapping already
-      carries the factors of :math:`\tfrac12` and the phases, so the resulting coefficients are
+      carries the factors of 1/2 and the phases, so the resulting coefficients are
       exactly the Hermitian convention above -- no separate fermionic normalization is needed.
 
     All three families thus take the **Hermitian** generator and normalize it identically; the
@@ -555,11 +555,11 @@ def _real_generator_coefficient(majorana: Sequence[int], value: complex) -> floa
 
 
 def _antihermitian_gen_coeff(majorana: Sequence[int], coeff: complex) -> float:
-    """Antihermitian-normalize a raw Majorana-product coefficient to a real ``g``.
+    r"""Antihermitian-normalize a raw Majorana-product coefficient to a real ``g``.
 
-    A physical generator's coefficient on the raw product ``m_{i_1}...m_{i_w}`` is
+    A physical generator's coefficient on the raw product $m_{i_1}...m_{i_w}$ is
     turned into the real structural coefficient of the antihermitian generator the engine
-    rotates by, dividing out the Hermitian phase ``(1j)**(w(w-1)/2)``. Raises ``ValueError``
+    rotates by, dividing out the Hermitian phase $1j^{\binom{w}{2}}$. Raises ``ValueError``
     if the result is not real (i.e. the generator is not Hermitian).
     """
     weight = len(majorana)
@@ -581,12 +581,12 @@ def _paulis_commute(p1: Pauli, p2: Pauli) -> bool:
 
 
 def _validate_commuting_pauli_generator(generator: PauliOperator) -> None:
-    """Reject a multi-term Pauli generator whose terms do not pairwise commute.
+    r"""Reject a multi-term Pauli generator whose terms do not pairwise commute.
 
     A gate is a single exponential of its generator, but :func:`_gate_layers` realizes a
     multi-term generator as a *product* of one rotation per term
-    (``exp(theta*g_1*P_1) * exp(theta*g_2*P_2) * ...``). That product equals
-    ``exp(theta * sum_i g_i*P_i)`` only when the Pauli terms mutually commute; otherwise the
+    $\exp(\theta g_1 P_1) \cdot \exp(\theta g_2 P_2) \cdot ...$. That product equals
+    $\exp(\theta \sum_i g_i P_i)$ only when the Pauli terms mutually commute; otherwise the
     evolution would be silently Trotterized. Fail loudly instead (mirroring the check the old
     ``PauliEvGate`` enforced).
 
@@ -612,11 +612,11 @@ def _majoranas_commute(m1: Sequence[int], m2: Sequence[int]) -> bool:
 
 
 def _validate_commuting_majorana_generator(generator: MajoranaOperator) -> None:
-    """Reject a multi-term Majorana generator whose terms do not pairwise commute.
+    r"""Reject a multi-term Majorana generator whose terms do not pairwise commute.
 
     A gate is a single exponential of its generator, but :func:`_gate_layers` realizes a
     multi-term generator as a product of one rotation per term. That product equals
-    ``exp(theta * sum_i g_i*M_i)`` only when the Majorana monomials mutually commute;
+    $\exp(\theta \sum_i g_i M_i)$ only when the Majorana monomials mutually commute;
     otherwise the evolution would be silently Trotterized.
 
     Raises:
@@ -634,13 +634,13 @@ def _validate_commuting_majorana_generator(generator: MajoranaOperator) -> None:
 def _gate_layers(
     gate: ExpGate, num_qubits: int | None
 ) -> list[tuple[tuple[int, ...], float]]:
-    """Expand one gate into ``(majorana, gen_coeff)`` layers, in application order.
+    r"""Expand one gate into ``(majorana, gen_coeff)`` layers, in application order.
 
     A ``"pauli"``-family :class:`ExpGate` places each :class:`~monoprop.pauli.Pauli` term on
     its qubits within the ``num_qubits``-wide system, Jordan-Wigner maps it, and
     antihermitian-normalizes (one layer per term). A ``"majorana"``-family :class:`ExpGate` carries
     the Hermitian generator, so its :class:`~monoprop.majorana.MajoranaOperator` terms are
-    antihermitian-normalized the same way (the ``i^{binom(w, 2)}`` phase divided out) -- unless
+    antihermitian-normalized the same way (the $i^{\binom{w}{2}}$ phase divided out) -- unless
     the gate is flagged :attr:`ExpGate._structural` (the wire/dense format), whose coefficients are
     already the structural ``g`` and are used directly.
     """

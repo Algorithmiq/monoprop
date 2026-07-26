@@ -77,7 +77,7 @@ class MajoranaPropagator(MonomialPropagator):
                 Majorana monomials retained during evolution; its meaning depends on
                 ``cutoff_type``. Higher values increase accuracy at greater cost. A
                 *fully paired* monomial -- one whose support consists entirely of
-                complete pairs ``(m_{2j-1} m_{2j})`` on a mode -- is always kept
+                complete pairs $(m_{2j-1} m_{2j})$ on a mode -- is always kept
                 regardless of this cutoff, because only paired monomials can contribute
                 to an expectation value against a computational-basis state or Slater
                 determinant; discarding them would throw away signal.
