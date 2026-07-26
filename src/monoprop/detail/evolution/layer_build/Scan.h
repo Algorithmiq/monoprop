@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
@@ -97,14 +98,22 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     nz.clear();
     n_anti = 0;
     n_foll = 0;
+    constexpr size_t kChunkWords = InvertedIndex<NumModes>::kDenseChunkWords;
     const bool pivot_dense = sc.column_is_dense(pivot_col);
-    const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_data(pivot_col) : nullptr;
     std::vector<uint64_t> &blk = column_block_scratch();
     // Fold one word range [bb,be): combine G's columns and record nonzero-overlap words. A DENSE pivot is
     // read inline; a SPARSE pivot is scatter-expanded LAZILY (only for blocks with a nonzero overlap, so
     // no-anticommuter blocks skip it) via a deferred follower fix-up — bit-identical to eager expansion.
     auto fold_range = [&](size_t bb, size_t be) {
         combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
+        // The driver loop below never lets [bb,be) straddle a dense chunk, so a DENSE pivot resolves to
+        // ONE chunk pointer for the whole range and is indexed relative to that chunk — a flat, absolute
+        // index would silently read the wrong words. A null chunk is an ABSENT (all-zero) one: no pivot
+        // bit is set anywhere in the range, hence no followers, so it is handled by leaving foll at 0
+        // rather than by falling through to the sparse expansion below.
+        const size_t pivot_chunk_base = (bb / kChunkWords) * kChunkWords;
+        const uint64_t *const pivot_dense_ptr =
+            pivot_dense ? sc.dense_chunk(pivot_col, bb / kChunkWords) : nullptr;
         const size_t nz_block_start = nz.size();
         for (size_t wi = bb; wi < be; ++wi) {
             uint64_t overlap = blk[wi - bb];
@@ -119,8 +128,8 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
             }
             n_anti += static_cast<size_t>(std::popcount(overlap));
             uint64_t foll = 0;
-            if (pivot_dense) {
-                foll = overlap & pivot_dense_ptr[wi];
+            if (pivot_dense_ptr != nullptr) {
+                foll = overlap & pivot_dense_ptr[wi - pivot_chunk_base];
                 n_foll += static_cast<size_t>(std::popcount(foll));
             }
             nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
@@ -138,8 +147,15 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
             n_foll += static_cast<size_t>(std::popcount(e.foll));
         }
     };
-    for (size_t bb = wlo; bb < whi; bb += kColumnBlockWords) {
-        fold_range(bb, std::min(bb + kColumnBlockWords, whi));
+    // Blocks are clamped to dense-CHUNK boundaries as well as to kColumnBlockWords, so fold_range can
+    // resolve a dense pivot to a single chunk. The two are the same width and every production call
+    // passes wlo == 0, so this is exactly the old fixed stride; the clamp only bites if a caller ever
+    // starts mid-chunk, and then it costs one extra (shorter) block, not a wrong answer.
+    for (size_t bb = wlo; bb < whi;) {
+        const size_t chunk_end = (bb / kChunkWords + 1) * kChunkWords;
+        const size_t be = std::min({whi, bb + kColumnBlockWords, chunk_end});
+        fold_range(bb, be);
+        bb = be;
     }
 }
 
