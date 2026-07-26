@@ -140,8 +140,11 @@ BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
 }
 
 // THE tier rule: a column stays SPARSE only while its delta+LEB128 postings encode strictly smaller
-// than its full-height bitmap would be — an actual byte comparison, not a density threshold. The two
-// straddling columns below are chosen so the verdict is the same whichever width TermIndex has.
+// than its full-height bitmap would be, times kDenseBias — an actual byte comparison, not a density
+// threshold. The two straddling columns below are chosen so the verdict is the same whichever width
+// TermIndex has. The concrete tier expectations hold at the default bias of 1.0; a build that
+// deliberately biases toward bitmaps is MEANT to move columns, so those are guarded and the general
+// rule check below is bias-aware.
 BOOST_AUTO_TEST_CASE(inverted_index_tier_is_the_encoded_byte_comparison) {
     constexpr size_t kR = 1024; // words() = 16 -> dense_bytes() = 128
     std::vector<MSet> op;
@@ -162,29 +165,32 @@ BOOST_AUTO_TEST_CASE(inverted_index_tier_is_the_encoded_byte_comparison) {
     BOOST_TEST(sc.rows() == kR);
     BOOST_TEST(sc.dense_bytes() == 128u);
 
-    // Mode 0 codes to kBlockHeaderBytes + 99 bytes (107 at TermIndex=u32), under the 128-byte bitmap.
-    BOOST_TEST(!sc.column_is_dense(col_of(0)));
-    BOOST_TEST(sc.sparse_column_count(col_of(0)) == 100u);
-    BOOST_TEST(sc.sparse_encoded_bytes(col_of(0)) == Sc::kBlockHeaderBytes + 99u);
-    BOOST_TEST(sc.sparse_encoded_bytes(col_of(0)) < sc.dense_bytes());
-
-    // Mode 1 codes to 2*kBlockHeaderBytes + 198 bytes (214 at u32) — over the bitmap, so DENSE.
+    // Mode 1 codes to 2*kBlockHeaderBytes + 198 bytes (214 at u32) — over the bitmap, so DENSE at any
+    // bias >= 1. Mode 2 is set in every row, where a bitmap wins by a mile.
     BOOST_TEST(sc.column_is_dense(col_of(1)));
     BOOST_TEST(predicted_encoded_bytes<N>(sc.column_rows(col_of(1))) >= sc.dense_bytes());
     BOOST_TEST(sc.column_is_dense(col_of(2)));
 
-    // The rule genuinely CHANGED: the retired threshold promoted at density >= 1/64, i.e. at >= 16 of
-    // these 1024 rows, so it would have made mode 0 dense. Coding it is cheaper, so now it is not.
-    BOOST_TEST(sc.sparse_column_count(col_of(0)) * 64u >= sc.rows());
+    if constexpr (Sc::kDenseBias == 1.0) {
+        // Mode 0 codes to kBlockHeaderBytes + 99 bytes (107 at u32), under the 128-byte bitmap.
+        BOOST_TEST(!sc.column_is_dense(col_of(0)));
+        BOOST_TEST(sc.sparse_column_count(col_of(0)) == 100u);
+        BOOST_TEST(sc.sparse_encoded_bytes(col_of(0)) == Sc::kBlockHeaderBytes + 99u);
+        BOOST_TEST(sc.sparse_encoded_bytes(col_of(0)) < sc.dense_bytes());
+        // The rule genuinely CHANGED: the retired threshold promoted at density >= 1/64, i.e. at >= 16
+        // of these 1024 rows, so it would have made mode 0 dense. Coding it is cheaper, so now it is not.
+        BOOST_TEST(sc.sparse_column_count(col_of(0)) * 64u >= sc.rows());
+    }
 
-    // Every tier decision the rule makes must agree with the byte comparison, in both directions.
+    // Every tier decision must agree with the byte comparison, in both directions, at ANY bias.
     bool tiers_follow_the_rule = true;
     for (size_t c = 0; c < Sc::kNumColumns; ++c) {
         const auto rows = sc.column_rows(c);
         if (rows.empty()) {
             continue;
         }
-        const bool should_be_dense = predicted_encoded_bytes<N>(rows) >= sc.dense_bytes();
+        const bool should_be_dense = static_cast<double>(predicted_encoded_bytes<N>(rows)) * Sc::kDenseBias
+                                     >= static_cast<double>(sc.dense_bytes());
         if (sc.column_is_dense(c) != should_be_dense) {
             tiers_follow_the_rule = false;
         }
@@ -196,7 +202,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_tier_is_the_encoded_byte_comparison) {
 // has to be large enough that the bitmap costs more than one block header, or NOTHING can be sparse:
 // below 8*kBlockHeaderBytes rows the tier rule correctly makes even a one-posting column dense.
 BOOST_AUTO_TEST_CASE(inverted_index_codes_a_lone_posting_losslessly) {
-    constexpr size_t kR = 1024; // dense_bytes() = 128, well above one header
+    constexpr size_t kR = 8192; // dense_bytes() = 1024, far above one header at any sane bias
     std::vector<MSet> op;
     op.reserve(kR);
     for (size_t i = 0; i < kR; ++i) {
@@ -295,12 +301,14 @@ BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
 
 // THE codec's headline invariant. An index grown by repeated append_rows must hold exactly the same
 // rows as one built by a single rebuild over the same final operator — the incremental encoder and the
-// two-pass one are different code paths, and mid-stream promotion runs only on the incremental one.
+// two-pass one are different code paths, and re-tiering runs only on the incremental one.
 //
-// Their TIERS may legitimately differ: promotion is one-way and the byte comparison is evaluated
-// against the row count at the time, so a column can be promoted early and stay dense even though a
-// rebuild at the final row count would have coded it. That is monotone in one direction only — dense
-// under rebuild implies dense under append — and it is harmless, which the fold check below proves.
+// Their TIERS can still differ slightly, because the two-way re-tier is amortized: it fires when the
+// row count doubles, so columns that drift out of tier during the last partial interval stay that way
+// until the next pass. Dense under rebuild always implies dense under append (eager promotion is exact
+// and runs on every fill); the converse holds only at a re-tier boundary, which
+// inverted_index_demotes_columns_the_growing_bitmap_outgrows pins separately. Either way the rows and
+// the fold are identical, which the checks below prove.
 BOOST_AUTO_TEST_CASE(inverted_index_incremental_append_matches_rebuild) {
     constexpr size_t M = 64; // 2M = 128 columns
     using ScW = InvertedIndex<M>;
@@ -337,6 +345,9 @@ BOOST_AUTO_TEST_CASE(inverted_index_incremental_append_matches_rebuild) {
     BOOST_TEST(rows_match);            // lossless under BOTH build paths
     BOOST_TEST(promotion_is_monotone); // rebuild-dense => append-dense
     BOOST_TEST(dense_incr >= dense_batch);
+    // Re-tiering must pull the grown index CLOSE to the rebuilt one, not merely bound it from above:
+    // with one-way promotion this fixture stranded columns dense by a wide margin.
+    BOOST_TEST(dense_incr <= dense_batch + 4u);
     BOOST_TEST(dense_batch > 0u); // the fixture really does straddle the crossover
     BOOST_TEST(dense_batch < Monomial<M>::size());
 
@@ -354,6 +365,82 @@ BOOST_AUTO_TEST_CASE(inverted_index_incremental_append_matches_rebuild) {
         }
     }
     BOOST_TEST(parity_matches);
+}
+
+// The tier decision must be REVISABLE, not just one-way. A bitmap costs O(row_count) whether or not
+// the column gains postings, so a column touched only while the operator was tiny is cheapest as a
+// bitmap then and hopelessly over-committed later. Leaving that unrevised stranded 4.29 MiB across 210
+// columns on hubbard, whose operator grows 32 -> 1,169,024 rows.
+//
+// Growth here ends exactly on a doubling, i.e. on a re-tier boundary, so the grown index must match a
+// rebuild at the final size EXACTLY -- same tiers, not merely the same rows.
+BOOST_AUTO_TEST_CASE(inverted_index_demotes_columns_the_growing_bitmap_outgrows) {
+    constexpr size_t M = 64;
+    using ScW = InvertedIndex<M>;
+    constexpr size_t kR = 8192;  // power of two: the last append lands on a re-tier boundary
+    constexpr size_t kEarly = 4; // column 0 is touched in these rows and never again
+
+    std::vector<Monomial<M>> op(kR);
+    for (size_t r = 0; r < kEarly; ++r) {
+        op[r].set(0);
+    }
+    for (size_t c = 1; c < Monomial<M>::size(); ++c) {
+        const size_t stride = 1 + (c * 37) % 700;
+        for (size_t r = c % stride; r < kR; r += stride) {
+            op[r].set(c);
+        }
+    }
+
+    ScW grown;
+    grown.append_rows(op, 0, kEarly);
+    // At 4 rows the bitmap is 8 B while the postings cost a whole 8 B block header plus 3 gap bytes,
+    // so the byte comparison correctly picks the bitmap. This is the promotion that used to be final.
+    BOOST_TEST(grown.dense_bytes() == 8u);
+    BOOST_TEST(grown.encoded_bytes_if_coded(0) == ScW::kBlockHeaderBytes + 3u);
+    BOOST_TEST(grown.column_is_dense(0));
+
+    for (size_t have = kEarly; have < kR;) {
+        const size_t next = std::min(kR, have * 2);
+        grown.append_rows(op, have, next - have);
+        have = next;
+    }
+    BOOST_TEST(grown.rows() == kR);
+
+    // By 8192 rows the bitmap costs 1024 B against ~11 B of postings, so it must have been demoted --
+    // and the re-encode must be lossless.
+    BOOST_TEST(grown.dense_bytes() == 1024u);
+    BOOST_TEST(!grown.column_is_dense(0));
+    BOOST_TEST(grown.sparse_column_count(0) == kEarly);
+    BOOST_TEST(grown.sparse_encoded_bytes(0) == ScW::kBlockHeaderBytes + 3u);
+    BOOST_TEST(grown.column_rows(0) == std::vector<TermIndex>({0u, 1u, 2u, 3u}), boost::test_tools::per_element());
+
+    // Landing on a re-tier boundary makes the grown index tier-for-tier identical to a rebuild, since
+    // both apply the same byte comparison at the same row count.
+    ScW fresh;
+    fresh.rebuild(op);
+    bool tiers_identical = true;
+    bool rows_identical = true;
+    for (size_t c = 0; c < Monomial<M>::size(); ++c) {
+        if (grown.column_is_dense(c) != fresh.column_is_dense(c)) {
+            tiers_identical = false;
+        }
+        if (grown.column_rows(c) != fresh.column_rows(c)) {
+            rows_identical = false;
+        }
+    }
+    BOOST_TEST(tiers_identical);
+    BOOST_TEST(rows_identical);
+    // ...so nothing is left mis-tiered, which is the criterion the stranded-column report used. Only
+    // meaningful at the byte-optimal bias: above 1.0 the rule deliberately keeps columns dense that the
+    // oracle would code, so delta_wins counts memory knowingly traded for fold speed, not a defect.
+    if constexpr (ScW::kDenseBias == 1.0) {
+        BOOST_TEST(grown.delta_coded_bytes()[2] == 0u);
+        BOOST_TEST(fresh.delta_coded_bytes()[2] == 0u);
+    }
+    // Demotion is a re-encode, so prove it did not perturb a single folded bit.
+    const std::vector<size_t> gen{0, 7, 33, 96};
+    BOOST_TEST(blocked_fold(grown, gen, kColumnBlockWords) == blocked_fold(fresh, gen, kColumnBlockWords),
+               boost::test_tools::per_element());
 }
 
 // combine_columns_block must reproduce the full-width reference fold for ANY block decomposition:
@@ -446,12 +533,17 @@ BOOST_AUTO_TEST_CASE(inverted_index_realizes_the_min_bitmap_delta_oracle) {
         dense_columns += static_cast<size_t>(sc.column_is_dense(c));
     }
     const auto diag = sc.delta_coded_bytes();
-    BOOST_TEST(diag[1] == realized); // oracle bytes == what we actually store
-    BOOST_TEST(diag[2] == 0u);       // no column left where coding it would still win
     BOOST_TEST(diag[0] > 0u);
     // Blanket-coding every column must cost MORE than the per-column choice -- the whole reason the
     // rule is a comparison and not "code everything". Only meaningful if some column went dense; with
     // no dense column the two figures coincide, which is itself the correct answer.
     BOOST_TEST(dense_columns > 0u);
     BOOST_TEST(diag[0] > diag[1]);
+    // The oracle is byte-optimal, so it is what we store only at the byte-optimal bias. Above 1.0 the
+    // gap to the oracle IS the memory deliberately spent on fold speed, and delta_wins counts the
+    // columns it was spent on -- expected, not a defect.
+    if constexpr (ScW::kDenseBias == 1.0) {
+        BOOST_TEST(diag[1] == realized); // oracle bytes == what we actually store
+        BOOST_TEST(diag[2] == 0u);       // no column left where coding it would still win
+    }
 }

@@ -65,6 +65,13 @@ if(monoprop_WIDE_TERM_INDEX)
   add_compile_definitions(monoprop_WIDE_TERM_INDEX)
 endif()
 
+# Inverted-index tier bias. A column is stored as delta-coded postings only while they encode smaller
+# than a full bitmap; this scales that comparison. 1.0 = byte-optimal (least memory); >1 keeps more
+# columns as bitmaps, which fold faster but cost memory. The time/memory sweep knob -- see
+# src/monoprop/detail/operator/InvertedIndex.h.
+option_with_default(monoprop_INVIDX_DENSE_BIAS "Inverted-index bias toward dense bitmap columns (1.0 = byte-optimal)" 1.0)
+add_compile_definitions(monoprop_INVIDX_DENSE_BIAS=${monoprop_INVIDX_DENSE_BIAS})
+
 find_package(Threads REQUIRED)
 
 if(monoprop_ENABLE_MPI)

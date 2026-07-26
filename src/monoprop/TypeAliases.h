@@ -53,8 +53,8 @@ namespace monoprop {
 // Backend-agnostic row access: dense/packed backends present one surface. materialize_row() returns a
 // const ref (dense, zero-copy) or a fresh value (packed — bind with `const auto&` to extend lifetime).
 template <size_t NumModes>
-[[nodiscard]] inline auto materialize_row(const std::vector<Monomial<NumModes>> &op, size_t i)
-    -> const Monomial<NumModes> & {
+[[nodiscard]] inline auto materialize_row(const std::vector<Monomial<NumModes>> &op,
+                                          size_t i) -> const Monomial<NumModes> & {
     return op[i];
 }
 template <size_t NumModes>
@@ -90,6 +90,7 @@ using VecZ = std::vector<size_t>;
 //   monoprop_WIDE_TERM_INDEX    TermIndex = u64 vs u32 → >2^32 terms per shard  (default OFF)
 //   monoprop_MAX_NUM_MODES      NumModes codegen/instantiation ceiling          (default 250)
 //   monoprop_ENABLE_ARCH_FLAGS  -march=native / -xHost (non-Debug)              (default ON)
+//   monoprop_INVIDX_DENSE_BIAS  inverted-index bitmap-vs-postings tier bias     (default 1.0)
 // Runtime (env-var) knobs live in detail/EnvConfig.h.
 //
 #if defined(monoprop_WIDE_TERM_INDEX)

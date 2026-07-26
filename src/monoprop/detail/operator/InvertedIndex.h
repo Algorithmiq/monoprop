@@ -27,6 +27,12 @@
 
 #include "monoprop/TypeAliases.h"
 
+// Set by cmake -Dmonoprop_INVIDX_DENSE_BIAS=... (see the CMakeLists option of the same name). Defaulted
+// here too so the header stays usable in a translation unit built without the project's definitions.
+#ifndef monoprop_INVIDX_DENSE_BIAS
+#define monoprop_INVIDX_DENSE_BIAS 1.0
+#endif
+
 namespace monoprop::detail {
 
 // ---- LEB128, the posting codec's variable-length integer -----------------------------------------
@@ -76,14 +82,19 @@ inline auto leb128_encode(std::vector<uint8_t> &out, size_t value) -> void {
  *
  * Columns are sparse (~few percent set), so they are stored in two tiers, bit-identical to
  * all-dense: DENSE full-height uint64 vectors folded by the hot word loop; SPARSE an ASCENDING,
- * delta+LEB128 coded posting list scatter-expanded at scan time. Promotion is one-way (the operator
- * is append-only).
+ * delta+LEB128 coded posting list scatter-expanded at scan time.
  *
  * The tier is chosen by an ACTUAL BYTE COMPARISON, not a density proxy: a column stays sparse only
  * while its encoded postings are smaller than its full-height bitmap would be. Density is a poor
  * proxy for that — measured on the two bench models, blanket delta-coding every column saves 55% on
  * hubbard but only 5% on pauli, while the per-column cheaper-of-the-two choice saves 58% and 48%
  * respectively. Which columns win differs by model, so only the comparison itself gets it right.
+ *
+ * The choice is REVISABLE in both directions, because it is not stable as the operator grows: a
+ * bitmap costs O(row_count) whether or not the column gains postings, so a column promoted while the
+ * operator was small can be badly over-committed by the end. Promotion runs on every fill (an O(1)
+ * check); demotion needs an O(set bits) re-encode and so runs only once the row count has doubled.
+ * See @ref retier_columns for the amortization argument and what leaving it out cost.
  */
 template <size_t NumModes>
 struct InvertedIndex {
@@ -96,8 +107,12 @@ struct InvertedIndex {
     // Bias of the tier comparison TOWARD the bitmap. Dense columns fold with the hot word loop while
     // postings must be decoded, so the byte-optimal tier is not necessarily the time-optimal one.
     // 1.0 = pure byte-optimal; >1 pushes columns dense sooner, buying fold speed with memory. THE
-    // time/memory knob of this structure — the tradeoff is a constant, not a rewrite.
-    static constexpr double kDenseBias = 1.0;
+    // time/memory knob of this structure, settable per build as -Dmonoprop_INVIDX_DENSE_BIAS=... so
+    // the tradeoff can be swept on real models without a source edit.
+    static constexpr double kDenseBias = monoprop_INVIDX_DENSE_BIAS;
+    static_assert(kDenseBias >= 1.0,
+                  "monoprop_INVIDX_DENSE_BIAS < 1 would keep a column coded even when its bitmap is "
+                  "strictly smaller — worse on memory AND on fold time. 1.0 is the memory-optimal end.");
 
     /// A posting block's header: its first row stored ABSOLUTELY (so the block decodes without its
     /// predecessors, which is what makes the range query O(log blocks)) and where its gaps start.
@@ -123,6 +138,10 @@ struct InvertedIndex {
 
     std::array<Column, kNumColumns> cols{};
     size_t row_count = 0;
+
+    // Row count at the last two-way re-tier. The trigger for the next one is 2*this, which is what
+    // amortizes the O(set bits) demotion re-encode away. See retier_columns.
+    size_t retier_rows_ = 0;
 
     // Lazily-built parity of |M| per row, packed 1 bit/row. Empty until the first odd-parity generator
     // requests it (even-parity workloads never allocate it); mutable because it is a lazy derived cache.
@@ -277,22 +296,58 @@ struct InvertedIndex {
         ++col.count;
     }
 
+    /// Invoke @p fn(TermIndex) for every set row of a DENSE column @p c, ASCENDING.
+    template <typename Fn>
+    auto for_each_dense_row(size_t c, Fn &&fn) const -> void {
+        const Column &col = cols[c];
+        for (size_t w = 0; w < col.words.size(); ++w) {
+            for (uint64_t x = col.words[w]; x != 0; x &= x - 1) {
+                fn(static_cast<TermIndex>(w * 64 + static_cast<size_t>(std::countr_zero(x))));
+            }
+        }
+    }
+
+    /// Invoke @p fn(TermIndex) for every set row of column @p c, ASCENDING, WHICHEVER tier holds it.
+    /// The tier-agnostic walk: re-tiering and the diagnostics all read columns through it.
+    template <typename Fn>
+    auto for_each_column_row(size_t c, Fn &&fn) const -> void {
+        if (cols[c].is_dense) {
+            for_each_dense_row(c, static_cast<Fn &&>(fn));
+        }
+        else {
+            for_each_sparse_row(c, static_cast<Fn &&>(fn));
+        }
+    }
+
+    /// Bytes column @p c would occupy as coded postings. O(1) if it already is; O(set bits) for a
+    /// dense column, since answering means replaying the encoder over its bitmap. THE quantity both
+    /// tier directions compare against @ref dense_bytes.
+    auto encoded_bytes_if_coded(size_t c) const -> size_t {
+        if (!cols[c].is_dense) {
+            return sparse_encoded_bytes(c);
+        }
+        size_t bytes = 0;
+        size_t postings = 0;
+        size_t prev = 0;
+        for_each_dense_row(c, [&bytes, &postings, &prev](TermIndex r) {
+            if (postings % kPostingsPerBlock == 0) {
+                bytes += kBlockHeaderBytes; // block leader is absolute, so no gap byte
+            }
+            else {
+                bytes += leb128_size(static_cast<size_t>(r) - prev);
+            }
+            prev = r;
+            ++postings;
+        });
+        return bytes;
+    }
+
     /// Diagnostic/testing: column @p c's set rows as an ascending vector, whichever tier holds it.
     /// Allocates — never call it on a hot path.
     auto column_rows(size_t c) const -> std::vector<TermIndex> {
         std::vector<TermIndex> rows;
-        const Column &col = cols[c];
-        if (col.is_dense) {
-            for (size_t w = 0; w < col.words.size(); ++w) {
-                for (uint64_t x = col.words[w]; x != 0; x &= x - 1) {
-                    rows.push_back(static_cast<TermIndex>(w * 64 + static_cast<size_t>(std::countr_zero(x))));
-                }
-            }
-        }
-        else {
-            rows.reserve(sparse_column_count(c));
-            for_each_sparse_row(c, [&rows](TermIndex r) { rows.push_back(r); });
-        }
+        rows.reserve(sparse_column_count(c));
+        for_each_column_row(c, [&rows](TermIndex r) { rows.push_back(r); });
         return rows;
     }
 
@@ -312,9 +367,73 @@ struct InvertedIndex {
         col.is_dense = true;
     }
 
+    /// Re-encode column @p c's bitmap back into postings and release the bitmap — the inverse of
+    /// @ref promote_to_dense, and lossless for the same reason: it replays the encoder over the rows
+    /// the bitmap holds. @p encoded_bytes must be @ref encoded_bytes_if_coded for @p c (the caller has
+    /// already computed it to make the decision); it sizes the streams exactly, so the re-encoded
+    /// column carries no growth slack. O(set bits) — hence the amortization in @ref retier_columns.
+    auto demote_to_sparse(size_t c, size_t encoded_bytes) -> void {
+        Column &col = cols[c];
+        assert(col.is_dense && encoded_bytes == encoded_bytes_if_coded(c));
+        size_t postings = 0;
+        for (uint64_t w : col.words) {
+            postings += static_cast<size_t>(std::popcount(w));
+        }
+        const size_t blocks = (postings + kPostingsPerBlock - 1) / kPostingsPerBlock;
+        Column coded;
+        coded.skips.reserve(blocks);
+        coded.gaps.reserve(encoded_bytes - blocks * kBlockHeaderBytes);
+        for_each_dense_row(c, [&coded](TermIndex r) { append_sparse_row(coded, r); });
+        assert(coded.count == postings);
+        col.gaps = std::move(coded.gaps);
+        col.skips = std::move(coded.skips);
+        col.last_row = coded.last_row;
+        col.count = coded.count;
+        col.words.clear();
+        col.words.shrink_to_fit();
+        col.is_dense = false;
+    }
+
+    /// Re-apply the tier rule to every column in BOTH directions, promoting and DEMOTING.
+    ///
+    /// Necessary because the comparison is not stable as the operator grows: dense_bytes() rises
+    /// linearly with the row count while a column's coded size rises only with its own postings. A
+    /// column promoted while the operator was small — when a bitmap was genuinely cheap — would
+    /// otherwise stay dense forever. The hubbard model grows from 32 to 1,169,024 rows, a ~36,000x
+    /// change in dense_bytes(), so a verdict reached early carries no information about the end state;
+    /// leaving promotion one-way stranded 4.29 MiB there (7.2% of the operator) across 210 columns.
+    ///
+    /// Demotion costs O(set bits), so callers MUST amortize this: @ref fill_rows runs it only once the
+    /// row count has DOUBLED since the previous pass. The re-encode work then telescopes to O(set bits)
+    /// in total, and no column is ever worse than 2x off its optimal tier.
+    ///
+    /// It also reclaims the posting streams' geometric-growth slack. That is a SEPARATE overhead from
+    /// mis-tiering — @ref rebuild reserves both streams exactly, but the incremental encoder push_backs
+    /// and so runs ~1.4x its encoded size — and it belongs here because shrinking is O(size), i.e. the
+    /// same cost class as the re-encode, so the same schedule amortizes it.
+    auto retier_columns() -> void {
+        for (size_t c = 0; c < kNumColumns; ++c) {
+            Column &col = cols[c];
+            if (col.is_dense) {
+                const size_t encoded = encoded_bytes_if_coded(c);
+                if (!col.words.empty() && sparse_beats_dense(encoded)) {
+                    demote_to_sparse(c, encoded);
+                }
+            }
+            else if (col.count != 0 && !sparse_beats_dense(sparse_encoded_bytes(c))) {
+                promote_to_dense(c);
+            }
+            if (!col.is_dense) {
+                col.gaps.shrink_to_fit();
+                col.skips.shrink_to_fit();
+            }
+        }
+        retier_rows_ = row_count;
+    }
+
     // Scatter the set bits of new rows [base, base+n) of `op` into the tiered columns: dense bits to the
-    // word array, sparse rows encoded in row order. Sparse columns whose postings no longer encode
-    // smaller than a bitmap are promoted afterwards. row_count must already cover [0, base+n).
+    // word array, sparse rows encoded in row order, then re-apply the tier rule.
+    // row_count must already cover [0, base+n).
     template <typename Rows>
     auto fill_rows(const Rows &op, size_t base, size_t n) -> void {
         if (n == 0) {
@@ -340,14 +459,21 @@ struct InvertedIndex {
                 }
             });
         }
-        // Re-apply the tier rule now that both the postings and dense_bytes() have grown. The postings
-        // are appended in row order, so append_sparse_row's assert already guards the ascending
-        // invariant the fold's range query depends on.
+        // PROMOTION runs every fill: the check is O(1) per column (both sides of the comparison are
+        // already known), and running it eagerly is what keeps a column's postings from ever growing
+        // past its bitmap cost. The postings are appended in row order, so append_sparse_row's assert
+        // already guards the ascending invariant the fold's range query depends on.
         for (size_t c = 0; c < kNumColumns; ++c) {
             const Column &col = cols[c];
             if (!col.is_dense && col.count != 0 && !sparse_beats_dense(sparse_encoded_bytes(c))) {
                 promote_to_dense(c);
             }
+        }
+        // DEMOTION needs an O(set bits) re-encode, so the full two-way pass waits until the row count
+        // has doubled — see retier_columns. The `max(_, 1)` makes the first fill establish the baseline
+        // rather than re-tiering on every one of them.
+        if (row_count >= std::max<size_t>(retier_rows_ * 2, 1)) {
+            retier_columns();
         }
     }
 
@@ -359,7 +485,11 @@ struct InvertedIndex {
         }
         row_parity_.clear();
         row_count = size;
+        // Pass 1 below decides every tier from the FINAL row count, which is exactly what a re-tier
+        // would conclude — so seed the baseline here and let the fill skip its two-way pass.
+        retier_rows_ = size;
         if (size == 0) {
+            retier_rows_ = 0;
             return;
         }
         const size_t required_words = (size + 63) / 64;
@@ -438,28 +568,20 @@ struct InvertedIndex {
     /// wins. Returns {delta_bytes_all_columns, oracle_bytes, columns_delta_wins}.
     ///
     /// It PREDATES the codec — it was the sizing study that chose the per-column byte comparison over
-    /// a density threshold. Now that the comparison is the tier rule, it is a VERIFICATION of it:
-    /// oracle_bytes must equal the realized tier bytes and columns_delta_wins must be 0, since no
-    /// column can be sparse unless coding it already won. Retire it once that is confirmed on the
-    /// bench models (it also costs an O(rows) expansion per column).
+    /// a density threshold. Now that the comparison IS the tier rule, it verifies it: AT kDenseBias
+    /// == 1.0, right after a re-tier, oracle_bytes equals the realized tier bytes and delta_wins is 0.
+    /// A nonzero delta_wins then means columns have drifted out of tier since the last two-way pass,
+    /// bounded by the doubling schedule to what one more doubling can strand — that is the signal that
+    /// caught demotion missing entirely (210 stranded columns, 4.29 MiB on hubbard).
+    ///
+    /// Above bias 1.0 a nonzero delta_wins is EXPECTED and not a defect: the oracle here is purely
+    /// byte-optimal, so the gap to it is exactly the memory the bias is knowingly spending on fold
+    /// speed, and delta_wins counts the columns it was spent on.
     auto delta_coded_bytes() const -> std::array<size_t, 3> {
         std::array<size_t, 3> out{0, 0, 0};
         for (size_t c = 0; c < kNumColumns; ++c) {
-            const Column &col = cols[c];
-            const std::vector<TermIndex> rows = column_rows(c);
-            size_t delta = 0;
-            size_t prev = 0;
-            for (size_t i = 0; i < rows.size(); ++i) {
-                if (i % kPostingsPerBlock == 0) {
-                    delta += kBlockHeaderBytes; // block leader is absolute, so no gap byte
-                }
-                else {
-                    // Gaps are ≥ 1 because the postings are strictly ascending.
-                    delta += leb128_size(static_cast<size_t>(rows[i]) - prev);
-                }
-                prev = rows[i];
-            }
-            const size_t here = col.is_dense ? dense_bytes() : sparse_encoded_bytes(c);
+            const size_t delta = encoded_bytes_if_coded(c);
+            const size_t here = cols[c].is_dense ? dense_bytes() : sparse_encoded_bytes(c);
             out[0] += delta;
             out[1] += std::min(delta, here);
             out[2] += static_cast<size_t>(delta < here);
