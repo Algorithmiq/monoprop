@@ -15,6 +15,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -51,6 +52,12 @@ static_assert(!std::is_copy_constructible_v<Store>, "OperatorIndex must remain n
 MSet bs(const VecZ &r) {
     return indices_to_bitset<N>(r);
 }
+
+// A bijection from [0, 21^3) to distinct 3-position monomials: three disjoint position bands inside
+// the 2N = 64 valid indices, so every key is genuinely distinct and stays inline at any width >= 3.
+MSet key3(size_t i) {
+    return bs({i % 21, 21 + (i / 21) % 21, 42 + (i / 441) % 21});
+}
 } // namespace
 
 BOOST_AUTO_TEST_CASE(rows_roundtrip_dense_popcount_positions) {
@@ -83,7 +90,7 @@ BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
 }
 
 BOOST_AUTO_TEST_CASE(width_is_a_construction_invariant) {
-    Store s(4);                    // stride = 1 + 4, fixed at construction
+    Store s(4);                    // stride derived from width 4, fixed at construction
     s.push_back(bs({0, 2, 4, 6})); // a 4-position row fits inline at width 4
     s.reserve(20);                 // capacity only -- width/stride are never touched by reserve
     BOOST_TEST(s.popcount(0) == 4u);
@@ -201,6 +208,416 @@ BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
     // Spot-check the two kinds explicitly.
     BOOST_TEST(out[0] == 0u);               // first present key -> row 0
     BOOST_TEST(out[1] == Store::kNotFound); // first absent key
+}
+
+// ---------------------------------------------------------------------------------------------
+// Split (index + 1-byte tag) table. The table no longer stores a reconstructible 32-bit hash, so a
+// rehash re-derives every surviving entry's hash from its row. These cases pin that path.
+// ---------------------------------------------------------------------------------------------
+
+// The slot is one TermIndex plus one tag byte, so the index arrays must measure exactly
+// slot_count * (sizeof(TermIndex) + 1) bytes at a power-of-two slot count. Width-agnostic: this
+// holds for both the default u32 and the -Dmonoprop_WIDE_TERM_INDEX u64 build.
+BOOST_AUTO_TEST_CASE(index_slot_is_term_index_plus_one_tag_byte) {
+    constexpr size_t kSlotBytes = sizeof(TermIndex) + 1;
+    Store s;
+    for (size_t n : {size_t{0}, size_t{100}, size_t{5000}}) {
+        for (size_t i = s.size(); i < n; ++i) {
+            s.push_back(key3(i));
+            s.emplace(key3(i), i);
+        }
+        const size_t array_bytes = s.index_estimated_memory_bytes() - sizeof(Store);
+        BOOST_TEST(array_bytes % kSlotBytes == 0u);
+        const size_t slots = array_bytes / kSlotBytes;
+        BOOST_TEST(std::has_single_bit(slots));
+        BOOST_TEST(slots * 7u >= s.size() * 10u); // load factor stayed at or under 0.7
+    }
+}
+
+// Many rehashes, each re-deriving hashes from rows: every key must still be findable, and find_batch
+// must still agree with find (a 1/256 tag collision resolves through the exact-find fallback).
+BOOST_AUTO_TEST_CASE(rehash_rederives_hashes_from_rows) {
+    constexpr size_t kRows = 4000; // 16 -> 8192 slots: nine doublings
+    Store s;
+    std::vector<MSet> keys;
+    keys.reserve(kRows);
+    for (size_t i = 0; i < kRows; ++i) {
+        keys.push_back(key3(i));
+        s.push_back(keys.back());
+        s.emplace(keys.back(), i); // emplace drives rehash_if_needed one entry at a time
+    }
+    bool all_found = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        const auto f = s.find(keys[i]);
+        if (!f || *f != i) {
+            all_found = false;
+        }
+    }
+    BOOST_TEST(all_found);
+
+    std::vector<size_t> out(kRows, 424242);
+    s.find_batch(keys.data(), kRows, out.data());
+    bool batch_agrees = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        if (out[i] != i) {
+            batch_agrees = false;
+        }
+    }
+    BOOST_TEST(batch_agrees);
+}
+
+// row_hash() of an overflow row must go through the side-map, not the (kOverflowMarker) header.
+// Width 1 sends every 2-position row to overflow, so this rehashes a table of overflow-only rows.
+BOOST_AUTO_TEST_CASE(rehash_rederives_hashes_of_overflow_rows) {
+    constexpr size_t kRows = 300;
+    Store s(1); // width 1: any 2-position row overflows
+    for (size_t i = 0; i < kRows; ++i) {
+        const auto key = bs({i % 30, 30 + (i / 30) % 30});
+        s.push_back(key);
+        s.emplace(key, i);
+    }
+    bool ok = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        const auto key = bs({i % 30, 30 + (i / 30) % 30});
+        const auto f = s.find(key);
+        if (!f || *f != i || s.popcount(i) != 2u || !(s.row(i) == key)) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    // ... and the clone of an all-overflow store re-derives them against its OWN rows.
+    const auto c = s.clone();
+    BOOST_TEST(*c->find(bs({7, 37})) == 217u); // i=217 -> {217%30=7, 30+(217/30)%30=37}
+}
+
+// bulk_insert right-sizes the table up front, then inserts without rehashing. Driven in successive
+// "layers" so the reserve path is exercised against a table that already holds entries.
+BOOST_AUTO_TEST_CASE(bulk_insert_across_layers_finds_every_key) {
+    Store s;
+    const auto key_of = [](size_t i) { return key3(i); };
+    size_t total = 0;
+    for (size_t layer_n : {size_t{1}, size_t{17}, size_t{500}, size_t{2500}}) {
+        const size_t base = s.grow_rows_geometric(layer_n);
+        BOOST_TEST(base == total);
+        for (size_t k = 0; k < layer_n; ++k) {
+            s.set(base + k, key_of(base + k));
+        }
+        s.bulk_insert(layer_n, base, [&](size_t k) { return key_of(base + k); });
+        total += layer_n;
+    }
+    BOOST_TEST(s.size() == total);
+    bool ok = true;
+    for (size_t i = 0; i < total; ++i) {
+        const auto f = s.find(key_of(i));
+        if (!f || *f != i) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    BOOST_TEST(!s.find(bs({0, 1, 2})).has_value()); // never inserted
+}
+
+// ---------------------------------------------------------------------------------------------
+// Segmented row arena. Rows live in fixed page-scale chunks rather than one geometrically grown
+// buffer, so every row access is one chunk-table load away and slack is bounded by one chunk. Width
+// 32 gives the widest stride available, hence the tightest chunk boundary spacing, so these cases
+// cross several chunk boundaries in a few hundred rows.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+constexpr size_t kNarrowWidth = 32; // the widest inline row -> the fewest rows per chunk
+} // namespace
+
+// Every row must round-trip at every index, including the indices either side of a chunk boundary.
+BOOST_AUTO_TEST_CASE(rows_round_trip_across_chunk_boundaries) {
+    constexpr size_t kRows = 400; // > 3 chunks of 128
+    Store s(kNarrowWidth);
+    for (size_t i = 0; i < kRows; ++i) {
+        s.push_back(key3(i));
+    }
+    BOOST_TEST(s.size() == kRows);
+    bool ok = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        if (!(s.row(i) == key3(i)) || s.popcount(i) != 3u) {
+            ok = false;
+        }
+        std::vector<size_t> pos;
+        s.for_each_position(i, [&](size_t b) { pos.push_back(b); });
+        if (pos.size() != 3u) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    // Spot-check the boundary neighbourhoods explicitly: a chunk-addressing off-by-one shows up here
+    // as a row read from the wrong chunk (or the wrong offset within the right one).
+    for (size_t i : {size_t{126}, size_t{127}, size_t{128}, size_t{129}, size_t{255}, size_t{256}, size_t{257}}) {
+        BOOST_TEST((s.row(i) == key3(i)));
+    }
+}
+
+// One grow_rows_geometric call spanning several chunks must allocate them all, and the rows written
+// into it must be readable across every boundary it crossed.
+BOOST_AUTO_TEST_CASE(single_grow_spanning_many_chunks) {
+    Store s(kNarrowWidth);
+    BOOST_TEST(s.grow_rows_geometric(1) == 0u);
+    s.set(0, key3(0));
+    const size_t base = s.grow_rows_geometric(300); // crosses two boundaries in one call
+    BOOST_TEST(base == 1u);
+    for (size_t k = 0; k < 300; ++k) {
+        s.set(base + k, key3(base + k));
+    }
+    bool ok = true;
+    for (size_t i = 0; i < 301; ++i) {
+        if (!(s.row(i) == key3(i))) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+}
+
+// A zero-popcount row, a maximum-inline-popcount row and an overflow row, placed on and around a
+// chunk boundary. set() must not pre-read the (indeterminate) header of a freshly allocated chunk.
+BOOST_AUTO_TEST_CASE(edge_popcount_rows_at_a_chunk_boundary) {
+    Store s(kNarrowWidth);
+    const auto full = [] { // 32 positions: exactly the inline width
+        VecZ r;
+        for (size_t j = 0; j < 32; ++j) {
+            r.push_back(j);
+        }
+        return bs(r);
+    }();
+    const auto over = [] { // 33 positions: one past the inline width -> overflow side-map
+        VecZ r;
+        for (size_t j = 0; j < 33; ++j) {
+            r.push_back(j);
+        }
+        return bs(r);
+    }();
+    const MSet empty{}; // popcount 0
+
+    for (size_t i = 0; i < 132; ++i) {
+        s.push_back(key3(i));
+    }
+    s.set(126, empty);
+    s.set(127, full); // last row of chunk 0
+    s.set(128, over); // first row of chunk 1 -> overflow
+    s.set(129, empty);
+
+    BOOST_TEST(s.popcount(126) == 0u);
+    BOOST_TEST((s.row(126) == empty));
+    BOOST_TEST(s.popcount(127) == 32u);
+    BOOST_TEST((s.row(127) == full));
+    BOOST_TEST(s.popcount(128) == 33u); // recovered from overflow, not from the header
+    BOOST_TEST((s.row(128) == over));
+    BOOST_TEST(s.popcount(129) == 0u);
+    BOOST_TEST((s.row(130) == key3(130))); // untouched neighbours survive
+    // Overwriting the overflow row with an inline one must drop the stale side-map entry.
+    s.set(128, key3(128));
+    BOOST_TEST(s.popcount(128) == 3u);
+    BOOST_TEST((s.row(128) == key3(128)));
+}
+
+// A rehash walks entries in table order, so it re-derives row hashes from rows scattered over every
+// chunk. Drive enough emplaces to force several rehashes while the arena spans multiple chunks.
+BOOST_AUTO_TEST_CASE(rehash_crosses_chunk_boundaries) {
+    constexpr size_t kRows = 600; // ~5 chunks of 128, and 16 -> 1024 slots: six doublings
+    Store s(kNarrowWidth);
+    for (size_t i = 0; i < kRows; ++i) {
+        s.push_back(key3(i));
+        s.emplace(key3(i), i);
+    }
+    bool ok = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        const auto f = s.find(key3(i));
+        if (!f || *f != i) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    // find_batch's prefetch addresses a candidate row through the chunk table; it must agree with find.
+    std::vector<MSet> q;
+    for (size_t i = 0; i < kRows; ++i) {
+        q.push_back(key3(i));
+    }
+    std::vector<size_t> out(kRows, 424242);
+    s.find_batch(q.data(), kRows, out.data());
+    bool batch_ok = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        if (out[i] != i) {
+            batch_ok = false;
+        }
+    }
+    BOOST_TEST(batch_ok);
+}
+
+// clone() copies the arena chunk by chunk. Every row must survive, the clone must stay independent,
+// and its index must confirm against its own rows.
+BOOST_AUTO_TEST_CASE(clone_copies_every_chunk) {
+    constexpr size_t kRows = 400;
+    Store a(kNarrowWidth);
+    for (size_t i = 0; i < kRows; ++i) {
+        a.push_back(key3(i));
+        a.emplace(key3(i), i);
+    }
+    const auto b = a.clone();
+    BOOST_TEST(b->size() == kRows);
+    bool ok = true;
+    for (size_t i = 0; i < kRows; ++i) {
+        const auto f = b->find(key3(i));
+        if (!(b->row(i) == key3(i)) || !f || *f != i) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    // Independence across a chunk boundary: mutating the source must not perturb the clone.
+    a.set(200, bs({1, 2, 3}));
+    BOOST_TEST((b->row(200) == key3(200)));
+}
+
+// The whole point of the arena: dead row capacity is bounded in ABSOLUTE bytes (about one chunk),
+// not as a fraction of the store. A propagator runs one store per physical core, so the bound has to
+// hold per store at every size -- the geometric buffer this replaced left up to ~1/3 of the rows.
+BOOST_AUTO_TEST_CASE(arena_slack_is_bounded_by_one_chunk) {
+    constexpr size_t kBound = 2 * Store::kChunkTargetBytes + 1024; // chunk bytes stay under 2 pages
+    for (size_t width : {size_t{1}, size_t{4}, kNarrowWidth}) {
+        Store s(width);
+        for (size_t n : {size_t{1}, size_t{130}, size_t{700}, size_t{3000}}) {
+            while (s.size() < n) {
+                s.push_back(key3(s.size()));
+            }
+            BOOST_TEST(s.slack_bytes() < kBound);
+            BOOST_TEST(s.memory_bytes() >= s.size() * Store::stride_for_(width) * sizeof(Store::PosT));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Headerless rows. Positions occupy [0, 2N), so PosT normally has spare codepoints for a terminator
+// and an overflow sentinel, and the leading popcount slot is dropped: stride == inline_width_. The
+// one exception is 2 * NumModes == 256 (NumModes == 128 exactly), where every uint8_t codepoint is a
+// valid position; those widths keep the header, selected by `if constexpr`, NOT by narrowing PosT
+// (which would double the row width at NumModes == 128 -- a far bigger cost than this saves).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+using Store128 = OperatorIndex<128>; // 2 * 128 == 256: no spare codepoint, so the header stays
+using MSet128 = Monomial<128>;
+
+static_assert(std::is_same_v<Store::PosT, std::uint8_t>);
+static_assert(std::is_same_v<Store128::PosT, std::uint8_t>);
+static_assert(Store::kHeaderless, "2N == 64 leaves 192 spare codepoints for the sentinels");
+static_assert(Store::stride_for_(6) == 6, "the headerless layout drops the popcount slot");
+static_assert(!Store128::kHeaderless, "2N == 256 has no spare codepoint and must keep the header");
+static_assert(Store128::stride_for_(6) == 7, "the header layout still costs one slot per row");
+
+MSet128 bs128(const VecZ &r) {
+    return indices_to_bitset<128>(r);
+}
+} // namespace
+
+// The headerless row shapes, all four of them: exactly full (no room for a terminator, recognised by
+// the scan hitting the width limit), short (terminator written), empty (terminator at slot 0), and
+// overflow (sentinel at slot 0). A full row must not run the scan on into the row that follows it.
+BOOST_AUTO_TEST_CASE(headerless_row_shapes_round_trip) {
+    Store s(3); // headerless: stride 3, so a 3-position row has no terminator slot
+    const auto full = bs({0, 1, 2});
+    // bs({0}) sets raw bit 2N-1 == 63, one below kTerminator == 64: the top valid position must never
+    // be mistaken for the terminator.
+    const auto top = bs({0});
+    const MSet empty{};
+    const auto over = bs({0, 1, 2, 3}); // 4 > 3 -> overflow side-map
+
+    s.push_back(full);
+    s.push_back(top);
+    s.push_back(empty);
+    s.push_back(over);
+    s.push_back(full); // a full row as the LAST row too
+
+    BOOST_TEST(s.popcount(0) == 3u); // stops at the width limit, not in row 1
+    BOOST_TEST((s.row(0) == full));
+    BOOST_TEST(s.popcount(1) == 1u);
+    BOOST_TEST((s.row(1) == top));
+    BOOST_TEST(s.popcount(2) == 0u);
+    BOOST_TEST((s.row(2) == empty));
+    BOOST_TEST(s.popcount(3) == 4u); // from the overflow map
+    BOOST_TEST((s.row(3) == over));
+    BOOST_TEST(s.popcount(4) == 3u);
+    BOOST_TEST((s.row(4) == full));
+
+    std::vector<size_t> pos;
+    s.for_each_position(1, [&](size_t b) { pos.push_back(b); });
+    BOOST_TEST(pos.size() == 1u);
+    BOOST_TEST(pos[0] == 63u); // the top valid position, adjacent to the terminator codepoint
+
+    // Every shape must also be findable through the index (row_eq_key sees the same shapes).
+    for (size_t i = 0; i < s.size(); ++i) {
+        s.emplace(s.row(i), i);
+    }
+    BOOST_TEST(*s.find(full) == 0u); // first insert wins; emplace is a no-op on a duplicate
+    BOOST_TEST(*s.find(top) == 1u);
+    BOOST_TEST(*s.find(empty) == 2u);
+    BOOST_TEST(*s.find(over) == 3u);
+
+    // Rewriting a full row as a short one must plant the terminator (no stale third position).
+    s.set(0, top);
+    BOOST_TEST(s.popcount(0) == 1u);
+    BOOST_TEST((s.row(0) == top));
+    // ... and rewriting the overflow row inline must drop the side-map entry.
+    s.set(3, full);
+    BOOST_TEST(s.popcount(3) == 3u);
+    BOOST_TEST((s.row(3) == full));
+}
+
+// The 2N == 256 width keeps the popcount header. Same four row shapes, exercised through the
+// `if constexpr` else-branch so the retained layout cannot rot.
+BOOST_AUTO_TEST_CASE(header_layout_round_trips_when_no_codepoint_is_spare) {
+    Store128 s(4); // header + 4 positions
+    const auto three = bs128({0, 3, 5});
+    const auto full = bs128({1, 2, 250, 255}); // exactly 4; index 255 is raw position 0
+    const MSet128 empty{};
+    const auto over = bs128({0, 1, 2, 3, 4}); // 5 > 4 -> overflow
+
+    s.push_back(three);
+    s.push_back(full);
+    s.push_back(empty);
+    s.push_back(over);
+
+    BOOST_TEST(s.popcount(0) == 3u);
+    BOOST_TEST((s.row(0) == three));
+    BOOST_TEST(s.popcount(1) == 4u);
+    BOOST_TEST((s.row(1) == full));
+    BOOST_TEST(s.popcount(2) == 0u);
+    BOOST_TEST((s.row(2) == empty));
+    BOOST_TEST(s.popcount(3) == 5u);
+    BOOST_TEST((s.row(3) == over));
+
+    for (size_t i = 0; i < s.size(); ++i) {
+        s.emplace(s.row(i), i);
+    }
+    BOOST_TEST(*s.find(three) == 0u);
+    BOOST_TEST(*s.find(full) == 1u);
+    BOOST_TEST(*s.find(empty) == 2u);
+    BOOST_TEST(*s.find(over) == 3u);
+
+    // Enough rows to force rehashes (which re-derive hashes from rows) across chunk boundaries.
+    for (size_t i = 4; i < 500; ++i) {
+        const auto k = bs128({i % 21, 21 + (i / 21) % 21, 42 + (i / 441) % 21});
+        s.push_back(k);
+        s.emplace(k, i);
+    }
+    bool ok = true;
+    for (size_t i = 4; i < 500; ++i) {
+        const auto k = bs128({i % 21, 21 + (i / 21) % 21, 42 + (i / 441) % 21});
+        const auto f = s.find(k);
+        if (!f || *f != i) {
+            ok = false;
+        }
+    }
+    BOOST_TEST(ok);
+    const auto c = s.clone();
+    BOOST_TEST(c->size() == s.size());
+    BOOST_TEST((c->row(1) == full));
+    BOOST_TEST(*c->find(over) == 3u);
 }
 
 // An empty store must report every key missing (find_batch's shard.count == 0 early-out).
