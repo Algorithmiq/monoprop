@@ -110,6 +110,22 @@ def _place_operator(
     )
 
 
+def _negated(operator: PauliOperator) -> PauliOperator:
+    """Flip the sign of every coefficient of ``operator``.
+
+    Qiskit evolves by ``exp(-i t H)`` while :class:`~monoprop.circuit.ExpGate` applies
+    ``exp(+i theta H)``, so a generator must change sign when it crosses the boundary. The sign
+    goes on the *generator*, not on the angle, so a converted circuit's ``parameters`` stay
+    numerically equal to the qiskit evolution times -- and a gradient with respect to a
+    monoprop parameter is a gradient with respect to the qiskit angle it came from.
+    """
+    return PauliOperator._from_terms(
+        list(operator.terms),
+        [-coeff for coeff in operator.terms.values()],
+        num_qubits=operator.num_qubits,
+    )
+
+
 def from_qiskit_circuit(
     circuit: QuantumCircuit,
     initial_state: list[int],
@@ -119,6 +135,10 @@ def from_qiskit_circuit(
     Note that the qiskit circuit must be composed only by PauliEvolutionGates with commuting
     operators. Each qiskit gate becomes one qubit :class:`~monoprop.circuit.ExpGate` driven by
     its own angle (the identity parameter mapping).
+
+    Qiskit's ``exp(-i t H)`` is monoprop's ``exp(+i theta (-H))``, so each generator's
+    coefficients are negated and the angles are carried through unchanged (see
+    :func:`_negated`).
 
     Args:
         circuit: A qiskit quantum circuit.
@@ -147,14 +167,15 @@ def from_qiskit_circuit(
 
         if gate_name == "PauliEvolution":
             parameter = g_op.time
-            generator = _place_operator(
-                from_qiskit_operator(g_op.operator), qubits, num_qubits
+            generator = _negated(
+                _place_operator(from_qiskit_operator(g_op.operator), qubits, num_qubits)
             )
         elif gate_name in PAULI_EVOLUTION_EQUIVALENT:
             parameter = g_op.params[0]
             pauli_string = gate_name[1:].upper()  # Remove the leading 'R' and uppercase
+            # R<P>(t) == exp(-i t P/2), i.e. exp(+i t (-P/2)).
             generator = PauliOperator._from_terms(
-                [Pauli(pauli_string, qubits)], [0.5], num_qubits=num_qubits
+                [Pauli(pauli_string, qubits)], [-0.5], num_qubits=num_qubits
             )
         else:
             raise ValueError(
@@ -193,7 +214,9 @@ def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
 
     Note that the resulting qiskit circuit will be composed only by PauliEvolutionGates with
     commuting operators. Each gate's evolution time is taken from the circuit's
-    ``parameters`` via its parameter mapping.
+    ``parameters`` via its parameter mapping, and each generator's coefficients are negated to
+    turn monoprop's ``exp(+i theta H)`` back into qiskit's ``exp(-i t H)`` (see
+    :func:`_negated`).
 
     Args:
         circuit: A :class:`~monoprop.circuit.Circuit` representing the given circuit.
@@ -217,7 +240,7 @@ def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
                 "to_qiskit_circuit requires a qubit (Pauli) circuit; got a "
                 f"{circuit.family}-family gate."
             )
-        pauli_dict, qubits = _extend_generator_minimally(generator)
+        pauli_dict, qubits = _extend_generator_minimally(_negated(generator))
         qiskit_circuit.append(
             PauliEvolutionGate(
                 to_qiskit_operator(pauli_dict), time=circuit.parameters[param_index]

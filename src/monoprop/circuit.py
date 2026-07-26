@@ -77,6 +77,11 @@ CircuitFamily = Literal["pauli", "majorana", "empty"]
 class ExpGate:
     r"""The exponential of a generator: one variational gate, abstract over the family.
 
+    The gate applies :math:`e^{+i\theta H}` for its driving angle :math:`\theta` and Hermitian
+    generator :math:`H`. Note the **positive** sign: qiskit's ``PauliEvolutionGate`` and ``r<P>``
+    rotations use :math:`e^{-itH}`, so :mod:`monoprop.qiskit_conversion` negates the generator on
+    the way in and out.
+
     A single gate type serves every family; the generator must be an *operator object* (it
     carries the system size), and its **type** decides how it is normalized (mirroring how a
     single :class:`Circuit` dispatches on its gates):

@@ -186,6 +186,8 @@ class TestToQiskitOperator:
 @requires_qiskit
 @pytest.mark.qiskit
 class ToQiskitCircuitCases:
+    # ExpGate applies exp(+i theta H) and PauliEvolutionGate exp(-i t H), so the expected qiskit
+    # generator carries the NEGATED coefficient at the same evolution time.
     @case(id="single_gate")
     def case_single_gate(self):
         circuit = Circuit(
@@ -195,7 +197,7 @@ class ToQiskitCircuitCases:
         )
         expected_circuit = QuantumCircuit(1)
         expected_circuit.append(
-            PauliEvolutionGate(SparsePauliOp.from_list([("Z", 1.0)]), time=0.7),
+            PauliEvolutionGate(SparsePauliOp.from_list([("Z", -1.0)]), time=0.7),
             [0],
         )
         return circuit, 1, expected_circuit
@@ -210,7 +212,7 @@ class ToQiskitCircuitCases:
         expected_circuit = QuantumCircuit(5)
         # qiskit uses reversed Pauli string order and sorted gate qubit indices.
         expected_circuit.append(
-            PauliEvolutionGate(SparsePauliOp.from_list([("ZYX", 1.5)]), time=0.7),
+            PauliEvolutionGate(SparsePauliOp.from_list([("ZYX", -1.5)]), time=0.7),
             [1, 2, 3],
         )
         return circuit, 5, expected_circuit
@@ -226,13 +228,15 @@ class TestToQiskitCircuit:
 
 
 class QiskitCircuitsCases:
+    # PauliEvolutionGate applies exp(-i t H) and ExpGate exp(+i theta H), so every expected
+    # monoprop generator carries the NEGATED qiskit coefficient at the same angle.
     @case(id="single_pauli_evolution_gate")
     def case_single_pauli_evolution_gate(self):
         circuit = QuantumCircuit(1)
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         expected = Circuit(
-            gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
+            gates=(ExpGate(PauliOperator({Pauli("Z", 0): -1.0}, num_qubits=1)),),
             parameters=(0.7,),
             initial_state=(),
         )
@@ -246,8 +250,8 @@ class QiskitCircuitsCases:
         circuit.append(PauliEvolutionGate(operator2, time=0.5), [0, 1])
         expected = Circuit(
             gates=(
-                ExpGate(PauliOperator({Pauli("ZX", (0, 1)): 1.0}, num_qubits=2)),
-                ExpGate(PauliOperator({Pauli("Y", 0): 0.5}, num_qubits=2)),
+                ExpGate(PauliOperator({Pauli("ZX", (0, 1)): -1.0}, num_qubits=2)),
+                ExpGate(PauliOperator({Pauli("Y", 0): -0.5}, num_qubits=2)),
             ),
             parameters=(0.3, 0.5),
             initial_state=(),
@@ -261,9 +265,9 @@ class QiskitCircuitsCases:
         circuit.rz(0.7, 0)
         expected = Circuit(
             gates=(
-                ExpGate(PauliOperator({Pauli("X", 0): 0.5}, num_qubits=1)),
-                ExpGate(PauliOperator({Pauli("Y", 0): 0.5}, num_qubits=1)),
-                ExpGate(PauliOperator({Pauli("Z", 0): 0.5}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("X", 0): -0.5}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("Y", 0): -0.5}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("Z", 0): -0.5}, num_qubits=1)),
             ),
             parameters=(0.5, 0.3, 0.7),
             initial_state=(),
@@ -276,7 +280,7 @@ class QiskitCircuitsCases:
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         circuit.barrier()
         expected = Circuit(
-            gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
+            gates=(ExpGate(PauliOperator({Pauli("Z", 0): -1.0}, num_qubits=1)),),
             parameters=(0.7,),
             initial_state=(),
         )
