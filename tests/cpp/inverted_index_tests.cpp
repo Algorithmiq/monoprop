@@ -96,8 +96,8 @@ BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
     BOOST_TEST(sc.column_is_dense(col_of(0)));  // 10/128 >= 1/64
     BOOST_TEST(!sc.column_is_dense(col_of(1))); // 1/128  <  1/64
     // The lone sparse hit is recorded losslessly.
-    BOOST_TEST(sc.sparse_column_rows(col_of(1)).size() == 1u);
-    BOOST_TEST(sc.sparse_column_rows(col_of(1))[0] == 0u);
+    BOOST_TEST(sc.sparse_column_count(col_of(1)) == 1u);
+    BOOST_TEST(sc.column_rows(col_of(1)) == std::vector<TermIndex>{0u}, boost::test_tools::per_element());
 }
 
 // rebuild fills columns in row order, so sparse row-lists come out ASCENDING — the invariant the fold
@@ -124,13 +124,20 @@ BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
         if (sc.column_is_dense(c)) {
             continue;
         }
-        const auto &rows = sc.sparse_column_rows(c);
-        if (!rows.empty()) {
+        if (sc.sparse_column_count(c) != 0) {
             saw_nonempty_sparse = true;
         }
-        if (!std::is_sorted(rows.begin(), rows.end())) {
-            all_sorted = false;
-        }
+        // Walk the tier through its public iteration entry point: strictly ascending is the contract
+        // combine_columns_block's range query depends on, so assert it on what the fold actually sees.
+        TermIndex prev = 0;
+        bool first = true;
+        sc.for_each_sparse_row(c, [&](TermIndex r) {
+            if (!first && r <= prev) {
+                all_sorted = false;
+            }
+            prev = r;
+            first = false;
+        });
     }
     BOOST_TEST(saw_nonempty_sparse); // the fill actually populated sparse columns
     BOOST_TEST(all_sorted);          // and they are ascending, at any thread count

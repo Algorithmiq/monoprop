@@ -69,14 +69,14 @@ struct InvertedIndex {
         if (row_parity_.empty() && row_count != 0) {
             const size_t nwords = (row_count + 63) / 64;
             row_parity_.assign(nwords, 0);
-            for (const auto &col : cols) {
+            for (size_t c = 0; c < kNumColumns; ++c) {
+                const Column &col = cols[c];
                 if (col.is_dense) {
                     for (size_t w = 0; w < nwords && w < col.words.size(); ++w)
                         row_parity_[w] ^= col.words[w];
                 }
                 else {
-                    for (TermIndex r : col.set_rows)
-                        row_parity_[r >> 6] ^= (uint64_t{1} << (r & 63));
+                    for_each_sparse_row(c, [this](TermIndex r) { row_parity_[r >> 6] ^= (uint64_t{1} << (r & 63)); });
                 }
             }
         }
@@ -88,14 +88,66 @@ struct InvertedIndex {
 
     auto column_is_dense(size_t c) const -> bool { return cols[c].is_dense; }
     auto dense_column_data(size_t c) const -> const uint64_t * { return cols[c].words.data(); }
-    auto sparse_column_rows(size_t c) const -> const std::vector<TermIndex> & { return cols[c].set_rows; }
+
+    // ---- SPARSE-tier access ---------------------------------------------------------------------
+    // The sparse tier is reached ONLY through these three entry points, never through its container:
+    // the fold kernel, the build scan and the tests all go via them, so the posting representation is
+    // an implementation detail of this struct.
+
+    /// Number of postings (set rows) held in column @p c's SPARSE tier; 0 for a dense column.
+    auto sparse_column_count(size_t c) const -> size_t { return cols[c].is_dense ? 0 : cols[c].set_rows.size(); }
+
+    /// Bytes column @p c's SPARSE tier actually occupies. THE sizing hook: memory_bytes,
+    /// tier_memory_bytes and the diagnostics all route through it, so the accounting cannot drift
+    /// from the representation.
+    auto sparse_column_bytes(size_t c) const -> size_t { return cols[c].set_rows.capacity() * sizeof(TermIndex); }
+
+    /// Invoke @p fn(TermIndex) for each sparse posting of column @p c with lo <= row < hi, ASCENDING.
+    /// The range query is what makes the blocked fold possible; postings are strictly ascending, so it
+    /// is a bounded sub-walk of the column.
+    template <typename Fn>
+    [[gnu::always_inline]] auto for_each_sparse_row_in_range(size_t c, size_t lo, size_t hi, Fn &&fn) const -> void {
+        const std::vector<TermIndex> &rows = cols[c].set_rows;
+        const auto below = [](TermIndex row, size_t bound) { return static_cast<size_t>(row) < bound; };
+        auto it = std::lower_bound(rows.begin(), rows.end(), lo, below);
+        const auto en = std::lower_bound(rows.begin(), rows.end(), hi, below);
+        for (; it != en; ++it) {
+            fn(*it);
+        }
+    }
+
+    /// Invoke @p fn(TermIndex) for every sparse posting of column @p c, ASCENDING.
+    template <typename Fn>
+    auto for_each_sparse_row(size_t c, Fn &&fn) const -> void {
+        for (TermIndex r : cols[c].set_rows) {
+            fn(r);
+        }
+    }
+
+    /// Diagnostic/testing: column @p c's set rows as an ascending vector, whichever tier holds it.
+    /// Allocates — never call it on a hot path.
+    auto column_rows(size_t c) const -> std::vector<TermIndex> {
+        std::vector<TermIndex> rows;
+        const Column &col = cols[c];
+        if (col.is_dense) {
+            for (size_t w = 0; w < col.words.size(); ++w) {
+                for (uint64_t x = col.words[w]; x != 0; x &= x - 1) {
+                    rows.push_back(static_cast<TermIndex>(w * 64 + static_cast<size_t>(std::countr_zero(x))));
+                }
+            }
+        }
+        else {
+            rows.reserve(sparse_column_count(c));
+            for_each_sparse_row(c, [&rows](TermIndex r) { rows.push_back(r); });
+        }
+        return rows;
+    }
 
     auto promote_to_dense(size_t c) -> void {
         Column &col = cols[c];
-        col.words.assign(words(), 0);
-        for (TermIndex r : col.set_rows) {
-            col.words[r >> 6] |= uint64_t{1} << (r & 63U);
-        }
+        std::vector<uint64_t> dense(words(), 0);
+        for_each_sparse_row(c, [&dense](TermIndex r) { dense[r >> 6] |= uint64_t{1} << (r & 63U); });
+        col.words = std::move(dense);
         col.set_rows.clear();
         col.set_rows.shrink_to_fit();
         col.is_dense = true;
@@ -202,9 +254,9 @@ struct InvertedIndex {
 
     auto memory_bytes() const -> size_t {
         size_t total = 0;
-        for (const auto &col : cols) {
-            total += col.words.capacity() * sizeof(uint64_t);
-            total += col.set_rows.capacity() * sizeof(TermIndex);
+        for (size_t c = 0; c < kNumColumns; ++c) {
+            total += cols[c].words.capacity() * sizeof(uint64_t);
+            total += sparse_column_bytes(c);
         }
         total += row_parity_.capacity() * sizeof(uint64_t);
         return total;
@@ -215,23 +267,13 @@ struct InvertedIndex {
     /// {delta_bytes_all_columns, oracle_bytes, columns_delta_wins}. Answers whether raising the
     /// dense-promotion threshold is worth anything before any codec is written.
     auto delta_coded_bytes() const -> std::array<size_t, 3> {
-        constexpr size_t kBlock = 128;      // postings per skip block (keeps lower_bound O(log) + scan)
-        constexpr size_t kBlockHeader = 8;  // absolute first value + byte offset
+        constexpr size_t kBlock = 128;     // postings per skip block (keeps lower_bound O(log) + scan)
+        constexpr size_t kBlockHeader = 8; // absolute first value + byte offset
         const size_t dense_bytes = ((row_count + 63) / 64) * sizeof(uint64_t);
         std::array<size_t, 3> out{0, 0, 0};
-        std::vector<TermIndex> rows;
-        for (const auto &col : cols) {
-            rows.clear();
-            if (col.is_dense) {
-                for (size_t w = 0; w < col.words.size(); ++w) {
-                    for (uint64_t x = col.words[w]; x != 0; x &= x - 1) {
-                        rows.push_back(static_cast<TermIndex>(w * 64 + std::countr_zero(x)));
-                    }
-                }
-            }
-            else {
-                rows.assign(col.set_rows.begin(), col.set_rows.end());
-            }
+        for (size_t c = 0; c < kNumColumns; ++c) {
+            const Column &col = cols[c];
+            const std::vector<TermIndex> rows = column_rows(c);
             size_t delta = 0;
             size_t prev = 0;
             for (size_t i = 0; i < rows.size(); ++i) {
@@ -248,7 +290,7 @@ struct InvertedIndex {
                 }
                 prev = rows[i];
             }
-            const size_t here = col.is_dense ? dense_bytes : col.set_rows.capacity() * sizeof(TermIndex);
+            const size_t here = col.is_dense ? dense_bytes : sparse_column_bytes(c);
             out[0] += delta;
             out[1] += std::min(delta, here);
             out[2] += static_cast<size_t>(delta < here);
@@ -261,10 +303,10 @@ struct InvertedIndex {
     /// ascending index list), so sizing that choice requires knowing which tier holds the bytes.
     auto tier_memory_bytes() const -> std::array<size_t, 3> {
         std::array<size_t, 3> out{0, 0, 0};
-        for (const auto &col : cols) {
-            out[0] += col.words.capacity() * sizeof(uint64_t);
-            out[1] += col.set_rows.capacity() * sizeof(TermIndex);
-            out[2] += static_cast<size_t>(col.is_dense);
+        for (size_t c = 0; c < kNumColumns; ++c) {
+            out[0] += cols[c].words.capacity() * sizeof(uint64_t);
+            out[1] += sparse_column_bytes(c);
+            out[2] += static_cast<size_t>(cols[c].is_dense);
         }
         return out;
     }
@@ -317,7 +359,6 @@ template <size_t NumModes>
     }
     const size_t lo = bb * 64;
     const size_t hi = be * 64;
-    const auto below = [](TermIndex row, size_t bound) { return static_cast<size_t>(row) < bound; };
     for (size_t ci = 0; ci < cols.size(); ++ci) {
         if (ci == dense_init) {
             continue;
@@ -330,12 +371,9 @@ template <size_t NumModes>
             }
         }
         else {
-            const auto &rows = sc.sparse_column_rows(c);
-            auto it = std::lower_bound(rows.begin(), rows.end(), lo, below);
-            const auto en = std::lower_bound(rows.begin(), rows.end(), hi, below);
-            for (; it != en; ++it) {
-                blk[(*it >> 6) - bb] ^= (uint64_t{1} << (*it & 63U));
-            }
+            sc.for_each_sparse_row_in_range(c, lo, hi, [blk, bb](TermIndex r) {
+                blk[(r >> 6) - bb] ^= (uint64_t{1} << (r & 63U));
+            });
         }
     }
 }

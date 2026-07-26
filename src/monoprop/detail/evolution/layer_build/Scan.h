@@ -317,7 +317,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             if (inverted_index.column_is_dense(c)) {
                 fold_cols_empty = false;
             }
-            else if (!inverted_index.sparse_column_rows(c).empty()) {
+            else if (inverted_index.sparse_column_count(c) != 0) {
                 fold_cols_empty = false;
             }
         }
