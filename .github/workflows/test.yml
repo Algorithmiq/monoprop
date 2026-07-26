@@ -151,6 +151,15 @@ jobs:
           disable_search: true
           fail_ci_if_error: true
 
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: pytest-${{ steps.test-group-label.outputs.label }}.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
+
       - name: Upload Test Results as artifacts
         uses: actions/upload-artifact@v7.0.1
         with:
@@ -274,6 +283,15 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: cpp-coverage-native.xml
           flags: cpp
+          disable_search: true
+          fail_ci_if_error: true
+
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ctest-ubuntu_latest.xml
+          report_type: test_results
           disable_search: true
           fail_ci_if_error: true
 
@@ -570,50 +588,11 @@ jobs:
             ctest-*.xml
           retention-days: 1
 
-  publish-test-results:
-    name: "Publish Tests Results"
-    needs:
-      - python-checks
-      - cpp-checks
-      - python-bindings-coverage
-      - cpp-checks-other
-
-    runs-on: ubuntu-slim
-    permissions:
-      checks: write
-
-      # only needed unless run with comment_mode: off
-      pull-requests: write
-
-      # only needed for private repository
-      contents: read
-
-      # only needed for private repository
-      issues: read
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7.0.1
-        with:
-          # grab the history of the PR, so setuptools-scm can compute the correct version number
-          fetch-depth: 0
-
-      - name: Download Artifacts
-        uses: actions/download-artifact@v8.0.1
-        with:
-          merge-multiple: true
-          path: .
-
-      - name: Publish Test Results
-        uses: EnricoMi/publish-unit-test-result-action@v2.24.0
-        with:
-          files: |
-            pytest-*.xml
-            ctest-*.xml
-
-
-      - name: Upload coverage to Codecov
+      - name: Upload test results to Codecov
         uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          files: ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
           report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
