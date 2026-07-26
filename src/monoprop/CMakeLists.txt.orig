@@ -26,6 +26,45 @@ generate_export_header(
   DEFINE_NO_DEPRECATED
 )
 
+<<<<<<< New base: build(cmake): :art: overhaul installation
+file(
+  GLOB_RECURSE monoprop_PUBLIC_HEADERS
+  CONFIGURE_DEPENDS
+  "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/*.h"
+  "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/*.h"
+  "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/detail/*.h"
+  "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/detail/**/*.h"
+)
+
+list(
+  APPEND monoprop_PUBLIC_HEADERS
+  ${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/Info.h
+  ${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h
+)
+
+set(monoprop_PRIVATE_HEADERS)
+||||||| Common ancestor
+file(
+  GLOB_RECURSE monoprop_PUBLIC_HEADERS
+  CONFIGURE_DEPENDS
+  "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/*.h"
+  "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/*.h"
+  "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/detail/*.h"
+  "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/detail/**/*.h"
+)
+
+list(
+  APPEND monoprop_PUBLIC_HEADERS
+  ${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/Info.h
+  ${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h
+)
+
+set(
+  monoprop_PRIVATE_HEADERS
+  ${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/masked_execution_plan/BuildExecutionPlan.h
+  ${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/masked_execution_plan/LayerFiltering.h
+)
+=======
 target_sources(
   monoprop
   PUBLIC
@@ -50,6 +89,7 @@ target_sources(
         "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h"
         "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/Info.h"
 )
+>>>>>>> Current commit: build(cmake): :art: overhaul installation
 
 set_target_properties(
   monoprop
@@ -60,14 +100,18 @@ set_target_properties(
       YES
 )
 
-add_subdirectory(detail)
+<<<<<<< New base: build(cmake): :art: overhaul installation
+||||||| Common ancestor
+add_subdirectory(masked_execution_plan)
 
+=======
+add_subdirectory(detail)
+add_subdirectory(masked_execution_plan)
+
+>>>>>>> Current commit: build(cmake): :art: overhaul installation
 target_include_directories(
   monoprop
   PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 

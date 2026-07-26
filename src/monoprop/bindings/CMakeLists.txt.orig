@@ -122,12 +122,32 @@ target_include_directories(
 )
 
 target_link_libraries(_core PRIVATE monoprop)
+
+<<<<<<< New base: build(cmake): :art: overhaul installation
+# The hot MonomialPropagator<N> kernels are header templates instantiated in this
+# target's TUs, so ARCH_FLAG must be applied here too: on the library alone it never
+# reached them and they compiled to scalar x86-64.
 target_compile_options(_core BEFORE PRIVATE "${ARCH_FLAG}")
 
+file(
+  RELATIVE_PATH
+  _rel
+  ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}
+  ${CMAKE_INSTALL_PREFIX}
+)
+||||||| Common ancestor
+file(
+  RELATIVE_PATH
+  _rel
+  ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}
+  ${CMAKE_INSTALL_PREFIX}
+)
+=======
 # handle RPATH
 set(_plat_token "")
+>>>>>>> Current commit: build(cmake): :art: overhaul installation
 if(APPLE)
-  set(_plat_token "@loader_path")
+  set(_plat_token "@rpath")
 else()
   set(_plat_token "\$ORIGIN")
 endif()

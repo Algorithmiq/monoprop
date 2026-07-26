@@ -20,7 +20,7 @@ add_subdirectory(monoprop)
 
 include(CMakePackageConfigHelpers)
 
-set(monoprop_INSTALL_CMAKEDIR ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME})
+set(monoprop_INSTALL_CMAKEDIR ${PROJECT_NAME}/cmake)
 
 configure_package_config_file(
   ${PROJECT_SOURCE_DIR}/cmake/monopropConfig.cmake.in
