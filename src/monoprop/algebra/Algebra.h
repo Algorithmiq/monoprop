@@ -44,8 +44,6 @@ struct MajoranaAlgebra {
     static constexpr Basis basis = Basis::Majorana;
     static constexpr bool requires_support_cutoff = false; ///< length OR support cutoff both valid
     static constexpr bool allows_basis_change = true;      ///< Majorana basis changes are supported
-    /// Physical slots one cutoff unit can occupy: a Majorana cutoff counts Majorana operators directly.
-    static constexpr size_t max_slots_per_cutoff_unit = 1;
 
     /// Per-generator context, built once per layer: the generator G and the fixed interleave mask W
     /// with interleave_phase(M,G) == (M.parity_and(W) ? -1 : 1).
@@ -90,9 +88,6 @@ struct PauliAlgebra {
     static constexpr Basis basis = Basis::Pauli;
     static constexpr bool requires_support_cutoff = true; ///< the support cutoff measures Pauli weight
     static constexpr bool allows_basis_change = false;    ///< the native encoding forbids a basis change
-    /// A weight-w Pauli carries up to 2w set bits (a Z occupies both slots of its qubit), so one
-    /// support-cutoff unit can occupy two physical slots.
-    static constexpr size_t max_slots_per_cutoff_unit = 2;
 
     /// Per-generator context = the precomputed Pauli rotation-sign kernel context (holds G and |G|).
     struct GenContext {

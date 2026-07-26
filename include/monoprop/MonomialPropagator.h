@@ -341,7 +341,7 @@ protected:
 
     // Inline-width hint for the packed operator rows (overflow spills losslessly, so it's a perf hint,
     // never a correctness constraint). Sized to the cutoff's structural position bound when it has one
-    // (CutoffEvaluator::max_positions_bound; nullopt for arbitrary/basis-changed cutoffs and Schrodinger,
+    // (CutoffEvaluator::max_slot_bound; nullopt for arbitrary/basis-changed cutoffs and Schrodinger,
     // where we keep the full width). Protected so derived classes size their operator identically.
     auto packed_inline_width_() const -> size_t;
 

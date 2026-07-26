@@ -294,15 +294,13 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
     if (schrodinger_) {
         return kDefault;
     }
-    const auto bound = detail::CutoffEvaluator<NumModes>(cutoff_fn_).max_positions_bound();
+    // The bound is already in physical slots (see CutoffEvaluator::max_slot_bound) -- it depends on the
+    // cutoff type, not the algebra, so there is nothing basis-specific to scale by here.
+    const auto bound = detail::CutoffEvaluator<NumModes>(cutoff_fn_).max_slot_bound();
     if (!bound) {
         return kDefault;
     }
-    // Scale the cutoff-unit bound to physical slots per the algebra (A::max_slots_per_cutoff_unit): a
-    // weight-w Pauli carries up to 2w set bits, so its bound doubles; Majorana counts operators directly.
-    const size_t inline_bound =
-        with_algebra<NumModes>(basis_, [&]<class A>() -> size_t { return A::max_slots_per_cutoff_unit * (*bound); });
-    return std::min<size_t>(inline_bound, kMax);
+    return std::min<size_t>(*bound, kMax);
 }
 
 template <size_t NumModes>
@@ -564,8 +562,11 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
                                                                      const VecD &parameters,
                                                                      int only_rotate_len_k) -> void {
     auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0);
+    // Materialize this picture's coefficients: resize to the store and drain init_op_map. Called for that
+    // side effect alone -- it returns a reference to the very vector selected below, so assigning it back
+    // would be a self-copy.
+    (void)current_picture_coeffs_();
     VecD *op_coeffs = schrodinger_ ? &mp_op_.state_coeffs : &mp_op_.op_coeffs;
-    *op_coeffs = current_picture_coeffs_();
     const auto majoranas_size = majoranas.size();
     // A SINGLE fused contraction path at all rank counts: build_evolve_result_ emits rotation records
     // (no transient LayerCore) and apply_fused_contract applies them in place. The build reports its

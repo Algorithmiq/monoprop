@@ -141,17 +141,20 @@ auto get_hf_mask(const VecZ &hf) -> Monomial<NumModes> {
     return indices_to_bitset<NumModes>(hf_bits);
 }
 
-/**
- * @brief Length cutoff: keep a monomial iff its length is within @p cutoff, OR it is fully paired.
- *
- * Fully paired monomials (xor_sum == 0) are kept unconditionally: they are the only terms that
- * contribute to an expectation value against a computational-basis state / Slater determinant, so
- * dropping them by length would discard signal. Otherwise keep iff Majorana count <= @p cutoff.
- */
+/// The three per-mode sums the structural cutoffs measure, over the ACTIVE modes only.
+///
+/// One place where the single-word and multi-word paths are written, so the two cutoffs below cannot
+/// drift apart across widths. always_inline plus a plain aggregate: each cutoff reads one field and the
+/// other sums fold away.
+struct CutoffSums {
+    size_t xor_sum;      ///< modes with exactly one of their two Majoranas set; 0 == fully paired
+    size_t popcount_sum; ///< Majorana operators present -- the LENGTH measure
+    size_t or_sum;       ///< modes with either Majorana present -- the SUPPORT measure (JW Pauli weight)
+};
+
 template <size_t NumModes>
-auto length_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes) -> bool {
-    const size_t inactive_mode_prefix = NumModes - logical_num_modes;
-    const size_t active_bit_offset = 2 * inactive_mode_prefix;
+[[gnu::always_inline]] inline auto cutoff_sums(const Monomial<NumModes> &maj, size_t logical_num_modes) -> CutoffSums {
+    const size_t active_bit_offset = 2 * (NumModes - logical_num_modes);
 
     if constexpr (Monomial<NumModes>::num_words() == 1) {
         constexpr size_t num_bits = Monomial<NumModes>::size();
@@ -161,18 +164,31 @@ auto length_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff, size_t lo
             active_bit_offset == 0 ? valid_mask : (valid_mask & ~((uint64_t{1} << active_bit_offset) - 1));
         const uint64_t active_word = maj.word(0) & active_mask;
         const uint64_t pair_mask = even_mask & active_mask;
-        const auto xor_sum = std::popcount((active_word & pair_mask) ^ ((active_word >> 1) & pair_mask));
-        const auto popcount_sum = std::popcount(active_word);
-        return xor_sum == 0 || popcount_sum <= cutoff;
+        const uint64_t first_pair = active_word & pair_mask;
+        const uint64_t second_pair = (active_word >> 1) & pair_mask;
+        return {static_cast<size_t>(std::popcount(first_pair ^ second_pair)),
+                static_cast<size_t>(std::popcount(active_word)),
+                static_cast<size_t>(std::popcount(first_pair | second_pair))};
     }
 
     const auto active_maj = logical_num_modes == NumModes ? maj : (maj >> active_bit_offset);
     const auto mask = even_bits<2 * NumModes, LSb0>();
     const auto first_pair = active_maj & mask;
     const auto second_pair = (active_maj >> 1) & mask;
-    const auto xor_sum = (first_pair ^ second_pair).count();
-    const auto popcount_sum = active_maj.count();
-    return xor_sum == 0 || popcount_sum <= cutoff;
+    return {(first_pair ^ second_pair).count(), active_maj.count(), (first_pair | second_pair).count()};
+}
+
+/**
+ * @brief Length cutoff: keep a monomial iff its length is within @p cutoff, OR it is fully paired.
+ *
+ * Fully paired monomials (xor_sum == 0) are kept unconditionally: they are the only terms that
+ * contribute to an expectation value against a computational-basis state / Slater determinant, so
+ * dropping them by length would discard signal. Otherwise keep iff Majorana count <= @p cutoff.
+ */
+template <size_t NumModes>
+auto length_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes) -> bool {
+    const auto sums = cutoff_sums<NumModes>(maj, logical_num_modes);
+    return sums.xor_sum == 0 || sums.popcount_sum <= cutoff;
 }
 
 template <size_t NumModes>
@@ -189,31 +205,8 @@ auto length_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff) -> bool {
  */
 template <size_t NumModes>
 auto support_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes) -> bool {
-    const size_t inactive_mode_prefix = NumModes - logical_num_modes;
-    const size_t active_bit_offset = 2 * inactive_mode_prefix;
-
-    if constexpr (Monomial<NumModes>::num_words() == 1) {
-        constexpr size_t num_bits = Monomial<NumModes>::size();
-        constexpr uint64_t valid_mask = num_bits == 64 ? ~uint64_t{0} : ((uint64_t{1} << num_bits) - 1);
-        constexpr uint64_t even_mask = even_bits<2 * NumModes, LSb0>().word(0);
-        const uint64_t active_mask =
-            active_bit_offset == 0 ? valid_mask : (valid_mask & ~((uint64_t{1} << active_bit_offset) - 1));
-        const uint64_t active_word = maj.word(0) & active_mask;
-        const uint64_t pair_mask = even_mask & active_mask;
-        const auto first_pair = active_word & pair_mask;
-        const auto second_pair = (active_word >> 1) & pair_mask;
-        const auto xor_sum = std::popcount(first_pair ^ second_pair);
-        const auto or_sum = std::popcount(first_pair | second_pair);
-        return xor_sum == 0 || or_sum <= cutoff;
-    }
-
-    const auto active_maj = logical_num_modes == NumModes ? maj : (maj >> active_bit_offset);
-    const auto mask = even_bits<2 * NumModes, LSb0>();
-    const auto first_pair = active_maj & mask;
-    const auto second_pair = (active_maj >> 1) & mask;
-    const auto xor_sum = (first_pair ^ second_pair).count();
-    const auto or_sum = (first_pair | second_pair).count();
-    return xor_sum == 0 || or_sum <= cutoff;
+    const auto sums = cutoff_sums<NumModes>(maj, logical_num_modes);
+    return sums.xor_sum == 0 || sums.or_sum <= cutoff;
 }
 
 template <size_t NumModes>
@@ -283,14 +276,19 @@ public:
         return cutoff_fn_(maj);
     }
 
-    // Upper bound on the Majorana positions a surviving term can carry, for the structural cutoffs
-    // (nullopt for an arbitrary user cutoff_fn). Lets the store size its packed inline rows from the cutoff.
-    auto max_positions_bound() const -> std::optional<size_t> {
+    // Upper bound on the SET BITS (physical slots) a surviving term can carry, for the structural
+    // cutoffs (nullopt for an arbitrary user cutoff_fn). Lets the store size its packed inline rows.
+    //
+    // The bound depends on the cutoff TYPE, which is why it lives here rather than on the algebra: a
+    // length cutoff counts set bits directly, while a support cutoff counts modes/qubits and each of
+    // those spans two slots. Hanging the factor off the algebra under-sized the row for the legal
+    // Majorana + Support combination, spilling roughly half those terms into the overflow map.
+    auto max_slot_bound() const -> std::optional<size_t> {
         if (length_cutoff_ != nullptr) {
             return length_cutoff_->cutoff;
         }
         if (support_cutoff_ != nullptr) {
-            return support_cutoff_->cutoff;
+            return 2 * support_cutoff_->cutoff;
         }
         return std::nullopt;
     }

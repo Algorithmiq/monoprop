@@ -14,7 +14,7 @@
 
 // Unit coverage of the MajoranaAlgebra cutoff + phase machinery: length_cutoff / support_cutoff
 // (including the logical_num_modes active-window masking and its single-word vs multi-word paths),
-// the CutoffEvaluator dispatch / popcount fast path / max_positions_bound, the interleave_phase vs
+// the CutoffEvaluator dispatch / popcount fast path / max_slot_bound, the interleave_phase vs
 // its fast masked-parity form, and encode/decode_coeff. Majorana sets are built directly in raw-bit
 // space (Monomial::set) so the "fully paired" condition (word[2k] == word[2k+1] for every mode k)
 // is unambiguous and matches the xor_sum spec in the cutoff docstrings.
@@ -116,7 +116,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_logical_num_modes_masks_prefix_multi_word) 
     BOOST_TEST(!length_cutoff<N>(prefix_only, 0, N));      // whole register -> dropped
 }
 
-// CutoffEvaluator resolves the concrete functor, exposes max_positions_bound, and takes the
+// CutoffEvaluator resolves the concrete functor, exposes max_slot_bound, and takes the
 // popcount fast path when popcount_sum <= cutoff.
 BOOST_AUTO_TEST_CASE(majorana_cutoff_evaluator_dispatch_and_popcount) {
     constexpr size_t N = 32;
@@ -125,21 +125,23 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_evaluator_dispatch_and_popcount) {
     detail::CutoffEvaluator<N> length_ev(length_fn);
     BOOST_TEST((length_ev.length_cutoff() != nullptr));
     BOOST_TEST((length_ev.support_cutoff() == nullptr));
-    BOOST_REQUIRE(length_ev.max_positions_bound().has_value());
-    BOOST_TEST(length_ev.max_positions_bound().value() == 3U);
+    BOOST_REQUIRE(length_ev.max_slot_bound().has_value());
+    // A length cutoff counts set bits directly, so the slot bound IS the cutoff.
+    BOOST_TEST(length_ev.max_slot_bound().value() == 3U);
 
     CutoffFn<N> support_fn = detail::SupportCutoff<N>{.cutoff = 2};
     detail::CutoffEvaluator<N> support_ev(support_fn);
     BOOST_TEST((support_ev.length_cutoff() == nullptr));
     BOOST_TEST((support_ev.support_cutoff() != nullptr));
-    BOOST_TEST(support_ev.max_positions_bound().value() == 2U);
+    // A support cutoff counts modes/qubits and each spans two slots, so the slot bound doubles.
+    BOOST_TEST(support_ev.max_slot_bound().value() == 4U);
 
     // An opaque predicate has neither concrete target and no positional bound.
     CutoffFn<N> opaque_fn = [](const Monomial<N> &) { return true; };
     detail::CutoffEvaluator<N> opaque_ev(opaque_fn);
     BOOST_TEST((opaque_ev.length_cutoff() == nullptr));
     BOOST_TEST((opaque_ev.support_cutoff() == nullptr));
-    BOOST_TEST(!opaque_ev.max_positions_bound().has_value());
+    BOOST_TEST(!opaque_ev.max_slot_bound().has_value());
 
     // passes_with_popcount: pc <= cutoff short-circuits to true; otherwise it equals a direct eval.
     Monomial<N> unpaired; // length 4, not paired
