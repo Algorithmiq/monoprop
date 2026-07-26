@@ -1,5 +1,6 @@
 import { defineConfig, defineDocs } from 'fumadocs-mdx/config';
 import { metaSchema, pageSchema } from 'fumadocs-core/source/schema';
+import { z } from 'zod';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeCitation from 'rehype-citation';
@@ -37,7 +38,9 @@ function rehypeRawMarkdown() {
 export const docs = defineDocs({
   dir: 'content/docs',
   docs: {
-    schema: pageSchema,
+    schema: pageSchema.extend({
+      githubPath: z.string().optional(),
+    }),
     postprocess: {
       includeProcessedMarkdown: true,
     },

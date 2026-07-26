@@ -31,6 +31,7 @@ const MODULES = [
   ['exceptions', 'Exceptions'],
 ];
 const KEEP = new Set(MODULES.map(([name]) => name));
+const MODULE_GITHUB_PATHS = new Map(MODULES.map(([name]) => [name, `src/monoprop/${name}.py`]));
 
 /** Drop single-underscore (non-dunder) members from a {name: node} map. */
 function prunePrivate(map) {
@@ -214,6 +215,14 @@ async function main() {
     // strips that leading segment from file paths. Realign the links.
     file.content = file.content.replaceAll(`${API_BASE_URL}/monoprop`, API_BASE_URL);
 
+    // Attach source paths to frontmatter so docs can build GitHub links
+    // without duplicating the module list in app code.
+    const modulePrefixMatch = file.path.match(/^monoprop\/([^/]+)(?:\/|$)/);
+    const moduleName = modulePrefixMatch?.[1];
+    const githubPath = moduleName ? MODULE_GITHUB_PATHS.get(moduleName) : undefined;
+    if (githubPath) {
+      file.frontmatter.githubPath = githubPath;
+    }
     // Fumadocs parameter rendering can escape braces in math arguments
     // (e.g. `\mathrm\{d\}`), which breaks KaTeX grouping.
     file.content = normalizeMathGroupingEscapes(file.content);
@@ -228,6 +237,7 @@ async function main() {
     if (file.path === 'monoprop/index.mdx') {
       file.frontmatter.title = 'Python API';
       file.frontmatter.description = 'Generated reference for the public monoprop Python package.';
+      file.frontmatter.githubPath = 'src/monoprop/__init__.py';
     }
   }
 

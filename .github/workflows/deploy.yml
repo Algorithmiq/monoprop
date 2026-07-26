@@ -142,7 +142,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pypa/cibuildwheel@v4.1.0
+      - uses: pypa/cibuildwheel@v4.1.1
         with:
           extras: "uv"
         env:
