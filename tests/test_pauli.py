@@ -321,3 +321,16 @@ class TestCircuit:
         assert ExpGate(gen) != ExpGate(
             PauliOperator({Pauli("X", 1): 1.0}, num_qubits=2)
         )
+
+
+def test_pauli_rejects_negative_qubit_index() -> None:
+    """A negative qubit index is rejected, mirroring Majorana.
+
+    Left unchecked it resolved silently through Python list indexing when the term was widened
+    -- ``Pauli("Z", -1)`` on four qubits became Z on qubit 3 -- and reached the engine as a
+    huge unsigned Majorana slot via ``get_local_operator``.
+    """
+    with pytest.raises(ValueError, match="must be non-negative"):
+        Pauli("Z", -1)
+    with pytest.raises(ValueError, match="must be non-negative"):
+        Pauli("XY", (0, -2))

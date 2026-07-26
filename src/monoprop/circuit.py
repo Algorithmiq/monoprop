@@ -115,7 +115,7 @@ class ExpGate:
             generator type at construction (a fermionic generator becomes ``"majorana"``).
     """
 
-    __slots__ = ("_structural", "family", "generator", "index")
+    __slots__ = ("_atol", "_structural", "family", "generator", "index")
 
     def __init__(
         self,
@@ -175,6 +175,9 @@ class ExpGate:
         # Authored generators (including converted fermionic ones) carry the Hermitian operator;
         # _gate_layers normalizes them. Only the wire/dense path sets _structural=True.
         self._structural = _structural
+        # Kept so a clone (_with_index, used by Circuit.__add__) re-truncates at the SAME
+        # tolerance; re-truncating at the default would silently drop terms the author kept.
+        self._atol = atol
 
     def _truncated_term(
         self, generator: PauliOperator | MajoranaOperator, atol: float
@@ -208,9 +211,15 @@ class ExpGate:
         """Clone ``gate`` with a new ``index``, preserving its family and ``_structural`` flag.
 
         Used by :meth:`Circuit.__add__`; a plain ``ExpGate(gate.generator, index)`` would reset
-        ``_structural`` to ``False`` and re-normalize an already-structural (dense) generator.
+        ``_structural`` to ``False`` and re-normalize an already-structural (dense) generator, and
+        would re-truncate at the default ``atol`` rather than the one the gate was built with.
         """
-        return cls(gate.generator, index=index, _structural=gate._structural)
+        return cls(
+            gate.generator,
+            index=index,
+            atol=gate._atol,
+            _structural=gate._structural,
+        )
 
     def __eq__(self, other: object) -> bool:
         """Equal when the generator, parameter index, family, and structural flag all match."""
@@ -269,14 +278,17 @@ class Circuit:
         self,
         gates: Sequence[ExpGate] = (),
         parameters: Sequence[float] = (),
-        initial_state: Sequence[int] = (),
+        initial_state: Sequence[int] | None = None,
     ) -> None:
         """Build the circuit, dropping identity gates and validating family/mapping/params.
 
         Args:
             gates: The ordered exponential gates.
             parameters: The angle values, or empty for an unbound circuit.
-            initial_state: The reference state (occupied mode / qubit indices).
+            initial_state: The reference state (occupied mode / qubit indices), or ``None`` to
+                leave it unspecified and defer to the propagator's. ``()`` is *not* the same as
+                ``None``: it is the explicit vacuum, and a propagator built against a different
+                reference rejects it.
 
         Raises:
             ValueError: On duplicate initial-state indices, a bad parameter mapping, or a
@@ -285,7 +297,10 @@ class Circuit:
         """
         gates = tuple(gates)
         parameters = tuple(float(v) for v in parameters)
-        initial_state = tuple(int(i) for i in initial_state)
+        # `()` is the vacuum, `None` is "unspecified" -- keep the distinction so a vacuum-authored
+        # circuit is still checked against the propagator's reference state.
+        self._state_given = initial_state is not None
+        initial_state = tuple(int(i) for i in initial_state or ())
         if len(set(initial_state)) != len(initial_state):
             raise ValueError("Duplicate indices in initial state")
 
@@ -419,8 +434,8 @@ class Circuit:
                 f"{other.family}-family one; the gate families differ."
             )
         if (
-            self.initial_state
-            and other.initial_state
+            self._state_given
+            and other._state_given
             and self.initial_state != other.initial_state
         ):
             raise ValueError(
@@ -437,10 +452,15 @@ class Circuit:
             ExpGate._with_index(gate, index + offset)
             for gate, index in zip(other.gates, other.resolved_mapping, strict=True)
         )
+        state = (
+            self.initial_state
+            if self._state_given
+            else (other.initial_state if other._state_given else None)
+        )
         return Circuit(
             gates=left + right,
             parameters=tuple(self.parameters) + tuple(other.parameters),
-            initial_state=self.initial_state or other.initial_state,
+            initial_state=state,
         )
 
     @classmethod
@@ -649,6 +669,14 @@ def _gate_layers(
             raise ValueError("num_qubits is required to expand a Pauli gate.")
         layers: list[tuple[tuple[int, ...], float]] = []
         for pauli, coeff in generator.terms.items():
+            # A generator authored for a wider system than the propagator would silently pack
+            # slots past the end of the monomial; PauliOperator only bounds-checks against its
+            # own num_qubits, which may be None or larger.
+            if pauli.qubits and pauli.qubits[-1] >= num_qubits:
+                raise ValueError(
+                    f"Gate generator term {pauli} acts on a qubit index >= the system's "
+                    f"num_qubits={num_qubits}."
+                )
             slots = _pauli_to_local_slots(pauli.string, pauli.qubits)
             layers.append((slots, _real_generator_coefficient(slots, coeff)))
         return layers
@@ -687,7 +715,12 @@ def expand_monomials(
     per_monomial: list[int] = []
     gate_indices: list[int] = []
     for gate_index, (gate, param) in enumerate(zip(gates, mapping, strict=True)):
-        for majorana, gen_coeff in _gate_layers(gate, num_qubits):
+        # A gate whose every term fell below its atol expands to nothing. Emitting no monomials
+        # would leave a hole in gate_indices (which the engine requires to be contiguous runs
+        # from 0) and orphan the gate's slot on the parameter axis, so emit the identity instead:
+        # the empty monomial with a zero generator coefficient rotates by zero.
+        layers = _gate_layers(gate, num_qubits) or [((), 0.0)]
+        for majorana, gen_coeff in layers:
             majoranas.append(majorana)
             gen_coeffs.append(gen_coeff)
             per_monomial.append(param)

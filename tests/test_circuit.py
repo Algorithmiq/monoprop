@@ -26,6 +26,7 @@ from monoprop import (
     Circuit,
     ExpGate,
     MajoranaPropagator,
+    PauliPropagator,
 )
 from monoprop.fermi import FermiOperator
 from monoprop.majorana import Majorana, MajoranaOperator
@@ -804,3 +805,94 @@ def test_propagate_after_build_graph_rejected() -> None:
     prop.build_graph(c1)
     with pytest.raises(RuntimeError, match="non-empty graph"):
         prop.propagate(c2)
+
+
+def test_with_index_preserves_atol() -> None:
+    """Cloning a gate re-truncates at ITS atol, not the default.
+
+    ``Circuit.__add__`` clones every gate through ``ExpGate._with_index``; forwarding the
+    default 1e-8 instead would silently delete terms the author explicitly kept.
+    """
+    gate = ExpGate(MajoranaOperator({(0, 1): 1e-10j}, num_modes=2), atol=0.0)
+    assert gate.generator.terms  # kept by atol=0.0
+
+    concatenated = Circuit((gate,)) + Circuit(())
+
+    assert concatenated.gates[0].generator.terms.keys() == {(0, 1)}
+
+
+def test_negligible_gate_expands_to_the_identity() -> None:
+    """A gate whose every term falls below atol becomes an identity layer, not a hole.
+
+    Emitting nothing would leave a gap in the engine's ``gate_indices`` (which must be
+    contiguous runs from 0) and orphan the gate's slot on the parameter axis. The gate must
+    instead contribute nothing physically: same expectation value, same gradient with respect
+    to the surviving angle, and zero gradient with respect to its own.
+    """
+    observable = MajoranaOperator({(0, 1): 1.0j}, num_modes=3)
+    params = [0.11, 0.37]
+
+    plain = MajoranaPropagator(observable, [], cutoff=6)
+    plain.build_graph(
+        Circuit.from_dense_arrays(
+            majoranas=[(0, 2)], gen_coeffs=[1.0], param_inds=[0], parameters=[params[1]]
+        )
+    )
+
+    with_identity = MajoranaPropagator(observable, [], cutoff=6)
+    with_identity.build_graph(
+        Circuit.from_dense_arrays(
+            majoranas=[(1, 3), (0, 2)],
+            gen_coeffs=[1e-12, 1.0],  # the first gate is dropped by the default atol
+            param_inds=[0, 1],
+            parameters=params,
+        )
+    )
+
+    np.testing.assert_allclose(
+        with_identity.expectation_value(params), plain.expectation_value([params[1]])
+    )
+    gradient = with_identity.gradient(params)
+    assert gradient[0] == pytest.approx(0.0)
+    assert gradient[1] == pytest.approx(plain.gradient([params[1]])[0])
+
+
+def test_explicit_vacuum_initial_state_is_checked() -> None:
+    """``initial_state=()`` is the vacuum, not "unspecified", so it is checked.
+
+    Treating the empty tuple as unset let a vacuum-authored circuit be evolved silently
+    against a half-filled reference -- exactly the mistake the check exists to catch.
+    """
+    observable = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
+    circuit = Circuit(
+        (ExpGate(MajoranaOperator({(0, 3): 1.0j}, num_modes=2)),),
+        parameters=(0.3,),
+        initial_state=(),
+    )
+
+    with pytest.raises(
+        ValueError, match="does not match the propagator's initial state"
+    ):
+        MajoranaPropagator(observable, [0], cutoff=4).build_graph(circuit)
+
+    # An unspecified state still defers to the propagator's, and a matching one is accepted.
+    MajoranaPropagator(observable, [0], cutoff=4).build_graph(
+        Circuit(circuit.gates, parameters=circuit.parameters)
+    )
+    MajoranaPropagator(observable, [], cutoff=4).build_graph(circuit)
+
+
+def test_pauli_generator_wider_than_the_system_rejected() -> None:
+    """A Pauli generator acting past the propagator's qubit count is rejected.
+
+    ``PauliOperator`` only bounds-checks against its own ``num_qubits``, which may be larger
+    than the system's; an out-of-range slot would otherwise be packed past the end of the
+    monomial.
+    """
+    propagator = PauliPropagator(PauliOperator({Pauli("Z", 0): 1.0}, 2), [], cutoff=4)
+    circuit = Circuit(
+        (ExpGate(PauliOperator({Pauli("Z", 5): 1.0}, num_qubits=8)),), parameters=(0.3,)
+    )
+
+    with pytest.raises(ValueError, match="qubit index >= the system's num_qubits"):
+        propagator.build_graph(circuit)

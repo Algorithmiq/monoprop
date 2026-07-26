@@ -63,8 +63,8 @@ class Pauli:
                 ``range(len(string))`` (i.e. a full-width string on qubits ``0..len-1``).
 
         Raises:
-            ValueError: On invalid characters, a string/qubits length mismatch, or duplicate
-                qubit indices.
+            ValueError: On invalid characters, a string/qubits length mismatch, a negative
+                qubit index, or duplicate qubit indices.
         """
         if qubits is None:
             qubits = range(len(string))
@@ -83,6 +83,13 @@ class Pauli:
             )
         if len(set(qubit_tuple)) != len(qubit_tuple):
             raise ValueError(f"Duplicate qubit indices in Pauli term: {qubit_tuple}.")
+        # A negative index would otherwise resolve silently by Python list indexing when the term
+        # is widened (conversion_utils._extend_pauli_string), placing the letter on the wrong
+        # qubit, and would reach the engine as a huge unsigned Majorana slot.
+        if any(q < 0 for q in qubit_tuple):
+            raise ValueError(
+                f"Pauli qubit indices must be non-negative; got {qubit_tuple}."
+            )
 
         pairs = sorted(
             (q, p) for q, p in zip(qubit_tuple, string, strict=True) if p != "I"

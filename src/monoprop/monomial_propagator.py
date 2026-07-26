@@ -182,12 +182,13 @@ class MonomialPropagator(ABC):
         """Reject a circuit whose reference state disagrees with the propagator's.
 
         A circuit's ``initial_state`` is advisory (the propagator was constructed with its
-        own reference state); an empty one defers to the propagator. A non-empty one that
-        names a different occupied set is almost certainly a mistake -- the circuit was
-        authored against a different reference -- so fail loudly rather than silently
-        evolving the wrong state. Occupied-index sets are order-insensitive.
+        own reference state); an *unspecified* one (``None``) defers to the propagator. A
+        specified one that names a different occupied set is almost certainly a mistake -- the
+        circuit was authored against a different reference -- so fail loudly rather than
+        silently evolving the wrong state. Occupied-index sets are order-insensitive, and the
+        empty tuple is the vacuum, not "unspecified".
         """
-        if circuit.initial_state and sorted(circuit.initial_state) != sorted(
+        if circuit._state_given and sorted(circuit.initial_state) != sorted(
             self._initial_state
         ):
             raise ValueError(
