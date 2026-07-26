@@ -143,6 +143,15 @@ just build-docs   # output: docs/out/
 just serve-docs   # live-reloading dev server
 ```
 
+### Keeping documentation up to date
+
+Any PR that changes behavior, public APIs, build/test commands, or repository paths
+must update the relevant docs in the same change:
+
+1. `AGENTS.md` for agent/developer workflow instructions.
+2. `README.md` for top-level usage and contributor guidance.
+3. `docs/` pages for user-facing and in-depth technical documentation.
+
 ## Citation
 
 If you use `monoprop` in your research, please cite:
