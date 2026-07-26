@@ -31,8 +31,8 @@ does -- the **generator type** it is handed decides how it is normalized:
   weight-2 monomial, real for weight-4); each term is antihermitian-normalized when the circuit
   is ingested, dividing out the Hermitian phase to the structural coefficient the engine rotates
   by;
-- a :class:`~monoprop.pauli.PauliOperator` is a qubit generator; each term is
-  Jordan-Wigner mapped and antihermitian-normalized when the circuit is ingested;
+- a :class:`~monoprop.pauli.PauliOperator` is a qubit operator; each term is packed into
+  the engine's native local Pauli form when the circuit is ingested;
 - a :class:`~monoprop.fermi.FermiOperator` is a fermionic generator; it is converted to
   its (Hermitian) Majorana form in :class:`ExpGate`.
 
@@ -55,9 +55,7 @@ import itertools
 from typing import TYPE_CHECKING, Literal
 
 from .conversion_utils import (
-    _extend_pauli_string,
     _pauli_to_local_slots,
-    _pauli_to_majorana,
 )
 from .majorana import MajoranaOperator
 from .pauli import Pauli, PauliOperator
@@ -89,9 +87,9 @@ class ExpGate:
       the Hermitian phase :math:`i^{\binom{w}{2}}` divided out -- by :func:`_gate_layers` when
       the circuit is ingested. A coefficient that leaves a non-negligible imaginary residue
       after normalization is rejected as non-Hermitian.
-    - :class:`~monoprop.pauli.PauliOperator` -- a qubit generator; each Pauli term is
-      Jordan-Wigner mapped and antihermitian-normalized by :func:`expand_monomials` when the
-      circuit is ingested, using the propagator's qubit count.
+    - :class:`~monoprop.pauli.PauliOperator` -- a qubit generator; each Pauli term is packed
+      into the engine's native local Pauli form by :func:`expand_monomials` when the circuit is
+      ingested, using the propagator's qubit count.
     - :class:`~monoprop.fermi.FermiOperator` -- a fermionic generator; converted to its
       (Hermitian) Majorana form by :meth:`get_majorana_operator` right here in ``__init__``, so
       the gate *is* a ``"majorana"`` gate from then on. The fermionic-to-Majorana mapping already
@@ -636,21 +634,9 @@ def _validate_commuting_majorana_generator(generator: MajoranaOperator) -> None:
 
 
 def _gate_layers(
-    gate: ExpGate, num_qubits: int | None, *, native_pauli: bool = False
+    gate: ExpGate, num_qubits: int | None
 ) -> list[tuple[tuple[int, ...], float]]:
-    """Expand one gate into ``(majorana, gen_coeff)`` layers, in application order.
-
-    A ``"pauli"``-family :class:`ExpGate` places each :class:`~monoprop.pauli.Pauli` term on
-    its qubits within the ``num_qubits``-wide system (one layer per term). When ``native_pauli``
-    is set the term is packed into the engine's native local pauli form
-    (:func:`~monoprop.conversion_utils._pauli_to_local_slots`) with its real generator
-    coefficient passed through directly
-    A ``"majorana"``-family :class:`ExpGate` carries the Hermitian generator, so its
-    :class:`~monoprop.majorana.MajoranaOperator` terms are antihermitian-normalized (the
-    ``i^{binom(w, 2)}`` phase divided out) -- unless the gate is flagged
-    :attr:`ExpGate._structural` (the wire/dense format), whose coefficients are already the
-    structural ``g`` and are used directly.
-    """
+    """Expand one gate into ``(majorana, gen_coeff)`` layers, in application order."""
     # A Pauli-family gate holds a PauliOperator; every other family a MajoranaOperator (so the
     # ``isinstance`` narrows the fall-through arm to MajoranaOperator).
     generator = gate.generator
@@ -659,15 +645,8 @@ def _gate_layers(
             raise ValueError("num_qubits is required to expand a Pauli gate.")
         layers: list[tuple[tuple[int, ...], float]] = []
         for pauli, coeff in generator.terms.items():
-            if native_pauli:
-                slots = _pauli_to_local_slots(pauli.string, pauli.qubits)
-                layers.append((slots, _real_generator_coefficient(slots, coeff)))
-                continue
-            extended = _extend_pauli_string(pauli.string, pauli.qubits, num_qubits)
-            majorana, jw_coeff = _pauli_to_majorana(extended)
-            layers.append(
-                (tuple(majorana), _antihermitian_gen_coeff(majorana, coeff * jw_coeff))
-            )
+            slots = _pauli_to_local_slots(pauli.string, pauli.qubits)
+            layers.append((slots, _real_generator_coefficient(slots, coeff)))
         return layers
 
     if gate._structural:
@@ -684,8 +663,6 @@ def expand_monomials(
     gates: Sequence[ExpGate],
     mapping: Sequence[int],
     num_qubits: int | None = None,
-    *,
-    native_pauli: bool = False,
 ) -> tuple[list[tuple[int, ...]], list[float], list[int], list[int]]:
     """Flatten gates + an already-resolved per-gate mapping into per-monomial arrays.
 
@@ -694,9 +671,6 @@ def expand_monomials(
         mapping: The angle index driving each gate (one entry per gate).
         num_qubits: System qubit count, required to place Pauli-family generators; unused for
             native Majorana generators.
-        native_pauli: When set, Pauli-family generators are packed into the engine's native
-            local symplectic frame (see :func:`_gate_layers`); otherwise the legacy
-            Jordan-Wigner Majorana frame is used.
 
     Returns:
         A tuple ``(majoranas, gen_coeffs, parameter_mapping, gate_indices)`` for the C++
@@ -709,9 +683,7 @@ def expand_monomials(
     per_monomial: list[int] = []
     gate_indices: list[int] = []
     for gate_index, (gate, param) in enumerate(zip(gates, mapping, strict=True)):
-        for majorana, gen_coeff in _gate_layers(
-            gate, num_qubits, native_pauli=native_pauli
-        ):
+        for majorana, gen_coeff in _gate_layers(gate, num_qubits):
             majoranas.append(majorana)
             gen_coeffs.append(gen_coeff)
             per_monomial.append(param)

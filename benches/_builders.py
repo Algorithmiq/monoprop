@@ -477,22 +477,6 @@ class KickedIsingConfig:
     coupling: float = np.pi / 4
     cutoff: int = 8
     lower_atol: float = 1e-4
-    topology: str = "heavy-hex"
-
-
-def _topology_edges(config: KickedIsingConfig) -> list[tuple[int, int]]:
-    """Return the ZZ coupling edges for the configured topology.
-
-    ``"heavy-hex"`` returns the fixed 127-qubit IBM-Eagle map (the default, so the
-    canonical benchmark is byte-identical); ``"chain"`` generates a 1D
-    nearest-neighbour chain of ``num_qubits`` qubits, letting the qubit count be
-    swept for scaling studies.
-    """
-    if config.topology == "chain":
-        return [(i, i + 1) for i in range(config.num_qubits - 1)]
-    if config.topology == "heavy-hex":
-        return HEAVY_HEX_TOPOLOGY
-    raise ValueError(f"unknown kicked-Ising topology: {config.topology!r}")
 
 
 def _xlayer(num_qubits: int, angle: float) -> list[tuple[ExpGate, float]]:
@@ -535,7 +519,7 @@ def build_kicked_ising_problem(
     for _ in range(config.num_layers):
         gate_angles.extend(_xlayer(config.num_qubits, config.theta / 2))
         gate_angles.extend(
-            _zzlayer(config.coupling, _topology_edges(config), config.num_qubits)
+            _zzlayer(config.coupling, HEAVY_HEX_TOPOLOGY, config.num_qubits)
         )
     circuit = Circuit(
         gates=tuple(gate for gate, _ in gate_angles),

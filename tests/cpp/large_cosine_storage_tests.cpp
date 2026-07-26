@@ -78,10 +78,10 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
     BOOST_CHECK_EQUAL(d_phi, -1);
 }
 
-// The per-rank cross-rank counts index into a single layer's term set. Under the wide build they
-// must be TermIndex-wide; if they stay uint32_t, a single rank/layer silently truncates above 2^32
-// entries and monoprop_WIDE_TERM_INDEX still caps a single-rank run at ~2^32 terms. (In the default
-// build TermIndex == uint32_t, so this holds trivially.)
+// The per-rank cross-rank counts index into a single layer's term set (bounded by one shard's store).
+// Under the wide build they must be TermIndex-wide; if they stay uint32_t, a single shard/layer silently
+// truncates above 2^32 entries and monoprop_WIDE_TERM_INDEX still caps a single shard at ~2^32 terms. (In
+// the default build TermIndex == uint32_t, so this holds trivially.)
 BOOST_AUTO_TEST_CASE(cross_rank_partner_range_counts_track_term_index_width) {
     CrossRankPartnerRange r{};
     BOOST_CHECK_EQUAL(sizeof(r.sin_send_count), sizeof(TermIndex));

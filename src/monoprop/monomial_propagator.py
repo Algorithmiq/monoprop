@@ -118,7 +118,6 @@ class MonomialPropagator(ABC):
         # System qubit count for expanding Pauli gates; set by PauliPropagator from the
         # observable. None for a native Majorana propagator (its gates need no qubit count).
         self._num_qubits = None
-        self._pauli_native = basis == "pauli"
         self._initial_state = list(initial_state)
         # dispatch() is typed to return the base `type[_SimulatorAdapter]`, whose __init__ takes
         # extra positional args the generated per-mode subclasses fill in; the kwargs below match
@@ -282,7 +281,7 @@ class MonomialPropagator(ABC):
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
         self._n_params += circuit.n_parameters
         majoranas, gen_coeffs, per_monomial, gate_indices = expand_monomials(
-            gates, mapping, num_qubits, native_pauli=self._pauli_native
+            gates, mapping, num_qubits
         )
         # `seed` may be a NumPy array (an accepted ParameterValues type), so resolve to a list
         # first and treat an empty vector as "no seed" -- `if seed` would raise on an ndarray.
@@ -317,7 +316,7 @@ class MonomialPropagator(ABC):
         gates = self._circuit_gates(circuit)
         num_qubits = self._num_qubits
         majoranas, gen_coeffs, mapping, _gate_indices = expand_monomials(
-            gates, circuit.resolved_mapping, num_qubits, native_pauli=self._pauli_native
+            gates, circuit.resolved_mapping, num_qubits
         )
         self._simulator.propagate(
             majoranas,

@@ -30,7 +30,6 @@
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/MPOperator.h"
-#include "monoprop/detail/profiling/RegionProfiler.h"
 
 namespace monoprop::detail {
 
@@ -217,8 +216,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     const size_t gen_pop = gen.count();
     const auto ectx = A::make_gen_context(gen);
 
-    size_t struct_rejects = 0; // stats
-
     // Cutoff + emit for one anticommuting term. The dynamic gate (|M| only) runs BEFORE emit_term_products,
     // so a gate-rejected term computes no products. abs_c/v_src are passed in from the caller's coeff read
     // (v_src the SIGNED coeff, pushed into lv/fv only when capture_values), so emit does not re-read it.
@@ -246,7 +243,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const size_t new_pop = maj_pop + gen_pop - 2 * overlap;
         const bool struct_pass = cutoff_eval.passes_with_popcount(new_maj, new_pop);
         if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
-            ++struct_rejects;
             return;
         }
         // Emitted sine phase: the algebra folds the rotation sign into the final ±1 (Majorana folds in
@@ -313,23 +309,16 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // Generator column list, pivot first. Pass 1 folds L1-resident blocks — no sparse-scatter prologue.
         const std::span<const size_t> gen_cols(gen_columns.indices.data(), gen_columns.count);
 
-        // Classify the fold columns in O(|G|). A DENSE column always holds ≥1 posting, so Σ postings == 0
-        // ⟺ every fold column is sparse-tier with an empty row list.
-        bool fold_cols_all_sparse = true;
+        // Classify the fold columns in O(|G|): the scan can be skipped only when every fold column is
+        // empty (a dense column always holds ≥1 posting, so any dense column makes it non-empty).
         bool fold_cols_empty = true;
-        size_t fold_postings = 0; // Σ sparse-column postings; a complete Σ only when all_sparse
         for (size_t ci = 0; ci < gen_columns.count; ++ci) {
             const size_t c = gen_columns.indices[ci];
             if (inverted_index.column_is_dense(c)) {
-                fold_cols_all_sparse = false;
                 fold_cols_empty = false;
             }
-            else {
-                const size_t p = inverted_index.sparse_column_rows(c).size();
-                fold_postings += p;
-                if (p != 0) {
-                    fold_cols_empty = false;
-                }
+            else if (!inverted_index.sparse_column_rows(c).empty()) {
+                fold_cols_empty = false;
             }
         }
         // Zero-postings early-out: no term touches a fold column ⇒ nothing anticommutes (for even |G|),
@@ -439,16 +428,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
         }
         res.cos_blocks.push_back(cos_b.finish());
-
-        // Fold-stats instrumentation (monoprop_FOLD_STATS): one relaxed-atomic publish per gate per shard.
-        if (profiling::g_fold_stats_enabled) {
-            profiling::record_fold_stats(fold_cols_all_sparse,
-                                         skip_scan,
-                                         fold_postings,
-                                         word_count,
-                                         n_anti,
-                                         struct_rejects);
-        }
     }
     return res;
 }

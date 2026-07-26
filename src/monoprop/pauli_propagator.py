@@ -139,10 +139,7 @@ class PauliPropagator(MonomialPropagator):
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.
 
-        A ``PauliPropagator`` rejects a Majorana/fermionic circuit. The Jordan-Wigner mapping
-        and antihermitian normalization live in :func:`~monoprop.circuit.expand_monomials`;
-        the propagator's ``num_qubits`` (from the observable) reaches the expander via
-        ``self._num_qubits``.
+        A ``PauliPropagator`` rejects a Majorana/fermionic circuit.
         """
         if circuit.family == "majorana":
             raise TypeError(

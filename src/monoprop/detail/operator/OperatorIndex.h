@@ -401,7 +401,7 @@ private:
     static auto check_index_fits(size_t value) -> void {
         if (value >= kIndexCeiling) {
             throw TermIndexCeilingReached("OperatorIndex: operator index reached the TermIndex ceiling; rebuild with "
-                                          "-Dmonoprop_WIDE_TERM_INDEX (term count exceeded ~2^32).");
+                                          "-Dmonoprop_WIDE_TERM_INDEX (this shard's term count exceeded ~2^32).");
         }
     }
 

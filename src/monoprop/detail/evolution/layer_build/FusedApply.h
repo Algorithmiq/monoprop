@@ -19,7 +19,6 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"    // scale_cos_mask, CosMask
 #include "monoprop/detail/evolution/layer_build/Common.h" // FusedContract, RotationRec
-#include "monoprop/detail/profiling/RegionProfiler.h"
 
 namespace monoprop::detail {
 
@@ -53,7 +52,6 @@ inline auto apply_fused_contract(FusedContract &fc,
     const double sin_val = std::sin(2 * param);
     double *const c = op_coeffs.data();
     if (!fused_scale) {
-        profiling::ScopedRegion prof_cs(profiling::Region::CosScale);
         scale_cos_mask(c, cos, cos_val);
     }
 
@@ -66,7 +64,6 @@ inline auto apply_fused_contract(FusedContract &fc,
     const size_t n_hit = fc.hits.size();
     const size_t n_full = n_hit + fc.inserts.size();
     const size_t n_cross = fc.cross_half.size();
-    profiling::ScopedRegion prof_fa(profiling::Region::FusedApply);
     for (size_t k = 0; k < n_full + n_cross; ++k) {
         if (k < n_full) {
             const bool is_insert = k >= n_hit;

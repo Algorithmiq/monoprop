@@ -42,7 +42,6 @@
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
-#include "monoprop/detail/profiling/RegionProfiler.h"
 
 namespace monoprop {
 namespace detail {

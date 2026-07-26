@@ -23,7 +23,6 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/mpi/Exchange.h"
 #include "monoprop/detail/mpi/MPICompat.h"
-#include "monoprop/detail/profiling/RegionProfiler.h"
 
 namespace monoprop {
 namespace {
@@ -506,7 +505,6 @@ auto evolve_step_traversal_impl(VecD &op,
                                 size_t layer_idx,
                                 const mpi::Comm &comm,
                                 const detail::LayerCosScale &cos_scale) -> void {
-    profiling::ScopedRegion prof_evolve(profiling::Region::Evolve);
     const double cos_val = std::cos(2 * param), sin_val = std::sin(2 * param);
 
     auto *const op_data = op.data();

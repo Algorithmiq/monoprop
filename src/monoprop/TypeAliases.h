@@ -87,12 +87,11 @@ using VecZ = std::vector<size_t>;
 
 // Compile-time build knobs (cmake -D<name>=...):
 //   monoprop_ENABLE_MPI         real MPI transport vs single-rank stubs         (default OFF)
-//   monoprop_WIDE_TERM_INDEX    TermIndex = u64 vs u32 → >2^32 local terms/rank (default OFF)
+//   monoprop_WIDE_TERM_INDEX    TermIndex = u64 vs u32 → >2^32 terms per shard  (default OFF)
 //   monoprop_MAX_NUM_MODES      NumModes codegen/instantiation ceiling          (default 250)
 //   monoprop_ENABLE_ARCH_FLAGS  -march=native / -xHost (non-Debug)              (default ON)
 // Runtime (env-var) knobs live in detail/EnvConfig.h.
 //
-// TermIndex: operator row index. Default u32; monoprop_WIDE_TERM_INDEX widens to u64 for > 2^32 local terms/rank.
 #if defined(monoprop_WIDE_TERM_INDEX)
 using TermIndex = std::uint64_t;
 #else
@@ -129,8 +128,6 @@ template <typename T>
 using DefaultInitVector = std::vector<T, default_init_allocator<T>>;
 
 using FermiOperatorMap = std::map<VecZ, std::complex<double>>;
-
-using CyclesType = std::vector<std::vector<std::pair<size_t, size_t>>>;
 
 } // namespace monoprop
 

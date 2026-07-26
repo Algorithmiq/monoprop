@@ -77,5 +77,4 @@ BOOST_AUTO_TEST_CASE(env_config_settings_cached_singleton) {
     // Touch the fields so the Settings aggregate is read (documented defaults unless the environment
     // overrode them for this process).
     BOOST_CHECK(a.shard_pinning == true || a.shard_pinning == false);
-    BOOST_CHECK(a.phase_timers == true || a.phase_timers == false);
 }

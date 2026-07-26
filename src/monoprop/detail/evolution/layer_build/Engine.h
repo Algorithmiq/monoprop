@@ -33,7 +33,6 @@
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/MPOperator.h"
-#include "monoprop/detail/profiling/RegionProfiler.h"
 
 namespace monoprop::detail {
 
@@ -151,7 +150,6 @@ struct GraphSink {
     // the D-apply only ADDS the sine term. cos is handed to out_cos when the in-build contraction needs it.
     auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator<NumModes> &op)
         -> std::shared_ptr<LayerCore> {
-        profiling::ScopedRegion prof_gather(profiling::Region::Gather);
         std::vector<CrossRankPartnerData> partners(R);
         for (size_t r = 0; r < R; ++r) {
             const auto &a = acc[r];
@@ -391,14 +389,10 @@ struct LayerBuildEngine {
     // a target coeff for fused contraction), inserting absent partners in the SAME round. Round 2 returns
     // those answers (the known transpose recv counts skip the count-Alltoall) and the querier folds them in.
     auto run_exchange(bool is_leader_pass) -> void {
-        {
-            profiling::ScopedRegion prof_sr(profiling::Region::SelfResolve);
-            resolve_self_queries(is_leader_pass);
-        }
+        resolve_self_queries(is_leader_pass);
         if (R <= 1) {
             return;
         }
-        profiling::ScopedRegion prof_mx(profiling::Region::MpiExchange);
         std::vector<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
         std::vector<std::vector<size_t>> inc_q;
         mpi::begin_alltoallv(send, comm).wait_into(inc_q);
@@ -459,7 +453,6 @@ struct LayerBuildEngine {
         if (n_miss == 0) {
             return;
         }
-        profiling::ScopedRegion prof_di(profiling::Region::DeferInsert);
         auto key_at = [&](size_t k) -> const Monomial<NumModes> & { return deferred_self_misses[k].maj; };
         sink.prepare_deferred(n_miss);
         insert_absent_terms<NumModes>(local_op, n_miss, key_at, [&](size_t k, size_t base) {
@@ -588,7 +581,6 @@ auto build_layer(MPOperator<NumModes> &local_op,
     assert(fused_scale_coeffs == nullptr || (local_coeffs && &local_coeffs->get() == fused_scale_coeffs));
 
     FusedScanResult fused = [&] {
-        profiling::ScopedRegion prof_find(profiling::Region::Find);
         // Dispatch the scan on the basis at compile time (Pauli emit-sign/J(G) fold vs Majorana
         // interleave/hermitian phase). Every other argument is basis-agnostic.
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;

@@ -393,7 +393,6 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
         VecZ cos_inds;
         const auto &gw = traversal.generator_words();
         if (!gw.empty()) {
-            profiling::ScopedRegion prof_cos(profiling::Region::CosRecompute);
             const auto gen = detail::generator_from_words<NumModes>(gw);
             auto p = detail::make_fold_cache<NumModes>(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
             cos_inds = detail::fold_to_indices<NumModes>(p);
@@ -534,10 +533,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
             detail::FusedContract fc;
             bool fused_scale = false;
             build_evolve_result_(maj, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc, op_coeffs, &fused_scale);
-            {
-                profiling::ScopedRegion prof_ext(profiling::Region::Extend);
-                extend_coeffs_from_current_picture_if_needed_(*op_coeffs);
-            }
+            extend_coeffs_from_current_picture_if_needed_(*op_coeffs);
             detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, schrodinger_, fused_scale);
         });
 }
