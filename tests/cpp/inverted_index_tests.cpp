@@ -15,18 +15,21 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/detail/operator/InvertedIndex.h"
 
-// Internals of the even-parity scan inverted index: the tiered column store (sparse row-lists vs dense
-// bit-vectors, promoted at the 1/kPromoteDensityInv density crossover), the lazily-built per-row
-// parity(|M|) bitmap, and the row-block-parallel fill. The inverted index reads its rows through the
-// backend-agnostic for_each_row_position accessor, which is defined for a plain
-// std::vector<Monomial<N>> — so these tests build one directly, no operator store required.
+// Internals of the even-parity scan inverted index: the tiered column store (delta+LEB128 coded
+// postings vs dense bit-vectors, with the tier chosen by an encoded-BYTE comparison rather than a
+// density proxy), the posting codec itself, the lazily-built per-row parity(|M|) bitmap, and the
+// fill. The inverted index reads its rows through the backend-agnostic for_each_row_position
+// accessor, which is defined for a plain std::vector<Monomial<N>> — so these tests build one
+// directly, no operator store required.
 
 using namespace monoprop;
 using namespace monoprop::detail;
@@ -42,6 +45,71 @@ MSet bs(const VecZ &r) {
 // raw bit position — so mode m populates column col_of(m).
 constexpr size_t col_of(size_t mode) {
     return 2 * N - 1 - mode;
+}
+
+// What the codec emits for an ascending row list, computed independently of the encoder: one absolute
+// header per block of kPostingsPerBlock, then a LEB128 gap for every other posting. The tier rule
+// compares exactly this against dense_bytes(), so the tests can predict tiers from first principles.
+template <size_t W>
+auto predicted_encoded_bytes(const std::vector<TermIndex> &rows) -> size_t {
+    size_t bytes = 0;
+    size_t prev = 0;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (i % InvertedIndex<W>::kPostingsPerBlock == 0) {
+            bytes += InvertedIndex<W>::kBlockHeaderBytes;
+        }
+        else {
+            bytes += leb128_size(static_cast<size_t>(rows[i]) - prev);
+        }
+        prev = rows[i];
+    }
+    return bytes;
+}
+
+// Full-width reference fold: XOR every set row of every column into one bitmap, no blocking, no
+// tiers. combine_columns_block must reproduce this for ANY block decomposition (XOR associativity).
+template <size_t W>
+auto reference_fold(const InvertedIndex<W> &sc, const std::vector<size_t> &cols) -> std::vector<uint64_t> {
+    std::vector<uint64_t> ref(sc.words(), 0);
+    for (size_t c : cols) {
+        for (TermIndex r : sc.column_rows(c)) {
+            ref[r >> 6] ^= uint64_t{1} << (r & 63U);
+        }
+    }
+    return ref;
+}
+
+// The same fold via the production kernel, in blocks of `block_words`.
+template <size_t W>
+auto blocked_fold(const InvertedIndex<W> &sc,
+                  const std::vector<size_t> &cols,
+                  size_t block_words) -> std::vector<uint64_t> {
+    std::vector<uint64_t> out(sc.words(), 0);
+    std::vector<uint64_t> blk(block_words, 0);
+    for (size_t bb = 0; bb < sc.words(); bb += block_words) {
+        const size_t be = std::min(bb + block_words, sc.words());
+        combine_columns_block<W>(sc, std::span<const size_t>(cols.data(), cols.size()), blk.data(), bb, be);
+        for (size_t w = bb; w < be; ++w) {
+            out[w] = blk[w - bb];
+        }
+    }
+    return out;
+}
+
+// A deterministic multi-density operator: column c is set every `stride(c)` rows, so densities span
+// three decades. With one-byte gaps a column codes to ~num_rows/stride bytes against a num_rows/8
+// bitmap, so strides below ~8 land DENSE and the rest stay coded — both tiers, and multi-block
+// posting streams, in one fixture.
+template <size_t W>
+auto strided_operator(size_t num_rows) -> std::vector<Monomial<W>> {
+    std::vector<Monomial<W>> op(num_rows);
+    for (size_t c = 0; c < Monomial<W>::size(); ++c) {
+        const size_t stride = 1 + (c * 37) % 700;
+        for (size_t r = c % stride; r < num_rows; r += stride) {
+            op[r].set(c);
+        }
+    }
+    return op;
 }
 } // namespace
 
@@ -71,38 +139,120 @@ BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
     BOOST_TEST(((sc.row_parity_words()[0] >> 1U) & 1U) == 1U); // row 1 is odd
 }
 
-// A column crosses to DENSE when set_rows.size() * kPromoteDensityInv >= row_count (density >= 1/64);
-// below that it stays a sparse row-list. rebuild decides tiers from the final per-column counts.
-BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
-    constexpr size_t kR = 128; // threshold = ceil(128/64) = 2 set rows to go dense
+// THE tier rule: a column stays SPARSE only while its delta+LEB128 postings encode strictly smaller
+// than its full-height bitmap would be — an actual byte comparison, not a density threshold. The two
+// straddling columns below are chosen so the verdict is the same whichever width TermIndex has.
+BOOST_AUTO_TEST_CASE(inverted_index_tier_is_the_encoded_byte_comparison) {
+    constexpr size_t kR = 1024; // words() = 16 -> dense_bytes() = 128
     std::vector<MSet> op;
     op.reserve(kR);
     for (size_t i = 0; i < kR; ++i) {
         VecZ pos;
-        if (i < 10) {
-            pos.push_back(0); // mode 0 set in 10 rows -> 10*64 >= 128 -> DENSE
-            if (i == 0) {
-                pos.push_back(1); // mode 1 set in exactly 1 row -> 1*64 < 128 -> SPARSE
-            }
+        if (i < 100) {
+            pos.push_back(0); // mode 0: 100 consecutive rows -> 1 block + 99 one-byte gaps
         }
-        else {
-            pos.push_back(2); // mode 2 set in 118 rows -> DENSE (keeps every row non-empty)
+        if (i < 200) {
+            pos.push_back(1); // mode 1: 200 consecutive rows -> 2 blocks + 198 one-byte gaps
         }
+        pos.push_back(2); // mode 2: every row -> a bitmap is far cheaper
         op.push_back(indices_to_bitset<N>(pos));
     }
     Sc sc;
     sc.rebuild(op);
     BOOST_TEST(sc.rows() == kR);
-    BOOST_TEST(sc.column_is_dense(col_of(0)));  // 10/128 >= 1/64
-    BOOST_TEST(!sc.column_is_dense(col_of(1))); // 1/128  <  1/64
-    // The lone sparse hit is recorded losslessly.
-    BOOST_TEST(sc.sparse_column_count(col_of(1)) == 1u);
-    BOOST_TEST(sc.column_rows(col_of(1)) == std::vector<TermIndex>{0u}, boost::test_tools::per_element());
+    BOOST_TEST(sc.dense_bytes() == 128u);
+
+    // Mode 0 codes to kBlockHeaderBytes + 99 bytes (107 at TermIndex=u32), under the 128-byte bitmap.
+    BOOST_TEST(!sc.column_is_dense(col_of(0)));
+    BOOST_TEST(sc.sparse_column_count(col_of(0)) == 100u);
+    BOOST_TEST(sc.sparse_encoded_bytes(col_of(0)) == Sc::kBlockHeaderBytes + 99u);
+    BOOST_TEST(sc.sparse_encoded_bytes(col_of(0)) < sc.dense_bytes());
+
+    // Mode 1 codes to 2*kBlockHeaderBytes + 198 bytes (214 at u32) — over the bitmap, so DENSE.
+    BOOST_TEST(sc.column_is_dense(col_of(1)));
+    BOOST_TEST(predicted_encoded_bytes<N>(sc.column_rows(col_of(1))) >= sc.dense_bytes());
+    BOOST_TEST(sc.column_is_dense(col_of(2)));
+
+    // The rule genuinely CHANGED: the retired threshold promoted at density >= 1/64, i.e. at >= 16 of
+    // these 1024 rows, so it would have made mode 0 dense. Coding it is cheaper, so now it is not.
+    BOOST_TEST(sc.sparse_column_count(col_of(0)) * 64u >= sc.rows());
+
+    // Every tier decision the rule makes must agree with the byte comparison, in both directions.
+    bool tiers_follow_the_rule = true;
+    for (size_t c = 0; c < Sc::kNumColumns; ++c) {
+        const auto rows = sc.column_rows(c);
+        if (rows.empty()) {
+            continue;
+        }
+        const bool should_be_dense = predicted_encoded_bytes<N>(rows) >= sc.dense_bytes();
+        if (sc.column_is_dense(c) != should_be_dense) {
+            tiers_follow_the_rule = false;
+        }
+    }
+    BOOST_TEST(tiers_follow_the_rule);
 }
 
-// rebuild fills columns in row order, so sparse row-lists come out ASCENDING — the invariant the fold
-// recompute relies on (combine_columns_block lower_bounds them). Build a many-mode operator kept below
-// the promote threshold so columns stay sparse, then assert every sparse list is sorted.
+// A single posting is recorded losslessly, and an untouched column costs nothing. Note the row count
+// has to be large enough that the bitmap costs more than one block header, or NOTHING can be sparse:
+// below 8*kBlockHeaderBytes rows the tier rule correctly makes even a one-posting column dense.
+BOOST_AUTO_TEST_CASE(inverted_index_codes_a_lone_posting_losslessly) {
+    constexpr size_t kR = 1024; // dense_bytes() = 128, well above one header
+    std::vector<MSet> op;
+    op.reserve(kR);
+    for (size_t i = 0; i < kR; ++i) {
+        op.push_back(i == 7 ? bs({1}) : MSet{});
+    }
+    Sc sc;
+    sc.rebuild(op);
+    BOOST_TEST(sc.rows() == kR);
+    BOOST_TEST(!sc.column_is_dense(col_of(1)));
+    BOOST_TEST(sc.sparse_column_count(col_of(1)) == 1u);
+    BOOST_TEST(sc.column_rows(col_of(1)) == std::vector<TermIndex>{7u}, boost::test_tools::per_element());
+    // One posting = one block header and no gap bytes at all.
+    BOOST_TEST(sc.sparse_encoded_bytes(col_of(1)) == Sc::kBlockHeaderBytes);
+    BOOST_TEST(sc.sparse_column_count(col_of(5)) == 0u);
+    BOOST_TEST(sc.sparse_encoded_bytes(col_of(5)) == 0u);
+    BOOST_TEST(sc.column_rows(col_of(5)).empty());
+
+    // A one-posting stream still answers the range query, and only inside the range.
+    std::vector<TermIndex> got;
+    sc.for_each_sparse_row_in_range(col_of(1), 0, 64, [&got](TermIndex r) { got.push_back(r); });
+    BOOST_TEST(got == std::vector<TermIndex>{7u}, boost::test_tools::per_element());
+    got.clear();
+    sc.for_each_sparse_row_in_range(col_of(1), 8, kR, [&got](TermIndex r) { got.push_back(r); });
+    BOOST_TEST(got.empty());
+    sc.for_each_sparse_row_in_range(col_of(5), 0, kR, [&got](TermIndex r) { got.push_back(r); });
+    BOOST_TEST(got.empty()); // and an empty column yields nothing rather than reading the stream
+}
+
+// The codec's three functions must agree exactly: leb128_size predicts what leb128_encode emits (the
+// tier rule and rebuild's exact reserve both depend on that), and leb128_decode inverts it.
+BOOST_AUTO_TEST_CASE(inverted_index_leb128_roundtrips_and_size_is_exact) {
+    const std::vector<size_t> values{1, 2, 127, 128, 129, 300, 16'383, 16'384, 1u << 20, (1u << 28) + 7};
+    std::vector<uint8_t> stream;
+    size_t predicted = 0;
+    for (size_t v : values) {
+        const size_t before = stream.size();
+        leb128_encode(stream, v);
+        BOOST_TEST(stream.size() - before == leb128_size(v));
+        predicted += leb128_size(v);
+    }
+    BOOST_TEST(stream.size() == predicted);
+
+    const uint8_t *cursor = stream.data();
+    bool all_roundtrip = true;
+    for (size_t v : values) {
+        if (leb128_decode(cursor) != v) {
+            all_roundtrip = false;
+        }
+    }
+    BOOST_TEST(all_roundtrip);
+    BOOST_TEST(cursor == stream.data() + stream.size()); // consumed exactly, no over/under-read
+}
+
+// rebuild encodes columns in row order, so postings come out STRICTLY ASCENDING — the invariant the
+// fold's range query rests on. Build a many-mode operator kept below the tier crossover so columns
+// stay sparse, then walk each one through its public iterator and assert the ordering.
 BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
     constexpr size_t M = 64; // 2M = 128 columns
     using ScW = InvertedIndex<M>;
@@ -110,8 +260,8 @@ BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
     std::vector<Monomial<M>> op;
     op.reserve(kR);
     for (size_t i = 0; i < kR; ++i) {
-        // one mode per row spread over all 128 columns: each column set ~128 times, 128*64 < 16385,
-        // so every column stays sparse.
+        // one mode per row spread over all 128 columns: each column set ~128 times, so its ~136 coded
+        // bytes stay far under the 2056-byte bitmap and every column stays sparse.
         op.push_back(indices_to_bitset<M>({i % 128}));
     }
     ScW sc;
@@ -141,4 +291,167 @@ BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
     }
     BOOST_TEST(saw_nonempty_sparse); // the fill actually populated sparse columns
     BOOST_TEST(all_sorted);          // and they are ascending, at any thread count
+}
+
+// THE codec's headline invariant. An index grown by repeated append_rows must hold exactly the same
+// rows as one built by a single rebuild over the same final operator — the incremental encoder and the
+// two-pass one are different code paths, and mid-stream promotion runs only on the incremental one.
+//
+// Their TIERS may legitimately differ: promotion is one-way and the byte comparison is evaluated
+// against the row count at the time, so a column can be promoted early and stay dense even though a
+// rebuild at the final row count would have coded it. That is monotone in one direction only — dense
+// under rebuild implies dense under append — and it is harmless, which the fold check below proves.
+BOOST_AUTO_TEST_CASE(inverted_index_incremental_append_matches_rebuild) {
+    constexpr size_t M = 64; // 2M = 128 columns
+    using ScW = InvertedIndex<M>;
+    constexpr size_t kR = 6'000;
+    const auto op = strided_operator<M>(kR);
+
+    ScW batch;
+    batch.rebuild(op);
+
+    ScW incr;
+    for (size_t base = 0; base < kR;) {
+        const size_t n = std::min<size_t>(1 + (base % 97), kR - base); // ragged chunks, incl. n == 1
+        incr.append_rows(op, base, n);
+        base += n;
+    }
+
+    BOOST_TEST(batch.rows() == kR);
+    BOOST_TEST(incr.rows() == kR);
+
+    bool rows_match = true;
+    bool promotion_is_monotone = true;
+    size_t dense_batch = 0;
+    size_t dense_incr = 0;
+    for (size_t c = 0; c < Monomial<M>::size(); ++c) {
+        if (batch.column_rows(c) != incr.column_rows(c)) {
+            rows_match = false;
+        }
+        if (batch.column_is_dense(c) && !incr.column_is_dense(c)) {
+            promotion_is_monotone = false;
+        }
+        dense_batch += static_cast<size_t>(batch.column_is_dense(c));
+        dense_incr += static_cast<size_t>(incr.column_is_dense(c));
+    }
+    BOOST_TEST(rows_match);            // lossless under BOTH build paths
+    BOOST_TEST(promotion_is_monotone); // rebuild-dense => append-dense
+    BOOST_TEST(dense_incr >= dense_batch);
+    BOOST_TEST(dense_batch > 0u); // the fixture really does straddle the crossover
+    BOOST_TEST(dense_batch < Monomial<M>::size());
+
+    // ...and the two fold to the same bits despite any tier divergence.
+    const std::vector<size_t> gen{3, 17, 40, 91};
+    BOOST_TEST(blocked_fold(batch, gen, kColumnBlockWords) == blocked_fold(incr, gen, kColumnBlockWords),
+               boost::test_tools::per_element());
+    // The lazy parity bitmap is derived by iterating both tiers, so it must agree too.
+    const uint64_t *pb = batch.row_parity_words();
+    const uint64_t *pi = incr.row_parity_words();
+    bool parity_matches = true;
+    for (size_t w = 0; w < batch.words(); ++w) {
+        if (pb[w] != pi[w]) {
+            parity_matches = false;
+        }
+    }
+    BOOST_TEST(parity_matches);
+}
+
+// combine_columns_block must reproduce the full-width reference fold for ANY block decomposition:
+// XOR is associative, so splitting the row range cannot change the result. Block widths that do not
+// divide the word count, and a width of 1, are the cases most likely to expose an off-by-one in the
+// posting range query's seek.
+BOOST_AUTO_TEST_CASE(inverted_index_blocked_fold_matches_full_width_reference) {
+    constexpr size_t M = 64;
+    using ScW = InvertedIndex<M>;
+    ScW sc;
+    sc.rebuild(strided_operator<M>(4'000));
+
+    const std::vector<std::vector<size_t>> gens{
+        {0},                   // a single column, sparse or dense
+        {5, 6},                // a pair
+        {1, 2, 3, 4, 5, 6, 7}, // an odd number, mixed tiers
+        {127, 0, 64, 33, 12},  // unsorted column order
+        {11, 11},              // the same column twice: must cancel to zero
+    };
+    bool all_match = true;
+    for (const auto &gen : gens) {
+        const auto ref = reference_fold(sc, gen);
+        for (size_t block_words : {size_t{1}, size_t{3}, size_t{17}, size_t{64}, kColumnBlockWords}) {
+            if (blocked_fold(sc, gen, block_words) != ref) {
+                all_match = false;
+            }
+        }
+    }
+    BOOST_TEST(all_match);
+    // Sanity: the fixture is not trivially all-zero, and a column XORed with itself really cancels.
+    BOOST_TEST(std::ranges::any_of(reference_fold(sc, {0, 5, 33}), [](uint64_t w) { return w != 0; }));
+    BOOST_TEST(std::ranges::none_of(reference_fold(sc, {11, 11}), [](uint64_t w) { return w != 0; }));
+}
+
+// The range query must return exactly the postings in [lo, hi). It seeks by skip block and then decodes
+// forward, so the cases that matter are block-aligned vs interior bounds, ranges before the first and
+// after the last posting, and empty ranges. Multi-block columns are what make the seek non-trivial.
+BOOST_AUTO_TEST_CASE(inverted_index_range_query_matches_filtered_full_walk) {
+    constexpr size_t M = 64;
+    using ScW = InvertedIndex<M>;
+    ScW sc;
+    sc.rebuild(strided_operator<M>(20'000)); // dense_bytes() = 2504, so wide columns stay coded
+
+    bool saw_multi_block = false;
+    bool all_match = true;
+    for (size_t c = 0; c < Monomial<M>::size(); ++c) {
+        if (sc.column_is_dense(c)) {
+            continue;
+        }
+        const auto rows = sc.column_rows(c);
+        if (rows.size() > ScW::kPostingsPerBlock) {
+            saw_multi_block = true;
+        }
+        const size_t last = rows.empty() ? 0 : static_cast<size_t>(rows.back());
+        for (size_t lo : {size_t{0}, size_t{1}, size_t{63}, size_t{64}, size_t{4033}, last, last + 1}) {
+            for (size_t width : {size_t{0}, size_t{1}, size_t{64}, size_t{1000}, size_t{25'000}}) {
+                const size_t hi = lo + width;
+                std::vector<TermIndex> expected;
+                for (TermIndex r : rows) {
+                    if (static_cast<size_t>(r) >= lo && static_cast<size_t>(r) < hi) {
+                        expected.push_back(r);
+                    }
+                }
+                std::vector<TermIndex> got;
+                sc.for_each_sparse_row_in_range(c, lo, hi, [&got](TermIndex r) { got.push_back(r); });
+                if (got != expected) {
+                    all_match = false;
+                }
+            }
+        }
+    }
+    BOOST_TEST(saw_multi_block); // the seek was actually exercised across blocks
+    BOOST_TEST(all_match);
+}
+
+// delta_coded_bytes() was the pre-implementation sizing study that chose the byte comparison over a
+// density threshold; now that the comparison IS the tier rule it verifies it. On a rebuilt index the
+// oracle -- the cheaper of {bitmap, coded postings} per column -- must already be what we store, and
+// no column can be one the coded form would win, because such a column would have stayed sparse.
+BOOST_AUTO_TEST_CASE(inverted_index_realizes_the_min_bitmap_delta_oracle) {
+    constexpr size_t M = 64;
+    using ScW = InvertedIndex<M>;
+    ScW sc;
+    sc.rebuild(strided_operator<M>(20'000));
+
+    size_t realized = 0;
+    size_t dense_columns = 0;
+    for (size_t c = 0; c < Monomial<M>::size(); ++c) {
+        realized += sc.column_is_dense(c) ? sc.dense_bytes() : sc.sparse_encoded_bytes(c);
+        dense_columns += static_cast<size_t>(sc.column_is_dense(c));
+    }
+    const auto diag = sc.delta_coded_bytes();
+    BOOST_TEST(diag[1] == realized); // oracle bytes == what we actually store
+    BOOST_TEST(diag[2] == 0u);       // no column left where coding it would still win
+    BOOST_TEST(diag[0] > 0u);
+    // Blanket-coding every column must cost MORE than the per-column choice -- the whole reason the
+    // rule is a comparison and not "code everything". Only meaningful if some column went dense; with
+    // no dense column the two figures coincide, which is itself the correct answer.
+    BOOST_TEST(dense_columns > 0u);
+    BOOST_TEST(diag[0] > diag[1]);
 }
