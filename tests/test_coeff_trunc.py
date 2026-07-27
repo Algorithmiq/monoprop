@@ -115,7 +115,7 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
         schrodinger_cutoff_val,
     )
     mp_inplace.propagate(circuit)
-    expval_inplace = mp_inplace.expectation_value()
+    expval_inplace = mp_inplace.expval()
 
     mp_build = _create_mp(
         fermionic_operator,
@@ -128,7 +128,7 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
     )
     # Coefficient-informed build: the seed is regenerated internally from parameters.
     mp_build.build_graph(circuit)
-    expval_build = mp_build.expectation_value(parameters)
+    expval_build = mp_build.expval(parameters)
 
     assert mp_inplace.size() == mp_build.size()
     assert np.isclose(expval_inplace, expval_build, atol=1e-12)

@@ -26,14 +26,13 @@ Majorana/fermionic circuit, [PauliPropagator][monoprop.pauli_propagator.PauliPro
 
 from __future__ import annotations
 
-import itertools
 from typing import TYPE_CHECKING, Literal
 
 from .conversion_utils import (
     _pauli_to_local_slots,
 )
 from .majorana import MajoranaOperator
-from .pauli import Pauli, PauliOperator
+from .pauli import PauliOperator
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -107,10 +106,10 @@ class ExpGate:
 
         self.generator = self._truncated_term(generator, atol)
 
-        if isinstance(self.generator, PauliOperator):
-            _validate_commuting_pauli_generator(self.generator)
-        elif isinstance(self.generator, MajoranaOperator):
-            _validate_commuting_majorana_generator(self.generator)
+        if not self.generator.all_pairwise_commute():
+            raise ValueError(
+                "The provided generator must be composed of commuting terms."
+            )
 
         self.index = None if index is None else int(index)
         self.family = family
@@ -465,57 +464,6 @@ def _antihermitian_gen_coeff(majorana: Sequence[int], coeff: complex) -> float:
     weight = len(majorana)
     gen = -coeff / (1j) ** (weight * (weight - 1) / 2)
     return _real_generator_coefficient(majorana, gen)
-
-
-def _paulis_commute(p1: Pauli, p2: Pauli) -> bool:
-    """Whether two Pauli terms commute as operators.
-
-    They anticommute iff they act with *different* letters on an odd number of shared qubits
-    ([Pauli][monoprop.pauli.Pauli] drops identity letters on construction).
-    """
-    op1 = dict(zip(p1.qubits, p1.string, strict=True))
-    op2 = dict(zip(p2.qubits, p2.string, strict=True))
-    anticommuting = sum(1 for q in op1.keys() & op2.keys() if op1[q] != op2[q])
-    return anticommuting % 2 == 0
-
-
-def _validate_commuting_pauli_generator(generator: PauliOperator) -> None:
-    r"""Reject a multi-term Pauli generator whose terms do not pairwise commute.
-
-    ``_gate_layers`` realizes a multi-term generator as a *product* of one rotation per term,
-    which equals the single exponential of their sum only if the terms commute; otherwise the
-    evolution would be silently Trotterized.
-    """
-    for p1, p2 in itertools.combinations(generator.terms, 2):
-        if not _paulis_commute(p1, p2):
-            raise ValueError(
-                "A multi-term Pauli gate generator must have mutually commuting terms so the "
-                f"gate is a single exponential of their sum; {p1} and {p2} anticommute."
-            )
-
-
-def _majoranas_commute(m1: Sequence[int], m2: Sequence[int]) -> bool:
-    """Whether two Majorana monomials commute as operators.
-
-    Swapping canonicalized products contributes the sign
-    ``(-1)**(len(m1)*len(m2) - |set(m1) & set(m2)|)``.
-    """
-    n_common = len(set(m1) & set(m2))
-    return ((len(m1) * len(m2) - n_common) % 2) == 0
-
-
-def _validate_commuting_majorana_generator(generator: MajoranaOperator) -> None:
-    r"""Reject a multi-term Majorana generator whose terms do not pairwise commute.
-
-    Same reason as ``_validate_commuting_pauli_generator``.
-    """
-    for m1, m2 in itertools.combinations(generator.terms, 2):
-        if not _majoranas_commute(m1, m2):
-            raise ValueError(
-                "A multi-term Majorana gate generator must have mutually commuting terms "
-                "so the gate is a single exponential of their sum; "
-                f"{tuple(m1)} and {tuple(m2)} anticommute."
-            )
 
 
 def _gate_layers(

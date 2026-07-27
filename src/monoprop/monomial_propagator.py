@@ -393,6 +393,54 @@ class MonomialPropagator(ABC):
 
         return _call
 
+    def expval(
+        self,
+        parameters: ParameterValues = None,
+    ) -> float:
+        """Shorthand for [expectation_value][].
+
+        See [expectation_value][] for full documentation.
+        """
+        return self.expectation_value(parameters)
+
+    def grad(
+        self,
+        parameters: ParameterValues = None,
+    ) -> np.ndarray:
+        """Shorthand for [gradient][].
+
+        See [gradient][] for full documentation.
+        """
+        return self.gradient(parameters)
+
+    def expval_and_grad(
+        self,
+        parameters: ParameterValues = None,
+    ) -> tuple[float, np.ndarray]:
+        """Shorthand for [expectation_value_and_gradient][].
+
+        See [expectation_value_and_gradient][] for full documentation.
+        """
+        return self.expectation_value_and_gradient(parameters)
+
+    def expval_functional(
+        self, pare_threshold: float | None = None
+    ) -> Callable[..., float]:
+        """Shorthand for [expectation_value_functional][].
+
+        See [expectation_value_functional][] for full documentation.
+        """
+        return self.expectation_value_functional(pare_threshold)
+
+    def expval_and_grad_functional(
+        self, pare_threshold: float | None = None
+    ) -> Callable[..., tuple]:
+        """Shorthand for [expectation_value_and_gradient_functional][].
+
+        See [expectation_value_and_gradient_functional][] for full documentation.
+        """
+        return self.expectation_value_and_gradient_functional(pare_threshold)
+
     def contract_partially(
         self,
         parameters: ParameterValues = None,
