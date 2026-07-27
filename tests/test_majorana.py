@@ -115,6 +115,24 @@ def test_majorana_operator_from_dict_round_trips():
 
 
 @pytest.mark.parametrize(
+    ("terms", "expected"),
+    [
+        pytest.param({}, True, id="empty"),
+        pytest.param({(0,): 1.0}, True, id="single_term"),
+        pytest.param({(0, 1): 1.0j, (2, 3): 1.0j}, True, id="disjoint_even_even"),
+        pytest.param(
+            {(0, 2, 3, 5): 1.0, (0, 2, 4, 6): 1.0}, True, id="overlap_even_parity"
+        ),
+        pytest.param({(0,): 1.0, (1,): 1.0}, False, id="disjoint_odd_odd"),
+        pytest.param({(0,): 1.0, (0, 1): 1.0}, False, id="overlap_odd_parity"),
+    ],
+)
+def test_majorana_operator_all_pairwise_commute(terms, expected):
+    """Pairwise commutation follows the parity of ``|S_1||S_2| - |S_1 ∩ S_2|``."""
+    assert MajoranaOperator(terms, num_modes=10).all_pairwise_commute() is expected
+
+
+@pytest.mark.parametrize(
     ("left", "right", "expected"),
     [
         pytest.param(
