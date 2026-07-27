@@ -114,10 +114,10 @@ def from_qiskit_circuit(
     circuit: QuantumCircuit,
     initial_state: list[int],
 ) -> Circuit:
-    """Convert a Qiskit circuit to a :class:`~monoprop.circuit.Circuit`.
+    """Convert a Qiskit circuit to a [Circuit][monoprop.circuit.Circuit].
 
     Note that the qiskit circuit must be composed only by PauliEvolutionGates with commuting
-    operators. Each qiskit gate becomes one qubit :class:`~monoprop.circuit.ExpGate` driven by
+    operators. Each qiskit gate becomes one qubit [ExpGate][monoprop.circuit.ExpGate] driven by
     its own angle (the identity parameter mapping).
 
     Args:
@@ -125,7 +125,7 @@ def from_qiskit_circuit(
         initial_state: Initial quantum state as a list of integers.
 
     Returns:
-        A :class:`~monoprop.circuit.Circuit` representing the given circuit.
+        A [Circuit][monoprop.circuit.Circuit] representing the given circuit.
     """
     if len(circuit.qregs) != 1:
         raise ValueError(
@@ -189,14 +189,14 @@ def _extend_generator_minimally(
 
 
 def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
-    """Convert a :class:`~monoprop.circuit.Circuit` to a Qiskit circuit.
+    """Convert a [Circuit][monoprop.circuit.Circuit] to a Qiskit circuit.
 
     Note that the resulting qiskit circuit will be composed only by PauliEvolutionGates with
     commuting operators. Each gate's evolution time is taken from the circuit's
     ``parameters`` via its parameter mapping.
 
     Args:
-        circuit: A :class:`~monoprop.circuit.Circuit` representing the given circuit.
+        circuit: A [Circuit][monoprop.circuit.Circuit] representing the given circuit.
         num_qubits: Total number of qubits (the circuit no longer carries it; supply the
             observable's ``num_qubits``).
 

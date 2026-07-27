@@ -112,12 +112,14 @@ jobs:
         run: |
           export COVERAGE_FILE="coverage-${{ steps.test-group-label.outputs.label }}"
 
-          uv run coverage run \
-          -m pytest \
+          uv run pytest \
           -r aR \
+          --cov=src/monoprop \
+          --cov-report=xml:coverage-"${{ steps.test-group-label.outputs.label }}".xml \
           --durations=50 \
           --durations-min=5.0 \
-          --junit-xml=pytest-"${{ steps.test-group-label.outputs.label }}".xml
+          --junit-xml=pytest-"${{ steps.test-group-label.outputs.label }}".xml \
+          -o junit_family=legacy
 
       - name: Run Python tests under MPI
         env:
@@ -140,14 +142,23 @@ jobs:
               uv run pytest tests --with-mpi -m mpi -v
           done
 
-      - name: Upload Test Results as artifacts
-        uses: actions/upload-artifact@v7.0.1
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
         with:
-          name: test_results_${{ steps.test-group-label.outputs.label }}
-          path: |
-            pytest-*.xml
-            coverage-*
-          retention-days: 1
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-${{ steps.test-group-label.outputs.label }}.xml
+          flags: python
+          disable_search: true
+          fail_ci_if_error: true
+
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: pytest-${{ steps.test-group-label.outputs.label }}.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
 
   cpp-checks:
     # in combination with the PR types selection, this top-level if statement
@@ -218,13 +229,6 @@ jobs:
 
           cmake --build find-package-smoke/build
 
-      - name: Upload C++ Test Results as artifacts
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: test_results_cpp_ubuntu_latest
-          path: ctest-*.xml
-          retention-days: 1
-
       - name: Collect coverage into a gcovr tracefile
         run: |
           pipx run gcovr \
@@ -239,12 +243,32 @@ jobs:
             build \
             --json cpp-coverage-native.json
 
-      - name: Upload C++ coverage tracefile as artifact
-        uses: actions/upload-artifact@v7.0.1
+      - name: Convert C++ tracefile to Cobertura XML for Codecov
+        run: |
+
+          pipx run gcovr \
+            --root . \
+            --merge-lines \
+            --add-tracefile cpp-coverage-native.json \
+            --cobertura cpp-coverage-native.xml
+
+      - name: Upload C++ coverage to Codecov
+        uses: codecov/codecov-action@v7
         with:
-          name: cpp_coverage_native
-          path: cpp-coverage-native.json
-          retention-days: 1
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: cpp-coverage-native.xml
+          flags: cpp
+          disable_search: true
+          fail_ci_if_error: true
+
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ctest-ubuntu_latest.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
 
   python-bindings-coverage:
     # in combination with the PR types selection, this top-level if statement
@@ -314,59 +338,21 @@ jobs:
             "$SKBUILD_BUILD_DIR" \
             --json cpp-coverage-python.json
 
-      - name: Upload C++ coverage tracefile as artifact
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: cpp_coverage_python
-          path: cpp-coverage-python.json
-          retention-days: 1
-
-  upload-coverage:
-    # in combination with the PR types selection, this top-level if statement
-    # skips running the workflow for Draft PRs
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
-
-    name: Upload coverage to Codecov
-    runs-on: ubuntu-26.04
-    needs:
-      - python-checks
-      - cpp-checks
-      - python-bindings-coverage
-
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Download coverage artifacts
-        uses: actions/download-artifact@v8.0.1
-        with:
-          merge-multiple: true
-          path: .
-
-      - name: Convert Python coverage data to XML
+      - name: Convert C++ tracefile to Cobertura XML for Codecov
         run: |
-          for f in coverage-*; do
-            COVERAGE_FILE="$f" pipx run coverage xml -o "${f}.xml"
-          done
+          pipx run gcovr \
+            --root . \
+            --merge-lines \
+            --add-tracefile cpp-coverage-python.json \
+            --cobertura cpp-coverage-python.xml
 
-      - name: Convert C++ tracefiles to Cobertura XML
-        run: |
-          # --merge-lines: collapse gcov's per-instantiation duplicate line
-          # records into one aggregated line each (see the SonarQube step for the
-          # full rationale) so the Codecov report reflects true line coverage.
-          for f in cpp-coverage-*.json; do
-            pipx run gcovr \
-              --root . \
-              --merge-lines \
-              --add-tracefile "$f" \
-              --cobertura "${f%.json}.xml"
-          done
-
-      - name: Upload coverage to Codecov
+      - name: Upload C++ coverage to Codecov
         uses: codecov/codecov-action@v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          files: cpp-coverage-python.xml
+          flags: cpp
+          disable_search: true
           fail_ci_if_error: true
 
   sonarqube-analysis:
@@ -376,42 +362,10 @@ jobs:
 
     name: SonarQube analysis
     runs-on: ubuntu-26.04
-    needs:
-      - python-checks
-      - cpp-checks
-      - python-bindings-coverage
-
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-
-      - name: Download Python coverage artifacts
-        uses: actions/download-artifact@v8.0.1
-        with:
-          merge-multiple: true
-          path: .
-
-      - name: Combine Python coverage data
-        run: |
-          pipx run coverage combine coverage-*
-          pipx run coverage xml -o coverage.xml
-
-      - name: Combine C++ coverage tracefiles into one SonarQube report
-        run: |
-          # --merge-lines collapses the multiple per-line coverage records that
-          # gcov emits for template instantiations (and across the native +
-          # python-bindings tracefiles) into a single lineToCover per source
-          # line, marked covered if ANY instantiation covers it. Without it the
-          # SonarQube report contains duplicate lineToCover entries whose
-          # covered= values conflict; SonarCloud keeps only the last, discarding
-          # most real coverage of the heavily-templated headers and sinking
-          # new_coverage far below the true value.
-          pipx run gcovr \
-            --root . \
-            --merge-lines \
-            --add-tracefile 'cpp-coverage-*.json' \
-            --sonarqube coverage_cpp.xml
 
       - name: Install dependencies
         run: |
@@ -562,52 +516,11 @@ jobs:
         run: |
           ctest --test-dir build --output-junit ../ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
 
-      - name: Upload Test Results as artifacts
-        uses: actions/upload-artifact@v7.0.1
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
         with:
-          name: test_results_cpp_${{ matrix.runner }}_${{ matrix.compiler }}
-          path: |
-            ctest-*.xml
-          retention-days: 1
-
-  publish-test-results:
-    name: "Publish Tests Results"
-    needs:
-      - python-checks
-      - cpp-checks
-      - python-bindings-coverage
-      - sonarqube-analysis
-      - cpp-checks-other
-      - upload-coverage
-    runs-on: ubuntu-26.04
-    permissions:
-      checks: write
-
-      # only needed unless run with comment_mode: off
-      pull-requests: write
-
-      # only needed for private repository
-      contents: read
-
-      # only needed for private repository
-      issues: read
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7.0.1
-        with:
-          # grab the history of the PR, so setuptools-scm can compute the correct version number
-          fetch-depth: 0
-
-      - name: Download Artifacts
-        uses: actions/download-artifact@v8.0.1
-        with:
-          merge-multiple: true
-          path: .
-
-      - name: Publish Test Results
-        uses: EnricoMi/publish-unit-test-result-action@v2.24.0
-        with:
-          files: |
-            pytest-*.xml
-            ctest-*.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
