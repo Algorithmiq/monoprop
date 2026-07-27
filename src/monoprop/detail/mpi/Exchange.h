@@ -23,23 +23,21 @@
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/RecvLayout.h"
 
-// Variable-size all-to-all facade over caller-owned FLAT buffers, so consumers (replay/pare exchange)
-// hold no #ifdef monoprop_ENABLE_MPI. States the "every rank must participate — never skip on zero
-// counts" deadlock discipline; non-MPI builds get self-copy stubs.
+// Variable-size all-to-all over caller-owned FLAT buffers, so consumers (replay/pare exchange) hold
+// no #ifdef monoprop_ENABLE_MPI; non-MPI builds get self-copy stubs.
 
 namespace monoprop::mpi {
 
-/// Resolve the recv side of a send-count vector, reusing `cache` when comm size is unchanged: a
-/// replayed graph's send pattern is fixed, so a hit removes one blocking count round-trip per layer
-/// per evaluation. The resolved layout is stored in `cache` and returned by reference.
+// Resolve the recv side of a send-count vector, reusing `cache` when comm size is unchanged: a
+// replayed graph's send pattern is fixed, so a hit removes one blocking count round-trip per layer
+// per evaluation. The resolved layout is stored in `cache` and returned by reference.
 inline auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache)
     -> const RecvLayout & {
     const auto n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);
     // alltoall_counts moves comm_size ints each way regardless of `n`, so a send vector that is not
-    // exactly one entry per rank reads and writes out of bounds. The layouts live on a
-    // shared_ptr<const LayerCore> that outlives propagator copies and pare rebuilds, so a graph
-    // replayed on a differently-sized comm would otherwise reach the collective with the old width.
+    // exactly one entry per rank reads and writes out of bounds — and layouts outlive propagator copies
+    // and pare rebuilds, so a graph replayed on a differently-sized comm would arrive with the old width.
     if (n != comm_size) {
         throw CollectiveArgumentError(
             std::format("Exchange layout has {} send counts but the communicator has {} ranks — a graph built for one "
@@ -55,8 +53,7 @@ inline auto resolve_recv(std::span<const int> send_counts, const Comm &comm, Rec
     out.counts.resize(static_cast<size_t>(n));
     alltoall_counts(send_counts.data(), out.counts.data(), n, comm);
     out.displs.resize(static_cast<size_t>(n));
-    // Accumulate wide: the per-rank counts are each int-sized, but their running total need not be, and
-    // out.total sizes the recv buffer. Signed int overflow here would be UB, then a garbage resize.
+    // Accumulate wide, narrow through the checked helper (see MPICompat.h).
     long long total = 0;
     for (int i = 0; i < n; ++i) {
         out.displs[static_cast<size_t>(i)] = checked_mpi_count(total);
@@ -67,14 +64,11 @@ inline auto resolve_recv(std::span<const int> send_counts, const Comm &comm, Rec
     return out;
 }
 
-/// Idempotent completion handle for a posted payload transfer. wait() finishes a non-blocking
-/// transfer; it is a no-op for the blocking path and for non-MPI builds. Move-only so a request is
-/// waited on exactly once.
-///
-/// Owns its request: the destructor completes anything still in flight. A posted MPI_Ialltoallv keeps
-/// writing into the caller's recv buffer until it completes, so simply dropping the handle -- which is
-/// what an exception between the post and the wait does -- would leave MPI writing into a
-/// thread_local buffer that the next exchange reallocates.
+// Idempotent completion handle for a posted payload transfer; move-only, so a request is waited on
+// exactly once. wait() is a no-op on the blocking path and in non-MPI builds. Owns its request: the
+// destructor completes anything still in flight, because a dropped in-flight MPI_Ialltoallv -- what an
+// exception between post and wait does -- keeps writing into a thread_local buffer the next exchange
+// reallocates.
 class [[nodiscard("call wait() on the Ticket to complete the posted transfer")]] Ticket {
 public:
     Ticket() = default;
@@ -104,7 +98,6 @@ public:
     }
 
 #ifdef monoprop_ENABLE_MPI
-    // Constructed by post_flat_alltoallv; not intended for direct use.
     explicit Ticket(MPI_Request request) : request_(request) {}
 
 private:
@@ -112,9 +105,9 @@ private:
 #endif
 };
 
-/// Post a variable-size all-to-all over caller-owned FLAT buffers. NEVER skipped on zero total: all
-/// ranks must participate or the collective deadlocks. Non-blocking (MPI_Ialltoallv) in an MPI build
-/// (the Ticket completes it); non-MPI build does a per-rank self-copy (recv layout == send layout).
+// Post a variable-size all-to-all over caller-owned FLAT buffers. NEVER skipped on zero total: all
+// ranks must participate or the collective deadlocks. Non-blocking (MPI_Ialltoallv) in an MPI build
+// (the Ticket completes it); non-MPI build does a per-rank self-copy (recv layout == send layout).
 template <class T>
 inline auto post_flat_alltoallv(const T *send,
                                 const int *send_counts,

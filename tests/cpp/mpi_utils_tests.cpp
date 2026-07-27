@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Unit coverage of the pure MPI helper primitives in MPIUtils.h: the deterministic term->owner
-// mapping (find_rank) and the Majorana word (de)serialization used to pack terms onto the wire.
-// These need no MPI runtime — they are exercised here directly rather than only through the
-// distributed suites.
+// The pure MPIUtils.h primitives, exercised without an MPI runtime: the deterministic term->owner
+// mapping (find_rank) and the Majorana word (de)serialization that packs terms onto the wire.
 
 #include <boost/test/unit_test.hpp>
 
@@ -54,8 +52,8 @@ BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_zero_ranks) {
     BOOST_TEST(find_rank<N>(mono, 0) == 0U);
 }
 
-// append_monomial_words / read_monomial_from_words round-trip several packed records at their
-// offsets, single-word (N=32) and multi-word (N=96) alike.
+// append_monomial_words / read_monomial_from_words round-trip packed records at their offsets,
+// multi-word (N=96) and single-word (N=32) alike.
 BOOST_AUTO_TEST_CASE(mpi_utils_monomial_words_roundtrip) {
     constexpr size_t N = 96; // 2N = 192 bits -> 3 words
     const auto a = indices_to_bitset<N>(VecZ{0, 1, 100, 191});
@@ -72,7 +70,6 @@ BOOST_AUTO_TEST_CASE(mpi_utils_monomial_words_roundtrip) {
     BOOST_TEST((mpi_detail::read_monomial_from_words<N>(buf, mpi_detail::kWords<N>) == b));
     BOOST_TEST((mpi_detail::read_monomial_from_words<N>(buf, 2 * mpi_detail::kWords<N>) == c));
 
-    // Single-word path.
     constexpr size_t M = 32;
     const auto d = indices_to_bitset<M>(VecZ{2, 40, 63});
     VecZ sbuf;

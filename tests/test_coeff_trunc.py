@@ -164,8 +164,7 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
     )
     mp.build_graph(circuit)
     assert mp.graph_size()[1] == 1
-    # Cosine-ONLY indices: both terms are rotation endpoints here, so zero is the real count
-    # (graph_size()[0] used to be structurally zero for every graph -- see MonomialPropagator).
+    # Cosine-ONLY indices: both terms are rotation endpoints here, so zero is the real count.
     assert mp.graph_size()[0] == 0
     assert mp.size() == 2
 
@@ -223,10 +222,8 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
 def test_graph_size_counts_real_cosine_indices(serial_comm):
     """``graph_size()[0]`` is the real cosine-only count, not a structural zero.
 
-    The engine read the count off the per-layer *stored* cosine set, which only a pared layer has,
-    so it was zero for every normally-built graph. A cutoff tight enough to truncate the weight-6
-    sine partners of these weight-4 terms leaves their sources cos-scaled with no endpoint, which
-    must show up as a positive count -- and relaxing the cutoff must drive it back to zero.
+    Cutoff 4 truncates the weight-6 sine partners of these weight-4 terms, leaving their sources
+    cos-scaled with no rotation endpoint; the exact cutoff truncates nothing.
     """
     n_modes = 6
     operator = MajoranaOperator({(0, 1, 2, 3): 1.0, (4, 5, 6, 7): 1.0}, n_modes)

@@ -27,7 +27,6 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
     const size_t large_count = static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 9;
     const size_t large_index = static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 17;
 
-    // Build CrossRankPartnerData for rank 1.
     // B layout: in-block first (200..211), then out-block (100..107).
     std::vector<CrossRankPartnerData> cross_rank(2);
     auto &p = cross_rank[1];
@@ -48,8 +47,8 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
 
     auto storage = detail::build_layer_storage_unified(std::move(cross_rank), /*my_rank=*/0);
 
-    // A PrunedLayer stores its filtered cosine word list explicitly. Build one whose total_count
-    // exceeds u32 and check it round-trips through the layer's num_cos_inds().
+    // An engaged pruned_cos stores its filtered cosine list explicitly, so num_cos_inds() reports its
+    // total_count: build one above u32 and read it back.
     CosMask pruned_cos;
     const size_t block_base = (large_index >> 6) << 6;
     pruned_cos.blocks.emplace_back(block_base, uint64_t{1} << (large_index & 63u));
@@ -58,7 +57,6 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
     Layer layer{storage, std::move(pruned_cos)};
     const auto lt = layer.traversal();
 
-    // The >u32 cosine count round-trips through the stored pruned cos (CosMask::total_count).
     BOOST_CHECK_EQUAL(lt.num_cos_inds(), large_count);
 
     // Cross-rank is read verbatim from the core (never masked): B[0] = in-block[0] = 200.
@@ -78,10 +76,8 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
     BOOST_CHECK_EQUAL(d_phi, -1);
 }
 
-// The per-rank cross-rank counts index into a single layer's term set (bounded by one shard's store).
-// Under the wide build they must be TermIndex-wide; if they stay uint32_t, a single shard/layer silently
-// truncates above 2^32 entries and monoprop_WIDE_TERM_INDEX still caps a single shard at ~2^32 terms. (In
-// the default build TermIndex == uint32_t, so this holds trivially.)
+// The per-rank cross-rank counts index into one layer's term set, so under the wide build they must
+// be TermIndex-wide; uint32_t would silently cap a single shard/layer at ~2^32 terms.
 BOOST_AUTO_TEST_CASE(cross_rank_partner_range_counts_track_term_index_width) {
     CrossRankPartnerRange r{};
     BOOST_CHECK_EQUAL(sizeof(r.sin_send_count), sizeof(TermIndex));
@@ -91,9 +87,7 @@ BOOST_AUTO_TEST_CASE(cross_rank_partner_range_counts_track_term_index_width) {
 
 #if defined(monoprop_WIDE_TERM_INDEX)
 // Under the wide build (TermIndex = u64), a cross-rank B (partner term) index above 2^32 must
-// round-trip losslessly through the packed cross-rank storage. Before the fix, checked_packed_index
-// hard-caps every stored index at UINT32_MAX and THROWS here, so monoprop_WIDE_TERM_INDEX never actually
-// reached the >2^32 term regime it advertises.
+// round-trip losslessly through the packed cross-rank storage rather than hit a UINT32_MAX cap.
 BOOST_AUTO_TEST_CASE(cross_rank_sin_send_index_round_trips_above_u32) {
     const size_t big_in = static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1000; // 2^32+1000
     const size_t big_out = static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 5;   // 2^32+5
@@ -109,18 +103,15 @@ BOOST_AUTO_TEST_CASE(cross_rank_sin_send_index_round_trips_above_u32) {
 
     const auto storage = detail::build_packed_cross_rank_storage(std::move(cross_rank));
 
-    // B[0] = in-block[0] = big_in; B[1] = out-block[0] = big_out.
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 1, 0), big_in);
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 1, 1), big_out);
-    // D index 0 is derived from B: D[0] = out-block[0] = big_out (Q = sin_recv_count - in_count = 1).
+    // D[0] is derived from B: Q = sin_recv_count - in_count = 1, so D[0] = out-block[0] = big_out.
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_recv_index(storage, 1, 0), big_out);
 }
 #endif
 
-// The cross-rank exchange uses MPI int counts/displacements, so a SINGLE per-rank exchange is capped
-// at INT_MAX elements. checked_mpi_int enforces this with a CLEAN throw (fail-safe) — never a silent
-// wrap. Documents the remaining distributed-scale limit: runs above ~2^31 elements per rank-pair need
-// chunked / large-count MPI; until then the limit is detected and reported, not silently corrupted.
+// The cross-rank exchange uses MPI int counts/displacements, so a single per-rank exchange is capped
+// at INT_MAX elements; checked_mpi_int must throw cleanly at that limit, never wrap silently.
 BOOST_AUTO_TEST_CASE(checked_mpi_int_throws_cleanly_above_int_max) {
     const size_t at_limit = static_cast<size_t>(std::numeric_limits<int>::max());
     BOOST_CHECK_EQUAL(detail::checked_mpi_int(at_limit, "exchange count"), std::numeric_limits<int>::max());
@@ -155,10 +146,7 @@ BOOST_AUTO_TEST_CASE(cosine_word_list_scale_and_accumulate) {
 }
 
 BOOST_AUTO_TEST_CASE(packed_cross_rank_storage_bit_packs_binary_phases) {
-    // Build CrossRankPartnerData for rank 1 with 128 D^- (out) and 128 D^+ (in) entries.
-    // D^- entries: d_minus[idx] = {idx+5, phase}  where phase = idx%2==0 ? 1 : -1
-    // D^+ entries: d_plus[idx]  = {idx+1005, -phase}
-    // B layout: in-block first, out-block second.
+    // 128 D^- (out) and 128 D^+ (in) entries for rank 1.
     std::vector<CrossRankPartnerData> binary_cross_rank(2);
     std::vector<CrossRankPartnerData> wide_phase_cross_rank(2);
 
@@ -178,7 +166,7 @@ BOOST_AUTO_TEST_CASE(packed_cross_rank_storage_bit_packs_binary_phases) {
         const int phase = idx % 2 == 0 ? 1 : -1;
         binary_cross_rank[1].sin_recv_entries.push_back({idx + 1005, -phase});
     }
-    binary_cross_rank[1].in_count = 128; // in-block size P (D indices derived from B via in_count)
+    binary_cross_rank[1].in_count = 128;
     wide_phase_cross_rank[1] = binary_cross_rank[1];
     // Make wide: set the first D- entry to a non-binary stored phase (-2).
     wide_phase_cross_rank[1].sin_recv_entries[0].second = -2;
@@ -186,9 +174,9 @@ BOOST_AUTO_TEST_CASE(packed_cross_rank_storage_bit_packs_binary_phases) {
     const auto binary_storage = detail::build_packed_cross_rank_storage(std::move(binary_cross_rank));
     const auto wide_phase_storage = detail::build_packed_cross_rank_storage(std::move(wide_phase_cross_rank));
 
-    // All original phases are ±1 so the binary storage uses 1-bit packing.
+    // All input phases are ±1 so the binary storage uses 1-bit packing.
     BOOST_CHECK(binary_storage.sin_recv_phases.uses_binary_phases);
-    // Non-binary phase (2) forces full int8 storage.
+    // The single non-binary phase forces full int8 storage.
     BOOST_CHECK(!wide_phase_storage.sin_recv_phases.uses_binary_phases);
 
     // D^-[1] = {idx+5=6, phase=-1}; stored as -(-1) = 1.

@@ -64,7 +64,6 @@ auto prepare_evolved_operator(EvalScratch &scratch,
                               const detail::LayerCosScale &cos_scale) -> void {
     fill_mapped_params(scratch.mapped_params, params, parameter_mapping, gen_coeffs, 1.0, true);
     scratch.op = op;
-    // cos_scale is always non-empty (cosine set is recomputed/transient), so the cos pass routes through it.
     scratch.op = evolve_operator(std::move(scratch.op), graph, scratch.mapped_params, cos_scale, comm);
 }
 
@@ -128,7 +127,6 @@ auto ev_and_grad_impl(double e_core,
     for (size_t i = 0; i < parameter_mapping.size(); ++i) {
         const auto idx = parameter_mapping.size() - 1 - i;
         const auto param_ind = parameter_mapping[i];
-        // cos_acc is always non-empty (checked above): the reverse cosine accumulation routes through it.
         scratch.gradient[param_ind] +=
             state_operator_derivative_local(state_, op_, graph, idx, gen_coeffs[i], params[param_ind], cos_acc, comm);
     }

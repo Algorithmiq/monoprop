@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Copyright (c) 2025 Algorithmiq. All rights reserved.
-
-monoprop: A great package.
-"""
+"""monoprop: classical Majorana and Pauli monomial propagation."""
 
 from __future__ import annotations
 

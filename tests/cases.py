@@ -32,12 +32,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class DenseMajoranaArrays:
-    """Flat per-monomial arrays for a Majorana gate sequence (test transport).
-
-    Mirrors the on-disk msgpack-fixture layout; :meth:`to_circuit` groups it into a
-    :class:`~monoprop.circuit.Circuit` via
-    :meth:`~monoprop.circuit.Circuit.from_dense_arrays`.
-    """
+    """Flat per-monomial arrays for a Majorana gate sequence, mirroring the msgpack layout."""
 
     initial_state: list[int] | ndarray
     majoranas: list[tuple[int, ...]] | ndarray
@@ -46,7 +41,6 @@ class DenseMajoranaArrays:
     param_inds: list[int] | ndarray
 
     def to_circuit(self) -> Circuit:
-        """Group the dense arrays into a :class:`~monoprop.circuit.Circuit`."""
         return Circuit.from_dense_arrays(
             majoranas=self.majoranas,
             gen_coeffs=self.gen_coeffs,
@@ -57,8 +51,6 @@ class DenseMajoranaArrays:
 
 
 class FermionicProblem:
-    """Data class for Fermionic problems."""
-
     def __init__(
         self,
         monomial_circuit: DenseMajoranaArrays,
@@ -75,17 +67,7 @@ class FermionicProblem:
 
 
 def load_problem(path: Path) -> FermionicProblem:
-    """Load a fermionic test case from a minimal-schema msgpack file.
-
-    See ``tests/data/README.md`` for the on-disk schema.
-
-    Args:
-        path: Path to the ``.msgpack`` fixture.
-
-    Returns:
-        A :class:`FermionicProblem` built from the dense msgpack arrays and
-        :class:`MajoranaOperator`.
-    """
+    """Load a fermionic test case from a ``.msgpack`` fixture (schema: ``tests/data/README.md``)."""
     with path.open("rb") as fh:
         data = unpackb(fh.read())
 
@@ -118,40 +100,22 @@ def _create_case(pth: Path, fname: str) -> FermionicProblem:
 
 
 class CasesFermionicProblemOrbitalRotations:
-    """
-    A class to represent a fermionic problem case for testing purposes.
-    """
-
     @case(id="S0_8e8o", tags=["molecule", "only_rotate_len_k"])
     def case_s0_8e8o(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        """
-        A test case for the S0_8e8o fermionic problem.
-        """
         return _create_case(lazy_shared_datadir, "S0_8e8o_majoranic_c8")
 
 
 class CasesFermionicProblem:
-    """
-    A class to represent a fermionic problem case for testing purposes.
-    """
-
     @case(id="LiH_fermionic_spin", tags=["molecule", "has_commutator_data"])
     def case_lih_fermionic_spin(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        """
-        A test case for the LiH fermionic problem.
-        """
         return _create_case(lazy_shared_datadir, "lih_fermionic_spin_exact")
 
     @case(id="rx_rz_ry_rz")
     def case_rx_rz_ry_rz(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        """
-        A simple test case for a 1q circuit containing a RX and RZ rotations.
-        """
+        """A 1q circuit of RX and RZ rotations."""
         return _create_case(lazy_shared_datadir, "rx_rz_ry_rz_exact")
 
     @case(id="random_circuit")
     def case_random_circuit(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        """
-        A simple test case for a 1q circuit containing a random rotations.
-        """
+        """A 1q circuit of random rotations."""
         return _create_case(lazy_shared_datadir, "random_exact")

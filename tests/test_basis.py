@@ -15,8 +15,7 @@
 """Coverage for the cutoff basis change.
 
 The front-ends construct with ``basis_change=None``, so the only way in is the engine's
-``basis_change`` setter. It writes straight through to the cutoff regeneration, which indexes
-``[0, 2*num_modes)`` unconditionally -- these tests pin both the physics and the guards.
+``basis_change`` setter, which writes straight through to the cutoff regeneration.
 """
 
 from __future__ import annotations
@@ -45,8 +44,8 @@ def _propagator(comm=None) -> MajoranaPropagator:
 def test_basis_change(serial_comm) -> None:
     """A Jordan-Wigner cutoff basis reproduces the exact single-rotation result.
 
-    serial_comm because evolved_operator() is rank-LOCAL (see tests/conftest.py): on COMM_WORLD
-    the single term lives on whichever rank owns its hash partition.
+    serial_comm because evolved_operator() is rank-local: on COMM_WORLD the single term lives on
+    whichever rank owns its hash partition.
     """
     propagator = _propagator(serial_comm)
     propagator._simulator.basis_change = jordan_wigner_basis_change(N_MODES)
@@ -71,22 +70,15 @@ def test_basis_change(serial_comm) -> None:
     ],
 )
 def test_malformed_basis_change_rejected(basis_change, match) -> None:
-    """A basis change that would be read out of bounds is rejected, not silently indexed.
-
-    The Python setter that used to validate this was removed, leaving the raw engine property
-    exposed: a short list made the cutoff regeneration index past the end of the vector, and a
-    row naming a slot outside the system underflowed into an out-of-bounds bitset write.
-    """
+    """Validation lives in the engine setter, so a short table or one naming a slot outside the
+    system must raise rather than index out of bounds."""
     with pytest.raises((ValueError, RuntimeError), match=match):
         _propagator()._simulator.basis_change = basis_change
 
 
 def test_pauli_propagator_rejects_basis_change_and_length_cutoff() -> None:
-    """The Pauli algebra's structural constraints hold after construction too.
-
-    Both setters wrote straight through to the cutoff regeneration, so a Pauli propagator could
-    be given a configuration its constructor rejects.
-    """
+    """A Pauli propagator must reject post-construction the configurations its constructor
+    rejects."""
     propagator = PauliPropagator(PauliOperator({"ZZ": 1.0}, num_qubits=2), [], cutoff=2)
 
     with pytest.raises(ValueError, match="does not accept a basis_change"):

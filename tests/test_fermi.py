@@ -303,16 +303,15 @@ class TestExp:
     def test_creation_from_fermi_operator(self):
         gate = ExpGate(generator=_number_op())
 
-        # A fermionic generator is converted to its (Hermitian) Majorana form in ExpGate, so the
-        # gate is a native "majorana" gate carrying the raw-product coefficients (imaginary for
-        # the weight-2 term); _gate_layers antihermitian-normalizes it like any Majorana gate.
+        # ExpGate converts a fermionic generator to its Majorana form, so the gate is native
+        # "majorana" carrying raw-product coefficients (imaginary on the weight-2 term); it is
+        # _gate_layers that antihermitian-normalizes them later.
         assert gate.family == "majorana"
         assert gate.generator.num_modes == 1
         assert gate.generator.terms == {(): 0.5, (0, 1): 0.5j}
 
     def test_majorana_operator_is_structural(self):
-        # A MajoranaOperator generator is taken as a *native* (structural) Majorana gate,
-        # never a fermionic one: its coefficients are used directly, unnormalized.
+        # A MajoranaOperator generator is structural: its coefficients are used unnormalized.
         gate = ExpGate(generator=MajoranaOperator({(0, 1): -1.0}, num_modes=1))
 
         assert gate.family == "majorana"
@@ -341,9 +340,7 @@ class TestCircuit:
 
         np.testing.assert_array_equal(circuit.initial_state, np.array([0, 1]))
         np.testing.assert_array_equal(list(circuit.parameters), np.array([0.3, -0.7]))
-        # One gate per fermi gate, identity mapping.
         assert list(circuit.resolved_mapping) == list(range(len(circuit)))
-        # A fermionic generator is converted to a native Majorana gate in ExpGate.
         assert all(g.family == "majorana" for g in circuit.gates)
 
         majoranas, gen_coeffs, per_monomial_mapping, gate_indices = expand_monomials(
@@ -353,22 +350,20 @@ class TestCircuit:
         n_terms = len(gate_0.generator.terms)
         assert gate_indices == [0] * n_terms + [1] * n_terms
         assert per_monomial_mapping == [0] * n_terms + [1] * n_terms
-        # The expanded monomials are exactly the normalized gate's Majorana terms, repeated.
         expected = [tuple(k) for k in circuit.gates[0].generator.terms]
         assert majoranas == expected + expected
         # Antihermitian normalization yielded real structural coefficients (no raise).
         assert all(isinstance(c, float) for c in gen_coeffs)
 
     def test_drops_identity_generators_and_aligned_parameters(self):
-        """An identity (empty) generator and its parameter are dropped."""
         identity = FermiOperator([], [], num_modes=1)
         circuit = Circuit(
             gates=[ExpGate(_number_op()), ExpGate(identity), ExpGate(_number_op())],
             parameters=[0.1, 0.2, 0.3],
             initial_state=[0],
         )
-        assert len(circuit) == 2  # the identity gate is dropped
-        assert circuit.parameters == (0.1, 0.3)  # its aligned parameter goes with it
+        assert len(circuit) == 2
+        assert circuit.parameters == (0.1, 0.3)
 
     def test_validate_inputs_duplicate_initial_state_raises(self):
         with pytest.raises(ValueError, match="Duplicate indices in initial state"):

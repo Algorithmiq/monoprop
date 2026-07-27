@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 def _index(
     quad: tuple[int, int, int, int], shift: tuple[int, int, int, int], num_orbs: int
 ) -> tuple[tuple[int, str], ...]:
+    """Turn an orbital quadruple into the ``c+ c+ c- c-`` term, shifting beta spins by ``num_orbs``."""
     exc = ("+", "+", "-", "-")
     new_quad = tuple(
         q + (num_orbs if s else 0) for q, s in zip(quad, shift, strict=True)
@@ -43,6 +44,7 @@ def _index(
 def _iter_integrals_to_fermion(
     h0: float, h1: ndarray, h2: ndarray
 ) -> Iterator[tuple[tuple[tuple[int, str], ...], float]]:
+    """Yield the ``(fermionic term, coefficient)`` pairs of a zero-, one- and two-body integral set."""
     num_orbs = h1.shape[1]
     # zero-body
     yield (), h0
@@ -89,15 +91,7 @@ def _iter_integrals_to_fermion(
 def integrals_to_fermion(
     hamiltonian: tuple[float, ndarray, ndarray],
 ) -> FermiOperator:
-    """Converts a integral Hamiltonian to fermion format.
-
-    Args:
-        hamiltonian: Hamiltonian to convert.
-
-    Returns:
-        Hamiltonian in FermiOperator format.
-
-    """
+    """Convert an ``(h0, h1, h2)`` integral Hamiltonian to a :class:`~monoprop.fermi.FermiOperator`."""
     terms = defaultdict(complex)
     for ind, coeff in _iter_integrals_to_fermion(*hamiltonian):
         if np.isclose(coeff, 0, atol=1e-12):

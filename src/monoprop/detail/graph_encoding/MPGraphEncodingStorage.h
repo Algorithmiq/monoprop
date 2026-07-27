@@ -28,9 +28,6 @@
 
 namespace monoprop::detail {
 
-// checked_mpi_int and build_layer_exchange_layout live in MPGraphEncodingTypes.h, next to the
-// LayerExchangeLayout they guard and build.
-
 // Bounds-check a term-space index. Capped by the TermIndex width (~2^32, or ~2^64 under
 // -Dmonoprop_WIDE_TERM_INDEX), so it must track TermIndex, NOT a fixed 32-bit limit.
 inline auto checked_term_index(size_t value, const char *what) -> TermIndex {
@@ -100,8 +97,7 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
     const size_t num_ranks = data.size();
     storage.ranges.resize(num_ranks);
 
-    // Pass 1 (serial, cheap): assign per-rank offsets/counts so the fill pass writes distinct slots in
-    // parallel, and accumulate global totals.
+    // Pass 1: per-rank offsets/counts + totals.
     size_t total_b = 0;
     size_t total_d = 0;
     for (size_t rank = 0; rank < num_ranks; ++rank) {
@@ -109,18 +105,16 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
         auto &range = storage.ranges[rank];
         range.sin_send_offset = total_b; // size_t; cumulative offset must not narrow (may exceed 2^32)
         range.sin_send_count = static_cast<TermIndex>(partner.sin_send_indices.size());
-        range.sin_recv_offset = total_d; // size_t; cumulative offset must not narrow (may exceed 2^32)
+        range.sin_recv_offset = total_d;
         range.sin_recv_count = static_cast<TermIndex>(partner.sin_recv_entries.size());
         range.in_count = static_cast<TermIndex>(partner.in_count);
         total_b += partner.sin_send_indices.size();
         total_d += partner.sin_recv_entries.size();
     }
 
-    // Pass 2: reduce the binary-phase flag over every element (AND is order-independent ⇒
-    // thread-count-independent). B indices are width-checked at the store site, not here.
+    // Pass 2: are all D phases ±1?
     bool uses_binary_phases = true;
     for (const auto &partner : data) {
-        // Only the phase needs scanning — the D index list is derived from B at read time.
         bool non_binary_phase = false;
         for (const auto &entry : partner.sin_recv_entries) {
             non_binary_phase = non_binary_phase || !is_binary_phase(entry.second);
@@ -129,12 +123,9 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
     }
 
     storage.sin_send_indices.resize(total_b);
-
-    // NOTE: D indices are not stored — derived from B on read (see cross_rank_sin_recv_index).
     storage.sin_recv_phases = make_packed_phase_storage(total_d, uses_binary_phases);
 
-    // Pass 3: fill the flat arrays. Within a rank slots are distinct (race-free). Binary phases set only
-    // the rare negative-phase bit in the zero-initialised packed word; non-binary phases get one byte per slot.
+    // Pass 3: fill the flat B-index and packed-phase arrays.
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         const auto &partner = data[rank];
         const size_t b_off = storage.ranges[rank].sin_send_offset;
@@ -144,13 +135,12 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
             storage.sin_send_indices[b_off + k] = checked_term_index(partner.sin_send_indices[k], "Cross-rank B index");
         }
 
-        // phi is already signed; only the phase is stored, D index derived from B.
         for (size_t k = 0; k < partner.sin_recv_entries.size(); ++k) {
             const auto &[i, phi] = partner.sin_recv_entries[k];
             (void)i;
             const size_t slot = d_off + k;
             if (uses_binary_phases) {
-                // Every phase is binary (Pass 2); only -1 sets a bit. Serial fill (one writer) ⇒ plain OR, no atomics.
+                // Only φ<0 sets a bit; the words start zeroed.
                 if (phi < 0) {
                     storage.sin_recv_phases.phase_words[packed_phase_word_index(slot)] |= packed_phase_bit_mask(slot);
                 }
@@ -187,7 +177,6 @@ inline auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> s
     size_t bytes =
         storage.ranges.capacity() * sizeof(CrossRankPartnerRange) + packed_phase_storage_bytes(storage.sin_recv_phases);
     bytes += storage.sin_send_indices.capacity() * sizeof(TermIndex);
-    // D indices are derived from B (not stored), so they contribute nothing.
     return bytes;
 }
 
@@ -195,35 +184,29 @@ inline auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layou
     return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
 }
 
-// build_layer_storage_unified: local cycles fold into the self-rank slot (my_rank); the exchange layout
-// zeroes counts[my_rank] so MPI_Alltoallv skips it (replay does a local copy). Paper Algorithm 3.
+// Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so
+// MPI_Alltoallv skips it (replay does a local copy).
 inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore> {
     auto storage = std::make_shared<LayerCore>();
 
-    // Build exchange layout excluding self-rank (counts[my_rank] = 0).
     {
         std::vector<size_t> send_counts;
         send_counts.reserve(all_partners.size());
         for (size_t r = 0; r < all_partners.size(); ++r) {
-            // Self-rank slot: zero MPI count (replay handles it locally). Full-width count so checked_mpi_int catches
-            // overflow.
             send_counts.push_back((r == my_rank) ? size_t{0} : all_partners[r].sin_send_indices.size());
         }
         storage->evolution_exchange_layout = build_layer_exchange_layout(send_counts, 1);
 
         // The derivative layout (2x) is ALLOCATED lazily on first gradient read, but validated here: an
         // overflow must throw during build_graph, not from inside the gradient collective window, where
-        // peers are already committed and blocked in mpi::resolve_recv's count round -> distributed hang
-        // instead of an error. Discarding the result keeps energy-only runs allocation-free at rest.
+        // peers are already blocked in mpi::resolve_recv's count round -> a distributed hang, not an error.
         static_cast<void>(build_derivative_exchange_layout(storage->evolution_exchange_layout));
     }
 
-    // Local cycles are folded into the self-rank cross_rank slot (no PackedLocalCycleStorage).
     storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
 
-    // The exchange layouts are indexed by the same rank space the packing loops iterate
-    // (cross_rank_rank_count()); assert it here, where both are built, rather than two hops away.
+    // Both are indexed by the same rank space; check it here, where both are built.
     if (storage->evolution_exchange_layout.counts.size() != storage->cross_rank.rank_count()) {
         throw std::logic_error(std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
                                            storage->evolution_exchange_layout.counts.size(),

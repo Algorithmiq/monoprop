@@ -21,12 +21,10 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 
-// A1 query+value fusion codec: the fused R>1 exchange rides the source coefficient (v_src) on each query
-// record as a trailing bit-cast word so ONE alltoallv carries both streams. These tests pin the codec
-// contract the fusion's bit-identity rests on: build_fused_query_value interleaves the plain query
-// records with the parallel value stream, and query_read (at the fused stride) + query_value recover the
-// majorana, phase, AND value byte-for-byte — including the FP corner cases (±0, denormal, inf, NaN, the
-// sign bit) that a lossy value channel would silently mangle.
+// Query+value fusion codec: the fused R>1 exchange rides the source coefficient (v_src) on each query
+// record as a trailing bit-cast word so ONE alltoallv carries both streams. These pin that
+// build_fused_query_value, query_read at the fused stride and query_value round-trip the majorana,
+// phase and value byte-for-byte, including the FP corner cases a lossy value channel would mangle.
 
 namespace {
 
@@ -40,10 +38,9 @@ using monoprop::detail::query_value;
 
 constexpr size_t kModes = 8; // 2*kModes = 16 majorana bits, one 64-bit word
 
-// A reproducible spread of majorana bit patterns for `n` records.
+// A deterministic, distinct majorana bit pattern per record index, spread across the 16-bit range.
 auto make_mono(size_t r) -> Monomial<kModes> {
     Monomial<kModes> m;
-    // deterministic, distinct per r; touch a few bits across the 16-bit range
     for (size_t b = 0; b < 2 * kModes; ++b) {
         if (((r * 2654435761u + b * 40503u) & 3u) == 0u) {
             m.set(b);

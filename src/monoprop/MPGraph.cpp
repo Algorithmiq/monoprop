@@ -29,8 +29,7 @@ namespace monoprop {
 
 namespace {
 
-// Consumed front layers are tracked by front_offset rather than erased eagerly; physically drop them
-// only once the dead prefix is both large and at least half the vector, to bound the amortized cost.
+// Erase the dead front prefix only once it is both large and >= half the vector, to bound amortized cost.
 auto maybe_compact_layers(std::vector<Layer> &layers, size_t &front_offset) -> void {
     if (front_offset == 0) {
         return;
@@ -114,8 +113,7 @@ auto MPGraph::storage_memory_usage() const -> GraphMemoryBreakdown {
         if (storage != nullptr && seen_storage.insert(storage.get()).second) {
             breakdown += layer_storage_memory_usage(*storage);
         }
-        // Pruned cos is stored per-layer (on PrunedLayer), not on the shared core, so accumulate it
-        // per active layer without the shared-core dedup. FoldLayer stores no cos.
+        // Pruned cos is owned per-layer, not by the shared core, so it accumulates without the dedup.
         if (const CosMask *cos = it->pruned_cos(); cos != nullptr) {
             breakdown.cos_data_bytes += cos->blocks.capacity() * sizeof(std::pair<size_t, uint64_t>);
         }

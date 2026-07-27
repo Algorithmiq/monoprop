@@ -26,7 +26,6 @@ namespace monoprop::mpi_detail {
 
 static_assert(sizeof(size_t) == sizeof(uint64_t), "MPI serialization assumes 64-bit size_t");
 
-/// Number of size_t words per Monomial<NumModes>.
 template <size_t NumModes>
 inline constexpr size_t kWords = Monomial<NumModes>::num_words();
 
@@ -48,8 +47,8 @@ inline auto read_monomial_from_words(const VecZ &buffer, size_t start) -> Monomi
 
 namespace monoprop {
 
-// Deterministic owner rank for a term: hash(mono) % n_ranks. Stateless and identical on every rank,
-// so all ranks agree on which rank owns any given term without communication.
+// Deterministic owner rank for a term: hash(mono) % n_ranks. Stateless and identical on every rank, so
+// all ranks agree on the owner of any term without communication.
 template <size_t NumModes>
 auto find_rank(const Monomial<NumModes> &mono, const size_t n_ranks) -> size_t {
     if (n_ranks == 0) {

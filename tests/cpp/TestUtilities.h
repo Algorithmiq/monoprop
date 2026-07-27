@@ -62,15 +62,11 @@ auto boost_test_print_type(std::ostream& os, const std::pair<K, V>& aPair) -> st
 }
 } // namespace std
 
-// ---------------------------------------------------------------------------
-// Shared test utilities
-// ---------------------------------------------------------------------------
 namespace test_utils {
 
 namespace fs = std::filesystem;
 using namespace monoprop;
 
-/// Resolve the path to the test data directory.
 inline auto resolve_test_data_path(int max_depth = 8) -> fs::path {
     if (const char* env_p = std::getenv("monoprop_REF_DATA_PATH")) {
         return fs::path(env_p);
@@ -97,11 +93,6 @@ inline auto resolve_test_data_path(int max_depth = 8) -> fs::path {
     return fs::path("tests/data");
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers (used across multiple test files)
-// ---------------------------------------------------------------------------
-
-/// Load test data from a msgpack file (with Boost assertion on existence).
 template <size_t NumModes>
 inline auto load_case_data(const std::string& filename) -> CaseData {
     const fs::path data_path = resolve_test_data_path() / filename;
@@ -109,7 +100,6 @@ inline auto load_case_data(const std::string& filename) -> CaseData {
     return load_case(data_path);
 }
 
-/// Configuration for building a simulator instance.
 struct SimulatorConfig {
     std::optional<unsigned int> schrodinger_cutoff = std::nullopt;
     MPI_Comm comm = MPI_COMM_SELF;
@@ -119,7 +109,6 @@ struct SimulatorConfig {
     std::optional<std::vector<VecZ>> basis_change = std::nullopt;
 };
 
-/// Build a MonomialPropagator from CaseData and a config struct.
 template <size_t NumModes>
 inline auto build_simulator(const CaseData& data, const SimulatorConfig& cfg = {}) -> MonomialPropagator<NumModes> {
     const auto cutoff = static_cast<unsigned int>(2 * NumModes);
@@ -134,11 +123,6 @@ inline auto build_simulator(const CaseData& data, const SimulatorConfig& cfg = {
                                         cfg.basis_change);
 }
 
-// ---------------------------------------------------------------------------
-// Expectation value evaluation helpers
-// ---------------------------------------------------------------------------
-
-/// Evolve and evaluate expectation value via expectation_value_functional.
 template <size_t NumModes>
 inline auto evaluate_expval(MonomialPropagator<NumModes>& sim, const CaseData& data, bool pare) -> double {
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
@@ -147,26 +131,20 @@ inline auto evaluate_expval(MonomialPropagator<NumModes>& sim, const CaseData& d
     return expval_fn(data.parameters);
 }
 
-/// Check that an expectation value is close to the exact value (with Boost assertion).
 inline auto check_expval_close(const char* label, double expval, double exact, double atol = 1e-9) -> void {
     BOOST_TEST_MESSAGE(std::string("[") + label + "] expval=" + std::format("{:.9f}", expval)
                        + ", exact=" + std::format("{:.9f}", exact));
     BOOST_CHECK_SMALL(expval - exact, atol);
 }
 
-/// Mixed absolute/relative float comparison, shared by the equivalence suites
-/// (rtol covers the floating-point accumulation drift between n=1 and n>1 runs).
+// Mixed absolute/relative comparison; rtol absorbs the accumulation drift between n=1 and n>1 runs.
 inline constexpr double kFpRtol = 1e-7;
 inline auto near(double lhs, double rhs, double atol = 1e-9, double rtol = kFpRtol) -> bool {
     const double scale = std::max(std::abs(lhs), std::abs(rhs));
     return std::abs(lhs - rhs) <= (atol + rtol * scale);
 }
 
-// ---------------------------------------------------------------------------
-// Template test functions (used by build_graph_tests.cpp)
-// ---------------------------------------------------------------------------
-
-/// Test evolve + expectation_value_functional.
+// Driven by build_graph_tests.cpp.
 template <size_t n_modes>
 inline auto test_evolve_build_graph(const CaseData& data, const SimulatorConfig& cfg, bool pare, double exact_expval)
     -> void {
@@ -182,7 +160,6 @@ inline auto test_evolve_build_graph(const CaseData& data, const SimulatorConfig&
     }
 }
 
-/// Test evolve with pre-computed coefficients + expectation_value_functional.
 template <size_t n_modes>
 inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
                                                 const SimulatorConfig& cfg,
@@ -203,10 +180,6 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test data fixtures
-// ---------------------------------------------------------------------------
-
 struct ExampleDataFix {
     static constexpr size_t n_modes = 8;
     int cutoff = 2 * n_modes;
@@ -221,7 +194,6 @@ struct ExampleDataFix {
     }
 };
 
-/// LiH fixture (n_modes = 12), backed by lih_fermionic_spin_exact.msgpack.
 struct LihFixture {
     static constexpr size_t n_modes = 12;
     CaseData data;

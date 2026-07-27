@@ -42,8 +42,8 @@ constexpr size_t N = 32;
 using Store = OperatorIndex<N>;
 using MSet = Monomial<N>;
 
-// The store is non-copyable and non-movable: owners hold it by unique_ptr and share stable
-// pointers to it, and clone() is the only deep copy. Lock this design invariant at compile time.
+// Owners hold the store by unique_ptr and share stable pointers into it, so it must stay
+// non-copyable and non-movable; clone() is the only deep copy.
 static_assert(!std::is_move_constructible_v<Store>, "OperatorIndex must remain non-movable");
 static_assert(!std::is_copy_constructible_v<Store>, "OperatorIndex must remain non-copyable");
 
@@ -86,23 +86,19 @@ BOOST_AUTO_TEST_CASE(width_is_a_construction_invariant) {
     s.push_back(bs({0, 2, 4, 6})); // a 4-position row fits inline at width 4
     s.reserve(20);                 // capacity only -- width/stride are never touched by reserve
     BOOST_TEST(s.popcount(0) == 4u);
-    BOOST_TEST((s.row(0) == bs({0, 2, 4, 6}))); // round-trips inline after reserve
+    BOOST_TEST((s.row(0) == bs({0, 2, 4, 6})));
 }
 
 BOOST_AUTO_TEST_CASE(overflow_is_lossless_above_width) {
     Store s(2); // width 2; a 3-position row must overflow
     s.push_back(bs({0, 1, 2}));
-    BOOST_TEST(s.popcount(0) == 3u);         // popcount recovered from the overflow map
-    BOOST_TEST((s.row(0) == bs({0, 1, 2}))); // and the full row round-trips losslessly
+    BOOST_TEST(s.popcount(0) == 3u); // popcount recovered from the overflow map
+    BOOST_TEST((s.row(0) == bs({0, 1, 2})));
 }
 
-// The store is intentionally non-movable (owners hold it by unique_ptr), so index integrity in its
-// final, stable location is what matters: the find/emplace round-trip below covers it.
 BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
     Store a;
-    // Insert 64 distinct rows (varying both positions) to force >=1 rehash in the flat_set.
-    // Using i and i+7 (mod 62) as positions; since 64 > 31, we vary the second axis too so
-    // all 64 monomials are distinct.
+    // 64 distinct rows (positions i and (i+7)%62) force at least one rehash of the in-place index.
     for (int i = 0; i < 64; ++i) {
         a.push_back(bs({static_cast<size_t>(i % 62), static_cast<size_t>((i + 7) % 62)}));
         a.emplace(a.row(static_cast<size_t>(i)), static_cast<size_t>(i));
@@ -112,9 +108,8 @@ BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
     BOOST_TEST(*f == 50u);
 }
 
-// clone() is the only deep-copy entry point: the store stays non-copyable/non-movable (the
-// static_asserts above), so clone() must hand back a fresh, fully independent heap store whose
-// index confirms against the CLONE's own rows, not the source's.
+// clone() must hand back a fresh, fully independent heap store whose index confirms against the
+// CLONE's own rows, not the source's.
 BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
     Store a(4); // non-default width must carry over
     a.push_back(bs({0, 3, 5}));
@@ -122,7 +117,7 @@ BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
     a.push_back(bs({1, 2}));
     a.emplace(bs({1, 2}), 1);
 
-    auto b = a.clone(); // std::unique_ptr<Store>
+    auto b = a.clone();
     BOOST_TEST(b->size() == 2u);
     BOOST_TEST((b->row(0) == bs({0, 3, 5})));
     auto f = b->find(bs({1, 2}));
@@ -135,9 +130,8 @@ BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
     BOOST_TEST(b->size() == 2u);
     BOOST_TEST(!b->find(bs({6, 7})).has_value());
 
-    // Store locality: corrupting the SOURCE's row 0 must not perturb the clone's find, which
-    // confirms against the CLONE's own rows. If the clone still referenced the source's rows,
-    // this find would read a->row(0) (now {8,9}) and fail.
+    // If the clone still referenced the source's rows, this find would read a->row(0) (now {8,9})
+    // and fail.
     a.set(0, bs({8, 9}));
     auto g = b->find(bs({0, 3, 5}));
     BOOST_TEST(g.has_value());
@@ -155,27 +149,22 @@ BOOST_AUTO_TEST_CASE(clone_preserves_overflow_rows) {
     BOOST_TEST(*b->find(bs({0, 1, 2})) == 0u);
 }
 
-// find_batch is the group-prefetch pipelined lookup used by the resolve phases. It must be
-// semantically identical to n independent find() calls: out[i] = the row index of keys[i], or
-// kNotFound. This drives a query mix that spans multiple G=16 groups plus a non-multiple tail, and
-// interleaves present (2-position) and absent (3-position) keys so every branch runs — hit, empty
-// slot (kNotFound), and the confirm step. The h32-collision fallback is not deterministically
-// reachable in a unit test (it needs a 32-bit hash collision), but the equivalence assertion pins
-// its observable behavior whichever path a given key takes.
+// find_batch (the group-prefetch pipelined lookup) must be semantically identical to n independent
+// find() calls. The query mix below spans several G=16 groups plus a short tail and interleaves
+// present and absent keys, so every branch but the h32-collision fallback runs; that one needs a
+// real 32-bit hash collision, but the equivalence assertion pins it whichever path a key takes.
 BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
     Store s;
     constexpr size_t kRows = 200; // > 12 groups of G=16
-    // Distinct 2-position rows: (i/60, 4 + i%60) is a bijection for i < 240 with disjoint position
-    // ranges {0..3} and {4..63}, so all rows differ and are genuine 2-position monomials.
+    // (i/60, 4 + i%60) is a bijection for i < 240 over the disjoint ranges {0..3} and {4..63}.
     for (size_t i = 0; i < kRows; ++i) {
         const auto key = bs({i / 60, 4 + (i % 60)});
         s.push_back(key);
         s.emplace(key, i);
     }
 
-    // Interleave each present key with an absent 3-position key (never inserted -> always missing),
-    // then one trailing absent key so the total is not a multiple of G=16 and the final short group
-    // (tail) path runs too.
+    // Interleave present keys with never-inserted 3-position keys, then one trailing absent key so
+    // the total is not a multiple of G=16 and the short-tail path runs too.
     std::vector<MSet> queries;
     for (size_t i = 0; i < kRows; ++i) {
         queries.push_back(bs({i / 60, 4 + (i % 60)}));
@@ -196,7 +185,6 @@ BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
         }
     }
     BOOST_TEST(all_match);
-    // Spot-check the two kinds explicitly.
     BOOST_TEST(out[0] == 0u);               // first present key -> row 0
     BOOST_TEST(out[1] == Store::kNotFound); // first absent key
 }

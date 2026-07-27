@@ -75,7 +75,6 @@ inline auto for_each_row_position(const std::vector<Monomial<NumModes>> &op, siz
         fn(b);
     }
 }
-// OperatorIndex overloads for these accessors are defined after the OperatorIndex.h include below.
 
 using VecCD = std::vector<std::complex<double>>;
 

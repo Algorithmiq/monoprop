@@ -14,10 +14,8 @@
 
 """Unit tests for the benchmark memory primitives (``benches/_memory.py``).
 
-The key invariant is that the per-test peak under MPI is the *peak-of-sum* (the
-largest footprint that actually coexisted across ranks), not the sum of each
-rank's independently-timed lifetime peak -- which overcounts transients that
-never overlapped.
+The per-test peak under MPI is the *peak-of-sum* (the largest footprint that actually coexisted
+across ranks), not the sum of per-rank lifetime peaks, which overcounts disjoint transients.
 """
 
 from __future__ import annotations
@@ -41,12 +39,10 @@ def test_merge_overlapping_peaks_sum() -> None:
 
 
 def test_merge_staggered_peaks_do_not_double_count() -> None:
-    # Ranks peak at different times (t=1 vs t=4): their transients never coexist,
-    # so the peak-of-sum is one peak + the other's held baseline -- NOT 210+210.
+    # The transients never coexist, so the peak-of-sum is one peak + the other's held baseline.
     rank0 = [(0.0, 10), (1.0, 210), (2.0, 10)]
     rank1 = [(0.0, 10), (3.0, 10), (4.0, 210), (5.0, 10)]
     assert merge_peak_of_sum([rank0, rank1]) == 220
-    # Guard against a regression to summing per-rank lifetime peaks.
     assert merge_peak_of_sum([rank0, rank1]) != 420
 
 
@@ -78,5 +74,4 @@ def test_sampler_records_timeline_and_sees_a_transient() -> None:
     samples = sampler.samples
     assert len(samples) >= 2  # baseline on enter, final on exit
     assert all(isinstance(t, float) and isinstance(p, int) for t, p in samples)
-    # The held allocation pushed the resident footprint above the baseline.
     assert max(p for _t, p in samples) > baseline

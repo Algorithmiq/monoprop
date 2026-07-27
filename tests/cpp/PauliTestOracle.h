@@ -14,12 +14,9 @@
 
 #pragma once
 
-// Independent Pauli reference oracle shared by the Pauli test files
-// (pauli_algebra_tests.cpp, pauli_build_layer_tests.cpp, and the shard/MPI
-// equivalence suites). None of it touches the library under test beyond the
-// still-shipped encoding primitive indices_to_bitset; the dense-matrix brute
-// force and JW image are computed from first principles so the engine's inline
-// kernels can be pinned against a second, readable implementation.
+// Independent Pauli reference oracle shared by the Pauli test files. Nothing here touches the
+// library under test beyond indices_to_bitset: the dense-matrix brute force and the JW image are
+// computed from first principles so the engine's inline kernels can be pinned against them.
 
 #include <bit>
 #include <complex>
@@ -64,7 +61,6 @@ inline auto slots_of_string(const std::string &p) -> VecZ {
     return slots;
 }
 
-// Native-encoded bitset for a Pauli string (slots mapped to physical bits).
 template <size_t NumModes>
 auto native_bitset(const std::string &p) -> Monomial<NumModes> {
     return indices_to_bitset<NumModes>(slots_of_string(p));

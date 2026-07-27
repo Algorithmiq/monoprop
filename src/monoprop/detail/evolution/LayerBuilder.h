@@ -14,26 +14,11 @@
 
 #pragma once
 
-// LayerBuilder.h — the paper's BuildDistributedLayer algorithm (arXiv:2503.18939, Algorithm 2)
-//
-// build_layer<NumModes>() implements Algorithm 2 in a single pass: one fused FindAnticommuting+cutoff
-// scan feeds two MPI exchange passes and emits a graph layer directly (a shared_ptr<LayerCore> assembled
-// from a uniform per-rank PartnerAcc). The layer's cosine set records ALL locally-anticommuting indices
-// (endpoints included), read at replay as a PRE-rotation snapshot, so replay is order- and rank-independent.
-//
-// WHY the pivot bit is the whole trick: M and its partner M⊕G differ in every column of G including the
-// pivot (G's lowest set column), so exactly one of the pair carries it — leader (pivot clear) vs follower
-// (pivot set). Visiting leaders then the still-unmatched followers touches each anticommuting pair once,
-// no sort and no dedup. Even generators use the plain fold; odd add the per-row parity(|M|) correction (g_odd).
-//
-// Passes: (1) leader pass applies cutoffs and routes surviving queries to the owner of M'=M⊕G (local
-// inline, remote via MPI); (2) follower pass repeats over F_r \ matched. Insert-on-miss: remote absent
-// partners are inserted by the resolver in the same response round; self-rank absent partners are deferred
-// and inserted after both passes inside build_layer — never over the wire. Cutoff applied → cosine only;
-// otherwise → sine.
-//
-// Umbrella header: the implementation lives in the sibling layer_build/ headers, included below in
-// dependency order (Common → Scan → Resolve → Engine). Include this for the full surface.
+// Umbrella header for build_layer<NumModes>(): the implementation lives in the sibling layer_build/
+// headers, included below in dependency order (Common → Scan → Resolve → Engine).
+// Pivot split: M and its partner M⊕G differ in every column of G including the pivot (G's lowest set
+// column), so exactly one of the pair carries it — leader (pivot clear) vs follower (pivot set). Visiting
+// leaders then the still-unmatched followers touches each pair once, no sort and no dedup.
 
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Engine.h"

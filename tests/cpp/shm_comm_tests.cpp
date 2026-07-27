@@ -33,7 +33,6 @@ using monoprop::mpi::ShmCommPoisoned;
 
 namespace {
 
-// Run `body(sh, rank)` on S participant threads sharing one ShmComm; join all (see ThreadHarness.h).
 template <class Body>
 auto run_shm(int s, Body body) -> std::vector<std::exception_ptr> {
     ShmComm sh(s);
@@ -66,9 +65,8 @@ BOOST_AUTO_TEST_CASE(shm_comm_alltoall_counts_transpose) {
     }
 }
 
-// begin_alltoallv (the vector-of-vectors facade) over a Shm comm must deliver each source's block
-// contiguously and tagged, in ascending source order — the property Resolve.h's positional pairing
-// depends on. Rank r sends target t a block of length (r+1) tagged r*1000+j (sender-determined count).
+// begin_alltoallv (the vector-of-vectors facade) must deliver each source's block contiguously in
+// ascending source order — what Resolve.h's positional pairing depends on. Rank r sends (r+1) tagged elts.
 BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_source_order_and_tags) {
     for (const int S : {2, 4, 8}) {
         std::vector<std::vector<std::vector<int>>> recv(static_cast<size_t>(S));
@@ -150,26 +148,20 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_bit_identical) {
         const double expect_dbl = static_cast<double>(S) * static_cast<double>(S) / 2.0;     // sum (r+0.5)
         for (int r = 0; r < S; ++r) {
             BOOST_CHECK_EQUAL(int_res[static_cast<size_t>(r)], expect_int);
-            BOOST_CHECK_EQUAL(dbl_res[static_cast<size_t>(r)], dbl_res[0]); // identical across ranks
+            BOOST_CHECK_EQUAL(dbl_res[static_cast<size_t>(r)], dbl_res[0]);
             BOOST_CHECK_CLOSE(dbl_res[static_cast<size_t>(r)], expect_dbl, 1e-12);
         }
     }
 }
 
-// allreduce_sum_inplace on a per-rank vector sums element-wise; every rank ends BIT-identical to the
-// ascending-rank-order reference. Lengths straddle the slice-partition edges: shorter than S (empty
-// slices), partial cache lines, and many lines per rank.
+// allreduce_sum_inplace sums element-wise; every rank ends bit-identical to the ascending-rank-order
+// reference. Lengths straddle the slice edges: shorter than S (empty slices), partial lines, many lines.
 BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_inplace_vector) {
     for (const int S : {2, 4, 8}) {
         for (const size_t N :
              {size_t{1}, size_t{5}, size_t{8 * 2 + 3}, size_t{8} * static_cast<size_t>(S) + 7, size_t{257}}) {
-            // Materialize every rank's input ONCE, then have both the transport and the reference reduce
-            // those exact stored doubles. Recomputing `r*0.3 + k*1.7` at the reference site instead would
-            // make the bit-identical check hostage to how the compiler rounds that product-sum at each call
-            // site: aarch64 gcc-14 (-O3 -march=native, default -ffp-contract=fast) contracts the store site
-            // to an fma but leaves the reference add un-fused, so the two disagree by a ulp. Reducing the
-            // same stored values isolates what we actually test — the ascending-order, cross-rank-identical
-            // reduction — from that codegen freedom.
+            // Materialize every rank's input ONCE and reduce those exact stored doubles at both sites:
+            // aarch64 gcc-14 -ffp-contract=fast fuses `r*0.3 + k*1.7` at one site and not the other (1 ulp).
             std::vector<std::vector<double>> inputs(static_cast<size_t>(S), std::vector<double>(N));
             for (int r = 0; r < S; ++r) {
                 for (size_t k = 0; k < N; ++k) {
@@ -185,8 +177,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_inplace_vector) {
             for (const auto &e : errs) {
                 BOOST_CHECK(e == nullptr);
             }
-            // Ascending-rank-order reference over the identical stored inputs.
-            std::vector<double> ref(N);
+            std::vector<double> ref(N); // ascending-rank-order reference over the identical stored inputs
             for (size_t k = 0; k < N; ++k) {
                 double acc = 0.0;
                 for (int r = 0; r < S; ++r) {
@@ -204,8 +195,8 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_inplace_vector) {
     }
 }
 
-// post_flat_alltoallv over caller-owned flat buffers (the Evolution/Pare replay path). Each rank sends
-// one element (its rank) to every target; target r receives [0,1,..,S-1] in source order.
+// post_flat_alltoallv over caller-owned flat buffers (the Evolution/Pare replay path): each rank sends
+// its own id, so every target must receive [0,1,..,S-1] in source order.
 BOOST_AUTO_TEST_CASE(shm_comm_post_flat_alltoallv_flat_buffers) {
     const int S = 4;
     std::vector<std::vector<int>> recv(static_cast<size_t>(S));
@@ -242,12 +233,8 @@ BOOST_AUTO_TEST_CASE(shm_comm_post_flat_alltoallv_flat_buffers) {
     }
 }
 
-// alltoallv_resolve (A2 fused verb): resolves recv_counts (the transpose) AND moves the payload in one
-// 2-sync round, sizing the recv buffer itself. Drive it directly over many rounds with varying (incl.
-// zero) per-source block sizes to check: recv_counts is the exact transpose, the recv buffer is sized
-// to the received total, and each source's block lands contiguously in ascending source order with the
-// right tags. The recv vector is REUSED across rounds so a stale-byte bug past a shrunk high-water mark
-// would surface. This is the ShmComm path begin_alltoallv now takes for every unknown-layout round.
+// alltoallv_resolve resolves recv_counts (the transpose) AND moves the payload in one 2-sync round,
+// sizing recv itself — what begin_alltoallv takes for unknown-layout Shm rounds. recv is REUSED here.
 BOOST_AUTO_TEST_CASE(shm_comm_alltoallv_resolve_fused) {
     for (const int S : {2, 4, 8}) {
         const int rounds = 25;
@@ -256,8 +243,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_alltoallv_resolve_fused) {
             std::vector<int> recv; // reused across rounds (HWM)
             std::vector<int> rc(static_cast<size_t>(S)), rd(static_cast<size_t>(S));
             for (int round = 0; round < rounds; ++round) {
-                // r sends target t a block of length len(r,round); every 5th round is big to push the
-                // recv HWM, so following (smaller) rounds run over a larger-capacity buffer.
+                // Every 5th round is big: pushes the recv HWM up so later rounds run over a larger buffer.
                 const auto len_of = [&](int src) {
                     return (round % 5 == 4) ? (src % 3 + 1) * 11 : (src + round) % 4; // includes 0
                 };
@@ -320,8 +306,8 @@ BOOST_AUTO_TEST_CASE(shm_comm_repeated_collectives) {
     BOOST_CHECK_EQUAL(failures.load(), 0);
 }
 
-// More participants than cores: the barrier's bounded busy-spin must fall back to yielding so
-// spinners can't starve the completer of a core — the test completing at all proves liveness.
+// Oversubscribed: the barrier's bounded spin must fall back to yielding or spinners starve the completer
+// of a core. The test completing at all proves liveness.
 BOOST_AUTO_TEST_CASE(shm_comm_oversubscribed_repeated_collectives) {
     const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
     const int S = static_cast<int>(std::min(64u, std::max(8u, 2 * hw)));
@@ -341,7 +327,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_oversubscribed_repeated_collectives) {
 }
 
 // Poison: if one participant unwinds instead of arriving, peers waiting in a barrier must throw
-// ShmCommPoisoned rather than hang forever. The test completing at all proves no deadlock.
+// ShmCommPoisoned rather than hang. The test completing at all proves no deadlock.
 BOOST_AUTO_TEST_CASE(shm_comm_poison_releases_waiters) {
     for (const int S : {2, 4, 8}) {
         auto errs = run_shm(S, [&](ShmComm &sh, int r) {

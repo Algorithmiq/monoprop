@@ -50,11 +50,7 @@ BOOST_DATA_TEST_CASE_F(ExampleDataFix,
     test_evolve_build_graph_with_coeffs<n_modes>(data, cfg, pare, data.actual_expval);
 }
 
-// graph_size()'s cosine count must be the real one. LayerTraversal::num_cos_inds() reports 0 unless the
-// layer carries a STORED (pruned) cosine set, which no normally-built layer does, so reading it alone
-// made graph_size().first structurally zero for every non-pared graph. It is now recomputed from the
-// operator's inverted index, where that data actually lives.
-//
+// graph_size()'s cosine count must be the real one, recomputed from the operator's inverted index.
 // Cosine-ONLY means cos-scaled but not a rotation endpoint, so it is legitimately zero when nothing is
 // truncated (every anticommuting term's sine partner survives and is an endpoint). A tight cutoff drops
 // those partners and the count must become positive.

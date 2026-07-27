@@ -26,8 +26,8 @@
 #include <utility>
 #include <vector>
 
-// Comm.h owns the MPI_Comm typedef (real <mpi.h> or the int fallback) and the runtime-tagged
-// mpi::Comm handle; ShmComm.h is the in-process transport a Kind::Shm handle dispatches to.
+// Comm.h owns the MPI_Comm typedef and the runtime-tagged mpi::Comm handle; ShmComm.h is the
+// in-process transport a Kind::Shm handle dispatches to.
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/ShmComm.h"
 #ifdef monoprop_ENABLE_MPI
@@ -40,18 +40,17 @@
 
 namespace monoprop::mpi {
 
-/// Thrown when a collective's inputs are inconsistent with its communicator (e.g. a per-rank count
-/// mismatching the rank count). Dedicated type so callers can catch this condition specifically.
+// Thrown when a collective's inputs are inconsistent with its communicator (e.g. a per-rank count
+// vector whose width is not the rank count).
 class CollectiveArgumentError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
-/// Narrow a running count/displacement total to the int MPI takes, throwing rather than overflowing.
-///
-/// Per-rank counts are individually int-sized, but their prefix sums need not be: accumulate in
-/// `long long` and funnel each result through here. A signed int accumulator would be UB on overflow,
-/// and the wrapped value then sizes a buffer or becomes a negative displacement.
+// Narrow a running count/displacement total to the int MPI takes, throwing rather than overflowing.
+// Per-rank counts are individually int-sized but their prefix sums need not be, so accumulate in
+// `long long` and funnel every result through here: a signed int accumulator would be UB on overflow,
+// and the wrapped value then sizes a buffer or becomes a negative displacement.
 inline auto checked_mpi_count(long long value, const char *what = "Aggregate MPI count") -> int {
     if (value < 0 || value > static_cast<long long>(std::numeric_limits<int>::max())) {
         throw CollectiveArgumentError(std::format("{} {} does not fit in the MPI int limit {} (message too large).",
@@ -62,18 +61,14 @@ inline auto checked_mpi_count(long long value, const char *what = "Aggregate MPI
     return static_cast<int>(value);
 }
 
-// lifecycle (MPI only; ShmComm needs no global init)
-
 #ifdef monoprop_ENABLE_MPI
-/**
- * @brief Initialize MPI environment. Should be called once at program start. Safe to call repeatedly.
- */
+// Idempotent.
 inline auto init(int *argc = nullptr, char ***argv = nullptr) -> void {
     auto initialized = 0;
     MPI_Initialized(&initialized);
     if (!initialized) {
-        // SERIALIZED (not FUNNELED): under the hybrid each rank's shard-0 master — not the main thread —
-        // makes the one-at-a-time MPI calls. mpi4py already requests >= SERIALIZED, so Python is unaffected.
+        // SERIALIZED (not FUNNELED): under the hybrid the one-at-a-time MPI calls come from each rank's
+        // shard-0 master, not the main thread. mpi4py already requests >= SERIALIZED.
         auto required = MPI_THREAD_SERIALIZED;
         auto provided = 0;
         MPI_Init_thread(argc, argv, required, &provided);
@@ -86,9 +81,7 @@ inline auto init(int *argc = nullptr, char ***argv = nullptr) -> void {
     }
 }
 
-/**
- * @brief Finalize MPI environment. Should be called once at program end. Safe to call repeatedly.
- */
+// Idempotent.
 inline auto finalize() -> void {
     int finalized = 0;
     MPI_Finalized(&finalized);
@@ -97,7 +90,6 @@ inline auto finalize() -> void {
     }
 }
 
-// Template for MPI datatypes (only referenced in the Kind::Mpi transport arms below).
 namespace detail {
 template <class>
 inline constexpr bool unsupported_mpi_datatype_v = false;
@@ -143,7 +135,6 @@ inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr)
 inline auto finalize() -> void { /* no MPI to finalize in a non-MPI build */ }
 #endif // monoprop_ENABLE_MPI
 
-/// Rank of the caller in `comm`.
 inline auto rank(const Comm &comm) -> int {
     if (comm.kind == Comm::Kind::Shm) {
         return comm.shm_rank;
@@ -162,7 +153,6 @@ inline auto rank(const Comm &comm) -> int {
 #endif
 }
 
-/// Total number of participants in `comm`.
 inline auto size(const Comm &comm) -> int {
     if (comm.kind == Comm::Kind::Shm) {
         return comm.shm->size();
@@ -181,9 +171,6 @@ inline auto size(const Comm &comm) -> int {
 #endif
 }
 
-/**
- * @brief Allreduce sum for a single value.
- */
 template <class T>
 inline auto allreduce_sum(T local_val, Comm comm) -> T {
     if (comm.kind == Comm::Kind::Shm) {
@@ -201,9 +188,6 @@ inline auto allreduce_sum(T local_val, Comm comm) -> T {
 #endif
 }
 
-/**
- * @brief Allreduce sum for a vector of doubles (in-place).
- */
 inline auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->allreduce_sum_inplace(comm.shm_rank, values.data(), values.size());
@@ -220,8 +204,8 @@ inline auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
 #endif
 }
 
-/// Exchange per-rank send counts for per-rank recv counts (MPI_Alltoall, or the ShmComm/HybridComm
-/// transpose). Single-process Kind::Mpi build: identity copy (recv == send). `n` is the comm size.
+// Exchange per-rank send counts for per-rank recv counts (MPI_Alltoall, or the ShmComm/HybridComm
+// transpose). Single-process Kind::Mpi build: identity copy (recv == send). `n` is the comm size.
 inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void {
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
@@ -241,13 +225,9 @@ inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Com
 #endif
 }
 
-// variable all-to-all (vector-of-vectors)
-
-/**
- * @brief In-flight variable-size all-to-all owning its buffers + layout (so multiple can be in flight).
- * The count exchange is done on return from begin_alltoallv (recv_counts valid); wait_into completes the
- * payload transfer (a no-op for the synchronous Shm / single-process paths) and unpacks by source.
- */
+// In-flight variable-size all-to-all owning its buffers + layout, so several can be in flight.
+// recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a
+// no-op on the synchronous Shm / single-process paths) and unpacks by source.
 template <class T>
 struct PendingAlltoallv {
     int num_ranks = 0;
@@ -276,15 +256,11 @@ struct PendingAlltoallv {
     }
 };
 
-/**
- * @brief Post a variable-size all-to-all. The count exchange runs eagerly (recv_counts known on
- * return); the Kind::Mpi payload is non-blocking (wait_into completes it), while Shm / single-process
- * transfer synchronously here.
- *
- * @param skip_self          Do not send the self slot (caller handles self inline): self send/recv=0.
- * @param known_recv_counts  Skip the count exchange — recv counts already known (e.g. the transpose of
- *                           the query counts). Self slot is also zeroed when skip_self is set.
- */
+// Post a variable-size all-to-all. The count exchange runs eagerly (recv_counts known on return); the
+// Kind::Mpi payload is non-blocking (wait_into completes it), Shm / single-process transfer here.
+// skip_self: do not send the self slot (the caller handles self inline) — self send/recv = 0.
+// known_recv_counts: recv counts already known (e.g. the transpose of the query counts), so skip the
+// count exchange. The self slot is also zeroed when skip_self is set.
 template <class T>
 inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                             Comm comm,
@@ -326,7 +302,6 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                   h.send_buffer.begin() + h.send_displs[static_cast<size_t>(i)]);
     }
 
-    // Resolve recv counts (known transpose, or one count exchange).
     h.recv_counts.resize(static_cast<size_t>(num_ranks));
 
     // Fused fast path (query round, recv layout unknown): resolve recv counts AND move payload in one

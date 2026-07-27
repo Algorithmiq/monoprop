@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// White-box tests for detail::MPOperator<N>, built directly (append_term / init_op_map / basis)
-// rather than through a full simulator. Oracles are the independent algebra primitives
-// (is_paired, algebra_state_phase, encode_pauli_coeff), so these verify MPOperator's COMPOSITION
-// (incremental scoring, slot placement, the init-map drain, the picture/basis branches) rather
-// than re-deriving the phase math (covered in majorana_cutoff_tests.cpp).
+// White-box tests for detail::MPOperator<N> built directly (append_term / init_op_map / basis) rather
+// than through a simulator, with the algebra primitives (is_paired, algebra_state_phase,
+// encode_pauli_coeff) as the oracle. They pin composition -- incremental scoring, slot placement, the
+// init-map drain, the picture/basis branches -- not the phase math (majorana_cutoff_tests.cpp).
 
 #include <boost/test/unit_test.hpp>
 
@@ -33,10 +32,8 @@ using cd = std::complex<double>;
 
 namespace {
 
-// Build an MPOperator whose store rows are also INDEXED (findable). The row store and the keyless
-// hash index are separate in OperatorIndex: push_back/append_term writes a row only, while find()
-// needs the index that bulk_insert populates. insert_absent_terms is the production grow→assign→
-// bulk_insert path, so it yields a store where find() works — required by every find-driven method.
+// Build an MPOperator whose store rows are also INDEXED (findable). append_term writes a row only;
+// find() needs the hash index, which only the insert_absent_terms path populates.
 auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis::Majorana) -> detail::MPOperator<8> {
     detail::MPOperator<8> op;
     op.basis = basis;
@@ -61,7 +58,7 @@ auto expected_state(detail::MPOperator<8> &op, Basis basis, const VecZ &initial_
     return expected;
 }
 
-// Independent expected SPARSE state: the ascending rows that score nonzero, and their phases.
+// Independent expected SPARSE state: ascending rows that score nonzero, and their phases.
 auto expected_sparse_state(detail::MPOperator<8> &op, Basis basis, const VecZ &initial_state) -> std::pair<VecZ, VecD> {
     const auto dense = expected_state(op, basis, initial_state);
     std::pair<VecZ, VecD> expected;
@@ -74,7 +71,6 @@ auto expected_sparse_state(detail::MPOperator<8> &op, Basis basis, const VecZ &i
     return expected;
 }
 
-// Compare a SparseState view against (rows, values) oracle vectors.
 auto sparse_state_equals(const detail::MPOperator<8>::SparseState &sparse, const std::pair<VecZ, VecD> &expected)
     -> bool {
     return std::ranges::equal(sparse.rows, expected.first, {}, [](TermIndex r) { return static_cast<size_t>(r); })
@@ -132,13 +128,13 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) 
     a.set(0);
     a.set(1); // paired
     op.append_term(a);
-    const VecD first = op.dense_state(); // scores row 0
+    const VecD first = op.dense_state();
     BOOST_REQUIRE_EQUAL(first.size(), 1U);
     const double a_score = first[0];
     BOOST_CHECK_EQUAL(op.state_scored_rows_, 1U);
 
-    // Stand in for evolution mutating the live (Schrödinger) vector; the incremental pass must not
-    // rewrite an already-scored row, so this value has to survive.
+    // Stands in for evolution mutating the live vector: the incremental pass must not rewrite an
+    // already-scored row, so this value has to survive.
     op.state_coeffs[0] = 7.5;
 
     Monomial<8> b;
@@ -147,7 +143,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) 
     op.append_term(b);
     const VecD second = op.dense_state(); // must score only row 1, leave row 0 untouched
     BOOST_REQUIRE_EQUAL(second.size(), 2U);
-    BOOST_CHECK_EQUAL(second[0], 7.5); // unchanged
+    BOOST_CHECK_EQUAL(second[0], 7.5);
     BOOST_CHECK_EQUAL(second[1], expected_state(op, Basis::Majorana, initial_state)[1]);
 
     // The sparse set was EXTENDED, not rebuilt: row 0 still carries its original state score.
@@ -222,8 +218,8 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_abse
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identity_term) {
-    // The Majorana codec divides by the term's hermitian phase; for the identity term that phase is
-    // 1, so a real coefficient round-trips as itself without tripping the non-Hermitian guard.
+    // The Majorana codec divides by the term's hermitian phase, which is 1 for the identity term, so
+    // a real coefficient round-trips as itself without tripping the non-Hermitian guard.
     const Monomial<8> identity;             // empty
     auto op = build_indexed_op({identity}); // basis defaults to Majorana
 
@@ -266,8 +262,8 @@ BOOST_AUTO_TEST_CASE(mp_operator_append_term_after_materialization_rebuilds_inve
     op.append_term(indices_to_bitset<8>({0, 1}));
     BOOST_CHECK_EQUAL(op.inverted_index().rows(), 1U); // materializes the index (rows == size)
 
-    // append_term does not sync the index incrementally; the next inverted_index() sees it stale
-    // (rows() != store size) and rebuilds it against the grown store.
+    // append_term does not sync the index; the next inverted_index() sees rows() != store size and
+    // rebuilds against the grown store.
     op.append_term(indices_to_bitset<8>({2, 3}));
     BOOST_CHECK_EQUAL(op.inverted_index().rows(), 2U);
 }
@@ -282,7 +278,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_pre
     BOOST_CHECK_GT(before.operator_terms_bytes, 0U);
     BOOST_CHECK_EQUAL(before.inverted_index_bytes, 0U); // absent arm
 
-    (void)op.inverted_index(); // materialize it
+    (void)op.inverted_index();
     const auto after = detail::estimate_memory_usage<8>(op);
     BOOST_CHECK_GT(after.inverted_index_bytes, 0U); // present arm
 }

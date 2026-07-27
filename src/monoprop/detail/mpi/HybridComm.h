@@ -31,11 +31,11 @@
 
 #include "monoprop/detail/mpi/ShardBarrier.h"
 
-// Composes R MPI ranks x S in-process shards into one flat P=R*S SPMD world so the engine needs zero
-// changes. Global id is RANK-MAJOR (g = mpi_rank*S + shard), keeping each rank's shards contiguous in
-// ascending-global order — the contract Resolve.h's positional pairing relies on. Only shard-0 masters
-// call MPI (bracketed by intra-rank barriers ⇒ requires MPI_THREAD_SERIALIZED); ascending-order local
-// sums + order-preserving MPI ⇒ bit-identical, repeatable results for fixed (R, S).
+// Composes R MPI ranks x S in-process shards into one flat P=R*S SPMD world. Global id is RANK-MAJOR
+// (g = mpi_rank*S + shard), keeping each rank's shards contiguous in ascending-global order — the
+// contract Resolve.h's positional pairing relies on. Only shard-0 masters call MPI (bracketed by
+// intra-rank barriers ⇒ requires MPI_THREAD_SERIALIZED); ascending-order local sums + order-preserving
+// MPI ⇒ bit-identical, repeatable results for fixed (R, S).
 
 namespace monoprop::mpi {
 
@@ -56,8 +56,7 @@ public:
                                      "MPI while peers are parked); provided level is lower. Ensure "
                                      "mpi::init / mpi4py requests SERIALIZED or MULTIPLE.");
         }
-        // Size all (R,S)-fixed scratch once here so per-call paths never allocate (the staging buffers
-        // and red_vec_ grow to a high-water mark on demand instead).
+        // Size all (R,S)-fixed scratch once so per-call paths never allocate; staging grows on demand.
         const size_t rss = static_cast<size_t>(r_) * static_cast<size_t>(s_) * static_cast<size_t>(s_);
         counts_send_.resize(rss);
         counts_recv_.resize(rss);
@@ -75,17 +74,10 @@ public:
     auto size() const -> int { return r_ * s_; }
     auto global_rank(int local_shard) const -> int { return mpi_rank_ * s_ + local_shard; }
 
-    // Shard 0 is this rank's ONLY participant in the collectives on parent_, so once it is inside one
-    // this rank is committed: the peer ranks' shard-0 threads will enter theirs and block. A rank-local
-    // failure here -- a peer shard poisoning the barrier (ShardGroup::master_loop_ does that when any
-    // shard throws), or a count overflow in size_staging_ -- cannot be turned into an exception without
-    // leaving every other rank waiting inside MPI forever, with no timeout and MPI_Abort the only exit.
-    //
-    // So abort the job with the underlying error instead. Multi-rank runs trade a clean Python traceback
-    // for terminating; a silent hang is strictly worse, and the error text still names the real cause.
-    // This also fires when every rank fails identically (each would otherwise have raised cleanly) --
-    // telling the two cases apart would need a collective, which is exactly the per-layer cost this
-    // must not add. Single-rank sharded runs use ShmComm, not HybridComm, and keep their exceptions.
+    // Once shard 0 -- this rank's only participant on parent_ -- is inside a collective, the peer ranks
+    // are committed: their shard-0 threads enter theirs and block inside MPI with no timeout. So a
+    // rank-local failure here must MPI_Abort with the underlying error rather than throw, which would
+    // hang the job. Single-rank sharded runs use ShmComm, not HybridComm, and keep their exceptions.
     template <class Body>
     auto guard_shard0_(int local_shard, const char *verb, Body &&body) -> decltype(body()) {
         if (local_shard != 0) {
@@ -164,8 +156,8 @@ public:
         slots_[u].counts = send_counts;
         sync();
         if (local_shard == 0) {
-            // Pack the S*S count matrix per dest rank, dest-shard-major (t) then source-shard-minor (su);
-            // the loop writes every element and MPI_Alltoall fills counts_recv_ fully, so neither is pre-zeroed.
+            // Pack the S*S count matrix per dest rank, dest-shard-major (t) then source-shard-minor (su).
+            // Every element is written here and MPI_Alltoall fills counts_recv_ fully, so neither is pre-zeroed.
             for (int b = 0; b < r_; ++b) {
                 for (int t = 0; t < s_; ++t) {
                     for (int su = 0; su < s_; ++su) {
@@ -212,14 +204,13 @@ public:
         me.recv_counts = recv_counts;
         sync(); // B1
 
-        // B2: shard 0 sizes/reallocates staging; MUST finish before any shard packs into stage_send_,
-        // hence a barrier separate from packing.
+        // B2: shard 0 sizes/reallocates staging; MUST finish before any shard packs into stage_send_.
         if (local_shard == 0) {
             size_staging_(elem);
         }
         sync(); // B2
 
-        // B3: each shard packs its own cross-rank blocks into stage_send_ (disjoint writes, no coordination).
+        // B3: each shard packs its own cross-rank blocks into stage_send_ (disjoint writes).
         pack_send_(local_shard, elem);
         sync(); // B3
 
@@ -237,9 +228,8 @@ public:
         }
         sync(); // B4
 
-        // Scatter each global source's contiguous run out of stage_recv_ to recv_displs[g]. All legs
-        // (incl. self-rank) go through staging uniformly; block starts come from scatter_off_, so no
-        // peer slot is read past B4.
+        // Scatter each global source's contiguous run from stage_recv_ to recv_displs[g] (all legs, incl.
+        // self-rank, go through staging). Block starts come from scatter_off_: no peer slot is read past B4.
         char *dst = static_cast<char *>(recv);
         const int t = local_shard;
         for (int a = 0; a < r_; ++a) {
@@ -253,8 +243,7 @@ public:
                 }
             }
         }
-        // No trailing barrier: past B4 a shard reads only stage_recv_/scatter_off_/its own buffers,
-        // all rewritten only inside a future call's shard-0 size_staging_ (after that call's B1).
+        // No trailing barrier (see alltoall_counts_impl_): past B4 only stage_recv_/scatter_off_/own buffers.
     }
 
     // Fused count-resolve + payload alltoallv: folds the standalone count exchange into this verb's
@@ -279,7 +268,6 @@ public:
         sync(); // B1
 
         if (local_shard == 0) {
-            // Pack the S*S count matrix (dest-shard-major t, source-shard-minor su) and MPI_Alltoall it.
             for (int b = 0; b < r_; ++b) {
                 for (int t = 0; t < s_; ++t) {
                     for (int su = 0; su < s_; ++su) {
@@ -288,8 +276,7 @@ public:
                 }
             }
             MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
-            // Size staging from counts_recv_ (transpose layout: recv of shard t from (rank, su) at rank*S*S + t*S +
-            // su).
+            // Size staging from counts_recv_: recv of shard t from (rank, su) sits at rank*S*S + t*S + su.
             size_staging_impl_(elem, [this](int t, int rank, int su) -> int {
                 return counts_recv_[(static_cast<size_t>(rank) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
                                     + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
@@ -340,7 +327,7 @@ public:
                 }
             }
         }
-        // No trailing barrier: same discipline as alltoallv (past B4 only stage_recv_/scatter_off_/own buffers read).
+        // No trailing barrier: same discipline as alltoallv_impl_.
     }
 
     template <class T>
@@ -382,8 +369,7 @@ public:
     }
 
     // In-place element-wise allreduce-sum across the flat P-world, slice-partitioned across shards in
-    // ascending order (bit-identical to a sequential sum). red_vec_ sizing gets its own barrier phase so
-    // no shard writes into a buffer that may still reallocate.
+    // ascending order (bit-identical to a sequential sum). red_vec_ sizing gets its own barrier phase.
     auto allreduce_sum_inplace_impl_(int local_shard, double *values, size_t len) -> void {
         slots_[static_cast<size_t>(local_shard)].vec = values;
         sync(); // all inputs published
@@ -433,7 +419,6 @@ private:
                + static_cast<size_t>(u);
     }
 
-    // Grow-only (high-water-mark) sizing: never shrink, never zero what will be overwritten anyway.
     template <class V>
     static auto grow_(V &v, size_t need) -> void {
         if (v.size() < need) {
@@ -441,11 +426,8 @@ private:
         }
     }
 
-    // Shard 0: aggregate the published count matrices into per-rank counts/displs, size staging, and
-    // precompute the pack/scatter offset tables. Overflow-guarded throughout: both the S^2-block
-    // per-rank sums and their prefix sums across the R ranks can pass INT_MAX.
-    // Default recv-count source is shard t's published recv_counts; alltoallv_resolve passes an accessor
-    // reading the just-computed counts_recv_ instead, so no shard need publish recv_counts.
+    // Shard 0: aggregate the published count matrices into per-rank counts/displs, size staging and
+    // precompute the pack/scatter offsets, reading recv counts from shard t's published recv_counts.
     auto size_staging_(size_t elem) -> void {
         size_staging_impl_(elem, [this](int t, int rank, int su) -> int {
             return slots_[static_cast<size_t>(t)].recv_counts[rank * s_ + su];
@@ -467,10 +449,7 @@ private:
             mpi_send_counts_[static_cast<size_t>(b)] = checked_int_(send_sum);
             mpi_recv_counts_[static_cast<size_t>(b)] = checked_int_(recv_sum);
         }
-        // Prefix sums accumulate WIDE and narrow through checked_int_: each per-rank count above fits in
-        // an int, but their running total need not, and a plain int accumulator would be UB on overflow
-        // before being cast to size_t to size the staging buffers (a wrapped positive value would
-        // silently under-size them and MPI_Alltoallv would run past the end).
+        // Accumulate wide, narrow through the checked helper (see MPICompat.h).
         long long send_running = 0;
         long long recv_running = 0;
         for (int b = 0; b < r_; ++b) {
@@ -485,9 +464,9 @@ private:
         // fills every live byte of stage_recv_, so stale bytes past a prior high-water mark are never read.
         grow_(stage_send_, total_send * elem);
         grow_(stage_recv_, total_recv * elem);
-        // Precompute each (rank b, dest shard t, source shard u) block start (ELEMENTS), dest-major/
-        // source-minor to match the staged layout, so packing/scatter do O(1) lookups instead of
-        // re-summing peer count matrices (O(R*S^3), and it kept peer-slot reads alive past B4).
+        // Precompute each (rank b, dest shard t, source shard u) block start in ELEMENTS, dest-major/
+        // source-minor to match staging: pack/scatter become O(1) lookups that read no peer slot past B4
+        // (re-summing peer count matrices instead would be O(R*S^3)).
         for (int b = 0; b < r_; ++b) {
             size_t cur = static_cast<size_t>(mpi_send_displs_[static_cast<size_t>(b)]);
             for (int t = 0; t < s_; ++t) {
@@ -508,8 +487,7 @@ private:
         }
     }
 
-    // Pack local shard `u`'s cross-rank send blocks into stage_send_ at the block starts shard 0
-    // precomputed in pack_off_ — disjoint writes, no coordination, no peer-slot reads.
+    // Pack local shard `u`'s cross-rank blocks into stage_send_ at shard 0's precomputed pack_off_ starts.
     auto pack_send_(int local_shard, size_t elem) -> void {
         const int u = local_shard;
         const char *src = static_cast<const char *>(slots_[static_cast<size_t>(u)].ptr);
@@ -534,8 +512,7 @@ private:
         return static_cast<int>(v);
     }
 
-    /// Terminate the whole job because this rank cannot reach a collective its peers are entering.
-    /// See guard_shard0_ for why an exception is not an option here.
+    // Terminate the job: this rank cannot reach a collective its peers are entering (see guard_shard0_).
     [[noreturn]] auto abort_rank_(const char *verb, const char *what) -> void {
         std::print(stderr,
                    "monoprop: rank {} cannot complete the collective '{}' ({}). Its peer ranks are "
@@ -548,7 +525,7 @@ private:
         std::abort(); // MPI_Abort is not marked [[noreturn]]; unreachable in practice
     }
 
-    // Intra-rank barrier between the s_ shards (shard 0 brackets its MPI call between two). See ShardBarrier.
+    // See ShardBarrier.
     auto sync() -> void { barrier_.sync(); }
 
     MPI_Comm parent_;

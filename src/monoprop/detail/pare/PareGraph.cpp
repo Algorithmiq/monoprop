@@ -36,8 +36,7 @@ auto for_each_remote_rank(const LayerTraversal &layer, size_t my_rank, Func &&fu
     }
 }
 
-// Filter the full cosine set to the kept nodes: {{}, true} when nothing was pruned (replay folds the
-// full set), else {filtered, false}.
+// Bits of `present` whose absolute index is in the keep set.
 inline auto keep_mask_for_block(const std::vector<char> &keep, size_t base, uint64_t present) -> uint64_t {
     uint64_t mask = 0;
     uint64_t b = present;
@@ -51,6 +50,7 @@ inline auto keep_mask_for_block(const std::vector<char> &keep, size_t base, uint
     return mask;
 }
 
+// Filter the cosine set to the kept nodes; {{}, true} means nothing was pruned (replay folds the full set).
 auto filter_layer_cosine_data(const CosMask &cos, const std::vector<char> &nodes_to_keep) -> std::pair<CosMask, bool> {
     const size_t n = cos.blocks.size();
     CosMask filtered;
@@ -74,18 +74,12 @@ auto filter_layer_cosine_data(const CosMask &cos, const std::vector<char> &nodes
 
 // Force every cross-rank endpoint kept, before the cosine filter runs.
 //
-// The cos pass (not the D-apply) scales EVERY D target, since cos holds all anticommuting indices, so
-// no D target may be pruned. That makes the D-side keep decision unconditional -- and a B source is
-// kept exactly when its partner D target is, i.e. always. No cross-rank agreement is needed to
-// establish that, because every rank reaches the same conclusion about its own endpoints.
+// The cos pass (not the D-apply) scales EVERY D target, since cos holds all anticommuting indices, so no
+// D target may be pruned; a B source is kept exactly when its partner D target is, i.e. always. Every rank
+// reaches the same conclusion about its own endpoints, so no cross-rank agreement is needed.
 //
-// This used to be computed with two blocking MPI_Alltoallv rounds per layer, which were exchanging a
-// foregone conclusion: round 1's source-keep flags were ORed with an always-true keep_tgt (this
-// function had already marked every target), so the received flags could not change any outcome, and
-// round 2 therefore always carried all-ones, making the B pass keep every source unconditionally.
-//
-// B sources are marked for REMOTE ranks only, matching what the B pass did: the self-rank slot carries
-// local cycles, whose sources follow the ordinary backward reachability instead of being force-kept.
+// B sources are marked for REMOTE ranks only: the self-rank slot carries local cycles, whose sources
+// follow the ordinary backward reachability instead of being force-kept.
 auto mark_cross_rank_endpoints_kept(const LayerTraversal &layer, size_t my_rank, std::vector<char> &nodes_to_keep)
     -> void {
     const auto mark = [&nodes_to_keep](size_t idx) {
@@ -109,9 +103,8 @@ auto mark_cross_rank_endpoints_kept(const LayerTraversal &layer, size_t my_rank,
 
 } // namespace
 
-// Prune the graph to the subgraph reaching the surviving output nodes: sweep the keep-set backward,
-// emitting each layer unchanged (all cosines kept) or with its cosine list filtered. full_cos_of_layer
-// supplies a layer's full cosine set lazily, so only filtered layers are materialized.
+// Prune the graph to the subgraph reaching the surviving output nodes: sweep the keep-set backward, emitting
+// each layer unchanged or with its cosine list filtered. full_cos_of_layer materializes a layer's cos lazily.
 auto pare_graph(const MPGraph &graph,
                 const VecZ &nonzero_inds,
                 size_t local_index_count,
@@ -132,8 +125,7 @@ auto pare_graph(const MPGraph &graph,
 
     // Single backward sweep, entirely rank-local: every cross-rank endpoint is force-kept (see
     // mark_cross_rank_endpoints_kept), so nodes_to_keep stays consistent across ranks with no exchange.
-    // Cross-rank lists are NEVER pruned -- they replay unmasked at >1 rank; the keep-set only has to be
-    // correct so the cos pruning below stays exact.
+    // Cross-rank lists are NEVER pruned; the keep-set only has to be right so cos pruning stays exact.
     for (size_t iter = 0; iter < num_layers; ++iter) {
         const size_t layer_idx = schrodinger ? iter : (num_layers - 1 - iter);
         const auto &layer = graph.get_layer(layer_idx);
@@ -143,7 +135,7 @@ auto pare_graph(const MPGraph &graph,
         mark_cross_rank_endpoints_kept(lt, my_rank, nodes_to_keep);
 
         // Materialize THIS layer's full cos lazily, prune to nodes_to_keep, discard it. preserves =>
-        // nothing trimmed => emit a FoldLayer (cos recomputed at replay); else a PrunedLayer.
+        // nothing trimmed => reuse the core with no stored cos (recompute at replay); else store the filter.
         const CosMask full = full_cos_of_layer(layer_idx);
         auto [filtered, preserves] = filter_layer_cosine_data(full, nodes_to_keep);
 

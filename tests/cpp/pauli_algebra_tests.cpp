@@ -32,10 +32,8 @@ using namespace pauli_oracle;
 namespace {
 
 // --- Reference oracles (test-only) -----------------------------------------------------------
-// Closed-form phase/weight computations kept here rather than in the shipped PauliAlgebra.h: the
-// library's hot path derives the same quantities inline (pauli_rotation_sign). These readable
-// forms exist only to pin that inline kernel against an independent reference in the cases below.
-// They reuse the header's still-shipped primitives (detail::pauli_uv, detail::mod4, pauli_y_count).
+// Readable closed forms for quantities the hot path derives inline (pauli_rotation_sign), built on
+// the header's primitives (detail::pauli_uv, detail::mod4, pauli_y_count).
 
 // Qubit Pauli weight = number of non-identity single-qubit letters = or_sum = |x | z|.
 template <size_t NumModes>
@@ -86,12 +84,7 @@ template <size_t NumModes>
 
 } // namespace
 
-// The repo's ctest discovery (boostAddTests.cmake) treats every --list_content line as a
-// top-level test name and cannot address suite-nested cases, so tests use flat cases with a
-// shared name prefix (as coeff_frame_*, inverted_index_*, etc. do) rather than a
-// BOOST_AUTO_TEST_SUITE. Run just this group with --run_test=pauli_algebra_*.
-
-// T1: pair_swap involution + anticommutation vs an independent second computation.
+// pair_swap involution + anticommutation, against string-level and dense-matrix oracles.
 BOOST_AUTO_TEST_CASE(pauli_algebra_pair_swap_and_anticommutation) {
     constexpr size_t N = 8;
 
@@ -99,7 +92,6 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_pair_swap_and_anticommutation) {
     for (size_t n : {size_t{1}, size_t{2}}) {
         for (const auto &pa : all_strings(n)) {
             const auto a = native_bitset<N>(pa);
-            // Involution.
             BOOST_TEST((pair_swap<N>(pair_swap<N>(a)) == a));
             for (const auto &pb : all_strings(n)) {
                 const auto b = native_bitset<N>(pb);
@@ -140,17 +132,15 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_pair_swap_and_anticommutation) {
     }
 }
 
-// T2: the encoding is EXACTLY the Jordan-Wigner image: native == change_basis(jw(P), jw_basis).
+// The encoding is EXACTLY the Jordan-Wigner image: native == change_basis(jw(P), jw_basis).
 BOOST_AUTO_TEST_CASE(pauli_algebra_encoding_is_jw_image) {
     constexpr size_t N = 8;
-    // Exhaustive for n = 1, 2.
     for (size_t n : {size_t{1}, size_t{2}}) {
         const auto basis = jw_basis<N>(n);
         for (const auto &p : all_strings(n)) {
             BOOST_TEST((native_bitset<N>(p) == change_basis<N>(jw_bitset<N>(p), basis)));
         }
     }
-    // Randomized for n up to 6.
     std::mt19937 rng(0x1234ABCDU);
     for (size_t trial = 0; trial < 4000; ++trial) {
         const size_t n = 1 + (rng() % 6);
@@ -160,7 +150,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_encoding_is_jw_image) {
     }
 }
 
-// T3: product phase pinned by dense-matrix brute force; emit sign for anticommuting pairs.
+// Product phase pinned by dense-matrix brute force; emit sign for anticommuting pairs.
 BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
     constexpr size_t N = 4;
     for (size_t n : {size_t{1}, size_t{2}, size_t{3}}) {
@@ -173,7 +163,6 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
                 const auto b = native_bitset<N>(pb);
                 const auto r = a ^ b;
 
-                // Reconstruct R's string from the bitset and build its dense matrix.
                 std::string pr(n, 'I');
                 for (size_t q = 0; q < n; ++q) {
                     pr[q] = letter_from_bitset<N>(r, q);
@@ -210,7 +199,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
     }
 }
 
-// T4: cutoff / weight / Z-only equivalence under the native encoding, incl. logical < NumModes.
+// Cutoff / weight / Z-only equivalence under the native encoding, incl. logical < NumModes.
 BOOST_AUTO_TEST_CASE(pauli_algebra_cutoff_and_weight_equivalence) {
     constexpr size_t N = 32; // single word (2N = 64)
     constexpr size_t logical = 6;
@@ -229,7 +218,6 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_cutoff_and_weight_equivalence) {
             BOOST_TEST(support_cutoff<N>(native, c) == support_cutoff<N>(via_jw, c));
         }
 
-        // pauli_weight == number of non-identity letters.
         size_t true_weight = 0;
         for (char ch : p) {
             true_weight += (ch != 'I') ? 1 : 0;
@@ -241,7 +229,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_cutoff_and_weight_equivalence) {
     }
 }
 
-// T5: initial-state phase vs brute-force <b|P|b>.
+// Initial-state phase vs brute-force <b|P|b>.
 BOOST_AUTO_TEST_CASE(pauli_algebra_state_phase) {
     constexpr size_t N = 8;
     constexpr size_t n = 5;

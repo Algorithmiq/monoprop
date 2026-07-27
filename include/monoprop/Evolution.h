@@ -43,25 +43,21 @@ class MPGraphView;
 
 struct LayerCore;
 
-/// @brief Perform a single-monomial evolution step (MPI: each rank owns its local coefficients,
-/// cross-rank cycles are communicated). Used by the in-built contraction and replay.
+/// Forward-evolve `op` through one layer; each rank owns its local coefficients, cross-rank cycles are communicated.
 monoprop_EXPORT auto evolve_step(VecD &op,
                                  const Layer &layer,
                                  double param,
                                  const detail::LayerCosScale &cos_scale,
                                  mpi::Comm comm) -> void;
 
-/// @brief Evolve an operator through the graph (per-rank local data + MPI as needed). Returns this
-/// rank's evolved coefficients.
-// Recompute-routed forward evolution (cos scaling via the mandatory callback). Callers pass a view
-// (MPGraph::replay_view() / slice_view()).
+/// Forward-evolve `coeffs` through every layer of `graph`, returning this rank's evolved coefficients.
 monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
                                      const MPGraphView &graph,
                                      const VecD &params,
                                      const detail::LayerCosScale &cos_scale,
                                      mpi::Comm comm) -> VecD;
 
-// Recompute-routed reverse derivative (cos accumulation via the mandatory callback).
+/// Reverse-mode derivative of one layer: inverse-rotates (state, op) in place and returns the gradient term.
 monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
                                                      VecD &op,
                                                      const MPGraphView &graph,

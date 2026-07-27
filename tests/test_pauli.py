@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for pauli module."""
-
 from __future__ import annotations
 
 import pytest
@@ -47,7 +45,6 @@ class TestPauliPropagatorCutoff:
         assert mp.num_qubits == 2  # "ZZ" operator
 
     def test_non_hermitian_pauli_gate_rejected(self, serial_comm):
-        """An ExpGate with a complex (non-Hermitian) Pauli coefficient is rejected."""
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=1)),),
             parameters=(0.3,),
@@ -57,10 +54,9 @@ class TestPauliPropagatorCutoff:
 
     @pytest.mark.parametrize("schrodinger_cutoff", [3, 4, 5])
     def test_schrodinger_cutoff(self, schrodinger_cutoff, serial_comm):
-        """schrodinger_cutoff bounds the retained Schrodinger-state Pauli weight, in qubits.
+        """schrodinger_cutoff is a Pauli weight in qubits, matching ``cutoff``.
 
-        PauliPropagator doubles it internally (qubit weight -> gamma-slot popcount), so the
-        user-facing value is a Pauli weight in qubits, matching ``cutoff``.
+        PauliPropagator doubles it internally (qubit weight -> gamma-slot popcount).
         """
         mp = PauliPropagator(
             PauliOperator({"ZZ": 1.0}, num_qubits=10),
@@ -70,7 +66,6 @@ class TestPauliPropagatorCutoff:
             comm=serial_comm,
         )
         op = mp.evolved_operator()
-        # evolved_operator() returns a PauliOperator; a term's weight is its qubit count.
         assert max(len(p.qubits) for p in op.terms) == schrodinger_cutoff
 
 
@@ -186,7 +181,6 @@ class TestPauliOperator:
         assert set(op.terms) == {Pauli("XYIZ")}
 
     def test_get_majorana_operator_requires_num_qubits(self):
-        """Converting to Majorana without a qubit count raises a clear ValueError."""
         op = PauliOperator._from_terms(["X"], [1.0], num_qubits=None)
         with pytest.raises(ValueError, match="needs num_qubits"):
             op.get_majorana_operator()
@@ -201,7 +195,6 @@ class TestPauliOperator:
         op = PauliOperator({Pauli("X", i): 1.0 for i in range(10)}, num_qubits=10)
         r = str(op)
         assert "PauliOperator" in r
-        # With >8 terms, individual terms should not appear
         assert "10 terms" in r
 
     def test_dict_construction(self):
@@ -211,7 +204,6 @@ class TestPauliOperator:
         assert op.num_qubits == 2
 
     def test_num_qubits_required(self):
-        # The qubit count is a required constructor argument; omitting it is an error.
         with pytest.raises(TypeError):
             PauliOperator({"IXYZ": 2.0})  # type: ignore[call-arg]
 
@@ -306,7 +298,6 @@ class TestCircuit:
         assert circuit.n_parameters == 2
 
     def test_rejects_mixed_gate_families(self):
-        # A single circuit cannot mix qubit and Majorana/fermionic gates.
         with pytest.raises(TypeError, match="mix"):
             Circuit(
                 (
@@ -326,9 +317,9 @@ class TestCircuit:
 def test_pauli_rejects_negative_qubit_index() -> None:
     """A negative qubit index is rejected, mirroring Majorana.
 
-    Left unchecked it resolved silently through Python list indexing when the term was widened
-    -- ``Pauli("Z", -1)`` on four qubits became Z on qubit 3 -- and reached the engine as a
-    huge unsigned Majorana slot via ``get_local_operator``.
+    Unchecked it resolves silently through Python list indexing when the term is widened
+    (``Pauli("Z", -1)`` on four qubits becomes Z on qubit 3) and reaches the engine as a huge
+    unsigned Majorana slot.
     """
     with pytest.raises(ValueError, match="must be non-negative"):
         Pauli("Z", -1)

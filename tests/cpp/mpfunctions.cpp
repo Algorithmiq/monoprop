@@ -31,7 +31,6 @@ namespace utf = boost::unit_test;
 namespace bdata = utf::data;
 
 constexpr int NumQubits = 4;
-// Test cases for indices_to_bitset
 static std::vector<VecZ> ds_input_indices_to_bitset_test = {
     {0, 1, 2, 3}, // Full indices set
     {},           // No indices set, empty majorana
@@ -55,21 +54,20 @@ BOOST_DATA_TEST_CASE(indices_to_bitset_test,
     BOOST_CHECK(bitset == expected_bitset);
 }
 
-// Test cases for length_cutoff
 static std::vector<Monomial<NumQubits>> ds_input_bitset_to_indices_test = {
-    0b00000000, // No indices set, empty majorana
-    0b00011000, // Single index set
-    0b10101010  // Two indices set
+    0b00000000, // fully paired
+    0b00011000, // 2 slots
+    0b10101010  // 4 slots
 };
 static std::vector<int> ds_cutoff_values = {
-    4, // Cutoff larger than any pairing distance
-    2, // Cutoff smaller than pairing distance
-    2  // Cutoff equal to pairing distance
+    4,
+    2,
+    2 // below the last case's slot count
 };
 static std::vector<bool> ds_expected_length_results = {
-    true, // No indices set, should be paired
-    true, // Single pair within cutoff, should be paired
-    false // Multiple pairs exceeding cutoff, should not be paired
+    true,
+    true,
+    false // length_cutoff keeps iff fully paired or slot count <= cutoff
 };
 
 BOOST_DATA_TEST_CASE(length_cutoff_test,
@@ -131,11 +129,8 @@ struct IS_FULLY_PAIRED_TEST_CASE {
 };
 
 static std::vector<IS_FULLY_PAIRED_TEST_CASE> ds_is_fully_paired_test = {
-    // Nothing is paired
     {{0, 1, 2, 3}, {0b0001, 0b0010, 0b0100, 0b1000}, {}, "Nothing is paired"},
-    // Everything is paired
     {{0, 1, 2, 3}, {0b0000, 0b0011, 0b1100, 0b1111}, {0, 1, 2, 3}, "Everything is paired"},
-    // Partially paired
     {{0, 1, 2, 3, 4, 5, 6}, {0b0001, 0b0011, 0b1000, 0b0101, 0b1100, 0b0110, 0b1110}, {1, 4}, "Partially paired"}};
 
 BOOST_DATA_TEST_CASE(is_fully_paired_test, bdata::make(ds_is_fully_paired_test), test_case) {

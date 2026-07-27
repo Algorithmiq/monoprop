@@ -90,6 +90,7 @@ monoprop_EXPORT auto map_params(const VecD &parameters,
                                 double phase,
                                 bool reverse = false) -> VecD;
 
+/// Expectation value of the evolved operator against `state` plus `e_core`, summed over all ranks.
 monoprop_EXPORT auto ev(double e_core,
                         const EvalState &state,
                         const VecD &op,
@@ -100,6 +101,7 @@ monoprop_EXPORT auto ev(double e_core,
                         mpi::Comm comm = MPI_COMM_WORLD,
                         const detail::LayerCosScale &cos_scale = {}) -> double;
 
+/// As ev(), plus the gradient with respect to each parameter; both callbacks are required if `params` is non-empty.
 monoprop_EXPORT auto ev_and_grad(double e_core,
                                  const EvalState &state,
                                  const VecD &op,
@@ -111,6 +113,7 @@ monoprop_EXPORT auto ev_and_grad(double e_core,
                                  const detail::LayerCosScale &cos_scale = {},
                                  const detail::LayerCosAccumulate &cos_acc = {}) -> std::pair<double, VecD>;
 
+/// Prune `graph` to the subgraph reaching `nonzero_inds`; `full_cos_of_layer(i)` supplies layer i's full cosine set.
 monoprop_EXPORT auto pare_graph(const MPGraph &graph,
                                 const VecZ &nonzero_inds,
                                 size_t local_index_count,

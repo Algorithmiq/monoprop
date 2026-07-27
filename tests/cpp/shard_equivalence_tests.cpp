@@ -25,11 +25,9 @@
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
-// Intra-process shard equivalence: a propagator built with shards>1 (S single-threaded shard
-// propagators over an in-process ShmComm) must agree with the ordinary single-partition propagator
-// within floating-point accumulation tolerance — the same standard the MPI rank-count test uses. This
-// is also the first C++ coverage of the native Pauli engine at S>1. Runs in the serial build (pure
-// std::thread; no mpiexec).
+// Intra-process shard equivalence: a propagator with shards>1 (S shard propagators over an in-process
+// ShmComm) must match the ordinary single-partition propagator within fp accumulation tolerance.
+// Oracle: the S=1 run. Pure std::thread, so this runs in the serial build with no mpiexec.
 
 namespace {
 
@@ -94,8 +92,7 @@ BOOST_AUTO_TEST_CASE(shard_majorana_gradient_matches_across_shard_counts) {
     }
 }
 
-// propagate() (contract-immediately, the benchmark path) then expectation_value of the contracted
-// operator must match S=1.
+// Same, on the contract-immediately propagate() path rather than build_graph().
 BOOST_AUTO_TEST_CASE(shard_majorana_propagate_then_expectation_matches) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto run = [&](size_t S) {
@@ -113,7 +110,7 @@ BOOST_AUTO_TEST_CASE(shard_majorana_propagate_then_expectation_matches) {
     }
 }
 
-// Two independent S=4 runs are bit-identical: ShmComm sums in fixed rank order and each shard is
+// Two independent S=4 runs are bit-identical: ShmComm sums in ascending rank order and each shard is
 // deterministic, so a given shard count has no run-to-run jitter.
 BOOST_AUTO_TEST_CASE(shard_energy_is_deterministic) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
@@ -125,7 +122,6 @@ BOOST_AUTO_TEST_CASE(shard_energy_is_deterministic) {
     BOOST_CHECK_EQUAL(energy_s4(), energy_s4());
 }
 
-// A deep copy of a shard-backed propagator (clones the whole group) evaluates identically.
 BOOST_AUTO_TEST_CASE(shard_deep_copy_matches) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto sim = majorana_sim(data, 4);
@@ -141,7 +137,7 @@ BOOST_AUTO_TEST_CASE(shard_deep_copy_matches) {
 // ─── Native Pauli (inline circuit) ───────────────────────────────────────────
 // Pauli strings map to Majorana-slot index vectors via pauli_oracle::slots_of_string.
 
-constexpr size_t kNq = 6; // qubits for the Pauli case
+constexpr size_t kNq = 6;
 
 auto pauli_sim(const std::map<std::string, double> &obs, size_t shards) -> MonomialPropagator<kNq> {
     OperatorDict init;
@@ -173,14 +169,14 @@ auto run_pauli_energy(size_t shards) -> std::pair<double, size_t> {
     VecZ pmap;
     VecD gcoeffs;
     size_t p = 0;
-    for (size_t q = 0; q < kNq; ++q) { // X on each qubit
+    for (size_t q = 0; q < kNq; ++q) {
         std::string s(kNq, 'I');
         s[q] = 'X';
         gens.push_back(slots_of_string(s));
         pmap.push_back(p++);
         gcoeffs.push_back(1.0);
     }
-    for (size_t q = 0; q + 1 < kNq; ++q) { // ZZ on neighbours
+    for (size_t q = 0; q + 1 < kNq; ++q) {
         std::string s(kNq, 'I');
         s[q] = 'Z';
         s[q + 1] = 'Z';
@@ -206,10 +202,9 @@ BOOST_AUTO_TEST_CASE(shard_pauli_energy_matches_across_shard_counts) {
 
 } // namespace
 
-// A shard factory that throws must surface the exception, not std::terminate. The ctor starts the
-// master threads BEFORE building the shards on them (for first-touch locality), so an escaping
-// exception used to unwind past joinable threads without ~ShardGroup ever setting stop_. Every
-// MonomialPropagator ctor validation reaches this path, as does an allocation failure.
+// A shard factory that throws must surface the exception, not std::terminate: the ctor starts the
+// master threads BEFORE building the shards on them (first-touch locality), so the unwind has to join
+// already-started threads. Every MonomialPropagator ctor validation reaches this path.
 BOOST_AUTO_TEST_CASE(shard_factory_exception_propagates_without_terminate) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     // logical_num_modes = 0 is rejected by each shard's own constructor, on its own master thread.

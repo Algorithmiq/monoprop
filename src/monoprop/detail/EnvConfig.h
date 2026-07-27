@@ -18,19 +18,13 @@
 #include <cstdlib>
 #include <optional>
 
-// Single home for all runtime environment configuration: every `monoprop_*` env var is parsed here
-// once (function-local static in config::get()) and exposed as a config::Settings field.
+// Single home for runtime environment configuration: every `monoprop_*` env var is parsed once here
+// (function-local static in config::get()) and exposed as a config::Settings field. Dependency-free by
+// design (only <cstdlib>) because it is pulled into hot-path headers.
 //
-// Dependency-free by design (only <cstdlib>): pulled into low-level hot-path headers, so it must not
-// depend on the threading layer, MPI, or any monoprop type.
-//
-// Recognised env vars:
-//   monoprop_NUM_THREADS          positive int (1..1e6); else ignored          → num_threads
-//   monoprop_SHARD_PINNING        bool, default ON; 0/false disables per-core pinning → shard_pinning
-//   monoprop_SHARDS               int N | "auto" | "off"; overrides the shard-count policy. Parsed at
-//                                 its point of use (resolve_shard_count_) since it needs string forms.
-//                                 "auto" (default) = one single-threaded shard per physical core, capped
-//                                 by monoprop_NUM_THREADS; "off" = one partition; N = exactly N shards.
+//   monoprop_NUM_THREADS    positive int (1..1e6), else ignored                → num_threads
+//   monoprop_SHARD_PINNING  bool, default ON; 0/false disables per-core pinning → shard_pinning
+//   monoprop_SHARDS         int N | "auto" | "off"; parsed where it is used (resolve_shard_count_)
 
 namespace monoprop::config {
 
@@ -67,7 +61,7 @@ struct Settings {
     bool shard_pinning = true;      // monoprop_SHARD_PINNING
 };
 
-/// Parse the environment once and return the shared, immutable Settings (cached; one instance across TUs).
+// Parse the environment once; the Settings are cached and shared across TUs.
 inline auto get() -> const Settings & {
     static const Settings settings = [] {
         Settings s;

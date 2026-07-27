@@ -31,10 +31,9 @@
 #endif
 #include "monoprop/detail/shard/CpuTopology.h"
 
-// Intra-process shard runtime: owns S single-threaded master threads, each pinned to a core and
-// running an independent MonomialPropagator over one hash-partition via a Kind::Shm comm — the
-// unchanged SPMD engine an MPI rank runs, with ShmComm standing in for the network. run_on_all must
-// fan a call out to ALL masters concurrently, since the engine's collectives are barrier-synced inside ShmComm.
+// Intra-process shard runtime: S master threads, each pinned to a core and running an independent
+// MonomialPropagator over one hash partition — the SPMD engine an MPI rank runs, with an in-process
+// comm for the network. run_on_all must fan out to ALL masters: the collectives are barrier-synced.
 
 namespace monoprop {
 
@@ -47,12 +46,11 @@ template <size_t NumModes>
 class ShardGroup {
 public:
     // Builds each shard's propagator via `factory(shard_comm)` ON its master thread, so heap allocations
-    // are first-touched on the owning core/CCX (the locality win). `factory` must build a shards=1 propagator.
+    // are first-touched on the owning core. `factory` must build a shards=1 propagator.
     using Factory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
 
-    // `parent` is the enclosing communicator (size R): R == 1 ⇒ shards trade over an in-process ShmComm;
-    // R > 1 ⇒ a HybridComm folding R ranks x S shards into one flat P=R*S world. Shards run the unchanged
-    // engine over a P-partition comm either way.
+    // `parent` is the enclosing communicator (size R): R == 1 ⇒ an in-process ShmComm; R > 1 ⇒ a
+    // HybridComm folding R ranks x S shards into one flat P=R*S world.
     ShardGroup(int n_shards, const Factory &factory, mpi::Comm parent)
         : n_(n_shards),
           parent_(parent),
@@ -62,10 +60,9 @@ public:
         discover_node_peers_();
         cpusets_ = topo_shard_cpusets(n_, node_rank_, node_size_);
         start_masters_();
-        // First job: build each shard on its master (pinned, cache-warm on the owning core).
-        // The masters are already running, so an exception here (any MonomialPropagator ctor
-        // validation) must not escape before they are stopped: ~ShardGroup would never run, stop_ would
-        // stay false, and destroying joinable threads during unwinding calls std::terminate.
+        // First job: build each shard on its pinned master (first-touch locality). The masters are
+        // already running, so a ctor throw must not escape: ~ShardGroup would never run, and destroying
+        // joinable threads during unwinding calls std::terminate.
         try {
             run_on_all([&](int r) { shards_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
         }
@@ -75,8 +72,8 @@ public:
         }
     }
 
-    // Clone: rebuild this group's transport (fresh threads + ShmComm/HybridComm over the same parent),
-    // deep-copy each shard on the new master, then rebind the copy's comm (it inherited src's handle).
+    // Clone: fresh transport and threads over the same parent, deep-copy each shard on its new master,
+    // then rebind the copy's comm (it inherited src's handle).
     ShardGroup(const ShardGroup &src)
         : n_(src.n_),
           parent_(src.parent_),
@@ -107,9 +104,8 @@ public:
     auto shard(int s) -> MonomialPropagator<NumModes> & { return *shards_[static_cast<size_t>(s)]; }
     auto shard(int s) const -> const MonomialPropagator<NumModes> & { return *shards_[static_cast<size_t>(s)]; }
 
-    /// Run `body(shard_rank)` on ALL masters concurrently; block until every master finishes; then
-    /// rethrow the first exception any master raised (peers were released via ShmComm poison, so a
-    /// throw on one master never hangs the others).
+    // Run `body(shard_rank)` on ALL masters, block until every one finishes, then rethrow the first
+    // exception raised (peers were released via poison, so a throw on one master never hangs the rest).
     auto run_on_all(const std::function<void(int)> &body) -> void {
         {
             std::lock_guard lk(m_);
@@ -134,9 +130,8 @@ public:
     }
 
 private:
-    // Stop every master and join it. Shared by the destructor and the constructors' failure paths, which
-    // must not let an exception escape past live threads. Poison first so a master parked in a barrier is
-    // released rather than joined-on forever.
+    // Stop and join every master. Shared by the destructor and the constructors' failure paths. Poison
+    // first so a master parked in a barrier is released rather than joined-on forever.
     auto stop_and_join_() noexcept -> void {
         transport_poison_();
         {
@@ -160,8 +155,7 @@ private:
     }
 
     // Under an MPI parent, find how many ranks share this host and which we are, so each co-located rank
-    // pins its shards to a disjoint core block (see shard_cpusets). Collective over `parent`; clones copy
-    // the result instead of re-running it, keeping cloning rank-local.
+    // pins to a disjoint core block (see shard_cpusets). Collective over `parent`; clones copy the result.
     auto discover_node_peers_() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
@@ -174,7 +168,6 @@ private:
 #endif
     }
 
-    // Build the shared transport: ShmComm for a single-rank parent, HybridComm when the parent spans R>1 ranks.
     auto make_transport_() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
@@ -222,8 +215,7 @@ private:
         if (!cpusets_.empty()) {
             pin_this_thread(cpusets_[static_cast<size_t>(rank)]);
         }
-        // Each shard runs the engine fully serially: one shard per core is the Phase-0 optimum, and it
-        // keeps all of a shard's mutable data owned by a single core (no cross-CCX coherence traffic).
+        // Each shard runs the engine fully serially, keeping its mutable data owned by one core.
         unsigned seen = 0;
         for (;;) {
             const std::function<void(int)> *job = nullptr;

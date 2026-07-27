@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for qiskit_conversion module."""
-
 from __future__ import annotations
 
 import importlib
@@ -43,7 +41,6 @@ except ImportError:
 
 
 def _assert_pauli_circuits_close(converted, expected) -> None:
-    """Structurally compare two Circuits (PauliOperator has no ``__eq__``)."""
     assert converted.initial_state == expected.initial_state
     assert len(converted) == len(expected)
     assert list(converted.resolved_mapping) == list(expected.resolved_mapping)
@@ -51,8 +48,8 @@ def _assert_pauli_circuits_close(converted, expected) -> None:
     for got, exp in zip(converted.parameters, expected.parameters):
         assert got == pytest.approx(exp)
     for got_gate, exp_gate in zip(converted.gates, expected.gates):
-        # The generator's Pauli terms carry the qubit placement, so comparing
-        # generators also checks the gate acts on the right qubits.
+        # The generator's Pauli terms carry the qubit placement, so this also
+        # checks the gate acts on the right qubits.
         assert got_gate.generator.isclose(exp_gate.generator)
 
 
@@ -299,13 +296,12 @@ class TestFromQiskitCircuit:
         circuit = QuantumCircuit(1)
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
-        circuit.h(0)  # Hadamard gate is not supported
+        circuit.h(0)
 
         with pytest.raises(ValueError, match="Unsupported gate"):
             from_qiskit_circuit(circuit, [])
 
     def test_non_commuting_generator_rejected(self):
-        """A PauliEvolution gate with non-commuting terms is rejected on conversion."""
         circuit = QuantumCircuit(1)
         # X and Z on the same qubit anticommute, so this is not a single exponential.
         operator = SparsePauliOp.from_list([("X", 0.5), ("Z", 0.5)])
@@ -329,16 +325,14 @@ def test_to_qiskit_circuit_rejects_unbound() -> None:
 @requires_qiskit
 @pytest.mark.qiskit
 def test_from_to_qiskit_circuit_roundtrip() -> None:
-    """Since in both to and from qiskit operator there are some qubit rewiring,
-    this test makes sure algebraically the operators represent the same matrix.
+    """Both conversions rewire qubits, so the round trip must land on the same operator.
 
-    The test compares the first and final form on the monoprop side, since it is uniquely
-    representing circuits.
+    Compared on the monoprop side, which represents a circuit uniquely.
     """
     circuit = Circuit(
         gates=(ExpGate(PauliOperator({Pauli("XYZ", (3, 1, 2)): 1.0}, num_qubits=4)),),
         parameters=[-1.2],
-    )  # no parameter values
+    )
     qcirc = to_qiskit_circuit(circuit, num_qubits=4)
     circuit_test = from_qiskit_circuit(qcirc, initial_state=[])
     assert circuit.gates[0].generator.isclose(
@@ -349,7 +343,6 @@ def test_from_to_qiskit_circuit_roundtrip() -> None:
 @requires_qiskit
 @pytest.mark.qiskit
 def test_from_qiskit_circuit_rejects_multiple_registers() -> None:
-    """from_qiskit_circuit on a circuit with multiple registers raises a clear error."""
     qreg1 = QuantumRegister(1)
     qreg2 = QuantumRegister(1)
     circuit = QuantumCircuit(qreg1, qreg2)

@@ -13,8 +13,7 @@
 // limitations under the License.
 
 // White-box tests for MPGraph transforms and MPGraphView, built by direct Layer construction
-// (GraphBuildHarness) rather than through a full simulator. Each layer carries a distinct gate_index
-// so slice / view ordering and the front_offset lazy-compaction arms can be asserted directly.
+// (GraphBuildHarness). Each layer's distinct gate_index is the oracle for slice / view ordering.
 
 #include <boost/test/unit_test.hpp>
 

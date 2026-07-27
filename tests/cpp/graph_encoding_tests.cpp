@@ -12,13 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// White-box unit tests for the graph-encoding packing/layout math
-// (src/monoprop/detail/graph_encoding/*). These are pure/free functions, so the tests
-// construct their inputs directly and check them against hand-computed oracles. The
-// distributed round-trip / bit-packing paths are covered by large_cosine_storage_tests.cpp;
-// this file targets the pieces that file leaves uncovered: the CosineWordBuilder coalescer,
-// the checked_* overflow throws, build_layer_exchange_layout, the int8 phase read, and
-// both arms of the D-from-B derivation.
+// White-box tests for the pure packing/layout functions in
+// src/monoprop/detail/graph_encoding/*, checked against hand-computed oracles.
 
 #include <boost/test/unit_test.hpp>
 
@@ -36,9 +31,9 @@ BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_push_index_coalesces_within_wor
     CosineWordBuilder b;
     b.push_index(0);
     b.push_index(1);
-    b.push_index(3);   // same 64-bit word (base 0)
-    b.push_index(64);  // crosses into the next word -> flushes word 0
-    b.push_index(197); // word base 192, bit 5
+    b.push_index(3);
+    b.push_index(64); // crosses into the next word -> flushes word 0
+    b.push_index(197);
     const CosMask cos = b.finish();
 
     BOOST_REQUIRE_EQUAL(cos.blocks.size(), 3U);
@@ -53,9 +48,9 @@ BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_push_index_coalesces_within_wor
 
 BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_push_word_skips_zero_and_counts_bits) {
     CosineWordBuilder b;
-    b.push_word(0, 0b101ULL); // 2 bits
-    b.push_word(64, 0ULL);    // zero word: no-op, no block emitted
-    b.push_word(128, 0xFULL); // 4 bits
+    b.push_word(0, 0b101ULL);
+    b.push_word(64, 0ULL); // zero word: no-op, no block emitted
+    b.push_word(128, 0xFULL);
     const CosMask cos = b.finish();
 
     BOOST_REQUIRE_EQUAL(cos.blocks.size(), 2U);
@@ -73,7 +68,6 @@ BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_finish_flushes_pending_and_empt
     BOOST_REQUIRE_EQUAL(cos.blocks.size(), 1U);
     BOOST_CHECK_EQUAL(cos.blocks[0].second, uint64_t{1} << 5);
 
-    // Nothing pushed -> empty CosMask.
     CosineWordBuilder empty;
     const CosMask none = empty.finish();
     BOOST_CHECK(none.blocks.empty());
@@ -83,14 +77,12 @@ BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_finish_flushes_pending_and_empt
 // ── checked_* overflow guards ─────────────────────────────────────────────────────────────────
 
 BOOST_AUTO_TEST_CASE(graph_encoding_checked_term_index_boundary) {
-    // At the TermIndex ceiling it round-trips; above it throws (narrow build only — under the
-    // wide build 2^32 is well within range, so it must NOT throw there).
+    // At the TermIndex ceiling it round-trips; above it throws only in the narrow build.
     const size_t ceiling = static_cast<size_t>(std::numeric_limits<TermIndex>::max());
     BOOST_CHECK_EQUAL(detail::checked_term_index(ceiling, "term"), std::numeric_limits<TermIndex>::max());
 #if !defined(monoprop_WIDE_TERM_INDEX)
     BOOST_CHECK_THROW(detail::checked_term_index(ceiling + 1, "term"), std::overflow_error);
 #else
-    // 2^32 is representable under the wide index: no throw.
     const size_t above_u32 = static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1;
     BOOST_CHECK_EQUAL(detail::checked_term_index(above_u32, "term"), static_cast<TermIndex>(above_u32));
 #endif
@@ -106,14 +98,13 @@ BOOST_AUTO_TEST_CASE(graph_encoding_checked_packed_phase_bounds) {
 // ── PackedPhaseStorage allocation + int8 read path ─────────────────────────────────────────────
 
 BOOST_AUTO_TEST_CASE(graph_encoding_make_packed_phase_storage_modes_and_zero) {
-    // count == 0 yields an empty storage in either mode.
     BOOST_CHECK(detail::make_packed_phase_storage(0, /*binary=*/true).empty());
     BOOST_CHECK(detail::make_packed_phase_storage(0, /*binary=*/false).empty());
 
     // Binary mode packs 64 phases per word; int8 mode is one byte per phase.
     const auto binary = detail::make_packed_phase_storage(130, /*binary=*/true);
     BOOST_CHECK(binary.uses_binary_phases);
-    BOOST_CHECK_EQUAL(binary.phase_words.size(), 3U); // ceil(130/64)
+    BOOST_CHECK_EQUAL(binary.phase_words.size(), 3U);
     BOOST_CHECK(binary.phase_values.empty());
 
     const auto wide = detail::make_packed_phase_storage(130, /*binary=*/false);
@@ -123,9 +114,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_make_packed_phase_storage_modes_and_zero) {
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_packed_phase_at_reads_int8_values) {
-    // A non-binary (int8) storage must read back the stored value through packed_phase_at.
-    // (build_packed_cross_rank_storage below produces int8 storage when any phase is non-binary;
-    //  here we exercise the reader directly so the int8 branch of packed_phase_at is covered.)
+    // Exercises the int8 branch of packed_phase_at directly.
     auto storage = detail::make_packed_phase_storage(3, /*binary=*/false);
     storage.phase_values[0] = 5;
     storage.phase_values[1] = -7;
@@ -154,9 +143,8 @@ BOOST_AUTO_TEST_CASE(graph_encoding_exchange_layout_scale_and_displacements) {
 }
 
 // ── LayerCore::derivative_exchange_layout: the lazily-built 2x layout ─────────────────────────
-// Production only ever calls build_layer_exchange_layout with scale=1; the 2x layout reaches
-// MPI through this accessor, which is unreachable at comm size 1 (Evolution.cpp early-returns).
-// Without this case the whole derivative layout is untested in the default non-MPI suite.
+// Production only builds scale=1; the 2x layout reaches MPI through this accessor, which is
+// unreachable at comm size 1, so the default non-MPI suite would otherwise never touch it.
 
 BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_is_twice_the_evolution_layout) {
     LayerCore core;
@@ -176,9 +164,8 @@ BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_is_twice_the_evol
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_overflow_throws) {
-    // A count that fits int at 1x but not at 2x. build_layer_storage_unified runs this same derivation
-    // eagerly and discards it, so the overflow throws during build_graph rather than from inside the
-    // gradient collective window (where peers are already blocked in the recv-count round).
+    // A count that fits int at 1x but not at 2x. build_layer_storage_unified runs this derivation
+    // eagerly, so the throw lands in build_graph and not inside the gradient collective window.
     const size_t just_over_half = static_cast<size_t>(std::numeric_limits<int>::max()) / 2 + 1;
 
     LayerCore core;
@@ -189,10 +176,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_overflow_throws) 
 // ── D-from-B derivation: exercise BOTH arms of cross_rank_sin_recv_index ─────────────────────────
 
 BOOST_AUTO_TEST_CASE(graph_encoding_d_from_b_derivation_both_arms) {
-    // Lay out B = [in(P=2)] ++ [out(Q=3)] = [10,11 | 20,21,22]. D = [out(Q)] ++ [in(P)].
-    // sin_recv_count = P + Q = 5, in_count = P = 2, so out_count Q = 3.
-    //   idx < Q  -> D[idx] = B[P + idx]        (the out block)
-    //   idx >= Q -> D[idx] = B[idx - Q]        (the in block)
+    // B = [in(P=2)] ++ [out(Q=3)] = [10,11 | 20,21,22]; D = [out] ++ [in], derived from B and in_count.
     std::vector<CrossRankPartnerData> data(1);
     auto &p = data[0];
     for (size_t v : {10U, 11U, 20U, 21U, 22U}) {

@@ -36,8 +36,7 @@ using namespace pauli_oracle;
 
 namespace {
 
-// The JW basis-change table as a Python-facing index list (each basis vector -> its gamma indices),
-// suitable for the MonomialPropagator basis_change parameter.
+// JW basis-change table (basis vector -> gamma indices) for the basis_change parameter.
 template <size_t NumModes>
 auto jw_basis_indices(size_t n) -> std::vector<VecZ> {
     std::vector<VecZ> table(2 * NumModes);
@@ -53,7 +52,7 @@ auto jw_basis_indices(size_t n) -> std::vector<VecZ> {
         table[2 * i] = even_vec;
         table[2 * i + 1] = odd_vec;
     }
-    // The inactive high modes map to themselves (identity), matching indices_to_bitset of a lone slot.
+    // Inactive high modes map to themselves (identity).
     for (size_t s = 2 * n; s < 2 * NumModes; ++s) {
         table[s] = VecZ{s};
     }
@@ -62,7 +61,6 @@ auto jw_basis_indices(size_t n) -> std::vector<VecZ> {
 
 // ── Native Pauli propagator drivers ──────────────────────────────────────────────────────────
 
-// Build a native Pauli propagator over a string->real observable.
 template <size_t N>
 auto build_pauli_sim(const std::map<std::string, double> &obs,
                      unsigned int cutoff,
@@ -86,7 +84,7 @@ auto build_pauli_sim(const std::map<std::string, double> &obs,
                                  Basis::Pauli);
 }
 
-// Dense matrix of the propagator's current (Heisenberg) operator, decoded term-by-term.
+// Dense matrix of the propagator's current Heisenberg operator, decoded term by term.
 template <size_t N>
 auto dense_operator(MonomialPropagator<N> &mp) -> std::vector<cd> {
     const size_t d = size_t{1} << N;
@@ -112,7 +110,6 @@ auto dense_operator(MonomialPropagator<N> &mp) -> std::vector<cd> {
     return m;
 }
 
-// Dense observable from string->real coefficients.
 template <size_t N>
 auto dense_observable(const std::map<std::string, double> &obs) -> std::vector<cd> {
     const size_t d = size_t{1} << N;
@@ -126,9 +123,8 @@ auto dense_observable(const std::map<std::string, double> &obs) -> std::vector<c
     return m;
 }
 
-// T7 sub-case: apply one native Pauli gate exp(+i·g·θ·G) and compare the propagated operator to the
-// dense ground truth U† O U (Heisenberg). Any single Pauli G has G² = I, so
-// U = cos(gθ) I + i sin(gθ) G exactly (no general matrix-exp needed); U† = cos(gθ) I − i sin(gθ) G.
+// Apply one native Pauli gate exp(+i·g·θ·G) and compare against the dense ground truth U† O U. Any
+// single Pauli has G² = I, so U = cos(gθ) I + i sin(gθ) G exactly — no matrix exponential needed.
 template <size_t N>
 auto check_pauli_gate(const std::map<std::string, double> &obs, const std::string &gstr, double g, double theta)
     -> void {
@@ -208,7 +204,7 @@ struct PauliCircuit {
     std::vector<std::string> gens; // per gate: the Pauli string generator
     VecD gs;                       // per gate: gen_coeff g
     VecZ param_map;                // per gate: parameter index
-    VecD params;                   // parameter values
+    VecD params;
 };
 
 // Native gate arrays for the circuit: generator = native slots, gen_coeff = g.
@@ -222,7 +218,7 @@ auto native_gate_arrays(const PauliCircuit &c) -> std::pair<std::vector<VecZ>, V
     return {monos, gcs};
 }
 
-// JW gate arrays: generator = JW image, gen_coeff = antihermitian-normalized (Re(-g·jw / i^{L(L-1)/2})).
+// JW gate arrays: generator = JW image, gen_coeff = antihermitian-normalized.
 auto jw_gate_arrays(const PauliCircuit &c) -> std::pair<std::vector<VecZ>, VecD> {
     std::vector<VecZ> monos;
     VecD gcs;
@@ -234,8 +230,8 @@ auto jw_gate_arrays(const PauliCircuit &c) -> std::pair<std::vector<VecZ>, VecD>
     return {monos, gcs};
 }
 
-// Build the JW-image Majorana propagator representing the SAME physical observable, with the JW basis
-// change so its Support cutoff measures Pauli weight (matching the native arm).
+// The JW-image Majorana propagator for the same physical observable; the JW basis change makes its
+// Support cutoff measure Pauli weight, matching the native arm.
 template <size_t N>
 auto build_jw_sim(const std::map<std::string, double> &obs,
                   unsigned int cutoff,
@@ -262,11 +258,10 @@ auto build_jw_sim(const std::map<std::string, double> &obs,
 
 } // namespace
 
-// The repo's ctest discovery treats every --list_content line as a top-level test name, so cases use a
-// flat shared prefix (pauli_build_layer_*) instead of a BOOST_AUTO_TEST_SUITE. Run with
-// --run_test=pauli_build_layer_*.
+// ctest discovery treats every --list_content line as a top-level test name, so these cases share a
+// flat pauli_build_layer_* prefix instead of a BOOST_AUTO_TEST_SUITE.
 
-// T7 (MANDATORY): dense-matrix ground truth — pins the emit sign (step A3 of the wiring).
+// Dense-matrix ground truth: pins the emit sign.
 BOOST_AUTO_TEST_CASE(pauli_build_layer_dense_matrix_ground_truth) {
     // n = 2: single- and two-qubit generators, Y-heavy observables, several angles.
     const std::map<std::string, double> o2{{"XY", 0.5}, {"ZZ", -0.3}, {"YX", 0.7}, {"IZ", 0.2}, {"YY", -0.15}};
@@ -334,9 +329,8 @@ auto heisenberg_expval(MonomialPropagator<N> &sim) -> double {
     return sim.core_term() + s;
 }
 
-// T6 (ARBITER): JW-vs-native isomorphism. The native Pauli propagator must match the JW-image Majorana
-// propagator (same physical observable/gates, JW basis-change cutoff) on expectation value AND stored
-// term count, across pictures / cutoffs / atol.
+// JW-vs-native isomorphism: for the same observable and gates, the native Pauli propagator must match
+// the JW-image Majorana propagator on expectation value AND term count, across pictures/cutoffs/atol.
 BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
     constexpr size_t N = 3;
     // Kicked-Ising-like: single-qubit X rotations (incl. odd-popcount generators) + ZZ rotations.
@@ -401,17 +395,16 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
     }
 }
 
-// T8 (replay/fold consumers + odd-popcount guard): for a native Pauli circuit that INCLUDES a
-// single-qubit X layer (odd-popcount generator), the fused propagate path, the graph replay
-// (expectation_value + contract_partially, which recompute the cos from the fold), and the JW-Majorana
-// reference must all agree. Also directly checks the fold-recomputed per-layer cos set for the X layer.
+// On a native Pauli circuit that includes a single-qubit X layer (odd-popcount generator), the fused
+// propagate path, the graph replay (which recomputes the cos from the fold) and the JW-Majorana
+// reference must all agree.
 BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
     constexpr size_t N = 3;
     const std::map<std::string, double> obs{{"ZII", 0.5}, {"IZI", -0.3}, {"YIY", 0.4}, {"XZI", 0.2}, {"IIZ", 0.6}};
     const VecZ initial_state{0}; // qubit 0 occupied
 
-    // Direct fold guard: a single odd-popcount X gate. graph_data's fold-recomputed cos set must equal
-    // the terms anticommuting with X (pauli sense), or the make_fold_* Pauli branch (step E) is wrong.
+    // Direct fold guard: for a single odd-popcount X gate, graph_data's fold-recomputed cos set must
+    // equal the terms anticommuting with X in the Pauli sense.
     {
         auto mp = build_pauli_sim<N>(obs, 3);
         mp.build_graph({slots_of_string("XII")}, VecZ{0}, VecD{1.0}); // structural single gate

@@ -14,6 +14,12 @@
 
 #pragma once
 
+// The Majorana algebra: how a Monomial is read as a product of Majorana operators. Sibling of
+// algebra/PauliAlgebra.h over the shared primitives in algebra/AlgebraCommon.h: the Hermitian
+// coefficient normalization i^C(|maj|,2), the ordering (interleave) sign and its per-layer mask form,
+// the initial-state phase, the real<->complex codec, and Majorana basis changes. Reached through the
+// MajoranaAlgebra policy in algebra/Algebra.h.
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -27,16 +33,6 @@
 #include "monoprop/Utilities.h"
 #include "monoprop/algebra/AlgebraCommon.h"
 
-/*!
- * @file algebra/MajoranaAlgebra.h
- * @brief The Majorana algebra: how a @ref Monomial is read as a product of Majorana operators.
- *
- * Sibling of algebra/PauliAlgebra.h over the shared primitives in algebra/AlgebraCommon.h. Carries the
- * Majorana-specific algebra: the Hermitian coefficient normalization i^(C(|maj|,2)), the ordering
- * (interleave) sign and its per-layer mask form, the initial-state phase, the real<->complex codec, and
- * Majorana basis changes. Reached through the @c MajoranaAlgebra policy in algebra/Algebra.h.
- */
-
 namespace monoprop {
 
 inline constexpr auto POWERS_OF_I =
@@ -44,52 +40,32 @@ inline constexpr auto POWERS_OF_I =
 inline constexpr auto POWERS_OF_MINUS_ONE = std::array{1, -1};
 inline constexpr auto REAL_PARTS = std::array{1, 0, -1, 0};
 
-/**
- * @brief Maps a Majorana operator to its hermitian coefficient
- */
+// The i^C(|maj|,2) factor that makes a Majorana product Hermitian.
 template <size_t NumModes>
 auto hermitian_coefficient(const Monomial<NumModes> &maj) -> std::complex<double> {
     const auto pop = maj.count();
-    // Calculate i^(|maj| choose 2) = |maj|(|maj|-1)/2
     return POWERS_OF_I[n_choose_2(pop) % 4];
 }
 
-/**
- * @brief Check if a Majorana operator (represented by indices) is antihermitian
- * @note Test-support only (tests/cpp/mpfunctions.cpp); not called by the shipped library.
- */
+// A Majorana product of L indices is antihermitian iff L/2 is odd.
 inline auto is_antihermitian(const VecZ &indices) -> bool {
     return ((indices.size() / 2) % 2) != 0;
 }
 
-/**
- * @brief Get the generator correction for a Majorana product represented by indices.
- * @note Test-support only (tests/cpp/mpfunctions.cpp); not called by the shipped library.
- */
+// Generator correction for an L-index Majorana product: i^(C(L,2)+1).
 inline auto antihermitian_generator_correction(const VecZ &indices) -> std::complex<double> {
     return POWERS_OF_I[(n_choose_2(indices.size()) + 1) % 4];
 }
 
-/**
- * @brief The diagonal element <b|M|b> of a fully-paired Majorana term against the initial state.
- *
- * @p state_mask is the occupation mask of the initial product state (@c initial_state_mask); the
- * pairing sign folds in on top of the occupation parity. Only meaningful for fully-paired terms.
- */
+// Diagonal element <b|M|b> of a fully-paired Majorana term against the initial product state, whose
+// occupation mask is state_mask (initial_state_mask): (-1)^(|maj & state_mask| + |maj|/2) -- the
+// pairing sign folds in on top of the occupation parity. Only meaningful for fully-paired terms.
 template <size_t NumModes>
 auto majorana_state_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &state_mask) -> double {
     const auto num_pairs = maj.count_and(state_mask);
     return POWERS_OF_MINUS_ONE[(num_pairs + maj.count() / 2) % 2];
 }
 
-/**
- * @brief Ordering sign (-1)^S of the Majorana product maj·gen, S = #{set bits of maj strictly below
- *        each set bit of gen} mod 2.
- *
- * Reference spec only: the hot path uses the equivalent per-layer mask form `maj.parity_and(W)` (see
- * interleave_phase_mask). Keep this branch-clear version as the proof target; do NOT reintroduce it
- * into the per-term scan.
- */
 inline constexpr auto prefix_xor_64(uint64_t x) -> uint64_t {
     x ^= x << 1;
     x ^= x << 2;
@@ -100,6 +76,8 @@ inline constexpr auto prefix_xor_64(uint64_t x) -> uint64_t {
     return x;
 }
 
+// Ordering sign (-1)^S of maj·gen, S = #{set bits of maj strictly below each set bit of gen} mod 2.
+// Reference spec: the hot path uses the equivalent per-layer mask form (see interleave_phase_mask).
 template <size_t NumModes>
 auto interleave_phase(const Monomial<NumModes> &maj_bs, const Monomial<NumModes> &gen_bs) -> int {
     constexpr size_t n_words = Monomial<NumModes>::num_words();
@@ -115,8 +93,7 @@ auto interleave_phase(const Monomial<NumModes> &maj_bs, const Monomial<NumModes>
         }
 
         const uint64_t prefix_xor = prefix_xor_64(maj_word);
-        // Strict-lower-position parity: shift left by 1 to exclude the bit itself, fold in carry
-        // (-carry broadcasts the previous words' parity to all 64 bits).
+        // Shift left by 1 to exclude the bit itself; -carry broadcasts the previous words' parity.
         const uint64_t running_parity = (prefix_xor << 1) ^ (-carry);
         parity ^= static_cast<size_t>(std::popcount(running_parity & gen_word));
         carry ^= prefix_xor >> 63;
@@ -125,13 +102,9 @@ auto interleave_phase(const Monomial<NumModes> &maj_bs, const Monomial<NumModes>
     return (parity & 1) == 0 ? 1 : -1;
 }
 
-/**
- * @brief Per-generator mask W collapsing the per-term interleave sign to one masked parity.
- *
- * IDENTITY: interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : #{g∈G : g>c} odd}, FIXED for
- * the layer. Building W is O(2N) (sweep c high→low tracking #{g>c}); the per-term sign is then one
- * `maj.parity_and(W)` instead of interleave_phase's latency-bound prefix-XOR scan.
- */
+// Per-generator mask W collapsing the per-term interleave sign to one masked parity.
+// IDENTITY: interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : #{g∈G : g>c} odd}, FIXED for
+// the layer; the per-term sign is then one maj.parity_and(W) instead of the prefix-XOR scan.
 template <size_t NumModes>
 auto interleave_phase_mask(const Monomial<NumModes> &gen) -> Monomial<NumModes> {
     Monomial<NumModes> w;
@@ -152,9 +125,7 @@ inline auto hermitian_phase(size_t maj_count, size_t gen_count, size_t overlap) 
     return REAL_PARTS[power];
 };
 
-/**
- * @brief Generates all paired Majorana operators up to a maximum weight for the active logical modes.
- */
+// All fully paired Majorana monomials with up to max_ones pairs, over the active logical modes only.
 template <size_t NumModes>
 auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialList<NumModes> {
     MonomialList<NumModes> combinations;
@@ -184,9 +155,6 @@ auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialLi
     return combinations;
 }
 
-/**
- * @brief Encode a single Majorana coefficient into its real representation
- */
 template <size_t NumModes>
 auto encode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &maj) -> double {
     const auto encoded = coeff / hermitian_coefficient<NumModes>(maj);
@@ -198,17 +166,11 @@ auto encode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &m
     return encoded.real();
 }
 
-/**
- * @brief Decode a single real coefficient back to its complex representation
- */
 template <size_t NumModes>
 auto decode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &maj) -> std::complex<double> {
     return coeff * hermitian_coefficient<NumModes>(maj);
 }
 
-/**
- * @brief Changes Majorana basis using a provided transformation
- */
 template <size_t NumModes>
 auto change_basis(const Monomial<NumModes> &maj, const MonomialList<NumModes> &basis) -> Monomial<NumModes> {
     Monomial<NumModes> new_maj;

@@ -12,11 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The backend-agnostic row accessors in TypeAliases.h (materialize_row / assign_row / row_popcount /
-// for_each_row_position) exist so the dense-vector backend and the packed OperatorIndex backend
-// present ONE surface to every row consumer. This differential test builds the same rows in both
-// backends and asserts each accessor produces identical observable output — the contract the rest of
-// the engine relies on when it switches backends.
+// Differential test of the backend-agnostic row accessors in TypeAliases.h: the dense-vector and
+// packed OperatorIndex backends must produce identical output for the same rows.
 
 #include <boost/test/unit_test.hpp>
 
@@ -51,12 +48,9 @@ auto check_backends_agree(const std::vector<std::vector<size_t>> &raw_rows) -> v
 
     BOOST_REQUIRE(packed.size() == dense.size());
     for (size_t i = 0; i < dense.size(); ++i) {
-        // materialize_row: the two backends reconstruct the identical bitset.
         BOOST_TEST((materialize_row<N>(dense, i) == materialize_row<N>(packed, i)));
-        // row_popcount matches count().
         BOOST_TEST(row_popcount<N>(dense, i) == row_popcount<N>(packed, i));
         BOOST_TEST(row_popcount<N>(dense, i) == materialize_row<N>(dense, i).count());
-        // for_each_row_position yields the same ascending raw positions.
         BOOST_TEST(positions_of<N>(dense, i) == positions_of<N>(packed, i));
     }
 }

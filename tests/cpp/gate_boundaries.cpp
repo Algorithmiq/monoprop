@@ -96,9 +96,8 @@ BOOST_AUTO_TEST_CASE(set_parameter_mapping_per_layer_still_works) {
     BOOST_TEST(std::ranges::all_of(sim.parameter_mapping(), [](size_t p) { return p == 0; }));
 }
 
-// relabel copies each LayerCore, which carries the lazily-built derivative exchange layout. That layout
-// is eval-time cache, not data, so a mapping set AFTER a gradient must behave exactly like one set before
-// it: same values, and no inherited cache in the fresh cores.
+// relabel copies each LayerCore, whose lazily-built derivative exchange layout is eval-time cache, not
+// data: a mapping set after a gradient must behave exactly like one set before it.
 BOOST_AUTO_TEST_CASE(set_parameter_mapping_after_gradient_matches_before) {
     const std::vector<VecZ> monos{{0}, {1}, {2}};
     const VecD params{0.3, 0.4};
