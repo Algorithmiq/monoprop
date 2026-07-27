@@ -163,7 +163,7 @@ class TestUpdateMethods:
 
         circuit = sequence
         mp.propagate(circuit)
-        expval = mp.expectation_value()
+        expval = mp.expval()
         assert isinstance(expval, (int, float))
 
     @pytest.mark.parametrize("order", ["lower_first", "upper_first"])

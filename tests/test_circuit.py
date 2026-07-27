@@ -347,13 +347,9 @@ def test_expectation_value_matches_exact(fixture: str) -> None:
 
     assert prop.n_parameters == circuit.n_parameters
     # The circuit carries its own parameters, so it can be evaluated directly.
-    np.testing.assert_allclose(prop.expectation_value(circuit), problem.exact_expval)
-    np.testing.assert_allclose(
-        prop.expectation_value(circuit.parameters), problem.exact_expval
-    )
-    np.testing.assert_allclose(
-        prop.gradient(circuit), problem.exact_gradient, atol=1e-9
-    )
+    np.testing.assert_allclose(prop.expval(circuit), problem.exact_expval)
+    np.testing.assert_allclose(prop.expval(circuit.parameters), problem.exact_expval)
+    np.testing.assert_allclose(prop.grad(circuit), problem.exact_gradient, atol=1e-9)
 
 
 def test_eval_rejects_wrong_parameter_length() -> None:
@@ -363,7 +359,7 @@ def test_eval_rejects_wrong_parameter_length() -> None:
     prop = _propagator(problem)
     prop.build_graph(circuit)
     with pytest.raises(RuntimeError):
-        prop.expectation_value([0.1])  # graph has more than one parameter
+        prop.expval([0.1])  # graph has more than one parameter
 
 
 @pytest.mark.parametrize("fixture", FIXTURES)
@@ -374,7 +370,7 @@ def test_pared_functional_matches_unpared(fixture: str) -> None:
     prop = _propagator(problem)
     prop.build_graph(circuit)
 
-    pared = prop.expectation_value_functional(pare_threshold=1e-12)
+    pared = prop.expval_functional(pare_threshold=1e-12)
     np.testing.assert_allclose(
         pared(circuit.parameters), problem.exact_expval, atol=1e-9
     )
@@ -390,11 +386,11 @@ def test_from_circuit_propagates_in_place() -> None:
     # No graph is stored; the circuit's angles are already applied, so the value is read
     # off with no parameters (and matches a manual construct + propagate).
     assert prop.n_parameters == 0
-    np.testing.assert_allclose(prop.expectation_value(), problem.exact_expval)
+    np.testing.assert_allclose(prop.expval(), problem.exact_expval)
 
     manual = _propagator(problem)
     manual.propagate(circuit)
-    np.testing.assert_allclose(prop.expectation_value(), manual.expectation_value())
+    np.testing.assert_allclose(prop.expval(), manual.expval())
 
 
 # -- the graph-owned parameter mapping ------------------------------------------
@@ -413,7 +409,7 @@ def test_parameter_mapping_getter_reflects_graph() -> None:
     # Round-trip: writing the mapping back changes nothing.
     prop.parameter_mapping = mapping
     assert prop.parameter_mapping == mapping
-    np.testing.assert_allclose(prop.expectation_value(circuit), problem.exact_expval)
+    np.testing.assert_allclose(prop.expval(circuit), problem.exact_expval)
 
 
 def test_parameter_mapping_setter_ties_parameters() -> None:
@@ -428,11 +424,11 @@ def test_parameter_mapping_setter_ties_parameters() -> None:
     # graph evaluated with that same theta broadcast across every parameter.
     prop.parameter_mapping = [0] * n_layers
     assert prop.n_parameters == 1
-    tied = prop.expectation_value([0.3])
+    tied = prop.expval([0.3])
 
     prop.parameter_mapping = list(range(n_layers))
     assert prop.n_parameters == n_layers
-    reference = prop.expectation_value([0.3] * n_layers)
+    reference = prop.expval([0.3] * n_layers)
     np.testing.assert_allclose(tied, reference)
 
 
@@ -485,10 +481,10 @@ def test_parameter_mapping_setter_accepts_per_gate() -> None:
     # evaluated at the same broadcast angle.
     prop.parameter_mapping = [0, 0]  # length == n_gates
     assert prop.n_parameters == 1
-    tied_by_gate = prop.expectation_value([0.3])
+    tied_by_gate = prop.expval([0.3])
 
     prop.parameter_mapping = [0] * prop.graph_layers  # length == graph_layers
-    tied_by_layer = prop.expectation_value([0.3])
+    tied_by_layer = prop.expval([0.3])
     np.testing.assert_allclose(tied_by_gate, tied_by_layer)
 
 
@@ -581,10 +577,8 @@ def test_compose_then_single_build_matches_single_call(fixture: str) -> None:
     fused = _propagator(problem)
     fused.build_graph(composed)
 
-    np.testing.assert_allclose(
-        fused.expectation_value(composed), single.expectation_value(circuit)
-    )
-    np.testing.assert_allclose(fused.expectation_value(composed), problem.exact_expval)
+    np.testing.assert_allclose(fused.expval(composed), single.expval(circuit))
+    np.testing.assert_allclose(fused.expval(composed), problem.exact_expval)
 
 
 @pytest.mark.parametrize("fixture", FIXTURES)
@@ -607,10 +601,8 @@ def test_build_graph_in_two_calls_schrodinger(fixture: str) -> None:
     twice.build_graph(Circuit(_rebase(gates[:split])))
     twice.build_graph(Circuit(_rebase(gates[split:])))
 
-    np.testing.assert_allclose(
-        twice.expectation_value(params), single.expectation_value(params)
-    )
-    np.testing.assert_allclose(twice.expectation_value(params), problem.exact_expval)
+    np.testing.assert_allclose(twice.expval(params), single.expval(params))
+    np.testing.assert_allclose(twice.expval(params), problem.exact_expval)
 
 
 @pytest.mark.parametrize("fixture", FIXTURES)
@@ -628,7 +620,7 @@ def test_build_graph_twice_with_seed_regeneration(fixture: str) -> None:
     # (the former operator_coeffs round-trip) used for coefficient-informed truncation.
     prop.build_graph(Circuit(_rebase(gates[split:])), seed_parameters=params)
 
-    np.testing.assert_allclose(prop.expectation_value(params), problem.exact_expval)
+    np.testing.assert_allclose(prop.expval(params), problem.exact_expval)
 
 
 # --- Regression tests for the interface-refactor review ---------------------------------
@@ -659,7 +651,7 @@ def test_empty_default_mapping_gate_dropped_and_evaluable() -> None:
     prop = _small_propagator()
     prop.build_graph(circuit)
     assert prop.graph_layers == 1
-    prop.expectation_value(circuit.parameters)  # previously raised a length mismatch
+    prop.expval(circuit.parameters)  # previously raised a length mismatch
 
 
 def test_empty_gate_in_middle_builds_contiguously() -> None:
@@ -749,18 +741,18 @@ def test_extend_without_seed_builds_structurally() -> None:
 
     single = _small_propagator(lower_atol=1e-15)
     single.build_graph(c1 + c2)
-    reference = single.expectation_value(params)
+    reference = single.expval(params)
 
     extended = _small_propagator(lower_atol=1e-15)
     extended.build_graph(c1)
     extended.build_graph(c2)  # no seed_parameters: structural extension, no raise
     assert extended.n_parameters == 2
-    np.testing.assert_allclose(extended.expectation_value(params), reference)
+    np.testing.assert_allclose(extended.expval(params), reference)
 
     seeded = _small_propagator(lower_atol=1e-15)
     seeded.build_graph(c1)
     seeded.build_graph(c2, seed_parameters=params)  # explicit full-axis seed
-    np.testing.assert_allclose(seeded.expectation_value(params), reference)
+    np.testing.assert_allclose(seeded.expval(params), reference)
 
 
 def test_propagate_after_build_graph_rejected() -> None:
