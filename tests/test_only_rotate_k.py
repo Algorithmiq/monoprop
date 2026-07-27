@@ -55,7 +55,7 @@ def test_basic_orbital_rotation(serial_comm):
         parameters=[np.pi / 4],
         gen_coeffs=[1.0],
         param_inds=[0],
-        num_modes=n_modes,
+        system_size=n_modes,
     )
     circuit = sequence
     kwargs = {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
@@ -97,13 +97,13 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     non_orbital = Circuit(
         tuple(ExpGate._with_index(gate, None) for gate in non_orbital_gates),
         initial_state=(),
-        num_modes=problem.n_modes,
+        system_size=problem.n_modes,
         parameters=tuple(parameters[:split]),
     )
     orbital = Circuit(
         tuple(ExpGate._with_index(gate, None) for gate in orbital_gates),
         initial_state=(),
-        num_modes=problem.n_modes,
+        system_size=problem.n_modes,
         parameters=tuple(parameters[split:]),
     )
 
@@ -158,7 +158,7 @@ def test_only_rotate_len_k_errors_majorana(only_rotate_len_k, err, method_name):
     mp = MajoranaPropagator(MajoranaOperator({}, 4), [], cutoff=6, schrodinger_cutoff=8)
     with err:
         getattr(mp, method_name)(
-            Circuit((), initial_state=(), num_modes=4),
+            Circuit((), initial_state=(), system_size=4),
             only_rotate_len_k=only_rotate_len_k,
         )
 
@@ -196,6 +196,6 @@ def test_only_rotate_len_k_errors_pauli(only_rotate_len_k, err, method_name):
     mp = PauliPropagator(PauliOperator({}, 4), [], cutoff=6, schrodinger_cutoff=8)
     with err:
         getattr(mp, method_name)(
-            Circuit((), initial_state=(), num_modes=4),
+            Circuit((), initial_state=(), system_size=4),
             only_rotate_len_k=only_rotate_len_k,
         )

@@ -191,7 +191,7 @@ class ToQiskitCircuitCases:
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
             initial_state=(),
-            num_modes=1,
+            system_size=1,
             parameters=(0.7,),
         )
         expected_circuit = QuantumCircuit(1)
@@ -206,7 +206,7 @@ class ToQiskitCircuitCases:
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("ZXY", (3, 1, 2)): 1.5}, num_qubits=5)),),
             initial_state=(),
-            num_modes=5,
+            system_size=5,
             parameters=(0.7,),
         )
         expected_circuit = QuantumCircuit(5)
@@ -236,7 +236,7 @@ class QiskitCircuitsCases:
         expected = Circuit(
             gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
             initial_state=(),
-            num_modes=1,
+            system_size=1,
             parameters=(0.7,),
         )
         return circuit, expected
@@ -253,7 +253,7 @@ class QiskitCircuitsCases:
                 ExpGate(PauliOperator({Pauli("Y", 0): 0.5}, num_qubits=2)),
             ),
             initial_state=(),
-            num_modes=2,
+            system_size=2,
             parameters=(0.3, 0.5),
         )
         return circuit, expected
@@ -270,7 +270,7 @@ class QiskitCircuitsCases:
                 ExpGate(PauliOperator({Pauli("Z", 0): 0.5}, num_qubits=1)),
             ),
             initial_state=(),
-            num_modes=1,
+            system_size=1,
             parameters=(0.5, 0.3, 0.7),
         )
         return circuit, expected
@@ -283,7 +283,7 @@ class QiskitCircuitsCases:
         expected = Circuit(
             gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
             initial_state=(),
-            num_modes=1,
+            system_size=1,
             parameters=(0.7,),
         )
         return circuit, expected
@@ -324,7 +324,7 @@ def test_to_qiskit_circuit_rejects_unbound() -> None:
     circuit = Circuit(
         gates=(ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),),
         initial_state=(),
-        num_modes=1,
+        system_size=1,
     )  # no parameter values
     with pytest.raises(ValueError, match="bound circuit"):
         to_qiskit_circuit(circuit, num_qubits=1)
@@ -342,7 +342,7 @@ def test_from_to_qiskit_circuit_roundtrip() -> None:
     circuit = Circuit(
         gates=(ExpGate(PauliOperator({Pauli("XYZ", (3, 1, 2)): 1.0}, num_qubits=4)),),
         initial_state=[],
-        num_modes=4,
+        system_size=4,
         parameters=[-1.2],
     )  # no parameter values
     qcirc = to_qiskit_circuit(circuit, num_qubits=4)

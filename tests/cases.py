@@ -52,7 +52,7 @@ class DenseMajoranaArrays:
             majoranas=self.majoranas,
             gen_coeffs=self.gen_coeffs,
             param_inds=self.param_inds,
-            num_modes=self.num_modes,
+            system_size=self.num_modes,
             parameters=self.parameters,
             initial_state=self.initial_state,
         )

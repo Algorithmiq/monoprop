@@ -199,9 +199,9 @@ class MonomialPropagator(ABC):
     def _check_circuit_width(self, circuit: Circuit) -> None:
         """Reject a circuit with a system width that disagrees with the propagator."""
         expected = self._num_qubits if self._num_qubits is not None else self._num_modes
-        if circuit.num_modes != expected:
+        if circuit.system_size != expected:
             raise ValueError(
-                f"Circuit num_modes={circuit.num_modes} does not match propagator width "
+                f"Circuit system_size={circuit.system_size} does not match propagator width "
                 f"{expected}."
             )
 

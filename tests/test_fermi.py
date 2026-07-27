@@ -323,7 +323,7 @@ class TestCircuit:
         circuit = Circuit(
             gates=gates,
             initial_state=[0],
-            num_modes=1,
+            system_size=1,
             parameters=[0.1, 0.2],
         )
 
@@ -340,7 +340,7 @@ class TestCircuit:
         circuit = Circuit(
             gates=[gate_0, gate_1],
             initial_state=[0, 1],
-            num_modes=2,
+            system_size=2,
             parameters=[0.3, -0.7],
         )
 
@@ -352,7 +352,7 @@ class TestCircuit:
         assert all(g.family == "majorana" for g in circuit.gates)
 
         majoranas, gen_coeffs, per_monomial_mapping, gate_indices = expand_monomials(
-            circuit.gates, circuit.resolved_mapping, circuit.num_modes
+            circuit.gates, circuit.resolved_mapping, circuit.system_size
         )
         # One gate per fermi gate; each generator here has two monomials.
         n_terms = len(gate_0.generator.terms)
@@ -370,7 +370,7 @@ class TestCircuit:
         circuit = Circuit(
             gates=[ExpGate(_number_op()), ExpGate(identity), ExpGate(_number_op())],
             initial_state=[0],
-            num_modes=1,
+            system_size=1,
             parameters=[0.1, 0.2, 0.3],
         )
         assert len(circuit) == 2  # the identity gate is dropped
@@ -378,4 +378,4 @@ class TestCircuit:
 
     def test_validate_inputs_duplicate_initial_state_raises(self):
         with pytest.raises(ValueError, match="Duplicate indices in initial state"):
-            Circuit(gates=[ExpGate(_number_op())], initial_state=[0, 0], num_modes=1)
+            Circuit(gates=[ExpGate(_number_op())], initial_state=[0, 0], system_size=1)

@@ -51,7 +51,7 @@ class TestPauliPropagatorCutoff:
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=2)),),
             initial_state=(),
-            num_modes=2,
+            system_size=2,
             parameters=(0.3,),
         )
         with pytest.raises(ValueError, match="not Hermitian"):
@@ -290,17 +290,19 @@ class TestCircuit:
 
     def test_basic_construction(self):
         gates = (self._make_gate(), self._make_gate())
-        circuit = Circuit(gates, initial_state=(0,), num_modes=1, parameters=(0.5, 0.5))
+        circuit = Circuit(
+            gates, initial_state=(0,), system_size=1, parameters=(0.5, 0.5)
+        )
         assert len(circuit) == 2
         assert circuit.initial_state == (0,)
 
     def test_empty_gates(self):
-        circuit = Circuit((), initial_state=(0,), num_modes=1)
+        circuit = Circuit((), initial_state=(0,), system_size=1)
         assert len(circuit) == 0
 
     def test_default_mapping_is_identity(self):
         circuit = Circuit(
-            (self._make_gate(), self._make_gate()), initial_state=(), num_modes=1
+            (self._make_gate(), self._make_gate()), initial_state=(), system_size=1
         )
         assert list(circuit.resolved_mapping) == [0, 1]
         assert circuit.n_parameters == 2
@@ -314,7 +316,7 @@ class TestCircuit:
                     ExpGate(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),
                 ),
                 initial_state=(),
-                num_modes=2,
+                system_size=2,
             )
 
     def test_pauli_gate_equality(self):
