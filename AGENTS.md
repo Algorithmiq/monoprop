@@ -82,8 +82,7 @@ mp = MonomialPropagator(operator, num_modes=4, ...)
 5. Add Doxygen docstrings.
 6. Implement in corresponding `.cpp` in `src/`
 7. Add Python bindings in `src/monoprop/bindings/binder.h`
-8. Regenerate bindings with `tools/generate-binders.py`
-9. Test with both C++ and Python tests
+8. Test with both C++ and Python tests
 
 ## Documentation Maintenance Policy
 
