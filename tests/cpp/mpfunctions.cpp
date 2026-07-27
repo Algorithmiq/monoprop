@@ -163,7 +163,7 @@ constexpr size_t kStateLength = 37;
 const std::vector<TermIndex> kRows = {0, 1, 5, 12, 13, 14, 30, 36};
 const VecD kVals = {1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0};
 
-auto make_dense(size_t length, const std::vector<TermIndex> &rows, const VecD &vals) -> VecD {
+auto make_dense(size_t length, const std::vector<TermIndex>& rows, const VecD& vals) -> VecD {
     VecD dense(length, 0.0);
     for (size_t k = 0; k < rows.size(); ++k) {
         dense[static_cast<size_t>(rows[k])] = vals[k];
@@ -245,15 +245,8 @@ BOOST_AUTO_TEST_CASE(eval_state_indices_above_matches_the_dense_scan) {
     const auto dense = make_dense(kStateLength, kRows, kVals);
     const auto sparse = EvalState::sparse(kStateLength, kRows, kVals);
 
-    const std::vector<double> thresholds = {-1.0,
-                                            -0.0,
-                                            0.0,
-                                            1e-12,
-                                            0.5,
-                                            std::nextafter(1.0, 0.0),
-                                            1.0,
-                                            2.0,
-                                            std::numeric_limits<double>::quiet_NaN()};
+    const std::vector<double> thresholds =
+        {-1.0, -0.0, 0.0, 1e-12, 0.5, std::nextafter(1.0, 0.0), 1.0, 2.0, std::numeric_limits<double>::quiet_NaN()};
     for (const auto t : thresholds) {
         BOOST_TEST_CONTEXT("threshold = " << t) {
             const auto expected = indices_above(dense, t);

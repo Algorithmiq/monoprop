@@ -45,7 +45,7 @@ concept Printable = requires(std::ostream& os, const T& value) {
 // boost_test_print_type has to be in the same namespace as the printed type
 namespace std {
 template <typename T>
-requires detail::Printable<T>
+    requires detail::Printable<T>
 auto boost_test_print_type(std::ostream& os, const std::vector<T>& aVec) -> std::ostream& {
     os << "std::vector size " << aVec.size() << " [";
     for (const auto& i : aVec) {
@@ -55,7 +55,7 @@ auto boost_test_print_type(std::ostream& os, const std::vector<T>& aVec) -> std:
     return os;
 }
 template <typename K, typename V>
-requires detail::Printable<K> && detail::Printable<V>
+    requires detail::Printable<K> && detail::Printable<V>
 auto boost_test_print_type(std::ostream& os, const std::pair<K, V>& aPair) -> std::ostream& {
     os << "[" << aPair.first << ", " << aPair.second << "]";
     return os;

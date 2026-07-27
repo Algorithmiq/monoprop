@@ -893,8 +893,8 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
         // Hamiltonian in Schrödinger, the state otherwise.
         const auto keep = schrodinger_ ? indices_above(op, *pare_threshold) : state.indices_above(*pare_threshold);
         const auto count = schrodinger_ ? op.size() : state.length();
-        graph = std::make_shared<const MPGraph>(
-            pare_graph(graph_, keep, count, schrodinger_, comm_, full_cos_of_layer));
+        graph =
+            std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, schrodinger_, comm_, full_cos_of_layer));
     }
     else {
         graph = std::shared_ptr<const MPGraph>(std::shared_ptr<const void>{}, &graph_);
