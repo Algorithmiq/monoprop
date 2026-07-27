@@ -224,6 +224,21 @@ class ExpGate:
         """Return a string representation such as ``ExpGate(<generator>, index=0)``."""
         return f"{self.__class__.__name__}({self.generator}, index={self.index})"
 
+    @property
+    def system_size(self) -> int:
+        """Number of modes/qubits the generator acts on.
+
+        Reads ``num_modes`` off a [MajoranaOperator][monoprop.majorana.MajoranaOperator]
+        generator, or ``num_qubits`` off a [PauliOperator][monoprop.pauli.PauliOperator]
+        generator.
+
+        Returns:
+            Number of modes/qubits
+        """
+        if isinstance(self.generator, PauliOperator):
+            return self.generator.num_qubits
+        return self.generator.num_modes
+
 
 class Circuit:
     """A variational circuit: an ordered sequence of exponential gates, angles, and a state.

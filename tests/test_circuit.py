@@ -88,6 +88,32 @@ def test_exp_from_fermi_generator_becomes_majorana() -> None:
     assert isinstance(gate.generator, MajoranaOperator)
 
 
+@pytest.mark.parametrize(
+    ("generator", "expected"),
+    [
+        pytest.param(
+            MajoranaOperator({(0, 1): 1.0j}, num_modes=3), 3, id="majorana_operator"
+        ),
+        pytest.param(
+            PauliOperator({Pauli("XX"): 1.0}, num_qubits=2), 2, id="pauli_operator"
+        ),
+        pytest.param(
+            # A FermiOperator generator is converted to Majorana; system_size follows suit.
+            FermiOperator(
+                [[(0, "+"), (1, "-")], [(1, "+"), (0, "-")]], [1.0, -1.0], num_modes=4
+            ),
+            4,
+            id="fermi_operator",
+        ),
+    ],
+)
+def test_exp_gate_system_size_reads_from_generator(
+    generator: MajoranaOperator | PauliOperator | FermiOperator, expected: int
+) -> None:
+    """system_size reads num_modes off a Majorana generator, num_qubits off a Pauli one."""
+    assert ExpGate(generator).system_size == expected
+
+
 class ExpGateAtolCases:
     @case(id="single_excitation")
     def case_single_excitation(self):
