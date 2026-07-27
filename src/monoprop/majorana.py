@@ -31,9 +31,11 @@ if TYPE_CHECKING:
 class Majorana:
     """A single Majorana monomial.
 
-    Represents an ordered product $m_{i_1} ... m_{i_w}$. A [MajoranaOperator][] is built from Majorana terms, and the generator an
-    [ExpGate][monoprop.circuit.ExpGate] gate exponentiates. Indices must be sorted, distinct, unique 
-    and nonnegative. Use :math:`from_unsorted` to create a canonical term from an unsorted and/or repeated index sequence.
+    Represents an ordered product $m_{i_1} ... m_{i_w}$. A [MajoranaOperator][] is built
+    from Majorana terms, and the generator an [ExpGate][monoprop.circuit.ExpGate] gate
+    exponentiates. Indices must be sorted, distinct, unique and nonnegative. Use
+    q:math:`from_unsorted` to create a canonical term from an unsorted and/or repeated
+    index sequence.
 
     An immutable value object: equal indices compare equal and hash alike, so a term can be
     used as a dictionary key (as [MajoranaOperator.terms][] does).
