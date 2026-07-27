@@ -109,3 +109,37 @@ def test_qiskit_with_mp(
     mp.propagate(circuit)
     test_expval = mp.expectation_value()
     assert np.isclose(test_expval, qiskit_result, atol=1e-6)
+
+
+@requires_qiskit
+@pytest.mark.qiskit
+@pytest.mark.parametrize(
+    ("gate", "angle", "qubit", "observable"),
+    [
+        ("rx", 0.7, 0, "IY"),
+        ("ry", 0.4, 1, "XI"),
+        ("rz", 0.9, 0, "IX"),
+        ("rx", -0.3, 1, "YI"),
+    ],
+)
+def test_rotation_sign_matches_qiskit(gate, angle, qubit, observable):
+    """A converted rotation must reproduce qiskit's sign, not its conjugate.
+
+    Qiskit rotates by ``exp(-i t P/2)`` while :class:`~monoprop.circuit.ExpGate` applies
+    ``exp(+i theta H)``. Each case pairs a single rotation with an observable that anticommutes
+    with its generator, so the expectation value is an odd function of the angle and a missing
+    negation across the boundary shows up as an exact sign flip. The
+    ``from_qiskit_circuit``/``to_qiskit_circuit`` roundtrip cannot catch this -- it negates both
+    ways -- so this compares against qiskit's own simulator.
+    """
+    qiskit_circuit = QuantumCircuit(2)
+    getattr(qiskit_circuit, gate)(angle, qubit)
+    hamiltonian = SparsePauliOp.from_list([(observable, 1.0)])
+
+    expected = StatevectorEstimator().run([(qiskit_circuit, hamiltonian)]).result()
+    expected_expval = expected[0].data.evs
+
+    mp = PauliPropagator(from_qiskit_operator(hamiltonian), [], cutoff=4)
+    mp.propagate(from_qiskit_circuit(qiskit_circuit, []))
+
+    assert np.isclose(mp.expectation_value(), expected_expval, atol=1e-9)

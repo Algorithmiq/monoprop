@@ -20,8 +20,7 @@
 
 namespace monoprop {
 
-// These helpers are declared in Validation.h and used across translation units,
-// so clang-tidy's internal-linkage suggestion does not apply here.
+// Declared in Validation.h and used across translation units, so internal linkage does not apply.
 // NOLINTBEGIN(misc-use-internal-linkage)
 
 namespace {
@@ -65,10 +64,9 @@ auto validate_gate_indices(const VecZ &gate_indices, size_t num_monomials) -> vo
 
 auto validate_parameters_length(const VecD &params, const VecZ &parameter_mapping) -> void {
     if (parameter_mapping.empty()) {
-        return; // No validation needed for empty parameter_mapping
+        return;
     }
 
-    // Find the maximum index in parameter_mapping
     size_t expected_param_length = *std::max_element(parameter_mapping.begin(), parameter_mapping.end()) + 1;
     if (params.size() != expected_param_length) {
         throw std::runtime_error(

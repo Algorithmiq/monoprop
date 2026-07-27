@@ -49,6 +49,13 @@ test-cpp-wide:
     cmake --build --preset release-gcc-wide
     ctest --preset release-gcc-wide -L serial
 
+# Build and run the C++ suite with MPI enabled. `monoprop_MPI_TEST_PROCS` (default 2, a
+# semicolon list) picks the rank counts the mpi-labelled tests are registered for.
+test-cpp-mpi:
+    cmake --preset release-gcc-mpi
+    cmake --build --preset release-gcc-mpi
+    ctest --preset release-gcc-mpi
+
 # Configure + build the Coverage tree, run the C++ suite, and emit a gcovr report over src/include.
 # Mirrors the flags the CI cpp-checks job uses (adjust --gcov-executable to your gcov-14).
 coverage-cpp:

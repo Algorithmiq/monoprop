@@ -26,7 +26,7 @@
 
 namespace monoprop {
 
-/// @brief Per-rank breakdown of graph memory, in bytes. Fields sum to total_bytes().
+// Per-rank breakdown of graph memory, in bytes; the fields sum to total_bytes().
 struct GraphMemoryBreakdown final {
     size_t layer_descriptor_bytes = 0;
     size_t layer_storage_object_bytes = 0;
@@ -50,9 +50,8 @@ struct GraphMemoryBreakdown final {
     }
 };
 
-/// @brief Windowed, optionally-reversed read-only view over a graph's layer vector.
-/// `reverse` traverses the window newest-first (Schrödinger replay order). Non-owning — the layer
-/// vector must outlive the view.
+// Windowed, optionally-reversed read-only view over a graph's layer vector. `reverse` traverses the window
+// newest-first (Schrödinger replay order). Non-owning — the layer vector must outlive the view.
 class MPGraphView {
 public:
     MPGraphView(const std::vector<Layer> &layers, size_t base, size_t count, bool reverse)
@@ -73,7 +72,6 @@ private:
             throw std::out_of_range(std::format("Layer {} is out of range (layers={})", layer_idx, count_));
         }
 
-        // reverse_ flips traversal order (Schrödinger replays newest-first) within the [base_, base_+count_) window.
         return base_ + (reverse_ ? count_ - 1 - layer_idx : layer_idx);
     }
 

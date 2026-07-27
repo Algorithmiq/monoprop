@@ -60,7 +60,7 @@ endmacro()
 
 option_with_default(monoprop_MAX_NUM_MODES "Maximum number of simulable Fermionic modes with Python bindings" 250)
 option_with_print(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
-option_with_print(monoprop_WIDE_TERM_INDEX "Use 64-bit term indices (support > 2^32 local terms)" OFF)
+option_with_print(monoprop_WIDE_TERM_INDEX "Use 64-bit term indices (support > 2^32 terms per shard)" OFF)
 if(monoprop_WIDE_TERM_INDEX)
   add_compile_definitions(monoprop_WIDE_TERM_INDEX)
 endif()

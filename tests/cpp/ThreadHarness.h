@@ -20,9 +20,8 @@
 
 namespace test_utils {
 
-// Run `body(comm, rank)` on S participant threads sharing one transport `comm`; join all. Exceptions
-// thrown by a body are captured per-rank and returned (so Boost.Test assertions stay on the main
-// thread, where they are safe). Shared by the ShmComm and HybridComm transport suites.
+// Run `body(comm, rank)` on S participant threads sharing one transport `comm`; join all. Body
+// exceptions are captured per-rank and returned: Boost.Test assertions are only safe on the main thread.
 template <class Comm, class Body>
 auto run_comm_threads(Comm &comm, int s, Body body) -> std::vector<std::exception_ptr> {
     std::vector<std::exception_ptr> errs(static_cast<size_t>(s));

@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Coverage of the MonomialPropagator constructor/API guard rails (ctor argument validation, the
-// operator-index range check, the propagate()-on-a-stored-graph guard, and MPGraph::get_layer bounds).
-// These throw paths define the public contract and were previously only reached from Python.
+// The MonomialPropagator throw paths that define the public contract: ctor argument validation, the
+// operator/generator index range checks, the propagate()-on-a-stored-graph guard, get_layer bounds.
 
 #include <boost/test/unit_test.hpp>
 
@@ -37,7 +36,7 @@ constexpr size_t N = 8;
 using MP = MonomialPropagator<N>;
 
 // Construct with the full argument list; individual cases vary just the field(s) under test.
-auto make(const FermiOperatorMap &op,
+auto make(const OperatorDict &op,
           unsigned int cutoff = 2 * N,
           std::optional<double> lower_atol = std::nullopt,
           std::optional<double> upper_atol = std::nullopt,
@@ -59,13 +58,12 @@ auto make(const FermiOperatorMap &op,
 }
 } // namespace
 
-// A minimal valid configuration must construct without throwing.
 BOOST_AUTO_TEST_CASE(ctor_accepts_valid_config) {
-    BOOST_CHECK_NO_THROW(make(FermiOperatorMap{}));
+    BOOST_CHECK_NO_THROW(make(OperatorDict{}));
 }
 
 BOOST_AUTO_TEST_CASE(ctor_logical_num_modes_out_of_range_throws) {
-    BOOST_CHECK_THROW(make(FermiOperatorMap{},
+    BOOST_CHECK_THROW(make(OperatorDict{},
                            2 * N,
                            std::nullopt,
                            std::nullopt,
@@ -73,7 +71,7 @@ BOOST_AUTO_TEST_CASE(ctor_logical_num_modes_out_of_range_throws) {
                            std::nullopt,
                            /*logical=*/0),
                       std::runtime_error);
-    BOOST_CHECK_THROW(make(FermiOperatorMap{},
+    BOOST_CHECK_THROW(make(OperatorDict{},
                            2 * N,
                            std::nullopt,
                            std::nullopt,
@@ -86,36 +84,69 @@ BOOST_AUTO_TEST_CASE(ctor_logical_num_modes_out_of_range_throws) {
 BOOST_AUTO_TEST_CASE(ctor_pauli_requires_support_cutoff_throws) {
     // Pauli basis + Length cutoff is rejected (Length has no Pauli-weight meaning).
     BOOST_CHECK_THROW(
-        make(FermiOperatorMap{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, N, Basis::Pauli),
+        make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, N, Basis::Pauli),
         std::invalid_argument);
-    // Pauli basis + Support cutoff is fine.
-    BOOST_CHECK_NO_THROW(make(FermiOperatorMap{},
-                              2 * N,
-                              std::nullopt,
-                              std::nullopt,
-                              CutoffType::Support,
-                              std::nullopt,
-                              N,
-                              Basis::Pauli));
+    BOOST_CHECK_NO_THROW(
+        make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Support, std::nullopt, N, Basis::Pauli));
 }
 
 BOOST_AUTO_TEST_CASE(ctor_pauli_forbids_basis_change_throws) {
     const std::vector<VecZ> some_basis(2 * N, VecZ{0});
     BOOST_CHECK_THROW(
-        make(FermiOperatorMap{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Support, some_basis, N, Basis::Pauli),
+        make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Support, some_basis, N, Basis::Pauli),
         std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(ctor_upper_atol_below_lower_atol_throws) {
-    BOOST_CHECK_THROW(make(FermiOperatorMap{}, 2 * N, /*lower=*/1e-6, /*upper=*/1e-8), std::runtime_error);
-    // upper >= lower is accepted.
-    BOOST_CHECK_NO_THROW(make(FermiOperatorMap{}, 2 * N, /*lower=*/1e-8, /*upper=*/1e-6));
+    BOOST_CHECK_THROW(make(OperatorDict{}, 2 * N, /*lower=*/1e-6, /*upper=*/1e-8), std::runtime_error);
+    BOOST_CHECK_NO_THROW(make(OperatorDict{}, 2 * N, /*lower=*/1e-8, /*upper=*/1e-6));
 }
 
 BOOST_AUTO_TEST_CASE(ctor_operator_index_out_of_range_throws) {
-    FermiOperatorMap op;
+    OperatorDict op;
     op[VecZ{20}] = std::complex<double>(1.0, 0.0); // 20 >= 2*logical (=16)
     BOOST_CHECK_THROW(make(op), std::runtime_error);
+}
+
+// A gate generator index outside the system must throw, not underflow 2*NumModes-1-index into an
+// out-of-bounds Bitset::set.
+BOOST_AUTO_TEST_CASE(build_graph_generator_index_out_of_range_throws) {
+    OperatorDict op;
+    op[VecZ{0, 1}] = std::complex<double>(0.0, 1.0);
+    auto sim = make(op);
+    // 2*logical_num_modes == 16, so slot 20 is outside this system.
+    BOOST_CHECK_THROW(sim.build_graph({VecZ{20, 21}}, VecZ{0}, VecD{1.0}), std::runtime_error);
+    BOOST_CHECK_NO_THROW(sim.build_graph({VecZ{0, 3}}, VecZ{0}, VecD{1.0}));
+}
+
+// A propagator over fewer LOGICAL modes than its instantiation must reject indices outside its own
+// system, not merely outside the storage width.
+BOOST_AUTO_TEST_CASE(generator_index_bound_is_logical_not_storage) {
+    OperatorDict op;
+    op[VecZ{0, 1}] = std::complex<double>(0.0, 1.0);
+    auto sim = make(op, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, /*logical=*/4);
+    // 2*logical == 8 <= slot 9 < 2*N == 16: inside the storage, outside the system.
+    BOOST_CHECK_THROW(sim.build_graph({VecZ{9}}, VecZ{0}, VecD{1.0}), std::runtime_error);
+}
+
+// The update_* setters must enforce the same invariants the constructor does, rather than writing
+// straight through to regenerate_cutoff_fn_().
+BOOST_AUTO_TEST_CASE(setters_enforce_the_constructor_invariants) {
+    auto pauli =
+        make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Support, std::nullopt, N, Basis::Pauli);
+    BOOST_CHECK_THROW(pauli.update_cutoff_type(CutoffType::Length), std::invalid_argument);
+    BOOST_CHECK_THROW(pauli.update_basis_change(std::vector<VecZ>(2 * N, VecZ{0})), std::invalid_argument);
+
+    auto majorana = make(OperatorDict{});
+    // Too few rows: regenerate_cutoff_fn_ indexes [0, 2*logical_num_modes) unconditionally.
+    BOOST_CHECK_THROW(majorana.update_basis_change(std::vector<VecZ>{VecZ{0}}), std::invalid_argument);
+    // A row naming a slot outside the system is rejected as well.
+    BOOST_CHECK_THROW(majorana.update_basis_change(std::vector<VecZ>(2 * N, VecZ{2 * N})), std::runtime_error);
+    std::vector<VecZ> identity(2 * N);
+    for (size_t i = 0; i < identity.size(); ++i) {
+        identity[i] = VecZ{i};
+    }
+    BOOST_CHECK_NO_THROW(majorana.update_basis_change(identity));
 }
 
 // propagate() must refuse to run on top of a graph already built by build_graph().

@@ -23,8 +23,8 @@
 
 namespace monoprop {
 
-/// @brief std::bitset replacement storing contiguous uint64_t words for zero-copy MPI, O(1) word
-/// hashing, portable std::countr_zero scanning, and memcpy-safety.
+// std::bitset replacement over contiguous uint64_t words: zero-copy MPI, word-wise hashing,
+// portable std::countr_zero scanning, memcpy-safe.
 template <size_t NumBits>
 class Bitset {
     static_assert(NumBits > 0, "Bitset requires at least 1 bit");
@@ -71,7 +71,7 @@ public:
 
     [[nodiscard]] static constexpr auto size() noexcept -> size_t { return NumBits; }
 
-    /// Count of bits set in (this & other) without creating a temporary.
+    // popcount(*this & other) without materializing the temporary.
     [[nodiscard]] constexpr auto count_and(const Bitset &o) const noexcept -> size_t {
         size_t c = 0;
         for (size_t i = 0; i < kNumWords; ++i)
@@ -181,8 +181,7 @@ public:
     [[nodiscard]] constexpr auto data() noexcept -> uint64_t * { return words_.data(); }
     [[nodiscard]] constexpr auto word(size_t i) const noexcept -> uint64_t { return words_[i]; }
 
-    /// Find the position of the first set bit, or NumBits if none.
-    [[nodiscard]] constexpr auto find_first() const noexcept -> size_t {
+    [[nodiscard]] constexpr auto find_first() const noexcept -> size_t { // NumBits if none
         for (size_t i = 0; i < kNumWords; ++i) {
             if (words_[i])
                 return i * word_width + static_cast<size_t>(std::countr_zero(words_[i]));
@@ -190,8 +189,7 @@ public:
         return NumBits;
     }
 
-    /// Find the next set bit after pos, or NumBits if none.
-    [[nodiscard]] constexpr auto find_next(size_t pos) const noexcept -> size_t {
+    [[nodiscard]] constexpr auto find_next(size_t pos) const noexcept -> size_t { // NumBits if none
         if (++pos >= NumBits)
             return NumBits;
         if constexpr (kNumWords == 1) {
@@ -211,7 +209,7 @@ public:
         }
     }
 
-    /// Stream output MSB→LSB (std::bitset convention); test-support for Boost.Test assertion printing.
+    // Stream output MSB→LSB (std::bitset convention).
     friend auto operator<<(std::ostream &os, const Bitset &bs) -> std::ostream & {
         for (size_t i = NumBits; i-- > 0;)
             os << (bs.test(i) ? '1' : '0');
@@ -249,7 +247,6 @@ struct SplitmixHash<monoprop::Bitset<NumBits>> {
     }
 };
 
-// std::hash specialization for Bitset — enables use with std:: containers.
 namespace std {
 template <size_t NumBits>
 struct hash<monoprop::Bitset<NumBits>> {

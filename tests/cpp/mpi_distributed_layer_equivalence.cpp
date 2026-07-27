@@ -25,10 +25,9 @@
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
-// Verifies that single-rank and multi-rank simulations produce equivalent energy
-// values (within floating-point accumulation tolerance). Rounding differences from
-// different summation order are expected; they grow with system size but are bounded
-// by ~1e-7 relative for all tested configurations.
+// Single-rank (SELF) vs multi-rank (WORLD) equivalence of energy, gradient, native-Pauli energy and
+// the MPI x shard hybrid. Oracle: the SELF run; the only expected difference is summation order,
+// covered by near()'s kFpRtol = 1e-7.
 
 namespace {
 
@@ -50,7 +49,7 @@ auto load_inputs() -> TestInputs {
 auto run_energy(const TestInputs& inputs, MPI_Comm comm) -> double {
     MonomialPropagator<kNumModes> sim(inputs.data.hamiltonian,
                                       kCutoff,
-                                      inputs.data.hartree_fock,
+                                      inputs.data.initial_state,
                                       std::nullopt,
                                       comm,
                                       std::nullopt,
@@ -61,8 +60,6 @@ auto run_energy(const TestInputs& inputs, MPI_Comm comm) -> double {
     auto fn = sim.expectation_value_functional();
     return fn(inputs.data.parameters);
 }
-
-// ─── Test 1: single-rank (SELF) energy matches multi-rank (WORLD) energy ────────
 
 BOOST_AUTO_TEST_CASE(rank_count_energy_within_fp_tolerance) {
     if (mpi::size(MPI_COMM_WORLD) < 2) {
@@ -76,8 +73,6 @@ BOOST_AUTO_TEST_CASE(rank_count_energy_within_fp_tolerance) {
     BOOST_TEST(near(e_serial, e_world));
 }
 
-// ─── Test 2: gradient is consistent across rank counts ──────────────────────────
-
 BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
     if (mpi::size(MPI_COMM_WORLD) < 2) {
         BOOST_TEST_MESSAGE("Skipping gradient cross-rank-count case: requires at least 2 ranks.");
@@ -88,7 +83,7 @@ BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
     auto run_gradient = [&](MPI_Comm comm) -> VecD {
         MonomialPropagator<kNumModes> sim(inputs.data.hamiltonian,
                                           kCutoff,
-                                          inputs.data.hartree_fock,
+                                          inputs.data.initial_state,
                                           std::nullopt,
                                           comm,
                                           std::nullopt,
@@ -111,15 +106,13 @@ BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
     }
 }
 
-// ─── Test 3: NATIVE PAULI energy matches across rank counts ─────────────────────
-// First permanent multi-rank coverage of the native Pauli engine (basis == Pauli). The same owner
-// hash and cross-rank resolve path drive the intra-process shard runtime, so this guards both.
+// Native Pauli engine across rank counts. The same owner hash and cross-rank resolve path drive the
+// intra-process shard runtime, so this guards both.
 
 constexpr size_t kPauliQ = 6;
-// Pauli strings map to Majorana-slot index vectors via pauli_oracle::slots_of_string.
 
 auto run_pauli_energy(MPI_Comm comm) -> double {
-    FermiOperatorMap init;
+    OperatorDict init;
     init[slots_of_string("ZIIIII")] = std::complex<double>(1.0, 0.0);
     init[slots_of_string("IIZZII")] = std::complex<double>(0.5, 0.0);
     MonomialPropagator<kPauliQ> sim(init,
@@ -167,16 +160,15 @@ BOOST_AUTO_TEST_CASE(pauli_rank_count_energy_within_fp_tolerance) {
     BOOST_TEST(near(e_serial, e_world));
 }
 
-// ─── Test 4: MPI x shard HYBRID equivalence ─────────────────────────────────────
-// Under R ranks, forcing shards=S builds the HybridComm flat R*S world. Its energy must match pure
-// MPI (R ranks, 1 shard) and serial, and the operator size must be EXACTLY invariant (the hybrid only
-// changes allreduce association, not which terms exist). Explicit shards= wins over the suite's
-// monoprop_SHARDS=off, so this is the sole case that exercises the hybrid transport end to end.
+// MPI x shard hybrid: shards=S under R ranks builds the HybridComm flat R*S world, which only changes
+// allreduce association, so the energy must match serial and the global term count must be exactly
+// invariant. Explicit shards= wins over the suite's monoprop_SHARDS=off, so this is the sole case
+// exercising the hybrid transport end to end.
 
 auto run_energy_sharded(const TestInputs& inputs, MPI_Comm comm, size_t shards) -> std::pair<double, size_t> {
     MonomialPropagator<kNumModes> sim(inputs.data.hamiltonian,
                                       kCutoff,
-                                      inputs.data.hartree_fock,
+                                      inputs.data.initial_state,
                                       std::nullopt,
                                       comm,
                                       std::nullopt,
@@ -199,7 +191,6 @@ BOOST_AUTO_TEST_CASE(hybrid_mpi_shard_energy_and_size_equivalence) {
     }
     const auto inputs = load_inputs();
     const auto [e_serial, n_serial] = run_energy_sharded(inputs, MPI_COMM_SELF, 1); // pure serial (full op)
-    // 2 shards per rank -> flat R*2 hybrid world over MPI_COMM_WORLD.
     const auto [e_hybrid, n_local] = run_energy_sharded(inputs, MPI_COMM_WORLD, 2);
     // Each rank's facade holds only its local shards; the GLOBAL term count is the cross-rank sum.
     const size_t n_hybrid_global = mpi::allreduce_sum<size_t>(n_local, MPI_COMM_WORLD);

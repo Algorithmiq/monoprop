@@ -27,10 +27,10 @@
 #include "monoprop/detail/mpi/ShardBarrier.h"
 
 // In-process shared-memory SPMD transport: S shard-master threads each call the same collective
-// sequence in program order, every collective a two-phase barrier (publish-slot → barrier →
-// read-peers → barrier). Two guarantees the engine relies on: alltoallv delivers each source's block
-// contiguously in ascending source-rank order (Resolve.h's positional pairing needs it), and allreduce
-// sums in ascending rank order so the result is bit-identical and deterministic per S.
+// sequence in program order, every collective two-phase (publish slot → barrier → read peers →
+// barrier). Two guarantees the engine relies on: alltoallv delivers each source's block contiguously
+// in ascending source-rank order (Resolve.h's positional pairing needs it), and allreduce sums in
+// ascending rank order, so results are bit-identical and deterministic per S.
 
 namespace monoprop::mpi {
 
@@ -43,7 +43,7 @@ public:
 
     auto size() const -> int { return n_; }
 
-    /// Transpose per-rank send counts into per-rank recv counts: recv[s] = amount rank s sends to me.
+    // Transpose per-rank send counts into per-rank recv counts: recv[s] = amount rank s sends to me.
     auto alltoall_counts(int rank, const int *send_counts, int *recv_counts) -> void {
         slots_[static_cast<size_t>(rank)].counts = send_counts;
         sync();
@@ -53,9 +53,9 @@ public:
         sync();
     }
 
-    /// Variable all-to-all over caller-owned FLAT buffers (counts/displs in ELEMENTS, `elem` = element
-    /// bytes). Fills recv per source s ascending at recv_displs[s]; recv_counts must hold the transpose
-    /// (via alltoall_counts or a known one) — same contract as MPI.
+    // Variable all-to-all over caller-owned FLAT buffers (counts/displs in ELEMENTS, `elem` = element
+    // bytes). Fills recv per source s ascending at recv_displs[s]; recv_counts must already hold the
+    // transpose — same contract as MPI_Alltoallv.
     auto alltoallv(int rank,
                    const void *send,
                    const int *send_displs,
@@ -82,9 +82,9 @@ public:
         sync();
     }
 
-    /// Fused count-resolve + payload all-to-all in ONE round (2 syncs vs 4). recv_counts / recv_displs
-    /// and `recv` (resized) are OUTPUTS. Used for the query round (recv layout unknown); same contiguous
-    /// ascending-source ordering as alltoallv, which the query/response positional pairing depends on.
+    // Fused count-resolve + payload all-to-all in ONE round (2 syncs vs 4). recv_counts / recv_displs
+    // and `recv` (resized) are OUTPUTS. Same contiguous ascending-source ordering as alltoallv, which
+    // the query/response positional pairing depends on.
     template <class T>
     auto alltoallv_resolve(int rank,
                            const T *send,
@@ -120,7 +120,7 @@ public:
         sync(); // B2: peers finished reading our send buffer before the caller may reuse it
     }
 
-    /// Allreduce-sum of a scalar (double or an unsigned integer type), summed in ascending rank order.
+    // Summed in ascending rank order.
     template <class T>
     auto allreduce_sum(int rank, T local_val) -> T {
         Slot &me = slots_[static_cast<size_t>(rank)];
@@ -145,9 +145,8 @@ public:
         return acc;
     }
 
-    /// In-place element-wise allreduce-sum of a double vector, summed in ascending rank order (bit-
-    /// identical on every rank). Slice-partitioned (O(len)/rank, zero alloc); safe in place because each
-    /// element is read then overwritten by its single slice owner, and slices are cache-line-rounded.
+    // In-place element-wise allreduce-sum, ascending rank order (bit-identical on every rank). Safe in
+    // place: each element is read then overwritten by its single slice owner, and slices are cache-line-rounded.
     auto allreduce_sum_inplace(int rank, double *values, size_t len) -> void {
         slots_[static_cast<size_t>(rank)].vec = values;
         sync();
@@ -158,7 +157,7 @@ public:
         const size_t hi = std::min(len, lo + per * kLine);
         for (size_t k = lo; k < hi; ++k) {
             double acc = 0.0;
-            for (int s = 0; s < n_; ++s) { // ascending rank order: bit-identical on every rank
+            for (int s = 0; s < n_; ++s) { // ascending rank order
                 acc += slots_[static_cast<size_t>(s)].vec[k];
             }
             for (int s = 0; s < n_; ++s) { // publish the same bits into every rank's buffer
@@ -168,16 +167,15 @@ public:
         sync(); // peers write into our buffer (and read from it) until here
     }
 
-    /// Release peers spinning in a barrier so they throw ShmCommPoisoned rather than hang forever
-    /// (called by the shard dispatcher when a participant unwinds). Idempotent. See ShardBarrier.
+    // Called by the shard dispatcher when a participant unwinds. See ShardBarrier::poison.
     auto poison() -> void { barrier_.poison(); }
 
-    /// Clear the poison flag and arrival counter between collective rounds. See ShardBarrier::reset.
+    // Clear the poison flag and arrival counter between collective rounds. See ShardBarrier::reset.
     auto reset() -> void { barrier_.reset(); }
 
 private:
-    // One cache-line-isolated publish slot per rank (no false sharing between publishers). A rank only
-    // ever writes its own slot and only reads peers' slots between the two barriers of a collective.
+    // One cache-line-isolated publish slot per rank (no false sharing). A rank writes only its own slot,
+    // and reads peers' slots only between the two barriers of a collective.
     struct alignas(64) Slot {
         const void *ptr = nullptr;
         const int *counts = nullptr;
@@ -187,7 +185,6 @@ private:
         uint64_t u64 = 0;
     };
 
-    // Two-phase barrier between the n_ participant shards (publish → sync → read → sync).
     auto sync() -> void { barrier_.sync(); }
 
     int n_;

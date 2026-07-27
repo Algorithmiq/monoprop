@@ -41,7 +41,7 @@ namespace nb = nanobind;
 using namespace nanobind::literals;
 
 namespace monoprop::bindings::detail {
-/*! Return a MPI communicator from mpi4py communicator object. */
+// mpi4py comm object -> MPI_Comm.
 auto get_mpi_comm(nb::object obj) -> MPI_Comm;
 
 auto cutoff_type_str_2_enum(const std::string &cutoff_type) -> CutoffType;
@@ -50,7 +50,7 @@ auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string;
 auto basis_str_2_enum(const std::string &basis) -> Basis;
 auto basis_enum_2_str(Basis basis) -> std::string;
 
-/// @brief Binds the MonomialPropagator class to Python.
+// Binds the MonomialPropagator class to Python.
 template <size_t NumModes>
 auto bind_monomial_propagator(nb::module_ &mod) -> void {
     using namespace monoprop;
@@ -63,7 +63,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         [](MonomialPropagator<NumModes> *t,
            const std::map<std::vector<size_t>, std::complex<double>> &initial_operator,
            unsigned int cutoff,
-           const std::vector<size_t> &slater_determinant,
+           const std::vector<size_t> &initial_state,
            nb::object py_comm,
            std::optional<unsigned int> schrodinger_cutoff,
            std::optional<double> lower_atol,
@@ -75,7 +75,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
            size_t shards) {
             new (t) MonomialPropagator<NumModes>(initial_operator,
                                                  cutoff,
-                                                 slater_determinant,
+                                                 initial_state,
                                                  schrodinger_cutoff,
                                                  get_mpi_comm(py_comm),
                                                  lower_atol,
@@ -88,7 +88,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         },
         "initial_operator"_a,
         "cutoff"_a,
-        "slater_determinant"_a,
+        "initial_state"_a,
         "comm"_a = nb::none(),
         "schrodinger_cutoff"_a = std::nullopt,
         "lower_atol"_a = std::nullopt,
@@ -125,35 +125,53 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "only_rotate_len_k"_a = 0,
             "Evolve and contract immediately without storing a graph");
 
-    cls.def("expectation_value", &MonomialPropagator<NumModes>::expectation_value, "parameters"_a);
+    cls.def("expectation_value",
+            &MonomialPropagator<NumModes>::expectation_value,
+            "parameters"_a,
+            "Expectation value at the given variational parameters");
 
     cls.def("expectation_value_and_gradient",
             &MonomialPropagator<NumModes>::expectation_value_and_gradient,
-            "parameters"_a);
+            "parameters"_a,
+            "Expectation value and its gradient at the given variational parameters");
 
     cls.def("expectation_value_functional",
             &MonomialPropagator<NumModes>::expectation_value_functional,
-            "pare_threshold"_a = std::nullopt);
+            "pare_threshold"_a = std::nullopt,
+            "Reusable callable giving the expectation value from parameters; None keeps the exact graph");
 
     cls.def("expectation_value_and_gradient_functional",
             &MonomialPropagator<NumModes>::expectation_value_and_gradient_functional,
-            "pare_threshold"_a = std::nullopt);
+            "pare_threshold"_a = std::nullopt,
+            "Reusable callable giving (expectation value, gradient) from parameters; None keeps the exact graph");
 
-    cls.def("contract_partially", &MonomialPropagator<NumModes>::contract_partially, "parameters"_a, "inplace"_a);
+    cls.def("contract_partially",
+            &MonomialPropagator<NumModes>::contract_partially,
+            "parameters"_a,
+            "inplace"_a,
+            "Contract the graph at parameters; inplace consumes the graph and updates internal state");
 
-    cls.def("update_initial_operator", &MonomialPropagator<NumModes>::update_initial_operator, "op_dict"_a);
+    cls.def("update_initial_operator",
+            &MonomialPropagator<NumModes>::update_initial_operator,
+            "op_dict"_a,
+            "Rewrite the initial operator from an {indices: coefficient} dict");
 
     cls.def_prop_rw("lower_atol",
                     &MonomialPropagator<NumModes>::lower_atol,
                     &MonomialPropagator<NumModes>::update_lower_atol,
-                    "lower_atol"_a = std::nullopt);
+                    "lower_atol"_a = std::nullopt,
+                    "Lower absolute tolerance of the cutoff function, or None");
 
     cls.def_prop_rw("upper_atol",
                     &MonomialPropagator<NumModes>::upper_atol,
                     &MonomialPropagator<NumModes>::update_upper_atol,
-                    "upper_atol"_a = std::nullopt);
+                    "upper_atol"_a = std::nullopt,
+                    "Upper absolute tolerance of the cutoff function, or None");
 
-    cls.def_prop_rw("cutoff", &MonomialPropagator<NumModes>::cutoff, &MonomialPropagator<NumModes>::update_cutoff);
+    cls.def_prop_rw("cutoff",
+                    &MonomialPropagator<NumModes>::cutoff,
+                    &MonomialPropagator<NumModes>::update_cutoff,
+                    "Cutoff value the cutoff function is built from");
 
     cls.def_prop_rw(
         "cutoff_type",
@@ -162,12 +180,14 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         },
         [](MonomialPropagator<NumModes> &self, const std::string &cutoff_type) {
             self.update_cutoff_type(cutoff_type_str_2_enum(cutoff_type));
-        });
+        },
+        "Cutoff scheme: 'length' or 'support'");
 
     cls.def_prop_rw("basis_change",
                     &MonomialPropagator<NumModes>::basis_change,
                     &MonomialPropagator<NumModes>::update_basis_change,
-                    "basis_change"_a = std::nullopt);
+                    "basis_change"_a = std::nullopt,
+                    "Optional per-Majorana basis change with 2 * num_modes entries, or None");
 
     cls.def_prop_ro("schrodinger",
                     &MonomialPropagator<NumModes>::schrodinger,
@@ -178,8 +198,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         [](const MonomialPropagator<NumModes> &self) -> std::string { return basis_enum_2_str(self.basis()); },
         "The operator basis: 'majorana' (default) or 'pauli'");
 
-    // Contract the graph, then decode every above-atol term into a Python {indices: coeff} dict.
-    // evolved_operator_terms is shard-transparent (merges each shard's disjoint hash partition).
+    // Shard-transparent: evolved_operator_terms merges each shard's disjoint hash partition.
     cls.def(
         "evolved_operator",
         [](MonomialPropagator<NumModes> &self, const VecD &parameters, double atol) -> nb::dict {
@@ -193,34 +212,67 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             }
 
             if (!self.schrodinger() && std::abs(self.core_term()) >= atol) {
-                // Add the core term if in Heisenberg picture
                 py_result[nb::tuple()] = std::complex{self.core_term(), 0.0};
             }
 
             return py_result;
         },
         "parameters"_a,
-        "atol"_a);
+        "atol"_a,
+        "The evolved operator as a {indices: coefficient} dict, keeping terms with |coeff| >= atol");
 
-    cls.def_prop_ro("num_modes", &MonomialPropagator<NumModes>::logical_num_modes);
+    cls.def_prop_ro("num_modes",
+                    &MonomialPropagator<NumModes>::logical_num_modes,
+                    "Number of modes the operator actually uses");
 
-    cls.def_prop_ro_static("storage_num_modes",
-                           [](nb::handle /*unused*/) { return MonomialPropagator<NumModes>::storage_num_modes; });
+    cls.def_prop_ro_static(
+        "storage_num_modes",
+        [](nb::handle /*unused*/) { return MonomialPropagator<NumModes>::storage_num_modes; },
+        "Mode width this compiled template instantiation stores");
 
-    cls.def("size", &MonomialPropagator<NumModes>::size);
+    cls.def("size", &MonomialPropagator<NumModes>::size, "Number of monomial terms on this rank");
 
-    cls.def("graph_size", &MonomialPropagator<NumModes>::graph_size);
+    cls.def("graph_size",
+            &MonomialPropagator<NumModes>::graph_size,
+            "(cosine-only indices, cycles) in the graph on this rank");
 
-    cls.def("graph_layers", &MonomialPropagator<NumModes>::graph_layers);
-    cls.def("n_gates", &MonomialPropagator<NumModes>::n_gates);
+    cls.def("graph_layers", &MonomialPropagator<NumModes>::graph_layers, "Number of layers in the graph");
+    cls.def("n_gates",
+            &MonomialPropagator<NumModes>::n_gates,
+            "Number of distinct gates in the graph; a multi-term gate spans several layers, so <= graph_layers()");
 
     cls.def_prop_rw("parameter_mapping",
                     &MonomialPropagator<NumModes>::parameter_mapping,
-                    &MonomialPropagator<NumModes>::set_parameter_mapping);
+                    &MonomialPropagator<NumModes>::set_parameter_mapping,
+                    "Variational-parameter index driving each graph layer; assigning re-wires it in place");
 
-    cls.def("operator_memory_bytes",
-            [](const MonomialPropagator<NumModes> &self) { return self.operator_memory_usage().total_bytes(); });
-    cls.def("graph_memory_bytes",
-            [](const MonomialPropagator<NumModes> &self) { return self.graph_memory_usage().total_bytes(); });
+    cls.def(
+        "operator_memory_bytes",
+        [](const MonomialPropagator<NumModes> &self) { return self.operator_memory_usage().total_bytes(); },
+        "Total bytes held by the operator on this rank");
+    cls.def(
+        "graph_memory_bytes",
+        [](const MonomialPropagator<NumModes> &self) { return self.graph_memory_usage().total_bytes(); },
+        "Total bytes held by the graph on this rank");
+
+    // total_bytes() alone cannot say whether the row store or the transposed inverted index dominates,
+    // which is what sizing decisions turn on.
+    cls.def("operator_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
+        const auto b = self.operator_memory_usage();
+        return std::map<std::string, size_t>{{"operator_terms_bytes", b.operator_terms_bytes},
+                                             {"op_coeffs_bytes", b.op_coeffs_bytes},
+                                             {"state_coeffs_bytes", b.state_coeffs_bytes},
+                                             {"indexing_bytes", b.indexing_bytes},
+                                             {"init_operator_bytes", b.init_operator_bytes},
+                                             {"initial_state_bytes", b.initial_state_bytes},
+                                             {"inverted_index_bytes", b.inverted_index_bytes},
+                                             {"total_bytes", b.total_bytes()},
+                                             // Diagnostics (NOT part of total_bytes; see the struct).
+                                             {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
+                                             {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
+                                             {"d_invidx_dense_columns", b.inverted_index_dense_columns},
+                                             {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
+                                             {"d_state_coeffs_nonzero", b.state_coeffs_nonzero}};
+    });
 }
 } // namespace monoprop::bindings::detail

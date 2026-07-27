@@ -14,12 +14,9 @@
 
 #pragma once
 
-// Independent Pauli reference oracle shared by the Pauli test files
-// (pauli_algebra_tests.cpp, pauli_build_layer_tests.cpp, and the shard/MPI
-// equivalence suites). None of it touches the library under test beyond the
-// still-shipped encoding primitive indices_to_bitset; the dense-matrix brute
-// force and JW image are computed from first principles so the engine's inline
-// kernels can be pinned against a second, readable implementation.
+// Independent Pauli reference oracle shared by the Pauli test files. Nothing here touches the
+// library under test beyond indices_to_bitset: the dense-matrix brute force and the JW image are
+// computed from first principles so the engine's inline kernels can be pinned against them.
 
 #include <bit>
 #include <complex>
@@ -64,7 +61,6 @@ inline auto slots_of_string(const std::string &p) -> VecZ {
     return slots;
 }
 
-// Native-encoded bitset for a Pauli string (slots mapped to physical bits).
 template <size_t NumModes>
 auto native_bitset(const std::string &p) -> Monomial<NumModes> {
     return indices_to_bitset<NumModes>(slots_of_string(p));
@@ -73,9 +69,9 @@ auto native_bitset(const std::string &p) -> Monomial<NumModes> {
 // Decode the single-qubit letter of qubit q from a native-encoded bitset
 // (MSb0 physical mapping): slot 2q is the x-plane bit, slot 2q+1 the z-plane bit.
 template <size_t NumModes>
-auto letter_from_bitset(const Monomial<NumModes> &maj, size_t q) -> char {
-    const bool u = maj.test(2 * NumModes - 1 - 2 * q); // slot 2q
-    const bool v = maj.test(2 * NumModes - 2 - 2 * q); // slot 2q+1
+auto letter_from_bitset(const Monomial<NumModes> &mono, size_t q) -> char {
+    const bool u = mono.test(2 * NumModes - 1 - 2 * q); // slot 2q
+    const bool v = mono.test(2 * NumModes - 2 - 2 * q); // slot 2q+1
     if (!u && !v) {
         return 'I';
     }

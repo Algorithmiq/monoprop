@@ -18,23 +18,18 @@
 
 #include "TestUtilities.h"
 
-// Fused cos sweep (ContractImmediately k==0): the scan multiplies every anticommuting coefficient by
-// cos(2θ) in place during its own pass, and resolve recovers a hit partner's pre-cos value as
-// stored·(1/cos) — see fused_find_and_collect / LayerBuildEngine. That recovery is the ONE deliberate
-// FP deviation from the two-pass path (≤1 ulp per hit endpoint's sine term, physics-identical: same
-// rotation set, same atol gating on the pre-cos load). These tests bound the accumulated drift by
-// requiring the in-place propagate() (fused sweep) and the build_graph()+replay evaluation (untouched
-// two-pass machinery) to agree far tighter than the physics tolerance, in both pictures and both with
-// and without the lower_atol gate that steers the scan's emission.
+// Fused cos sweep (ContractImmediately k==0): the scan multiplies anticommuting coefficients by
+// cos(2θ) in place, and resolve recovers a hit partner's pre-cos value as stored·(1/cos) — the one
+// deliberate FP deviation (≤1 ulp per hit endpoint) from the two-pass path. Oracle: the untouched
+// build_graph()+replay evaluation, in both pictures and with/without the lower_atol gate.
 
 namespace {
 
 using namespace test_utils;
 using namespace monoprop;
 
-// propagate() and build_graph()+replay accumulate FP differently even before the sweep (parallel
-// reduction order, replay recompute), so demand agreement to 1e-12 — tight enough that a wrong cos
-// factor on any endpoint (relative error O(1)) fails loudly, loose enough for benign reordering.
+// The two paths accumulate FP differently even before the sweep, so demand 1e-12: tight enough that a
+// wrong cos factor on any endpoint (relative error O(1)) fails loudly, loose enough for reordering.
 constexpr double kAgreeAtol = 1e-12;
 constexpr double kExactAtol = 1e-9;
 
@@ -69,14 +64,14 @@ BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg, ExampleData
     check_agreement(data, SimulatorConfig{}, "heisenberg");
 }
 
-// lower_atol active: the sin gate reads the PRE-cos value the sweep loads — emission (and therefore
-// the rotation set) must be unchanged by the in-place store that follows it.
+// lower_atol active: the sin gate reads the PRE-cos value, so the in-place store that follows must
+// not change which terms are emitted.
 BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg_atol, ExampleDataFix) {
     check_agreement(data, SimulatorConfig{.atol = 1e-10}, "heisenberg atol=1e-10");
 }
 
-// Schrödinger picture: fresh inserts carry a nonzero HF-scored value born AFTER the sweep — the
-// apply's in-place insert arm (c = cos·c + sin term) must fold the gate's cos into those slots.
+// Schrödinger: fresh inserts carry a nonzero state-scored value born AFTER the sweep, so the apply's
+// insert arm must fold the gate's cos into those slots itself (c = cos·c + sin term).
 BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger, ExampleDataFix) {
     check_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes}, "schrodinger");
 }

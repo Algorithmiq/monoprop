@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for update methods in MajoranaPropagator."""
-
 import pytest
 from pytest_cases import parametrize_with_cases
 
@@ -27,8 +25,6 @@ from tests.cases import CasesFermionicProblem
 
 
 class TestUpdateMethods:
-    """Test class for update methods in MajoranaPropagator."""
-
     @pytest.fixture
     def mp(self, serial_comm):
         return MajoranaPropagator(
@@ -203,14 +199,9 @@ class TestUpdateMethods:
 @parametrize_with_cases("problem", cases=CasesFermionicProblem, has_tag="molecule")
 @pytest.mark.parametrize("test_type", ["cutoff", "lower_atol", "upper_atol"])
 def test_evolutions_after_updates(problem, test_type, serial_comm):
-    """Test that evolutions work correctly after parameter updates."""
-
     circuit = problem.monomial_circuit.to_circuit()
 
-    # upper_atol RESCUES over-cutoff partner terms (keeps |sin·c| >= upper_atol ones alive); it can
-    # only ADD terms, never drop. At cutoff 6 this molecule produces no over-cutoff partners, so the
-    # rescue has nothing to act on and the size is unchanged. Use a low cutoff where partners do
-    # exceed the cutoff, so the rescue is actually exercised and observably changes the size.
+    # upper_atol only rescues over-cutoff partners, of which cutoff 6 produces none here.
     cutoff = 2 if test_type == "upper_atol" else 6
 
     mp = MajoranaPropagator(

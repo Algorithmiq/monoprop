@@ -35,9 +35,8 @@ struct LayerExchangeLayout final {
     std::vector<int> displs;
     size_t total_count = 0;
 
-    // Cached per-layer recv counts/displs (see mpi::resolve_recv): the send pattern is fixed for a
-    // replayed graph, so they are identical every eval. Filled lazily, reused while comm size matches;
-    // `mutable` because reached through const traversal handles at eval time.
+    // Cached recv counts/displs (mpi::resolve_recv): a replayed graph's send pattern is fixed, so these
+    // repeat every eval. Reused while comm size matches; mutable — filled through const handles at eval time.
     mutable mpi::RecvLayoutCache recv_cache;
 };
 
@@ -53,9 +52,8 @@ inline auto checked_mpi_int(size_t value, const char *what) -> int {
     return static_cast<int>(value);
 }
 
-// build_layer_exchange_layout: per-rank MPI counts = send_counts[r] * scale, with prefix-sum
-// displacements. send_counts is full-width (size_t) so checked_mpi_int catches overflow. `what` names the
-// layout in the overflow message (the evolution and derivative layouts must be distinguishable).
+// Per-rank MPI counts = send_counts[r] * scale, with prefix-sum displacements. send_counts is full-width
+// (size_t) so checked_mpi_int catches overflow; `what` names the layout in the overflow message.
 inline auto build_layer_exchange_layout(const std::vector<size_t> &send_counts,
                                         int scale,
                                         const char *what = "Layer exchange") -> LayerExchangeLayout {
@@ -77,8 +75,7 @@ inline auto build_layer_exchange_layout(const std::vector<size_t> &send_counts,
 }
 
 // The derivative layout is the evolution layout at 2x (each rotation endpoint carries both the op and
-// state payload). One implementation, shared by the build-time overflow check (result discarded) and by
-// LayerCore's lazy accessor, so the arithmetic exists in exactly one place.
+// state payload). Shared by the build-time overflow check and by LayerCore's lazy accessor.
 inline auto build_derivative_exchange_layout(const LayerExchangeLayout &evolution) -> LayerExchangeLayout {
     std::vector<size_t> send_counts;
     send_counts.reserve(evolution.counts.size());
@@ -92,13 +89,12 @@ inline auto build_derivative_exchange_layout(const LayerExchangeLayout &evolutio
 
 namespace monoprop {
 
-// Materialized cosine (anticommuting) index set: ascending (block_base, 64-bit mask) blocks. Only for
-// sets that must be stored (pruned layers) or carried transiently; the inverted-index fold recompute is
-// the primary replay path.
+// Materialized cosine (anticommuting) index set: ascending (block_base, 64-bit mask) blocks. Only for sets
+// that must be stored (pruned layers) or carried transiently; the fold recompute is the primary replay path.
 struct CosMask final {
     std::vector<std::pair<size_t, uint64_t>> blocks;
-    size_t total_count = 0; // number of set bits
-    auto span_count() const -> size_t { return blocks.size(); } // WORD count (parallel split unit)
+    size_t total_count = 0;                                     // number of set bits
+    auto span_count() const -> size_t { return blocks.size(); } // number of 64-bit blocks
 };
 
 // Coalesces ascending absolute indices (or whole word-aligned blocks) into a CosMask. Indices/blocks
@@ -145,44 +141,36 @@ struct PackedPhaseStorage final {
     auto empty() const -> bool { return total_count == 0; }
 };
 
-// NAMING LEGEND for the cross-rank structs below: `sin_send` = paper's send recipe B^{(r')}, `sin_recv`
-// = apply recipe D^{(r')} — the off-diagonal sin(θ) endpoints of each Givens rotation. B/D/P/Q are the
-// paper's symbols; invariant "b = [in(P)]++[out(Q)], d = [out(Q)]++[in(P)]".
+// NAMING LEGEND for the cross-rank structs below. sin_send (B) = local indices whose coefficient this rank
+// sends; sin_recv (D) = local targets to add into — the off-diagonal sin(θ) endpoints of each Givens
+// rotation. P = in-block size, Q = out-block size; B = [in]++[out] and D = [out]++[in], so D is derived from B.
 
-/// Build-time input for one partner rank's per-layer cross-rank data.
-/// sin_send_indices: local indices whose op[i] we send (in(P) sources then out(Q) sources).
-/// sin_recv_entries: (local_target_idx, signed phi) pairs — the single phased D list (former D- then D+).
+// Build-time input for one partner rank: sin_recv_entries are (local target index, signed phase) pairs.
 struct CrossRankPartnerData {
-    // default-init storage: assemble_partners overwrites every element in parallel, so the serial
-    // resize() zero-fill was pure waste.
+    // Default-init: every element is overwritten before any read.
     DefaultInitVector<size_t> sin_send_indices;
     DefaultInitVector<std::pair<size_t, int>> sin_recv_entries;
-    // Size of the in-block (P). Layout invariant b=[in(P)]++[out(Q)], d=[out(Q)]++[in(P)]: D indices are
-    // derived from B (not stored); D PHASES differ per endpoint and ARE stored. See cross_rank_sin_recv_index.
+    // Size of the in-block (P).
     size_t in_count = 0;
 };
 
 struct CrossRankPartnerRange final {
-    size_t sin_send_offset = 0; // into sin_send_indices; cumulative across ranks, so size_t (a layer's total may exceed
-                                // 2^32 even when each rank's term count does not)
+    size_t sin_send_offset = 0; // into sin_send_indices; cumulative across ranks, so size_t (may exceed 2^32)
     TermIndex sin_send_count =
-        0;                      // == sin_recv_count (paper invariant); TermIndex-wide so one rank/layer can exceed 2^32
+        0;                      // == sin_recv_count (both endpoints); TermIndex-wide so one rank/layer can exceed 2^32
     size_t sin_recv_offset = 0; // into sin_recv_phases; cumulative across ranks, so size_t (see sin_send_offset)
-    // Single phased D list (former D- then D+); the signed phase carries everything, no boundary stored.
     TermIndex sin_recv_count = 0;
-    // Size of the in-block P within B. D index k = (k<Q) ? B[P+k] : B[k-Q], Q=sin_recv_count-P (derive D from B).
     TermIndex in_count = 0;
 };
 
 struct PackedCrossRankStorage final {
     std::vector<CrossRankPartnerRange> ranges; // size == R
-    std::vector<TermIndex> sin_send_indices;   // D indices are derived from B on read, not stored
-    PackedPhaseStorage sin_recv_phases;        // one phased entry per D index, sign baked in
+    std::vector<TermIndex> sin_send_indices;
+    PackedPhaseStorage sin_recv_phases; // one phased entry per D index, sign baked in
 
     auto rank_count() const -> size_t { return ranges.size(); }
     auto sin_send_size(size_t rank) const -> size_t { return ranges[rank].sin_send_count; }
     auto sin_recv_size(size_t rank) const -> size_t { return ranges[rank].sin_recv_count; }
-    // P = in-entries = rotations on this rank; sin_recv_size counts both endpoints (double-counts self-rank).
     auto in_count(size_t rank) const -> size_t { return ranges[rank].in_count; }
 };
 
@@ -190,43 +178,28 @@ struct LayerCore final {
     PackedCrossRankStorage cross_rank;
     LayerExchangeLayout evolution_exchange_layout;
 
-    // Derivative exchange layout = 2x the evolution layout (each rotation endpoint carries both the op
-    // and state payload). Built lazily on the first derivative read (gradient path only), so energy-only
-    // runs never allocate it. Definition just below this struct.
     auto derivative_exchange_layout() const -> const LayerExchangeLayout &;
 
-    // Drop the lazily-built derivative layout. Needed after copying a core (the copy inherits the
-    // source's cache, which is eval-time state, not data): see set_parameter_mapping's relabel.
+    // A copied core must not inherit the source's cache: it is eval-time state, not data.
     auto reset_derivative_exchange_layout() -> void { derivative_exchange_layout_cache_.reset(); }
 
-    // Per-layer recompute metadata: lets the cosine-recompute path rebuild this layer's cosine set on the
-    // fly (XOR-fold of the generator's inverted-index columns) instead of storing it.
-    //   generator_words: this layer's generator G as W=kWords<NumModes> backing words.
-    //   scaled_count:    fold truncation bound = operator size AFTER this layer's partner inserts.
+    // Per-layer recompute metadata: generator_words = this layer's generator G as backing words;
+    // scaled_count = fold truncation bound = operator size AFTER this layer's partner inserts.
     std::vector<uint64_t> generator_words;
     uint64_t scaled_count = 0;
 
-    // Gate info owned by this layer: param_index into the variational parameter vector and generator
-    // coefficient g (rotation angle = parameters[param_index] * gen_coeff). Read by evaluation.
+    // Rotation angle = parameters[param_index] * gen_coeff.
     size_t param_index = 0;
     double gen_coeff = 0.0;
-    // Index of the ingested gate this layer came from (shared by layers from one multi-term gate;
-    // absolute across build_graph calls). Enables per-gate parameter_mapping relabelling.
+    // Shared by all layers of one multi-term gate; absolute across build_graph calls (parameter_mapping).
     size_t gate_index = 0;
 
 private:
-    // Lazily-materialized 2x-scaled evolution layout; see derivative_exchange_layout(). mutable because
-    // it is filled through const traversal handles at eval time (mirrors LayerExchangeLayout::recv_cache).
-    // Cores are shared and immutable IN VALUE, not bit-frozen: this and recv_cache are eval-time caches,
-    // so materializing them must not be raced across threads, and a copied core must reset this (the
-    // copy is a fresh object — reset_derivative_exchange_layout()).
     mutable std::optional<LayerExchangeLayout> derivative_exchange_layout_cache_;
 };
 
-// Derived lazily (gradient path only) from the already-validated evolution counts, so energy-only runs
-// never allocate it. Its recv_cache is rebuilt lazily on first use, exactly as the stored layout's was,
-// so the cached MPI resolve is preserved across evals. The 2x overflow check itself is NOT deferred —
-// build_layer_storage_unified validates it eagerly, see MPGraphEncodingStorage.h.
+// Derived lazily (gradient path only) from the already-validated evolution counts. The 2x overflow check
+// itself is NOT deferred — build_layer_storage_unified validates it eagerly, see MPGraphEncodingStorage.h.
 inline auto LayerCore::derivative_exchange_layout() const -> const LayerExchangeLayout & {
     if (!derivative_exchange_layout_cache_) {
         derivative_exchange_layout_cache_ = detail::build_derivative_exchange_layout(evolution_exchange_layout);

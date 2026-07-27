@@ -14,6 +14,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <functional>
@@ -32,8 +33,8 @@ namespace {
 
 constexpr size_t kNumModes = 8;
 
-// Full-cos provider mirroring the streaming provider the pare functional uses: fold the operator's
-// persistent even-parity inverted index truncated to each layer's scaled_count.
+// Mirrors the streaming provider the pare functional uses: fold the operator's even-parity
+// inverted index truncated to each layer's scaled_count.
 template <size_t NumModes>
 auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_index, const LayerTraversal &layer)
     -> CosMask {
@@ -46,12 +47,7 @@ auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_ind
 
 } // namespace
 
-// 1. The streaming pare sweep emits the typed layers we expect. For the real fold cos, every cosine
-//    index single-rank is a force-kept rotation endpoint (mark_replayed_d_targets), so a real
-//    threshold prunes nothing — matching the original masked-plan behavior. To exercise the
-//    filter+emit path deterministically (single-rank), we feed a provider whose cos carries one
-//    synthetic index that is NOT in the keep-set: that one layer must become a PrunedLayer whose
-//    stored cos is a strict subset, while every untouched layer stays a FoldLayer.
+// The streaming pare sweep must engage pruned_cos on exactly the layers whose cos loses an index.
 BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
@@ -61,23 +57,26 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
 
     const auto &graph = sim.graph();
     const auto &inverted_index = sim.mp_op().inverted_index();
-    const VecD state = sim.mp_op().get_state();
+    const VecD state = sim.mp_op().materialize_state();
     BOOST_REQUIRE(state.size() > 0);
 
-    // Single-rank, the cumulative rotation endpoints (D-targets) across all layers cover the entire
-    // operator index space, and mark_replayed_d_targets force-keeps every one of them — so a real
-    // threshold prunes nothing single-rank (matching the original masked-plan behavior; real pruning
-    // is a multi-rank effect, covered by mpi_pare). To exercise the prune+emit path deterministically
-    // here, inject a synthetic cos index ONE PAST the real index space (never a D-target, so nothing
-    // force-keeps it) into layer 0, widen local_index_count to include it, and leave it out of the
-    // keep-set. That one layer must become a PrunedLayer; every other layer stays a FoldLayer.
+    // materialize_state() hands back a caller-owned vector and caches nothing on the operator, so
+    // state_coeffs stays empty and the sparse entry count must equal the dense vector's nonzero count.
+    BOOST_CHECK(sim.mp_op().state_coeffs.empty());
+    const auto sparse = sim.mp_op().sparse_state();
+    BOOST_CHECK_EQUAL(sparse.rows.size(),
+                      static_cast<size_t>(std::ranges::count_if(state, [](double c) { return c != 0.0; })));
+
+    // Single-rank, mark_replayed_d_targets force-keeps every cosine index, so a real threshold prunes
+    // nothing (real pruning is a multi-rank effect, covered by mpi_pare). To reach the prune path
+    // deterministically, inject a synthetic cos index one past the real index space into layer 0 and
+    // leave it out of the keep-set: only that layer may end up with a stored cos.
     const size_t marked_layer = 0;
     const size_t synth_index = state.size();
     const size_t local_index_count = state.size() + 1;
     const size_t synth_base = (synth_index >> 6) << 6;
     const uint64_t synth_bit = uint64_t{1} << (synth_index & 63U);
 
-    // Provider: real recomputed cos for layer 0 PLUS the synthetic index; real recomputed cos for all others.
     auto provider = [&](size_t i) -> CosMask {
         CosMask cos = recompute_cos<kNumModes>(inverted_index, graph.get_layer_traversal(i));
         if (i == marked_layer) {
@@ -97,8 +96,7 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
         return cos;
     };
 
-    // Seed the keep-set with every real index (so no real cos bit is dropped) but NOT the synthetic
-    // one, so only the synthetic index is pruned from the marked layer's cos.
+    // Keep every real index, but not the synthetic one.
     VecZ seed;
     seed.reserve(state.size());
     for (size_t i = 0; i < state.size(); ++i) {
@@ -112,13 +110,11 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
     for (size_t i = 0; i < pared.layers(); ++i) {
         const auto &layer = pared.get_layer(i);
         if (const CosMask *pruned = layer.pruned_cos(); pruned != nullptr) {
-            // A pruned layer carries an explicitly-stored (possibly empty) filtered cos.
             ++pruned_count;
-            // Stored pruned cos is a strict subset of the full (synthetic-augmented) cos.
             BOOST_TEST(pruned->total_count <= provider(i).total_count);
         }
         else {
-            // Preserved layers are fold layers (cos recomputed at replay, nothing stored).
+            // Preserved layers store nothing; their cos is recomputed at replay.
             BOOST_TEST(layer.pruned_cos() == static_cast<const CosMask *>(nullptr));
         }
     }
@@ -127,23 +123,20 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
     BOOST_TEST(pared.get_layer(marked_layer).pruned_cos() != static_cast<const CosMask *>(nullptr));
 }
 
-// 2. The pared energy matches the unpared energy at a tiny threshold (prunes ~nothing) up to
-//    floating-point summation order, and stays within the pare tolerance at a real threshold.
+// The pared energy matches the unpared energy at a tiny threshold (prunes ~nothing) up to
+// floating-point summation order, and stays within tolerance of the exact energy at a real one.
 BOOST_AUTO_TEST_CASE(pare_graph_energy_matches_unpared) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
 
-    // Unpared energy.
     auto sim_full = build_simulator<kNumModes>(data, cfg);
     sim_full.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     auto ev_full = sim_full.expectation_value_functional(std::nullopt);
     const double e_full = ev_full(data.parameters);
 
-    // Pared at a tiny threshold: prunes essentially nothing, so the energy must agree with the
-    // unpared value up to floating-point summation order. The pared and unpared replays each run a
-    // multithreaded reduction whose accumulation order is not pinned, so the two differ by a few ULP
-    // (~1e-18 here) run-to-run — exact == is therefore the wrong assertion; require a tolerance far
-    // tighter than any real pruning effect but comfortably above reduction-reorder noise.
+    // The pared and unpared replays reduce in an unpinned accumulation order, so they differ by a
+    // few ULP (~1e-18 here) run-to-run: exact == is the wrong assertion. The tolerance is far tighter
+    // than any real pruning effect but comfortably above that reorder noise.
     auto sim_tiny = build_simulator<kNumModes>(data, cfg);
     sim_tiny.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     auto ev_tiny = sim_tiny.expectation_value_functional(std::optional<double>{1e-12});

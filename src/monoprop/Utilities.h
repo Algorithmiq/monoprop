@@ -44,21 +44,21 @@ constexpr auto make_repeating_bitset(uint64_t pattern) -> Bitset<N> {
     return bits;
 }
 
-/// Repeating 0x5555...5555 pattern (even bits set) truncated to N bits.
+// Repeating 0x5555...5555 pattern (even bits set) truncated to N bits.
 template <size_t N>
 constexpr auto even_bits() -> Bitset<N> {
     return make_repeating_bitset<N>(0x5555555555555555ULL);
 }
 
-/// Repeating 0xAAAA...AAAA pattern (odd bits set) truncated to N bits.
+// Repeating 0xAAAA...AAAA pattern (odd bits set) truncated to N bits.
 template <size_t N>
 constexpr auto odd_bits() -> Bitset<N> {
     return make_repeating_bitset<N>(0xAAAAAAAAAAAAAAAAULL);
 }
 } // namespace detail
 
-/// @brief Bitset with the even logical positions (0, 2, 4, …) set, truncated to N bits.
-/// Under MSb0 the logical even positions are physically odd, so the pattern is swapped vs LSb0.
+// Bitset with the even logical positions (0, 2, 4, …) set, truncated to N bits.
+// Under MSb0 the logical even positions are physically odd, so the pattern is swapped vs LSb0.
 template <size_t N, typename Ordering>
 constexpr auto even_bits() -> Bitset<N> {
     if constexpr (std::is_same_v<Ordering, MSb0>) {
@@ -68,7 +68,7 @@ constexpr auto even_bits() -> Bitset<N> {
         return detail::even_bits<N>();
     }
 };
-/// @brief Bitset with the odd logical positions (1, 3, 5, …) set, truncated to N bits (see even_bits() for the MSb0/LSb0 swap).
+// Bitset with the odd logical positions (1, 3, 5, …) set; see even_bits() for the MSb0/LSb0 swap.
 template <size_t N, typename Ordering>
 constexpr auto odd_bits() -> Bitset<N> {
     if constexpr (std::is_same_v<Ordering, MSb0>) {
@@ -79,12 +79,10 @@ constexpr auto odd_bits() -> Bitset<N> {
     }
 };
 
-/// @brief Compute n-choose-2.
 inline auto n_choose_2(std::integral auto n) -> size_t {
     return static_cast<size_t>(n * (n - 1) / 2);
 }
 
-/// @brief Join a range's elements into a string, inserting `separator` between consecutive elements.
 auto join_with_separator(std::ranges::range auto const &values, std::string_view separator) -> std::string {
     std::string joined;
     bool first = true;

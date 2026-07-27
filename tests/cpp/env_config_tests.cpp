@@ -12,14 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Direct unit coverage of EnvConfig.h — the single home for monoprop_* environment parsing. The
-// two pure parsers (parse_flag / parse_positive_int) are pinned here against every branch of their
-// documented semantics; config::get() is exercised once for the cached-Settings path. The engine
-// consumes these via config::get() on hot paths, but that reads the environment once at load, so the
-// parsers themselves are only fully swept in isolation.
-//
-// Cases are flat top-level BOOST_AUTO_TEST_CASEs sharing an env_config_ prefix (not a
-// BOOST_AUTO_TEST_SUITE) to match this suite's ctest discovery, which registers by leaf case name.
+// Every branch of EnvConfig.h's two pure parsers (parse_flag / parse_positive_int), plus one pass
+// over config::get() for the cached-Settings path.
 
 #include <boost/test/unit_test.hpp>
 
@@ -43,7 +37,7 @@ BOOST_AUTO_TEST_CASE(env_config_parse_flag_falsey_first_char) {
     for (const char *v : {"0", "f", "F", "n", "N"}) {
         BOOST_CHECK_MESSAGE(parse_flag(v, true) == false, v);
     }
-    BOOST_CHECK_EQUAL(parse_flag("0abc", true), false); // only the first char matters
+    BOOST_CHECK_EQUAL(parse_flag("0abc", true), false);
 }
 
 BOOST_AUTO_TEST_CASE(env_config_parse_flag_truthy_first_char) {
@@ -74,8 +68,6 @@ BOOST_AUTO_TEST_CASE(env_config_settings_cached_singleton) {
     const auto &a = monoprop::config::get();
     const auto &b = monoprop::config::get();
     BOOST_CHECK_EQUAL(&a, &b);
-    // Touch the fields so the Settings aggregate is read (documented defaults unless the environment
-    // overrode them for this process).
+    // Touch a field so the Settings aggregate is actually read.
     BOOST_CHECK(a.shard_pinning == true || a.shard_pinning == false);
-    BOOST_CHECK(a.phase_timers == true || a.phase_timers == false);
 }

@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Direct unit coverage of Bitset.h — the foundational fixed-width bit container underlying
-// Monomial. The engine exercises it heavily end-to-end, but these tests pin its contract in
-// isolation (single-word and multi-word) against a std::bitset oracle so a regression in the
-// hand-rolled multi-word shift / scan / mask surfaces here rather than as a distant energy drift.
+// Bitset.h in isolation (single-word and multi-word) against a std::bitset oracle, so a regression
+// in the hand-rolled shift / scan / mask surfaces here rather than as a distant energy drift.
 
 #include <boost/test/unit_test.hpp>
 
@@ -30,7 +28,6 @@ using monoprop::Bitset;
 
 namespace {
 
-// Build a Bitset<N> and a std::bitset<N> from the same positions (the shared oracle setup).
 template <size_t N>
 auto make_pair(const std::vector<size_t> &positions) -> std::pair<Bitset<N>, std::bitset<N>> {
     Bitset<N> bs;
@@ -42,7 +39,6 @@ auto make_pair(const std::vector<size_t> &positions) -> std::pair<Bitset<N>, std
     return {bs, ref};
 }
 
-// Assert a Bitset<N> agrees with its std::bitset<N> oracle bit-for-bit.
 template <size_t N>
 auto expect_equal(const Bitset<N> &bs, const std::bitset<N> &ref) -> void {
     for (size_t i = 0; i < N; ++i) {
@@ -53,10 +49,10 @@ auto expect_equal(const Bitset<N> &bs, const std::bitset<N> &ref) -> void {
 
 } // namespace
 
-// The ctor from a single word must mask off bits beyond NumBits (kTopMask), so a partial top word
-// never leaks stray high bits into count()/any().
+// The single-word ctor must mask off bits beyond NumBits (kTopMask), so a partial top word never
+// leaks stray high bits into count()/any().
 BOOST_AUTO_TEST_CASE(bitset_ctor_sanitizes_top) {
-    const Bitset<10> b(0xFFFFULL); // only the low 10 bits survive
+    const Bitset<10> b(0xFFFFULL);
     BOOST_TEST(b.count() == 10U);
     BOOST_TEST(b.word(0) == 0x3FFULL);
     const Bitset<64> full(~uint64_t{0});
@@ -93,14 +89,13 @@ BOOST_AUTO_TEST_CASE(bitset_not_respects_top_mask) {
     BOOST_TEST((~Bitset<100>{}).count() == 100U);
     BOOST_TEST((~Bitset<64>{}).count() == 64U);
     BOOST_TEST((~Bitset<10>{}).count() == 10U);
-    // Double complement is identity.
     auto [bs, ref] = make_pair<100>({3, 70, 99});
     BOOST_TEST((~~bs) == bs);
     (void)ref;
 }
 
-// Multi-word right shift vs a std::bitset oracle across the interesting shift magnitudes, including
-// exact word multiples, sub-word crossings, and >= NumBits (which must zero the whole set).
+// Multi-word right shift vs the oracle at exact word multiples, sub-word crossings, and >= NumBits
+// (which must zero the whole set).
 BOOST_AUTO_TEST_CASE(bitset_shift_right_cross_word) {
     const std::vector<size_t> pos{0, 5, 63, 64, 65, 130, 191};
     for (size_t s : {size_t{0},
@@ -124,8 +119,7 @@ BOOST_AUTO_TEST_CASE(bitset_shift_right_cross_word) {
     expect_equal<64>(bs, ref >> 8);
 }
 
-// find_first / find_next must walk set bits in ascending order, cross words, and return NumBits when
-// exhausted (the multi-word scan branch is otherwise reached only deep in the engine).
+// find_first / find_next must walk set bits ascending, cross words, and return NumBits when exhausted.
 BOOST_AUTO_TEST_CASE(bitset_find_first_next_chain) {
     auto [bs, ref] = make_pair<192>({5, 63, 64, 130, 191});
     (void)ref;
@@ -135,7 +129,6 @@ BOOST_AUTO_TEST_CASE(bitset_find_first_next_chain) {
     BOOST_TEST(bs.find_next(64) == 130U);
     BOOST_TEST(bs.find_next(130) == 191U);
     BOOST_TEST(bs.find_next(191) == 192U); // past the last set bit -> NumBits
-    // Empty set: find_first is NumBits.
     BOOST_TEST(Bitset<192>{}.find_first() == 192U);
     // Single-word find_next branch.
     auto [sb, sref] = make_pair<64>({0, 40});
@@ -145,8 +138,7 @@ BOOST_AUTO_TEST_CASE(bitset_find_first_next_chain) {
     BOOST_TEST(sb.find_next(40) == 64U);
 }
 
-// The multi-word hash must depend on WHICH word carries a bit (the +i mix guard): a bit in word 0 and
-// the same intra-word bit in word 1 must hash differently, and the hash must be deterministic.
+// The multi-word hash must depend on WHICH word carries a bit (the +i mix guard), and be deterministic.
 BOOST_AUTO_TEST_CASE(bitset_splitmix_hash_position_sensitive) {
     Bitset<128> low;
     low.set(0);
@@ -154,10 +146,10 @@ BOOST_AUTO_TEST_CASE(bitset_splitmix_hash_position_sensitive) {
     high.set(64); // bit 0 of word 1 — same intra-word position as `low`'s bit
     const std::hash<Bitset<128>> h;
     BOOST_TEST(h(low) != h(high));
-    BOOST_TEST(h(low) == h(low)); // deterministic
+    BOOST_TEST(h(low) == h(low));
     Bitset<128> low_copy;
     low_copy.set(0);
-    BOOST_TEST(h(low) == h(low_copy)); // equal sets hash equal
+    BOOST_TEST(h(low) == h(low_copy));
 }
 
 // Randomized differential fuzz against std::bitset for the bitwise ops, shift, and scans.

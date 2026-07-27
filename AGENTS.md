@@ -1,6 +1,6 @@
 # Agent Instructions for monoprop
 
-monoprop is a high-performance C++/Python hybrid library implementing Majorana and Pauli propagation. The project combines modern C++23 with Python bindings via nanobind. It is based on the paper arXiv:2503.18939
+monoprop is a high-performance C++/Python hybrid library implementing Majorana and Pauli propagation. The project combines modern C++23 with Python bindings via nanobind.
 
 
 ## Repository rules
@@ -11,7 +11,14 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - If you make a commit, add a trailer: `Assisted-by: <harness>:<model>`, where `<harness>` is the current agent harness (like ClaudeCode), and `<model>` is the AI model (like claude-opus-4.8). You don't need to add a coauthored-by when you have this.
 - PR titles must adhere to the same conventional commits format.
 - Prefix PR descriptions and comments on PRs with the line ":robot: _AI text below_ :robot:" to indicate you are an agent speaking on a user's behalf.
-- Python docstrings use Google style. C++ docstrings use Doxygen style.
+- Python docstrings use Google style, and are rendered into the docs site by `just gen-api` — keep
+  them accurate.
+- C++ comments: bare `///` one-liners on declarations in `include/monoprop/` (the installed public
+  API); plain `//` everywhere else. No Doxygen `@` tags (`@brief`, `@param`, `@return`, …) and no
+  `/* */` block comments — there is no Doxygen build, so those tags produce nothing.
+- Comments state what the code cannot: invariants, ordering and lifetime contracts, sign and bit
+  conventions, and why an obvious alternative was rejected. Do not restate the code, narrate history
+  (git has it), or repeat a fact that already has a home elsewhere.
 
 
 ## Architecture Overview
@@ -93,7 +100,8 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 2. Use C++23 syntax and idioms.
 3. Use almost always auto style.
 4. Use trailing return type syntax in function declarations.
-5. Add Doxygen docstrings.
+5. Add a one-line `///` summary if the declaration is in `include/monoprop/`; elsewhere add a plain
+   `//` note only where the code does not already say it.
 6. Implement in corresponding `.cpp` in `src/`
 7. Add Python bindings in `src/monoprop/bindings/binder.h`
 8. Regenerate bindings with `tools/generate-binders.py`

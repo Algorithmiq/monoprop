@@ -14,25 +14,16 @@
 
 #pragma once
 
+// Reference forms of the Majorana algebra that the production kernels are checked against.
+// Exercised only by tests/cpp/mpfunctions.cpp, never called by the shipped library.
+
 #include <algorithm>
 #include <vector>
 
 #include "monoprop/algebra/MajoranaAlgebra.h"
 
-/*!
- * @file AlgebraReference.h
- * @brief Test-only reference helpers for the Majorana algebra.
- *
- * These are exercised only by tests/cpp/mpfunctions.cpp and are not called by the shipped
- * library, so they live here rather than in the shipped algebra headers. They provide
- * straightforward reference forms the production kernels are checked against.
- */
-
 namespace monoprop {
 
-/*!
- * @brief Converts a fermionic operator from index representation to binary (bitset) representation.
- */
 template <size_t NumModes>
 auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MonomialList<NumModes> {
     auto majorana_operator = MonomialList<NumModes>(op.size());
@@ -40,17 +31,14 @@ auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MonomialList<N
     return majorana_operator;
 }
 
-/*!
- * @brief Reference multiplicative phase factor for Majorana operator evolution:
- *        the ordering (interleave) sign times the Hermitian phase.
- */
+// Multiplicative phase for Majorana evolution: the interleave (ordering) sign times the Hermitian phase.
 template <size_t NumModes>
-auto get_multiplicative_phase(const Monomial<NumModes> &maj,
-                              const Monomial<NumModes> &gen_maj,
-                              size_t maj_count,
+auto get_multiplicative_phase(const Monomial<NumModes> &mono,
+                              const Monomial<NumModes> &gen_mono,
+                              size_t mono_count,
                               size_t gen_count,
                               size_t overlap) -> int {
-    return interleave_phase<NumModes>(maj, gen_maj) * hermitian_phase(maj_count, gen_count, overlap);
+    return interleave_phase<NumModes>(mono, gen_mono) * hermitian_phase(mono_count, gen_count, overlap);
 }
 
 } // namespace monoprop

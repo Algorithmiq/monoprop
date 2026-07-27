@@ -12,11 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Unit coverage of two small, load-bearing build-time helpers that are otherwise only exercised
-// deep inside build_layer: MatchedEpochSet (the O(1)-clear follower-mark set) and CutoffContext
-// (the atol / upper-atol gating predicates). Both are pure and stateful-in-isolation, so a direct
-// test pins their contract without spinning up a propagator. The query/value codecs in the same
-// headers are covered by fused_query_codec_tests.cpp and not duplicated here.
+// MatchedEpochSet (the O(1)-clear follower-mark set) and CutoffContext (the atol / upper-atol gating
+// predicates), driven directly rather than through build_layer.
 
 #include <boost/test/unit_test.hpp>
 

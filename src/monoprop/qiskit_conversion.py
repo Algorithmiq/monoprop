@@ -54,12 +54,9 @@ def from_qiskit_operator(
 
     Args:
         qiskit_op: A qiskit Pauli operator.
-        atol: Absolute tolerance for cutoff with qiskit's simplify()
-        force_real: Cast operator coefficients as real values. Default is `False`
-    Returns:
-        A PauliOperator instance representing the given operator.
+        atol: Absolute tolerance for the ``simplify()`` run first, which drops smaller terms.
+        force_real: Cast the coefficients to real, raising if any is not numerically real.
     """
-    # Make sure the operator is reduced
     qiskit_op = qiskit_op.simplify(atol=atol)
     pauli_strings: list[str] = qiskit_op.paulis.to_labels(array=True)  # type: ignore
     pauli_strings = [
@@ -83,11 +80,8 @@ def to_qiskit_operator(
     """Convert a dictionary of Pauli strings with their coefficients to a Qiskit operator.
 
     Args:
-        pauli_dict: A dictionary of Pauli strings with their coefficients,
-            in the right qubit order.
-
-    Returns:
-        the Qiskit operator.
+        pauli_dict: Pauli strings in monoprop order (leftmost letter on qubit 0); each key is
+            reversed into qiskit's little-endian label order.
     """
     return SparsePauliOp.from_list([(k[::-1], v) for k, v in pauli_dict.items()])
 
@@ -95,11 +89,7 @@ def to_qiskit_operator(
 def _place_operator(
     local_op: PauliOperator, qubits: tuple[int, ...], num_qubits: int
 ) -> PauliOperator:
-    """Remap a local operator (on qubits ``0..len(qubits)-1``) onto global ``qubits``.
-
-    The result is a gate generator carrying the full-circuit ``num_qubits`` (an operator
-    carries its own qubit count).
-    """
+    """Remap a local operator on ``0..len(qubits)-1`` onto global ``qubits``, at full width."""
     return PauliOperator._from_terms(
         [
             Pauli(pauli.string, tuple(qubits[q] for q in pauli.qubits))
@@ -110,22 +100,32 @@ def _place_operator(
     )
 
 
+def _negated(operator: PauliOperator) -> PauliOperator:
+    """Flip the sign of every coefficient of ``operator``.
+
+    Qiskit evolves by ``exp(-i t H)`` while :class:`~monoprop.circuit.ExpGate` applies
+    ``exp(+i theta H)``, so a generator changes sign when it crosses the boundary. The sign goes on
+    the *generator*, not on the angle, which keeps a converted circuit's ``parameters`` (and hence
+    gradients with respect to them) numerically equal to the qiskit evolution times.
+    """
+    return PauliOperator._from_terms(
+        list(operator.terms),
+        [-coeff for coeff in operator.terms.values()],
+        num_qubits=operator.num_qubits,
+    )
+
+
 def from_qiskit_circuit(
     circuit: QuantumCircuit,
     initial_state: list[int],
 ) -> Circuit:
     """Convert a Qiskit circuit to a :class:`~monoprop.circuit.Circuit`.
 
-    Note that the qiskit circuit must be composed only by PauliEvolutionGates with commuting
-    operators. Each qiskit gate becomes one qubit :class:`~monoprop.circuit.ExpGate` driven by
-    its own angle (the identity parameter mapping).
-
-    Args:
-        circuit: A qiskit quantum circuit.
-        initial_state: Initial quantum state as a list of integers.
-
-    Returns:
-        A :class:`~monoprop.circuit.Circuit` representing the given circuit.
+    The qiskit circuit must hold only PauliEvolutionGates (or the equivalent rotations in
+    :data:`PAULI_EVOLUTION_EQUIVALENT`) with commuting operators; barriers are ignored. Each gate
+    becomes one :class:`~monoprop.circuit.ExpGate` driven by its own angle (the identity parameter
+    mapping), with the generator's coefficients negated so the angles carry through unchanged (see
+    :func:`_negated`).
     """
     if len(circuit.qregs) != 1:
         raise ValueError(
@@ -147,14 +147,15 @@ def from_qiskit_circuit(
 
         if gate_name == "PauliEvolution":
             parameter = g_op.time
-            generator = _place_operator(
-                from_qiskit_operator(g_op.operator), qubits, num_qubits
+            generator = _negated(
+                _place_operator(from_qiskit_operator(g_op.operator), qubits, num_qubits)
             )
         elif gate_name in PAULI_EVOLUTION_EQUIVALENT:
             parameter = g_op.params[0]
-            pauli_string = gate_name[1:].upper()  # Remove the leading 'R' and uppercase
+            pauli_string = gate_name[1:].upper()
+            # R<P>(t) == exp(-i t P/2), i.e. exp(+i t (-P/2)).
             generator = PauliOperator._from_terms(
-                [Pauli(pauli_string, qubits)], [0.5], num_qubits=num_qubits
+                [Pauli(pauli_string, qubits)], [-0.5], num_qubits=num_qubits
             )
         else:
             raise ValueError(
@@ -174,6 +175,7 @@ def from_qiskit_circuit(
 def _extend_generator_minimally(
     generator: PauliOperator,
 ) -> tuple[dict[str, complex], list[int]]:
+    """Relabel a generator onto the qubits it touches, returning the strings and those qubits."""
     qubits = sorted({q for p in generator.terms for q in p.qubits})
     localizing_qubit_map = {q: i for i, q in enumerate(qubits)}
     result = {
@@ -191,17 +193,10 @@ def _extend_generator_minimally(
 def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
     """Convert a :class:`~monoprop.circuit.Circuit` to a Qiskit circuit.
 
-    Note that the resulting qiskit circuit will be composed only by PauliEvolutionGates with
-    commuting operators. Each gate's evolution time is taken from the circuit's
-    ``parameters`` via its parameter mapping.
-
-    Args:
-        circuit: A :class:`~monoprop.circuit.Circuit` representing the given circuit.
-        num_qubits: Total number of qubits (the circuit no longer carries it; supply the
-            observable's ``num_qubits``).
-
-    Returns:
-        A qiskit quantum circuit.
+    The result holds only PauliEvolutionGates. Each gate's evolution time is taken from the
+    circuit's ``parameters`` via its parameter mapping, and each generator's coefficients are
+    negated to turn monoprop's ``exp(+i theta H)`` back into qiskit's ``exp(-i t H)`` (see
+    :func:`_negated`). Pass the observable's ``num_qubits`` as the width of the result.
     """
     if len(circuit.parameters) != circuit.n_parameters:
         raise ValueError(
@@ -218,7 +213,7 @@ def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
                 "to_qiskit_circuit requires a qubit (Pauli) circuit; got a "
                 f"{circuit.family}-family gate."
             )
-        pauli_dict, qubits = _extend_generator_minimally(generator)
+        pauli_dict, qubits = _extend_generator_minimally(_negated(generator))
         qiskit_circuit.append(
             PauliEvolutionGate(
                 to_qiskit_operator(pauli_dict), time=circuit.parameters[param_index]

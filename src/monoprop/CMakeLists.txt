@@ -8,7 +8,6 @@ add_library(
   MPFunctions.cpp
   detail/pare/PareGraph.cpp
   MPGraph.cpp
-  Profiling.cpp
   Validation.cpp
 )
 

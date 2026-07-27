@@ -31,27 +31,18 @@
 
 namespace monoprop::detail {
 
-/// Thrown when the term count would exceed the TermIndex range (rebuild with -Dmonoprop_WIDE_TERM_INDEX).
+// Thrown when the term count would exceed the TermIndex range (rebuild with -Dmonoprop_WIDE_TERM_INDEX).
 class TermIndexCeilingReached : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
-/**
- * @brief Operator-term store: entropy-packed position-list rows plus a keyless open-addressing hash
- * index over those rows, in one self-contained object.
- *
- * Rows: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c = ascending set-bit
- * positions. stride_ is fixed for the container's life so row offsets stay stable. inline_width_ is a
- * construction invariant: any width is correct — over-long rows spill losslessly to an overflow map —
- * so callers pass the cutoff that bounds the common case. The hand-rolled index exists for one
- * capability boost::unordered_flat_set cannot expose: find_batch, a group-prefetch pipelined lookup
- * that overlaps DRAM misses, which the latency-bound resolve phases need.
- *
- * Single-writer: one shard owns its store on one thread (parallelism is cross-shard, up in ShardGroup),
- * so no method locks. Non-copyable/non-movable and heap-owned via unique_ptr; clone() is the single
- * deep-copy (called only on an idle store).
- */
+// Operator-term store: entropy-packed position-list rows plus a keyless open-addressing hash index over
+// those rows. Row layout: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c =
+// ascending set-bit positions; stride_ is fixed for the container's life so row offsets stay stable.
+// inline_width_ is a free parameter -- any width is correct, over-long rows spill losslessly to overflow.
+// find_batch exists for the group-prefetch pipelined lookup the latency-bound resolve phases need.
+// Single-writer (one shard, one thread; parallelism is cross-shard), non-copyable, deep-copied by clone().
 template <size_t NumModes>
 class OperatorIndex {
 public:
@@ -59,13 +50,12 @@ public:
     using key_type = Monomial<NumModes>;
     using mapped_type = size_t;
 
-    // Position element: u8 when 2N<=256 (byte-identical to the original packed layout), widening
-    // only for larger mode counts so positions never truncate.
+    // Position element: u8 when 2N<=256, widening only for larger mode counts so positions never
+    // truncate.
     using PosT = std::
         conditional_t<(2 * NumModes <= 256), uint8_t, std::conditional_t<(2 * NumModes <= 65536), uint16_t, uint32_t>>;
 
     // Default inline width when no cutoff-derived bound is supplied (e.g. Schrödinger state rows).
-    // Kept at the historical value so default-constructed stores are byte-identical.
     static constexpr size_t kDefaultInlinePositions = 11;
     // Ceiling on the caller-requested inline width. A weight-w Pauli needs 2w positions; 32 covers the
     // common case inline at the supported Pauli cutoffs (2*cutoff <= 32 for cutoff <= 16).
@@ -85,8 +75,6 @@ public:
     // operator store must not depend on evolution headers).
     static constexpr size_t kNotFound = std::numeric_limits<size_t>::max();
 
-    // The inline width (hence stride) is a construction invariant: any width is correct, since
-    // over-long rows spill to overflow losslessly.
     explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
           stride_(1 + inline_width_) {}
@@ -113,15 +101,13 @@ public:
 
     [[nodiscard]] auto size() const -> size_t { return size_; }
 
-    // reserve grows ROW capacity and right-sizes the index together; grow_rows_geometric grows rows
-    // alone per layer, and bulk_insert right-sizes the index by its element count.
+    // Grows rows and right-sizes the index together.
     auto reserve(size_t n) -> void {
         reserve_rows(n);
         reserve_index(n);
     }
     // Grow the row store by `n` rows, returning the pre-growth size (the caller's insert base). Growth
     // is GEOMETRIC (1.5×), never exact-fit: an exact fit would realloc the whole operator every layer.
-    // The reserve-then-resize split is load-bearing (reserve grows capacity, resize sets logical size).
     auto grow_rows_geometric(size_t n) -> size_t {
         const size_t base = size_;
         if (capacity() < base + n) {
@@ -135,17 +121,17 @@ public:
         return base;
     }
 
-    auto push_back(const value_type &maj) -> void { set(grow_rows_geometric(1), maj); }
+    auto push_back(const value_type &mono) -> void { set(grow_rows_geometric(1), mono); }
 
-    // Write row i from `maj` (grown-but-uninitialized or a prior value). Never pre-reads the row header
+    // Write row i from `mono` (grown-but-uninitialized or a prior value). Never pre-reads the row header
     // (freshly grown headers are indeterminate); a stale overflow entry at i, if any, is dropped — cheap
     // when the overflow map is empty, which is the common case.
-    auto set(size_t i, const value_type &maj) -> void {
-        const size_t c = maj.count();
+    auto set(size_t i, const value_type &mono) -> void {
+        const size_t c = mono.count();
         PosT *row = &rows_[i * stride_];
         if (c > inline_width_) {
             row[0] = kOverflowMarker;
-            overflow_[i] = maj;
+            overflow_[i] = mono;
             return;
         }
         if (!overflow_.empty()) {
@@ -153,7 +139,7 @@ public:
         }
         row[0] = static_cast<PosT>(c);
         PosT *out = row + 1;
-        for (size_t b = maj.find_first(); b < maj.size(); b = maj.find_next(b)) {
+        for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
             *out++ = static_cast<PosT>(b);
         }
     }
@@ -163,12 +149,12 @@ public:
         if (c == kOverflowMarker) {
             return overflow_.at(i);
         }
-        value_type maj;
+        value_type mono;
         const PosT *pos = &rows_[i * stride_ + 1];
         for (size_t j = 0; j < c; ++j) {
-            maj.set(pos[j]);
+            mono.set(pos[j]);
         }
-        return maj;
+        return mono;
     }
     template <typename Fn>
     auto for_each_position(size_t i, Fn &&fn) const -> void {
@@ -197,7 +183,7 @@ public:
         return total;
     }
 
-    // Returns the dense row index for `key`, or nullopt if absent. Usage: `if (auto i = find(k)) ...`.
+    // Returns the dense row index for `key`, or nullopt if absent.
     auto find(const key_type &key) const -> std::optional<size_t> {
         const uint32_t h = fold_hash(key);
         if (table_.count == 0) {
@@ -255,7 +241,6 @@ public:
                     out[base + j] = static_cast<size_t>(cand[j]);
                 }
                 else if (cand[j] != kEmptySlot) {
-                    // h collision: the first h-match wasn't the key — resolve exactly.
                     const auto v = find(keys[base + j]);
                     out[base + j] = v ? *v : kNotFound;
                 }
@@ -274,7 +259,7 @@ public:
         size_t s = spread(h) & table_.mask;
         while (table_.slots[s].idx != kEmptySlot) {
             if (table_.slots[s].h == h && row_eq_key(static_cast<size_t>(table_.slots[s].idx), key)) {
-                return; // key already present — no-op (matches the former set semantics)
+                return;
             }
             s = (s + 1) & table_.mask;
         }
@@ -292,7 +277,6 @@ public:
             insert_slot_(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
         }
     }
-    // Visits every indexed (row, index) pair in table order.
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
         for (const Slot &e : table_.slots) {
@@ -301,6 +285,12 @@ public:
             }
         }
     }
+    // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity. Growth is 1.5x
+    // and never exact-fit, so this is bounded by ~1/3 of the row bytes.
+    [[nodiscard]] auto slack_bytes() const -> size_t {
+        return rows_.capacity() * sizeof(PosT) - std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT);
+    }
+
     auto index_estimated_memory_bytes() const -> size_t {
         return sizeof(OperatorIndex) + table_.slots.capacity() * sizeof(Slot);
     }
@@ -401,12 +391,11 @@ private:
     static auto check_index_fits(size_t value) -> void {
         if (value >= kIndexCeiling) {
             throw TermIndexCeilingReached("OperatorIndex: operator index reached the TermIndex ceiling; rebuild with "
-                                          "-Dmonoprop_WIDE_TERM_INDEX (term count exceeded ~2^32).");
+                                          "-Dmonoprop_WIDE_TERM_INDEX (this shard's term count exceeded ~2^32).");
         }
     }
 
-    // DefaultInitVector: grow_rows_geometric and push_back skip the tail zero-fill — set() overwrites
-    // each row's header and positions before any read, and never pre-reads the (indeterminate) header.
+    // default-init: set() writes every row before any read
     DefaultInitVector<PosT> rows_ = {};
     size_t size_ = 0;
     size_t inline_width_ = kMaxInlinePositions;

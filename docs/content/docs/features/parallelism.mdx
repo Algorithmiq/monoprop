@@ -22,10 +22,8 @@ all shards at once, synchronised by a lightweight barrier, and anticommuting
 terms whose partner lives on another shard are resolved through a per-gate
 exchange.
 
-This replaced an earlier oneTBB thread-pool design and was measured to be
-substantially faster — roughly **6–9× on native-Pauli** workloads and **~2× on
-Hubbard** — because each thin shard probes a cache-resident, lock-free index
-instead of contending on one shared table. TBB is no longer used or required.
+Each thin shard probes a cache-resident, lock-free index rather than contending
+on one shared table.
 
 You normally do not configure anything. The knobs below exist for tuning and
 benchmarking.

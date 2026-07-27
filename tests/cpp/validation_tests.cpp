@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Direct coverage of the (live) parameter validators in Validation.cpp. These pure throw-or-return
-// functions guard the public build/propagate/functional API but were previously exercised only
-// indirectly through Python. Each case pins one accept path and one reject path.
+// The pure throw-or-return validators in Validation.cpp that guard the public
+// build/propagate/functional API; each case pins the accept paths and the reject paths.
 
 #include <boost/test/unit_test.hpp>
 
@@ -50,7 +49,6 @@ BOOST_AUTO_TEST_CASE(validation_parameters_length) {
     // Expected length is max(parameter_mapping) + 1.
     BOOST_CHECK_NO_THROW(validate_parameters_length(VecD{0.1, 0.2, 0.3}, VecZ{0, 1, 2}));
     BOOST_CHECK_NO_THROW(validate_parameters_length(VecD{0.1, 0.2}, VecZ{0, 1, 1, 0})); // max=1 -> len 2
-    // Empty mapping needs no parameters.
     BOOST_CHECK_NO_THROW(validate_parameters_length(VecD{}, VecZ{}));
     BOOST_CHECK_THROW(validate_parameters_length(VecD{0.1, 0.2}, VecZ{0, 1, 2}), std::runtime_error);
 }

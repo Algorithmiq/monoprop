@@ -28,19 +28,12 @@
 
 namespace monoprop::detail {
 
-/**
- * @brief Lazy transposed operator storage — an inverted index over Majorana columns.
- *
- * Stores the transpose of the row-major operator: one bit-vector per column (mode), bit r set iff
- * term r touches that mode. Its purpose is the anticommutation scan: XOR-combining a generator G's
- * columns yields, per term M, |M ∩ G| mod 2 — the anticommutation bit for an EVEN generator; ODD
- * generators add a per-row parity(|M|) correction, so the structure serves BOTH parities.
- *
- * Columns are sparse (~few percent set), so they are stored in two tiers, bit-identical to
- * all-dense: DENSE (density ≥ 1/kPromoteDensityInv) full-height uint64 vectors folded by the hot word
- * loop; SPARSE (below that) an ASCENDING set-row list scatter-expanded at scan time. Promotion is
- * one-way (the operator is append-only).
- */
+// Lazy transposed operator storage: one bit-vector per column (mode), bit r set iff term r touches that
+// column. XOR-combining a generator G's columns yields |M ∩ G| mod 2 per term M -- the anticommutation
+// bit for an EVEN generator; ODD generators add a per-row parity(|M|) correction, so both parities are
+// served. Columns are stored in two tiers, bit-identical to all-dense: DENSE (density ≥
+// 1/kPromoteDensityInv) full-height uint64 vectors; SPARSE an ASCENDING set-row list scatter-expanded at
+// scan time. Promotion is one-way (the operator is append-only).
 template <size_t NumModes>
 struct InvertedIndex {
     static constexpr size_t kNumColumns = Monomial<NumModes>::size();
@@ -58,13 +51,10 @@ struct InvertedIndex {
     std::array<Column, kNumColumns> cols{};
     size_t row_count = 0;
 
-    // Lazily-built parity of |M| per row, packed 1 bit/row. Empty until the first odd-parity generator
-    // requests it (even-parity workloads never allocate it); mutable because it is a lazy derived cache.
+    // Parity of |M| per row, packed 1 bit/row: bit r = popcount(row r) & 1. Built on first use and only
+    // by odd-|G| generators, so even-parity workloads never allocate it; mutable as a lazy derived cache.
     mutable std::vector<uint64_t> row_parity_{}; // empty == not built
 
-    // Base pointer of the per-row parity bitmap, built once on first use: bit r = popcount(row r) & 1
-    // (the XOR over all mode columns of row r). Only odd-|G| generators call it; even-parity workloads
-    // never allocate it. Const because the bitmap is a lazy derived cache.
     auto row_parity_words() const -> const uint64_t * {
         if (row_parity_.empty() && row_count != 0) {
             const size_t nwords = (row_count + 63) / 64;
@@ -134,8 +124,7 @@ struct InvertedIndex {
             if (!col.is_dense && col.set_rows.size() * kPromoteDensityInv >= row_count) {
                 promote_to_dense(c);
             }
-            // set_rows must stay ascending for combine_columns_block's lower_bound; the row-order fill
-            // guarantees it. Verified in debug so a future fill change cannot silently break the fold.
+            // Verified in debug so a future fill change cannot silently break the ascending invariant.
             assert(col.is_dense || std::ranges::is_sorted(col.set_rows));
         }
     }
@@ -208,6 +197,17 @@ struct InvertedIndex {
         }
         total += row_parity_.capacity() * sizeof(uint64_t);
         return total;
+    }
+
+    // Diagnostic tier split of memory_bytes(): {dense_bytes, sparse_bytes, dense_columns}.
+    auto tier_memory_bytes() const -> std::array<size_t, 3> {
+        std::array<size_t, 3> out{0, 0, 0};
+        for (const auto &col : cols) {
+            out[0] += col.words.capacity() * sizeof(uint64_t);
+            out[1] += col.set_rows.capacity() * sizeof(TermIndex);
+            out[2] += static_cast<size_t>(col.is_dense);
+        }
+        return out;
     }
 };
 

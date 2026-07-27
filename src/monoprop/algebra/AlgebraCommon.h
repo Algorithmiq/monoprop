@@ -14,26 +14,24 @@
 
 #pragma once
 
+// Basis-agnostic structural primitives (pairing, cutoffs, index<->bit conversions) meaningful in
+// either basis; the basis-specific algebra lives in the sibling MajoranaAlgebra.h / PauliAlgebra.h.
+
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <format>
 #include <optional>
+#include <stdexcept>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 
-/*!
- * @file algebra/AlgebraCommon.h
- * @brief Basis-agnostic structural primitives (pairing, cutoffs, index<->bit conversions) meaningful
- * in either basis; the basis-specific algebra lives in the sibling MajoranaAlgebra.h / PauliAlgebra.h.
- */
-
 namespace monoprop {
 
-/**
- * @brief Converts a vector of Majorana indices to a bitset representation
- */
+// Unchecked: `2 * NumModes - 1 - bit_loc` underflows for an out-of-range index and Monomial::set is
+// noexcept, so the result is an out-of-bounds write. Use indices_to_bitset_checked() for user input.
 template <size_t NumModes>
 auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
     Monomial<NumModes> bs;
@@ -43,10 +41,21 @@ auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
     return bs;
 }
 
-/**
- * @brief Converts a bitset to a vector of indices where bits are set to 1.
- *        Uses find_first/find_next for O(popcount) scanning instead of O(NumModes).
- */
+// indices_to_bitset() with a bound on each index. The bound is the LOGICAL width
+// (2 * logical_num_modes), not the storage width 2 * NumModes: a propagator over fewer modes than its
+// instantiation must still reject indices outside its own system.
+template <size_t NumModes>
+auto indices_to_bitset_checked(const VecZ &arr, size_t max_index) -> Monomial<NumModes> {
+    for (const auto &bit_loc : arr) {
+        if (bit_loc >= max_index) {
+            throw std::runtime_error(
+                std::format("Majorana/Pauli index {} is out of range; must be less than {}.", bit_loc, max_index));
+        }
+    }
+    return indices_to_bitset<NumModes>(arr);
+}
+
+// Indices of the set bits, scanned in O(popcount) via find_first/find_next rather than O(NumModes).
 template <size_t NumModes>
 auto bitset_to_indices(const Monomial<NumModes> &bs) -> VecZ {
     const auto pop = bs.count();
@@ -58,39 +67,30 @@ auto bitset_to_indices(const Monomial<NumModes> &bs) -> VecZ {
     return indices;
 }
 
-/**
- * @brief Checks if a single Majorana operator is fully paired
- */
 template <size_t NumModes>
-auto is_paired(const Monomial<NumModes> &maj, const Monomial<NumModes> &even_mask) -> bool {
+auto is_paired(const Monomial<NumModes> &mono, const Monomial<NumModes> &even_mask) -> bool {
     // Paired = each mode's even bit and its odd partner agree (both set or both clear).
-    const auto even_bits_masked = maj & even_mask;
-    const auto odd_bits_masked = (maj >> 1) & even_mask;
+    const auto even_bits_masked = mono & even_mask;
+    const auto odd_bits_masked = (mono >> 1) & even_mask;
     return (even_bits_masked ^ odd_bits_masked).none();
 }
 
-/**
- * @brief Convenience overload that builds the pairing mask internally
- */
 template <size_t NumModes>
-auto is_paired(const Monomial<NumModes> &maj) -> bool {
+auto is_paired(const Monomial<NumModes> &mono) -> bool {
     const auto even_mask = even_bits<2 * NumModes, LSb0>();
-    return is_paired<NumModes>(maj, even_mask);
+    return is_paired<NumModes>(mono, even_mask);
 }
 
 template <size_t NumModes>
-auto is_paired(const VecZ &maj) -> bool {
-    return is_paired<NumModes>(indices_to_bitset<NumModes>(maj));
+auto is_paired(const VecZ &mono) -> bool {
+    return is_paired<NumModes>(indices_to_bitset<NumModes>(mono));
 }
 
-/**
- * @brief Checks if a collection of Majorana operators are fully paired
- */
 template <size_t NumModes, typename Rows>
 auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     VecZ result;
     const auto mask = even_bits<2 * NumModes, LSb0>();
-    // Appended in ascending `inds` order; only the SET is observable to callers, but order is deterministic.
+    // Appended in ascending `inds` order; only the SET is observable, but the order is deterministic.
     for (const auto index : inds) {
         const auto &op_row = materialize_row<NumModes>(op, index);
         if (is_paired<NumModes>(op_row, mask)) {
@@ -100,30 +100,30 @@ auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     return result;
 }
 
-/**
- * @brief Builds a Hartree-Fock mask from occupied fermionic modes
- */
+// Occupation mask of the initial product state: the even index 2*i of each listed mode (Majorana) or
+// qubit (Pauli) that starts in state 1. Algebra-agnostic -- both algebras read the same mask, and
+// differ only in the phase they score against it (majorana_state_phase / pauli_state_phase).
 template <size_t NumModes>
-auto get_hf_mask(const VecZ &hf) -> Monomial<NumModes> {
-    VecZ hf_bits;
-    hf_bits.reserve(hf.size());
-    for (const auto &mode : hf) {
-        hf_bits.push_back(2 * mode);
+auto initial_state_mask(const VecZ &initial_state) -> Monomial<NumModes> {
+    VecZ bits;
+    bits.reserve(initial_state.size());
+    for (const auto &mode : initial_state) {
+        bits.push_back(2 * mode);
     }
-    return indices_to_bitset<NumModes>(hf_bits);
+    return indices_to_bitset<NumModes>(bits);
 }
 
-/**
- * @brief Length cutoff: keep a monomial iff its length is within @p cutoff, OR it is fully paired.
- *
- * Fully paired monomials (xor_sum == 0) are kept unconditionally: they are the only terms that
- * contribute to an expectation value against a computational-basis state / Slater determinant, so
- * dropping them by length would discard signal. Otherwise keep iff Majorana count <= @p cutoff.
- */
+// The per-mode sums the structural cutoffs measure, over the ACTIVE modes only; one implementation
+// shared by both cutoffs.
+struct CutoffSums {
+    size_t xor_sum;      // modes with exactly one of their two Majoranas set; 0 == fully paired
+    size_t popcount_sum; // Majorana operators present -- the LENGTH measure
+    size_t or_sum;       // modes with either Majorana present -- the SUPPORT measure (JW Pauli weight)
+};
+
 template <size_t NumModes>
-auto length_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes) -> bool {
-    const size_t inactive_mode_prefix = NumModes - logical_num_modes;
-    const size_t active_bit_offset = 2 * inactive_mode_prefix;
+[[gnu::always_inline]] inline auto cutoff_sums(const Monomial<NumModes> &mono, size_t logical_num_modes) -> CutoffSums {
+    const size_t active_bit_offset = 2 * (NumModes - logical_num_modes);
 
     if constexpr (Monomial<NumModes>::num_words() == 1) {
         constexpr size_t num_bits = Monomial<NumModes>::size();
@@ -131,66 +131,49 @@ auto length_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff, size_t lo
         constexpr uint64_t even_mask = even_bits<2 * NumModes, LSb0>().word(0);
         const uint64_t active_mask =
             active_bit_offset == 0 ? valid_mask : (valid_mask & ~((uint64_t{1} << active_bit_offset) - 1));
-        const uint64_t active_word = maj.word(0) & active_mask;
+        const uint64_t active_word = mono.word(0) & active_mask;
         const uint64_t pair_mask = even_mask & active_mask;
-        const auto xor_sum = std::popcount((active_word & pair_mask) ^ ((active_word >> 1) & pair_mask));
-        const auto popcount_sum = std::popcount(active_word);
-        return xor_sum == 0 || popcount_sum <= cutoff;
+        const uint64_t first_pair = active_word & pair_mask;
+        const uint64_t second_pair = (active_word >> 1) & pair_mask;
+        return {static_cast<size_t>(std::popcount(first_pair ^ second_pair)),
+                static_cast<size_t>(std::popcount(active_word)),
+                static_cast<size_t>(std::popcount(first_pair | second_pair))};
     }
 
-    const auto active_maj = logical_num_modes == NumModes ? maj : (maj >> active_bit_offset);
+    const auto active_mono = logical_num_modes == NumModes ? mono : (mono >> active_bit_offset);
     const auto mask = even_bits<2 * NumModes, LSb0>();
-    const auto first_pair = active_maj & mask;
-    const auto second_pair = (active_maj >> 1) & mask;
-    const auto xor_sum = (first_pair ^ second_pair).count();
-    const auto popcount_sum = active_maj.count();
-    return xor_sum == 0 || popcount_sum <= cutoff;
+    const auto first_pair = active_mono & mask;
+    const auto second_pair = (active_mono >> 1) & mask;
+    return {(first_pair ^ second_pair).count(), active_mono.count(), (first_pair | second_pair).count()};
+}
+
+// Both cutoffs below keep a fully paired monomial (xor_sum == 0) unconditionally: those are the only
+// terms contributing to an expectation value against a product reference state, so bounding them by
+// length or support would discard signal.
+
+// Length cutoff: keep iff the Majorana count is within cutoff, or fully paired.
+template <size_t NumModes>
+auto length_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
+    const auto sums = cutoff_sums<NumModes>(mono, logical_num_modes);
+    return sums.xor_sum == 0 || sums.popcount_sum <= cutoff;
 }
 
 template <size_t NumModes>
-auto length_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff) -> bool {
-    return length_cutoff<NumModes>(maj, cutoff, NumModes);
+auto length_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff) -> bool {
+    return length_cutoff<NumModes>(mono, cutoff, NumModes);
 }
 
-/**
- * @brief Support cutoff: keep a monomial iff its orbital support is within @p cutoff, OR it is fully paired.
- *
- * Fully paired terms are kept unconditionally (same expectation-value reason as length_cutoff).
- * Support (or_sum: orbital j counts once if either of its Majoranas is present) is coarser than
- * length; under Jordan-Wigner it equals the qubit Pauli weight, so this bounds the X/Y/Z factor count.
- */
+// Support cutoff: keep iff the orbital support is within cutoff, or fully paired. Support (or_sum) is
+// coarser than length; under Jordan-Wigner it equals the qubit Pauli weight.
 template <size_t NumModes>
-auto support_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff, size_t logical_num_modes) -> bool {
-    const size_t inactive_mode_prefix = NumModes - logical_num_modes;
-    const size_t active_bit_offset = 2 * inactive_mode_prefix;
-
-    if constexpr (Monomial<NumModes>::num_words() == 1) {
-        constexpr size_t num_bits = Monomial<NumModes>::size();
-        constexpr uint64_t valid_mask = num_bits == 64 ? ~uint64_t{0} : ((uint64_t{1} << num_bits) - 1);
-        constexpr uint64_t even_mask = even_bits<2 * NumModes, LSb0>().word(0);
-        const uint64_t active_mask =
-            active_bit_offset == 0 ? valid_mask : (valid_mask & ~((uint64_t{1} << active_bit_offset) - 1));
-        const uint64_t active_word = maj.word(0) & active_mask;
-        const uint64_t pair_mask = even_mask & active_mask;
-        const auto first_pair = active_word & pair_mask;
-        const auto second_pair = (active_word >> 1) & pair_mask;
-        const auto xor_sum = std::popcount(first_pair ^ second_pair);
-        const auto or_sum = std::popcount(first_pair | second_pair);
-        return xor_sum == 0 || or_sum <= cutoff;
-    }
-
-    const auto active_maj = logical_num_modes == NumModes ? maj : (maj >> active_bit_offset);
-    const auto mask = even_bits<2 * NumModes, LSb0>();
-    const auto first_pair = active_maj & mask;
-    const auto second_pair = (active_maj >> 1) & mask;
-    const auto xor_sum = (first_pair ^ second_pair).count();
-    const auto or_sum = (first_pair | second_pair).count();
-    return xor_sum == 0 || or_sum <= cutoff;
+auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
+    const auto sums = cutoff_sums<NumModes>(mono, logical_num_modes);
+    return sums.xor_sum == 0 || sums.or_sum <= cutoff;
 }
 
 template <size_t NumModes>
-auto support_cutoff(const Monomial<NumModes> &maj, unsigned int cutoff) -> bool {
-    return support_cutoff<NumModes>(maj, cutoff, NumModes);
+auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff) -> bool {
+    return support_cutoff<NumModes>(mono, cutoff, NumModes);
 }
 
 namespace detail {
@@ -200,8 +183,8 @@ struct LengthCutoff {
     unsigned int cutoff = 0;
     size_t logical_num_modes = NumModes;
 
-    auto operator()(const Monomial<NumModes> &maj) const -> bool {
-        return length_cutoff<NumModes>(maj, cutoff, logical_num_modes);
+    auto operator()(const Monomial<NumModes> &mono) const -> bool {
+        return length_cutoff<NumModes>(mono, cutoff, logical_num_modes);
     }
 };
 
@@ -210,8 +193,8 @@ struct SupportCutoff {
     unsigned int cutoff = 0;
     size_t logical_num_modes = NumModes;
 
-    auto operator()(const Monomial<NumModes> &maj) const -> bool {
-        return support_cutoff<NumModes>(maj, cutoff, logical_num_modes);
+    auto operator()(const Monomial<NumModes> &mono) const -> bool {
+        return support_cutoff<NumModes>(mono, cutoff, logical_num_modes);
     }
 };
 
@@ -227,42 +210,43 @@ public:
 
     auto support_cutoff() const -> const SupportCutoff<NumModes> * { return support_cutoff_; }
 
-    auto operator()(const Monomial<NumModes> &maj) const -> bool {
+    auto operator()(const Monomial<NumModes> &mono) const -> bool {
         if (length_cutoff_ != nullptr) {
-            return (*length_cutoff_)(maj);
+            return (*length_cutoff_)(mono);
         }
         if (support_cutoff_ != nullptr) {
-            return (*support_cutoff_)(maj);
+            return (*support_cutoff_)(mono);
         }
-        return cutoff_fn_(maj);
+        return cutoff_fn_(mono);
     }
 
-    // Fast path when popcount(maj) is known: the predicate is `xor_sum==0 || (popcount/or_sum)<=cutoff`,
+    // Fast path when popcount(mono) is known: the predicate is `xor_sum==0 || (popcount/or_sum)<=cutoff`,
     // so popcount<=cutoff alone proves keep without reading the bitset (or_sum<=popcount makes support safe).
-    auto passes_with_popcount(const Monomial<NumModes> &maj, size_t popcount_sum) const -> bool {
+    auto passes_with_popcount(const Monomial<NumModes> &mono, size_t popcount_sum) const -> bool {
         if (length_cutoff_ != nullptr) {
             if (popcount_sum <= length_cutoff_->cutoff) {
                 return true;
             }
-            return (*length_cutoff_)(maj);
+            return (*length_cutoff_)(mono);
         }
         if (support_cutoff_ != nullptr) {
             if (popcount_sum <= support_cutoff_->cutoff) {
                 return true;
             }
-            return (*support_cutoff_)(maj);
+            return (*support_cutoff_)(mono);
         }
-        return cutoff_fn_(maj);
+        return cutoff_fn_(mono);
     }
 
-    // Upper bound on the Majorana positions a surviving term can carry, for the structural cutoffs
-    // (nullopt for an arbitrary user cutoff_fn). Lets the store size its packed inline rows from the cutoff.
-    auto max_positions_bound() const -> std::optional<size_t> {
+    // Upper bound on the SET BITS (physical slots) a surviving term can carry, so the store can size
+    // its packed inline rows (nullopt for an arbitrary user cutoff_fn). A length cutoff counts set
+    // bits directly; a support cutoff counts modes/qubits, each spanning two slots, hence the x2.
+    auto max_slot_bound() const -> std::optional<size_t> {
         if (length_cutoff_ != nullptr) {
             return length_cutoff_->cutoff;
         }
         if (support_cutoff_ != nullptr) {
-            return support_cutoff_->cutoff;
+            return 2 * support_cutoff_->cutoff;
         }
         return std::nullopt;
     }

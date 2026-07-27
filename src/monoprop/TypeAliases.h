@@ -58,8 +58,8 @@ template <size_t NumModes>
     return op[i];
 }
 template <size_t NumModes>
-inline auto assign_row(std::vector<Monomial<NumModes>> &op, size_t i, const Monomial<NumModes> &maj) -> void {
-    op[i] = maj;
+inline auto assign_row(std::vector<Monomial<NumModes>> &op, size_t i, const Monomial<NumModes> &mono) -> void {
+    op[i] = mono;
 }
 template <size_t NumModes>
 [[nodiscard]] inline auto row_popcount(const std::vector<Monomial<NumModes>> &op, size_t i) -> size_t {
@@ -75,7 +75,6 @@ inline auto for_each_row_position(const std::vector<Monomial<NumModes>> &op, siz
         fn(b);
     }
 }
-// OperatorIndex overloads for these accessors are defined after the OperatorIndex.h include below.
 
 using VecCD = std::vector<std::complex<double>>;
 
@@ -87,12 +86,11 @@ using VecZ = std::vector<size_t>;
 
 // Compile-time build knobs (cmake -D<name>=...):
 //   monoprop_ENABLE_MPI         real MPI transport vs single-rank stubs         (default OFF)
-//   monoprop_WIDE_TERM_INDEX    TermIndex = u64 vs u32 → >2^32 local terms/rank (default OFF)
+//   monoprop_WIDE_TERM_INDEX    TermIndex = u64 vs u32 → >2^32 terms per shard  (default OFF)
 //   monoprop_MAX_NUM_MODES      NumModes codegen/instantiation ceiling          (default 250)
 //   monoprop_ENABLE_ARCH_FLAGS  -march=native / -xHost (non-Debug)              (default ON)
 // Runtime (env-var) knobs live in detail/EnvConfig.h.
 //
-// TermIndex: operator row index. Default u32; monoprop_WIDE_TERM_INDEX widens to u64 for > 2^32 local terms/rank.
 #if defined(monoprop_WIDE_TERM_INDEX)
 using TermIndex = std::uint64_t;
 #else
@@ -128,9 +126,9 @@ struct default_init_allocator : A {
 template <typename T>
 using DefaultInitVector = std::vector<T, default_init_allocator<T>>;
 
-using FermiOperatorMap = std::map<VecZ, std::complex<double>>;
-
-using CyclesType = std::vector<std::vector<std::pair<size_t, size_t>>>;
+/// An operator as it crosses the Python boundary: index list -> complex coefficient. Algebra-agnostic
+/// -- the indices are Majorana indices or the JW-image slots of a Pauli string, per the runtime Basis.
+using OperatorDict = std::map<VecZ, std::complex<double>>;
 
 } // namespace monoprop
 
@@ -145,8 +143,8 @@ template <size_t NumModes>
     return op.row(i);
 }
 template <size_t NumModes>
-inline auto assign_row(detail::OperatorIndex<NumModes> &op, size_t i, const Monomial<NumModes> &maj) -> void {
-    op.set(i, maj);
+inline auto assign_row(detail::OperatorIndex<NumModes> &op, size_t i, const Monomial<NumModes> &mono) -> void {
+    op.set(i, mono);
 }
 template <size_t NumModes>
 [[nodiscard]] inline auto row_popcount(const detail::OperatorIndex<NumModes> &op, size_t i) -> size_t {

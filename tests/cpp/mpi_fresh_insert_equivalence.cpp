@@ -12,16 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Multi-rank equivalence for the Schrödinger fused-resolve fresh-insert arms of Resolve.h /
-// FusedApply.h. The existing Heisenberg World tests (exact_upper_atol_rescue, mpi_distributed_layer
-// _equivalence) already drive the Heisenberg R>1 resolve/apply paths under mpiexec; the SCHRÖDINGER
-// picture takes a distinct branch in ContractCrossSink::on_resolved (the fused cross-rank resolve, via
-// resolve_incoming) — a fresh partner insert is HF-scored (Majorana hf_phase, or the Pauli pauli_hf_phase
-// sub-branch) rather than left at 0. These arms only execute at world >= 2 and self-skip otherwise.
-//
-// The oracle is serial<->world bit-exact-to-fp equivalence, which is the load-bearing invariant of
-// the deterministic base+j miss-prefix: the same terms must be produced and summed to the same value
-// regardless of rank count (up to fp accumulation order, bounded by near()'s rtol).
+// Multi-rank equivalence for the Schrödinger fresh-insert arm of ContractSink::on_resolved, where a
+// fresh partner is state-scored (majorana_state_phase / pauli_state_phase) rather than left at 0. The
+// Heisenberg R>1 resolve/apply paths are already covered by exact_upper_atol_rescue and
+// mpi_distributed_layer_equivalence. Only runs at world >= 2. Oracle: serial<->world equivalence --
+// the deterministic base+j miss-prefix must sum the same terms at any rank count, to near()'s rtol.
 
 #include <boost/test/unit_test.hpp>
 
@@ -42,14 +37,13 @@ using namespace test_utils;
 using pauli_oracle::slots_of_string;
 
 // ── Majorana, Schrödinger picture, coefficient-carrying (fused) propagate ────────────────────────
-// schrodinger_cutoff engages the Schrödinger picture; a low structural cutoff + upper_atol = 0
-// rescue forces most partner terms to be FRESH inserts, so the Schrödinger miss arm of
-// ContractCrossSink::on_resolved (v_tgt = HF-scored, not 0) runs on nearly every partner.
+// schrodinger_cutoff engages the picture; a low structural cutoff plus the upper_atol = 0 rescue
+// forces most partners to be FRESH inserts, so the miss arm runs on nearly every partner.
 template <size_t NumModes>
 auto run_schrodinger_majorana(const CaseData& data, MPI_Comm comm) -> double {
     MonomialPropagator<NumModes> sim(data.hamiltonian,
                                      /*cutoff=*/2U,
-                                     data.hartree_fock,
+                                     data.initial_state,
                                      /*schrodinger_cutoff=*/std::optional<unsigned int>{4U},
                                      comm,
                                      /*lower_atol=*/std::nullopt,
@@ -73,12 +67,12 @@ BOOST_FIXTURE_TEST_CASE(mpi_fresh_insert_schrodinger_majorana_serial_world_equiv
 }
 
 // ── Native Pauli, Schrödinger picture, fused propagate ───────────────────────────────────────────
-// Drives the Pauli sub-branch of the Schrödinger miss arm (pauli_hf_phase). A hand Pauli operator +
-// X / ZZ generator layers, Schrödinger engaged, at world >= 2 forces fresh paired cross-rank inserts.
+// Drives the pauli_state_phase sub-branch of the same miss arm: a hand Pauli operator with X / ZZ
+// generator layers forces fresh paired cross-rank inserts.
 constexpr size_t kPauliQ = 6;
 
 auto run_schrodinger_pauli(MPI_Comm comm) -> double {
-    FermiOperatorMap init;
+    OperatorDict init;
     init[slots_of_string("ZIIIII")] = std::complex<double>(1.0, 0.0);
     init[slots_of_string("IIZZII")] = std::complex<double>(0.5, 0.0);
     MonomialPropagator<kPauliQ> sim(init,

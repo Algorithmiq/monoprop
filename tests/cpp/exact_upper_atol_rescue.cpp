@@ -20,16 +20,10 @@
 
 #include "TestUtilities.h"
 
-// upper_atol RESCUE invariant: a structural cutoff of 0 rejects every partner term the evolution
-// generates (only the identity has popcount <= 0), so on its own it would truncate the operator down
-// to nothing. upper_atol = 0 rescues a rejected partner whenever its sine coefficient magnitude is
-// >= 0 — which is ALWAYS true — so every partner is kept and the evolution is exact: the energy must
-// match the reference to FP-summation tolerance regardless of cutoff.
-//
-// The rescue keys off the partner's coefficient, so it only fires on the coefficient-carrying
-// (in-place) build path; the structural graph-only build has no coefficients to test and is NOT
-// exact at cutoff 0 (it is the complementary, deliberately-NOT-tested case). See
-// CutoffContext::is_above_upper and the emit gate in LayerBuilder.h.
+// upper_atol rescue: a structural cutoff of 0 rejects every non-identity partner, and upper_atol = 0
+// rescues all of them (|sin|·|coeff| >= 0 always), so the evolution is exact. Oracle: data.actual_expval.
+// The rescue reads the partner's coefficient, so only the coefficient-carrying in-place build path can
+// take it — the graph-only build has no coefficients and is not exact at cutoff 0.
 
 namespace {
 
@@ -40,14 +34,13 @@ constexpr double kEnergyAtol = 1e-9;
 
 enum class CommMode { Self, World };
 
-// Build a simulator with a ZERO structural cutoff and upper_atol = 0 (full rescue). Unlike
-// build_simulator (which hardcodes cutoff = 2*NumModes), this exercises the rescue path: cutoff 0
-// rejects everything, upper_atol 0 keeps everything.
+// Zero structural cutoff + upper_atol = 0; build_simulator cannot express this (it hardcodes
+// cutoff = 2*NumModes).
 template <size_t NumModes>
 auto build_zero_cutoff_full_rescue(const CaseData& data, MPI_Comm comm) -> MonomialPropagator<NumModes> {
     return MonomialPropagator<NumModes>(data.hamiltonian,
                                         /*cutoff=*/0U,
-                                        data.hartree_fock,
+                                        data.initial_state,
                                         /*schrodinger_cutoff=*/std::nullopt,
                                         comm,
                                         /*atol=*/std::nullopt,
@@ -56,7 +49,6 @@ auto build_zero_cutoff_full_rescue(const CaseData& data, MPI_Comm comm) -> Monom
                                         /*basis_change=*/std::nullopt);
 }
 
-// In-place (coefficient-carrying) evolve + energy: this is the path on which upper_atol can rescue.
 template <size_t NumModes>
 auto evaluate_zero_cutoff_full_rescue_energy(MonomialPropagator<NumModes>& simulator, const CaseData& data) -> double {
     simulator.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
@@ -66,9 +58,7 @@ auto evaluate_zero_cutoff_full_rescue_energy(MonomialPropagator<NumModes>& simul
 
 } // namespace
 
-// One test per (fixture, comm) so a failure pinpoints the configuration. The rescue invariant is
-// independent of the shard/thread count (each shard runs its partition serially), so there is no
-// thread-mode axis.
+// One test per (fixture, comm) so a failure pinpoints the configuration.
 #define MAKE_ZERO_CUTOFF_RESCUE_TEST(NAME, FixtureType, CommToken)                                            \
     BOOST_FIXTURE_TEST_CASE(NAME##_##CommToken, FixtureType) {                                                \
         MPI_Comm comm = (CommMode::CommToken == CommMode::Self) ? MPI_COMM_SELF : MPI_COMM_WORLD;             \

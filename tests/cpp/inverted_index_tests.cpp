@@ -22,11 +22,9 @@
 #include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/detail/operator/InvertedIndex.h"
 
-// Internals of the even-parity scan inverted index: the tiered column store (sparse row-lists vs dense
-// bit-vectors, promoted at the 1/kPromoteDensityInv density crossover), the lazily-built per-row
-// parity(|M|) bitmap, and the row-block-parallel fill. The inverted index reads its rows through the
-// backend-agnostic for_each_row_position accessor, which is defined for a plain
-// std::vector<Monomial<N>> — so these tests build one directly, no operator store required.
+// Internals of the even-parity scan inverted index: the tiered column store, the lazily-built
+// per-row parity(|M|) bitmap, and the fill order. Rows are read through the backend-agnostic
+// for_each_row_position accessor, so a plain std::vector<Monomial<N>> stands in for the store.
 
 using namespace monoprop;
 using namespace monoprop::detail;
@@ -38,21 +36,19 @@ using MSet = Monomial<N>;
 MSet bs(const VecZ &r) {
     return indices_to_bitset<N>(r);
 }
-// indices_to_bitset maps mode index m to bit position 2N-1-m, and the inverted index indexes its columns by
-// raw bit position — so mode m populates column col_of(m).
+// indices_to_bitset maps mode m to bit 2N-1-m; columns are indexed by raw bit position.
 constexpr size_t col_of(size_t mode) {
     return 2 * N - 1 - mode;
 }
 } // namespace
 
-// row_parity_words() builds the packed popcount(|M|)&1 bitmap over the current rows. Verify each
-// bit against the known parity of the row it was built from.
+// row_parity_words() packs popcount(|M|)&1 over the current rows; the oracle is each row's popcount.
 BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
     const std::vector<MSet> op{
-        bs({0, 1}),       // |M| = 2 -> even
-        bs({0, 1, 2}),    // |M| = 3 -> odd
-        bs({5}),          // |M| = 1 -> odd
-        bs({4, 5, 6, 7}), // |M| = 4 -> even
+        bs({0, 1}),
+        bs({0, 1, 2}),
+        bs({5}),
+        bs({4, 5, 6, 7}),
     };
     Sc sc;
     sc.rebuild(op);
@@ -71,8 +67,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
     BOOST_TEST(((sc.row_parity_words()[0] >> 1U) & 1U) == 1U); // row 1 is odd
 }
 
-// A column crosses to DENSE when set_rows.size() * kPromoteDensityInv >= row_count (density >= 1/64);
-// below that it stays a sparse row-list. rebuild decides tiers from the final per-column counts.
+// rebuild decides tiers from the final per-column counts: dense once density >= 1/kPromoteDensityInv.
 BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
     constexpr size_t kR = 128; // threshold = ceil(128/64) = 2 set rows to go dense
     std::vector<MSet> op;
@@ -100,9 +95,8 @@ BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
     BOOST_TEST(sc.sparse_column_rows(col_of(1))[0] == 0u);
 }
 
-// rebuild fills columns in row order, so sparse row-lists come out ASCENDING — the invariant the fold
-// recompute relies on (combine_columns_block lower_bounds them). Build a many-mode operator kept below
-// the promote threshold so columns stay sparse, then assert every sparse list is sorted.
+// rebuild fills columns in row order, so sparse row-lists come out ASCENDING — the invariant
+// combine_columns_block's lower_bound relies on.
 BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
     constexpr size_t M = 64; // 2M = 128 columns
     using ScW = InvertedIndex<M>;
@@ -110,8 +104,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
     std::vector<Monomial<M>> op;
     op.reserve(kR);
     for (size_t i = 0; i < kR; ++i) {
-        // one mode per row spread over all 128 columns: each column set ~128 times, 128*64 < 16385,
-        // so every column stays sparse.
+        // One mode per row over 128 columns: 128 hits each, and 128*64 < 16385, so all stay sparse.
         op.push_back(indices_to_bitset<M>({i % 128}));
     }
     ScW sc;
@@ -133,5 +126,5 @@ BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
         }
     }
     BOOST_TEST(saw_nonempty_sparse); // the fill actually populated sparse columns
-    BOOST_TEST(all_sorted);          // and they are ascending, at any thread count
+    BOOST_TEST(all_sorted);
 }

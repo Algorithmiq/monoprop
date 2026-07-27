@@ -24,28 +24,26 @@
 
 namespace monoprop {
 
-// A layer replays one of two ways by whether it carries a stored cosine list (pruned_cos_):
-//   RECOMPUTE (nullopt)   — cosine recomputed from the generator's inverted-index columns at replay.
-//   PRUNED    (has value) — cosine pre-filtered to a backward-reachable subset, stored explicitly
-//                           (an EMPTY stored list is still PRUNED — replay as nothing, do NOT recompute).
-// All layers share an immutable LayerCore; the pared graph reuses source cores (shared_ptr) + pruned cos.
-// "Immutable" means immutable IN VALUE: a core carries two eval-time caches filled through const handles
-// (LayerExchangeLayout::recv_cache and the lazy derivative layout), so materializing them on a core two
-// threads share is a data race. No shipped path does that — shards own their propagators and the Python
-// bindings hold the GIL — but a C++ caller evaluating two aliasing propagators concurrently must not.
+// A layer replays one of two ways, by whether it carries a stored cosine list (pruned_cos_):
+//   RECOMPUTE (nullopt)   — cosine rebuilt from the generator's inverted-index columns at replay.
+//   PRUNED    (has value) — cosine pre-filtered to a backward-reachable subset, stored explicitly; an
+//                           EMPTY stored list is still PRUNED (replay as nothing, do NOT recompute).
+// Cores are shared and immutable IN VALUE only: their eval-time caches (recv_cache, the lazy derivative
+// layout) are filled through const handles, so evaluating two aliasing propagators concurrently is a race.
 
-/// @brief Read-only view over an immutable LayerCore plus an optional pruned-cosine word list.
-/// Cross-rank data is always read verbatim (no logical→stored remap). num_cos_inds() reports the stored
-/// count for pruned layers; recompute layers report 0 and rebuild cosine from the inverted index.
+// Read-only view over an immutable LayerCore plus an optional pruned-cosine word list. Cross-rank data is
+// always read verbatim (no logical→stored remap).
 struct LayerTraversal final {
     explicit LayerTraversal(const LayerCore &core, const CosMask *pruned_cos = nullptr)
         : core_(&core),
           pruned_cos_(pruned_cos) {}
 
-    // num_cos_inds() reports 0 for recompute layers (no stored cosine); pruned layers report the stored count.
+    // Reports 0 for recompute layers (no stored cosine); check has_stored_cos() first, or a normally-built
+    // graph — every layer of which recomputes — looks like it has no cosine indices at all.
     auto num_cos_inds() const -> size_t { return pruned_cos_ != nullptr ? pruned_cos_->total_count : 0; }
 
-    // Per-layer recompute metadata, read straight off the underlying LayerCore core.
+    auto has_stored_cos() const -> bool { return pruned_cos_ != nullptr; }
+
     auto scaled_count() const -> uint64_t { return core_->scaled_count; }
     auto generator_words() const -> const std::vector<uint64_t> & { return core_->generator_words; }
 
@@ -113,13 +111,10 @@ private:
     const CosMask *pruned_cos_;
 };
 
-/// @brief Owning graph layer: a shared immutable LayerCore, plus an owned cosine list for pruned layers.
-/// All read-only access goes through traversal(); this type only adds ownership over the core + pruned cos.
 struct Layer final {
     Layer() : core_(std::make_shared<LayerCore>()) {}
 
     explicit Layer(std::shared_ptr<const LayerCore> core) : core_(std::move(core)) {}
-    // Pruned layer: carries an explicitly-stored (possibly empty) filtered cosine list.
     Layer(std::shared_ptr<const LayerCore> core, CosMask pruned_cos)
         : core_(std::move(core)),
           pruned_cos_(std::move(pruned_cos)) {}
@@ -132,7 +127,7 @@ struct Layer final {
 
 private:
     std::shared_ptr<const LayerCore> core_;
-    std::optional<CosMask> pruned_cos_; // nullopt == fold layer (recompute); value == pruned
+    std::optional<CosMask> pruned_cos_;
 };
 
 } // namespace monoprop

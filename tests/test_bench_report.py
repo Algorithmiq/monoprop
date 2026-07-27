@@ -14,10 +14,8 @@
 
 """Unit tests for the benchmark report builder (``benches/report.py``).
 
-``benches`` is on the pytest pythonpath (see ``pyproject.toml``), so the module
-imports as ``report`` from the normal test suite. Each run contributes two
-artifacts to the results directory: ``time-<label>.json`` (pytest-benchmark
-timings) and ``<label>.json`` (everything else, keyed by section).
+Each run contributes two artifacts to the results directory: ``time-<label>.json``
+(pytest-benchmark timings) and ``<label>.json`` (everything else, keyed by section).
 """
 
 from __future__ import annotations
@@ -79,7 +77,6 @@ def _write_timings(results_dir: Path, label: str = "np1") -> None:
 
 
 def _write_results(results_dir: Path, label: str = "np1", **sections: object) -> None:
-    """Write the consolidated ``<label>.json`` artifact from named sections."""
     (results_dir / f"{label}.json").write_text(json.dumps(sections))
 
 
@@ -89,13 +86,11 @@ def test_build_report_has_two_sections(tmp_path: Path) -> None:
 
     assert "## Heisenberg" in md
     assert "## Schrödinger" in md
-    # Heisenberg precedes Schrödinger.
     assert md.index("## Heisenberg") < md.index("## Schrödinger")
 
     heis = md[md.index("## Heisenberg") : md.index("## Schrödinger")]
     schr = md[md.index("## Schrödinger") :]
 
-    # Model op only under Heisenberg; random energy appears in both sections.
     assert "model / hubbard" in heis
     assert "model / hubbard" not in schr
     assert "random / energy" in heis
@@ -119,12 +114,10 @@ def test_build_report_includes_hyperparameters(tmp_path: Path) -> None:
     md = _collapse(report.build_report(tmp_path))
 
     assert "## Hyperparameters" in md
-    # Each hyperparameter row is present with its value.
     assert "| num_generators | 100 |" in md
     assert "| cutoff | 6 |" in md
-    # lower_atol is no longer a random hyperparameter (it is per-model now).
+    # lower_atol is per-model, not a sampled hyperparameter.
     assert "| lower_atol |" not in md
-    # Hyperparameters sit between Configuration and the picture sections.
     assert md.index("## Hyperparameters") < md.index("## Heisenberg")
 
 
@@ -150,11 +143,9 @@ def test_build_report_includes_model_config(tmp_path: Path) -> None:
     assert "## Model configuration" in md
     assert "### hubbard" in md
     assert "### pauli" in md
-    # Int field and compact-float field rendered in the right sub-tables.
     assert "| num_sites | 60 |" in md
     assert "| num_qubits | 127 |" in md
     assert "| lower_atol | 1e-05 |" in md
-    # hubbard precedes pauli; the section precedes the picture sections.
     assert md.index("### hubbard") < md.index("### pauli")
     assert md.index("## Model configuration") < md.index("## Heisenberg")
 
@@ -177,7 +168,6 @@ def test_build_report_includes_operator_size(tmp_path: Path) -> None:
     md = _collapse(report.build_report(tmp_path))
 
     assert "## Operator size" in md
-    # Term counts are rendered with thousands separators, one row per picture.
     assert "| Heisenberg | 132,220 |" in md
     assert "| Schrödinger | 11,311,942 |" in md
 
@@ -194,7 +184,7 @@ def test_build_report_includes_memory(tmp_path: Path) -> None:
     md = _collapse(report.build_report(tmp_path))
 
     assert "Memory (RSS)" in md
-    # Bytes render as MiB in the per-picture memory tables.
+    # Bytes render as MiB.
     assert "50.00 MiB" in md
     assert "100.00 MiB" in md
 

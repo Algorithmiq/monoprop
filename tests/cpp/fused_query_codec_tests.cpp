@@ -21,12 +21,10 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 
-// A1 query+value fusion codec: the fused R>1 exchange rides the source coefficient (v_src) on each query
-// record as a trailing bit-cast word so ONE alltoallv carries both streams. These tests pin the codec
-// contract the fusion's bit-identity rests on: build_fused_query_value interleaves the plain query
-// records with the parallel value stream, and query_read (at the fused stride) + query_value recover the
-// majorana, phase, AND value byte-for-byte — including the FP corner cases (±0, denormal, inf, NaN, the
-// sign bit) that a lossy value channel would silently mangle.
+// Query+value fusion codec: the fused R>1 exchange rides the source coefficient (v_src) on each query
+// record as a trailing bit-cast word so ONE alltoallv carries both streams. These pin that
+// build_fused_query_value, query_read at the fused stride and query_value round-trip the majorana,
+// phase and value byte-for-byte, including the FP corner cases a lossy value channel would mangle.
 
 namespace {
 
@@ -40,10 +38,9 @@ using monoprop::detail::query_value;
 
 constexpr size_t kModes = 8; // 2*kModes = 16 majorana bits, one 64-bit word
 
-// A reproducible spread of majorana bit patterns for `n` records.
-auto make_maj(size_t r) -> Monomial<kModes> {
+// A deterministic, distinct majorana bit pattern per record index, spread across the 16-bit range.
+auto make_mono(size_t r) -> Monomial<kModes> {
     Monomial<kModes> m;
-    // deterministic, distinct per r; touch a few bits across the 16-bit range
     for (size_t b = 0; b < 2 * kModes; ++b) {
         if (((r * 2654435761u + b * 40503u) & 3u) == 0u) {
             m.set(b);
@@ -68,10 +65,10 @@ BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
     const size_t nq = values.size();
 
     VecZ plain;
-    std::vector<Monomial<kModes>> majs(nq);
+    std::vector<Monomial<kModes>> monos(nq);
     for (size_t r = 0; r < nq; ++r) {
-        majs[r] = make_maj(r);
-        query_push<kModes>(plain, majs[r], phases[r]);
+        monos[r] = make_mono(r);
+        query_push<kModes>(plain, monos[r], phases[r]);
     }
     BOOST_REQUIRE_EQUAL(plain.size(), nq * kQueryWords<kModes>);
 
@@ -83,7 +80,7 @@ BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
         Monomial<kModes> m_out;
         int ph_out = 0;
         query_read<kModes, kQueryWordsFused<kModes>>(fused, q, m_out, ph_out);
-        BOOST_CHECK(m_out == majs[q]);
+        BOOST_CHECK(m_out == monos[q]);
         BOOST_CHECK_EQUAL(ph_out, phases[q]);
         // value is bit-exact: compare the raw payload, so -0.0 and denormals are distinguished from 0.0
         const double v_out = query_value<kModes>(fused, q);
@@ -98,7 +95,7 @@ BOOST_AUTO_TEST_CASE(fused_buffer_reuse_shrinks_logical_size) {
     VecZ plain_big;
     std::vector<double> vbig;
     for (size_t r = 0; r < 32; ++r) {
-        query_push<kModes>(plain_big, make_maj(r), (r % 2 == 0) ? 1 : -1);
+        query_push<kModes>(plain_big, make_mono(r), (r % 2 == 0) ? 1 : -1);
         vbig.push_back(static_cast<double>(r) * 1.5 - 7.0);
     }
     VecZ out;
@@ -108,7 +105,7 @@ BOOST_AUTO_TEST_CASE(fused_buffer_reuse_shrinks_logical_size) {
     VecZ plain_small;
     std::vector<double> vsmall = {42.0, -42.0, 0.25};
     for (size_t r = 0; r < vsmall.size(); ++r) {
-        query_push<kModes>(plain_small, make_maj(100 + r), 1);
+        query_push<kModes>(plain_small, make_mono(100 + r), 1);
     }
     build_fused_query_value<kModes>(plain_small, vsmall, out);
     BOOST_CHECK_EQUAL(out.size(), vsmall.size() * kQueryWordsFused<kModes>);

@@ -12,13 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Guardrail: the live recompute replay must agree bit-for-bit with the materialised-fold reference.
-//   - RECOMPUTE (live runtime path): make_lazy_fold  + scale_cos_lazy / accumulate_cos_lazy
-//   - REFERENCE (materialised oracle): make_fold_cache + scale_cos_cached / accumulate_cos_cached
-// build_cos_callbacks always recomputes (the persistent runtime FoldCache was retired; it bought <=5%
-// per eval and lost for large operators while costing GB — see CosineRecompute.h). This pins the
-// recompute path against the reference on every layer of a real propagated operator, so a refactor of
-// the shared word-scan cannot silently diverge them.
+// The live recompute path (make_lazy_fold + scale_cos_lazy / accumulate_cos_lazy) must agree
+// bit-for-bit with the materialised-fold oracle (make_fold_cache + the scale_cos_cached /
+// accumulate_cos_cached replays below), on every layer of a real propagated operator.
 
 #include <boost/test/unit_test.hpp>
 
@@ -46,9 +42,8 @@ auto generator_of(const LayerTraversal &layer) -> Monomial<NumModes> {
     return gen;
 }
 
-// Reference oracle (test-only): replay a MATERIALISED FoldCache buffer. The live runtime path
-// (scale_cos_lazy / accumulate_cos_lazy) recomputes each layer's fold on the fly; these cached replays
-// are kept here only as the independent reference the equivalence cases below pin the recompute against.
+// Reference oracle (test-only): replay a MATERIALISED FoldCache buffer. The live path recomputes each
+// layer's fold on the fly, so these cached replays exist only as the independent reference.
 template <size_t NumModes>
 void scale_cos_cached(const monoprop::detail::FoldCache<NumModes> &p, double *coeff, double cos_val) {
     const size_t mask_words = p.fold.mask_words;
@@ -79,8 +74,8 @@ double accumulate_cos_cached(const monoprop::detail::FoldCache<NumModes> &p,
 
 } // namespace
 
-// scale: coeff[i] *= cos over the layer's cosine index set. A pure per-index scatter, so the cache
-// and recompute paths must produce byte-identical arrays regardless of thread scheduling.
+// scale: coeff[i] *= cos over the layer's cosine index set — a pure per-index scatter, so the two
+// paths must produce byte-identical arrays.
 BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
@@ -89,7 +84,7 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
 
     const auto &inverted_index = sim.mp_op().inverted_index();
     const auto &graph = sim.graph();
-    const size_t n = sim.mp_op().get_state().size();
+    const size_t n = sim.mp_op().size();
     BOOST_REQUIRE(n > 0);
 
     // Distinct, non-degenerate coefficients so a missed/extra index shows up.
@@ -125,9 +120,8 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
     BOOST_TEST(odd_layers > 0u);
 }
 
-// accumulate: reads state*ham into an energy term and mutates state/ham per index. The array
-// mutations are per-index (order-independent) so must be byte-identical; the returned reduction is
-// summed in a possibly different order, so compare it within a tight fp tolerance.
+// accumulate: the per-index state/ham mutations must be byte-identical; the returned reduction may be
+// summed in a different order, so it is compared within a tight fp tolerance.
 BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
@@ -136,7 +130,7 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
 
     const auto &inverted_index = sim.mp_op().inverted_index();
     const auto &graph = sim.graph();
-    const size_t n = sim.mp_op().get_state().size();
+    const size_t n = sim.mp_op().size();
     BOOST_REQUIRE(n > 0);
 
     std::vector<double> state0(n);
@@ -175,11 +169,8 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
     }
 }
 
-// Snapshot invariance (formerly snapshot_invariance.cpp): calling the energy functional twice with
-// identical parameters must agree to tight tolerance. Each shard folds its partition serially in a
-// fixed order, so repeated evaluations agree exactly; the tolerance check pins the CONTRACT (tight
-// numerical agreement), not the reduction implementation. It lives here because it is the same
-// recompute machinery exercised above, evaluated twice.
+// Snapshot invariance: the energy functional called twice with identical parameters must agree. It
+// lives here because it re-runs the same recompute machinery exercised above.
 BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto sim = build_simulator<n_modes>(data, cfg);
@@ -191,4 +182,56 @@ BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix)
 
     BOOST_CHECK_SMALL(e1 - e2, 1e-13);
     BOOST_TEST_MESSAGE("snapshot_invariance energy=" << e1);
+}
+
+// Lifetime contract: a LazyFold outlives the index it was built from (build_cos_callbacks retains one
+// per layer in a functional's closure, and a later build_graph rebuilds InvertedIndex::row_parity_),
+// so it must hold no pointer into that buffer. Pins both halves — that the buffer really does move
+// under growth, and that a fold built before the growth still folds like a FoldCache built after it.
+BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    SimulatorConfig cfg{.comm = MPI_COMM_SELF};
+    auto sim = build_simulator<kNumModes>(data, cfg);
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+
+    // Find an odd-|G| layer: row_parity_ is only consulted for those (Pauli and even |G| never touch it).
+    const auto &graph = sim.graph();
+    size_t odd_layer = graph.layers();
+    for (size_t li = 0; li < graph.layers(); ++li) {
+        const auto layer = graph.get_layer_traversal(li);
+        if (!layer.generator_words().empty() && generator_of<kNumModes>(layer).count() % 2 != 0) {
+            odd_layer = li;
+            break;
+        }
+    }
+    BOOST_REQUIRE(odd_layer < graph.layers());
+
+    const auto layer = graph.get_layer_traversal(odd_layer);
+    const auto gen = generator_of<kNumModes>(layer);
+    const auto scaled_count = layer.scaled_count();
+
+    const uint64_t *before = sim.mp_op().inverted_index().row_parity_words();
+    BOOST_REQUIRE(before != nullptr);
+    auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count);
+
+    // Grow the operator, forcing the index and its row parity onto fresh storage.
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    const uint64_t *after = sim.mp_op().inverted_index().row_parity_words();
+    BOOST_REQUIRE(after != nullptr);
+    BOOST_TEST(before != after); // a pointer cached in the fold would now dangle
+
+    const size_t n = sim.mp_op().size();
+    std::vector<double> baseline(n);
+    for (size_t i = 0; i < n; ++i) {
+        baseline[i] = 1.0 + static_cast<double>(i) * 1e-3;
+    }
+    const double cos_val = 0.6234;
+
+    auto prepared = monoprop::detail::make_fold_cache<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count);
+    std::vector<double> expected = baseline;
+    std::vector<double> actual = baseline;
+    scale_cos_cached<kNumModes>(prepared, expected.data(), cos_val);
+    monoprop::detail::scale_cos_lazy<kNumModes>(sim.mp_op().inverted_index(), recipe, actual.data(), cos_val);
+
+    BOOST_TEST(std::memcmp(expected.data(), actual.data(), n * sizeof(double)) == 0);
 }

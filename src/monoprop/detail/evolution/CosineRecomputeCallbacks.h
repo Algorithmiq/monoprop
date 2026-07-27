@@ -14,16 +14,15 @@
 
 #pragma once
 
-// CosineRecomputeCallbacks.h — cos-recompute callback type aliases, split out from CosineRecompute.h
-// so public headers can name them without dragging in the heavy build-pipeline templates.
+// Cos-recompute callback type aliases, split out from CosineRecompute.h so public headers can name them
+// without dragging in the build-pipeline templates.
 
 #include <cstddef>
 #include <functional>
 
 namespace monoprop::detail {
 
-// Per-layer cosine callbacks for the forward evolution and reverse-gradient walks (`layer` selects the
-// cosine set to replay):
+// Per-layer cosine callbacks; `layer` selects the cosine set to replay.
 //   LayerCosScale      — forward: scale operator coefficients in place by cos θ.
 //   LayerCosAccumulate — reverse: apply cos θ / sec θ to state and ham, returning the layer's gradient term.
 using LayerCosScale = std::function<void(size_t layer, double *coeff, double cos_val)>;

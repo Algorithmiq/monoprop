@@ -21,26 +21,20 @@
 
 namespace test_utils {
 
-/// Minimal test-case payload loaded from a `tests/data/*.msgpack` fixture.
-///
-/// Mirrors the flat msgpack schema documented in `tests/data/README.md`; only
-/// the fields exercised by the C++ test suite are kept.
+// The flat msgpack schema documented in tests/data/README.md, restricted to the fields the C++
+// suite uses.
 struct CaseData {
     double actual_expval{0.0};
-    monoprop::VecZ hartree_fock;
+    monoprop::VecZ initial_state;
     monoprop::VecZ param_inds;
     monoprop::VecD gen_coeffs;
     monoprop::VecD parameters;
     std::vector<monoprop::VecZ> majoranas;
-    monoprop::FermiOperatorMap hamiltonian;
+    monoprop::OperatorDict hamiltonian;
     size_t num_modes{0};
 };
 
-/// Load a test case from a minimal-schema msgpack fixture.
-///
-/// @param filename Path to the `.msgpack` fixture.
-/// @return The parsed @ref CaseData.
-/// @throws std::runtime_error if the file cannot be read or parsed.
+// Throws std::runtime_error if the fixture cannot be read or parsed.
 auto load_case(const std::filesystem::path& filename) -> CaseData;
 
 } // namespace test_utils

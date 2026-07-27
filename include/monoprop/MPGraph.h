@@ -27,9 +27,8 @@
 
 namespace monoprop {
 
-/// @brief Ordered per-rank record of the evolution circuit, one Layer per gate.
-/// Each Layer holds a shared immutable LayerCore plus an optional pruned cosine list; the per-layer
-/// cosine set is not stored but recomputed from the operator's inverted index (except pruned layers).
+/// Ordered per-rank record of the evolution circuit, one Layer per generator. Each Layer holds a shared
+/// immutable LayerCore plus an optional pruned cosine list; an unpruned cosine set is recomputed, not stored.
 class monoprop_EXPORT MPGraph {
 private:
     using LayerIterator = std::vector<Layer>::iterator;
@@ -67,17 +66,16 @@ private:
     }
 
 public:
-    /// @brief Initialize the Majorana graph.
+    /// Initialize an empty graph.
     explicit MPGraph(bool schrodinger) : schrodinger_(schrodinger) {}
 
-    /// @brief Initialize the Majorana graph with existing layers.
+    /// Initialize a graph with existing layers.
     explicit MPGraph(bool schrodinger, std::vector<Layer> layers)
         : schrodinger_(schrodinger),
           layers_(std::move(layers)) {}
 
-    /// @brief Append a new layer to the graph.
-    /// @param storage The layer's LayerCore; gate info (param_index, gen_coeff, gate_index) is written
-    ///   onto it here while still mutable, before it is frozen into the Layer's shared const core.
+    /// Append a new layer. Gate info (param_index, gen_coeff, gate_index) is written onto `storage` here
+    /// while it is still mutable, before it is frozen into the Layer's shared const core.
     auto append(std::shared_ptr<LayerCore> storage,
                 size_t param_index = 0,
                 double gen_coeff = 0.0,
@@ -88,30 +86,28 @@ public:
         append_layer(Layer(std::move(storage)));
     }
 
-    /// @brief Slice the graph at `key` (the number of earliest operations to include).
-    /// @param contract If true, remove the sliced part from this graph.
+    /// Slice the graph at `key` (the number of earliest operations to include); `contract` also removes
+    /// the sliced part from this graph.
     auto slice_graph(size_t key, bool contract = false) -> MPGraph;
 
     auto slice_view(size_t key) const -> MPGraphView;
 
-    /// @brief The number of layers in the graph.
     auto layers() const -> size_t { return active_end_index() - active_begin_index(); }
 
-    /// @brief Get the layer at `layer_idx`.
-    auto get_layer(size_t layer_idx) -> Layer & { return layers_[checked_layer_offset(layer_idx)]; }
+    auto get_layer(size_t layer_idx) -> Layer& { return layers_[checked_layer_offset(layer_idx)]; }
 
-    auto get_layer(size_t layer_idx) const -> const Layer & { return layers_[checked_layer_offset(layer_idx)]; }
+    auto get_layer(size_t layer_idx) const -> const Layer& { return layers_[checked_layer_offset(layer_idx)]; }
 
     auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
 
-    /// @brief Non-owning replay view over the active layers, in build order.
+    /// Non-owning replay view over the active layers, in build order.
     auto replay_view() const -> MPGraphView { return MPGraphView(layers_, active_begin_index(), layers(), false); }
 
-    /// @brief Whether the graph is in the Schrodinger picture.
     auto is_schrodinger() const -> bool { return schrodinger_; }
 
-    /// @brief The number of (cos_inds, cycles) across all layers.
-    auto num_cos_inds_and_cycles() const -> std::pair<size_t, size_t>;
+    /// Total rotation cycles across all layers. The companion cosine-index count is not here: a
+    /// normally-built layer stores no cosine set, so only the operator's inverted index can supply it.
+    auto total_cycles() const -> size_t;
     auto storage_memory_usage() const -> GraphMemoryBreakdown;
 };
 } // namespace monoprop
