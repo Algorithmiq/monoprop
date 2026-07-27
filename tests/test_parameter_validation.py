@@ -67,7 +67,7 @@ class TestGraphAndParameterValidation:
     def test_wrong_parameter_length_raises(self, serial_comm, parameters):
         mp, _ = _two_gate_graph(serial_comm)
         with pytest.raises(RuntimeError, match="Parameter length"):
-            mp.expectation_value(parameters)
+            mp.expval(parameters)
 
     def test_non_contiguous_mapping_raises(self):
         """A param scheme with an index gap is rejected at circuit construction."""
@@ -112,7 +112,7 @@ class TestGraphAndParameterValidation:
                 )
             )
         )
-        functional = mp.expectation_value_functional()
+        functional = mp.expval_functional()
         # Appending another layer mutates the graph, so the previously-built functional
         # must reject being called against the stale plan.
         mp.build_graph(Circuit((ExpGate(MajoranaOperator({(2,): 1.0}, num_modes=2)),)))
