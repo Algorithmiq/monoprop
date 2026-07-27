@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .utils import _validate_system_size
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
@@ -99,6 +101,10 @@ class MajoranaOperator:
                 also authored as a [MajoranaOperator][] (wrapped in
                 [ExpGate][monoprop.circuit.ExpGate]) -- bare [Majorana][] terms are not accepted
                 by ``ExpGate``, since the operator is what carries the mode count.
+
+        Raises:
+            TypeError: If ``num_modes`` is not an integer.
+            ValueError: If ``num_modes`` is negative or a term index is out of range.
         """
         # Route raw index tuples through Majorana so they get the same non-negative/distinct
         # validation a Majorana key already carries (a bare tuple would otherwise slip past it).
@@ -106,7 +112,13 @@ class MajoranaOperator:
             (key if isinstance(key, Majorana) else Majorana(*key)).indices
             for key in terms
         ]
-        self.num_modes = num_modes
+        self.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
+        for majorana in majoranas:
+            # majoranas are sorted in here
+            if majorana and majorana[-1] >= 2 * self.num_modes:
+                raise ValueError(
+                    f"Majorana term {majorana} acts on an index >= num_modes={self.num_modes}."
+                )
         self.terms = self._accumulate(majoranas, list(terms.values()))
 
     @classmethod
@@ -114,7 +126,7 @@ class MajoranaOperator:
         cls,
         majoranas: Sequence[Sequence[int]],
         coefficients: Sequence[complex],
-        num_modes: int | None = None,
+        num_modes: int,
     ) -> MajoranaOperator:
         """Build from parallel ``majoranas``/``coefficients`` lists (internal).
 
@@ -122,7 +134,9 @@ class MajoranaOperator:
         Jordan-Wigner and fermionic conversions ([get_majorana_operator][]) rely on.
         """
         obj = cls.__new__(cls)
-        obj.num_modes = num_modes
+        obj.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
+        # _accumulate is taking care of the sorting/removing repeating terms
+        # so no need to check in here
         obj.terms = cls._accumulate(majoranas, coefficients)
         return obj
 

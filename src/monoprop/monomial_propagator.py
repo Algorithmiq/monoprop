@@ -78,7 +78,7 @@ class MonomialPropagator(ABC):
 
     _comm: MPI.Comm | None
     _n_params: int
-    _num_qubits: int | None
+    _num_modes: int
     _initial_state: list[int]
     _simulator: object
 
@@ -115,6 +115,7 @@ class MonomialPropagator(ABC):
 
         self._comm = comm
         self._n_params = 0
+        self._num_modes = num_modes
         # System qubit count for expanding Pauli gates; set by PauliPropagator from the
         # observable. None for a native Majorana propagator (its gates need no qubit count).
         self._num_qubits = None
@@ -195,6 +196,15 @@ class MonomialPropagator(ABC):
                 "propagator with this circuit's initial state (or via from_circuit)."
             )
 
+    def _check_circuit_width(self, circuit: Circuit) -> None:
+        """Reject a circuit with a system width that disagrees with the propagator."""
+        expected = self._num_qubits if self._num_qubits is not None else self._num_modes
+        if circuit.num_modes != expected:
+            raise ValueError(
+                f"Circuit num_modes={circuit.num_modes} does not match propagator width "
+                f"{expected}."
+            )
+
     def _validate_and_correct_only_rotate_len_k(
         self, only_rotate_len_k: int | None
     ) -> int:
@@ -255,6 +265,7 @@ class MonomialPropagator(ABC):
                 expectation-value estimation in Schrodinger-picture simulations.
         """
         self._check_initial_state(circuit)
+        self._check_circuit_width(circuit)
         # Resolve the coefficient seed handed to the engine (the operator coefficients the new
         # layers are contracted against while the graph is built, informing coefficient
         # truncation). The engine validates its length against the accumulated parameter axis.
@@ -275,7 +286,7 @@ class MonomialPropagator(ABC):
         else:
             seed = None
         gates = self._circuit_gates(circuit)
-        num_qubits = self._num_qubits
+        num_qubits = 0 if self._num_qubits is None else self._num_qubits
         # Shift the circuit's local 0-based angle indices onto the accumulated axis.
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
         self._n_params += circuit.n_parameters
@@ -312,8 +323,9 @@ class MonomialPropagator(ABC):
             only_rotate_len_k
         )
         self._check_initial_state(circuit)
+        self._check_circuit_width(circuit)
         gates = self._circuit_gates(circuit)
-        num_qubits = self._num_qubits
+        num_qubits = 0 if self._num_qubits is None else self._num_qubits
         majoranas, gen_coeffs, mapping, _gate_indices = expand_monomials(
             gates, circuit.resolved_mapping, num_qubits
         )
@@ -585,7 +597,7 @@ class MonomialPropagator(ABC):
     @property
     def num_modes(self) -> int:
         """Number of fermionic modes for the simulator."""
-        return self._simulator.num_modes
+        return self._num_modes
 
     @property
     def graph_layers(self) -> int:

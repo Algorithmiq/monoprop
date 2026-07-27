@@ -320,7 +320,9 @@ def test_hermitian_majorana_generator_matches_structural() -> None:
     hermitian = Circuit(
         gates=(ExpGate(MajoranaOperator({(4, 5): 1j}, num_modes=8)),), parameters=(0.5,)
     )
-    structural = Circuit.from_dense_arrays([[4, 5]], [-1.0], [0], parameters=[0.5])
+    structural = Circuit.from_dense_arrays(
+        [[4, 5]], [-1.0], [0], num_modes=8, parameters=[0.5]
+    )
 
     from_hermitian = MajoranaPropagator.from_circuit(
         hermitian, obs, cutoff=16

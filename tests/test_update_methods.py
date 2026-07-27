@@ -144,6 +144,7 @@ class TestUpdateMethods:
             majoranas=[(0, 2), (1, 3)],
             gen_coeffs=[0.0, 0.0],
             param_inds=[0, 1],
+            num_modes=4,
             parameters=[1.0, 1.0],
         )
         mp = MajoranaPropagator(

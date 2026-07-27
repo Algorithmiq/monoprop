@@ -64,6 +64,7 @@ def test_from_dense_arrays_groups_by_param_ind():
         majoranas=[(0, 1), (2, 3), (0, 3)],
         gen_coeffs=[0.5, -0.5, 1.0],
         param_inds=[0, 0, 1],
+        num_modes=2,
         parameters=[1.0, 2.0],
         initial_state=[0, 1],
     )

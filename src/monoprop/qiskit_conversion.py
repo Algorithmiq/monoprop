@@ -31,6 +31,7 @@ except ImportError as e:
 
 from monoprop.circuit import Circuit, ExpGate
 from monoprop.pauli import Pauli, PauliOperator
+from monoprop.utils import _validate_system_size
 
 PAULI_EVOLUTION_EQUIVALENT = {
     "rx",
@@ -168,6 +169,7 @@ def from_qiskit_circuit(
         gates=tuple(gates),
         parameters=tuple(parameters),
         initial_state=tuple(initial_state),
+        num_modes=num_qubits,
     )
 
 
@@ -197,12 +199,16 @@ def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
 
     Args:
         circuit: A [Circuit][monoprop.circuit.Circuit] representing the given circuit.
-        num_qubits: Total number of qubits (the circuit no longer carries it; supply the
-            observable's ``num_qubits``).
+        num_qubits: Total number of qubits. Must match ``circuit.num_modes``.
 
     Returns:
         A qiskit quantum circuit.
     """
+    num_qubits = _validate_system_size(num_qubits, argument_name="num_qubits")
+    if num_qubits != circuit.num_modes:
+        raise ValueError(
+            f"num_qubits={num_qubits} does not match circuit.num_modes={circuit.num_modes}."
+        )
     if len(circuit.parameters) != circuit.n_parameters:
         raise ValueError(
             f"to_qiskit_circuit needs a bound circuit: it has {circuit.n_parameters} "

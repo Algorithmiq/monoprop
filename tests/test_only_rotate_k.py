@@ -55,6 +55,7 @@ def test_basic_orbital_rotation(serial_comm):
         parameters=[np.pi / 4],
         gen_coeffs=[1.0],
         param_inds=[0],
+        num_modes=n_modes,
     )
     circuit = sequence
     kwargs = {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}

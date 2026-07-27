@@ -57,6 +57,7 @@ from typing import TYPE_CHECKING, Literal
 from .conversion_utils import _extend_pauli_string, _pauli_to_majorana
 from .majorana import MajoranaOperator
 from .pauli import Pauli, PauliOperator
+from .utils import _validate_system_size
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -255,33 +256,42 @@ class Circuit:
         gates: The ordered exponential gates.
         parameters: The angle values, or empty for an unbound circuit.
         initial_state: The reference state (occupied mode / qubit indices).
+        num_modes: System width (number of fermionic modes / qubits).
         family: The gate family -- ``"pauli"``, ``"majorana"``, or ``"empty"`` -- computed at
             construction; the propagators dispatch on it.
     """
 
-    def __init__(
+    def __init__(  # noqa:C901
         self,
-        gates: Sequence[ExpGate] = (),
+        gates: Sequence[ExpGate],
+        initial_state: Sequence[int],
+        num_modes: int,
         parameters: Sequence[float] = (),
-        initial_state: Sequence[int] = (),
     ) -> None:
         """Build the circuit, dropping identity gates and validating family/mapping/params.
 
         Args:
             gates: The ordered exponential gates.
-            parameters: The angle values, or empty for an unbound circuit.
+            num_modes: Number of modes/qubits for the circuit.
             initial_state: The reference state (occupied mode / qubit indices).
+            parameters: The angle values, or empty for an unbound circuit.
 
         Raises:
             ValueError: On duplicate initial-state indices, a bad parameter mapping, or a
-                bound circuit whose parameter count does not match [n_parameters][].
+                bound circuit whose parameter count does not match [n_parameters][]; also if
+                a gate's operator width differs from ``num_modes``.
             TypeError: On a non-[ExpGate][] gate or a mix of qubit and Majorana gate families.
         """
         gates = tuple(gates)
         parameters = tuple(float(v) for v in parameters)
         initial_state = tuple(int(i) for i in initial_state)
+        num_modes = _validate_system_size(num_modes, argument_name="num_modes")
         if len(set(initial_state)) != len(initial_state):
             raise ValueError("Duplicate indices in initial state")
+        if any(i < 0 or i >= num_modes for i in initial_state):
+            raise ValueError(
+                f"initial_state entries must be in 0..{num_modes - 1}; got {list(initial_state)}."
+            )
 
         # Validate gate types up front: the identity-drop below reads gate.index/.generator,
         # so a non-ExpGate gate must be rejected with a clear TypeError first rather than crashing
@@ -290,6 +300,15 @@ class Circuit:
             if not isinstance(gate, ExpGate):
                 raise TypeError(
                     f"Circuit gates must be ExpGate; got {type(gate).__name__}."
+                )
+            gate_size = (
+                gate.generator.num_qubits
+                if isinstance(gate.generator, PauliOperator)
+                else gate.generator.num_modes
+            )
+            if gate_size != num_modes:
+                raise ValueError(
+                    f"Gate generator width {gate_size} does not match circuit num_modes={num_modes}."
                 )
 
         def _is_identity_gate(gate: ExpGate) -> bool:
@@ -310,6 +329,7 @@ class Circuit:
         self.gates = gates
         self.parameters = parameters
         self.initial_state = initial_state
+        self.num_modes = num_modes
         #: The gate family, computed from the (validated) gates; the propagators dispatch on it.
         self.family = self._resolve_family(gates)
 
@@ -328,6 +348,7 @@ class Circuit:
             self.gates == other.gates
             and self.parameters == other.parameters
             and self.initial_state == other.initial_state
+            and self.num_modes == other.num_modes
         )
 
     __hash__ = None  # type: ignore[assignment]  # value-equal but not hashable (mutable gates)
@@ -336,7 +357,8 @@ class Circuit:
         """Return a string representation listing the gates, parameters, and initial state."""
         return (
             f"{self.__class__.__name__}(gates={self.gates!r}, "
-            f"parameters={self.parameters!r}, initial_state={self.initial_state!r})"
+            f"parameters={self.parameters!r}, initial_state={self.initial_state!r}, "
+            f"num_modes={self.num_modes!r})"
         )
 
     @staticmethod
@@ -420,6 +442,11 @@ class Circuit:
             raise ValueError(
                 "Cannot concatenate circuits with different initial states."
             )
+        if self.num_modes != other.num_modes:
+            raise ValueError(
+                f"Cannot concatenate circuits with different num_modes: "
+                f"{self.num_modes} != {other.num_modes}."
+            )
         offset = self.n_parameters
         # Preserve each gate's _structural flag: a dense (wire-format) gate carries structural
         # coefficients that must not be antihermitian-normalized again.
@@ -435,6 +462,7 @@ class Circuit:
             gates=left + right,
             parameters=tuple(self.parameters) + tuple(other.parameters),
             initial_state=self.initial_state or other.initial_state,
+            num_modes=self.num_modes,
         )
 
     @classmethod
@@ -443,6 +471,7 @@ class Circuit:
         majoranas: Sequence[Sequence[int]],
         gen_coeffs: Sequence[float],
         param_inds: Sequence[int],
+        num_modes: int,
         parameters: Sequence[float] = (),
         initial_state: Sequence[int] = (),
     ) -> Circuit:
@@ -460,6 +489,7 @@ class Circuit:
             gen_coeffs: Generator coefficient per monomial.
             param_inds: Variational-angle index per monomial (contiguous runs group into
                 gates).
+            num_modes: Number of fermionic modes in the system.
             parameters: Optional angle values.
             initial_state: Optional reference state (occupied mode indices).
 
@@ -467,6 +497,7 @@ class Circuit:
             A [Circuit][] carrying the grouped gates, angle values, and initial state.
         """
         indices = [int(p) for p in param_inds]
+        num_modes = _validate_system_size(num_modes, argument_name="num_modes")
         gates: list[ExpGate] = []
         current_index: int | None = None
         current_majoranas: list[tuple[int, ...]] = []
@@ -478,7 +509,7 @@ class Circuit:
             gates.append(
                 ExpGate._structural_gate(
                     MajoranaOperator._from_terms(
-                        current_majoranas, current_coeffs, num_modes=None
+                        current_majoranas, current_coeffs, num_modes=num_modes
                     ),
                     index=current_index,
                 )
@@ -490,7 +521,16 @@ class Circuit:
                 current_majoranas = []
                 current_coeffs = []
             current_index = pidx
-            current_majoranas.append(tuple(int(i) for i in maj))
+            majorana = tuple(int(i) for i in maj)
+            if any(i < 0 for i in majorana):
+                raise ValueError(
+                    f"Majorana indices must be non-negative; got {majorana}."
+                )
+            if majorana and max(majorana) >= 2 * num_modes:
+                raise ValueError(
+                    f"Majorana term {majorana} acts on an index >= 2*num_modes={2 * num_modes}."
+                )
+            current_majoranas.append(majorana)
             current_coeffs.append(complex(float(coeff)))
         if current_majoranas:
             _flush()
@@ -499,6 +539,7 @@ class Circuit:
             gates=tuple(gates),
             parameters=tuple(float(p) for p in parameters),
             initial_state=tuple(int(i) for i in initial_state),
+            num_modes=num_modes,
         )
 
 
@@ -632,9 +673,7 @@ def _validate_commuting_majorana_generator(generator: MajoranaOperator) -> None:
             )
 
 
-def _gate_layers(
-    gate: ExpGate, num_qubits: int | None
-) -> list[tuple[tuple[int, ...], float]]:
+def _gate_layers(gate: ExpGate, num_qubits: int) -> list[tuple[tuple[int, ...], float]]:
     r"""Expand one gate into ``(majorana, gen_coeff)`` layers, in application order.
 
     A ``"pauli"``-family [ExpGate][] places each [Pauli][monoprop.pauli.Pauli] term on
@@ -649,8 +688,6 @@ def _gate_layers(
     # ``isinstance`` narrows the fall-through arm to MajoranaOperator).
     generator = gate.generator
     if isinstance(generator, PauliOperator):
-        if num_qubits is None:
-            raise ValueError("num_qubits is required to expand a Pauli gate.")
         layers: list[tuple[tuple[int, ...], float]] = []
         for pauli, coeff in generator.terms.items():
             extended = _extend_pauli_string(pauli.string, pauli.qubits, num_qubits)
@@ -673,7 +710,7 @@ def _gate_layers(
 def expand_monomials(
     gates: Sequence[ExpGate],
     mapping: Sequence[int],
-    num_qubits: int | None = None,
+    num_qubits: int,
 ) -> tuple[list[tuple[int, ...]], list[float], list[int], list[int]]:
     """Flatten gates + an already-resolved per-gate mapping into per-monomial arrays.
 
@@ -689,6 +726,7 @@ def expand_monomials(
         the authoring gate monomial ``i`` came from, so the engine can recover gate
         boundaries; monomials from a multi-term gate share one gate index.
     """
+    num_qubits = _validate_system_size(num_qubits, argument_name="num_qubits")
     majoranas: list[tuple[int, ...]] = []
     gen_coeffs: list[float] = []
     per_monomial: list[int] = []

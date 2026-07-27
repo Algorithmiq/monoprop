@@ -167,6 +167,7 @@ def make_random_problem(
         majoranas=gen_majoranas,
         gen_coeffs=gen_coeffs,
         param_inds=param_inds,
+        num_modes=num_modes,
         parameters=parameters,
         initial_state=[],
     )

@@ -62,6 +62,7 @@ def test_coeff_trunc(serial_comm):
         parameters=[np.pi / 6],
         gen_coeffs=[1.0],
         param_inds=[0],
+        num_modes=n_modes,
     )
     circuit = sequence
 
@@ -146,6 +147,7 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
         parameters=[p],
         gen_coeffs=[1.0],
         param_inds=[0],
+        num_modes=n_modes,
     )
     circuit = sequence
 
@@ -183,6 +185,7 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
         parameters=[p],
         gen_coeffs=[1.0],
         param_inds=[0],
+        num_modes=n_modes,
     )
     circuit = sequence
 
