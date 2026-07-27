@@ -148,7 +148,13 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
                 match=r"only_rotate_len_k=0 is out of range; must be 0 < k <= 2\*num_qubits",
             ),
         ),
-        (9, does_not_raise()),
+        (
+            9,
+            pytest.raises(
+                ValueError,
+                match=r"only_rotate_len_k=9 is out of range; must be 0 < k <= 2\*num_qubits",
+            ),
+        ),
         (8, does_not_raise()),
     ],
 )

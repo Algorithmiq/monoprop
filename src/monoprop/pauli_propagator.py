@@ -102,18 +102,11 @@ class PauliPropagator(MonomialPropagator):
             basis_change=jordan_wigner_basis_change(num_qubits),
             comm=comm,
         )
-        # The qubit count comes from the observable and is carried into Pauli gate expansion
-        # via build_graph (_init_simulator initializes it to None).
-        self._num_qubits = num_qubits
 
     @property
     def num_qubits(self) -> int:
         """Number of qubits the propagator acts on."""
-        # Always set in __init__ (which raises if the observable has no qubit count); the base
-        # declares it Optional for the native Majorana propagator.
-        if self._num_qubits is None:
-            raise RuntimeError("PauliPropagator has no qubit count set.")
-        return self._num_qubits
+        return self._system_size
 
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.
@@ -121,7 +114,7 @@ class PauliPropagator(MonomialPropagator):
         A ``PauliPropagator`` rejects a Majorana/fermionic circuit. The Jordan-Wigner mapping
         and antihermitian normalization live in [expand_monomials][monoprop.circuit.expand_monomials];
         the propagator's ``num_qubits`` (from the observable) reaches the expander via
-        ``self._num_qubits``.
+        ``self._system_size``.
         """
         if circuit.family == "majorana":
             raise TypeError(
