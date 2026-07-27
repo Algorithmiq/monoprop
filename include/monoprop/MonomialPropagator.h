@@ -293,7 +293,7 @@ public:
 protected:
     // Reusable evaluation callbacks for make_functional_
     static inline const auto ev_fn = [](double e_core,
-                                        const VecD &state,
+                                        const EvalState &state,
                                         const VecD &op,
                                         const VecZ &parameter_mapping,
                                         const VecD &gen_coeffs,
@@ -308,7 +308,7 @@ protected:
 
     static inline const auto ev_and_grad_fn =
         [](double e_core,
-           const VecD &state,
+           const EvalState &state,
            const VecD &op,
            const VecZ &parameter_mapping,
            const VecD &gen_coeffs,
@@ -458,7 +458,7 @@ private:
     template <typename Fn,
               typename R = std::invoke_result_t<Fn,
                                                 double,
-                                                const VecD &,
+                                                const EvalState &,
                                                 const VecD &,
                                                 const VecZ &,
                                                 const VecD &,

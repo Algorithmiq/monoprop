@@ -14,8 +14,8 @@
 
 #pragma once
 
-// Pulls in the public pare_graph / get_pared_graph declarations (MPFunctions.h) plus the MPI compat
-// layer the .cpp helpers need.
+// Pulls in the public pare_graph declaration (MPFunctions.h) plus the MPI compat layer the .cpp
+// helpers need.
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"

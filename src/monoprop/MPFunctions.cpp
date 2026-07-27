@@ -14,6 +14,10 @@
 
 #include "monoprop/MPFunctions.h"
 
+#include <cmath>
+#include <numeric>
+#include <stdexcept>
+
 #include "monoprop/Evolution.h"
 
 namespace monoprop {
@@ -67,7 +71,7 @@ auto prepare_evolved_operator(EvalScratch &scratch,
 // Expectation value ⟨state|evolved op⟩ + e_core, summed across ranks. Empty params ⇒ evaluate the
 // unevolved operator directly.
 auto ev_impl(double e_core,
-             const VecD &state,
+             const EvalState &state,
              const VecD &op,
              const VecZ &parameter_mapping,
              const VecD &gen_coeffs,
@@ -75,19 +79,22 @@ auto ev_impl(double e_core,
              const VecD &params,
              const mpi::Comm &comm,
              const detail::LayerCosScale &cos_scale) -> double {
+    // The state is only ever dotted here, so it never has to be dense: Heisenberg contracts straight
+    // out of its sparse scores. The allreduce is unconditional -- ShmComm's is barrier-synced, so
+    // short-circuiting an empty local sum past it would deadlock every peer.
     if (params.empty()) {
-        return e_core + mpi::allreduce_sum(inner_product(state, op), comm);
+        return e_core + mpi::allreduce_sum(state.dot(op), comm);
     }
 
     auto &scratch = eval_scratch();
     prepare_evolved_operator(scratch, op, params, parameter_mapping, gen_coeffs, graph, comm, cos_scale);
-    return e_core + mpi::allreduce_sum(inner_product(state, scratch.op), comm);
+    return e_core + mpi::allreduce_sum(state.dot(scratch.op), comm);
 }
 
 // Expectation value and its gradient: forward-evolve, then walk layers in reverse accumulating each
 // parameter's derivative (allreduced). Empty params ⇒ value only, empty gradient.
 auto ev_and_grad_impl(double e_core,
-                      const VecD &state,
+                      const EvalState &state,
                       const VecD &op,
                       const VecZ &parameter_mapping,
                       const VecD &gen_coeffs,
@@ -97,7 +104,7 @@ auto ev_and_grad_impl(double e_core,
                       const detail::LayerCosScale &cos_scale,
                       const detail::LayerCosAccumulate &cos_acc) -> std::pair<double, VecD> {
     if (params.empty()) {
-        return {e_core + mpi::allreduce_sum(inner_product(state, op), comm), VecD(0)};
+        return {e_core + mpi::allreduce_sum(state.dot(op), comm), VecD(0)};
     }
 
     // Both callbacks are required on the with-parameters path; fail loudly rather than with a cryptic
@@ -106,8 +113,11 @@ auto ev_and_grad_impl(double e_core,
         throw std::invalid_argument("ev_and_grad requires both cos_scale (forward) and cos_acc (reverse) callbacks.");
     }
 
+    // The ONLY dense state in the whole library: the reverse pass back-evolves it in place, which
+    // destroys sparsity at the first layer. It lives in the reused thread-local scratch rather than on
+    // the functional, so energy-only runs never build one and N functionals on a thread share this one.
     auto &scratch = eval_scratch();
-    scratch.state = state;
+    state.scatter_into(scratch.state);
     prepare_evolved_operator(scratch, op, params, parameter_mapping, gen_coeffs, graph, comm, cos_scale);
 
     auto &state_ = scratch.state;
@@ -139,6 +149,98 @@ auto inner_product(const VecD &v, const VecD &w) -> double {
     return result;
 }
 
+auto indices_above(const VecD &v, double threshold) -> VecZ {
+    VecZ inds;
+    inds.reserve(v.size());
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (std::abs(v[i]) > threshold) {
+            inds.push_back(i);
+        }
+    }
+    return inds;
+}
+
+auto EvalState::sparse(size_t length, std::span<const TermIndex> rows, std::span<const double> values) -> EvalState {
+    if (rows.size() != values.size()) {
+        throw std::invalid_argument("EvalState::sparse: rows and values must have the same length.");
+    }
+
+    EvalState state;
+    state.length_ = length;
+    state.is_dense_ = false;
+    state.rows_.reserve(rows.size());
+    for (const auto row : rows) {
+        const auto widened = static_cast<size_t>(row);
+        if (widened >= length) {
+            throw std::invalid_argument("EvalState::sparse: row index is out of range for the given length.");
+        }
+        state.rows_.push_back(widened);
+    }
+    state.values_.assign(values.begin(), values.end());
+    return state;
+}
+
+auto EvalState::dense(VecD values) -> EvalState {
+    EvalState state;
+    state.length_ = values.size();
+    state.is_dense_ = true;
+    state.values_ = std::move(values);
+    return state;
+}
+
+auto EvalState::dot(const VecD &op) const -> double {
+    if (op.size() < length_) {
+        throw std::invalid_argument("EvalState::dot: the operator is shorter than the state.");
+    }
+    if (is_dense_) {
+        return inner_product(values_, op);
+    }
+
+    // Ascending rows, so this is the dense sum with its exactly-zero terms dropped -- same order, same
+    // result, for any finite op.
+    double result = 0.0;
+    for (size_t k = 0; k < rows_.size(); ++k) {
+        result += values_[k] * op[rows_[k]];
+    }
+    return result;
+}
+
+auto EvalState::scatter_into(VecD &out) const -> void {
+    if (is_dense_) {
+        out.assign(values_.begin(), values_.end());
+        return;
+    }
+
+    // assign, not resize: `out` is scratch that arrives holding a previous (possibly longer, possibly
+    // back-evolved) state, and every entry this state does not name must read as an exact zero.
+    out.assign(length_, 0.0);
+    for (size_t k = 0; k < rows_.size(); ++k) {
+        out[rows_[k]] = values_[k];
+    }
+}
+
+auto EvalState::indices_above(double threshold) const -> VecZ {
+    if (is_dense_) {
+        return monoprop::indices_above(values_, threshold);
+    }
+    // A negative threshold is cleared by |0.0| too, so the dense scan would keep every index. Match it
+    // rather than silently paring against a different keep-set.
+    if (threshold < 0.0) {
+        VecZ all(length_);
+        std::iota(all.begin(), all.end(), size_t{0});
+        return all;
+    }
+
+    VecZ inds;
+    inds.reserve(rows_.size());
+    for (size_t k = 0; k < rows_.size(); ++k) {
+        if (std::abs(values_[k]) > threshold) {
+            inds.push_back(rows_[k]);
+        }
+    }
+    return inds;
+}
+
 auto map_params(const VecD &parameters,
                 const VecZ &parameter_mapping,
                 const VecD &gen_coeffs,
@@ -150,7 +252,7 @@ auto map_params(const VecD &parameters,
 }
 
 auto ev(double e_core,
-        const VecD &state,
+        const EvalState &state,
         const VecD &op,
         const VecZ &parameter_mapping,
         const VecD &gen_coeffs,
@@ -162,7 +264,7 @@ auto ev(double e_core,
 }
 
 auto ev_and_grad(double e_core,
-                 const VecD &state,
+                 const EvalState &state,
                  const VecD &op,
                  const VecZ &parameter_mapping,
                  const VecD &gen_coeffs,

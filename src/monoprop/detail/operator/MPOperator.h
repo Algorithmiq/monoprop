@@ -186,8 +186,10 @@ struct MPOperator {
     /**
      * @brief Scatter the sparse state into a FRESH dense vector of length size(); nothing is cached.
      *
-     * For consumers that genuinely need a dense `VecD` (the evaluation functional). Prefer this over
-     * dense_state() in the Heisenberg picture: it leaves no dense copy behind on the operator.
+     * The evaluation functional does NOT use this -- it carries the sparse form (see sparse_state) and
+     * densifies only inside the gradient's reverse pass. This is for consumers that genuinely need a
+     * dense `VecD` and for the tests' dense oracle. Prefer it over dense_state() in the Heisenberg
+     * picture: it leaves no dense copy behind on the operator.
      */
     auto materialize_state() -> VecD {
         score_new_state_rows_();
@@ -202,7 +204,9 @@ struct MPOperator {
      * This is the Schrödinger picture's live coefficient vector: the first call seeds it from the
      * initial-state scores, and evolution then overwrites it in place. Subsequent calls only EXTEND it
      * -- rows scored before are left exactly as the caller (or evolution) left them, and just the
-     * newly-appended rows are scored. Heisenberg callers that only need a value use materialize_state().
+     * newly-appended rows are scored. Because evolution mutates it, callers that snapshot it for later
+     * use (the evaluation functional) must COPY it. Heisenberg callers wanting a value use
+     * materialize_state(), or better, sparse_state().
      */
     auto dense_state() -> const VecD & {
         score_new_state_rows_();

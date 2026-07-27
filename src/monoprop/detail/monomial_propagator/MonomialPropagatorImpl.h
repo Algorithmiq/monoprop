@@ -912,11 +912,20 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     auto gen_coeffs = std::move(gate_arrays.second);
     const auto num_params = expected_num_params(parameter_mapping);
 
-    // ev/ev_and_grad and get_pared_graph all want a dense state (ev_and_grad back-evolves it in place,
-    // which destroys sparsity at the first layer), so exactly ONE dense vector is built here and moved
-    // into the functional. Heisenberg scatters a fresh one from the sparse state scores -- the operator
-    // keeps no dense copy of its own; Schrödinger must copy the live evolved vector.
-    VecD state = schrodinger_ ? VecD(mp_op_.dense_state()) : mp_op_.materialize_state();
+    // NOTHING here needs a dense state: the energy path only dots it against the evolved operator, and
+    // the gradient path scatters it into its own thread-local buffer before back-evolving it. So
+    // Heisenberg hands over just the sparse scores (~0.07% of rows); Schrödinger's state is the live
+    // evolved vector and is snapshotted whole. EvalState OWNS its rows and snapshots the term count:
+    // appending terms later push_backs onto the operator's sparse rows, which would both dangle a view
+    // and outrun the `op` captured below.
+    const auto num_terms = mp_op_.size();
+    auto state = [&] {
+        if (schrodinger_) {
+            return EvalState::dense(mp_op_.dense_state());
+        }
+        const auto sparse = mp_op_.sparse_state();
+        return EvalState::sparse(num_terms, sparse.rows, sparse.values);
+    }();
     VecD op = mp_op_.get_operator();
     const auto core_term = this->core_term();
     const auto comm = comm_;
@@ -925,7 +934,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     const auto &inverted_index = mp_op_.inverted_index();
 
     // Resolve the replayed graph as ONE owning handle so the pare and non-pare paths share a single
-    // tail. pare: get_pared_graph produces a heap-owned MPGraph (shared_ptr) — the functional captures
+    // tail. pare: pare_graph produces a heap-owned MPGraph (shared_ptr) — the functional captures
     // it, keeping alive the stored-cos pointers build_cos_callbacks holds into its PrunedLayers.
     // non-pare: an aliasing (non-owning) shared_ptr to graph_, which must outlive the functional anyway.
     std::shared_ptr<const MPGraph> graph;
@@ -936,8 +945,13 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
             const auto combined = detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count(), basis_);
             return detail::fold_to_cos_mask<NumModes>(combined);
         };
+        // Keep only the indices whose amplitude clears the threshold in the picture's driving vector:
+        // the Hamiltonian in the Schrödinger picture, the state otherwise (where the sparse scores are
+        // already exactly that keep-set).
+        const auto keep = schrodinger_ ? indices_above(op, *pare_threshold) : state.indices_above(*pare_threshold);
+        const auto count = schrodinger_ ? op.size() : state.length();
         graph = std::make_shared<const MPGraph>(
-            get_pared_graph(state, op, *pare_threshold, graph_, schrodinger_, comm_, full_cos_of_layer));
+            pare_graph(graph_, keep, count, schrodinger_, comm_, full_cos_of_layer));
     }
     else {
         graph = std::shared_ptr<const MPGraph>(std::shared_ptr<const void>{}, &graph_);

@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <bit>
-#include <cmath>
 #include <utility>
 #include <vector>
 
@@ -152,27 +151,6 @@ auto pare_graph(const MPGraph &graph,
     }
 
     return MPGraph(graph.is_schrodinger(), std::move(layers));
-}
-
-// Threshold wrapper over pare_graph: keep only the indices whose amplitude exceeds `threshold` in the
-// relevant vector (the Hamiltonian in the Schrödinger picture, the state otherwise), then pare.
-auto get_pared_graph(const VecD &state,
-                     const VecD &hamiltonian,
-                     double threshold,
-                     const MPGraph &graph,
-                     bool schrodinger,
-                     mpi::Comm comm,
-                     const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
-    const auto &source = schrodinger ? hamiltonian : state;
-    VecZ nonzero_inds;
-    nonzero_inds.reserve(source.size());
-    for (size_t i = 0; i < source.size(); ++i) {
-        if (std::abs(source[i]) > threshold) {
-            nonzero_inds.push_back(i);
-        }
-    }
-
-    return pare_graph(graph, nonzero_inds, source.size(), schrodinger, comm, full_cos_of_layer);
 }
 
 } // namespace monoprop
