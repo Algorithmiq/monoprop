@@ -58,8 +58,8 @@ template <size_t NumModes>
     return op[i];
 }
 template <size_t NumModes>
-inline auto assign_row(std::vector<Monomial<NumModes>> &op, size_t i, const Monomial<NumModes> &maj) -> void {
-    op[i] = maj;
+inline auto assign_row(std::vector<Monomial<NumModes>> &op, size_t i, const Monomial<NumModes> &mono) -> void {
+    op[i] = mono;
 }
 template <size_t NumModes>
 [[nodiscard]] inline auto row_popcount(const std::vector<Monomial<NumModes>> &op, size_t i) -> size_t {
@@ -127,7 +127,9 @@ struct default_init_allocator : A {
 template <typename T>
 using DefaultInitVector = std::vector<T, default_init_allocator<T>>;
 
-using FermiOperatorMap = std::map<VecZ, std::complex<double>>;
+/// An operator as it crosses the Python boundary: index list -> complex coefficient. Algebra-agnostic
+/// -- the indices are Majorana indices or the JW-image slots of a Pauli string, per the runtime Basis.
+using OperatorDict = std::map<VecZ, std::complex<double>>;
 
 } // namespace monoprop
 
@@ -142,8 +144,8 @@ template <size_t NumModes>
     return op.row(i);
 }
 template <size_t NumModes>
-inline auto assign_row(detail::OperatorIndex<NumModes> &op, size_t i, const Monomial<NumModes> &maj) -> void {
-    op.set(i, maj);
+inline auto assign_row(detail::OperatorIndex<NumModes> &op, size_t i, const Monomial<NumModes> &mono) -> void {
+    op.set(i, mono);
 }
 template <size_t NumModes>
 [[nodiscard]] inline auto row_popcount(const detail::OperatorIndex<NumModes> &op, size_t i) -> size_t {

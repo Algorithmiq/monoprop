@@ -33,7 +33,7 @@
  *
  * Sibling of algebra/PauliAlgebra.h over the shared primitives in algebra/AlgebraCommon.h. Carries the
  * Majorana-specific algebra: the Hermitian coefficient normalization i^(C(|maj|,2)), the ordering
- * (interleave) sign and its per-layer mask form, the Hartree-Fock phase, the real<->complex codec, and
+ * (interleave) sign and its per-layer mask form, the initial-state phase, the real<->complex codec, and
  * Majorana basis changes. Reached through the @c MajoranaAlgebra policy in algebra/Algebra.h.
  */
 
@@ -71,11 +71,14 @@ inline auto antihermitian_generator_correction(const VecZ &indices) -> std::comp
 }
 
 /**
- * @brief Calculates the Hartree-Fock phase contribution for a single Majorana term
+ * @brief The diagonal element <b|M|b> of a fully-paired Majorana term against the initial state.
+ *
+ * @p state_mask is the occupation mask of the initial product state (@c initial_state_mask); the
+ * pairing sign folds in on top of the occupation parity. Only meaningful for fully-paired terms.
  */
 template <size_t NumModes>
-auto hf_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &hf_mask) -> double {
-    const auto num_pairs = maj.count_and(hf_mask);
+auto majorana_state_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &state_mask) -> double {
+    const auto num_pairs = maj.count_and(state_mask);
     return POWERS_OF_MINUS_ONE[(num_pairs + maj.count() / 2) % 2];
 }
 

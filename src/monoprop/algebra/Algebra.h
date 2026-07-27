@@ -32,7 +32,7 @@
  * algebra is a compile-time policy model (@c MajoranaAlgebra, @c PauliAlgebra) answering a fixed set
  * of questions about how a @ref Monomial evolves under a rotation exp(iθ·G): which columns to fold
  * (and whether an odd-|G| parity correction is needed), the per-term rotation sign and emitted sine
- * phase, the coeff codec, and the diagonal (HF) score. @c with_algebra binds the runtime @ref Basis
+ * phase, the coeff codec, and the diagonal initial-state score. @c with_algebra binds the runtime @ref Basis
  * to one model exactly once; each model only forwards to the sibling-header kernels.
  */
 
@@ -56,29 +56,30 @@ struct MajoranaAlgebra {
     }
     static auto generator(const GenContext &ctx) -> const Monomial<NumModes> & { return ctx.gen; }
 
-    /// Ordering sign (-1)^x of maj·G via the per-layer mask (branch/scan-free). new_maj unused.
+    /// Ordering sign (-1)^x of mono·G via the per-layer mask (branch/scan-free). new_mono unused.
     static auto rotation_sign(const GenContext &ctx,
-                              const Monomial<NumModes> &maj,
-                              const Monomial<NumModes> & /*new_maj*/) -> int {
-        return maj.parity_and(ctx.interleave_mask) ? -1 : 1;
+                              const Monomial<NumModes> &mono,
+                              const Monomial<NumModes> & /*new_mono*/) -> int {
+        return mono.parity_and(ctx.interleave_mask) ? -1 : 1;
     }
     /// Emitted sine phase = ordering sign folded with the Hermitian phase of the product.
-    static auto emit_phase(int rotation_sign, size_t maj_pop, size_t gen_pop, size_t overlap) -> int {
-        return rotation_sign * hermitian_phase(maj_pop, gen_pop, overlap);
+    static auto emit_phase(int rotation_sign, size_t mono_pop, size_t gen_pop, size_t overlap) -> int {
+        return rotation_sign * hermitian_phase(mono_pop, gen_pop, overlap);
     }
 
     /// Anticommutation fold columns = G itself; odd |G| needs the per-row parity(|M|) correction.
     static auto fold_generator(const Monomial<NumModes> &gen) -> Monomial<NumModes> { return gen; }
     static auto fold_needs_odd_correction(const Monomial<NumModes> &gen) -> bool { return gen.count() % 2 != 0; }
 
-    static auto encode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &maj) -> double {
-        return monoprop::encode_coeff<NumModes>(coeff, maj);
+    static auto encode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &mono) -> double {
+        return monoprop::encode_coeff<NumModes>(coeff, mono);
     }
-    static auto decode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &maj) -> std::complex<double> {
-        return monoprop::decode_coeff<NumModes>(coeff, maj);
+    static auto decode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &mono)
+        -> std::complex<double> {
+        return monoprop::decode_coeff<NumModes>(coeff, mono);
     }
-    static auto hf_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &hf_mask) -> double {
-        return monoprop::hf_phase<NumModes>(maj, hf_mask);
+    static auto state_phase(const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
+        return monoprop::majorana_state_phase<NumModes>(mono, state_mask);
     }
 };
 
@@ -99,12 +100,12 @@ struct PauliAlgebra {
     static auto generator(const GenContext &ctx) -> const Monomial<NumModes> & { return ctx.pauli_ctx.gen; }
 
     /// Rotation-ready sign (already the negated raw product sign) from the hot Pauli kernel.
-    static auto rotation_sign(const GenContext &ctx, const Monomial<NumModes> &maj, const Monomial<NumModes> &new_maj)
+    static auto rotation_sign(const GenContext &ctx, const Monomial<NumModes> &mono, const Monomial<NumModes> &new_mono)
         -> int {
-        return pauli_rotation_sign<NumModes>(ctx.pauli_ctx, maj, new_maj);
+        return pauli_rotation_sign<NumModes>(ctx.pauli_ctx, mono, new_mono);
     }
     /// Pauli's rotation sign is already the emitted sine phase -- no Hermitian fold.
-    static auto emit_phase(int rotation_sign, size_t /*maj_pop*/, size_t /*gen_pop*/, size_t /*overlap*/) -> int {
+    static auto emit_phase(int rotation_sign, size_t /*mono_pop*/, size_t /*gen_pop*/, size_t /*overlap*/) -> int {
         return rotation_sign;
     }
 
@@ -113,15 +114,15 @@ struct PauliAlgebra {
     static auto fold_generator(const Monomial<NumModes> &gen) -> Monomial<NumModes> { return pair_swap<NumModes>(gen); }
     static auto fold_needs_odd_correction(const Monomial<NumModes> & /*gen*/) -> bool { return false; }
 
-    static auto encode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> & /*maj*/) -> double {
+    static auto encode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> & /*mono*/) -> double {
         return encode_pauli_coeff(coeff);
     }
-    static auto decode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> & /*maj*/)
+    static auto decode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> & /*mono*/)
         -> std::complex<double> {
         return decode_pauli_coeff(coeff.real());
     }
-    static auto hf_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &hf_mask) -> double {
-        return pauli_hf_phase<NumModes>(maj, hf_mask);
+    static auto state_phase(const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
+        return pauli_state_phase<NumModes>(mono, state_mask);
     }
 };
 
@@ -168,21 +169,21 @@ auto algebra_fold_needs_odd_correction(Basis basis, const Monomial<NumModes> &ge
     return with_algebra<NumModes>(basis, [&]<class A>() { return A::fold_needs_odd_correction(gen); });
 }
 template <size_t NumModes>
-auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const Monomial<NumModes> &maj) -> double {
-    return with_algebra<NumModes>(basis, [&]<class A>() { return A::encode_coeff(coeff, maj); });
+auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const Monomial<NumModes> &mono) -> double {
+    return with_algebra<NumModes>(basis, [&]<class A>() { return A::encode_coeff(coeff, mono); });
 }
 template <size_t NumModes>
-auto algebra_decode_coeff(Basis basis, const std::complex<double> &coeff, const Monomial<NumModes> &maj)
+auto algebra_decode_coeff(Basis basis, const std::complex<double> &coeff, const Monomial<NumModes> &mono)
     -> std::complex<double> {
-    return with_algebra<NumModes>(basis, [&]<class A>() { return A::decode_coeff(coeff, maj); });
+    return with_algebra<NumModes>(basis, [&]<class A>() { return A::decode_coeff(coeff, mono); });
 }
 template <size_t NumModes>
-auto algebra_hf_phase(Basis basis, const Monomial<NumModes> &maj, const Monomial<NumModes> &hf_mask) -> double {
-    return with_algebra<NumModes>(basis, [&]<class A>() { return A::hf_phase(maj, hf_mask); });
+auto algebra_state_phase(Basis basis, const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
+    return with_algebra<NumModes>(basis, [&]<class A>() { return A::state_phase(mono, state_mask); });
 }
 
 /*!
- * @brief Score the diagonal (Hartree-Fock) coefficient of each fully-paired term.
+ * @brief Score each fully-paired term's diagonal element against the initial product state.
  *
  * Emits `sink(row, phase)` per entry, in ascending @p paired_inds order. A sink (rather than a dense
  * `out[row] = ...`) keeps the caller free to store the result sparsely: the scored set is a vanishing
@@ -192,12 +193,16 @@ auto algebra_hf_phase(Basis basis, const Monomial<NumModes> &maj, const Monomial
  * monomorphic in A (a Z-only Pauli scores (-1)^{|Z n occ|}; a Majorana term folds in the pairing sign).
  */
 template <size_t NumModes, typename Rows, typename Sink>
-auto algebra_score_hf(Basis basis, const VecZ &paired_inds, const VecZ &hf, const Rows &store, Sink &&sink) -> void {
+auto algebra_score_state(Basis basis,
+                         const VecZ &paired_inds,
+                         const VecZ &initial_state,
+                         const Rows &store,
+                         Sink &&sink) -> void {
     with_algebra<NumModes>(basis, [&]<class A>() {
-        const auto hf_mask = get_hf_mask<NumModes>(hf);
+        const auto state_mask = initial_state_mask<NumModes>(initial_state);
         for (size_t i = 0; i < paired_inds.size(); ++i) {
             const auto &row = materialize_row<NumModes>(store, paired_inds[i]);
-            sink(paired_inds[i], A::hf_phase(row, hf_mask));
+            sink(paired_inds[i], A::state_phase(row, state_mask));
         }
     });
 }

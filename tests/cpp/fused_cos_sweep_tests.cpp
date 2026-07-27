@@ -75,7 +75,7 @@ BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg_atol, Exampl
     check_agreement(data, SimulatorConfig{.atol = 1e-10}, "heisenberg atol=1e-10");
 }
 
-// Schrödinger picture: fresh inserts carry a nonzero HF-scored value born AFTER the sweep — the
+// Schrödinger picture: fresh inserts carry a nonzero state-scored value born AFTER the sweep — the
 // apply's in-place insert arm (c = cos·c + sin term) must fold the gate's cos into those slots.
 BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger, ExampleDataFix) {
     check_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes}, "schrodinger");

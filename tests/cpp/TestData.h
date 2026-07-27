@@ -27,12 +27,12 @@ namespace test_utils {
 /// the fields exercised by the C++ test suite are kept.
 struct CaseData {
     double actual_expval{0.0};
-    monoprop::VecZ hartree_fock;
+    monoprop::VecZ initial_state;
     monoprop::VecZ param_inds;
     monoprop::VecD gen_coeffs;
     monoprop::VecD parameters;
     std::vector<monoprop::VecZ> majoranas;
-    monoprop::FermiOperatorMap hamiltonian;
+    monoprop::OperatorDict hamiltonian;
     size_t num_modes{0};
 };
 

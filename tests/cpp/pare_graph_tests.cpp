@@ -65,7 +65,7 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
     const VecD state = sim.mp_op().materialize_state();
     BOOST_REQUIRE(state.size() > 0);
 
-    // The Heisenberg picture keeps NO dense state: the sparse HF set is the resting representation and
+    // The Heisenberg picture keeps NO dense state: the sparse scored set is the resting representation and
     // materialize_state() hands back a caller-owned vector without caching one on the operator. The
     // sparse entry count must be exactly the dense vector's nonzero count.
     BOOST_CHECK(sim.mp_op().state_coeffs.empty());

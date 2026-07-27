@@ -134,17 +134,17 @@ public:
         return base;
     }
 
-    auto push_back(const value_type &maj) -> void { set(grow_rows_geometric(1), maj); }
+    auto push_back(const value_type &mono) -> void { set(grow_rows_geometric(1), mono); }
 
-    // Write row i from `maj` (grown-but-uninitialized or a prior value). Never pre-reads the row header
+    // Write row i from `mono` (grown-but-uninitialized or a prior value). Never pre-reads the row header
     // (freshly grown headers are indeterminate); a stale overflow entry at i, if any, is dropped — cheap
     // when the overflow map is empty, which is the common case.
-    auto set(size_t i, const value_type &maj) -> void {
-        const size_t c = maj.count();
+    auto set(size_t i, const value_type &mono) -> void {
+        const size_t c = mono.count();
         PosT *row = &rows_[i * stride_];
         if (c > inline_width_) {
             row[0] = kOverflowMarker;
-            overflow_[i] = maj;
+            overflow_[i] = mono;
             return;
         }
         if (!overflow_.empty()) {
@@ -152,7 +152,7 @@ public:
         }
         row[0] = static_cast<PosT>(c);
         PosT *out = row + 1;
-        for (size_t b = maj.find_first(); b < maj.size(); b = maj.find_next(b)) {
+        for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
             *out++ = static_cast<PosT>(b);
         }
     }
@@ -162,12 +162,12 @@ public:
         if (c == kOverflowMarker) {
             return overflow_.at(i);
         }
-        value_type maj;
+        value_type mono;
         const PosT *pos = &rows_[i * stride_ + 1];
         for (size_t j = 0; j < c; ++j) {
-            maj.set(pos[j]);
+            mono.set(pos[j]);
         }
-        return maj;
+        return mono;
     }
     template <typename Fn>
     auto for_each_position(size_t i, Fn &&fn) const -> void {

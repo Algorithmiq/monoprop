@@ -83,12 +83,12 @@ using MonomialMap =
     boost::unordered_flat_map<Monomial<NumModes>, double, MonomialHash<NumModes>, MonomialEqual<NumModes>>;
 
 template <size_t NumModes>
-inline auto monomial_hash(const Monomial<NumModes> &maj) noexcept -> size_t {
+inline auto monomial_hash(const Monomial<NumModes> &mono) noexcept -> size_t {
     if constexpr (Monomial<NumModes>::num_words() == 1) {
-        return static_cast<size_t>(SplitmixHash<Monomial<NumModes>>::mix(maj.word(0)));
+        return static_cast<size_t>(SplitmixHash<Monomial<NumModes>>::mix(mono.word(0)));
     }
     else {
-        return MonomialHash<NumModes>{}(maj);
+        return MonomialHash<NumModes>{}(mono);
     }
 }
 

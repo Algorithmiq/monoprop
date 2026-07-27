@@ -45,7 +45,7 @@ constexpr unsigned int kCutoff = 4;
 auto majorana_sim(const CaseData &data, size_t shards) -> MonomialPropagator<kNumModes> {
     return MonomialPropagator<kNumModes>(data.hamiltonian,
                                          kCutoff,
-                                         data.hartree_fock,
+                                         data.initial_state,
                                          std::nullopt,
                                          MPI_COMM_SELF,
                                          std::nullopt,
@@ -144,13 +144,13 @@ BOOST_AUTO_TEST_CASE(shard_deep_copy_matches) {
 constexpr size_t kNq = 6; // qubits for the Pauli case
 
 auto pauli_sim(const std::map<std::string, double> &obs, size_t shards) -> MonomialPropagator<kNq> {
-    FermiOperatorMap init;
+    OperatorDict init;
     for (const auto &[p, c] : obs) {
         init[slots_of_string(p)] = std::complex<double>(c, 0.0);
     }
     return MonomialPropagator<kNq>(init,
                                    /*cutoff=*/kNq,
-                                   /*slater=*/{},
+                                   /*initial_state=*/{},
                                    std::nullopt,
                                    MPI_COMM_SELF,
                                    /*lower_atol=*/1e-12,
@@ -215,7 +215,7 @@ BOOST_AUTO_TEST_CASE(shard_factory_exception_propagates_without_terminate) {
     // logical_num_modes = 0 is rejected by each shard's own constructor, on its own master thread.
     BOOST_CHECK_THROW(MonomialPropagator<kNumModes>(data.hamiltonian,
                                                     kCutoff,
-                                                    data.hartree_fock,
+                                                    data.initial_state,
                                                     std::nullopt,
                                                     MPI_COMM_SELF,
                                                     std::nullopt,
@@ -232,7 +232,7 @@ BOOST_AUTO_TEST_CASE(shard_factory_exception_propagates_without_terminate) {
     bad_op[VecZ{2 * kNumModes}] = std::complex<double>(1.0, 0.0);
     BOOST_CHECK_THROW(MonomialPropagator<kNumModes>(bad_op,
                                                     kCutoff,
-                                                    data.hartree_fock,
+                                                    data.initial_state,
                                                     std::nullopt,
                                                     MPI_COMM_SELF,
                                                     std::nullopt,

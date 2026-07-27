@@ -16,7 +16,7 @@
 // FusedApply.h. The existing Heisenberg World tests (exact_upper_atol_rescue, mpi_distributed_layer
 // _equivalence) already drive the Heisenberg R>1 resolve/apply paths under mpiexec; the SCHRÖDINGER
 // picture takes a distinct branch in ContractCrossSink::on_resolved (the fused cross-rank resolve, via
-// resolve_incoming) — a fresh partner insert is HF-scored (Majorana hf_phase, or the Pauli pauli_hf_phase
+// resolve_incoming) — a fresh partner insert is state-scored (Majorana majorana_state_phase, or pauli_state_phase
 // sub-branch) rather than left at 0. These arms only execute at world >= 2 and self-skip otherwise.
 //
 // The oracle is serial<->world bit-exact-to-fp equivalence, which is the load-bearing invariant of
@@ -44,12 +44,12 @@ using pauli_oracle::slots_of_string;
 // ── Majorana, Schrödinger picture, coefficient-carrying (fused) propagate ────────────────────────
 // schrodinger_cutoff engages the Schrödinger picture; a low structural cutoff + upper_atol = 0
 // rescue forces most partner terms to be FRESH inserts, so the Schrödinger miss arm of
-// ContractCrossSink::on_resolved (v_tgt = HF-scored, not 0) runs on nearly every partner.
+// ContractCrossSink::on_resolved (v_tgt = state-scored, not 0) runs on nearly every partner.
 template <size_t NumModes>
 auto run_schrodinger_majorana(const CaseData& data, MPI_Comm comm) -> double {
     MonomialPropagator<NumModes> sim(data.hamiltonian,
                                      /*cutoff=*/2U,
-                                     data.hartree_fock,
+                                     data.initial_state,
                                      /*schrodinger_cutoff=*/std::optional<unsigned int>{4U},
                                      comm,
                                      /*lower_atol=*/std::nullopt,
@@ -73,12 +73,12 @@ BOOST_FIXTURE_TEST_CASE(mpi_fresh_insert_schrodinger_majorana_serial_world_equiv
 }
 
 // ── Native Pauli, Schrödinger picture, fused propagate ───────────────────────────────────────────
-// Drives the Pauli sub-branch of the Schrödinger miss arm (pauli_hf_phase). A hand Pauli operator +
+// Drives the Pauli sub-branch of the Schrödinger miss arm (pauli_state_phase). A hand Pauli operator +
 // X / ZZ generator layers, Schrödinger engaged, at world >= 2 forces fresh paired cross-rank inserts.
 constexpr size_t kPauliQ = 6;
 
 auto run_schrodinger_pauli(MPI_Comm comm) -> double {
-    FermiOperatorMap init;
+    OperatorDict init;
     init[slots_of_string("ZIIIII")] = std::complex<double>(1.0, 0.0);
     init[slots_of_string("IIZZII")] = std::complex<double>(0.5, 0.0);
     MonomialPropagator<kPauliQ> sim(init,

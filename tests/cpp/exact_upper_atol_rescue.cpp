@@ -47,7 +47,7 @@ template <size_t NumModes>
 auto build_zero_cutoff_full_rescue(const CaseData& data, MPI_Comm comm) -> MonomialPropagator<NumModes> {
     return MonomialPropagator<NumModes>(data.hamiltonian,
                                         /*cutoff=*/0U,
-                                        data.hartree_fock,
+                                        data.initial_state,
                                         /*schrodinger_cutoff=*/std::nullopt,
                                         comm,
                                         /*atol=*/std::nullopt,

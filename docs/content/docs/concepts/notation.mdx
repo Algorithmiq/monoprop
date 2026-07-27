@@ -101,15 +101,18 @@ core of the propagation algorithm.
 
 ## Reference states and paired monomials
 
-A Fock state $|n_1 \dots n_N\rangle$ (in particular a Hartree-Fock
-reference, or Slater determinant) has an especially simple Majorana expansion.
-Introducing the **paired** operator for each orbital,
+monoprop's reference state is always a **product state**: a Fock state
+$|n_1 \dots n_N\rangle$ in mode space, or equivalently a computational-basis
+state in qubit space. (In quantum chemistry this is the Hartree-Fock reference,
+or Slater determinant, but nothing in the algorithm assumes that origin.) Such a
+state has an especially simple Majorana expansion. Introducing the **paired**
+operator for each mode,
 
 $$
 \overline{m}_j = -i\,m_{2j-1} m_{2j},
 $$
 
-the corresponding density operator factorises one orbital at a time,
+the corresponding density operator factorises one mode at a time,
 
 $$
 |n_1 \dots n_N\rangle\!\langle n_1 \dots n_N|

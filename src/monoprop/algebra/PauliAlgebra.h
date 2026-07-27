@@ -136,25 +136,25 @@ template <size_t NumModes>
 }
 
 /*!
- * @brief HOT kernel: the rotation sign +/-1 for the anticommuting product maj*gen (new_maj = maj^gen).
+ * @brief HOT kernel: the rotation sign +/-1 for the anticommuting product mono*gen (new_mono = mono^gen).
  *
  * Returns the sign the rotation O' = U†OU (U = exp(iθ·gen)) needs on the off-diagonal partner term:
  * the NEGATED raw product sign (pinned by T7), so the emit site needs no extra negation. Loops ONLY
- * over gen's nonzero words (elsewhere maj/new_maj Y counts cancel and x_gen = 0). Exponent
- * e = g_y + Σ_w(yMaj - yNew) + 2·Σ_w(v_maj & x_gen); raw sign = (e mod 4 == 1 ? +1 : -1), negated here.
+ * over gen's nonzero words (elsewhere mono/new_mono Y counts cancel and x_gen = 0). Exponent
+ * e = g_y + Σ_w(yMono - yNew) + 2·Σ_w(v_mono & x_gen); raw sign = (e mod 4 == 1 ? +1 : -1), negated here.
  */
 template <size_t NumModes>
 [[gnu::always_inline]] inline auto pauli_rotation_sign(const PauliGenContext<NumModes> &ctx,
-                                                       const Monomial<NumModes> &maj,
-                                                       const Monomial<NumModes> &new_maj) -> int {
+                                                       const Monomial<NumModes> &mono,
+                                                       const Monomial<NumModes> &new_mono) -> int {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     long delta = static_cast<long>(ctx.g_y);
     long cross = 0;
     for (size_t k = 0; k < ctx.nz_count; ++k) {
         const size_t w = ctx.nz_words[k];
         const uint64_t e = e_mask.word(w);
-        const auto [v_m, u_m] = detail::pauli_uv(maj.word(w), e);
-        const auto [v_n, u_n] = detail::pauli_uv(new_maj.word(w), e);
+        const auto [v_m, u_m] = detail::pauli_uv(mono.word(w), e);
+        const auto [v_n, u_n] = detail::pauli_uv(new_mono.word(w), e);
         const auto [v_g, u_g] = detail::pauli_uv(ctx.gen.word(w), e);
         delta += std::popcount(v_m & ~u_m);
         delta -= std::popcount(v_n & ~u_n);
@@ -165,13 +165,13 @@ template <size_t NumModes>
 }
 
 /*!
- * @brief Hartree-Fock phase (-1)^{|Z ∩ occupied|} for a Z-only (diagonal) Pauli.
+ * @brief Diagonal element <b|P|b> = (-1)^{|Z ∩ occupied|} of a Z-only Pauli against the initial state.
  *
  * Only meaningful for Z-only terms (is_paired holds); for a non-diagonal Pauli <b|P|b> = 0.
  */
 template <size_t NumModes>
-[[nodiscard]] auto pauli_hf_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &hf_mask) -> double {
-    return (maj.count_and(hf_mask) & 1) ? -1.0 : 1.0;
+[[nodiscard]] auto pauli_state_phase(const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
+    return (mono.count_and(state_mask) & 1) ? -1.0 : 1.0;
 }
 
 /*!

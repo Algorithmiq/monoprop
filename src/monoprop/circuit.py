@@ -256,7 +256,8 @@ class Circuit:
       one gate is driven by one angle, named by its ``param`` index.
     - ``parameters``: the angle *values* (a point in parameter space). Empty means unbound --
       author the structure now and supply values at evaluation time.
-    - ``initial_state``: the reference Slater determinant / computational-basis state.
+    - ``initial_state``: the product reference state, as the indices of the modes/qubits
+      that start in state 1.
 
     The per-gate ``param`` indices give the parameter mapping: if *no* gate sets ``param``,
     each gate gets its own angle in order (the identity mapping); if *any* gate sets it, *all*
@@ -510,13 +511,13 @@ class Circuit:
                 )
             )
 
-        for maj, coeff, pidx in zip(majoranas, gen_coeffs, indices, strict=True):
+        for mono, coeff, pidx in zip(majoranas, gen_coeffs, indices, strict=True):
             if current_majoranas and pidx != current_index:
                 _flush()
                 current_majoranas = []
                 current_coeffs = []
             current_index = pidx
-            current_majoranas.append(tuple(int(i) for i in maj))
+            current_majoranas.append(tuple(int(i) for i in mono))
             current_coeffs.append(complex(float(coeff)))
         if current_majoranas:
             _flush()
@@ -683,11 +684,11 @@ def _gate_layers(
 
     if gate._structural:
         return [
-            (maj, _real_generator_coefficient(maj, c))
-            for maj, c in generator.terms.items()
+            (mono, _real_generator_coefficient(mono, c))
+            for mono, c in generator.terms.items()
         ]
     return [
-        (maj, _antihermitian_gen_coeff(maj, c)) for maj, c in generator.terms.items()
+        (mono, _antihermitian_gen_coeff(mono, c)) for mono, c in generator.terms.items()
     ]
 
 

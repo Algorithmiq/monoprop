@@ -63,7 +63,7 @@ BOOST_AUTO_TEST_CASE(graph_size_reports_real_cosine_only_count) {
     const auto data = test_utils::load_case_data<N>("random_exact.msgpack");
 
     const auto sized = [&](unsigned int cutoff) {
-        auto sim = MonomialPropagator<N>(data.hamiltonian, cutoff, data.hartree_fock, std::nullopt, MPI_COMM_SELF);
+        auto sim = MonomialPropagator<N>(data.hamiltonian, cutoff, data.initial_state, std::nullopt, MPI_COMM_SELF);
         sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
         return sim.graph_size();
     };

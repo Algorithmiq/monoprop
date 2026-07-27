@@ -188,17 +188,17 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_interleave_phase_mask_cross_check) {
 // non-Hermitian one (imaginary residue after dividing out the hermitian phase).
 BOOST_AUTO_TEST_CASE(majorana_cutoff_encode_decode_coeff) {
     constexpr size_t N = 32;
-    Monomial<N> maj;
-    maj.set(0);
-    maj.set(3);
-    maj.set(6);
+    Monomial<N> mono;
+    mono.set(0);
+    mono.set(3);
+    mono.set(6);
 
     for (double r : {1.0, -2.5, 0.0, 7.25}) {
-        const cd hermitian = decode_coeff<N>(cd(r, 0.0), maj); // r * hermitian_coefficient(maj)
-        BOOST_TEST(encode_coeff<N>(hermitian, maj) == r);      // round-trips exactly
+        const cd hermitian = decode_coeff<N>(cd(r, 0.0), mono); // r * hermitian_coefficient(mono)
+        BOOST_TEST(encode_coeff<N>(hermitian, mono) == r);      // round-trips exactly
     }
 
     // Multiply by i to break Hermiticity: the encoded value then has a nonzero imaginary part.
-    const cd non_hermitian = decode_coeff<N>(cd(1.0, 0.0), maj) * cd(0.0, 1.0);
-    BOOST_CHECK_THROW(encode_coeff<N>(non_hermitian, maj), std::runtime_error);
+    const cd non_hermitian = decode_coeff<N>(cd(1.0, 0.0), mono) * cd(0.0, 1.0);
+    BOOST_CHECK_THROW(encode_coeff<N>(non_hermitian, mono), std::runtime_error);
 }

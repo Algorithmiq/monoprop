@@ -50,7 +50,7 @@ auto load_inputs() -> TestInputs {
 auto run_energy(const TestInputs& inputs, MPI_Comm comm) -> double {
     MonomialPropagator<kNumModes> sim(inputs.data.hamiltonian,
                                       kCutoff,
-                                      inputs.data.hartree_fock,
+                                      inputs.data.initial_state,
                                       std::nullopt,
                                       comm,
                                       std::nullopt,
@@ -88,7 +88,7 @@ BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
     auto run_gradient = [&](MPI_Comm comm) -> VecD {
         MonomialPropagator<kNumModes> sim(inputs.data.hamiltonian,
                                           kCutoff,
-                                          inputs.data.hartree_fock,
+                                          inputs.data.initial_state,
                                           std::nullopt,
                                           comm,
                                           std::nullopt,
@@ -119,7 +119,7 @@ constexpr size_t kPauliQ = 6;
 // Pauli strings map to Majorana-slot index vectors via pauli_oracle::slots_of_string.
 
 auto run_pauli_energy(MPI_Comm comm) -> double {
-    FermiOperatorMap init;
+    OperatorDict init;
     init[slots_of_string("ZIIIII")] = std::complex<double>(1.0, 0.0);
     init[slots_of_string("IIZZII")] = std::complex<double>(0.5, 0.0);
     MonomialPropagator<kPauliQ> sim(init,
@@ -176,7 +176,7 @@ BOOST_AUTO_TEST_CASE(pauli_rank_count_energy_within_fp_tolerance) {
 auto run_energy_sharded(const TestInputs& inputs, MPI_Comm comm, size_t shards) -> std::pair<double, size_t> {
     MonomialPropagator<kNumModes> sim(inputs.data.hamiltonian,
                                       kCutoff,
-                                      inputs.data.hartree_fock,
+                                      inputs.data.initial_state,
                                       std::nullopt,
                                       comm,
                                       std::nullopt,

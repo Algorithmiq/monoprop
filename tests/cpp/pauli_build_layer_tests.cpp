@@ -67,15 +67,15 @@ template <size_t N>
 auto build_pauli_sim(const std::map<std::string, double> &obs,
                      unsigned int cutoff,
                      std::optional<unsigned int> schrodinger_cutoff = std::nullopt,
-                     const VecZ &slater = {},
+                     const VecZ &initial_state = {},
                      std::optional<double> lower_atol = std::nullopt) -> MonomialPropagator<N> {
-    FermiOperatorMap init;
+    OperatorDict init;
     for (const auto &[p, c] : obs) {
         init[slots_of_string(p)] = cd(c, 0.0);
     }
     return MonomialPropagator<N>(init,
                                  cutoff,
-                                 slater,
+                                 initial_state,
                                  schrodinger_cutoff,
                                  MPI_COMM_SELF,
                                  lower_atol,
@@ -92,7 +92,7 @@ auto dense_operator(MonomialPropagator<N> &mp) -> std::vector<cd> {
     const size_t d = size_t{1} << N;
     std::vector<cd> m(d * d, cd(0, 0));
     const auto &coeffs = mp.mp_op().get_operator();
-    mp.indexing().for_each([&](const Monomial<N> &maj, size_t idx) {
+    mp.indexing().for_each([&](const Monomial<N> &mono, size_t idx) {
         if (idx >= coeffs.size()) {
             return;
         }
@@ -102,7 +102,7 @@ auto dense_operator(MonomialPropagator<N> &mp) -> std::vector<cd> {
         }
         std::string s(N, 'I');
         for (size_t q = 0; q < N; ++q) {
-            s[q] = letter_from_bitset<N>(maj, q);
+            s[q] = letter_from_bitset<N>(mono, q);
         }
         const auto pm = matrix_from_string(s);
         for (size_t k = 0; k < d * d; ++k) {
@@ -213,25 +213,25 @@ struct PauliCircuit {
 
 // Native gate arrays for the circuit: generator = native slots, gen_coeff = g.
 auto native_gate_arrays(const PauliCircuit &c) -> std::pair<std::vector<VecZ>, VecD> {
-    std::vector<VecZ> majs;
+    std::vector<VecZ> monos;
     VecD gcs;
     for (size_t k = 0; k < c.gens.size(); ++k) {
-        majs.push_back(slots_of_string(c.gens[k]));
+        monos.push_back(slots_of_string(c.gens[k]));
         gcs.push_back(c.gs[k]);
     }
-    return {majs, gcs};
+    return {monos, gcs};
 }
 
 // JW gate arrays: generator = JW image, gen_coeff = antihermitian-normalized (Re(-g·jw / i^{L(L-1)/2})).
 auto jw_gate_arrays(const PauliCircuit &c) -> std::pair<std::vector<VecZ>, VecD> {
-    std::vector<VecZ> majs;
+    std::vector<VecZ> monos;
     VecD gcs;
     for (size_t k = 0; k < c.gens.size(); ++k) {
         const auto [idx, jw] = pauli_to_fermi_full(c.gens[k]);
-        majs.push_back(idx);
+        monos.push_back(idx);
         gcs.push_back(antiherm_gen_coeff(idx.size(), c.gs[k] * jw));
     }
-    return {majs, gcs};
+    return {monos, gcs};
 }
 
 // Build the JW-image Majorana propagator representing the SAME physical observable, with the JW basis
@@ -240,16 +240,16 @@ template <size_t N>
 auto build_jw_sim(const std::map<std::string, double> &obs,
                   unsigned int cutoff,
                   std::optional<unsigned int> schrodinger_cutoff = std::nullopt,
-                  const VecZ &slater = {},
+                  const VecZ &initial_state = {},
                   std::optional<double> lower_atol = std::nullopt) -> MonomialPropagator<N> {
-    FermiOperatorMap init;
+    OperatorDict init;
     for (const auto &[p, c] : obs) {
         const auto [idx, jw] = pauli_to_fermi_full(p);
         init[idx] = jw * cd(c, 0.0);
     }
     return MonomialPropagator<N>(init,
                                  cutoff,
-                                 slater,
+                                 initial_state,
                                  schrodinger_cutoff,
                                  MPI_COMM_SELF,
                                  lower_atol,
@@ -321,7 +321,8 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_dense_matrix_ground_truth) {
     }
 }
 
-// Heisenberg ⟨HF|O_evolved|HF⟩ after a contract-immediately propagate: core + Σ state·op.
+// Heisenberg ⟨b|O_evolved|b⟩ against the initial state, after a contract-immediately propagate:
+// core + Σ state·op.
 template <size_t N>
 auto heisenberg_expval(MonomialPropagator<N> &sim) -> double {
     const VecD st = sim.mp_op().materialize_state();
@@ -350,9 +351,9 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
                                             {"XZX", 0.25},
                                             {"IIZ", 0.5},
                                             {"ZZZ", -0.2}};
-    const VecZ slater{0, 2}; // qubits 0 and 2 occupied
+    const VecZ initial_state{0, 2}; // qubits 0 and 2 occupied
 
-    const auto [nat_majs, nat_gcs] = native_gate_arrays(circ);
+    const auto [nat_monos, nat_gcs] = native_gate_arrays(circ);
     const auto [jw_majs, jw_gcs] = jw_gate_arrays(circ);
 
     struct Cfg {
@@ -369,9 +370,9 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
         {std::optional<unsigned int>(5), 3, std::optional<double>(1e-6), "schrodinger-lower-atol"},
     };
     for (const auto &cf : cfgs) {
-        auto nat = build_pauli_sim<N>(obs, cf.cutoff, cf.sch, slater, cf.atol);
-        auto jw = build_jw_sim<N>(obs, cf.cutoff, cf.sch, slater, cf.atol);
-        nat.build_graph(nat_majs, circ.param_map, nat_gcs);
+        auto nat = build_pauli_sim<N>(obs, cf.cutoff, cf.sch, initial_state, cf.atol);
+        auto jw = build_jw_sim<N>(obs, cf.cutoff, cf.sch, initial_state, cf.atol);
+        nat.build_graph(nat_monos, circ.param_map, nat_gcs);
         jw.build_graph(jw_majs, circ.param_map, jw_gcs);
         const double en = nat.expectation_value(circ.params);
         const double ej = jw.expectation_value(circ.params);
@@ -407,7 +408,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
 BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
     constexpr size_t N = 3;
     const std::map<std::string, double> obs{{"ZII", 0.5}, {"IZI", -0.3}, {"YIY", 0.4}, {"XZI", 0.2}, {"IIZ", 0.6}};
-    const VecZ slater{0}; // qubit 0 occupied
+    const VecZ initial_state{0}; // qubit 0 occupied
 
     // Direct fold guard: a single odd-popcount X gate. graph_data's fold-recomputed cos set must equal
     // the terms anticommuting with X (pauli sense), or the make_fold_* Pauli branch (step E) is wrong.
@@ -421,8 +422,8 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
         const auto Gb = indices_to_bitset<N>(slots_of_string("XII"));
         std::set<size_t> expected;
         (void)mp.mp_op().get_operator(); // materialize the store size
-        mp.indexing().for_each([&](const Monomial<N> &maj, size_t idx) {
-            if (pauli_anticommutes<N>(maj, Gb)) {
+        mp.indexing().for_each([&](const Monomial<N> &mono, size_t idx) {
+            if (pauli_anticommutes<N>(mono, Gb)) {
                 expected.insert(idx);
             }
         });
@@ -435,22 +436,22 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
     circ.gs = {1.0, 0.9, 0.8, 1.1, 0.7};
     circ.param_map = {0, 1, 2, 3, 4};
     circ.params = {0.33, -0.7, 0.5, 0.9, -0.4};
-    const auto [nat_majs, nat_gcs] = native_gate_arrays(circ);
+    const auto [nat_monos, nat_gcs] = native_gate_arrays(circ);
     const auto [jw_majs, jw_gcs] = jw_gate_arrays(circ);
 
     // (a) fused contract-immediately propagate.
-    auto prop = build_pauli_sim<N>(obs, 3, std::nullopt, slater);
-    prop.propagate(nat_majs, circ.param_map, nat_gcs, circ.params);
+    auto prop = build_pauli_sim<N>(obs, 3, std::nullopt, initial_state);
+    prop.propagate(nat_monos, circ.param_map, nat_gcs, circ.params);
     const double e_prop = heisenberg_expval<N>(prop);
 
     // (b) graph build + functional (expectation_value recomputes the cos from the fold).
-    auto grp = build_pauli_sim<N>(obs, 3, std::nullopt, slater);
-    grp.build_graph(nat_majs, circ.param_map, nat_gcs);
+    auto grp = build_pauli_sim<N>(obs, 3, std::nullopt, initial_state);
+    grp.build_graph(nat_monos, circ.param_map, nat_gcs);
     const double e_graph = grp.expectation_value(circ.params);
 
     // (c) contract_partially (evolve_operator_with_recompute — the same fold path, non-inplace).
-    auto ctr = build_pauli_sim<N>(obs, 3, std::nullopt, slater);
-    ctr.build_graph(nat_majs, circ.param_map, nat_gcs);
+    auto ctr = build_pauli_sim<N>(obs, 3, std::nullopt, initial_state);
+    ctr.build_graph(nat_monos, circ.param_map, nat_gcs);
     const auto evolved = ctr.contract_partially(circ.params, /*inplace=*/false);
     const VecD st = ctr.mp_op().materialize_state();
     double s = 0.0;
@@ -460,7 +461,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
     const double e_contract = ctr.core_term() + s;
 
     // (d) JW-image Majorana reference.
-    auto jw = build_jw_sim<N>(obs, 3, std::nullopt, slater);
+    auto jw = build_jw_sim<N>(obs, 3, std::nullopt, initial_state);
     jw.build_graph(jw_majs, circ.param_map, jw_gcs);
     const double e_jw = jw.expectation_value(circ.params);
 

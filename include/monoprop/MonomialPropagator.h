@@ -58,9 +58,9 @@ class ShardGroup;
 template <size_t NumModes>
 class MonomialPropagator {
 public:
-    MonomialPropagator(const FermiOperatorMap &initial_operator,
+    MonomialPropagator(const OperatorDict &initial_operator,
                        unsigned int cutoff,
-                       const VecZ &slater_determinant,
+                       const VecZ &initial_state,
                        std::optional<unsigned int> schrodinger_cutoff,
                        mpi::Comm comm,
                        std::optional<double> lower_atol = std::nullopt,
@@ -288,7 +288,7 @@ public:
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
-    virtual auto update_initial_operator(const FermiOperatorMap &op_dict) -> void { apply_initial_operator_(op_dict); }
+    virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
     // Reusable evaluation callbacks for make_functional_
@@ -328,7 +328,7 @@ protected:
 
     /// @brief Distribute op_dict across ranks and apply it to this rank's operator (shared impl of
     /// update_initial_operator). Returns this rank's new (Majorana terms, encoded coeffs) so caches can refresh.
-    auto apply_initial_operator_(const FermiOperatorMap &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
+    auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
 
     bool schrodinger_;
     mpi::Comm comm_; // communicator handle (real MPI across nodes, or in-process ShmComm across shards)

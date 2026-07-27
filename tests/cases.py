@@ -91,7 +91,7 @@ def load_problem(path: Path) -> FermionicProblem:
 
     monomial_circuit = DenseMajoranaArrays(
         initial_state=data["hartree_fock"],
-        majoranas=[tuple(maj) for maj in data["majoranas"]],
+        majoranas=[tuple(mono) for mono in data["majoranas"]],
         gen_coeffs=np.asarray(data["gen_coeffs"]),
         param_inds=np.asarray(data["param_inds"], dtype=int),
         parameters=np.asarray(data["parameters"]),

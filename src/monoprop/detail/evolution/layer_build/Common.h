@@ -136,17 +136,17 @@ inline auto decode_value(size_t word) -> double {
 }
 
 template <size_t NumModes>
-inline auto query_push(VecZ &buf, const Monomial<NumModes> &maj, int phase) -> void {
-    mpi_detail::append_majorana_words<NumModes>(maj, buf);
+inline auto query_push(VecZ &buf, const Monomial<NumModes> &mono, int phase) -> void {
+    mpi_detail::append_monomial_words<NumModes>(mono, buf);
     buf.push_back(encode_phase(phase));
 }
 
-// The maj + phase words occupy the SAME leading offsets in both the plain and fused record, so readers
+// The mono + phase words occupy the SAME leading offsets in both the plain and fused record, so readers
 // differ only in the per-record stride QW (defaulted to the plain width, leaving existing calls unchanged).
 template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
-inline auto query_read(const VecZ &buf, size_t q, Monomial<NumModes> &maj_out, int &phase_out) -> void {
+inline auto query_read(const VecZ &buf, size_t q, Monomial<NumModes> &mono_out, int &phase_out) -> void {
     const size_t base = q * QW;
-    maj_out = mpi_detail::read_majorana_from_words<NumModes>(buf, base);
+    mono_out = mpi_detail::read_monomial_from_words<NumModes>(buf, base);
     phase_out = decode_phase(buf[base + mpi_detail::kWords<NumModes>]);
 }
 

@@ -30,12 +30,12 @@ constexpr size_t kModes = 2;
 
 // A simple propagator with a non-trivial initial operator, one gate per test.
 auto make_sim() -> MonomialPropagator<kModes> {
-    FermiOperatorMap ham;
+    OperatorDict ham;
     ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
-    VecZ hartree_fock{0, 1};
+    VecZ initial_state{0, 1};
     return MonomialPropagator<kModes>(ham,
                                       2 * kModes,
-                                      hartree_fock,
+                                      initial_state,
                                       std::nullopt,
                                       MPI_COMM_SELF,
                                       std::nullopt,
@@ -48,25 +48,25 @@ auto make_sim() -> MonomialPropagator<kModes> {
 
 BOOST_AUTO_TEST_CASE(n_gates_defaults_to_one_per_generator) {
     auto sim = make_sim();
-    const std::vector<VecZ> majs{{0}, {1}, {2}};
-    sim.build_graph(majs, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0});
+    const std::vector<VecZ> monos{{0}, {1}, {2}};
+    sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0});
     BOOST_TEST(sim.graph_layers() == 3u);
     BOOST_TEST(sim.n_gates() == sim.graph_layers());
 }
 
 BOOST_AUTO_TEST_CASE(gate_indices_group_layers) {
     auto sim = make_sim();
-    const std::vector<VecZ> majs{{0}, {1}, {2}};
+    const std::vector<VecZ> monos{{0}, {1}, {2}};
     // Two monomials belong to gate 0, one to gate 1.
-    sim.build_graph(majs, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
+    sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
     BOOST_TEST(sim.graph_layers() == 3u);
     BOOST_TEST(sim.n_gates() == 2u);
 }
 
 BOOST_AUTO_TEST_CASE(set_parameter_mapping_per_gate_ties_layers) {
     auto sim = make_sim();
-    const std::vector<VecZ> majs{{0}, {1}, {2}};
-    sim.build_graph(majs, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
+    const std::vector<VecZ> monos{{0}, {1}, {2}};
+    sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
 
     // Per-gate mapping (length n_gates == 2) tying both gates to one angle: every layer
     // ends up on parameter 0.
@@ -87,8 +87,8 @@ BOOST_AUTO_TEST_CASE(set_parameter_mapping_per_gate_ties_layers) {
 
 BOOST_AUTO_TEST_CASE(set_parameter_mapping_per_layer_still_works) {
     auto sim = make_sim();
-    const std::vector<VecZ> majs{{0}, {1}, {2}};
-    sim.build_graph(majs, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
+    const std::vector<VecZ> monos{{0}, {1}, {2}};
+    sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
 
     // Length graph_layers() -> per-layer branch.
     sim.set_parameter_mapping(VecZ{0, 0, 0});
@@ -100,16 +100,16 @@ BOOST_AUTO_TEST_CASE(set_parameter_mapping_per_layer_still_works) {
 // is eval-time cache, not data, so a mapping set AFTER a gradient must behave exactly like one set before
 // it: same values, and no inherited cache in the fresh cores.
 BOOST_AUTO_TEST_CASE(set_parameter_mapping_after_gradient_matches_before) {
-    const std::vector<VecZ> majs{{0}, {1}, {2}};
+    const std::vector<VecZ> monos{{0}, {1}, {2}};
     const VecD params{0.3, 0.4};
 
     auto before = make_sim();
-    before.build_graph(majs, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
+    before.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
     before.set_parameter_mapping(VecZ{0, 1});
     const auto [value_before, grad_before] = before.expectation_value_and_gradient(params);
 
     auto after = make_sim();
-    after.build_graph(majs, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
+    after.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
     // Materialize the derivative layout first, THEN relabel: the copied cores must not inherit it.
     static_cast<void>(after.expectation_value_and_gradient(VecD{0.1, 0.2, 0.5}));
     after.set_parameter_mapping(VecZ{0, 1});
@@ -124,8 +124,8 @@ BOOST_AUTO_TEST_CASE(set_parameter_mapping_after_gradient_matches_before) {
 
 BOOST_AUTO_TEST_CASE(set_parameter_mapping_rejects_bad_length) {
     auto sim = make_sim();
-    const std::vector<VecZ> majs{{0}, {1}, {2}};
-    sim.build_graph(majs, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
+    const std::vector<VecZ> monos{{0}, {1}, {2}};
+    sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
     // Length 4 matches neither graph_layers (3) nor n_gates (2).
     BOOST_CHECK_THROW(sim.set_parameter_mapping(VecZ{0, 1, 2, 3}), std::runtime_error);
 }
@@ -141,7 +141,7 @@ BOOST_AUTO_TEST_CASE(n_gates_accumulates_across_builds) {
 
 BOOST_AUTO_TEST_CASE(build_graph_rejects_malformed_gate_indices) {
     auto sim = make_sim();
-    const std::vector<VecZ> majs{{0}, {1}};
+    const std::vector<VecZ> monos{{0}, {1}};
     // A jump from 0 to 2 is not a contiguous run.
-    BOOST_CHECK_THROW(sim.build_graph(majs, VecZ{0, 1}, VecD{1.0, 1.0}, VecZ{0, 2}), std::runtime_error);
+    BOOST_CHECK_THROW(sim.build_graph(monos, VecZ{0, 1}, VecD{1.0, 1.0}, VecZ{0, 2}), std::runtime_error);
 }

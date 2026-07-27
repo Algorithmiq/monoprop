@@ -125,7 +125,7 @@ class MonomialPropagator(ABC):
         self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,
-            slater_determinant=list(initial_state),
+            initial_state=list(initial_state),
             schrodinger_cutoff=schrodinger_cutoff,
             lower_atol=lower_atol,
             upper_atol=upper_atol,

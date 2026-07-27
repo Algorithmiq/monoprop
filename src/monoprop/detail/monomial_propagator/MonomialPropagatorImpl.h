@@ -40,9 +40,9 @@
 namespace monoprop {
 
 template <size_t NumModes>
-MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial_operator,
+MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_operator,
                                                  unsigned int cutoff,
-                                                 const VecZ &slater_determinant,
+                                                 const VecZ &initial_state,
                                                  std::optional<unsigned int> schrodinger_cutoff,
                                                  mpi::Comm comm,
                                                  std::optional<double> lower_atol,
@@ -70,7 +70,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
 
     validate_cutoff_config_(cutoff_type_, basis_change_);
 
-    // Record the basis on the operator so its coefficient encoding / HF scoring match this picture.
+    // Record the basis on the operator so its coefficient encoding / state scoring match this picture.
     mp_op_.basis = basis_;
 
     if (upper_atol.has_value() && lower_atol.has_value() && (upper_atol.value() < lower_atol.value())) {
@@ -93,7 +93,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
         auto factory = [=](mpi::Comm shard_comm) {
             return std::make_unique<MonomialPropagator<NumModes>>(initial_operator,
                                                                   cutoff,
-                                                                  slater_determinant,
+                                                                  initial_state,
                                                                   schrodinger_cutoff,
                                                                   shard_comm,
                                                                   lower_atol,
@@ -148,14 +148,14 @@ MonomialPropagator<NumModes>::MonomialPropagator(const FermiOperatorMap &initial
     // The initial operator's Majorana monomials are DISTINCT, so emplace (insert-if-absent) == an
     // assigning insert here.
     for (size_t r = 0; r < op.size(); ++r) {
-        const auto &maj = materialize_row<NumModes>(op, r);
-        if (my_rank == find_rank<NumModes>(maj, num_ranks)) {
-            mp_op_.append_term(maj);
-            mp_op_.store->emplace(maj, i++);
+        const auto &mono = materialize_row<NumModes>(op, r);
+        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+            mp_op_.append_term(mono);
+            mp_op_.store->emplace(mono, i++);
         }
     }
 
-    mp_op_.slater_determinant = slater_determinant;
+    mp_op_.initial_state = initial_state;
     core_term_ = core_term;
 
     initialize_operator_caches_();
@@ -304,7 +304,7 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMap &op_dict)
+auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &op_dict)
     -> std::pair<MonomialList<NumModes>, VecD> {
     if (shard_group_) {
         // Each shard filters op_dict to its own hash partition. The facade holds no local terms, so the
@@ -315,16 +315,16 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const FermiOperatorMa
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
 
-    FermiOperatorMap new_op;
+    OperatorDict new_op;
     for (const auto &[ind, coeff] : op_dict) {
-        const auto maj = indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
+        const auto mono = indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
         if (ind.empty()) { // Core term, store in all
-            core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, maj);
+            core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
             continue;
         }
-        if (my_rank == find_rank<NumModes>(maj, num_ranks)) {
-            const auto maj_indices = bitset_to_indices<NumModes>(maj);
-            new_op[maj_indices] = coeff;
+        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+            const auto mono_indices = bitset_to_indices<NumModes>(mono);
+            new_op[mono_indices] = coeff;
         }
     }
 
@@ -458,7 +458,7 @@ auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
     // Pre-warm the lazy operator/state/inverted index caches (results discarded) so later eval-time
     // recompute hits them already built, then trim the now-stable coeff vectors' slack.
     (void)mp_op_.get_operator();
-    // Heisenberg warms the SPARSE state only: the HF scores are nonzero on a vanishing fraction of rows,
+    // Heisenberg warms the SPARSE state only: the scores are nonzero on a vanishing fraction of rows,
     // and materializing a dense vector here would reinstate the 99.9%-zero array the sparse form exists
     // to avoid. Schrödinger's dense vector IS the live coefficient vector evolution mutates, so it must
     // exist up front.
@@ -503,19 +503,20 @@ auto MonomialPropagator<NumModes>::evolve_mode_build_graph_(const std::vector<Ve
                                                             const VecZ &gate_indices,
                                                             int only_rotate_len_k) -> void {
     const auto majoranas_size = majoranas.size();
-    run_gate_loop_(
-        majoranas,
-        only_rotate_len_k,
-        [this, &parameter_mapping, &gen_coeffs, &gate_indices, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
-            const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
-            propagate_one_(maj,
-                           rot_len,
-                           std::nullopt,
-                           std::nullopt,
-                           parameter_mapping[idx],
-                           gen_coeffs[idx],
-                           gate_indices[idx]);
-        });
+    run_gate_loop_(majoranas,
+                   only_rotate_len_k,
+                   [this, &parameter_mapping, &gen_coeffs, &gate_indices, majoranas_size](const VecZ &mono,
+                                                                                          int rot_len,
+                                                                                          size_t i) {
+                       const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
+                       propagate_one_(mono,
+                                      rot_len,
+                                      std::nullopt,
+                                      std::nullopt,
+                                      parameter_mapping[idx],
+                                      gen_coeffs[idx],
+                                      gate_indices[idx]);
+                   });
 }
 
 template <size_t NumModes>
@@ -530,29 +531,29 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
     auto coeffs = operator_coeffs;
     const auto majoranas_size = majoranas.size();
 
-    run_gate_loop_(
-        majoranas,
-        only_rotate_len_k,
-        [this, &parameter_mapping, &gen_coeffs, &gate_indices, &mapped_params, &coeffs, majoranas_size](const VecZ &maj,
-                                                                                                        int rot_len,
-                                                                                                        size_t i) {
-            const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
-            const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
-            // The cos word list is not persisted on the layer; the builder moves it out transiently and
-            // evolve_step scales it in parallel here. Gate info is recorded on the layer so the graph
-            // owns it and evaluation needs only the variational parameters.
-            auto cos = std::make_shared<CosMask>();
-            auto storage = build_evolve_result_(maj, rot_len, std::cref(coeffs), build_angle, cos.get());
-            graph_.append(storage, parameter_mapping[idx], gen_coeffs[idx], gate_indices[idx]);
+    run_gate_loop_(majoranas,
+                   only_rotate_len_k,
+                   [this, &parameter_mapping, &gen_coeffs, &gate_indices, &mapped_params, &coeffs, majoranas_size](
+                       const VecZ &mono,
+                       int rot_len,
+                       size_t i) {
+                       const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
+                       const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
+                       // The cos word list is not persisted on the layer; the builder moves it out transiently and
+                       // evolve_step scales it in parallel here. Gate info is recorded on the layer so the graph
+                       // owns it and evaluation needs only the variational parameters.
+                       auto cos = std::make_shared<CosMask>();
+                       auto storage = build_evolve_result_(mono, rot_len, std::cref(coeffs), build_angle, cos.get());
+                       graph_.append(storage, parameter_mapping[idx], gen_coeffs[idx], gate_indices[idx]);
 
-            extend_coeffs_from_current_picture_if_needed_(coeffs);
+                       extend_coeffs_from_current_picture_if_needed_(coeffs);
 
-            Layer layer(std::move(storage));
-            detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v) {
-                detail::scale_cos_mask(c, *cos, v); // parallel; build-produced list is 64-aligned & disjoint
-            };
-            evolve_step(coeffs, layer, apply_angle, cos_scale, comm_);
-        });
+                       Layer layer(std::move(storage));
+                       detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v) {
+                           detail::scale_cos_mask(c, *cos, v); // parallel; build-produced list is 64-aligned & disjoint
+                       };
+                       evolve_step(coeffs, layer, apply_angle, cos_scale, comm_);
+                   });
 }
 
 template <size_t NumModes>
@@ -575,13 +576,13 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
     run_gate_loop_(
         majoranas,
         only_rotate_len_k,
-        [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &maj, int rot_len, size_t i) {
+        [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &mono, int rot_len, size_t i) {
             const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
             // extend_coeffs must run AFTER build_evolve_result_'s self-rank grow and BEFORE the apply.
             CosMask cos;
             detail::FusedContract fc;
             bool fused_scale = false;
-            build_evolve_result_(maj, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc, op_coeffs, &fused_scale);
+            build_evolve_result_(mono, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc, op_coeffs, &fused_scale);
             extend_coeffs_from_current_picture_if_needed_(*op_coeffs);
             detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, schrodinger_, fused_scale);
         });
@@ -693,8 +694,8 @@ auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &major
     // This loop is serial per shard; parallelism comes from sharding the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
-        const auto &maj = majoranas[idx];
-        evolution_func(maj, only_rotate_len_k, i);
+        const auto &mono = majoranas[idx];
+        evolution_func(mono, only_rotate_len_k, i);
     }
 
     initialize_operator_caches_();
@@ -712,13 +713,13 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
     // The single choke point for every gate generator reaching the engine (build_graph and
     // propagate both funnel here), and the only place they are bounds-checked: nothing between
     // the public entry points and here constrains a generator's indices.
-    const auto gen_maj = indices_to_bitset_checked<NumModes>(gen_vec, 2 * logical_num_modes_);
+    const auto gen_mono = indices_to_bitset_checked<NumModes>(gen_vec, 2 * logical_num_modes_);
 
     // Unified build pass (paper Algorithm 2): both parities go through the parity-corrected inverted-
     // index scan (odd generators add the g_odd parity(|M|) correction). The builder writes the
     // per-layer recompute metadata onto the returned LayerCore, so it travels with every graph transform.
     return detail::build_layer<NumModes>(mp_op_,
-                                         gen_maj,
+                                         gen_mono,
                                          cutoff_fn_,
                                          lower_atol_,
                                          coeffs,
@@ -913,7 +914,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
 
     // ev/ev_and_grad and get_pared_graph all want a dense state (ev_and_grad back-evolves it in place,
     // which destroys sparsity at the first layer), so exactly ONE dense vector is built here and moved
-    // into the functional. Heisenberg scatters a fresh one from the sparse HF scores -- the operator
+    // into the functional. Heisenberg scatters a fresh one from the sparse state scores -- the operator
     // keeps no dense copy of its own; Schrödinger must copy the live evolved vector.
     VecD state = schrodinger_ ? VecD(mp_op_.dense_state()) : mp_op_.materialize_state();
     VecD op = mp_op_.get_operator();
@@ -1106,7 +1107,7 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
     const auto collect = [&](MonomialPropagator &p) -> std::vector<Term> {
         std::vector<Term> terms;
         const VecD evolved = p.contract_partially(parameters, false);
-        p.indexing().for_each([&](const auto &maj, size_t idx) {
+        p.indexing().for_each([&](const auto &mono, size_t idx) {
             if (idx >= evolved.size()) {
                 return;
             }
@@ -1115,10 +1116,10 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
                 return;
             }
             // Round to drop anti-hermitian numerical noise (Majorana un-applies the Hermitian phase).
-            const auto decoded = algebra_decode_coeff<NumModes>(basis_, coeff, maj);
+            const auto decoded = algebra_decode_coeff<NumModes>(basis_, coeff, mono);
             const std::complex<double> rounded(std::round(decoded.real() * 1e12) / 1e12,
                                                std::round(decoded.imag() * 1e12) / 1e12);
-            terms.emplace_back(bitset_to_indices<NumModes>(maj), rounded);
+            terms.emplace_back(bitset_to_indices<NumModes>(mono), rounded);
         });
         return terms;
     };

@@ -19,7 +19,8 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/algebra/Algebra.h" // is_paired / get_hf_mask (common) + algebra_hf_phase (fresh Schrödinger miss coeff)
+// is_paired / initial_state_mask (common) + algebra_state_phase (fresh Schrödinger miss coeff)
+#include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/operator/MPOperator.h"
@@ -34,13 +35,13 @@ namespace monoprop::detail {
 // queries pairwise distinct ⇒ misses distinct and absent, so miss j gets base+j like a serial loop.
 template <size_t NumModes>
 struct IncomingProbe {
-    std::vector<size_t> goff;                  // rank_count+1 flat offsets: g = goff[s] + q
-    DefaultInitVector<uint32_t> sender_of;     // g → sender rank
-    DefaultInitVector<Monomial<NumModes>> maj; // g → deserialized query monomial
-    DefaultInitVector<int> phase_of;           // g → query phase
-    DefaultInitVector<size_t> idx_of;          // g → resolved index (HIT: < base; MISS: base+j)
-    std::vector<TermIndex> miss_g;             // j → the g that became miss j (Phase 4 reads maj[miss_g[j]])
-    size_t base = 0;                           // op size before the miss inserts (the miss-index base)
+    std::vector<size_t> goff;                   // rank_count+1 flat offsets: g = goff[s] + q
+    DefaultInitVector<uint32_t> sender_of;      // g → sender rank
+    DefaultInitVector<Monomial<NumModes>> mono; // g → deserialized query monomial
+    DefaultInitVector<int> phase_of;            // g → query phase
+    DefaultInitVector<size_t> idx_of;           // g → resolved index (HIT: < base; MISS: base+j)
+    std::vector<TermIndex> miss_g;              // j → the g that became miss j (Phase 4 reads mono[miss_g[j]])
+    size_t base = 0;                            // op size before the miss inserts (the miss-index base)
     size_t nq_total = 0;
 };
 
@@ -77,7 +78,7 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
 
     // Phase 1 (parallel, read-only): deserialize, then probe with the group-prefetch batch find
     // (chunked so each task pipelines its own probes; the table is not mutated during this phase).
-    pr.maj.resize(pr.nq_total);
+    pr.mono.resize(pr.nq_total);
     pr.phase_of.resize(pr.nq_total);
     pr.idx_of.resize(pr.nq_total);
     for (size_t g = 0; g < pr.nq_total; ++g) {
@@ -86,12 +87,12 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
         Monomial<NumModes> m;
         int ph = 0;
         query_read<NumModes, QW>(incoming[s], q, m, ph);
-        pr.maj[g] = m;
+        pr.mono[g] = m;
         pr.phase_of[g] = ph;
     }
     {
         const size_t op_size = op.store->size();
-        op.store->find_batch(pr.maj.data(), pr.nq_total, pr.idx_of.data());
+        op.store->find_batch(pr.mono.data(), pr.nq_total, pr.idx_of.data());
         for (size_t g = 0; g < pr.nq_total; ++g) {
             if (pr.idx_of[g] >= op_size) { // kNotFound is size_t max → also lands here
                 pr.idx_of[g] = kMissingIndex;
@@ -100,7 +101,7 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     }
 
     // Phase 2 (serial prefix, (sender,query) order): each miss takes the next index base+j. miss_g[j]
-    // records which query g became miss j, so Phase 4 reads the deserialized maj[miss_g[j]] directly.
+    // records which query g became miss j, so Phase 4 reads the deserialized mono[miss_g[j]] directly.
     pr.base = op.store->size(); // LOCAL insert base into the op being mutated
     for (size_t g = 0; g < pr.nq_total; ++g) {
         if (pr.idx_of[g] == kMissingIndex) {
@@ -111,7 +112,7 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     return pr;
 }
 
-// Phase 4 (parallel bulk insert of the distinct absent terms): scatter majs into disjoint op slots
+// Phase 4 (parallel bulk insert of the distinct absent terms): scatter monos into disjoint op slots
 // [base, base+n_miss), insert keys into disjoint map shards, resync the inverted index — atomics-free.
 // Call AFTER the caller's Phase-3 scatter, which reads pre-insert op_coeffs for hits and needs base == op.size().
 template <size_t NumModes>
@@ -121,12 +122,12 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
         return;
     }
     // See insert_absent_terms. pr.base (captured at Phase 2) still equals op.size() here since no insert has
-    // run; one writer per miss slot base+j, the staged maj read straight from the deserialization buffer.
+    // run; one writer per miss slot base+j, the staged mono read straight from the deserialization buffer.
     insert_absent_terms<NumModes>(
         op,
         n_miss,
-        [&](size_t j) -> const Monomial<NumModes> & { return pr.maj[pr.miss_g[j]]; },
-        [&](size_t j, size_t base) { assign_row<NumModes>(*op.store, base + j, pr.maj[pr.miss_g[j]]); });
+        [&](size_t j) -> const Monomial<NumModes> & { return pr.mono[pr.miss_g[j]]; },
+        [&](size_t j, size_t base) { assign_row<NumModes>(*op.store, base + j, pr.mono[pr.miss_g[j]]); });
 }
 
 // resolve_incoming / process_responses are the picture-independent cross-rank exchange skeletons. The

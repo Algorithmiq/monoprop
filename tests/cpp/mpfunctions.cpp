@@ -108,10 +108,10 @@ BOOST_DATA_TEST_CASE(get_multiplicative_phase_test, bdata::make(ds_get_multiplic
     auto [majorana_set, expected_phase] = test_pair;
     VecZ gen_vec = {0, 1};
     auto gen_bitset = indices_to_bitset<NumQubits2>(gen_vec);
-    auto maj_count = majorana_set.count();
+    auto mono_count = majorana_set.count();
     auto gen_count = gen_bitset.count();
     auto overlap = (majorana_set & gen_bitset).count();
-    auto result = get_multiplicative_phase<NumQubits2>(majorana_set, gen_bitset, maj_count, gen_count, overlap);
+    auto result = get_multiplicative_phase<NumQubits2>(majorana_set, gen_bitset, mono_count, gen_count, overlap);
     BOOST_CHECK(result == expected_phase);
 }
 

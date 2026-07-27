@@ -59,9 +59,9 @@ struct EvenParityGeneratorColumns {
 // Collect a generator's set columns in ASCENDING bit order. indices[0] (lowest) is the pivot ordinary
 // callers pass to even_parity_scan_pass1 — the column that splits an anticommuting pair leader/follower.
 template <size_t NumModes>
-auto build_even_parity_generator_columns(const Monomial<NumModes> &gen_maj) -> EvenParityGeneratorColumns<NumModes> {
+auto build_even_parity_generator_columns(const Monomial<NumModes> &gen_mono) -> EvenParityGeneratorColumns<NumModes> {
     EvenParityGeneratorColumns<NumModes> columns;
-    for (size_t bit_idx = gen_maj.find_first(); bit_idx < gen_maj.size(); bit_idx = gen_maj.find_next(bit_idx)) {
+    for (size_t bit_idx = gen_mono.find_first(); bit_idx < gen_mono.size(); bit_idx = gen_mono.find_next(bit_idx)) {
         columns.indices[columns.count++] = bit_idx;
     }
     return columns;
@@ -146,9 +146,9 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
 // The per-term rotation gate splits into a DYNAMIC part (orbital pop cap, upper-atol freeze, lower-atol
 // sine cutoff) and a STATIC part (structural cutoff on M'=M⊕G). Every emitting path uses these helpers so
 // the gate semantics cannot drift.
-inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t maj_pop, const CutoffContext &ctx, double abs_c)
+inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t mono_pop, const CutoffContext &ctx, double abs_c)
     -> bool {
-    if (only_rotate_len_k > 0 && maj_pop > static_cast<size_t>(only_rotate_len_k)) {
+    if (only_rotate_len_k > 0 && mono_pop > static_cast<size_t>(only_rotate_len_k)) {
         return false;
     }
     if (ctx.is_below_sin(abs_c)) {
@@ -160,7 +160,7 @@ inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t maj_pop, const C
 // The per-generator context, built once per layer, is owned by the algebra policy `A::GenContext`
 // (Majorana: G + interleave mask; Pauli: PauliGenContext = G + |G|). See algebra/Algebra.h.
 
-// Compute the three per-survivor products for term i: new_maj = M_i ⊕ G (the query partner),
+// Compute the three per-survivor products for term i: new_mono = M_i ⊕ G (the query partner),
 // overlap = |M_i ∩ G| (feeds new-popcount + hermitian phase), and the phase_factor sign. Rebuilds M_i
 // dense in registers from its stored position list, then evaluates with branch-free W-word kernels; the
 // dynamic gate runs in the caller BEFORE this, so rejected terms cost no reconstruction.
@@ -170,15 +170,15 @@ template <size_t NumModes, Algebra A>
 [[gnu::always_inline]] inline auto emit_term_products(const OperatorIndex<NumModes> &ham,
                                                       size_t i,
                                                       const typename A::GenContext &ctx,
-                                                      Monomial<NumModes> &new_maj,
+                                                      Monomial<NumModes> &new_mono,
                                                       size_t &overlap,
                                                       int &phase_factor) -> void {
-    Monomial<NumModes> maj; // zero-init, W words, lives in registers
-    ham.for_each_position(i, [&](size_t pos) { maj.set(pos); });
+    Monomial<NumModes> mono; // zero-init, W words, lives in registers
+    ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
     const Monomial<NumModes> &gen = A::generator(ctx);
-    new_maj = maj ^ gen;
-    overlap = maj.count_and(gen);
-    phase_factor = A::rotation_sign(ctx, maj, new_maj);
+    new_mono = mono ^ gen;
+    overlap = mono.count_and(gen);
+    phase_factor = A::rotation_sign(ctx, mono, new_mono);
 }
 
 // fused_find_and_collect (any rank count): one pass fusing FindAnticommuting + apply_cutoffs — classify
@@ -219,7 +219,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     // Cutoff + emit for one anticommuting term. The dynamic gate (|M| only) runs BEFORE emit_term_products,
     // so a gate-rejected term computes no products. abs_c/v_src are passed in from the caller's coeff read
     // (v_src the SIGNED coeff, pushed into lv/fv only when capture_values), so emit does not re-read it.
-    auto emit = [&](size_t maj_pop,
+    auto emit = [&](size_t mono_pop,
                     size_t i,
                     double abs_c,
                     double v_src,
@@ -231,35 +231,35 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     std::vector<std::vector<size_t>> &fs,
                     std::vector<std::vector<double>> &fv) {
         // Gate emission on the SOURCE here (dynamic sine + orbital cap).
-        if (!rotation_dynamic_gate(only_rotate_len_k, maj_pop, cut_st, abs_c)) {
+        if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
             return;
         }
-        Monomial<NumModes> new_maj;
+        Monomial<NumModes> new_mono;
         size_t overlap = 0;
         int phase_factor = 0;
-        emit_term_products<NumModes, A>(*op.store, i, ectx, new_maj, overlap, phase_factor);
+        emit_term_products<NumModes, A>(*op.store, i, ectx, new_mono, overlap, phase_factor);
         // Structural cutoff on the partner M⊕G — UNLESS upper_atol rescues it (its sine coefficient is
         // large enough to keep alive despite exceeding the cutoff). See CutoffContext::is_above_upper.
-        const size_t new_pop = maj_pop + gen_pop - 2 * overlap;
-        const bool struct_pass = cutoff_eval.passes_with_popcount(new_maj, new_pop);
+        const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
+        const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
         if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
             return;
         }
         // Emitted sine phase: the algebra folds the rotation sign into the final ±1 (Majorana folds in
         // hermitian_phase; Pauli's pauli_rotation_sign is already rotation-ready). See A::emit_phase.
-        const int phase = A::emit_phase(phase_factor, maj_pop, gen_pop, overlap);
+        const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
         // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-        const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_maj) % rank_count);
+        const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_mono) % rank_count);
         const size_t source = i;
         if (is_follower) {
-            query_push<NumModes>(fq[r_prime], new_maj, phase);
+            query_push<NumModes>(fq[r_prime], new_mono, phase);
             fs[r_prime].push_back(source);
             if (capture_values) {
                 fv[r_prime].push_back(v_src);
             }
         }
         else {
-            query_push<NumModes>(lq[r_prime], new_maj, phase);
+            query_push<NumModes>(lq[r_prime], new_mono, phase);
             ls[r_prime].push_back(source);
             if (capture_values) {
                 lv[r_prime].push_back(v_src);
@@ -389,9 +389,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t maj_pop = op.store->popcount(i);
+                    const size_t mono_pop = op.store->popcount(i);
                     const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(maj_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
+                    emit(mono_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
                 }
             }
             else if (word_aligned_cos) {
@@ -405,25 +405,25 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t maj_pop = op.store->popcount(i);
+                    const size_t mono_pop = op.store->popcount(i);
                     const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(maj_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
+                    emit(mono_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
                 }
             }
             else {
-                // Orbital gate active: it needs maj_pop, and the per-index cosine push covers only
+                // Orbital gate active: it needs mono_pop, and the per-index cosine push covers only
                 // orbital-passing terms, so the popcount row read must precede both.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
-                    const size_t maj_pop = op.store->popcount(i);
-                    if (maj_pop > static_cast<size_t>(only_rotate_len_k)) {
+                    const size_t mono_pop = op.store->popcount(i);
+                    if (mono_pop > static_cast<size_t>(only_rotate_len_k)) {
                         continue;
                     }
                     cos_b.push_index(i);
                     const auto [v_src, abs_c] = derive_coeff(i);
                     const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(maj_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
+                    emit(mono_pop, i, abs_c, v_src, is_follower, lq, ls, lv, fq, fs, fv);
                 }
             }
         }

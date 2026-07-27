@@ -122,8 +122,8 @@ The same idea applies in the Pauli picture (see [Notation](/concepts/notation)).
 
 Keeping the paired monomials is what makes this safe in the Heisenberg picture.
 As shown in *Reading off the expectation value* below, only paired monomials
-survive the trace against a computational-basis state or Slater determinant, while every
-unpaired monomial contributes nothing.
+survive the trace against a product reference state, while every unpaired
+monomial contributes nothing.
 
 ### Coefficient truncation
 
@@ -135,9 +135,9 @@ exceed an upper threshold are kept even when their length exceeds the length cut
 ## Reading off the expectation value
 
 Once every gate has been applied, the expectation value is obtained by evaluating
-the evolved observable against the reference state (currently a single Slater
-determinant or computational-basis state). The key simplification comes from the
-Majorana basis: distinct Hermitian monomials are orthogonal under the trace,
+the evolved observable against the reference state (currently a single product
+state). The key simplification comes from the Majorana basis: distinct Hermitian
+monomials are orthogonal under the trace,
 $\mathrm{Tr}[M_\nu M_\mu] \propto \delta_{\nu,\mu}$. So for an
 evolved observable $\tilde{H}_L = \sum_\nu c_\nu M_\nu$ and a reference
 state $\varrho = \sum_\mu b_\mu M_\mu$, the trace collapses to a sum

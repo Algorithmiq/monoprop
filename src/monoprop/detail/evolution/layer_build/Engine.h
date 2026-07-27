@@ -201,11 +201,11 @@ struct ContractSink {
     const VecD &op_coeffs; // SAME array the scan read (= *op_coeffs)
     bool fused_scale;      // fused cos sweep active: hit v_tgt recovered as stored·inv_cos
     double inv_cos;
-    bool schrodinger;              // fresh cross-rank MISS coeff: 0 (Heisenberg) vs HF-scored (Schrödinger)
-    Basis basis;                   // Pauli vs Majorana HF scoring of fresh cross-rank Schrödinger misses
-    size_t def_base_ = 0;          // deferred self-insert base into fc.inserts
-    size_t cross_base_ = 0;        // cross-rank resolver-half base into fc.cross_half
-    Monomial<NumModes> hf_mask_{}; // Schrödinger fresh-insert scoring mask (empty in Heisenberg)
+    bool schrodinger;                 // fresh cross-rank MISS coeff: 0 (Heisenberg) vs state-scored (Schrödinger)
+    Basis basis;                      // Pauli vs Majorana state scoring of fresh cross-rank Schrödinger misses
+    size_t def_base_ = 0;             // deferred self-insert base into fc.inserts
+    size_t cross_base_ = 0;           // cross-rank resolver-half base into fc.cross_half
+    Monomial<NumModes> state_mask_{}; // Schrödinger fresh-insert scoring mask (empty in Heisenberg)
 
     ContractSink(size_t R_,
                  size_t my_rank_,
@@ -254,7 +254,7 @@ struct ContractSink {
                  size_t /*rank_count*/,
                  MPOperator<NumModes> &op,
                  const std::vector<std::vector<Response>> & /*responses*/) -> void {
-        hf_mask_ = schrodinger ? get_hf_mask<NumModes>(op.slater_determinant) : Monomial<NumModes>{};
+        state_mask_ = schrodinger ? initial_state_mask<NumModes>(op.initial_state) : Monomial<NumModes>{};
         cross_base_ = fc.cross_half.size();
         fc.cross_half.resize(cross_base_ + pr.nq_total);
     }
@@ -272,7 +272,8 @@ struct ContractSink {
             v_tgt = fused_scale ? op_coeffs[ip] * inv_cos : op_coeffs[ip];
         }
         else if (schrodinger) {
-            v_tgt = is_paired<NumModes>(pr.maj[g]) ? algebra_hf_phase<NumModes>(basis, pr.maj[g], hf_mask_) : 0.0;
+            v_tgt =
+                is_paired<NumModes>(pr.mono[g]) ? algebra_state_phase<NumModes>(basis, pr.mono[g], state_mask_) : 0.0;
         }
         else {
             v_tgt = 0.0; // Heisenberg fresh insert
@@ -323,7 +324,7 @@ struct ContractSink {
 template <size_t NumModes, class Sink>
 struct LayerBuildEngine {
     struct DeferredSelfMiss {
-        Monomial<NumModes> maj;
+        Monomial<NumModes> mono;
         size_t src;
         int phase;
         double v_src = 0.0; // ContractSink only: op_pre[src] captured at scan emit; 0 for GraphSink
@@ -446,18 +447,18 @@ struct LayerBuildEngine {
 
     // Sub-step of finish() — do not call directly. LOAD-BEARING precondition: call only AFTER both resolve
     // passes complete, else the base+k ↔ record-slot assignment and per-miss distinctness break. Deferred
-    // SELF misses are pairwise-distinct (maj = source⊕G, ⊕G injective) and still absent, so miss k gets
+    // SELF misses are pairwise-distinct (mono = source⊕G, ⊕G injective) and still absent, so miss k gets
     // base+k in leader-then-follower order — byte-identical to a serial loop. See insert_absent_terms.
     auto insert_deferred_self_misses() -> void {
         const size_t n_miss = deferred_self_misses.size();
         if (n_miss == 0) {
             return;
         }
-        auto key_at = [&](size_t k) -> const Monomial<NumModes> & { return deferred_self_misses[k].maj; };
+        auto key_at = [&](size_t k) -> const Monomial<NumModes> & { return deferred_self_misses[k].mono; };
         sink.prepare_deferred(n_miss);
         insert_absent_terms<NumModes>(local_op, n_miss, key_at, [&](size_t k, size_t base) {
             const auto &m = deferred_self_misses[k];
-            assign_row<NumModes>(*local_op.store, base + k, m.maj);
+            assign_row<NumModes>(*local_op.store, base + k, m.mono);
             sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
         });
     }

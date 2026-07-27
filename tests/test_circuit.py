@@ -183,7 +183,7 @@ def test_to_circuit_round_trips_sequence() -> None:
     circuit = mc.to_circuit()
 
     # Expanding the gates against the mapping reproduces the dense per-monomial arrays.
-    majoranas = [maj for gate in circuit for maj in gate.generator.terms]
+    majoranas = [mono for gate in circuit for mono in gate.generator.terms]
     assert majoranas == [tuple(m) for m in mc.majoranas]
     assert list(circuit.resolved_mapping) != []  # sanity: mapping is populated
     np.testing.assert_allclose(
@@ -265,10 +265,10 @@ def test_circuit_add_offsets_second_axis() -> None:
 
 def test_circuit_add_rejects_mixed_families() -> None:
     """Concatenating a Majorana circuit with a qubit circuit raises a clear TypeError."""
-    maj = Circuit((ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),))
+    majorana = Circuit((ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),))
     qubit = Circuit((ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)),))
     with pytest.raises(TypeError, match="gate families differ"):
-        _ = maj + qubit
+        _ = majorana + qubit
 
 
 def test_circuit_add_rejects_different_initial_states() -> None:

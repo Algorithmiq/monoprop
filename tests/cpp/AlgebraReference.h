@@ -45,12 +45,12 @@ auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MonomialList<N
  *        the ordering (interleave) sign times the Hermitian phase.
  */
 template <size_t NumModes>
-auto get_multiplicative_phase(const Monomial<NumModes> &maj,
-                              const Monomial<NumModes> &gen_maj,
-                              size_t maj_count,
+auto get_multiplicative_phase(const Monomial<NumModes> &mono,
+                              const Monomial<NumModes> &gen_mono,
+                              size_t mono_count,
                               size_t gen_count,
                               size_t overlap) -> int {
-    return interleave_phase<NumModes>(maj, gen_maj) * hermitian_phase(maj_count, gen_count, overlap);
+    return interleave_phase<NumModes>(mono, gen_mono) * hermitian_phase(mono_count, gen_count, overlap);
 }
 
 } // namespace monoprop

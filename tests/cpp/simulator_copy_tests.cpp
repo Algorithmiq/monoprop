@@ -115,8 +115,8 @@ BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_index_valid, ExampleDataFix) 
     const auto &idx = copy.indexing();
     BOOST_TEST(idx.size() == sim.indexing().size());
     bool all_found = true;
-    idx.for_each([&](const auto &maj, size_t i) {
-        const auto f = idx.find(maj);
+    idx.for_each([&](const auto &mono, size_t i) {
+        const auto f = idx.find(mono);
         if (!f || *f != i) {
             all_found = false;
         }

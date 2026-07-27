@@ -241,8 +241,8 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_cutoff_and_weight_equivalence) {
     }
 }
 
-// T5: Hartree-Fock phase vs brute-force <b|P|b>.
-BOOST_AUTO_TEST_CASE(pauli_algebra_hf_phase) {
+// T5: initial-state phase vs brute-force <b|P|b>.
+BOOST_AUTO_TEST_CASE(pauli_algebra_state_phase) {
     constexpr size_t N = 8;
     constexpr size_t n = 5;
     std::mt19937 rng(0xFACE42U);
@@ -250,31 +250,31 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_hf_phase) {
     std::bernoulli_distribution use_z(0.5);
 
     for (size_t trial = 0; trial < 3000; ++trial) {
-        // Random computational basis state b and hf_mask (even/z-plane bits of occupied qubits).
+        // Random computational basis state b and state_mask (even/z-plane bits of occupied qubits).
         std::vector<int> b(n);
-        VecZ hf_slots;
+        VecZ occupied_slots;
         for (size_t q = 0; q < n; ++q) {
             b[q] = occ(rng) ? 1 : 0;
             if (b[q] != 0) {
-                hf_slots.push_back(2 * q + 1); // z-plane bit of qubit q (even physical bit)
+                occupied_slots.push_back(2 * q + 1); // z-plane bit of qubit q (even physical bit)
             }
         }
-        const auto hf_mask = indices_to_bitset<N>(hf_slots);
+        const auto state_mask = indices_to_bitset<N>(occupied_slots);
 
-        // Z-only Pauli: pauli_hf_phase must match (-1)^{|Z ∩ occupied|} and dense <b|P|b>.
+        // Z-only Pauli: pauli_state_phase must match (-1)^{|Z ∩ occupied|} and dense <b|P|b>.
         std::string pz(n, 'I');
         for (size_t q = 0; q < n; ++q) {
             pz[q] = use_z(rng) ? 'Z' : 'I';
         }
-        const auto zmaj = native_bitset<N>(pz);
+        const auto z_mono = native_bitset<N>(pz);
         int expected = 1;
         for (size_t q = 0; q < n; ++q) {
             if (pz[q] == 'Z' && b[q] != 0) {
                 expected = -expected;
             }
         }
-        const double hf = pauli_hf_phase<N>(zmaj, hf_mask);
-        BOOST_TEST(hf == static_cast<double>(expected));
+        const double phase = pauli_state_phase<N>(z_mono, state_mask);
+        BOOST_TEST(phase == static_cast<double>(expected));
 
         const size_t d = size_t{1} << n;
         size_t idx = 0;
@@ -286,7 +286,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_hf_phase) {
         const auto mz = matrix_from_string(pz);
         BOOST_TEST(std::abs(mz[idx * d + idx] - cd(static_cast<double>(expected), 0)) < 1e-9);
 
-        // Non-diagonal Pauli: <b|P|b> == 0 (documents why the hf-phase guard is Z-only).
+        // Non-diagonal Pauli: <b|P|b> == 0 (documents why the state-phase guard is Z-only).
         std::string pnd = random_string(rng, n);
         if (is_z_only(pnd)) {
             pnd[rng() % n] = 'X'; // force at least one off-diagonal letter

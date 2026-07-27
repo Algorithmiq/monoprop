@@ -73,9 +73,9 @@ auto native_bitset(const std::string &p) -> Monomial<NumModes> {
 // Decode the single-qubit letter of qubit q from a native-encoded bitset
 // (MSb0 physical mapping): slot 2q is the x-plane bit, slot 2q+1 the z-plane bit.
 template <size_t NumModes>
-auto letter_from_bitset(const Monomial<NumModes> &maj, size_t q) -> char {
-    const bool u = maj.test(2 * NumModes - 1 - 2 * q); // slot 2q
-    const bool v = maj.test(2 * NumModes - 2 - 2 * q); // slot 2q+1
+auto letter_from_bitset(const Monomial<NumModes> &mono, size_t q) -> char {
+    const bool u = mono.test(2 * NumModes - 1 - 2 * q); // slot 2q
+    const bool v = mono.test(2 * NumModes - 2 - 2 * q); // slot 2q+1
     if (!u && !v) {
         return 'I';
     }
