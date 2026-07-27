@@ -494,9 +494,9 @@ class MonomialPropagator(ABC):
         self,
         parameters: ParameterValues = None,
     ) -> float:
-        """Shorthand for :meth:`expectation_value`.
+        """Shorthand for [expectation_value][].
 
-        See :meth:`expectation_value` for full documentation.
+        See [expectation_value][] for full documentation.
         """
         return self.expectation_value(parameters)
 
@@ -504,9 +504,9 @@ class MonomialPropagator(ABC):
         self,
         parameters: ParameterValues = None,
     ) -> np.ndarray:
-        """Shorthand for :meth:`gradient`.
+        """Shorthand for [gradient][].
 
-        See :meth:`gradient` for full documentation.
+        See [gradient][] for full documentation.
         """
         return self.gradient(parameters)
 
@@ -514,27 +514,27 @@ class MonomialPropagator(ABC):
         self,
         parameters: ParameterValues = None,
     ) -> tuple[float, np.ndarray]:
-        """Shorthand for :meth:`expectation_value_and_gradient`.
+        """Shorthand for [expectation_value_and_gradient][].
 
-        See :meth:`expectation_value_and_gradient` for full documentation.
+        See [expectation_value_and_gradient][] for full documentation.
         """
         return self.expectation_value_and_gradient(parameters)
 
     def expval_functional(
         self, pare_threshold: float | None = None
     ) -> Callable[..., float]:
-        """Shorthand for :meth:`expectation_value_functional`.
+        """Shorthand for [expectation_value_functional][].
 
-        See :meth:`expectation_value_functional` for full documentation.
+        See [expectation_value_functional][] for full documentation.
         """
         return self.expectation_value_functional(pare_threshold)
 
     def expval_and_grad_functional(
         self, pare_threshold: float | None = None
     ) -> Callable[..., tuple]:
-        """Shorthand for :meth:`expectation_value_and_gradient_functional`.
+        """Shorthand for [expectation_value_and_gradient_functional][].
 
-        See :meth:`expectation_value_and_gradient_functional` for full documentation.
+        See [expectation_value_and_gradient_functional][] for full documentation.
         """
         return self.expectation_value_and_gradient_functional(pare_threshold)
 
