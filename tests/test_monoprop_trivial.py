@@ -39,7 +39,9 @@ def test_trivial_evolved_operator_cases(
 ):
     """Test trivial evolved operator dict for various initial conditions."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
-    quantum_circuit = Circuit(initial_state=[], gates=[])
+    quantum_circuit = Circuit(
+        initial_state=[], num_modes=initial_op.num_modes, gates=[]
+    )
     mp = MajoranaPropagator(
         initial_op,
         quantum_circuit.initial_state,
@@ -53,7 +55,9 @@ def test_trivial_evolved_operator_cases(
 
 def test_trivial_evolved_operator(serial_comm):
     initial_op = MajoranaOperator({(0, 1, 2, 4): 1}, 8)
-    quantum_circuit = Circuit(initial_state=[], gates=[])
+    quantum_circuit = Circuit(
+        initial_state=[], num_modes=initial_op.num_modes, gates=[]
+    )
     mp = MajoranaPropagator(
         initial_op, quantum_circuit.initial_state, cutoff=16, comm=serial_comm
     )
@@ -102,7 +106,7 @@ def test_update_initial_operator(
 ):
     """Test updating coefficients in both regular and Schrodinger pictures."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
-    quantum_circuit = Circuit(initial_state=[], gates=[])
+    quantum_circuit = Circuit(initial_state=[], num_modes=init_op.num_modes, gates=[])
     mp = MajoranaPropagator(
         init_op,
         quantum_circuit.initial_state,

@@ -107,7 +107,7 @@ class TestUpdateMethods:
         mp.cutoff = 6
         # A weight-6 monomial takes an imaginary Hermitian coefficient (like weight-2).
         gate = ExpGate(MajoranaOperator({(0, 1, 2, 3, 4, 5): 1.0j}, num_modes=4))
-        mp.build_graph(Circuit((gate,)))
+        mp.build_graph(Circuit((gate,), initial_state=(), num_modes=4))
         assert mp.size() > 0
 
     def test_update_cutoff_invalid(self, mp):

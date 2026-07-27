@@ -18,7 +18,7 @@ from __future__ import annotations
 
 
 def _validate_system_size(size: int, *, argument_name: str) -> int:
-    """Validate and normalize a positive system-size argument.
+    """Validate and normalize a non-negative system-size argument.
 
     Args:
         size: Number of modes/qubits.
@@ -29,14 +29,14 @@ def _validate_system_size(size: int, *, argument_name: str) -> int:
 
     Raises:
         TypeError: If ``size`` is not an integer (or is ``bool``).
-        ValueError: If ``size`` is not positive.
+        ValueError: If ``size`` is negative.
     """
     if isinstance(size, bool) or not isinstance(size, int):
         raise TypeError(
             f"{argument_name} must be an integer (not {type(size).__name__})."
         )
-    if size <= 0:
-        raise ValueError(f"{argument_name} must be positive; got {size}.")
+    if size < 0:
+        raise ValueError(f"{argument_name} must be non-negative; got {size}.")
     return int(size)
 
 

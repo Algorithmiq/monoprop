@@ -64,13 +64,13 @@ class TestFermiString:
 class TestFermiOperator:
     def test_valid_creation(self):
         terms = [FermiString([(0, "+")]), FermiString([(1, "-")])]
-        op = FermiOperator(terms, [1.0, -1.0])
+        op = FermiOperator(terms, [1.0, -1.0], num_modes=2)
         assert op.terms == terms
         assert op.coefficients == [1.0, -1.0]
 
     def test_num_modes_max_index(self):
         terms = [FermiString([(0, "+"), (3, "-")]), FermiString([(5, "+")])]
-        op = FermiOperator(terms, [1.0, 1.0])
+        op = FermiOperator(terms, [1.0, 1.0], num_modes=6)
         assert op.num_modes == 6
 
     def test_num_modes_empty_terms(self):
@@ -78,24 +78,24 @@ class TestFermiOperator:
         assert op.num_modes == 10
 
     def test_num_modes_single_term(self):
-        op = FermiOperator([FermiString([(2, "+"), (7, "-")])], [1.0])
+        op = FermiOperator([FermiString([(2, "+"), (7, "-")])], [1.0], num_modes=8)
         assert op.num_modes == 8
 
     def test_terms_is_copy(self):
         terms = [FermiString([(0, "+")])]
-        op = FermiOperator(terms, [1.0])
+        op = FermiOperator(terms, [1.0], num_modes=1)
         terms.append(FermiString([(1, "-")]))
         assert len(op.terms) == 1
 
     def test_coefficients_is_copy(self):
         coeffs = [1.0]
-        op = FermiOperator([FermiString([(0, "+")])], coeffs)
+        op = FermiOperator([FermiString([(0, "+")])], coeffs, num_modes=1)
         coeffs.append(2.0)
         assert len(op.coefficients) == 1
 
     def test_str(self):
         terms = [FermiString([(0, "+")])]
-        op = FermiOperator(terms, [2.0])
+        op = FermiOperator(terms, [2.0], num_modes=1)
         assert str(op) == "FermiOperator(1 terms, 1 modes: 2.0*FermiString(c_0^+))"
 
     def test_num_modes_explicit_override(self):
@@ -104,11 +104,8 @@ class TestFermiOperator:
         assert op.num_modes == 12
 
     def test_empty_terms_without_num_modes_raises(self):
-        with pytest.raises(
-            ValueError,
-            match=r"max\(\) (arg is an empty sequence|iterable argument is empty)",
-        ):
-            FermiOperator([], [])
+        with pytest.raises(TypeError):
+            FermiOperator([], [])  # type: ignore[call-arg]
 
     @pytest.mark.parametrize(
         ("left", "right", "expected"),
@@ -323,7 +320,12 @@ class TestCircuit:
     def test_len(self):
         gates = [ExpGate(_number_op()), ExpGate(_number_op())]
 
-        circuit = Circuit(gates=gates, parameters=[0.1, 0.2], initial_state=[0])
+        circuit = Circuit(
+            gates=gates,
+            initial_state=[0],
+            num_modes=1,
+            parameters=[0.1, 0.2],
+        )
 
         assert len(circuit) == 2
 
@@ -336,7 +338,10 @@ class TestCircuit:
         gate_1 = ExpGate(hop)
 
         circuit = Circuit(
-            gates=[gate_0, gate_1], parameters=[0.3, -0.7], initial_state=[0, 1]
+            gates=[gate_0, gate_1],
+            initial_state=[0, 1],
+            num_modes=2,
+            parameters=[0.3, -0.7],
         )
 
         np.testing.assert_array_equal(circuit.initial_state, np.array([0, 1]))
@@ -347,7 +352,7 @@ class TestCircuit:
         assert all(g.family == "majorana" for g in circuit.gates)
 
         majoranas, gen_coeffs, per_monomial_mapping, gate_indices = expand_monomials(
-            circuit.gates, circuit.resolved_mapping
+            circuit.gates, circuit.resolved_mapping, circuit.num_modes
         )
         # One gate per fermi gate; each generator here has two monomials.
         n_terms = len(gate_0.generator.terms)
@@ -364,12 +369,13 @@ class TestCircuit:
         identity = FermiOperator([], [], num_modes=1)
         circuit = Circuit(
             gates=[ExpGate(_number_op()), ExpGate(identity), ExpGate(_number_op())],
-            parameters=[0.1, 0.2, 0.3],
             initial_state=[0],
+            num_modes=1,
+            parameters=[0.1, 0.2, 0.3],
         )
         assert len(circuit) == 2  # the identity gate is dropped
         assert circuit.parameters == (0.1, 0.3)  # its aligned parameter goes with it
 
     def test_validate_inputs_duplicate_initial_state_raises(self):
         with pytest.raises(ValueError, match="Duplicate indices in initial state"):
-            Circuit(gates=[ExpGate(_number_op())], initial_state=[0, 0])
+            Circuit(gates=[ExpGate(_number_op())], initial_state=[0, 0], num_modes=1)

@@ -190,8 +190,9 @@ class ToQiskitCircuitCases:
     def case_single_gate(self):
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
-            parameters=(0.7,),
             initial_state=(),
+            num_modes=1,
+            parameters=(0.7,),
         )
         expected_circuit = QuantumCircuit(1)
         expected_circuit.append(
@@ -204,8 +205,9 @@ class ToQiskitCircuitCases:
     def case_local_gate(self):
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("ZXY", (3, 1, 2)): 1.5}, num_qubits=5)),),
-            parameters=(0.7,),
             initial_state=(),
+            num_modes=5,
+            parameters=(0.7,),
         )
         expected_circuit = QuantumCircuit(5)
         # qiskit uses reversed Pauli string order and sorted gate qubit indices.
@@ -233,8 +235,9 @@ class QiskitCircuitsCases:
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         expected = Circuit(
             gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
-            parameters=(0.7,),
             initial_state=(),
+            num_modes=1,
+            parameters=(0.7,),
         )
         return circuit, expected
 
@@ -249,8 +252,9 @@ class QiskitCircuitsCases:
                 ExpGate(PauliOperator({Pauli("ZX", (0, 1)): 1.0}, num_qubits=2)),
                 ExpGate(PauliOperator({Pauli("Y", 0): 0.5}, num_qubits=2)),
             ),
-            parameters=(0.3, 0.5),
             initial_state=(),
+            num_modes=2,
+            parameters=(0.3, 0.5),
         )
         return circuit, expected
 
@@ -265,8 +269,9 @@ class QiskitCircuitsCases:
                 ExpGate(PauliOperator({Pauli("Y", 0): 0.5}, num_qubits=1)),
                 ExpGate(PauliOperator({Pauli("Z", 0): 0.5}, num_qubits=1)),
             ),
-            parameters=(0.5, 0.3, 0.7),
             initial_state=(),
+            num_modes=1,
+            parameters=(0.5, 0.3, 0.7),
         )
         return circuit, expected
 
@@ -277,8 +282,9 @@ class QiskitCircuitsCases:
         circuit.barrier()
         expected = Circuit(
             gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
-            parameters=(0.7,),
             initial_state=(),
+            num_modes=1,
+            parameters=(0.7,),
         )
         return circuit, expected
 
@@ -316,7 +322,9 @@ class TestFromQiskitCircuit:
 def test_to_qiskit_circuit_rejects_unbound() -> None:
     """to_qiskit_circuit on an unbound circuit raises a clear error, not an IndexError."""
     circuit = Circuit(
-        gates=(ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),)
+        gates=(ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),),
+        initial_state=(),
+        num_modes=1,
     )  # no parameter values
     with pytest.raises(ValueError, match="bound circuit"):
         to_qiskit_circuit(circuit, num_qubits=1)
@@ -333,6 +341,8 @@ def test_from_to_qiskit_circuit_roundtrip() -> None:
     """
     circuit = Circuit(
         gates=(ExpGate(PauliOperator({Pauli("XYZ", (3, 1, 2)): 1.0}, num_qubits=4)),),
+        initial_state=[],
+        num_modes=4,
         parameters=[-1.2],
     )  # no parameter values
     qcirc = to_qiskit_circuit(circuit, num_qubits=4)

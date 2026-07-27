@@ -264,16 +264,16 @@ class Circuit:
     def __init__(  # noqa:C901
         self,
         gates: Sequence[ExpGate],
-        initial_state: Sequence[int],
         num_modes: int,
+        initial_state: Sequence[int] = (),
         parameters: Sequence[float] = (),
     ) -> None:
         """Build the circuit, dropping identity gates and validating family/mapping/params.
 
         Args:
             gates: The ordered exponential gates.
-            num_modes: Number of modes/qubits for the circuit.
             initial_state: The reference state (occupied mode / qubit indices).
+            num_modes: Number of modes/qubits for the circuit.
             parameters: The angle values, or empty for an unbound circuit.
 
         Raises:

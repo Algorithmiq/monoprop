@@ -49,7 +49,9 @@ class TestPauliPropagatorCutoff:
     def test_non_hermitian_pauli_gate_rejected(self, serial_comm):
         """An ExpGate with a complex (non-Hermitian) Pauli coefficient is rejected."""
         circuit = Circuit(
-            (ExpGate(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=1)),),
+            (ExpGate(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=2)),),
+            initial_state=(),
+            num_modes=2,
             parameters=(0.3,),
         )
         with pytest.raises(ValueError, match="not Hermitian"):
@@ -183,10 +185,9 @@ class TestPauliOperator:
         assert set(op.terms) == {Pauli("XYIZ")}
 
     def test_get_majorana_operator_requires_num_qubits(self):
-        """Converting to Majorana without a qubit count raises a clear ValueError."""
-        op = PauliOperator._from_terms(["X"], [1.0], num_qubits=None)
-        with pytest.raises(ValueError, match="needs num_qubits"):
-            op.get_majorana_operator()
+        """Constructing with no qubit count raises a clear TypeError."""
+        with pytest.raises(TypeError, match="num_qubits must be an integer"):
+            PauliOperator._from_terms(["X"], [1.0], num_qubits=None)
 
     def test_str_few_terms(self):
         op = PauliOperator({"XY": 1.0}, num_qubits=2)
@@ -289,16 +290,18 @@ class TestCircuit:
 
     def test_basic_construction(self):
         gates = (self._make_gate(), self._make_gate())
-        circuit = Circuit(gates, parameters=(0.5, 0.5), initial_state=(0,))
+        circuit = Circuit(gates, initial_state=(0,), num_modes=1, parameters=(0.5, 0.5))
         assert len(circuit) == 2
         assert circuit.initial_state == (0,)
 
     def test_empty_gates(self):
-        circuit = Circuit((), initial_state=(0,))
+        circuit = Circuit((), initial_state=(0,), num_modes=1)
         assert len(circuit) == 0
 
     def test_default_mapping_is_identity(self):
-        circuit = Circuit((self._make_gate(), self._make_gate()))
+        circuit = Circuit(
+            (self._make_gate(), self._make_gate()), initial_state=(), num_modes=1
+        )
         assert list(circuit.resolved_mapping) == [0, 1]
         assert circuit.n_parameters == 2
 
@@ -307,9 +310,11 @@ class TestCircuit:
         with pytest.raises(TypeError, match="mix"):
             Circuit(
                 (
-                    ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),
+                    ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)),
                     ExpGate(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),
-                )
+                ),
+                initial_state=(),
+                num_modes=2,
             )
 
     def test_pauli_gate_equality(self):

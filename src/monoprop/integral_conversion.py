@@ -104,4 +104,5 @@ def integrals_to_fermion(
             continue
         terms[ind] += coeff
 
-    return FermiOperator.from_dict(terms)
+    # 2* because we have alpha and beta orbitals
+    return FermiOperator.from_dict(terms, 2 * hamiltonian[1].shape[1])
