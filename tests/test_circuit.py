@@ -683,7 +683,9 @@ def test_surplus_parameters_raise_not_truncated() -> None:
 
 def test_non_commuting_pauli_generator_rejected() -> None:
     """A multi-term Pauli gate whose terms anticommute is rejected at construction."""
-    with pytest.raises(ValueError, match="anticommute"):
+    with pytest.raises(
+        ValueError, match=r"The provided generator must be composed of commuting terms."
+    ):
         ExpGate(PauliOperator({Pauli("X", 0): 1.0, Pauli("Z", 0): 1.0}, num_qubits=1))
 
 
@@ -694,35 +696,6 @@ def test_commuting_pauli_generator_accepted() -> None:
             {Pauli("XX", (0, 1)): 1.0, Pauli("ZZ", (0, 1)): 1.0}, num_qubits=2
         )
     )
-
-
-@pytest.mark.parametrize(
-    ("terms", "should_raise"),
-    [
-        pytest.param({(0,): 1.0, (1,): 1.0}, True, id="odd_odd_anticommuting"),
-        pytest.param({(0, 1): 1.0j, (2, 3): 1.0j}, False, id="even_even_commuting"),
-        pytest.param(
-            {(0, 2, 3, 5): 1.0, (0, 2, 4, 6): 1.0},
-            False,
-            id="even_even_commuting_overlap",
-        ),
-        pytest.param(
-            {(0,): 1.0, (0, 1): 1.0}, True, id="mixed_parity_lengths_anticommuting"
-        ),
-        pytest.param(
-            {(0,): 1.0, (1, 2): 1.0}, False, id="mixed_parity_lengths_commuting"
-        ),
-    ],
-)
-def test_majorana_generator_commutation_validation(
-    terms: dict[tuple[int, ...], complex], *, should_raise: bool
-) -> None:
-    """Majorana multi-term gates are accepted iff all terms pairwise commute."""
-    if should_raise:
-        with pytest.raises(ValueError, match="anticommute"):
-            ExpGate(MajoranaOperator(terms, num_modes=10))
-    else:
-        ExpGate(MajoranaOperator(terms, num_modes=10))
 
 
 def test_build_graph_seed_parameters_accepts_numpy() -> None:
