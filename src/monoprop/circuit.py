@@ -316,11 +316,7 @@ class Circuit:
                 raise TypeError(
                     f"Circuit gates must be ExpGate; got {type(gate).__name__}."
                 )
-            gate_size = (
-                gate.generator.num_qubits
-                if isinstance(gate.generator, PauliOperator)
-                else gate.generator.num_modes
-            )
+            gate_size = gate.system_size
             if gate_size != system_size:
                 raise ValueError(
                     f"Gate generator width {gate_size} does not match circuit system_size={system_size}."
