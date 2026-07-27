@@ -12,19 +12,20 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - PR titles must adhere to the same conventional commits format.
 - Prefix PR descriptions and comments on PRs with the line ":robot: _AI text below_ :robot:" to indicate you are an agent speaking on a user's behalf.
 - Python docstrings use Google style. C++ docstrings use Doxygen style.
+- In prose docs (`docs/content/docs/**.mdx`) and Python docstrings, link to API symbols with the mkdocstrings-style `[Symbol][]` reference (or `[Display][fully.qualified.path]`) — never hard-code `/api/...` URLs. Do not backtick the name in the `[Symbol][]` form. See `docs/content/docs/documenting.mdx`.
 
 
 ## Architecture Overview
 
 - **Core C++ Engine**: High-performance simulation logic in `src/` and `include/monoprop/`
-- **Python Interface**: User-facing API in `src/monoprop/` with C++ bindings in `src/bindings/`
+- **Python Interface**: User-facing API in `src/monoprop/` with C++ bindings in `src/monoprop/bindings/`
 - **Template-Based Design**: Heavily templated C++ code with compile-time mode limits (`monoprop_MAX_NUM_MODES`)
 - **Generated Code**: Python dispatch and C++ bindings auto-generated via `tools/generate-*.py`
 
 Key files:
 - `src/monoprop/monomial_propagator.py`: Main Python API
 - `include/monoprop/MonomialPropagator.h`: Core C++ simulator (1000+ lines)
-- `src/bindings/bindings.cpp`: auto-generated Python bindings, using the nanobind library.
+- `src/monoprop/bindings/bindings.cpp.in`: template for Python bindings, using the nanobind library. The corresponding source file is generated when configuring the project.
 
 
 ### Environment Management
@@ -80,9 +81,18 @@ mp = MonomialPropagator(operator, num_modes=4, ...)
 4. Use trailing return type syntax in function declarations.
 5. Add Doxygen docstrings.
 6. Implement in corresponding `.cpp` in `src/`
-7. Add Python bindings in `src/bindings/binder.h`
-8. Regenerate bindings with `tools/generate-binders.py`
-9. Test with both C++ and Python tests
+7. Add Python bindings in `src/monoprop/bindings/binder.h`
+8. Test with both C++ and Python tests
+
+## Documentation Maintenance Policy
+
+When changing behavior, APIs, build/test workflows, paths, or developer conventions:
+
+1. Update `AGENTS.md` in the same change.
+2. Update `README.md` in the same change.
+3. Update the docs under `docs/` for user-facing or contributor-facing guidance.
+4. Keep commands and paths consistent across all three (`AGENTS.md`, `README.md`, and `docs/`).
+5. If a section no longer reflects the codebase, either fix it immediately or remove it.
 
 ### Debugging Build Issues
 - Check `build/*/compile_commands.json` for compilation flags

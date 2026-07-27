@@ -14,7 +14,7 @@
 
 """Majorana propagator.
 
-Concrete :class:`~monoprop.monomial_propagator.MonomialPropagator` that accepts Majorana (or
+Concrete [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] that accepts Majorana (or
 fermionic) operators and gates. Gate information (the Majorana generators, their coefficients,
 and the parameter each drives) is owned by the propagation graph, so evaluation methods take
 only ``parameters``.
@@ -40,11 +40,11 @@ if TYPE_CHECKING:
 class MajoranaPropagator(MonomialPropagator):
     """Classical simulator for Majorana operators.
 
-    Accepts a :class:`~monoprop.majorana.MajoranaOperator` (or any object implementing
-    ``get_majorana_operator()``, such as a :class:`~monoprop.fermi.FermiOperator`)
-    observable and a :class:`~monoprop.circuit.Circuit` of Majorana/fermionic
-    :class:`~monoprop.circuit.ExpGate` gates. See
-    :class:`~monoprop.monomial_propagator.MonomialPropagator` for the shared building,
+    Accepts a [MajoranaOperator][monoprop.majorana.MajoranaOperator] (or any object implementing
+    ``get_majorana_operator()``, such as a [FermiOperator][monoprop.fermi.FermiOperator])
+    observable and a [Circuit][monoprop.circuit.Circuit] of Majorana/fermionic
+    [ExpGate][monoprop.circuit.ExpGate] gates. See
+    [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] for the shared building,
     evaluation, and introspection surface.
     """
 
@@ -69,7 +69,7 @@ class MajoranaPropagator(MonomialPropagator):
 
         Args:
             initial_operator: Initial operator, either a
-                :class:`~monoprop.majorana.MajoranaOperator` or an object
+                [MajoranaOperator][monoprop.majorana.MajoranaOperator] or an object
                 implementing ``get_majorana_operator()``.
             initial_state: Slater determinant (occupied mode indices) for the initial
                 state.
@@ -77,7 +77,7 @@ class MajoranaPropagator(MonomialPropagator):
                 Majorana monomials retained during evolution; its meaning depends on
                 ``cutoff_type``. Higher values increase accuracy at greater cost. A
                 *fully paired* monomial -- one whose support consists entirely of
-                complete pairs ``(m_{2j-1} m_{2j})`` on a mode -- is always kept
+                complete pairs $(m_{2j-1} m_{2j})$ on a mode -- is always kept
                 regardless of this cutoff, because only paired monomials can contribute
                 to an expectation value against a computational-basis state or Slater
                 determinant; discarding them would throw away signal.
@@ -124,7 +124,7 @@ class MajoranaPropagator(MonomialPropagator):
         """Validate the circuit's gate family and return its gates for expansion.
 
         A ``MajoranaPropagator`` rejects a qubit circuit; the shared conversion lives in
-        :func:`~monoprop.circuit.expand_monomials`.
+        [expand_monomials][monoprop.circuit.expand_monomials].
         """
         if circuit.family == "pauli":
             raise TypeError(

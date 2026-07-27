@@ -1,7 +1,7 @@
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import * as Py from 'fumadocs-python/components';
 import type { MDXComponents } from 'mdx/types';
-import type { ImgHTMLAttributes } from 'react';
+import type { ComponentProps, ImgHTMLAttributes, ReactElement } from 'react';
 
 // The tutorial pages embed matplotlib figures as raw `<img src="data:…">` tags
 // with no intrinsic dimensions. fumadocs' default `img` wraps Next.js' `Image`,
@@ -17,11 +17,31 @@ function Img({ src, ...props }: ImgHTMLAttributes<HTMLImageElement>) {
   return <DefaultImg src={src} {...props} />;
 }
 
+// Wrap the generated Py{Function,Attribute} cards in an anchor so cross-references
+// to a specific member (e.g. `monoprop.circuit.ExpGate.__init__`) can jump to its
+// definition. The `id` is the member `name`, matching the `#<name>` fragment that
+// `generate-api.mjs`'s xref map appends for methods/functions/attributes. The
+// `scroll-mt` keeps the target clear of the sticky header when jumped to.
+function anchored<P extends { name?: string }>(Component: (props: P) => ReactElement) {
+  return function Anchored(props: P) {
+    return (
+      <div id={props.name} className="scroll-mt-24">
+        <Component {...props} />
+      </div>
+    );
+  };
+}
+
+const PyFunction = anchored(Py.PyFunction as (props: ComponentProps<typeof Py.PyFunction>) => ReactElement);
+const PyAttribute = anchored(Py.PyAttribute as (props: ComponentProps<typeof Py.PyAttribute>) => ReactElement);
+
 export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
     // Py* components (plus Tab/Tabs) used by the generated Python API pages.
     ...Py,
+    PyFunction,
+    PyAttribute,
     img: Img,
     ...components,
   } satisfies MDXComponents;

@@ -40,8 +40,8 @@ jobs:
           - "3.11"
           - "3.14"
         runner:
-          - ubuntu-latest
-          - ubuntu-24.04-arm
+          - ubuntu-26.04
+          - ubuntu-26.04-arm
           - macos-15
 
     runs-on: ${{ matrix.runner}}
@@ -51,35 +51,37 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set gcc-14/g++-14 as default compilers
-        if: ${{ matrix.runner != 'macos-15' }}
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
       - name: Install dependencies
         run: |
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
             brew install boost tbb open-mpi
           else
             sudo apt-get update
-            sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev
-            ./tools/install-deps.sh /opt/Software --skip-boost-test --skip-msgpack
+            sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+            ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
           fi
 
       - name: Set build environment variables
+        if: ${{ matrix.runner == 'macos-15' }}
         run: |
-          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            echo "MACOSX_DEPLOYMENT_TARGET=15.0" >> "$GITHUB_ENV"
-          else
-            echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
-          fi
+          echo "MACOSX_DEPLOYMENT_TARGET=15.0" >> "$GITHUB_ENV"
+
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
+        if: ${{ matrix.runner == 'ubuntu-26.04' }}
+        run: |
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
+
+      - name: Set build environment variables
+        if: ${{ matrix.runner == 'ubuntu-26.04-arm' }}
+        run: |
+          echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -89,7 +91,6 @@ jobs:
 
       - name: Install package
         run: |
-          echo "Building with CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL on ${{ matrix.runner }}"
           uv sync --no-progress --group test --all-extras -v
 
       - name: Python environment information
@@ -111,12 +112,14 @@ jobs:
         run: |
           export COVERAGE_FILE="coverage-${{ steps.test-group-label.outputs.label }}"
 
-          uv run coverage run \
-          -m pytest \
+          uv run pytest \
           -r aR \
+          --cov=src/monoprop \
+          --cov-report=xml:coverage-"${{ steps.test-group-label.outputs.label }}".xml \
           --durations=50 \
           --durations-min=5.0 \
-          --junit-xml=pytest-"${{ steps.test-group-label.outputs.label }}".xml
+          --junit-xml=pytest-"${{ steps.test-group-label.outputs.label }}".xml \
+          -o junit_family=legacy
 
       - name: Run Python tests under MPI
         env:
@@ -139,48 +142,56 @@ jobs:
               uv run pytest tests --with-mpi -m mpi -v
           done
 
-      - name: Upload Test Results as artifacts
-        uses: actions/upload-artifact@v7.0.1
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
         with:
-          name: test_results_${{ steps.test-group-label.outputs.label }}
-          path: |
-            pytest-*.xml
-            coverage-*
-          retention-days: 1
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-${{ steps.test-group-label.outputs.label }}.xml
+          flags: python
+          disable_search: true
+          fail_ci_if_error: true
+
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: pytest-${{ steps.test-group-label.outputs.label }}.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
 
   cpp-checks:
     # in combination with the PR types selection, this top-level if statement
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
-    name: Check C++ on ubuntu-latest (coverage)
-    runs-on: ubuntu-latest
+    name: Check C++ on ubuntu-26.04 (coverage)
+    runs-on: ubuntu-26.04
 
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Set gcc-14/g++-14 as default compilers
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
-          ./tools/install-deps.sh /opt/Software
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
+
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
+        run: |
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Configure
         run: |
-          export CMAKE_PREFIX_PATH=/opt/Software
           cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Coverage
 
       - name: Build
@@ -214,21 +225,14 @@ jobs:
 
           cmake -S find-package-smoke -B find-package-smoke/build \
             -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_PREFIX_PATH="/opt/Software;$PWD/monoprop-install"
+            -DCMAKE_PREFIX_PATH="$PWD/monoprop-install"
 
           cmake --build find-package-smoke/build
-
-      - name: Upload C++ Test Results as artifacts
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: test_results_cpp_ubuntu_latest
-          path: ctest-*.xml
-          retention-days: 1
 
       - name: Collect coverage into a gcovr tracefile
         run: |
           pipx run gcovr \
-            --gcov-executable gcov-14 \
+            --gcov-executable gcov \
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
             --exclude-unreachable-branches \
@@ -239,12 +243,32 @@ jobs:
             build \
             --json cpp-coverage-native.json
 
-      - name: Upload C++ coverage tracefile as artifact
-        uses: actions/upload-artifact@v7.0.1
+      - name: Convert C++ tracefile to Cobertura XML for Codecov
+        run: |
+
+          pipx run gcovr \
+            --root . \
+            --merge-lines \
+            --add-tracefile cpp-coverage-native.json \
+            --cobertura cpp-coverage-native.xml
+
+      - name: Upload C++ coverage to Codecov
+        uses: codecov/codecov-action@v7
         with:
-          name: cpp_coverage_native
-          path: cpp-coverage-native.json
-          retention-days: 1
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: cpp-coverage-native.xml
+          flags: cpp
+          disable_search: true
+          fail_ci_if_error: true
+
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ctest-ubuntu_latest.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
 
   python-bindings-coverage:
     # in combination with the PR types selection, this top-level if statement
@@ -252,8 +276,7 @@ jobs:
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
     name: Collect C++ coverage through the Python bindings
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
 
@@ -270,26 +293,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set gcc-14/g++-14 as default compilers
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libtbb-dev
-          ./tools/install-deps.sh /opt/Software --skip-boost-test --skip-msgpack
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
 
-      - name: Set build environment variables
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
         run: |
-          echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -308,7 +327,7 @@ jobs:
       - name: Collect coverage into a gcovr tracefile
         run: |
           pipx run gcovr \
-            --gcov-executable gcov-14 \
+            --gcov-executable gcov \
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
             --exclude-unreachable-branches \
@@ -319,59 +338,21 @@ jobs:
             "$SKBUILD_BUILD_DIR" \
             --json cpp-coverage-python.json
 
-      - name: Upload C++ coverage tracefile as artifact
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: cpp_coverage_python
-          path: cpp-coverage-python.json
-          retention-days: 1
-
-  upload-coverage:
-    # in combination with the PR types selection, this top-level if statement
-    # skips running the workflow for Draft PRs
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
-
-    name: Upload coverage to Codecov
-    runs-on: ubuntu-latest
-    needs:
-      - python-checks
-      - cpp-checks
-      - python-bindings-coverage
-
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Download coverage artifacts
-        uses: actions/download-artifact@v8.0.1
-        with:
-          merge-multiple: true
-          path: .
-
-      - name: Convert Python coverage data to XML
+      - name: Convert C++ tracefile to Cobertura XML for Codecov
         run: |
-          for f in coverage-*; do
-            COVERAGE_FILE="$f" pipx run coverage xml -o "${f}.xml"
-          done
+          pipx run gcovr \
+            --root . \
+            --merge-lines \
+            --add-tracefile cpp-coverage-python.json \
+            --cobertura cpp-coverage-python.xml
 
-      - name: Convert C++ tracefiles to Cobertura XML
-        run: |
-          # --merge-lines: collapse gcov's per-instantiation duplicate line
-          # records into one aggregated line each (see the SonarQube step for the
-          # full rationale) so the Codecov report reflects true line coverage.
-          for f in cpp-coverage-*.json; do
-            pipx run gcovr \
-              --root . \
-              --merge-lines \
-              --add-tracefile "$f" \
-              --cobertura "${f%.json}.xml"
-          done
-
-      - name: Upload coverage to Codecov
+      - name: Upload C++ coverage to Codecov
         uses: codecov/codecov-action@v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          files: cpp-coverage-python.xml
+          flags: cpp
+          disable_search: true
           fail_ci_if_error: true
 
   sonarqube-analysis:
@@ -380,60 +361,28 @@ jobs:
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
     name: SonarQube analysis
-    runs-on: ubuntu-latest
-    needs:
-      - python-checks
-      - cpp-checks
-      - python-bindings-coverage
-
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Download Python coverage artifacts
-        uses: actions/download-artifact@v8.0.1
-        with:
-          merge-multiple: true
-          path: .
-
-      - name: Combine Python coverage data
-        run: |
-          pipx run coverage combine coverage-*
-          pipx run coverage xml -o coverage.xml
-
-      - name: Combine C++ coverage tracefiles into one SonarQube report
-        run: |
-          # --merge-lines collapses the multiple per-line coverage records that
-          # gcov emits for template instantiations (and across the native +
-          # python-bindings tracefiles) into a single lineToCover per source
-          # line, marked covered if ANY instantiation covers it. Without it the
-          # SonarQube report contains duplicate lineToCover entries whose
-          # covered= values conflict; SonarCloud keeps only the last, discarding
-          # most real coverage of the heavily-templated headers and sinking
-          # new_coverage far below the true value.
-          pipx run gcovr \
-            --root . \
-            --merge-lines \
-            --add-tracefile 'cpp-coverage-*.json' \
-            --sonarqube coverage_cpp.xml
-
-      - name: Set gcc-14/g++-14 as default compilers
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libtbb-dev libopenmpi-dev openmpi-bin
-          ./tools/install-deps.sh /opt/Software
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
+
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
+        run: |
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Install matching Build Wrapper
         run: |
@@ -443,7 +392,6 @@ jobs:
 
       - name: Configure for SonarQube CFamily analysis
         run: |
-          export CMAKE_PREFIX_PATH=/opt/Software
           cmake -S. -Bbuild-sonar -DCMAKE_CXX_COMPILER=g++
 
       - name: Build with Build Wrapper
@@ -473,13 +421,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-26.04-arm
             compiler: gcc-14
             cmake_cxx_compiler: g++
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-26.04-arm
             compiler: clang-18
             cmake_cxx_compiler: clang++
-          - runner: ubuntu-latest
+          - runner: ubuntu-26.04
             compiler: clang-18
             cmake_cxx_compiler: clang++
           - runner: macos-15
@@ -523,8 +471,25 @@ jobs:
         if: ${{ matrix.runner != 'macos-15' }}
         run: |
           sudo apt-get update
-          sudo apt-get install libtbb-dev libopenmpi-dev openmpi-bin
-          ./tools/install-deps.sh /opt/Software
+          sudo apt-get install libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
+
+      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
+        if: ${{ matrix.runner == 'ubuntu-26.04' }}
+        run: |
+          BEFORE_ENV=$(mktemp)
+          AFTER_ENV=$(mktemp)
+
+          env | sort > "$BEFORE_ENV"
+          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
+          env | sort > "$AFTER_ENV"
+
+          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
+
+      - name: Set build environment variables
+        if: ${{ matrix.runner == 'ubuntu-26.04-arm' }}
+        run: |
+          echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         if: ${{ matrix.runner == 'macos-15' }}
@@ -534,7 +499,6 @@ jobs:
       - name: Configure
         if: ${{ matrix.runner != 'macos-15' }}
         run: |
-          export CMAKE_PREFIX_PATH=/opt/Software
           cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=${{ matrix.cmake_cxx_compiler }}
 
       - name: Configure
@@ -552,52 +516,11 @@ jobs:
         run: |
           ctest --test-dir build --output-junit ../ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
 
-      - name: Upload Test Results as artifacts
-        uses: actions/upload-artifact@v7.0.1
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
         with:
-          name: test_results_cpp_${{ matrix.runner }}_${{ matrix.compiler }}
-          path: |
-            ctest-*.xml
-          retention-days: 1
-
-  publish-test-results:
-    name: "Publish Tests Results"
-    needs:
-      - python-checks
-      - cpp-checks
-      - python-bindings-coverage
-      - sonarqube-analysis
-      - cpp-checks-other
-      - upload-coverage
-    runs-on: ubuntu-latest
-    permissions:
-      checks: write
-
-      # only needed unless run with comment_mode: off
-      pull-requests: write
-
-      # only needed for private repository
-      contents: read
-
-      # only needed for private repository
-      issues: read
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7.0.1
-        with:
-          # grab the history of the PR, so setuptools-scm can compute the correct version number
-          fetch-depth: 0
-
-      - name: Download Artifacts
-        uses: actions/download-artifact@v8.0.1
-        with:
-          merge-multiple: true
-          path: .
-
-      - name: Publish Test Results
-        uses: EnricoMi/publish-unit-test-result-action@v2.24.0
-        with:
-          files: |
-            pytest-*.xml
-            ctest-*.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
