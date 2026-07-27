@@ -127,10 +127,11 @@ monomial contributes nothing.
 
 ### Coefficient truncation
 
-A complementary rule discards new monomials whose coefficients fall below a
-threshold, suppressing numerically negligible terms that would otherwise
-accumulate over a long sequence of gates. Conversely, new monomials whose coefficients
-exceed an upper threshold are kept even when their length exceeds the length cutoff.
+A complementary rule can be used in two ways. It may **discard** new monomials
+whose coefficients fall below a threshold, suppressing numerically negligible
+terms that would otherwise accumulate over a long sequence of gates. It may also
+**keep** new monomials whose coefficients exceed an upper threshold even when
+their length exceeds the length cutoff.
 
 ## Reading off the expectation value
 

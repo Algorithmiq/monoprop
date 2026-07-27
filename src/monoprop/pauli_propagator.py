@@ -35,8 +35,8 @@ if TYPE_CHECKING:
 class PauliPropagator(MonomialPropagator):
     """Classical simulator for qubit (Pauli) operators.
 
-    Accepts a :class:`~monoprop.pauli.PauliOperator` and a :class:`~monoprop.circuit.Circuit` of
-    qubit gates; see :class:`~monoprop.monomial_propagator.MonomialPropagator` for the shared
+    Accepts a [PauliOperator][monoprop.pauli.PauliOperator] and a [Circuit][monoprop.circuit.Circuit] of
+    qubit gates; see [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] for the shared
     surface. The cutoff is qubit Pauli weight -- the number of qubits a retained term touches --
     so ``cutoff_type`` is fixed and read-only here.
     """
@@ -58,7 +58,7 @@ class PauliPropagator(MonomialPropagator):
             initial_operator: Initial qubit operator; its ``num_qubits`` sizes the simulator.
             initial_state: Computational-basis reference (indices of qubits set to 1).
             cutoff: Maximum Pauli weight retained during evolution. The fully-paired exception
-                described on :meth:`~monoprop.majorana_propagator.MajoranaPropagator.__init__`
+                described on [MajoranaPropagator.__init__][monoprop.majorana_propagator.MajoranaPropagator.__init__]
                 still applies.
             schrodinger_cutoff: ``None`` (default) keeps the Heisenberg picture; an integer selects
                 the Schrodinger picture and bounds the Pauli weight of the evolved state, including
@@ -102,7 +102,7 @@ class PauliPropagator(MonomialPropagator):
         *,
         atol: float = 1e-12,
     ) -> PauliOperator:
-        """Return the evolved operator as a :class:`~monoprop.pauli.PauliOperator`.
+        """Return the evolved operator as a [PauliOperator][monoprop.pauli.PauliOperator].
 
         Returns:
             The evolved qubit operator (Heisenberg picture) or evolved state (Schrodinger picture).

@@ -26,12 +26,12 @@ if TYPE_CHECKING:
 
 
 class Majorana:
-    """A single Majorana monomial: the ordered product ``m_{i_1} ... m_{i_w}``.
+    """A single Majorana monomial.
 
-    Indices are sorted on construction (matching :class:`MajoranaOperator`'s canonicalization)
+    Indices are sorted on construction (matching [MajoranaOperator][]'s canonicalization)
     and must be distinct and non-negative; a repeated index is rejected because ``m_i^2 = 1``
     would silently change the monomial's weight. Equal indices compare equal and hash alike, so
-    a term can be used as a dictionary key (as :attr:`MajoranaOperator.terms` does).
+    a term can be used as a dictionary key (as [MajoranaOperator.terms][] does).
 
     Attributes:
         indices: The sorted, distinct Majorana indices of the monomial.
@@ -70,9 +70,9 @@ class Majorana:
 class MajoranaOperator:
     """A weighted sum of Majorana monomials.
 
-    Constructed from a ``{term: coefficient}`` mapping whose keys are :class:`Majorana` terms or
+    Constructed from a ``{term: coefficient}`` mapping whose keys are [Majorana][] terms or
     raw index tuples. Terms are normalized: indices are sorted within each monomial and duplicate
-    monomials are summed. The resulting :attr:`terms` mapping (index tuple to complex coefficient)
+    monomials are summed. The resulting [terms][] mapping (index tuple to complex coefficient)
     is what the propagator hands to the C++ engine.
     """
 
@@ -84,8 +84,8 @@ class MajoranaOperator:
         """Initialize the Majorana operator from a term mapping.
 
         ``num_modes`` is required, not inferred: the operator carries its own mode count, which is
-        why a propagator and :class:`~monoprop.circuit.ExpGate` both take an operator rather than a
-        bare :class:`Majorana` term.
+        why a propagator and [ExpGate][monoprop.circuit.ExpGate] both take an operator rather than a
+        bare [Majorana][] term.
         """
         # Raw index tuples go through Majorana for the same non-negative/distinct validation.
         majoranas = [
@@ -104,8 +104,8 @@ class MajoranaOperator:
     ) -> MajoranaOperator:
         """Build from parallel ``majoranas``/``coefficients`` lists (internal).
 
-        Colliding monomials are summed, which the Jordan-Wigner and fermionic conversions rely on
-        (a mapping cannot carry the same monomial twice).
+        Colliding monomials are summed, which the Jordan-Wigner and fermionic conversions
+        ([get_majorana_operator][]) rely on (a mapping cannot carry the same monomial twice).
         """
         obj = cls.__new__(cls)
         obj.num_modes = num_modes
@@ -153,11 +153,11 @@ class MajoranaOperator:
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1e-8) -> bool:
         """Check whether two MajoranaOperators have the same terms and close coefficients.
 
-        Coefficients are compared with :func:`numpy.isclose` at ``rtol``/``atol``; a differing
+        Coefficients are compared with ``numpy.isclose`` at ``rtol``/``atol``; a differing
         mode count is False, not an error.
 
         Raises:
-            TypeError: If ``other`` is not a :class:`MajoranaOperator`.
+            TypeError: If ``other`` is not a [MajoranaOperator][].
         """
         if not isinstance(other, MajoranaOperator):
             raise TypeError(

@@ -103,7 +103,7 @@ def _place_operator(
 def _negated(operator: PauliOperator) -> PauliOperator:
     """Flip the sign of every coefficient of ``operator``.
 
-    Qiskit evolves by ``exp(-i t H)`` while :class:`~monoprop.circuit.ExpGate` applies
+    Qiskit evolves by ``exp(-i t H)`` while [ExpGate][monoprop.circuit.ExpGate] applies
     ``exp(+i theta H)``, so a generator changes sign when it crosses the boundary. The sign goes on
     the *generator*, not on the angle, which keeps a converted circuit's ``parameters`` (and hence
     gradients with respect to them) numerically equal to the qiskit evolution times.
@@ -119,13 +119,13 @@ def from_qiskit_circuit(
     circuit: QuantumCircuit,
     initial_state: list[int],
 ) -> Circuit:
-    """Convert a Qiskit circuit to a :class:`~monoprop.circuit.Circuit`.
+    """Convert a Qiskit circuit to a [Circuit][monoprop.circuit.Circuit].
 
     The qiskit circuit must hold only PauliEvolutionGates (or the equivalent rotations in
-    :data:`PAULI_EVOLUTION_EQUIVALENT`) with commuting operators; barriers are ignored. Each gate
-    becomes one :class:`~monoprop.circuit.ExpGate` driven by its own angle (the identity parameter
+    ``PAULI_EVOLUTION_EQUIVALENT``) with commuting operators; barriers are ignored. Each gate
+    becomes one [ExpGate][monoprop.circuit.ExpGate] driven by its own angle (the identity parameter
     mapping), with the generator's coefficients negated so the angles carry through unchanged (see
-    :func:`_negated`).
+    ``_negated``).
     """
     if len(circuit.qregs) != 1:
         raise ValueError(
@@ -191,12 +191,12 @@ def _extend_generator_minimally(
 
 
 def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
-    """Convert a :class:`~monoprop.circuit.Circuit` to a Qiskit circuit.
+    """Convert a [Circuit][monoprop.circuit.Circuit] to a Qiskit circuit.
 
     The result holds only PauliEvolutionGates. Each gate's evolution time is taken from the
     circuit's ``parameters`` via its parameter mapping, and each generator's coefficients are
     negated to turn monoprop's ``exp(+i theta H)`` back into qiskit's ``exp(-i t H)`` (see
-    :func:`_negated`). Pass the observable's ``num_qubits`` as the width of the result.
+    ``_negated``). Pass the observable's ``num_qubits`` as the width of the result.
     """
     if len(circuit.parameters) != circuit.n_parameters:
         raise ValueError(

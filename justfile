@@ -139,5 +139,5 @@ build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
     cd {{ site }} && npm run build
 
 # Serve the documentation locally with hot reloading.
-serve-docs: docs-install gen-api gen-notebooks
+serve-docs:
     cd {{ site }} && npm run dev

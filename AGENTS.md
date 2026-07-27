@@ -13,6 +13,7 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - Prefix PR descriptions and comments on PRs with the line ":robot: _AI text below_ :robot:" to indicate you are an agent speaking on a user's behalf.
 - Python docstrings use Google style, and are rendered into the docs site by `just gen-api` — keep
   them accurate.
+- In prose docs (`docs/content/docs/**.mdx`) and Python docstrings, link to API symbols with the mkdocstrings-style `[Symbol][]` reference (or `[Display][fully.qualified.path]`) — never hard-code `/api/...` URLs. Do not backtick the name in the `[Symbol][]` form. See `docs/content/docs/documenting.mdx`.
 - C++ comments: bare `///` one-liners on declarations in `include/monoprop/` (the installed public
   API); plain `//` everywhere else. No Doxygen `@` tags (`@brief`, `@param`, `@return`, …) and no
   `/* */` block comments — there is no Doxygen build, so those tags produce nothing.
@@ -24,7 +25,7 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 ## Architecture Overview
 
 - **Core C++ Engine**: High-performance simulation logic in `src/` and `include/monoprop/`
-- **Python Interface**: User-facing API in `src/monoprop/` with C++ bindings in `src/bindings/`
+- **Python Interface**: User-facing API in `src/monoprop/` with C++ bindings in `src/monoprop/bindings/`
 - **Template-Based Design**: Heavily templated C++ code with compile-time mode limits (`monoprop_MAX_NUM_MODES`)
 - **Generated Code**: Python dispatch and C++ bindings auto-generated via `tools/generate-*.py`
 
@@ -106,6 +107,16 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 7. Add Python bindings in `src/monoprop/bindings/binder.h`
 8. Regenerate bindings with `tools/generate-binders.py`
 9. Test with both C++ and Python tests
+
+## Documentation Maintenance Policy
+
+When changing behavior, APIs, build/test workflows, paths, or developer conventions:
+
+1. Update `AGENTS.md` in the same change.
+2. Update `README.md` in the same change.
+3. Update the docs under `docs/` for user-facing or contributor-facing guidance.
+4. Keep commands and paths consistent across all three (`AGENTS.md`, `README.md`, and `docs/`).
+5. If a section no longer reflects the codebase, either fix it immediately or remove it.
 
 ### Debugging Build Issues
 - Check `build/*/compile_commands.json` for compilation flags

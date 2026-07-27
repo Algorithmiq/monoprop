@@ -38,14 +38,14 @@ class Pauli:
     """A single Pauli term: Pauli letters placed on specific qubits.
 
     The placement is *local* -- the string names only the qubits the term acts on, so a term fits an
-    operator of any width and the total ``num_qubits`` lives on :class:`PauliOperator`, not here.
+    operator of any width and the total ``num_qubits`` lives on [PauliOperator][], not here.
 
     Terms are canonicalized on construction: identity (``I``) letters are dropped and the
     remaining ``(qubit, letter)`` pairs are sorted by qubit, so ``Pauli("XY", (1, 0))`` and
     ``Pauli("YX", (0, 1))`` compare equal and hash alike, making the term usable as a dict key.
 
     Attributes:
-        string: The non-identity Pauli letters, ordered to match :attr:`qubits`.
+        string: The non-identity Pauli letters, ordered to match [qubits][].
         qubits: The (sorted, distinct) qubit indices the letters act on.
     """
 
@@ -110,10 +110,10 @@ class Pauli:
 class PauliOperator:
     """A weighted sum of Pauli terms.
 
-    Constructed from a ``{term: coefficient}`` mapping whose keys are :class:`Pauli` terms or raw
+    Constructed from a ``{term: coefficient}`` mapping whose keys are [Pauli][] terms or raw
     full-width Pauli strings like ``"ZZ"``, read as a term on qubits ``0..len-1``. The qubit count
-    lives here, on the operator, so a propagator and an :class:`~monoprop.circuit.ExpGate` generator
-    are built from an operator -- a bare :class:`Pauli` term is not accepted in either place.
+    lives here, on the operator, so a propagator and an [ExpGate][monoprop.circuit.ExpGate] generator
+    are built from an operator -- a bare [Pauli][] term is not accepted in either place.
     """
 
     def __init__(
@@ -125,7 +125,7 @@ class PauliOperator:
 
         Every term must act within ``0..num_qubits-1``. ``num_qubits=None`` defers the qubit count
         (useful while building a generator whose width is not yet known), but then
-        :meth:`get_majorana_operator` and :meth:`get_local_operator` raise.
+        [get_majorana_operator][] and [get_local_operator][] raise.
 
         Raises:
             ValueError: If a term acts on a qubit index ``>= num_qubits``.
@@ -183,11 +183,11 @@ class PauliOperator:
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1e-8) -> bool:
         """Check whether two PauliOperators have the same terms and close coefficients.
 
-        Coefficients are compared with :func:`numpy.isclose` at ``rtol``/``atol``; a differing
+        Coefficients are compared with ``numpy.isclose`` at ``rtol``/``atol``; a differing
         qubit count is False, not an error.
 
         Raises:
-            TypeError: If ``other`` is not a :class:`PauliOperator`.
+            TypeError: If ``other`` is not a [PauliOperator][].
         """
         if not isinstance(other, PauliOperator):
             raise TypeError(
@@ -232,10 +232,10 @@ class PauliOperator:
         """Pack the operator into the engine's native Pauli basis, as a MajoranaOperator.
 
         Each term maps to its per-qubit gamma-slots -- ``X_q -> {2q}``, ``Y_q -> {2q+1}``,
-        ``Z_q -> {2q, 2q+1}`` (see :func:`~monoprop.conversion_utils._pauli_to_local_slots`) --
+        ``Z_q -> {2q, 2q+1}`` (see ``_pauli_to_local_slots``) --
         carrying its (real, Hermitian) coefficient. The result is a
-        :class:`~monoprop.majorana.MajoranaOperator` only as a container for those slot tuples;
-        it is not the Jordan-Wigner image (that is :meth:`get_majorana_operator`).
+        [MajoranaOperator][monoprop.majorana.MajoranaOperator] only as a container for those slot tuples;
+        it is not the Jordan-Wigner image (that is [get_majorana_operator][]).
 
         Raises:
             ValueError: If ``num_qubits`` is unset.

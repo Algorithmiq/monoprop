@@ -91,7 +91,7 @@ def _iter_integrals_to_fermion(
 def integrals_to_fermion(
     hamiltonian: tuple[float, ndarray, ndarray],
 ) -> FermiOperator:
-    """Convert an ``(h0, h1, h2)`` integral Hamiltonian to a :class:`~monoprop.fermi.FermiOperator`."""
+    """Convert an ``(h0, h1, h2)`` integral Hamiltonian to a [FermiOperator][monoprop.fermi.FermiOperator]."""
     terms = defaultdict(complex)
     for ind, coeff in _iter_integrals_to_fermion(*hamiltonian):
         if np.isclose(coeff, 0, atol=1e-12):

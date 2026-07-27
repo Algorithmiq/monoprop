@@ -34,10 +34,10 @@ if TYPE_CHECKING:
 class MajoranaPropagator(MonomialPropagator):
     """Classical simulator for Majorana operators.
 
-    Accepts a :class:`~monoprop.majorana.MajoranaOperator` (or any object implementing
-    ``get_majorana_operator()``, such as a :class:`~monoprop.fermi.FermiOperator`) and a
-    :class:`~monoprop.circuit.Circuit` of Majorana/fermionic gates. See
-    :class:`~monoprop.monomial_propagator.MonomialPropagator` for the shared surface.
+    Accepts a [MajoranaOperator][monoprop.majorana.MajoranaOperator] (or any object implementing
+    ``get_majorana_operator()``, such as a [FermiOperator][monoprop.fermi.FermiOperator]) and a
+    [Circuit][monoprop.circuit.Circuit] of Majorana/fermionic gates. See
+    [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] for the shared surface.
     """
 
     def __init__(
@@ -55,7 +55,7 @@ class MajoranaPropagator(MonomialPropagator):
         """Initialize the propagator.
 
         Args:
-            initial_operator: A :class:`~monoprop.majorana.MajoranaOperator` or any object
+            initial_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] or any object
                 implementing ``get_majorana_operator()``.
             initial_state: Slater determinant, as occupied mode indices.
             cutoff: Bound on the complexity of the Majorana monomials retained during evolution,
