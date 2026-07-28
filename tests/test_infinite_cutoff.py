@@ -54,8 +54,6 @@ def test_infinite_cutoff(
             )
 
         case "with_coeffs":
-            # Coefficient-informed build: the seed is regenerated internally from the
-            # circuit's parameters (replacing the old operator_coeffs round-trip).
             mp.build_graph(circuit)
             test_expval = mp.expval_functional(pare_threshold=pare_threshold)(
                 parameters
@@ -72,7 +70,7 @@ def test_infinite_cutoff(
 @pytest.mark.parametrize("pare_threshold", [None, 1e-10])
 @pytest.mark.parametrize("schrodinger", [False, True])
 def test_gradient(problem, schrodinger, pare_threshold, comm):
-    """Test expectation_value_and_gradient_functional against finite differences."""
+    """Check the analytic gradient against central finite differences."""
     prng = np.random.default_rng(0)
 
     cutoff = 4
@@ -112,7 +110,6 @@ def test_gradient(problem, schrodinger, pare_threshold, comm):
 @parametrize_with_cases("problem", cases=CasesFermionicProblem)
 @pytest.mark.parametrize("schrodinger", [True, False])
 def test_immediate_contraction(problem, schrodinger, comm):
-    """Test propagate with immediate contraction returns correct expectation value."""
     n_modes = problem.n_modes
 
     mp = MajoranaPropagator(

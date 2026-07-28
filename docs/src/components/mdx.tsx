@@ -19,9 +19,9 @@ function Img({ src, ...props }: ImgHTMLAttributes<HTMLImageElement>) {
 
 // Wrap the generated Py{Function,Attribute} cards in an anchor so cross-references
 // to a specific member (e.g. `monoprop.circuit.ExpGate.__init__`) can jump to its
-// definition. The `id` is the member `name`, matching the `#<name>` fragment that
-// `generate-api.mjs`'s xref map appends for methods/functions/attributes. The
-// `scroll-mt` keeps the target clear of the sticky header when jumped to.
+// definition: the `id` must stay equal to the member `name`, which is the `#<name>`
+// fragment `buildXrefMap` (docs/scripts/xref.mjs) appends. `scroll-mt` keeps the
+// target clear of the sticky header.
 function anchored<P extends { name?: string }>(Component: (props: P) => ReactElement) {
   return function Anchored(props: P) {
     return (

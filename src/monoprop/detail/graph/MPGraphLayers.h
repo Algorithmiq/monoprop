@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -22,350 +24,113 @@
 
 namespace monoprop {
 
-// Runtime code talks to both full layers and masked execution plans through the
-// same logical traversal surface. The storage stays compressed; traversal only
-// remaps logical positions back to stored positions when a masked plan is used.
+// A layer replays one of two ways, by whether it carries a stored cosine list (pruned_cos_):
+//   recompute (nullopt)   — cosine rebuilt from the generator's inverted-index columns at replay.
+//   pruned    (has value) — cosine pre-filtered to a backward-reachable subset, stored explicitly; an
+//                           empty stored list is still pruned (replay as nothing, do not recompute).
+// Cores are shared and immutable in value only: their eval-time caches (recv_cache, the lazy derivative
+// layout) are filled through const handles, so evaluating two aliasing propagators concurrently is a race.
+
+// Cross-rank data is always read verbatim; only the cosine set is ever filtered.
 struct LayerTraversal final {
-    LayerTraversal() = default;
+    explicit LayerTraversal(const LayerCore &core, const CosMask *pruned_cos = nullptr)
+        : core_(&core),
+          pruned_cos_(pruned_cos) {}
 
-    explicit LayerTraversal(const LayerStorage &storage)
-        : storage_(&storage),
-          cos_data_(&storage.cos_data),
-          evolution_exchange_layout_(&storage.evolution_exchange_layout) {}
+    // Reports 0 for recompute layers (no stored cosine); check has_stored_cos() first, or a normally-built
+    // graph — every layer of which recomputes — looks like it has no cosine indices at all.
+    auto num_cos_inds() const -> size_t { return pruned_cos_ != nullptr ? pruned_cos_->total_count : 0; }
 
-    LayerTraversal(const LayerStorage &storage,
-                   const detail::ExecutionPlanStorage *execution_storage,
-                   bool use_original_cos_data,
-                   size_t cos_data_index,
-                   bool use_original_local_cycles,
-                   size_t local_cycle_position_block_index,
-                   bool use_original_cross_rank,
-                   size_t cross_rank_position_block_index,
-                   const std::vector<detail::CrossRankMaskRange> &cross_rank_ranges,
-                   const LayerExchangeLayout &evolution_exchange_layout)
-        : storage_(&storage),
-          cos_data_(use_original_cos_data ? &storage.cos_data : &execution_storage->cos_data_blocks[cos_data_index]),
-          local_cycle_positions_(
-              use_original_local_cycles
-                  ? nullptr
-                  : &execution_storage->local_cycle_position_blocks[local_cycle_position_block_index]),
-          cross_rank_out_positions_(
-              use_original_cross_rank
-                  ? nullptr
-                  : &execution_storage->cross_rank_out_position_blocks[cross_rank_position_block_index]),
-          cross_rank_in_positions_(
-              use_original_cross_rank
-                  ? nullptr
-                  : &execution_storage->cross_rank_in_position_blocks[cross_rank_position_block_index]),
-          cross_rank_ranges_(use_original_cross_rank ? nullptr : &cross_rank_ranges),
-          evolution_exchange_layout_(use_original_cross_rank ? &storage.evolution_exchange_layout
-                                                             : &evolution_exchange_layout) {}
+    auto has_stored_cos() const -> bool { return pruned_cos_ != nullptr; }
 
-    auto cos_data() const -> const CompressedCosineData & { return *cos_data_; }
-    auto num_cos_inds() const -> size_t { return cos_data_->total_count; }
-    auto cos_span_count() const -> size_t { return cos_data_->span_count(); }
+    // The stored set itself, for readers that need its indices and not just the count; nullptr on a
+    // recompute layer.
+    auto stored_cos() const -> const CosMask * { return pruned_cos_; }
 
-    template <typename Func>
-    auto for_each_cos_span(Func &&func) const -> void {
-        detail::for_each_cosine_span(*cos_data_, std::forward<Func>(func));
+    auto scaled_count() const -> uint64_t { return core_->scaled_count; }
+    auto generator_words() const -> const std::vector<uint64_t> & { return core_->generator_words; }
+
+    auto cross_rank_rank_count() const -> size_t { return core_->cross_rank.rank_count(); }
+
+    auto cross_rank_sin_send_size(size_t rank) const -> size_t { return core_->cross_rank.sin_send_size(rank); }
+    auto cross_rank_sin_recv_size(size_t rank) const -> size_t { return core_->cross_rank.sin_recv_size(rank); }
+    auto cross_rank_in_count(size_t rank) const -> size_t { return core_->cross_rank.in_count(rank); }
+
+    // Random access into the D list, for the paired self-slot derivative fetches d[k], d[k+P].
+    auto cross_rank_sin_recv_index_at(size_t rank, size_t idx) const -> size_t {
+        return detail::cross_rank_sin_recv_index(core_->cross_rank, rank, idx);
     }
-
-    auto local_cycle_count() const -> size_t {
-        return local_cycle_positions_ == nullptr ? storage_->local_cycles.size() : local_cycle_positions_->total_count;
-    }
-
-    auto local_cycle_src(size_t idx) const -> size_t {
-        return detail::local_cycle_src(storage_->local_cycles, local_cycle_position(idx));
-    }
-
-    auto local_cycle_tgt(size_t idx) const -> size_t {
-        return detail::local_cycle_tgt(storage_->local_cycles, local_cycle_position(idx));
-    }
-
-    auto local_cycle_phase(size_t idx) const -> int {
-        return detail::local_cycle_phase(storage_->local_cycles, local_cycle_position(idx));
+    auto cross_rank_sin_recv_phase_at(size_t rank, size_t idx) const -> int {
+        return detail::cross_rank_sin_recv_phase(core_->cross_rank, rank, idx);
     }
 
     template <typename Func>
-    auto for_each_local_cycle_range(size_t begin, size_t end, Func &&func) const -> void {
-        if (begin == end) {
-            return;
+    auto for_each_cross_rank_sin_send_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
+        for (size_t idx = begin; idx < end; ++idx) {
+            func(idx, detail::cross_rank_sin_send_index(core_->cross_rank, rank, idx));
         }
-        if (local_cycle_positions_ == nullptr) {
-            for (size_t idx = begin; idx < end; ++idx) {
-                func(idx,
-                     detail::local_cycle_src(storage_->local_cycles, idx),
-                     detail::local_cycle_tgt(storage_->local_cycles, idx),
-                     detail::local_cycle_phase(storage_->local_cycles, idx));
-            }
-            return;
-        }
-
-        detail::for_each_compressed_position_range(
-            *local_cycle_positions_,
-            begin,
-            end,
-            [this, &func](size_t logical_start, size_t position_start, size_t count) {
-                for (size_t offset = 0; offset < count; ++offset) {
-                    const size_t logical_idx = logical_start + offset;
-                    const size_t position = position_start + offset;
-                    func(logical_idx,
-                         detail::local_cycle_src(storage_->local_cycles, position),
-                         detail::local_cycle_tgt(storage_->local_cycles, position),
-                         detail::local_cycle_phase(storage_->local_cycles, position));
-                }
-            });
-    }
-
-    auto cross_rank_rank_count() const -> size_t { return storage_->cross_rank.rank_count(); }
-
-    auto cross_rank_out_size(size_t rank) const -> size_t {
-        return cross_rank_ranges_ == nullptr ? storage_->cross_rank.out_size(rank)
-                                             : (*cross_rank_ranges_)[rank].out_size();
-    }
-
-    auto cross_rank_in_size(size_t rank) const -> size_t {
-        return cross_rank_ranges_ == nullptr ? storage_->cross_rank.in_size(rank)
-                                             : (*cross_rank_ranges_)[rank].in_size();
-    }
-
-    auto cross_rank_out_index(size_t rank, size_t idx) const -> size_t {
-        return detail::cross_rank_out_index(storage_->cross_rank, rank, cross_rank_out_position(rank, idx));
-    }
-
-    auto cross_rank_out_phase(size_t rank, size_t idx) const -> int {
-        return detail::cross_rank_out_phase(storage_->cross_rank, rank, cross_rank_out_position(rank, idx));
-    }
-
-    auto cross_rank_in_index(size_t rank, size_t idx) const -> size_t {
-        return detail::cross_rank_in_index(storage_->cross_rank, rank, cross_rank_in_position(rank, idx));
-    }
-
-    auto cross_rank_in_phase(size_t rank, size_t idx) const -> int {
-        return detail::cross_rank_in_phase(storage_->cross_rank, rank, cross_rank_in_position(rank, idx));
     }
 
     template <typename Func>
-    auto for_each_cross_rank_out_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
-        if (begin == end) {
-            return;
-        }
-        if (cross_rank_ranges_ == nullptr) {
-            for (size_t idx = begin; idx < end; ++idx) {
-                func(idx,
-                     detail::cross_rank_out_index(storage_->cross_rank, rank, idx),
-                     detail::cross_rank_out_phase(storage_->cross_rank, rank, idx));
-            }
-            return;
-        }
-
-        const auto &range = (*cross_rank_ranges_)[rank];
-        detail::for_each_compressed_position_range(
-            *cross_rank_out_positions_,
-            range.out_offset + begin,
-            range.out_offset + end,
-            [this, &func, &range, rank](size_t logical_start, size_t position_start, size_t count) {
-                for (size_t offset = 0; offset < count; ++offset) {
-                    const size_t logical_idx = logical_start - range.out_offset + offset;
-                    const size_t position = position_start + offset;
-                    func(logical_idx,
-                         detail::cross_rank_out_index(storage_->cross_rank, rank, position),
-                         detail::cross_rank_out_phase(storage_->cross_rank, rank, position));
-                }
-            });
-    }
-
-    template <typename Func>
-    auto for_each_cross_rank_in_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
-        if (begin == end) {
-            return;
-        }
-        if (cross_rank_ranges_ == nullptr) {
-            for (size_t idx = begin; idx < end; ++idx) {
-                func(idx,
-                     detail::cross_rank_in_index(storage_->cross_rank, rank, idx),
-                     detail::cross_rank_in_phase(storage_->cross_rank, rank, idx));
-            }
-            return;
-        }
-
-        const auto &range = (*cross_rank_ranges_)[rank];
-        detail::for_each_compressed_position_range(
-            *cross_rank_in_positions_,
-            range.in_offset + begin,
-            range.in_offset + end,
-            [this, &func, &range, rank](size_t logical_start, size_t position_start, size_t count) {
-                for (size_t offset = 0; offset < count; ++offset) {
-                    const size_t logical_idx = logical_start - range.in_offset + offset;
-                    const size_t position = position_start + offset;
-                    func(logical_idx,
-                         detail::cross_rank_in_index(storage_->cross_rank, rank, position),
-                         detail::cross_rank_in_phase(storage_->cross_rank, rank, position));
-                }
-            });
-    }
-
-    auto evolution_exchange_layout() const -> const LayerExchangeLayout & { return *evolution_exchange_layout_; }
-
-    auto param_index() const -> size_t { return storage_->param_index; }
-    auto gen_coeff() const -> double { return storage_->gen_coeff; }
-    auto gate_index() const -> size_t { return storage_->gate_index; }
-
-private:
-    auto local_cycle_position(size_t idx) const -> size_t {
-        return local_cycle_positions_ == nullptr ? idx : detail::compressed_position_at(*local_cycle_positions_, idx);
-    }
-
-    auto cross_rank_out_position(size_t rank, size_t idx) const -> size_t {
-        if (cross_rank_ranges_ == nullptr) {
-            return idx;
-        }
-        const auto &range = (*cross_rank_ranges_)[rank];
-        return detail::compressed_position_at(*cross_rank_out_positions_, range.out_offset + idx);
-    }
-
-    auto cross_rank_in_position(size_t rank, size_t idx) const -> size_t {
-        if (cross_rank_ranges_ == nullptr) {
-            return idx;
-        }
-        const auto &range = (*cross_rank_ranges_)[rank];
-        return detail::compressed_position_at(*cross_rank_in_positions_, range.in_offset + idx);
-    }
-
-    const LayerStorage *storage_ = nullptr;
-    const CompressedCosineData *cos_data_ = nullptr;
-    const CompressedPositionData *local_cycle_positions_ = nullptr;
-    const CompressedPositionData *cross_rank_out_positions_ = nullptr;
-    const CompressedPositionData *cross_rank_in_positions_ = nullptr;
-    const std::vector<detail::CrossRankMaskRange> *cross_rank_ranges_ = nullptr;
-    const LayerExchangeLayout *evolution_exchange_layout_ = nullptr;
-};
-
-struct Layer final {
-    Layer() : storage_(std::make_shared<LayerStorage>()) {}
-
-    Layer(VecZ cos_inds, std::vector<LocalCycle> local_cycs, std::vector<CrossRankCycles> cross_rank)
-        : storage_(detail::build_layer_storage(std::move(cos_inds), std::move(local_cycs), std::move(cross_rank))) {}
-
-    Layer(CompressedCosineData cos_data, std::vector<LocalCycle> local_cycs, std::vector<CrossRankCycles> cross_rank)
-        : storage_(detail::build_layer_storage(std::move(cos_data), std::move(local_cycs), std::move(cross_rank))) {}
-
-    explicit Layer(std::shared_ptr<LayerStorage> storage) : storage_(std::move(storage)) {}
-
-    auto traversal() const -> LayerTraversal { return LayerTraversal(*storage_); }
-
-    auto cos_data() const -> const CompressedCosineData & { return storage_->cos_data; }
-    auto cos_spans() const -> std::vector<CosineSpan> {
-        return detail::materialize_stored_cosine_spans(storage_->cos_data);
-    }
-    auto has_wide_cos_spans() const -> bool { return storage_->cos_data.has_wide_starts(); }
-    auto num_cos_inds() const -> size_t { return storage_->cos_data.total_count; }
-    auto cos_span_count() const -> size_t { return storage_->cos_data.span_count(); }
-    auto materialize_cos_inds() const -> VecZ { return detail::expand_compressed_cosine_data(storage_->cos_data); }
-
-    template <typename Func>
-    auto for_each_cos_span(Func &&func) const -> void {
-        detail::for_each_cosine_span(storage_->cos_data, std::forward<Func>(func));
-    }
-
-    template <typename Func>
-    auto for_each_cos_index(Func &&func) const -> void {
-        for_each_cos_span([&func](const CosineSpan &span) {
-            size_t idx = span.start;
-            const size_t end = idx + static_cast<size_t>(span.count);
-            for (; idx < end; ++idx) {
-                func(idx);
-            }
-        });
-    }
-
-    auto local_cycle_count() const -> size_t { return storage_->local_cycles.size(); }
-    auto local_cycle_src(size_t idx) const -> size_t { return detail::local_cycle_src(storage_->local_cycles, idx); }
-    auto local_cycle_tgt(size_t idx) const -> size_t { return detail::local_cycle_tgt(storage_->local_cycles, idx); }
-    auto local_cycle_phase(size_t idx) const -> int { return detail::local_cycle_phase(storage_->local_cycles, idx); }
-
-    template <typename Func>
-    auto for_each_local_cycle_range(size_t begin, size_t end, Func &&func) const -> void {
+    auto for_each_cross_rank_sin_recv_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
         for (size_t idx = begin; idx < end; ++idx) {
             func(idx,
-                 detail::local_cycle_src(storage_->local_cycles, idx),
-                 detail::local_cycle_tgt(storage_->local_cycles, idx),
-                 detail::local_cycle_phase(storage_->local_cycles, idx));
+                 detail::cross_rank_sin_recv_index(core_->cross_rank, rank, idx),
+                 detail::cross_rank_sin_recv_phase(core_->cross_rank, rank, idx));
         }
     }
 
-    auto cross_rank_rank_count() const -> size_t { return storage_->cross_rank.rank_count(); }
-    auto cross_rank_out_size(size_t rank) const -> size_t { return storage_->cross_rank.out_size(rank); }
-    auto cross_rank_in_size(size_t rank) const -> size_t { return storage_->cross_rank.in_size(rank); }
-    auto cross_rank_out_index(size_t rank, size_t idx) const -> size_t {
-        return detail::cross_rank_out_index(storage_->cross_rank, rank, idx);
-    }
-    auto cross_rank_out_phase(size_t rank, size_t idx) const -> int {
-        return detail::cross_rank_out_phase(storage_->cross_rank, rank, idx);
-    }
-    auto cross_rank_in_index(size_t rank, size_t idx) const -> size_t {
-        return detail::cross_rank_in_index(storage_->cross_rank, rank, idx);
-    }
-    auto cross_rank_in_phase(size_t rank, size_t idx) const -> int {
-        return detail::cross_rank_in_phase(storage_->cross_rank, rank, idx);
+    auto evolution_exchange_layout() const -> const LayerExchangeLayout & { return core_->evolution_exchange_layout; }
+    auto derivative_exchange_layout() const -> const LayerExchangeLayout & {
+        return core_->derivative_exchange_layout();
     }
 
-    template <typename Func>
-    auto for_each_cross_rank_out_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
-        for (size_t idx = begin; idx < end; ++idx) {
-            func(idx,
-                 detail::cross_rank_out_index(storage_->cross_rank, rank, idx),
-                 detail::cross_rank_out_phase(storage_->cross_rank, rank, idx));
-        }
-    }
+    auto param_index() const -> size_t { return core_->param_index; }
+    auto gen_coeff() const -> double { return core_->gen_coeff; }
+    auto gate_index() const -> size_t { return core_->gate_index; }
 
-    template <typename Func>
-    auto for_each_cross_rank_in_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
-        for (size_t idx = begin; idx < end; ++idx) {
-            func(idx,
-                 detail::cross_rank_in_index(storage_->cross_rank, rank, idx),
-                 detail::cross_rank_in_phase(storage_->cross_rank, rank, idx));
-        }
-    }
-
-    auto evolution_exchange_layout() const -> const LayerExchangeLayout & {
-        return storage_->evolution_exchange_layout;
-    }
-    auto shared_storage() const -> std::shared_ptr<LayerStorage> { return storage_; }
-
-    // Gate information owned by this layer (see LayerStorage). Set when the layer is
-    // appended during graph building; read by evaluation.
-    auto param_index() const -> size_t { return storage_->param_index; }
-    auto gen_coeff() const -> double { return storage_->gen_coeff; }
-    auto gate_index() const -> size_t { return storage_->gate_index; }
-    auto set_gate_info(size_t param_index, double gen_coeff, size_t gate_index) -> void {
-        storage_->param_index = param_index;
-        storage_->gen_coeff = gen_coeff;
-        storage_->gate_index = gate_index;
-    }
-
-    auto empty() const -> bool {
-        if (num_cos_inds() != 0 || local_cycle_count() != 0) {
-            return false;
-        }
-        for (size_t rank = 0; rank < cross_rank_rank_count(); ++rank) {
-            if (cross_rank_out_size(rank) != 0 || cross_rank_in_size(rank) != 0) {
-                return false;
-            }
-        }
-        return true;
-    }
-
+    // Rotations (Givens cycles) = sum of per-rank in-counts (one in-entry per rotation). sin_recv_size
+    // would double-count self-rank rotations (in+out).
     auto total_cycles() const -> size_t {
-        size_t count = local_cycle_count();
+        size_t count = 0;
         for (size_t rank = 0; rank < cross_rank_rank_count(); ++rank) {
-            count += cross_rank_in_size(rank);
+            count += cross_rank_in_count(rank);
+        }
+        return count;
+    }
+
+    // Endpoints are counted in+out across ranks. Every endpoint is also in cos_data, so cosine-only
+    // indices = num_cos_inds() - total_rotation_endpoints().
+    auto total_rotation_endpoints() const -> size_t {
+        size_t count = 0;
+        for (size_t rank = 0; rank < cross_rank_rank_count(); ++rank) {
+            count += cross_rank_sin_recv_size(rank);
         }
         return count;
     }
 
 private:
-    std::shared_ptr<LayerStorage> storage_;
+    const LayerCore *core_;
+    const CosMask *pruned_cos_;
+};
+
+struct Layer final {
+    Layer() : core_(std::make_shared<LayerCore>()) {}
+
+    explicit Layer(std::shared_ptr<const LayerCore> core) : core_(std::move(core)) {}
+    Layer(std::shared_ptr<const LayerCore> core, CosMask pruned_cos)
+        : core_(std::move(core)),
+          pruned_cos_(std::move(pruned_cos)) {}
+
+    auto core() const -> const LayerCore & { return *core_; }
+    auto shared_core() const -> std::shared_ptr<const LayerCore> { return core_; }
+    auto pruned_cos() const -> const CosMask * { return pruned_cos_ ? &*pruned_cos_ : nullptr; }
+
+    auto traversal() const -> LayerTraversal { return LayerTraversal(core(), pruned_cos()); }
+
+private:
+    std::shared_ptr<const LayerCore> core_;
+    std::optional<CosMask> pruned_cos_;
 };
 
 } // namespace monoprop

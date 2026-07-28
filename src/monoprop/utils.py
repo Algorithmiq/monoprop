@@ -18,16 +18,11 @@ from __future__ import annotations
 
 
 def jordan_wigner_basis_change(n_qubits: int) -> list[list[int]]:
-    """Generate a basis change for Jordan-Wigner representation.
+    """Return the Jordan-Wigner basis change: the ``2 * n_qubits`` Majoranas as gamma-slot lists.
 
-    This function returns a list of lists, where each inner list represents a basis vector in the Jordan-Wigner
-    representation in terms of Majoranas.
-
-    Args:
-        n_qubits: The number of qubits.
-
-    Returns:
-        A list of lists representing the basis change.
+    Entry ``k`` is the slot support of the Jordan-Wigner image of Majorana ``m_k``, in the same
+    two-slots-per-qubit encoding the engine's native Pauli basis uses (``X_q`` is ``2q``, ``Y_q``
+    is ``2q+1``, ``Z_q`` both), so ``m_{2i}`` spans ``2i+1`` slots via its ``Z`` prefix.
     """
     basis = []
     for i in range(n_qubits):
@@ -45,12 +40,8 @@ def validate_basis_change(
 ) -> None:
     """Validate the basis change.
 
-    Args:
-        basis_change: The basis change to validate.
-        num_modes: The number of modes.
-
     Raises:
-        ValueError: If the basis change is invalid.
+        ValueError: If ``basis_change`` is not ``None`` and does not have ``2 * num_modes`` entries.
     """
     if basis_change is not None and len(basis_change) != 2 * num_modes:
         raise ValueError(

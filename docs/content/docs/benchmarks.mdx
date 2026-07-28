@@ -228,7 +228,9 @@ re-running `run_model.py` afterwards overwrites the file and drops them again â€
 For every engine, `results.json` collects, indexed by Trotter step:
 
 - `num_terms`: the number of Pauli/Majorana terms kept in the evolving operator, for every step.
-- `runtime`: wall-clock time per step, in seconds (excluding the first step, see the note above).
+- `runtime`: wall-clock time per step, in seconds. The first step is excluded: it carries each
+  engine's warm-up (JIT compilation, first-touch allocation), which is not what the per-step
+  comparison is measuring.
 - `memory`: the memory footprint of the evolving operator, in megabytes, for every step. Where an
   engine exposes its own accounting this is exact (monoprop's C++ operator-memory accounting,
   cuPauliProp's cupy device memory pool, `PauliPropagation.jl`'s `Base.summarysize` of the Pauli
@@ -258,7 +260,7 @@ and outperforms all other CPU-only engines in both time and memory as the operat
 ## Internal benchmarks
 
 The `monoprop` repository includes a pytest suite measuring the **time** and
-**peak physical memory (PSS)** of monoprop's core operations.
+**peak resident memory (RSS)** of monoprop's core operations.
 The suite is separated from the test suite and can be run with `just bench`.
 See below for more detailed instructions.
 
@@ -274,7 +276,7 @@ just bench serial                              # serial run, column "serial"
 just bench-smoke                               # quick sanity check (tiny sizes)
 just bench serial --num-modes 64 --bench-rounds 10
 
-monoprop_NUM_THREADS=10 just bench serial-t10  # set oneTBB worker count
+monoprop_NUM_THREADS=10 just bench serial-t10  # cap the partition count
 
 uv run --group bench python benches/report.py  # rebuild report, no re-run
 ```
@@ -282,8 +284,9 @@ uv run --group bench python benches/report.py  # rebuild report, no re-run
 ### MPI
 
 Communicator-aware: operations are barrier-wrapped so the timed cost is the
-**makespan** across ranks, and memory is the **peak of the PSS summed across
-ranks** (shared pages counted once), not the sum of per-rank peaks.
+**makespan** across ranks, and memory is the **peak of the RSS summed across
+ranks** (shared pages counted per rank, so an upper bound), not the sum of
+per-rank peaks.
 
 ```bash
 just bench-build-mpi                           # build once (MPI on)

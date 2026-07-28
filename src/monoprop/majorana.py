@@ -32,10 +32,12 @@ if TYPE_CHECKING:
 class Majorana:
     """A single Majorana monomial.
 
-    Represents an ordered product $m_{i_1} ... m_{i_w}$. A [MajoranaOperator][] is built
-    from Majorana terms, and the generator an [ExpGate][monoprop.circuit.ExpGate] gate
-    exponentiates. Indices must be sorted, distinct, unique and nonnegative. Use
-    q:math:`from_unsorted` to create a canonical term from an unsorted and/or repeated
+    Represents an ordered product $m_{i_1} ... m_{i_w}$. Majorana terms are what a
+    [MajoranaOperator][] is built from, and that operator is in turn what an
+    [ExpGate][monoprop.circuit.ExpGate] exponentiates. Indices must be sorted, distinct and
+    non-negative; a repeated index is
+    rejected because ``m_i^2 = 1`` would silently change the monomial's weight. Use
+    [Majorana.from_unsorted][] to create a canonical term from an unsorted and/or repeated
     index sequence.
 
     An immutable value object: equal indices compare equal and hash alike, so a term can be
@@ -70,8 +72,9 @@ class Majorana:
     def from_unsorted(cls, *indices: int) -> tuple[Majorana, float]:
         """Create a canonical term from an unsorted index sequence.
 
-        Returns the sorted :class:`Majorana` term together with the sign coming
-        from reordering the indices under Majorana anticommutation.
+        Returns the sorted [Majorana][] term together with the sign coming from reordering the
+        indices under Majorana anticommutation. Repeated indices are canceled in pairs using
+        ``m_i^2 = 1``.
 
         Args:
             indices: Majorana indices in arbitrary order.
@@ -79,14 +82,11 @@ class Majorana:
         Returns:
             ``(term, sign)``, where ``sign`` is ``+1.0`` or ``-1.0``.
 
-        Repeated indices are canceled in pairs using ``m_i^2 = 1``.
-
         Raises:
             ValueError: If any index is negative.
         """
         if any(i < 0 for i in indices):
-            # better to check as negative indices might cancel out
-            # (and should still not be allowed)
+            # Checked first: the pair cancellation below would hide a repeated negative index.
             raise ValueError(f"Majorana indices must be non-negative; got {indices}.")
         sorted_values = _remove_repeated_pairs(tuple(sorted(indices)))
         sign = float(_parity(indices))
@@ -110,11 +110,10 @@ class Majorana:
 class MajoranaOperator:
     """A weighted sum of Majorana monomials.
 
-    Constructed from a ``{term: coefficient}`` mapping, where each key is a
-    [Majorana][] term (or, equivalently, a raw index tuple). Terms are normalized:
-    indices within each monomial are sorted and duplicate monomials are summed. The resulting
-    [terms][] mapping (Majorana-index tuple to complex coefficient) is what the propagator
-    hands to the C++ engine.
+    Constructed from a ``{term: coefficient}`` mapping whose keys are [Majorana][] terms or
+    raw index tuples. Terms are normalized: indices are sorted within each monomial and duplicate
+    monomials are summed. The resulting [terms][] mapping (index tuple to complex coefficient)
+    is what the propagator hands to the C++ engine.
     """
 
     def __init__(
@@ -124,15 +123,10 @@ class MajoranaOperator:
     ) -> None:
         """Initialize the Majorana operator from a term mapping.
 
-        Args:
-            terms: Mapping from [Majorana][] terms (or raw index tuples) to coefficients.
-            num_modes: Number of modes in the system. Required: an operator carries its own
-                mode count so a propagator can be built from it directly. A gate generator is
-                also authored as a [MajoranaOperator][] (wrapped in
-                [ExpGate][monoprop.circuit.ExpGate]) -- bare [Majorana][] terms are not accepted
-                by ``ExpGate``, since the operator is what carries the mode count.
+        ``num_modes`` is required, not inferred: the operator carries its own mode count, which is
+        why a propagator and [ExpGate][monoprop.circuit.ExpGate] both take an operator rather than a
+        bare [Majorana][] term.
         """
-        # Route raw index tuples through phase-aware canonicalization in _accumulate.
         majoranas = [
             key.indices if isinstance(key, Majorana) else tuple(key) for key in terms
         ]
@@ -148,8 +142,8 @@ class MajoranaOperator:
     ) -> MajoranaOperator:
         """Build from parallel ``majoranas``/``coefficients`` lists (internal).
 
-        Unlike the dict constructor this accepts colliding monomials and sums them, which the
-        Jordan-Wigner and fermionic conversions ([get_majorana_operator][]) rely on.
+        Colliding monomials are summed, which the Jordan-Wigner and fermionic conversions
+        ([get_majorana_operator][]) rely on (a mapping cannot carry the same monomial twice).
         """
         obj = cls.__new__(cls)
         obj.num_modes = num_modes
@@ -195,15 +189,10 @@ class MajoranaOperator:
     __hash__ = None  # type: ignore[assignment]  # value-equal but mutable
 
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1e-8) -> bool:
-        """Check if two MajoranaOperators are closely equal (same terms and coefficients).
+        """Check whether two MajoranaOperators have the same terms and close coefficients.
 
-        Args:
-            other: Another MajoranaOperator to compare with.
-            rtol: Relative tolerance for coefficient comparison.
-            atol: Absolute tolerance for coefficient comparison.
-
-        Returns:
-            True if the operators have the same mode count and matching terms, else False.
+        Coefficients are compared with ``numpy.isclose`` at ``rtol``/``atol``; a differing
+        mode count is False, not an error.
 
         Raises:
             TypeError: If ``other`` is not a [MajoranaOperator][].
