@@ -28,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -136,6 +137,7 @@ public:
         std::tuple<VecZ, std::vector<LocalCycleData>, std::vector<CrossRankData>, std::vector<CrossRankData>>;
     auto graph_data() const -> std::vector<LayerData>;
 
+    /// Raise or lower the truncation floor; must not exceed the current upper_atol.
     auto update_lower_atol(std::optional<double> new_lower_atol) -> void {
         if (upper_atol_.has_value() && new_lower_atol.has_value() && (new_lower_atol.value() > upper_atol_.value())) {
             throw std::runtime_error(
@@ -143,12 +145,10 @@ public:
                             new_lower_atol.value(),
                             upper_atol_.value()));
         }
-        lower_atol_ = new_lower_atol;
-        if (shard_group_) {
-            for_each_shard_([&](MonomialPropagator &s) { s.update_lower_atol(new_lower_atol); });
-        }
+        update_setting_([&](MonomialPropagator &p) { p.lower_atol_ = new_lower_atol; });
     }
 
+    /// Raise or lower the exact-retention ceiling; must not fall below the current lower_atol.
     auto update_upper_atol(std::optional<double> new_upper_atol) -> void {
         if (lower_atol_.has_value() && new_upper_atol.has_value() && new_upper_atol.value() < lower_atol_.value()) {
             throw std::runtime_error(
@@ -156,36 +156,33 @@ public:
                             new_upper_atol.value(),
                             lower_atol_.value()));
         }
-        upper_atol_ = new_upper_atol;
-        if (shard_group_) {
-            for_each_shard_([&](MonomialPropagator &s) { s.update_upper_atol(new_upper_atol); });
-        }
+        update_setting_([&](MonomialPropagator &p) { p.upper_atol_ = new_upper_atol; });
     }
 
+    /// Re-cut at a new cutoff, regenerating the cutoff function. Existing terms are not re-truncated.
     auto update_cutoff(unsigned int new_cutoff) -> void {
-        cutoff_ = new_cutoff;
-        regenerate_cutoff_fn_();
-        if (shard_group_) {
-            for_each_shard_([&](MonomialPropagator &s) { s.update_cutoff(new_cutoff); });
-        }
+        update_setting_([&](MonomialPropagator &p) {
+            p.cutoff_ = new_cutoff;
+            p.regenerate_cutoff_fn_();
+        });
     }
 
+    /// Switch the cutoff metric (Length / Support); rejected if this algebra cannot honour it.
     auto update_cutoff_type(CutoffType new_cutoff_type) -> void {
         validate_cutoff_config_(new_cutoff_type, basis_change_);
-        cutoff_type_ = new_cutoff_type;
-        regenerate_cutoff_fn_();
-        if (shard_group_) {
-            for_each_shard_([&](MonomialPropagator &s) { s.update_cutoff_type(new_cutoff_type); });
-        }
+        update_setting_([&](MonomialPropagator &p) {
+            p.cutoff_type_ = new_cutoff_type;
+            p.regenerate_cutoff_fn_();
+        });
     }
 
+    /// Replace the basis the cutoff is measured in (nullopt ⇒ the native basis).
     auto update_basis_change(std::optional<std::vector<VecZ>> new_basis_change) -> void {
         validate_cutoff_config_(cutoff_type_, new_basis_change);
-        basis_change_ = new_basis_change;
-        regenerate_cutoff_fn_();
-        if (shard_group_) {
-            for_each_shard_([&](MonomialPropagator &s) { s.update_basis_change(new_basis_change); });
-        }
+        update_setting_([&](MonomialPropagator &p) {
+            p.basis_change_ = new_basis_change;
+            p.regenerate_cutoff_fn_();
+        });
     }
 
     auto schrodinger() const -> bool { return schrodinger_; }
@@ -333,11 +330,53 @@ private:
     auto sharded_core_term_() const -> double; // core term is replicated on every shard; read shard 0
     auto sharded_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes>;
     auto sharded_graph_memory_usage_() const -> GraphMemoryBreakdown;
-    // Run `fn` on every shard concurrently; out-of-line because ShardGroup is incomplete here.
+
+    // Shard fan-out vocabulary. Every one of these is FACADE-ONLY: shard_group_ != nullptr is a
+    // precondition, and all are defined in the impl, where ShardGroup is complete.
+    //
+    // `for_each_shard_` / `map_shards_` / `concat_shards_` dispatch to the shards' own pinned master
+    // threads, which is mandatory for anything that touches shard state: the shards trade over an
+    // in-process comm and their collectives are barrier-synced, so all S must run together.
+    // `fold_shards_` / `sum_shards_` / `first_shard_` instead read QUIESCENT shards straight from the
+    // facade thread, which is safe precisely because they mutate nothing.
+
+    // Run `fn` on every shard concurrently.
     auto for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void;
+
+    // Run `fn` on every shard concurrently; one result per shard, in shard order.
+    template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
+    auto map_shards_(Fn fn) -> std::vector<R>;
+
+    // map_shards_ with the per-shard sequences concatenated in shard order. The partitions are
+    // disjoint, so the result enumerates the whole operator (deterministic for a fixed shard count).
+    template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
+    auto concat_shards_(Fn fn) -> R;
+
+    // Sequential fold of `proj(shard)` over the quiescent shards; `accumulate(total, value)` combines.
+    template <typename Proj, typename Accumulate, typename R = std::invoke_result_t<Proj &, const MonomialPropagator &>>
+    auto fold_shards_(Proj proj, Accumulate accumulate) const -> R;
+
+    // fold_shards_ for the additive breakdowns: the fields sum over the disjoint hash partitions.
+    template <typename Proj, typename R = std::invoke_result_t<Proj &, const MonomialPropagator &>>
+    auto sum_shards_(Proj proj) const -> R;
+
+    // Shard 0 for values that are NOT partitioned: the graph structure and gate info are identical on
+    // every shard, the core (identity) term is replicated on all of them, and an allreduced scalar is
+    // already global on each. Anything hash-partitioned must go through sum_/concat_shards_ instead.
+    auto first_shard_() const -> const MonomialPropagator &;
 
     /// Cosine-only index count across the active layers (see graph_size()).
     auto cos_index_count_() const -> size_t;
+
+    // The shared tail of every update_* setter: apply `mutate` here, then replicate it to each shard.
+    // Validation stays at the call site, so a rejected value throws before anything is mutated, and
+    // the shards do not re-validate what the facade already checked against identical field values.
+    auto update_setting_(const std::function<void(MonomialPropagator &)> &mutate) -> void {
+        mutate(*this);
+        if (shard_group_) {
+            for_each_shard_(mutate);
+        }
+    }
 
     auto regenerate_cutoff_fn_() -> void;
 

@@ -17,6 +17,7 @@
 #include <cmath>
 #include <complex>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -40,13 +41,14 @@ constexpr unsigned int kCutoff = 4;
 
 // ─── Majorana (fixture-driven) ───────────────────────────────────────────────
 
-auto majorana_sim(const CaseData &data, size_t shards) -> MonomialPropagator<kNumModes> {
+auto majorana_sim(const CaseData &data, size_t shards, std::optional<double> lower_atol = std::nullopt)
+    -> MonomialPropagator<kNumModes> {
     return MonomialPropagator<kNumModes>(data.hamiltonian,
                                          kCutoff,
                                          data.initial_state,
                                          std::nullopt,
                                          MPI_COMM_SELF,
-                                         std::nullopt,
+                                         lower_atol,
                                          std::nullopt,
                                          CutoffType::Length,
                                          std::nullopt,
@@ -120,6 +122,43 @@ BOOST_AUTO_TEST_CASE(shard_energy_is_deterministic) {
         return sim.expectation_value(data.parameters);
     };
     BOOST_CHECK_EQUAL(energy_s4(), energy_s4());
+}
+
+// A facade owns no operator, so a setter that stopped there would leave every shard on its old
+// configuration and the run would silently ignore the new value. The cutoff truncates structurally
+// during the graph build, so it shows up in the aggregated term count. LiH is used rather than the
+// random_exact fixture, which is small enough that no setting truncates anything. The tightened
+// oracle must itself differ from the wide run, else the last assertion would hold vacuously.
+BOOST_AUTO_TEST_CASE(shard_setters_reach_every_shard) {
+    constexpr size_t kLihModes = LihFixture::n_modes;
+    const auto data = load_case_data<kLihModes>("lih_fermionic_spin_exact.msgpack");
+
+    auto build = [&](unsigned int cutoff, unsigned int updated_cutoff) {
+        MonomialPropagator<kLihModes> sim(data.hamiltonian,
+                                          cutoff,
+                                          data.initial_state,
+                                          std::nullopt,
+                                          MPI_COMM_SELF,
+                                          std::nullopt,
+                                          std::nullopt,
+                                          CutoffType::Length,
+                                          std::nullopt,
+                                          kLihModes,
+                                          Basis::Majorana,
+                                          /*shards=*/4);
+        if (cutoff != updated_cutoff) {
+            sim.update_cutoff(updated_cutoff);
+            BOOST_CHECK_EQUAL(sim.cutoff(), updated_cutoff);
+        }
+        sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+        return sim.size();
+    };
+
+    const size_t n_wide = build(2 * kLihModes, 2 * kLihModes);
+    const size_t n_tight = build(4, 4);
+    BOOST_REQUIRE_NE(n_wide, n_tight);
+    // Constructed wide, then tightened: only the shards' own cutoff can produce the tight count.
+    BOOST_CHECK_EQUAL(n_tight, build(2 * kLihModes, 4));
 }
 
 BOOST_AUTO_TEST_CASE(shard_deep_copy_matches) {

@@ -214,62 +214,90 @@ auto MonomialPropagator<NumModes>::resolve_shard_count_(size_t requested, mpi::C
     return compute_auto();
 }
 
-// Sharded read accessors: fan out over the quiescent shards from the facade thread.
+// --- Shard fan-out vocabulary (see the declarations for which helper is legal where) ---
+
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::sharded_size_() const -> size_t {
+auto MonomialPropagator<NumModes>::for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void {
+    shard_group_->run_on_all([&](int r) { fn(shard_group_->shard(r)); });
+}
+
+template <size_t NumModes>
+template <typename Fn, typename R>
+auto MonomialPropagator<NumModes>::map_shards_(Fn fn) -> std::vector<R> {
+    return detail::shard::map_shards(*shard_group_, fn);
+}
+
+template <size_t NumModes>
+template <typename Fn, typename R>
+auto MonomialPropagator<NumModes>::concat_shards_(Fn fn) -> R {
+    const auto per_shard = map_shards_(fn);
     size_t total = 0;
+    for (const auto &v : per_shard) {
+        total += v.size();
+    }
+    R merged;
+    merged.reserve(total);
+    for (const auto &v : per_shard) {
+        merged.insert(merged.end(), v.begin(), v.end());
+    }
+    return merged;
+}
+
+template <size_t NumModes>
+template <typename Proj, typename Accumulate, typename R>
+auto MonomialPropagator<NumModes>::fold_shards_(Proj proj, Accumulate accumulate) const -> R {
+    R total{};
     for (int r = 0; r < shard_group_->shard_count(); ++r) {
-        total += shard_group_->shard(r).size();
+        accumulate(total, proj(shard_group_->shard(r)));
     }
     return total;
 }
 
 template <size_t NumModes>
+template <typename Proj, typename R>
+auto MonomialPropagator<NumModes>::sum_shards_(Proj proj) const -> R {
+    return fold_shards_(proj, [](R &total, const R &value) { total += value; });
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::first_shard_() const -> const MonomialPropagator & {
+    return shard_group_->shard(0);
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::sharded_size_() const -> size_t {
+    return sum_shards_([](const MonomialPropagator &s) { return s.size(); });
+}
+
+template <size_t NumModes>
 auto MonomialPropagator<NumModes>::sharded_graph_size_() const -> std::pair<size_t, size_t> {
-    size_t cos = 0;
-    size_t cyc = 0;
-    for (int r = 0; r < shard_group_->shard_count(); ++r) {
-        const auto [c, y] = shard_group_->shard(r).graph_size();
-        cos += c;
-        cyc += y;
-    }
-    return {cos, cyc};
+    // One pass: graph_size() recomputes the cosine-only count, so it must not be projected twice.
+    return fold_shards_([](const MonomialPropagator &s) { return s.graph_size(); },
+                        [](std::pair<size_t, size_t> &total, const std::pair<size_t, size_t> &value) {
+                            total.first += value.first;
+                            total.second += value.second;
+                        });
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::sharded_graph_layers_() const -> size_t {
-    // Graph structure is identical on every shard, so shard 0 is authoritative for structural queries.
-    return shard_group_->shard(0).graph_layers();
+    return first_shard_().graph_layers();
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::sharded_core_term_() const -> double {
-    // The core (identity) term is stored on every shard (not hash-partitioned), so any shard is full.
-    return shard_group_->shard(0).core_term();
+    return first_shard_().core_term();
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::sharded_operator_memory_usage_() const
     -> detail::MPOperatorMemoryBreakdown<NumModes> {
-    detail::MPOperatorMemoryBreakdown<NumModes> total;
-    for (int r = 0; r < shard_group_->shard_count(); ++r) {
-        total += shard_group_->shard(r).operator_memory_usage();
-    }
-    return total;
+    return sum_shards_([](const MonomialPropagator &s) { return s.operator_memory_usage(); });
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::sharded_graph_memory_usage_() const -> GraphMemoryBreakdown {
-    GraphMemoryBreakdown total;
-    for (int r = 0; r < shard_group_->shard_count(); ++r) {
-        total += shard_group_->shard(r).graph_memory_usage();
-    }
-    return total;
-}
-
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void {
-    shard_group_->run_on_all([&](int r) { fn(shard_group_->shard(r)); });
+    return sum_shards_([](const MonomialPropagator &s) { return s.graph_memory_usage(); });
 }
 
 template <size_t NumModes>
@@ -292,7 +320,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
     -> std::pair<MonomialList<NumModes>, VecD> {
     if (shard_group_) {
         // The facade holds no local terms of its own, so the return is empty.
-        shard_group_->run_on_all([&](int r) { shard_group_->shard(r).update_initial_operator(op_dict); });
+        for_each_shard_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
         return {};
     }
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
@@ -558,9 +586,8 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                                std::optional<VecD> parameters,
                                                int only_rotate_len_k) -> void {
     if (shard_group_) {
-        shard_group_->run_on_all([&](int r) {
-            shard_group_->shard(r)
-                .build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
+        for_each_shard_([&](MonomialPropagator &s) {
+            s.build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
         });
         return;
     }
@@ -621,8 +648,8 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              const VecD &parameters,
                                              int only_rotate_len_k) -> void {
     if (shard_group_) {
-        shard_group_->run_on_all([&](int r) {
-            shard_group_->shard(r).propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+        for_each_shard_([&](MonomialPropagator &s) {
+            s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
         });
         return;
     }
@@ -722,7 +749,7 @@ auto MonomialPropagator<NumModes>::evolve_operator_with_recompute_(VecD &&coeffs
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::n_gates() const -> size_t {
     if (shard_group_) {
-        return shard_group_->shard(0).n_gates();
+        return first_shard_().n_gates();
     }
     const size_t count = graph_.layers();
     size_t max_gate = 0;
@@ -738,7 +765,7 @@ auto MonomialPropagator<NumModes>::n_gates() const -> size_t {
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_mapping) -> void {
     if (shard_group_) {
-        shard_group_->run_on_all([&](int r) { shard_group_->shard(r).set_parameter_mapping(parameter_mapping); });
+        for_each_shard_([&](MonomialPropagator &s) { s.set_parameter_mapping(parameter_mapping); });
         return;
     }
     const size_t count = graph_.layers();
@@ -784,7 +811,7 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ, VecD> {
     if (shard_group_) {
-        return shard_group_->shard(0).graph_gate_arrays_();
+        return first_shard_().graph_gate_arrays_();
     }
     const size_t count = graph_.layers();
     VecZ parameter_mapping(count);
@@ -930,15 +957,12 @@ auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<do
         // Each shard allreduces internally, so shard 0 is the global value. The group is captured by
         // raw pointer, so the returned callable must not outlive this propagator.
         auto fns = std::make_shared<std::vector<std::function<double(const VecD &)>>>(
-            static_cast<size_t>(shard_group_->shard_count()));
-        shard_group_->run_on_all([&](int r) {
-            (*fns)[static_cast<size_t>(r)] = shard_group_->shard(r).expectation_value_functional(pare_threshold);
-        });
+            map_shards_([&](MonomialPropagator &s) { return s.expectation_value_functional(pare_threshold); }));
         auto *grp = shard_group_.get();
         return [grp, fns](const VecD &params) -> double {
-            std::vector<double> vals(fns->size());
-            grp->run_on_all([&](int r) { vals[static_cast<size_t>(r)] = (*fns)[static_cast<size_t>(r)](params); });
-            return vals[0];
+            // Fans out over the pre-built per-shard callables, so it indexes by shard rank.
+            return detail::shard::collect_on_all(*grp,
+                                                 [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];
         };
     }
     return make_functional_(ev_fn, pare_threshold);
@@ -948,17 +972,13 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional(std::optional<double> pare_threshold)
     -> std::function<std::pair<double, VecD>(const VecD &)> {
     if (shard_group_) {
-        auto fns = std::make_shared<std::vector<std::function<std::pair<double, VecD>(const VecD &)>>>(
-            static_cast<size_t>(shard_group_->shard_count()));
-        shard_group_->run_on_all([&](int r) {
-            (*fns)[static_cast<size_t>(r)] =
-                shard_group_->shard(r).expectation_value_and_gradient_functional(pare_threshold);
-        });
+        auto fns = std::make_shared<std::vector<std::function<std::pair<double, VecD>(const VecD &)>>>(map_shards_(
+            [&](MonomialPropagator &s) { return s.expectation_value_and_gradient_functional(pare_threshold); }));
         auto *grp = shard_group_.get();
         return [grp, fns](const VecD &params) -> std::pair<double, VecD> {
-            std::vector<std::pair<double, VecD>> res(fns->size());
-            grp->run_on_all([&](int r) { res[static_cast<size_t>(r)] = (*fns)[static_cast<size_t>(r)](params); });
-            return res[0];
+            // Fans out over the pre-built per-shard callables, so it indexes by shard rank.
+            return detail::shard::collect_on_all(*grp,
+                                                 [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];
         };
     }
     return make_functional_(ev_and_grad_fn, pare_threshold);
@@ -968,10 +988,7 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value(const VecD &parameters) -> double {
     if (shard_group_) {
         // Each shard allreduces internally, so every shard returns the GLOBAL value; take shard 0.
-        std::vector<double> vals(static_cast<size_t>(shard_group_->shard_count()));
-        shard_group_->run_on_all(
-            [&](int r) { vals[static_cast<size_t>(r)] = shard_group_->shard(r).expectation_value(parameters); });
-        return vals[0];
+        return map_shards_([&](MonomialPropagator &s) { return s.expectation_value(parameters); })[0];
     }
     return expectation_value_functional(std::nullopt)(parameters);
 }
@@ -979,11 +996,8 @@ auto MonomialPropagator<NumModes>::expectation_value(const VecD &parameters) -> 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD> {
     if (shard_group_) {
-        std::vector<std::pair<double, VecD>> res(static_cast<size_t>(shard_group_->shard_count()));
-        shard_group_->run_on_all([&](int r) {
-            res[static_cast<size_t>(r)] = shard_group_->shard(r).expectation_value_and_gradient(parameters);
-        });
-        return res[0];
+        // As in expectation_value(): the gradient is allreduced inside each shard.
+        return map_shards_([&](MonomialPropagator &s) { return s.expectation_value_and_gradient(parameters); })[0];
     }
     return expectation_value_and_gradient_functional(std::nullopt)(parameters);
 }
@@ -991,22 +1005,8 @@ auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &pa
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bool inplace) -> VecD {
     if (shard_group_) {
-        // Partitions are disjoint, so concatenating in shard order enumerates the whole operator
-        // (deterministic for a fixed shard count). Core term excluded, as on the unsharded path.
-        std::vector<VecD> res(static_cast<size_t>(shard_group_->shard_count()));
-        shard_group_->run_on_all([&](int r) {
-            res[static_cast<size_t>(r)] = shard_group_->shard(r).contract_partially(parameters, inplace);
-        });
-        VecD merged;
-        size_t total = 0;
-        for (const auto &v : res) {
-            total += v.size();
-        }
-        merged.reserve(total);
-        for (auto &v : res) {
-            merged.insert(merged.end(), v.begin(), v.end());
-        }
-        return merged;
+        // Core term excluded, as on the unsharded path.
+        return concat_shards_([&](MonomialPropagator &s) { return s.contract_partially(parameters, inplace); });
     }
     const auto gate_arrays = graph_gate_arrays_();
     const auto &parameter_mapping = gate_arrays.first;
@@ -1077,18 +1077,7 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
     if (!shard_group_) {
         return collect(*this);
     }
-    std::vector<std::vector<Term>> per(static_cast<size_t>(shard_group_->shard_count()));
-    shard_group_->run_on_all([&](int r) { per[static_cast<size_t>(r)] = collect(shard_group_->shard(r)); });
-    std::vector<Term> merged;
-    size_t total = 0;
-    for (const auto &v : per) {
-        total += v.size();
-    }
-    merged.reserve(total);
-    for (const auto &v : per) {
-        merged.insert(merged.end(), v.begin(), v.end());
-    }
-    return merged;
+    return concat_shards_(collect);
 }
 
 } // namespace monoprop

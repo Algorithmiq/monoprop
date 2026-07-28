@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/detail/mpi/Comm.h"
@@ -264,6 +265,21 @@ private:
     int done_count_ = 0;
     bool stop_ = false;
 };
+
+// Run `body(shard_rank)` on every master and collect one result per shard, indexed by shard rank.
+// The slots are written from the owning master, so `body` must not touch the vector itself.
+template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, int>>
+auto collect_on_all(ShardGroup<NumModes> &group, Body body) -> std::vector<R> {
+    std::vector<R> results(static_cast<size_t>(group.shard_count()));
+    group.run_on_all([&](int r) { results[static_cast<size_t>(r)] = body(r); });
+    return results;
+}
+
+// collect_on_all over the shard propagators themselves: `body(shard)` on each shard's master.
+template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, MonomialPropagator<NumModes> &>>
+auto map_shards(ShardGroup<NumModes> &group, Body body) -> std::vector<R> {
+    return collect_on_all(group, [&](int r) -> R { return body(group.shard(r)); });
+}
 
 } // namespace detail::shard
 } // namespace monoprop
