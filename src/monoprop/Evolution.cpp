@@ -501,7 +501,8 @@ auto evolve_step_traversal_impl(VecD &op,
                                 size_t layer_idx,
                                 const mpi::Comm &comm,
                                 const detail::LayerCosScale &cos_scale) -> void {
-    const double cos_val = std::cos(2 * param), sin_val = std::sin(2 * param);
+    const double cos_val = std::cos(2 * param);
+    const double sin_val = std::sin(2 * param);
 
     auto *const op_data = op.data();
     const int my_rank_int = mpi::rank(comm);

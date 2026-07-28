@@ -93,8 +93,11 @@ auto interleave_phase(const Monomial<NumModes> &maj_bs, const Monomial<NumModes>
         }
 
         const uint64_t prefix_xor = prefix_xor_64(maj_word);
-        // Shift left by 1 to exclude the bit itself; -carry broadcasts the previous words' parity.
-        const uint64_t running_parity = (prefix_xor << 1) ^ (-carry);
+        // Shift left by 1 to exclude the bit itself; carry_mask is 0 or all-ones, broadcasting the
+        // previous words' parity across the word. Written as 0 - carry, not -carry: same modular
+        // arithmetic and same `neg`, without a unary minus on an unsigned operand.
+        const uint64_t carry_mask = 0ULL - carry;
+        const uint64_t running_parity = (prefix_xor << 1) ^ carry_mask;
         parity ^= static_cast<size_t>(std::popcount(running_parity & gen_word));
         carry ^= prefix_xor >> 63;
     }

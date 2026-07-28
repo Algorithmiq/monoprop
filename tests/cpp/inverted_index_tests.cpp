@@ -121,7 +121,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
         if (!rows.empty()) {
             saw_nonempty_sparse = true;
         }
-        if (!std::is_sorted(rows.begin(), rows.end())) {
+        if (!std::ranges::is_sorted(rows)) {
             all_sorted = false;
         }
     }

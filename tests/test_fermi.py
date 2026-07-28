@@ -366,5 +366,6 @@ class TestCircuit:
         assert circuit.parameters == (0.1, 0.3)
 
     def test_validate_inputs_duplicate_initial_state_raises(self):
+        gate = ExpGate(_number_op())
         with pytest.raises(ValueError, match="Duplicate indices in initial state"):
-            Circuit(gates=[ExpGate(_number_op())], initial_state=[0, 0])
+            Circuit(gates=[gate], initial_state=[0, 0])

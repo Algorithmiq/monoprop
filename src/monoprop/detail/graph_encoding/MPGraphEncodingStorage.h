@@ -87,6 +87,17 @@ inline auto packed_phase_at(const PackedPhaseStorage &storage, size_t idx) -> in
     return static_cast<int>(storage.phase_values[idx]);
 }
 
+// Write counterpart to packed_phase_at. In binary storage only φ<0 sets a bit, because the words are
+// assigned zeroed in make_packed_phase_storage.
+inline auto store_packed_phase(PackedPhaseStorage &storage, size_t idx, int phase, const char *what) -> void {
+    if (!storage.uses_binary_phases) {
+        storage.phase_values[idx] = checked_packed_phase(phase, what);
+    }
+    else if (phase < 0) {
+        storage.phase_words[packed_phase_word_index(idx)] |= packed_phase_bit_mask(idx);
+    }
+}
+
 inline auto packed_phase_storage_bytes(const PackedPhaseStorage &storage) -> size_t {
     return storage.uses_binary_phases ? storage.phase_words.capacity() * sizeof(uint64_t)
                                       : storage.phase_values.capacity() * sizeof(int8_t);
@@ -138,16 +149,7 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
         for (size_t k = 0; k < partner.sin_recv_entries.size(); ++k) {
             const auto &[i, phi] = partner.sin_recv_entries[k];
             (void)i;
-            const size_t slot = d_off + k;
-            if (uses_binary_phases) {
-                // Only φ<0 sets a bit; the words start zeroed.
-                if (phi < 0) {
-                    storage.sin_recv_phases.phase_words[packed_phase_word_index(slot)] |= packed_phase_bit_mask(slot);
-                }
-            }
-            else {
-                storage.sin_recv_phases.phase_values[slot] = checked_packed_phase(phi, "Cross-rank D phase");
-            }
+            store_packed_phase(storage.sin_recv_phases, d_off + k, phi, "Cross-rank D phase");
         }
     }
 

@@ -57,20 +57,28 @@ struct InvertedIndex {
 
     auto row_parity_words() const -> const uint64_t * {
         if (row_parity_.empty() && row_count != 0) {
-            const size_t nwords = (row_count + 63) / 64;
-            row_parity_.assign(nwords, 0);
-            for (const auto &col : cols) {
-                if (col.is_dense) {
-                    for (size_t w = 0; w < nwords && w < col.words.size(); ++w)
-                        row_parity_[w] ^= col.words[w];
+            build_row_parity_();
+        }
+        return row_parity_.data();
+    }
+
+    // Fold every column into row_parity_. Callers gate on row_count != 0, so the bitmap is never
+    // sized to zero words here.
+    auto build_row_parity_() const -> void {
+        const size_t nwords = (row_count + 63) / 64;
+        row_parity_.assign(nwords, 0);
+        for (const auto &col : cols) {
+            if (col.is_dense) {
+                for (size_t w = 0; w < nwords && w < col.words.size(); ++w) {
+                    row_parity_[w] ^= col.words[w];
                 }
-                else {
-                    for (TermIndex r : col.set_rows)
-                        row_parity_[r >> 6] ^= (uint64_t{1} << (r & 63));
+            }
+            else {
+                for (TermIndex r : col.set_rows) {
+                    row_parity_[r >> 6] ^= (uint64_t{1} << (r & 63));
                 }
             }
         }
-        return row_parity_.data();
     }
 
     auto rows() const -> size_t { return row_count; }
@@ -182,7 +190,7 @@ struct InvertedIndex {
             row_parity_.resize((row_count + 63) / 64, 0);
             for (size_t j = 0; j < n; ++j) {
                 const size_t r = base + j;
-                if (row_popcount<NumModes>(op, r) & 1u) {
+                if (row_popcount<NumModes>(op, r) & 1U) {
                     row_parity_[r >> 6] |= (uint64_t{1} << (r & 63));
                 }
             }

@@ -59,15 +59,20 @@ def _rebase(gates):
 
 
 def test_exp_rejects_bare_term() -> None:
+    majorana_term = Majorana(0, 1)
+    pauli_term = Pauli("X", 0)
     with pytest.raises(TypeError, match="not a bare term"):
-        ExpGate(Majorana(0, 1))  # type: ignore[arg-type]
+        ExpGate(majorana_term)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="not a bare term"):
-        ExpGate(Pauli("X", 0))  # type: ignore[arg-type]
+        ExpGate(pauli_term)  # type: ignore[arg-type]
 
 
 def test_exp_equality_and_repr() -> None:
     gen = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
-    assert ExpGate(gen, index=0) == ExpGate(gen, index=0)
+    # Two distinct instances built from the same generator must compare equal.
+    first = ExpGate(gen, index=0)
+    second = ExpGate(gen, index=0)
+    assert first == second
     assert ExpGate(gen, index=0) != ExpGate(gen, index=1)
     assert ExpGate(gen) != "not an ExpGate"
     assert repr(ExpGate(gen, index=0)).startswith("ExpGate(")
@@ -640,16 +645,18 @@ def test_surplus_parameters_raise_not_truncated() -> None:
     generator = FermiOperator(
         [[(0, "+"), (1, "-")], [(1, "+"), (0, "-")]], [1.0, 1.0], num_modes=4
     )
+    gate = ExpGate(generator)
     with pytest.raises(ValueError, match="1 parameter"):
-        Circuit(gates=(ExpGate(generator),), parameters=(1.0, 2.0))
+        Circuit(gates=(gate,), parameters=(1.0, 2.0))
 
 
 def test_non_commuting_pauli_generator_rejected() -> None:
     """A multi-term Pauli gate whose terms anticommute is rejected at construction."""
+    generator = PauliOperator({Pauli("X", 0): 1.0, Pauli("Z", 0): 1.0}, num_qubits=1)
     with pytest.raises(
         ValueError, match=r"The provided generator must be composed of commuting terms."
     ):
-        ExpGate(PauliOperator({Pauli("X", 0): 1.0, Pauli("Z", 0): 1.0}, num_qubits=1))
+        ExpGate(generator)
 
 
 def test_commuting_pauli_generator_accepted() -> None:
@@ -797,10 +804,11 @@ def test_explicit_vacuum_initial_state_is_checked() -> None:
         initial_state=(),
     )
 
+    prop = MajoranaPropagator(observable, [0], cutoff=4)
     with pytest.raises(
         ValueError, match="does not match the propagator's initial state"
     ):
-        MajoranaPropagator(observable, [0], cutoff=4).build_graph(circuit)
+        prop.build_graph(circuit)
 
     # An unspecified state still defers to the propagator's, and a matching one is accepted.
     MajoranaPropagator(observable, [0], cutoff=4).build_graph(

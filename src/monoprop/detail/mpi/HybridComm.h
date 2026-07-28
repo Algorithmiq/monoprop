@@ -277,7 +277,7 @@ public:
             }
             MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
             // Size staging from counts_recv_: recv of shard t from (rank, su) sits at rank*S*S + t*S + su.
-            size_staging_impl_(elem, [this](int t, int rank, int su) -> int {
+            size_staging_impl_(elem, [this](int t, int rank, int su) {
                 return counts_recv_[(static_cast<size_t>(rank) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
                                     + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
             });
@@ -429,7 +429,7 @@ private:
     // Shard 0: aggregate the published count matrices into per-rank counts/displs, size staging and
     // precompute the pack/scatter offsets, reading recv counts from shard t's published recv_counts.
     auto size_staging_(size_t elem) -> void {
-        size_staging_impl_(elem, [this](int t, int rank, int su) -> int {
+        size_staging_impl_(elem, [this](int t, int rank, int su) {
             return slots_[static_cast<size_t>(t)].recv_counts[rank * s_ + su];
         });
     }
@@ -535,10 +535,20 @@ private:
     std::vector<Slot> slots_;
 
     // Shard-0-managed shared state (written by shard 0, read by all between barriers).
-    std::vector<int> counts_send_, counts_recv_; // S*S per rank, the counts alltoall
-    std::vector<int> mpi_send_counts_, mpi_send_displs_, mpi_recv_counts_, mpi_recv_displs_; // [R]
-    std::vector<size_t> pack_off_, scatter_off_;     // [R*S*S] block starts (elements) in the staging buffers
-    std::vector<std::byte> stage_send_, stage_recv_; // aggregated MPI payload staging, HWM-sized
+    // S*S per rank, the counts alltoall.
+    std::vector<int> counts_send_;
+    std::vector<int> counts_recv_;
+    // Per-rank [R] counts/displs for the aggregated payload alltoallv.
+    std::vector<int> mpi_send_counts_;
+    std::vector<int> mpi_send_displs_;
+    std::vector<int> mpi_recv_counts_;
+    std::vector<int> mpi_recv_displs_;
+    // [R*S*S] block starts (elements) in the staging buffers.
+    std::vector<size_t> pack_off_;
+    std::vector<size_t> scatter_off_;
+    // Aggregated MPI payload staging, HWM-sized.
+    std::vector<std::byte> stage_send_;
+    std::vector<std::byte> stage_recv_;
     double red_f64_ = 0.0;
     uint64_t red_u64_ = 0;
     std::vector<double> red_vec_;
