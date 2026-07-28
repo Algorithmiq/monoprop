@@ -111,7 +111,8 @@ class MajoranaOperator:
     """A weighted sum of Majorana monomials.
 
     Constructed from a ``{term: coefficient}`` mapping whose keys are [Majorana][] terms or
-    raw index tuples. Terms are normalized: indices are sorted within each monomial and duplicate
+    raw index tuples. Terms are normalized: indices are sorted within each monomial -- which
+    anticommutes them, so the coefficient carries the sign of the reordering -- and duplicate
     monomials are summed. The resulting [terms][] mapping (index tuple to complex coefficient)
     is what the propagator hands to the C++ engine.
     """
@@ -126,6 +127,16 @@ class MajoranaOperator:
         ``num_modes`` is required, not inferred: the operator carries its own mode count, which is
         why a propagator and [ExpGate][monoprop.circuit.ExpGate] both take an operator rather than a
         bare [Majorana][] term.
+
+        Args:
+            terms: Mapping from [Majorana][] terms, or raw index tuples, to their coefficients. A
+                raw tuple need not be sorted -- it is canonicalized through
+                [Majorana.from_unsorted][], so its coefficient picks up the sign of the reordering
+                and any repeated index pair cancels.
+            num_modes: Number of Majorana modes the operator is defined over.
+
+        Raises:
+            ValueError: If any index is negative.
         """
         majoranas = [
             key.indices if isinstance(key, Majorana) else tuple(key) for key in terms
