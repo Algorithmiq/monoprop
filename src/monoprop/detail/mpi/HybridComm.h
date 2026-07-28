@@ -185,8 +185,8 @@ public:
         // send_counts was consumed before the last sync, so peers may free/reuse it on return.
     }
 
-    // Flat variable all-to-all over caller-owned buffers (counts/displs in elements, `elem` = element
-    // bytes, `dt` = MPI datatype). recv_counts must already hold the transpose — same contract as MPI_Alltoallv.
+    // Flat variable all-to-all over caller-owned buffers (counts/displs in elements, `elem` = element bytes).
+    // recv_counts must already hold the transpose — same contract as MPI_Alltoallv.
     auto alltoallv_impl_(int local_partition,
                          const void *send,
                          const int *send_counts /*[P]*/,
@@ -369,7 +369,7 @@ public:
     }
 
     // In-place element-wise allreduce-sum across the flat P-world, slice-partitioned across partitions in
-    // ascending order (bit-identical to a sequential sum). red_vec_ sizing gets its own barrier phase.
+    // ascending order (bit-identical to a sequential sum).
     auto allreduce_sum_inplace_impl_(int local_partition, double *values, size_t len) -> void {
         slots_[static_cast<size_t>(local_partition)].vec = values;
         sync(); // all inputs published
@@ -426,8 +426,7 @@ private:
         }
     }
 
-    // Partition 0: aggregate the published count matrices into per-rank counts/displs, size staging and
-    // precompute the pack/scatter offsets, reading recv counts from partition t's published recv_counts.
+    // Partition 0 only; recv counts come from partition t's published recv_counts.
     auto size_staging_(size_t elem) -> void {
         size_staging_impl_(elem, [this](int t, int rank, int su) {
             return slots_[static_cast<size_t>(t)].recv_counts[rank * s_ + su];
@@ -449,7 +448,6 @@ private:
             mpi_send_counts_[static_cast<size_t>(b)] = checked_int_(send_sum);
             mpi_recv_counts_[static_cast<size_t>(b)] = checked_int_(recv_sum);
         }
-        // Accumulate wide, narrow through the checked helper (see MPICompat.h).
         long long send_running = 0;
         long long recv_running = 0;
         for (int b = 0; b < r_; ++b) {
@@ -487,7 +485,6 @@ private:
         }
     }
 
-    // Pack local partition `u`'s cross-rank blocks into stage_send_ at partition 0's precomputed pack_off_ starts.
     auto pack_send_(int local_partition, size_t elem) -> void {
         const int u = local_partition;
         const char *src = static_cast<const char *>(slots_[static_cast<size_t>(u)].ptr);
@@ -512,7 +509,6 @@ private:
         return static_cast<int>(v);
     }
 
-    // Terminate the job: this rank cannot reach a collective its peers are entering (see guard_partition0_).
     [[noreturn]] auto abort_rank_(const char *verb, const char *what) -> void {
         std::print(stderr,
                    "monoprop: rank {} cannot complete the collective '{}' ({}). Its peer ranks are "
@@ -525,7 +521,6 @@ private:
         std::abort(); // MPI_Abort is not marked [[noreturn]]; unreachable in practice
     }
 
-    // See PartitionBarrier.
     auto sync() -> void { barrier_.sync(); }
 
     MPI_Comm parent_;

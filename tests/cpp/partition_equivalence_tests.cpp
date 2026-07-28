@@ -40,8 +40,6 @@ using pauli_oracle::slots_of_string;
 constexpr size_t kNumModes = 8;
 constexpr unsigned int kCutoff = 4;
 
-// ─── Majorana (fixture-driven) ───────────────────────────────────────────────
-
 auto majorana_sim(const CaseData &data, size_t partitions, std::optional<double> lower_atol = std::nullopt)
     -> MonomialPropagator<kNumModes> {
     return MonomialPropagator<kNumModes>(data.hamiltonian,
@@ -95,7 +93,6 @@ BOOST_AUTO_TEST_CASE(partition_majorana_gradient_matches_across_partition_counts
     }
 }
 
-// Same, on the contract-immediately propagate() path rather than build_graph().
 BOOST_AUTO_TEST_CASE(partition_majorana_propagate_then_expectation_matches) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto run = [&](size_t S) {
@@ -151,8 +148,7 @@ BOOST_AUTO_TEST_CASE(partition_contract_partially_matches_as_a_multiset) {
 }
 
 // The raw per-partition accessors have no facade reading: the facade's own graph_/mp_op_ are never
-// populated, so returning them would hand a C++ consumer empty state that looks valid. The suite
-// itself only ever reaches them at partitions=1, which is why nothing caught this.
+// populated, so returning them would hand a C++ consumer empty state that looks valid.
 BOOST_AUTO_TEST_CASE(partition_raw_accessors_reject_a_facade) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto sim = majorana_sim(data, 4);
@@ -162,7 +158,6 @@ BOOST_AUTO_TEST_CASE(partition_raw_accessors_reject_a_facade) {
     BOOST_CHECK_THROW(static_cast<void>(sim.indexing()), std::runtime_error);
     BOOST_CHECK_THROW(static_cast<void>(sim.graph_data()), std::runtime_error);
 
-    // The same calls on a single-partition propagator keep working.
     auto solo = majorana_sim(data, 1);
     solo.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     BOOST_CHECK_GT(solo.graph().layers(), 0U);
@@ -218,9 +213,6 @@ BOOST_AUTO_TEST_CASE(partition_deep_copy_matches) {
     BOOST_CHECK_EQUAL(sim.size(), copy.size());
 }
 
-// ─── Native Pauli (inline circuit) ───────────────────────────────────────────
-// Pauli strings map to Majorana-slot index vectors via pauli_oracle::slots_of_string.
-
 constexpr size_t kNq = 6;
 
 auto pauli_sim(const std::map<std::string, double> &obs, size_t partitions) -> MonomialPropagator<kNq> {
@@ -242,7 +234,6 @@ auto pauli_sim(const std::map<std::string, double> &obs, size_t partitions) -> M
                                    partitions);
 }
 
-// A kicked-Ising-style layer: transverse X rotations then ZZ couplings, driven at fixed angles.
 auto run_pauli_energy(size_t partitions) -> std::pair<double, size_t> {
     std::map<std::string, double> obs;
     obs["ZIIIII"] = 1.0;

@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Differential test of the backend-agnostic row accessors in TypeAliases.h: the dense-vector and
-// packed OperatorIndex backends must produce identical output for the same rows.
+// The dense-vector and packed OperatorIndex backends must agree through every TypeAliases.h accessor.
 
 #include <boost/test/unit_test.hpp>
 
@@ -65,7 +64,6 @@ BOOST_AUTO_TEST_CASE(row_accessor_backends_agree_multi_word) {
     check_backends_agree<96>({{0, 64, 191}, {5, 63, 64, 65}, {}, {128, 190}});
 }
 
-// assign_row overwrites an already-sized slot in place; both backends reflect the new row.
 BOOST_AUTO_TEST_CASE(row_accessor_assign_row_overwrites) {
     constexpr size_t N = 32;
     std::vector<Monomial<N>> dense;

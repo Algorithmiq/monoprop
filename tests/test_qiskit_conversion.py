@@ -99,7 +99,7 @@ class TestFromQiskitOperator:
         op = SparsePauliOp.from_list([("XZ", 1.0), ("IY", 1e-10)])
         result = from_qiskit_operator(op, atol=1e-8)
         assert len(result) == 1
-        assert Pauli("ZX", (0, 1)) in result.terms  # qiskit ordering
+        assert Pauli("ZX", (0, 1)) in result.terms
 
     def test_atol_default_keeps_large_terms(self):
         op = SparsePauliOp.from_list([("XZ", 1.0), ("IY", 0.1)])
@@ -127,7 +127,7 @@ class TestFromQiskitOperator:
         op = SparsePauliOp.from_list([("II", 0.5)])
         result = from_qiskit_operator(op)
         assert len(result) == 1
-        assert Pauli("II") in result.terms  # identity term (no letters)
+        assert Pauli("II") in result.terms
 
     def test_single_qubit_operator(self):
         op = SparsePauliOp.from_list([("Z", 1.0)])

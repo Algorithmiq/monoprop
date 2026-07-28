@@ -85,7 +85,7 @@ class PauliPropagator(MonomialPropagator):
             comm=comm,
             basis="pauli",
         )
-        # Carried into Pauli gate expansion via build_graph (_init_simulator sets it to None).
+        # Must follow _init_simulator, which resets it to None.
         self._num_qubits = num_qubits
 
     @property

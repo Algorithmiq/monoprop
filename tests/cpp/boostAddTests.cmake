@@ -42,8 +42,8 @@ set(properties ${TEST_PROPERTIES})
 set(script)
 set(tests)
 
-# Split the caller's PROPERTIES once into the LABELS and ENVIRONMENT entries (which each variant
-# extends) and everything else (which each variant inherits verbatim).
+# LABELS and ENVIRONMENT are split off because each variant extends them; every other caller
+# property is inherited verbatim.
 set(common_properties)
 set(common_labels_list)
 set(common_env_list)
@@ -91,8 +91,6 @@ function(add_command NAME)
   set(script "${script}${NAME}(${_args})\n" PARENT_SCOPE)
 endfunction()
 
-# The single registration path: every variant (serial, MPI) is one call. LABELS/ENVIRONMENT are
-# merged onto the common ones; the rest of the caller's properties pass through unchanged.
 # `script` and `tests` are written back because add_command's PARENT_SCOPE write lands here.
 function(register_variant NAME)
   cmake_parse_arguments("" "" "" "COMMAND;LABELS;ENVIRONMENT" ${ARGN})

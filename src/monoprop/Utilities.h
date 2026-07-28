@@ -44,20 +44,17 @@ constexpr auto make_repeating_bitset(uint64_t pattern) -> Bitset<N> {
     return bits;
 }
 
-// Repeating 0x5555...5555 pattern (even bits set) truncated to N bits.
 template <size_t N>
 constexpr auto even_bits() -> Bitset<N> {
     return make_repeating_bitset<N>(0x5555555555555555ULL);
 }
 
-// Repeating 0xAAAA...AAAA pattern (odd bits set) truncated to N bits.
 template <size_t N>
 constexpr auto odd_bits() -> Bitset<N> {
     return make_repeating_bitset<N>(0xAAAAAAAAAAAAAAAAULL);
 }
 } // namespace detail
 
-// Bitset with the even logical positions (0, 2, 4, …) set, truncated to N bits.
 // Under MSb0 the logical even positions are physically odd, so the pattern is swapped vs LSb0.
 template <size_t N, typename Ordering>
 constexpr auto even_bits() -> Bitset<N> {
@@ -68,7 +65,7 @@ constexpr auto even_bits() -> Bitset<N> {
         return detail::even_bits<N>();
     }
 };
-// Bitset with the odd logical positions (1, 3, 5, …) set; see even_bits() for the MSb0/LSb0 swap.
+// Same MSb0/LSb0 swap as even_bits().
 template <size_t N, typename Ordering>
 constexpr auto odd_bits() -> Bitset<N> {
     if constexpr (std::is_same_v<Ordering, MSb0>) {

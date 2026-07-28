@@ -33,7 +33,6 @@
 
 namespace monoprop::detail {
 
-// The cutoff state read by the fused scan and the even-parity generator-column scan it uses.
 inline auto build_majorana_evolution_cutoff_state(const std::optional<double> &atol,
                                                   std::optional<std::reference_wrapper<const VecD>> local_coeffs,
                                                   const std::optional<double> &upper_atol,
@@ -56,8 +55,7 @@ struct EvenParityGeneratorColumns {
     size_t count = 0;
 };
 
-// Collect a generator's set columns in ascending bit order. indices[0] (lowest) is the pivot ordinary
-// callers pass to even_parity_scan_pass1 (see LayerBuilder.h).
+// Set columns in ascending bit order.
 template <size_t NumModes>
 auto build_even_parity_generator_columns(const Monomial<NumModes> &gen_mono) -> EvenParityGeneratorColumns<NumModes> {
     EvenParityGeneratorColumns<NumModes> columns;
@@ -75,11 +73,10 @@ struct EvenParityNzWord {
     uint64_t foll;
 };
 
-// Even-parity scan pass 1: over words [wlo,whi), fold G's inverted index columns into a per-word overlap
-// mask, keep nonzero words in `nz`, and tally popcounts (n_anti, n_foll) so pass 2 reserves once.
+// Even-parity scan pass 1 over words [wlo,whi). n_anti/n_foll are tallied here so pass 2 reserves once.
 // `pivot_col` is read separately from `gen_cols` so a caller can fold a transformed generator while
-// splitting on the untransformed one; ordinary callers pass gen_cols[0]. `g_odd` XORs the per-row
-// parity(|M|) correction (row_parity_ptr) in before followers are derived.
+// splitting on the untransformed one. `g_odd` XORs the per-row parity(|M|) correction (row_parity_ptr)
+// in before followers are derived.
 template <size_t NumModes>
 inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                                    std::span<const size_t> gen_cols,
@@ -99,9 +96,9 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     const bool pivot_dense = sc.column_is_dense(pivot_col);
     const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_data(pivot_col) : nullptr;
     std::vector<uint64_t> &blk = column_block_scratch();
-    // Fold one word range [bb,be): combine G's columns and record nonzero-overlap words. A dense pivot is
-    // read inline; a sparse pivot is scatter-expanded lazily (only for blocks with a nonzero overlap, so
-    // no-anticommuter blocks skip it) via a deferred follower fix-up — bit-identical to eager expansion.
+    // A dense pivot is read inline; a sparse pivot is scatter-expanded lazily (only for blocks with a
+    // nonzero overlap, so no-anticommuter blocks skip it) via a deferred follower fix-up — bit-identical
+    // to eager expansion.
     auto fold_range = [&](size_t bb, size_t be) {
         combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
         const size_t nz_block_start = nz.size();
@@ -155,9 +152,8 @@ inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t mono_pop, const 
     return true;
 }
 
-// The three per-survivor products for term i: new_mono = M_i ⊕ G (the query partner), overlap = |M_i ∩ G|
-// (feeds the new popcount and the phase), and phase_factor — the basis-specific sign (Majorana
-// interleave_phase, folded with hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready).
+// phase_factor is the basis-specific sign only: Majorana interleave_phase, still to be folded with
+// hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready.
 template <size_t NumModes, Algebra A>
 [[gnu::always_inline]] inline auto emit_term_products(const OperatorIndex<NumModes> &ham,
                                                       size_t i,
@@ -165,7 +161,7 @@ template <size_t NumModes, Algebra A>
                                                       Monomial<NumModes> &new_mono,
                                                       size_t &overlap,
                                                       int &phase_factor) -> void {
-    Monomial<NumModes> mono; // zero-init, W words, lives in registers
+    Monomial<NumModes> mono;
     ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
     const Monomial<NumModes> &gen = A::generator(ctx);
     new_mono = mono ^ gen;
@@ -173,7 +169,6 @@ template <size_t NumModes, Algebra A>
     phase_factor = A::rotation_sign(ctx, mono, new_mono);
 }
 
-// Output of fused_find_and_collect.
 struct FusedScanResult {
     std::vector<CosMask> cos_blocks;               // ascending, disjoint, chunk order
     std::vector<VecZ> leader_queries;              // size R: serialized leader queries per owner rank
@@ -181,17 +176,16 @@ struct FusedScanResult {
     std::vector<VecZ> follower_queries;            // size R: serialized follower queries per owner rank
     std::vector<std::vector<size_t>> follower_src; // size R: parallel to follower_queries
     // Fused-contraction only (capture_values): signed pre-cos source coeff (v_src) parallel to
-    // leader_src / follower_src. Empty (never populated) when capture_values is false.
+    // leader_src / follower_src. Empty when capture_values is false.
     std::vector<std::vector<double>> leader_val;
     std::vector<std::vector<double>> follower_val;
 };
 
-// One pass fusing FindAnticommuting + apply_cutoffs: classify each anticommuting term leader/follower,
-// compress it into the cosine block, and emit surviving queries to the owner of M'=M⊕G (hash%R; self at
-// R==1) in ascending source-index order, so resolve and index assignment are deterministic.
-// `capture_values` (fused) also collects the signed pre-cos v_src. `fused_scale_coeffs` (k==0 only; must
-// alias coeffs.data()) scales every anticommuting coeff in place by `fused_scale_cos`=cos(2·build_angle),
-// so no cosine set is built and a hit's stored value is post-cos (resolve recovers it via 1/cos).
+// Classify, cut off and emit in one pass over the anticommuting terms. Queries go to the owner of
+// M'=M⊕G (hash%R; self at R==1) in ascending source-index order, so resolve and index assignment are
+// deterministic. `fused_scale_coeffs` (k==0 only; must alias coeffs.data()) scales every anticommuting
+// coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
+// value is post-cos (resolve recovers it via 1/cos).
 template <size_t NumModes, Algebra A>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const Monomial<NumModes> &gen,
@@ -225,7 +219,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // correction since parity(|G ∩ J(G)|)=0). The pivot splitting each pair is a set bit of the real G
         // (gen.find_first()), not J(G) — A and A⊕G differ exactly on G's bits.
         const Monomial<NumModes> fold_gen = A::fold_generator(gen);
-        // Odd |G| needs the per-row parity(|M|) correction (see even_parity_scan_pass1); Pauli never does.
         const bool g_odd = A::fold_needs_odd_correction(gen);
         const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
         if (gen_columns.count == 0) {
@@ -244,11 +237,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
 
         const size_t last_word = word_count - 1;
         const uint64_t last_word_mask = (n % 64 == 0) ? ~uint64_t{0} : ((uint64_t{1} << (n % 64)) - 1);
-        // Generator column list, pivot (lowest set column) first.
         const std::span<const size_t> gen_cols(gen_columns.indices.data(), gen_columns.count);
 
-        // Classify the fold columns in O(|G|): the scan can be skipped only when every fold column is
-        // empty (a dense column always holds ≥1 posting, so any dense column makes it non-empty).
+        // The scan can be skipped only when every fold column is empty; a dense column always holds ≥1
+        // posting, so any dense column makes it non-empty.
         bool fold_cols_empty = true;
         for (size_t ci = 0; ci < gen_columns.count; ++ci) {
             const size_t c = gen_columns.indices[ci];
@@ -270,9 +262,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
 
-        // Cutoff + emit for one anticommuting term, appending to the six streams above. The dynamic gate
-        // runs before emit_term_products, so a gate-rejected term computes no products. abs_c/v_src come
-        // from the caller's coeff read, not re-read.
+        // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
+        // abs_c/v_src come from the caller's coeff read, not re-read.
         auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
             if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
                 return;
@@ -335,9 +326,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             fq[my_rank].reserve(n_foll * kQueryWords<NumModes>);
             fs[my_rank].reserve(n_foll);
         }
-        // Pass 2: collect cosine for every anticommuting term, then apply cutoff + emit the query. No
-        // orbital gate → push each word's full overlap (push_word); orbital gate → per-index (push_index).
-        // derive_coeff gives (v_src, abs_c) for both arms; fused derives abs_c from the signed v_src.
         auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
             if (capture_values) {
                 const double v_src = (i < coeffs.size()) ? coeffs[i] : 0.0;
@@ -349,7 +337,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         CosineWordBuilder cos_b;
         for (const auto &w : nz) {
             if (word_aligned_cos && fused_scale_coeffs != nullptr) {
-                // Fused cos sweep (k==0): cosine-scale in place all anticommuting terms and emit survivors.
+                // Fused cos sweep: scaling in place here is what replaces building a cosine set.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;

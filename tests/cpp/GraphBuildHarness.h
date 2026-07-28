@@ -20,8 +20,8 @@
 
 #include "monoprop/MPGraph.h"
 
-// Direct-construction helpers for white-box MPGraph/Layer tests. A layer's gate_index is used purely
-// as a distinguishable tag so slice/view ordering can be asserted; the rest of the LayerCore is empty.
+// gate_index is only a distinguishable tag for asserting slice/view ordering; the rest of a LayerCore
+// is left empty.
 namespace test_utils {
 
 inline auto core_with_gate(std::size_t gate_index) -> std::shared_ptr<monoprop::LayerCore> {
@@ -34,8 +34,7 @@ inline auto layer_with_gate(std::size_t gate_index) -> monoprop::Layer {
     return monoprop::Layer(core_with_gate(gate_index));
 }
 
-// An MPGraph of `n` layers with gate_index 0..n-1, built via append() so the picture's internal
-// layer ordering (Heisenberg back-append, Schrödinger front-insert) is exactly as production builds it.
+// Built via append() so layer ordering (Heisenberg back-append, Schrödinger front-insert) is production's.
 inline auto graph_with_gates(bool schrodinger, std::size_t n) -> monoprop::MPGraph {
     monoprop::MPGraph graph(schrodinger);
     for (std::size_t i = 0; i < n; ++i) {

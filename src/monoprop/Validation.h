@@ -23,17 +23,15 @@ namespace monoprop {
 
 // Each of these throws std::runtime_error when the stated condition does not hold.
 
-// parameter_mapping and gen_coeffs must have equal lengths.
 monoprop_EXPORT auto validate_coefficient_lengths(const VecZ &parameter_mapping, const VecD &gen_coeffs) -> void;
 
-// gate_indices (which ingested gate each monomial came from) must have one entry per monomial and form
-// contiguous runs from 0 — each entry equal to the previous or previous+1.
+// gate_indices records which ingested gate each monomial came from: one entry per monomial, forming
+// contiguous runs from 0.
 monoprop_EXPORT auto validate_gate_indices(const VecZ &gate_indices, size_t num_monomials) -> void;
 
 // params must have max(parameter_mapping)+1 entries.
 monoprop_EXPORT auto validate_parameters_length(const VecD &params, const VecZ &parameter_mapping) -> void;
 
-// A functional call must supply exactly expected_num_params parameters.
 monoprop_EXPORT auto validate_functional_call(const VecD &parameters, size_t expected_num_params) -> void;
 
 // The graph must still have the layer count the functional was built against.

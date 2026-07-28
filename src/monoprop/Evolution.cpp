@@ -39,8 +39,8 @@ struct TrigValues {
     double cos_val;
     double sin_val;
     double sec_val;
-    double g_val;   // 2·gen_coeff
-    double tan_val; // sin/cos
+    double g_val; // 2·gen_coeff
+    double tan_val;
 
     explicit TrigValues(double param, double gen_coeff = 1.0) {
         const double g = 2.0 * gen_coeff;
@@ -89,14 +89,13 @@ auto active_evolution_exchange_layout(const LayerTraversal &layer, const mpi::Co
     return &layer.evolution_exchange_layout();
 }
 
-// In-flight cross-rank exchange handle; an empty ticket means nothing is in flight.
+// An empty ticket means nothing is in flight.
 struct CrossRankExchangeHandle {
     const LayerExchangeLayout *layout = nullptr;
     FlatExchangeBuffers *buffers = nullptr;
     [[no_unique_address]] mpi::Ticket ticket;
 };
 
-// Size the recv buffer from the cached layout and post the non-blocking payload transfer.
 inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers, const mpi::Comm &comm)
     -> CrossRankExchangeHandle {
     CrossRankExchangeHandle handle;
@@ -121,17 +120,15 @@ inline auto wait_flat_exchange(CrossRankExchangeHandle &handle) -> void {
     handle.ticket.wait();
 }
 
-// One in-flight cross-rank round, shared by the evolution and derivative paths: !active means the
-// caller's participation guard declined and no transfer was posted.
+// !active means the caller's participation guard declined and no transfer was posted.
 struct InFlightExchange {
     CrossRankExchangeHandle handle;
     int my_rank = 0;
     bool active = false;
 };
 
-// Buffer lifecycle for one round: acquire the thread's scratch, size it, let `pack` fill the send
-// buffer, then post. Callers run the participation guard first (see
-// active_evolution_exchange_layout) so the layout is never materialized at a single rank.
+// Callers run the participation guard first (see active_evolution_exchange_layout) so the layout is
+// never materialized at a single rank.
 template <typename Pack>
 inline auto begin_layer_exchange(const LayerExchangeLayout &layout, const mpi::Comm &comm, Pack pack)
     -> InFlightExchange {
@@ -146,8 +143,7 @@ inline auto begin_layer_exchange(const LayerExchangeLayout &layout, const mpi::C
     return in_flight;
 }
 
-// Wait for the transfer, then hand the payload to `apply(recv_buffer, recv_displs, my_rank)` and
-// return whatever it returns (an inactive round yields a default-constructed result).
+// An inactive round yields a default-constructed result without waiting.
 template <typename Apply>
 inline auto finish_layer_exchange(InFlightExchange &in_flight, Apply apply)
     -> std::invoke_result_t<Apply &, const VecD &, const std::vector<int> &, int> {
@@ -191,7 +187,7 @@ void pack_cross_rank_derivative_payload_impl(const std::vector<VecD> &sin_send_s
 }
 
 // Remote endpoint pass: own pre-cos values come from the sin_recv snapshots, partner values from the
-// received sin_send payload; accumulates the endpoint sums and overwrites state/op with the rotation.
+// received sin_send payload.
 auto apply_cross_rank_derivative_exchange_impl(VecD &state,
                                                VecD &op,
                                                const LayerTraversal &layer,
@@ -235,8 +231,7 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
     return local;
 }
 
-// In-flight cross-rank derivative exchange: pack + Ialltoallv fire up front so the transfer overlaps the
-// cos pass + self-slot; finish_cross_rank_derivative_exchange waits and applies the payloads.
+// Pack + Ialltoallv fire up front so the transfer overlaps the cos pass and the self-slot.
 inline auto begin_cross_rank_derivative_exchange(const std::vector<VecD> &sin_send_state,
                                                  const std::vector<VecD> &sin_send_op,
                                                  const LayerTraversal &layer,
@@ -254,8 +249,7 @@ inline auto begin_cross_rank_derivative_exchange(const std::vector<VecD> &sin_se
         });
 }
 
-// Wait for the transfer, then apply partner payloads at the remote sin_recv endpoints. must run after
-// the cos pass — the ordering is floating-point significant.
+// Must run after the cos pass — the ordering is floating-point significant.
 inline auto finish_cross_rank_derivative_exchange(VecD &state,
                                                   VecD &op,
                                                   const LayerTraversal &layer,
@@ -305,8 +299,7 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
                                               const VecD &recv_buffer,
                                               const std::vector<int> &recv_displs,
                                               int my_rank) {
-    // op[i] is already cos-scaled, so this only adds the sine rotation op[i] += sin·φ·partner_old,
-    // where recv[k] is the partner's pre-cos sin_send snapshot.
+    // op[i] is already cos-scaled, so only the sine term is added; rv[k] is the partner's pre-cos value.
     const size_t num_ranks = layer.cross_rank_rank_count();
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         if (static_cast<int>(rank) == my_rank) {
@@ -326,8 +319,6 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
     }
 }
 
-// In-flight cross-rank evolution exchange: pack + Ialltoallv fire up front so local compute overlaps;
-// finish_cross_rank_evolution_exchange applies the received contributions.
 inline auto begin_cross_rank_evolution_exchange(VecD &op, const LayerTraversal &layer, const mpi::Comm &comm)
     -> InFlightExchange {
     const auto *layout = active_evolution_exchange_layout(layer, comm);
@@ -363,14 +354,14 @@ auto apply_self_slot_derivative_paired(VecD &state,
     if (self_d_count == 0) {
         return {};
     }
-    const size_t pairs = self_d_count / 2; // rotation k = (sin_recv[k], sin_recv[k + pairs])
+    const size_t pairs = self_d_count / 2;
     EndpointContrib local{};
     for (size_t k = 0; k < pairs; ++k) {
         const size_t i1 = layer.cross_rank_sin_recv_index_at(my_rank, k);
         const double phi1 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k));
         const size_t i2 = layer.cross_rank_sin_recv_index_at(my_rank, k + pairs);
         const auto phi2 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k + pairs));
-        // Recover pre-cos values (read both endpoints before any write).
+        // Recover pre-cos values.
         const double s1 = state[i1] * trig.sec_val;
         const double h1 = op[i1] * trig.cos_val;
         const double s2 = state[i2] * trig.sec_val;
@@ -451,8 +442,6 @@ void snapshot_remote_endpoints(const VecD &state,
 
 } // namespace
 
-// Reverse-mode gradient contribution of one layer: applies the inverse rotation to (state, op) in place
-// and returns this layer's parameter-gradient term.
 auto state_operator_derivative_local_impl(VecD &state,
                                           VecD &op,
                                           const MPGraphView &graph,
@@ -466,7 +455,6 @@ auto state_operator_derivative_local_impl(VecD &state,
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = layer.cross_rank_rank_count();
 
-    // The cos pass clobbers state/op at every endpoint index, so remote endpoints are snapshotted pre-cos.
     auto &snap = derivative_snapshot_scratch();
     snapshot_remote_endpoints(state, op, layer, my_rank, R, snap);
     const auto &sin_send_state = snap.sin_send_state;
@@ -474,19 +462,16 @@ auto state_operator_derivative_local_impl(VecD &state,
     const auto &sin_recv_state = snap.sin_recv_state;
     const auto &sin_recv_op = snap.sin_recv_op;
 
-    // Fire the remote exchange now so the transfer overlaps the cos pass + self-slot below (no-op at
-    // single rank; the transfer touches only buffers, so concurrent state/op mutation is safe).
+    // No-op at single rank; the transfer touches only buffers, so the cos pass below may mutate state/op.
     auto in_flight = begin_cross_rank_derivative_exchange(sin_send_state, sin_send_op, layer, comm);
 
-    // Cos pass over all anticommuting indices via cos_acc: A = Σ s_old·h_old, then state*=cos, op*=sec.
+    // A = Σ s_old·h_old over all anticommuting indices, endpoints included — hence the subtraction below.
     const double A = cos_acc(layer_idx, state.data(), op.data(), trig.cos_val, trig.sec_val);
 
-    // Endpoint passes overwrite the endpoints and accumulate ep.cos_terms / ep.sin_terms.
     EndpointContrib ep;
     if (my_rank < R) {
         ep = apply_self_slot_derivative_paired(state, op, layer, my_rank, trig);
     }
-    // Wait for the transfer and apply remote partner payloads (after the cos pass).
     const auto remote =
         finish_cross_rank_derivative_exchange(state, op, layer, sin_recv_state, sin_recv_op, trig, in_flight);
     ep = combine_endpoint_contrib(ep, remote);
@@ -533,12 +518,10 @@ auto evolve_step_traversal_impl(VecD &op,
 
     // Pack + start the exchange before the cos scan so partner values are pre-cos and the transfer overlaps.
     auto in_flight = begin_cross_rank_evolution_exchange(op, layer, comm);
-    // Cos scaling via the mandatory callback; must stay between begin_/finish so the transfer overlaps it.
     cos_scale(layer_idx, op_data, cos_val);
     finish_cross_rank_evolution_exchange(op, layer, sin_val, in_flight);
 
-    // Apply the self-slot sin_recv entries: op[i] is already cos-scaled, so this only adds the sine
-    // rotation op[i] += sin·φ·self_b_snapshot[k].
+    // Self-slot sin_recv entries: op[i] is already cos-scaled, so only the sine term is added.
     if (self_b_count > 0) {
         const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);
         layer.for_each_cross_rank_sin_recv_range(my_rank,
@@ -565,7 +548,6 @@ auto evolve_step(VecD &op, const Layer &layer, double param, const detail::Layer
     evolve_step_traversal_impl(op, layer.traversal(), param, 0, comm, cos_scale);
 }
 
-// Forward-evolve `coeffs` through every layer in order, applying params[i] at layer i.
 auto evolve_operator_impl(VecD coeffs,
                           const MPGraphView &graph,
                           const VecD &params,

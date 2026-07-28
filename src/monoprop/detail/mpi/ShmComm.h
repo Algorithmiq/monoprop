@@ -44,7 +44,7 @@ public:
 
     auto size() const -> int { return n_; }
 
-    // Transpose per-rank send counts into per-rank recv counts: recv[s] = amount rank s sends to me.
+    // recv_counts[s] = what rank s sends to me (the transpose of the send-count matrix).
     auto alltoall_counts(int rank, const int *send_counts, int *recv_counts) -> void {
         slots_[static_cast<size_t>(rank)].counts = send_counts;
         sync();
@@ -83,9 +83,8 @@ public:
         sync();
     }
 
-    // Fused count-resolve + payload all-to-all in one round (2 syncs vs 4). recv_counts / recv_displs
-    // and `recv` (resized) are outputs. Same contiguous ascending-source ordering as alltoallv, which
-    // the query/response positional pairing depends on.
+    // Fused count-resolve + payload all-to-all in one round (2 syncs vs 4). Same contiguous
+    // ascending-source ordering as alltoallv, which the query/response positional pairing depends on.
     template <class T>
     auto alltoallv_resolve(int rank,
                            const T *send,
@@ -121,7 +120,6 @@ public:
         sync(); // B2: peers finished reading our send buffer before the caller may reuse it
     }
 
-    // Summed in ascending rank order.
     template <class T>
     auto allreduce_sum(int rank, T local_val) -> T {
         Slot &me = slots_[static_cast<size_t>(rank)];
@@ -146,8 +144,8 @@ public:
         return acc;
     }
 
-    // In-place element-wise allreduce-sum, ascending rank order (bit-identical on every rank). Safe in
-    // place: each element is read then overwritten by its single slice owner, and slices are cache-line-rounded.
+    // Safe in place: each element is read then overwritten by its single slice owner, and slices are
+    // cache-line-rounded.
     auto allreduce_sum_inplace(int rank, double *values, size_t len) -> void {
         slots_[static_cast<size_t>(rank)].vec = values;
         sync();
@@ -168,15 +166,14 @@ public:
         sync(); // peers write into our buffer (and read from it) until here
     }
 
-    // Called by the partition dispatcher when a participant unwinds. See PartitionBarrier::poison.
+    // See PartitionBarrier::poison / ::reset for when each is legal to call.
     auto poison() -> void { barrier_.poison(); }
 
-    // Clear the poison flag and arrival counter between collective rounds. See PartitionBarrier::reset.
     auto reset() -> void { barrier_.reset(); }
 
 private:
-    // One cache-line-isolated publish slot per rank (no false sharing). A rank writes only its own slot,
-    // and reads peers' slots only between the two barriers of a collective.
+    // One cache-line-isolated publish slot per rank. A rank writes only its own slot, and reads peers'
+    // slots only between the two barriers of a collective.
     struct alignas(64) Slot {
         const void *ptr = nullptr;
         const int *counts = nullptr;

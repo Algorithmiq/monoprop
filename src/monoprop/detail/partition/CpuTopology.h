@@ -32,22 +32,20 @@
 #include <sys/sysctl.h>
 #endif
 
-// CPU-topology helpers for partition placement (the one platform-specific file). Policy: one
-// single-threaded partition per physical core, spread across L3/ccx domains so each owns a distinct llc.
-// The Linux fast path parses /sys and pins each master, intersected with the process's allowed-CPU
-// mask; elsewhere partitions run unpinned (still correct, no locality win).
+// CPU-topology helpers for partition placement (the one platform-specific file). Policy: one partition per
+// physical core, spread across L3/ccx domains. The Linux fast path parses /sys and pins each master,
+// intersected with the process's allowed-CPU mask; elsewhere partitions run unpinned (still correct, no
+// locality win).
 
 namespace monoprop::detail::partition {
 
-// One physical core: a representative hardware-thread id to pin to, and its L3-domain id.
 struct PhysicalCore {
-    int cpu = 0;       // representative hardware thread (an allowed SMT sibling of the core)
-    int l3_domain = 0; // index of the shared-L3 group this core belongs to
+    int cpu = 0; // representative hardware thread (an allowed SMT sibling of the core)
+    int l3_domain = 0;
 };
 
 #if defined(__linux__)
 
-// On Linux a partition cpuset is a real affinity mask.
 using CpuSet = cpu_set_t;
 
 namespace topo_detail {
@@ -122,16 +120,15 @@ inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
         const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(cpu);
         const std::string sib = topo_detail::read_line(base + "/topology/thread_siblings_list");
         if (sib.empty()) {
-            continue; // this id is offline or absent; later ids may still be online
+            continue;
         }
         const auto siblings = topo_detail::parse_cpulist(sib);
         const int group_key = siblings.empty() ? cpu : *std::min_element(siblings.begin(), siblings.end());
         if (seen_cores.contains(group_key)) {
-            continue; // already recorded this physical core via another sibling
+            continue;
         }
         seen_cores.insert(group_key);
 
-        // Pin target = smallest allowed sibling; skip the core entirely if none of its siblings is ours.
         int rep = -1;
         if (siblings.empty()) {
             rep = is_allowed(cpu) ? cpu : -1;
@@ -170,7 +167,6 @@ inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
 // — two ranks must never share a core (one rank's busy-polling collectives would starve the other's
 // barrier spins). Empty (⇒ unpinned) if the host lacks group_count*n cores.
 inline auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1) -> std::vector<CpuSet> {
-    // monoprop_PARTITION_PINNING=0/false/n disables pinning (partitions run unpinned — still correct).
     if (!config::get().partition_pinning) {
         return {};
     }
@@ -182,7 +178,7 @@ inline auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_cou
     for (const auto &c : cores) {
         max_domain = std::max(max_domain, c.l3_domain);
     }
-    // Bucket by domain, then order: interleaved for a lone process, contiguous blocks for co-located ranks.
+    // Ordering: interleaved for a lone process, contiguous blocks for co-located ranks.
     std::vector<std::vector<int>> by_domain(static_cast<size_t>(max_domain) + 1);
     for (const auto &c : cores) {
         by_domain[static_cast<size_t>(c.l3_domain)].push_back(c.cpu);
@@ -233,7 +229,7 @@ inline auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_cou
     return sets;
 }
 
-// Pin the calling thread to `set`. A failing pthread call is ignored: only performance depends on it.
+// A failing pthread call is ignored: only performance depends on it.
 inline auto pin_this_thread(const CpuSet &set) -> void {
     pthread_setaffinity_np(pthread_self(), sizeof(CpuSet), &set);
 }

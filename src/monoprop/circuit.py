@@ -385,7 +385,6 @@ class Circuit:
         current_coeffs: list[complex] = []
 
         def _flush() -> None:
-            # Wire-format coefficients are already structural, so skip normalization.
             gates.append(
                 ExpGate._structural_gate(
                     MajoranaOperator._from_terms(

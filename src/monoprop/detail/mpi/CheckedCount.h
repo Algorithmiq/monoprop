@@ -24,14 +24,13 @@
 
 namespace monoprop::mpi {
 
-// Thrown when a collective's inputs are inconsistent with its communicator (e.g. a per-rank count
-// vector whose width is not the rank count), or when a payload outgrows MPI's int counts.
+// Covers both inputs inconsistent with the communicator (a count vector whose width is not the rank
+// count) and payloads that outgrow MPI's int counts.
 class CollectiveArgumentError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
-// Narrow a running count/displacement total to the int MPI takes, throwing rather than overflowing.
 // Per-rank counts are individually int-sized but their prefix sums need not be, so accumulate in
 // `long long` and funnel every result through here: a signed int accumulator would be UB on overflow,
 // and the wrapped value then sizes a buffer or becomes a negative displacement.
@@ -45,10 +44,10 @@ inline auto checked_mpi_count(long long value, const char *what = "Aggregate MPI
     return static_cast<int>(value);
 }
 
-// Same check for a buffer size, which is not int-bounded to begin with: a per-peer payload is
-// kWords<NumModes> + 1 elements per term, so a single wide-mode query round reaches INT_MAX well
-// inside the term space monoprop_WIDE_TERM_INDEX advertises. Kept separate from the `long long`
-// overload so a size_t above LLONG_MAX cannot sign-flip on the way into the check.
+// A buffer size is not int-bounded to begin with: a per-peer payload is kWords<NumModes> + 1 elements
+// per term, so a single wide-mode query round reaches INT_MAX well inside the term space
+// monoprop_WIDE_TERM_INDEX advertises. Kept separate from the `long long` overload so a size_t above
+// LLONG_MAX cannot sign-flip on the way into the check.
 inline auto checked_mpi_count(size_t value, const char *what = "MPI count") -> int {
     if (value > static_cast<size_t>(std::numeric_limits<int>::max())) {
         throw CollectiveArgumentError(std::format("{} {} does not fit in the MPI int limit {} (message too large).",

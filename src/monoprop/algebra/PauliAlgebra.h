@@ -14,9 +14,9 @@
 
 #pragma once
 
-// Pauli-native algebra over the shared Monomial container: a qubit Pauli string is stored in the same
-// bitset as a Majorana monomial, under the per-qubit JW image -- qubit q owns the physical pair
-// {2m, 2m+1}, m = N-1-q. (u,v) symplectic split with E = pauli_even_mask (physical even bits):
+// A qubit Pauli string is stored in the same bitset as a Majorana monomial, under the per-qubit JW
+// image -- qubit q owns the physical pair {2m, 2m+1}, m = N-1-q.
+// (u,v) symplectic split with E = pauli_even_mask (physical even bits):
 // v (z-plane) = w & E, u = (w >> 1) & E, x-plane = u ^ v; a qubit is Y iff (v=1, u=0), Z-only iff the
 // x-plane is empty. So xor_sum = popcount(x-plane), or_sum = Pauli weight, is_paired(P) iff P Z-only.
 
@@ -34,14 +34,12 @@
 
 namespace monoprop {
 
-// Physical-even-bit mask E (z-plane / v-plane selector) for the Pauli encoding.
 template <size_t NumModes>
 [[nodiscard]] inline constexpr auto pauli_even_mask() -> Monomial<NumModes> {
     return even_bits<2 * NumModes, LSb0>();
 }
 
 namespace detail {
-// The (u,v) symplectic planes of one physical word (e = pauli_even_mask's word).
 struct PauliUv {
     uint64_t v; // z-plane (even physical bits)
     uint64_t u; // odd-bit plane, aligned onto the even lane
@@ -65,7 +63,7 @@ template <size_t NumModes>
     return result;
 }
 
-// Total number of Y letters over all qubits (a Y has v=1, u=0).
+// A Y letter has v=1, u=0.
 template <size_t NumModes>
 [[nodiscard]] auto pauli_y_count(const Monomial<NumModes> &p) -> size_t {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
@@ -85,14 +83,14 @@ template <size_t NumModes>
 }
 
 namespace detail {
-// Reduce a (possibly negative) i-power exponent to [0, 4) for POWERS_OF_I indexing.
+// Reduce a (possibly negative) i-power exponent to [0, 4).
 [[nodiscard]] inline constexpr auto mod4(long e) -> int {
     return static_cast<int>(((e % 4) + 4) % 4);
 }
 } // namespace detail
 
-// Per-generator context for the hot emit-sign kernel: caches G, its popcount and Y count, and its
-// nonzero physical words so pauli_rotation_sign() can skip words outside G's support.
+// Per-generator context for the hot emit-sign kernel: nz_words lets pauli_rotation_sign() skip words
+// outside G's support.
 template <size_t NumModes>
 struct PauliGenContext final {
     Monomial<NumModes> gen{};
@@ -150,8 +148,7 @@ template <size_t NumModes>
     return (mono.count_and(state_mask) & 1) ? -1.0 : 1.0;
 }
 
-// Pauli strings are Hermitian so coeffs are already real: identity on the real part, rejecting any
-// stray imaginary component.
+// Pauli strings are Hermitian, so coefficients are already real -- no phase to normalize away.
 [[nodiscard]] inline auto encode_pauli_coeff(const std::complex<double> &coeff) -> double {
     if (std::abs(coeff.imag()) > 1e-10) {
         throw std::runtime_error("Non-real Pauli coeffs detected");

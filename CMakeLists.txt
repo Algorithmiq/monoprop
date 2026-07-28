@@ -26,9 +26,6 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-# A cache STRING rather than an option(): it holds a mode count, not a boolean. An explicitly
-# empty -Dmonoprop_MAX_NUM_MODES= is left empty and fails in the binding generators, instead of
-# silently reverting to the default. Every option below is echoed in the configuration report.
 set(
   monoprop_MAX_NUM_MODES
   "250"

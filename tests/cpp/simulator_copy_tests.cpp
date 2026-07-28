@@ -27,8 +27,7 @@
 using namespace test_utils;
 using namespace monoprop;
 
-// Deep copy is exposed via the copy constructor only; copy assignment is deliberately left deleted
-// (the unique_ptr-owned store needs no assignment).
+// Copy assignment is deliberately deleted: the unique_ptr-owned store needs no assignment.
 static_assert(std::is_copy_constructible_v<MonomialPropagator<8>>, "simulator must be copyable");
 static_assert(std::is_move_constructible_v<MonomialPropagator<8>>, "simulator must stay movable");
 static_assert(!std::is_copy_assignable_v<MonomialPropagator<8>>, "copy assignment stays deleted");
@@ -38,7 +37,7 @@ BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_matches_energy, ExampleDataFi
     auto sim = build_simulator<n_modes>(data, cfg);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
-    auto copy = sim; // copy after evolution
+    auto copy = sim;
 
     BOOST_TEST(copy.graph_layers() == sim.graph_layers());
     BOOST_TEST(copy.size() == sim.size());
@@ -52,15 +51,13 @@ BOOST_FIXTURE_TEST_CASE(copy_is_independent_of_source, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto sim = build_simulator<n_modes>(data, cfg);
 
-    auto copy = sim; // copy the un-evolved simulator
+    auto copy = sim;
     BOOST_TEST(copy.graph_layers() == 0u);
 
-    // Evolve only the source; the copy must be untouched.
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     BOOST_TEST(sim.graph_layers() > 0u);
     BOOST_TEST(copy.graph_layers() == 0u);
 
-    // Evolving the copy independently reproduces the same energy.
     copy.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const double e_sim = sim.expectation_value_functional()(data.parameters);
     const double e_copy = copy.expectation_value_functional()(data.parameters);
@@ -68,8 +65,8 @@ BOOST_FIXTURE_TEST_CASE(copy_is_independent_of_source, ExampleDataFix) {
 }
 
 // The layer list is per-instance (vector<Layer>); the immutable LayerCores are shared via shared_ptr.
-// Contracting one copy in place truncates only its layer list, and destroying it only drops its core
-// references, so the other copy's graph stays complete and still replays to the original energy.
+// Contracting one copy in place truncates only its own layer list, and destroying it only drops its
+// core references.
 BOOST_FIXTURE_TEST_CASE(copy_graph_survives_other_being_contracted_and_destroyed, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto original = build_simulator<n_modes>(data, cfg);
@@ -80,14 +77,12 @@ BOOST_FIXTURE_TEST_CASE(copy_graph_survives_other_being_contracted_and_destroyed
     const double e_before = original.expectation_value_functional()(data.parameters);
 
     {
-        auto copy = original; // deep copy; shares the immutable LayerCores
+        auto copy = original;
         BOOST_TEST(copy.graph_layers() == layers_before);
 
         copy.contract_partially(data.parameters, /*inplace=*/true);
         BOOST_TEST(copy.graph_layers() < layers_before);
         BOOST_TEST(original.graph_layers() == layers_before);
-
-        // `copy` is destroyed at the end of this scope, releasing its core references.
     }
 
     BOOST_TEST(original.graph_layers() == layers_before);
@@ -102,7 +97,6 @@ BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_index_valid, ExampleDataFix) 
 
     auto copy = sim;
 
-    // Every stored term must round-trip through the copy's own index, not the source's rows.
     const auto &idx = copy.indexing();
     BOOST_TEST(idx.size() == sim.indexing().size());
     bool all_found = true;

@@ -328,7 +328,6 @@ class TestCircuit:
 
     def test_pauli_gate_equality(self):
         gen = PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)
-        # Two distinct instances built from the same generator must compare equal.
         first = ExpGate(gen)
         second = ExpGate(gen)
         assert first == second

@@ -26,7 +26,7 @@
 
 namespace monoprop {
 
-// Per-rank breakdown of graph memory, in bytes; the fields sum to total_bytes().
+// One rank's own graph memory only.
 struct GraphMemoryBreakdown final {
     size_t layer_descriptor_bytes = 0;
     size_t layer_storage_object_bytes = 0;
@@ -39,7 +39,7 @@ struct GraphMemoryBreakdown final {
                + exchange_layout_bytes;
     }
 
-    // Field-wise sum, so a partitioned propagator can aggregate its per-partition graph breakdowns.
+    // Lets a partitioned propagator aggregate its per-partition graph breakdowns.
     auto operator+=(const GraphMemoryBreakdown &o) -> GraphMemoryBreakdown & {
         layer_descriptor_bytes += o.layer_descriptor_bytes;
         layer_storage_object_bytes += o.layer_storage_object_bytes;
@@ -50,8 +50,8 @@ struct GraphMemoryBreakdown final {
     }
 };
 
-// Windowed, optionally-reversed read-only view over a graph's layer vector. `reverse` traverses the window
-// newest-first (Schrödinger replay order). Non-owning — the layer vector must outlive the view.
+// `reverse` traverses the window newest-first (Schrödinger replay order). Non-owning — the layer vector
+// must outlive the view.
 class MPGraphView {
 public:
     MPGraphView(const std::vector<Layer> &layers, size_t base, size_t count, bool reverse)

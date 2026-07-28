@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The MonomialPropagator throw paths that define the public contract: ctor argument validation, the
-// operator/generator index range checks, the propagate()-on-a-stored-graph guard, get_layer bounds.
+// The MonomialPropagator throw paths that define the public contract.
 
 #include <boost/test/unit_test.hpp>
 
@@ -82,7 +81,7 @@ BOOST_AUTO_TEST_CASE(ctor_logical_num_modes_out_of_range_throws) {
 }
 
 BOOST_AUTO_TEST_CASE(ctor_pauli_requires_support_cutoff_throws) {
-    // Pauli basis + Length cutoff is rejected (Length has no Pauli-weight meaning).
+    // Length has no Pauli-weight meaning.
     BOOST_CHECK_THROW(
         make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, N, Basis::Pauli),
         std::invalid_argument);
@@ -119,8 +118,6 @@ BOOST_AUTO_TEST_CASE(build_graph_generator_index_out_of_range_throws) {
     BOOST_CHECK_NO_THROW(sim.build_graph({VecZ{0, 3}}, VecZ{0}, VecD{1.0}));
 }
 
-// A propagator over fewer logical modes than its instantiation must reject indices outside its own
-// system, not merely outside the storage width.
 BOOST_AUTO_TEST_CASE(generator_index_bound_is_logical_not_storage) {
     OperatorDict op;
     op[VecZ{0, 1}] = std::complex<double>(0.0, 1.0);
@@ -129,8 +126,7 @@ BOOST_AUTO_TEST_CASE(generator_index_bound_is_logical_not_storage) {
     BOOST_CHECK_THROW(sim.build_graph({VecZ{9}}, VecZ{0}, VecD{1.0}), std::runtime_error);
 }
 
-// The update_* setters must enforce the same invariants the constructor does, rather than writing
-// straight through to regenerate_cutoff_fn_().
+// The update_* setters must not write straight through to regenerate_cutoff_fn_().
 BOOST_AUTO_TEST_CASE(setters_enforce_the_constructor_invariants) {
     auto pauli =
         make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Support, std::nullopt, N, Basis::Pauli);
@@ -140,7 +136,6 @@ BOOST_AUTO_TEST_CASE(setters_enforce_the_constructor_invariants) {
     auto majorana = make(OperatorDict{});
     // Too few rows: regenerate_cutoff_fn_ indexes [0, 2*logical_num_modes) unconditionally.
     BOOST_CHECK_THROW(majorana.update_basis_change(std::vector<VecZ>{VecZ{0}}), std::invalid_argument);
-    // A row naming a slot outside the system is rejected as well.
     BOOST_CHECK_THROW(majorana.update_basis_change(std::vector<VecZ>(2 * N, VecZ{2 * N})), std::runtime_error);
     std::vector<VecZ> identity(2 * N);
     for (size_t i = 0; i < identity.size(); ++i) {
@@ -149,7 +144,6 @@ BOOST_AUTO_TEST_CASE(setters_enforce_the_constructor_invariants) {
     BOOST_CHECK_NO_THROW(majorana.update_basis_change(identity));
 }
 
-// propagate() must refuse to run on top of a graph already built by build_graph().
 BOOST_FIXTURE_TEST_CASE(propagate_on_nonempty_graph_throws, ExampleDataFix) {
     auto sim = build_simulator<n_modes>(data, SimulatorConfig{});
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
@@ -158,7 +152,7 @@ BOOST_FIXTURE_TEST_CASE(propagate_on_nonempty_graph_throws, ExampleDataFix) {
                       std::runtime_error);
 }
 
-// MPGraph::get_layer bounds-checks the layer index (checked_layer_offset throw site).
+// Pins MPGraph::get_layer's checked_layer_offset throw site.
 BOOST_FIXTURE_TEST_CASE(graph_get_layer_out_of_range_throws, ExampleDataFix) {
     auto sim = build_simulator<n_modes>(data, SimulatorConfig{});
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);

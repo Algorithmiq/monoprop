@@ -42,8 +42,7 @@ auto generator_of(const LayerTraversal &layer) -> Monomial<NumModes> {
     return gen;
 }
 
-// Reference oracle (test-only): replay a materialised FoldCache buffer. The live path recomputes each
-// layer's fold on the fly, so these cached replays exist only as the independent reference.
+// Reference oracle (test-only): replay a materialised FoldCache buffer, which the live path never does.
 template <size_t NumModes>
 void scale_cos_cached(const monoprop::detail::FoldCache<NumModes> &p, double *coeff, double cos_val) {
     const size_t mask_words = p.fold.mask_words;
@@ -169,8 +168,7 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
     }
 }
 
-// Snapshot invariance: the energy functional called twice with identical parameters must agree. It
-// lives here because it re-runs the same recompute machinery exercised above.
+// Lives here because it re-runs the same recompute machinery exercised above.
 BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto sim = build_simulator<n_modes>(data, cfg);

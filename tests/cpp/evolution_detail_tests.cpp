@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// MatchedEpochSet (the O(1)-clear follower-mark set) and CutoffContext (the atol / upper-atol gating
-// predicates), driven directly rather than through build_layer.
+// MatchedEpochSet and CutoffContext driven directly, not through build_layer.
 
 #include <boost/test/unit_test.hpp>
 
@@ -28,7 +27,6 @@ using namespace monoprop;
 using monoprop::detail::CutoffContext;
 using monoprop::detail::MatchedEpochSet;
 
-// begin_gate is an O(1) clear: a mark set in one gate must not survive into the next.
 BOOST_AUTO_TEST_CASE(matched_epoch_begin_gate_clears_all) {
     MatchedEpochSet set;
     set.begin_gate(5);
@@ -38,7 +36,7 @@ BOOST_AUTO_TEST_CASE(matched_epoch_begin_gate_clears_all) {
     BOOST_TEST(set.is_marked(4));
     BOOST_TEST(!set.is_marked(0));
 
-    set.begin_gate(5); // one counter bump -> every prior mark clears
+    set.begin_gate(5);
     BOOST_TEST(!set.is_marked(2));
     BOOST_TEST(!set.is_marked(4));
     set.mark(0);
@@ -53,9 +51,9 @@ BOOST_AUTO_TEST_CASE(matched_epoch_tail_grow) {
     set.mark(3);
     BOOST_TEST(set.is_marked(3));
 
-    set.begin_gate(8);             // grew from 4 to 8 slots
-    BOOST_TEST(!set.is_marked(3)); // old mark cleared by the epoch bump
-    set.mark(7);                   // new tail slot works
+    set.begin_gate(8);
+    BOOST_TEST(!set.is_marked(3));
+    set.mark(7);
     BOOST_TEST(set.is_marked(7));
     BOOST_TEST(!set.is_marked(3));
 }
@@ -71,12 +69,11 @@ BOOST_AUTO_TEST_CASE(matched_epoch_u32_wrap_resets) {
 
     set.begin_gate(4); // triggers the fill(0) + cur_ = 0 -> ++cur_ = 1 reset
     BOOST_TEST(set.cur_ == 1U);
-    BOOST_TEST(!set.is_marked(1)); // the stale UINT32_MAX slot must not read as marked
+    BOOST_TEST(!set.is_marked(1));
     set.mark(2);
     BOOST_TEST(set.is_marked(2));
 }
 
-// abs_coeff_for gates on use_coeff_checks and bounds the index.
 BOOST_AUTO_TEST_CASE(cutoff_context_abs_coeff_for) {
     const VecD coeffs{-3.0, 2.0, 0.0};
 
@@ -85,7 +82,7 @@ BOOST_AUTO_TEST_CASE(cutoff_context_abs_coeff_for) {
 
     CutoffContext on;
     on.use_coeff_checks = true;
-    BOOST_TEST(on.abs_coeff_for(0, coeffs) == 3.0); // |−3|
+    BOOST_TEST(on.abs_coeff_for(0, coeffs) == 3.0);
     BOOST_TEST(on.abs_coeff_for(1, coeffs) == 2.0);
     BOOST_TEST(on.abs_coeff_for(3, coeffs) == 0.0); // out of range -> 0
 }
@@ -96,13 +93,13 @@ BOOST_AUTO_TEST_CASE(cutoff_context_is_above_upper) {
     ctx.abs_sin_val = 0.5;
 
     ctx.check_upper_atol = false;
-    BOOST_TEST(!ctx.is_above_upper(100.0)); // disabled -> never rescues
+    BOOST_TEST(!ctx.is_above_upper(100.0));
 
     ctx.check_upper_atol = true;
     ctx.upper_atol_value = 1.0;
-    BOOST_TEST(ctx.is_above_upper(2.0));  // 0.5*2.0 == 1.0 -> boundary inclusive
-    BOOST_TEST(ctx.is_above_upper(4.0));  // 0.5*4.0 == 2.0 >= 1.0
-    BOOST_TEST(!ctx.is_above_upper(1.0)); // 0.5*1.0 == 0.5 < 1.0
+    BOOST_TEST(ctx.is_above_upper(2.0)); // 0.5*2.0 == 1.0 -> boundary inclusive
+    BOOST_TEST(ctx.is_above_upper(4.0));
+    BOOST_TEST(!ctx.is_above_upper(1.0));
 }
 
 // is_below_sin is the lower-atol drop predicate: enabled AND |sin|·|coeff| <= atol (inclusive).
@@ -111,11 +108,11 @@ BOOST_AUTO_TEST_CASE(cutoff_context_is_below_sin) {
     ctx.abs_sin_val = 2.0;
 
     ctx.check_atol = false;
-    BOOST_TEST(!ctx.is_below_sin(0.0)); // disabled -> never drops
+    BOOST_TEST(!ctx.is_below_sin(0.0));
 
     ctx.check_atol = true;
     ctx.atol_value = 1.0;
-    BOOST_TEST(ctx.is_below_sin(0.5));  // 2.0*0.5 == 1.0 -> boundary inclusive
-    BOOST_TEST(ctx.is_below_sin(0.1));  // 2.0*0.1 == 0.2 <= 1.0
-    BOOST_TEST(!ctx.is_below_sin(1.0)); // 2.0*1.0 == 2.0 > 1.0
+    BOOST_TEST(ctx.is_below_sin(0.5)); // 2.0*0.5 == 1.0 -> boundary inclusive
+    BOOST_TEST(ctx.is_below_sin(0.1));
+    BOOST_TEST(!ctx.is_below_sin(1.0));
 }

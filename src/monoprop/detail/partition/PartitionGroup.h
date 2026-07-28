@@ -33,8 +33,8 @@
 #include "monoprop/detail/partition/CpuTopology.h"
 
 // Intra-process partition runtime: S master threads, each pinned to a core and running an independent
-// MonomialPropagator over one hash partition — the SPMD engine an MPI rank runs, with an in-process
-// comm for the network. run_on_all must fan out to all masters: the collectives are barrier-synced.
+// MonomialPropagator over one hash partition, with an in-process comm standing in for the network.
+// run_on_all must fan out to all masters: the collectives are barrier-synced.
 
 namespace monoprop {
 
@@ -61,9 +61,8 @@ public:
         discover_node_peers_();
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_);
         start_masters_();
-        // First job: build each partition on its pinned master (first-touch locality). The masters are
-        // already running, so a ctor throw must not escape: ~PartitionGroup would never run, and destroying
-        // joinable threads during unwinding calls std::terminate.
+        // The masters are already running, so a ctor throw must not escape: ~PartitionGroup would never run,
+        // and destroying joinable threads during unwinding calls std::terminate.
         try {
             run_on_all([&](int r) { partitions_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
         }
@@ -73,8 +72,8 @@ public:
         }
     }
 
-    // Clone: fresh transport and threads over the same parent, deep-copy each partition on its new master,
-    // then rebind the copy's comm (it inherited src's handle).
+    // Fresh transport and threads over the same parent; each partition is deep-copied on its new master, then
+    // its comm rebound (the copy inherited src's handle).
     PartitionGroup(const PartitionGroup &src)
         : n_(src.n_),
           parent_(src.parent_),
@@ -131,8 +130,7 @@ public:
     }
 
 private:
-    // Stop and join every master. Shared by the destructor and the constructors' failure paths. Poison
-    // first so a master parked in a barrier is released rather than joined-on forever.
+    // Poison first so a master parked in a barrier is released rather than joined-on forever.
     auto stop_and_join_() noexcept -> void {
         transport_poison_();
         {
@@ -205,10 +203,8 @@ private:
         shm_->reset();
     }
 
-    // Spawning is itself a failure point — one std::thread per partition is O(100) threads, and a mid-loop
-    // std::system_error must not escape with live masters parked in masters_: they are joinable, and
-    // destroying a joinable thread while the caller's ctor unwinds calls std::terminate. Release and
-    // join what did start, then rethrow.
+    // Spawning is itself a failure point: one std::thread per partition is O(100) threads, and a mid-loop
+    // std::system_error must not escape with live masters parked in masters_ (see the primary ctor).
     auto start_masters_() -> void {
         masters_.reserve(static_cast<size_t>(n_));
         try {
@@ -226,7 +222,6 @@ private:
         if (!cpusets_.empty()) {
             pin_this_thread(cpusets_[static_cast<size_t>(rank)]);
         }
-        // Each partition runs the engine fully serially, keeping its mutable data owned by one core.
         unsigned seen = 0;
         for (;;) {
             const std::function<void(int)> *job = nullptr;
@@ -244,7 +239,7 @@ private:
             }
             catch (...) {
                 errs_[static_cast<size_t>(rank)] = std::current_exception();
-                transport_poison_(); // release peers waiting in a barrier so they don't hang
+                transport_poison_();
             }
             {
                 std::lock_guard lk(m_);
@@ -276,8 +271,8 @@ private:
     bool stop_ = false;
 };
 
-// Run `body(partition_rank)` on every master and collect one result per partition, indexed by partition rank.
-// The slots are written from the owning master, so `body` must not touch the vector itself.
+// One result per partition, indexed by partition rank. The slots are written from the owning master, so
+// `body` must not touch the vector itself.
 template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, int>>
 auto collect_on_all(PartitionGroup<NumModes> &group, Body body) -> std::vector<R> {
     std::vector<R> results(static_cast<size_t>(group.partition_count()));

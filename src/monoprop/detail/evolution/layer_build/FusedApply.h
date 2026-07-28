@@ -17,8 +17,8 @@
 #include <cmath>
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/detail/evolution/CosineRecompute.h"    // scale_cos_mask, CosMask
-#include "monoprop/detail/evolution/layer_build/Common.h" // FusedContract, RotationRec
+#include "monoprop/detail/evolution/CosineRecompute.h"
+#include "monoprop/detail/evolution/layer_build/Common.h"
 
 namespace monoprop::detail {
 
@@ -52,9 +52,9 @@ inline auto apply_fused_contract(FusedContract &fc,
     }
 
     // (3) One pass over hits ++ inserts ++ cross_half. Each op slot is touched by exactly one add (pivot
-    // split + ⊕G-injective targets + drop_matched_cross_rank_followers). Full rotations write both local
-    // endpoints; half rotations write only the slot this rank owns. In fused_scale mode a slot born after
-    // the sweep (insert targets, resolver miss halves) folds the gate's cos in here (c = cos·c + sin).
+    // split + ⊕G-injective targets + drop_matched_cross_rank_followers), which is what makes the plain +=
+    // safe. In fused_scale mode a slot born after the sweep (insert targets, resolver miss halves) folds
+    // the gate's cos in here (c = cos·c + sin).
     const size_t n_hit = fc.hits.size();
     const size_t n_full = n_hit + fc.inserts.size();
     const size_t n_cross = fc.cross_half.size();
@@ -71,7 +71,6 @@ inline auto apply_fused_contract(FusedContract &fc,
             }
         }
         else {
-            // Cross-rank half rotations (R>1): the wire-carried partner term, on the one slot this rank owns.
             const HalfRotationRec &h = fc.cross_half[k - n_full];
             if (fused_scale && h.is_insert) {
                 c[h.local_idx] = cos_val * c[h.local_idx] + sin_val * static_cast<double>(h.phase_signed) * h.v_partner;

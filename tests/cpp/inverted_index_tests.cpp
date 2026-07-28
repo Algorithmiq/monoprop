@@ -62,7 +62,6 @@ auto rows_of(const Sc &sc, size_t c) -> std::vector<size_t> {
 }
 } // namespace
 
-// row_parity_words() packs popcount(|M|)&1 over the current rows; the oracle is each row's popcount.
 BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
     const std::vector<MSet> op{
         bs({0, 1}),
@@ -110,7 +109,6 @@ BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
     BOOST_TEST(sc.rows() == kR);
     BOOST_TEST(sc.column_is_dense(col_of(0)));  // 10/128 >= 1/64
     BOOST_TEST(!sc.column_is_dense(col_of(1))); // 1/128  <  1/64
-    // The lone sparse hit is recorded losslessly.
     BOOST_TEST(sc.sparse_column_rows(col_of(1)).size() == 1u);
     BOOST_TEST(sc.sparse_column_rows(col_of(1))[0] == 0u);
 }
@@ -198,10 +196,10 @@ BOOST_AUTO_TEST_CASE(inverted_index_append_rows_matches_rebuild) {
     BOOST_TEST(parity_matches);
 }
 
-// combine_columns_block is the fold-combine kernel every scan and recompute path shares, and only
-// rebuild() was exercised before. It XORs the given columns' row bitmaps over a word range: XOR
-// associativity means any block decomposition reproduces the full-width fold bit-for-bit, and the
-// dense-column memcpy seed must equal memset + XOR-all.
+// combine_columns_block is the fold-combine kernel every scan and recompute path shares. It XORs the
+// given columns' row bitmaps over a word range: XOR associativity means any block decomposition
+// reproduces the full-width fold bit-for-bit, and the dense-column memcpy seed must equal
+// memset + XOR-all.
 BOOST_AUTO_TEST_CASE(combine_columns_block_folds_dense_and_sparse_identically) {
     constexpr size_t kR = 300; // 5 row words, so a block split has something to split
     std::vector<MSet> op;
@@ -247,7 +245,6 @@ BOOST_AUTO_TEST_CASE(combine_columns_block_folds_dense_and_sparse_identically) {
     combine_columns_block<N>(sc, cols, whole.data(), 0, words);
     BOOST_TEST(whole == expected, boost::test_tools::per_element());
 
-    // One word per call must reproduce the same fold word for word.
     std::vector<uint64_t> pieced(words, 0xdeadbeefULL);
     for (size_t w = 0; w < words; ++w) {
         combine_columns_block<N>(sc, cols, pieced.data() + w, w, w + 1);

@@ -26,8 +26,7 @@
 #include <utility>
 #include <vector>
 
-// Comm.h owns the MPI_Comm typedef and the runtime-tagged mpi::Comm handle; ShmComm.h is the
-// in-process transport a Kind::Shm handle dispatches to.
+// Comm.h owns the MPI_Comm typedef (real or non-MPI fallback) and the runtime-tagged mpi::Comm handle.
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/ShmComm.h"
@@ -42,7 +41,6 @@
 namespace monoprop::mpi {
 
 #ifdef monoprop_ENABLE_MPI
-// Idempotent.
 inline auto init(int *argc = nullptr, char ***argv = nullptr) -> void {
     auto initialized = 0;
     MPI_Initialized(&initialized);
@@ -61,7 +59,6 @@ inline auto init(int *argc = nullptr, char ***argv = nullptr) -> void {
     }
 }
 
-// Idempotent.
 inline auto finalize() -> void {
     int finalized = 0;
     MPI_Finalized(&finalized);
@@ -110,9 +107,8 @@ struct datatype {
     }
 };
 #else
-inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr)
-    -> void { /* no MPI to initialize in a non-MPI build */ }
-inline auto finalize() -> void { /* no MPI to finalize in a non-MPI build */ }
+inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr) -> void {}
+inline auto finalize() -> void {}
 #endif // monoprop_ENABLE_MPI
 
 inline auto rank(const Comm &comm) -> int {
@@ -184,8 +180,7 @@ inline auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
 #endif
 }
 
-// Exchange per-rank send counts for per-rank recv counts (MPI_Alltoall, or the ShmComm/HybridComm
-// transpose). Single-process Kind::Mpi build: identity copy (recv == send). `n` is the comm size.
+// `n` is the comm size.
 inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void {
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
@@ -236,8 +231,8 @@ struct PendingAlltoallv {
     }
 };
 
-// Post a variable-size all-to-all. The count exchange runs eagerly (recv_counts known on return); the
-// Kind::Mpi payload is non-blocking (wait_into completes it), Shm / single-process transfer here.
+// The count exchange runs eagerly (recv_counts known on return); the Kind::Mpi payload is non-blocking
+// (wait_into completes it), Shm / single-process transfer here.
 // skip_self: do not send the self slot (the caller handles self inline) — self send/recv = 0.
 // known_recv_counts: recv counts already known (e.g. the transpose of the query counts), so skip the
 // count exchange. The self slot is also zeroed when skip_self is set.
@@ -260,8 +255,8 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     h.recv_displs.resize(static_cast<size_t>(num_ranks));
 
     const int self = skip_self ? rank(comm) : -1;
-    // Wide accumulator + checked narrowing on the send side too, mirroring the recv prefix sum below:
-    // a wrapped count would size send_buffer short and then feed MPI a negative count/displacement.
+    // Wide accumulator + checked narrowing: a wrapped count would size send_buffer short and then feed
+    // MPI a negative count/displacement.
     long long total_send = 0;
     for (int i = 0; i < num_ranks; ++i) {
         const size_t n = (i == self) ? 0 : send_data[static_cast<size_t>(i)].size();
@@ -328,7 +323,7 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
         alltoall_counts(h.send_counts.data(), h.recv_counts.data(), num_ranks, comm);
     }
 
-    // Wide accumulator + checked narrowing: see checked_mpi_count. Mirrors resolve_recv's prefix sum.
+    // Wide accumulator + checked narrowing: see checked_mpi_count.
     long long running = 0;
     for (int i = 0; i < num_ranks; ++i) {
         h.recv_displs[static_cast<size_t>(i)] = checked_mpi_count(running, "Recv displacement");

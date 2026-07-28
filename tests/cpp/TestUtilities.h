@@ -144,7 +144,6 @@ inline auto near(double lhs, double rhs, double atol = 1e-9, double rtol = kFpRt
     return std::abs(lhs - rhs) <= (atol + rtol * scale);
 }
 
-// Driven by build_graph_tests.cpp.
 template <size_t n_modes>
 inline auto test_evolve_build_graph(const CaseData& data, const SimulatorConfig& cfg, bool pare, double exact_expval)
     -> void {
@@ -167,8 +166,7 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
                                                 double exact_expval) -> void {
     auto mp = build_simulator<n_modes>(data, cfg);
 
-    // Coefficient-informed build: the seed is regenerated internally from the parameters.
-    // gate_indices defaults (nullopt -> one gate per generator).
+    // Coefficient-informed build; the seed is computed internally and the bare nullopt is gate_indices.
     mp.build_graph(data.majoranas, data.param_inds, data.gen_coeffs, std::nullopt, data.parameters);
 
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
@@ -182,11 +180,9 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
 
 // As above, but split across two build_graph calls so the second one lands on an already non-empty
 // graph -- the only path that reaches build_graph's contract_partially() seeding branch. Schrodinger
-// only: a Heisenberg build consumes each call back-to-front, so a forward split is not equivalent to
-// one call, and a coefficient-informed extend needs each call's mapping to reference indices at least
-// as high as the stored graph's, which only a forward split gives. `cfg.schrodinger_cutoff` must be
-// set. Each call's `parameters` covers the prefix its own mapping reaches, which is also exactly what
-// the seeding guard demands of the second call.
+// only, so `cfg.schrodinger_cutoff` must be set: a Heisenberg build consumes each call back-to-front,
+// so a forward split is not equivalent to one call. Each call's `parameters` covers the prefix its own
+// mapping reaches, which is what the seeding guard demands of the second call.
 template <size_t n_modes>
 inline auto test_evolve_build_graph_with_coeffs_extend(const CaseData& data,
                                                        const SimulatorConfig& cfg,

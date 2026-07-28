@@ -56,7 +56,6 @@ auto world_rank() -> int {
 
 } // namespace
 
-// Global size() and rank() reflect the flat P=R*S world with rank-major ids.
 BOOST_AUTO_TEST_CASE(hybrid_comm_flat_size_and_rank) {
     if (world_size() < 2) {
         return;
@@ -80,7 +79,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_flat_size_and_rank) {
     }
 }
 
-// allreduce_sum: partition g contributes its global id g; every partition ends with sum_{0..P-1} g.
+// Each partition contributes its global id, so the expected total is sum_{g<P} g.
 BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_global) {
     if (world_size() < 2) {
         return;
@@ -105,7 +104,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_global) {
 }
 
 // begin_alltoallv must deliver each source's block contiguously in ascending global source order with
-// tags intact (Resolve.h's positional pairing). Partition g sends everyone (g%3+1) elts tagged g*1000+j.
+// tags intact (Resolve.h's positional pairing).
 BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
     if (world_size() < 2) {
         return;
@@ -203,7 +202,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_repeated_alltoallv_varying_sizes) {
 }
 
 // alltoallv_resolve driven directly: it folds the count MPI_Alltoall into the payload verb's B1→B2
-// window and sizes recv itself. Varying-size rounds check the total, the transpose, and source order.
+// window and sizes recv itself.
 BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
     if (world_size() < 2) {
         return;
@@ -267,7 +266,6 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
     BOOST_CHECK_EQUAL(failures.load(), 0);
 }
 
-// allreduce_sum_inplace: element-wise global sum over all P partitions, bit-identical on every partition.
 BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global) {
     if (world_size() < 2) {
         return;
@@ -315,7 +313,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_poison_releases_waiters) {
     for (const int S : {2, 3}) {
         auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
             if (u == 0) {
-                hyb.poison(); // partition 0 unwinds before reaching the collective — on every rank
+                hyb.poison();
                 return;
             }
             std::vector<int> send(static_cast<size_t>(world_size() * S), 1);

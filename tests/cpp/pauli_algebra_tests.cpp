@@ -31,7 +31,6 @@ using namespace pauli_oracle;
 
 namespace {
 
-// --- Reference oracles (test-only) -----------------------------------------------------------
 // Readable closed forms for quantities the hot path derives inline (pauli_rotation_sign), built on
 // the header's primitives (detail::pauli_uv, detail::mod4, pauli_y_count).
 
@@ -84,11 +83,9 @@ template <size_t NumModes>
 
 } // namespace
 
-// pair_swap involution + anticommutation, against string-level and dense-matrix oracles.
 BOOST_AUTO_TEST_CASE(pauli_algebra_pair_swap_and_anticommutation) {
     constexpr size_t N = 8;
 
-    // Exhaustive 1- and 2-qubit checks (also cross-checked against dense matrices).
     for (size_t n : {size_t{1}, size_t{2}}) {
         for (const auto &pa : all_strings(n)) {
             const auto a = native_bitset<N>(pa);
@@ -109,7 +106,6 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_pair_swap_and_anticommutation) {
         }
     }
 
-    // Randomized up to 6 qubits (single-word) + multiword (N=40) coverage.
     std::mt19937 rng(0xC0FFEEU);
     for (size_t trial = 0; trial < 4000; ++trial) {
         const size_t n = 1 + (rng() % 6);
@@ -150,7 +146,6 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_encoding_is_jw_image) {
     }
 }
 
-// Product phase pinned by dense-matrix brute force; emit sign for anticommuting pairs.
 BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
     constexpr size_t N = 4;
     for (size_t n : {size_t{1}, size_t{2}, size_t{3}}) {
@@ -188,7 +183,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
         }
     }
 
-    // pauli_rotation_sign == -pauli_emit_sign_antic for all pairs, including multiword (N=40).
+    // Multiword coverage (NW = 40 -> 2 words).
     constexpr size_t NW = 40;
     std::mt19937 rng(0xBEEF01U);
     for (size_t trial = 0; trial < 3000; ++trial) {
@@ -199,7 +194,6 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
     }
 }
 
-// Cutoff / weight / Z-only equivalence under the native encoding, incl. logical < NumModes.
 BOOST_AUTO_TEST_CASE(pauli_algebra_cutoff_and_weight_equivalence) {
     constexpr size_t N = 32; // single word (2N = 64)
     constexpr size_t logical = 6;
@@ -238,7 +232,6 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_state_phase) {
     std::bernoulli_distribution use_z(0.5);
 
     for (size_t trial = 0; trial < 3000; ++trial) {
-        // Random computational basis state b and state_mask (even/z-plane bits of occupied qubits).
         std::vector<int> b(n);
         VecZ occupied_slots;
         for (size_t q = 0; q < n; ++q) {

@@ -106,8 +106,6 @@ class TestGraphAndParameterValidation:
             )
         )
         functional = mp.expval_functional()
-        # Appending another layer mutates the graph, so the previously-built functional
-        # must reject being called against the stale plan.
         mp.build_graph(Circuit((ExpGate(MajoranaOperator({(2,): 1.0}, num_modes=2)),)))
         # Two parameters, so the stale-graph guard fires rather than the length check.
         with pytest.raises(RuntimeError, match=r"MP object has been modified"):

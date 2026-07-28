@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The pure MPIUtils.h primitives, exercised without an MPI runtime: the deterministic term->owner
-// mapping (find_rank) and the Majorana word (de)serialization that packs terms onto the wire.
+// The pure MPIUtils.h primitives (term->owner mapping, wire word packing), driven without a comm.
 
 #include <boost/test/unit_test.hpp>
 
@@ -25,7 +24,6 @@
 
 using namespace monoprop;
 
-// find_rank must return a value in [0, n_ranks), agree with hash % n_ranks, and be deterministic.
 BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
     constexpr size_t N = 32;
     std::mt19937_64 rng(0x9E3779B9ULL);
@@ -39,21 +37,19 @@ BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
         for (size_t n_ranks : {size_t{1}, size_t{2}, size_t{3}, size_t{7}}) {
             const size_t r = find_rank<N>(mono, n_ranks);
             BOOST_TEST(r < n_ranks);
-            BOOST_TEST(r == monomial_hash<N>(mono) % n_ranks); // matches the documented formula
-            BOOST_TEST(r == find_rank<N>(mono, n_ranks));      // deterministic
+            BOOST_TEST(r == monomial_hash<N>(mono) % n_ranks);
+            BOOST_TEST(r == find_rank<N>(mono, n_ranks)); // deterministic
         }
     }
 }
 
-// n_ranks == 0 is the documented degenerate case: owner is rank 0 (no modulo by zero).
+// n_ranks == 0 is degenerate: owner is rank 0, not a modulo by zero.
 BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_zero_ranks) {
     constexpr size_t N = 32;
     const auto mono = indices_to_bitset<N>(VecZ{0, 3, 5});
     BOOST_TEST(find_rank<N>(mono, 0) == 0U);
 }
 
-// append_monomial_words / read_monomial_from_words round-trip packed records at their offsets,
-// multi-word (N=96) and single-word (N=32) alike.
 BOOST_AUTO_TEST_CASE(mpi_utils_monomial_words_roundtrip) {
     constexpr size_t N = 96; // 2N = 192 bits -> 3 words
     const auto a = indices_to_bitset<N>(VecZ{0, 1, 100, 191});

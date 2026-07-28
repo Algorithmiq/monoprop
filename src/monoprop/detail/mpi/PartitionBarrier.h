@@ -22,16 +22,15 @@
 
 namespace monoprop::mpi {
 
-// Thrown when a peer partition poisoned the barrier instead of arriving: a permanent hang becomes a
-// propagating exception on every participant.
+// Turns what would be a permanent hang into an exception on every participant.
 class ShmCommPoisoned : public std::runtime_error {
 public:
     ShmCommPoisoned() : std::runtime_error("ShmComm poisoned: a peer partition threw during a collective") {}
 };
 
-// Sense-reversing generation barrier for a fixed number of in-process partition threads, with a poison
-// escape. Each barrier word gets a private cache line: if `gen_` shared `arrived_`'s line, spinners'
-// reloads would miss to L3 on every peer arrival — O(S) coherence bounces (measured top hotspot at S=112).
+// Sense-reversing generation barrier for a fixed number of in-process partition threads. Each barrier
+// word gets a private cache line: if `gen_` shared `arrived_`'s line, spinners' reloads would miss to
+// L3 on every peer arrival — O(S) coherence bounces (measured top hotspot at S=112).
 class PartitionBarrier {
 public:
     explicit PartitionBarrier(int participants) : participants_(participants) {}
@@ -67,13 +66,13 @@ public:
         }
     }
 
-    // Signal that this participant is unwinding (e.g. an engine exception): release peers spinning in a
-    // barrier so they throw ShmCommPoisoned rather than hang forever. Idempotent.
+    // Signal that this participant is unwinding (e.g. an engine exception), releasing peers spinning in a
+    // barrier. Idempotent.
     auto poison() -> void { poisoned_.store(true, std::memory_order_release); }
 
-    // Clear the poison flag and arrival counter. must be called only when every participant is quiescent
-    // (between rounds), so a poison-aborted round leaves no dirty state. `gen_` deliberately stays
-    // monotonic: each participant re-reads it at its next barrier.
+    // Must be called only when every participant is quiescent (between rounds), so a poison-aborted round
+    // leaves no dirty state. `gen_` deliberately stays monotonic: each participant re-reads it at its next
+    // barrier.
     auto reset() -> void {
         poisoned_.store(false, std::memory_order_relaxed);
         arrived_.store(0, std::memory_order_relaxed);

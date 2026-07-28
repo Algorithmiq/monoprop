@@ -35,8 +35,7 @@ struct LayerExchangeLayout final {
     std::vector<int> displs;
     size_t total_count = 0;
 
-    // Cached recv counts/displs (mpi::resolve_recv): a replayed graph's send pattern is fixed, so these
-    // repeat every eval. Reused while comm size matches; mutable — filled through const handles at eval time.
+    // Cached recv counts/displs (see mpi::resolve_recv); mutable — filled through const handles at eval time.
     mutable mpi::RecvLayoutCache recv_cache;
 };
 
@@ -53,7 +52,7 @@ inline auto checked_mpi_int(size_t value, const char *what) -> int {
 }
 
 // Per-rank MPI counts = send_counts[r] * scale, with prefix-sum displacements. send_counts is full-width
-// (size_t) so checked_mpi_int catches overflow; `what` names the layout in the overflow message.
+// (size_t) so checked_mpi_int catches the narrowing to MPI's int.
 inline auto build_layer_exchange_layout(const std::vector<size_t> &send_counts,
                                         int scale,
                                         const char *what = "Layer exchange") -> LayerExchangeLayout {
@@ -75,7 +74,7 @@ inline auto build_layer_exchange_layout(const std::vector<size_t> &send_counts,
 }
 
 // The derivative layout is the evolution layout at 2x (each rotation endpoint carries both the op and
-// state payload). Shared by the build-time overflow check and by LayerCore's lazy accessor.
+// state payload).
 inline auto build_derivative_exchange_layout(const LayerExchangeLayout &evolution) -> LayerExchangeLayout {
     std::vector<size_t> send_counts;
     send_counts.reserve(evolution.counts.size());
@@ -97,8 +96,8 @@ struct CosMask final {
     auto span_count() const -> size_t { return blocks.size(); } // number of 64-bit blocks
 };
 
-// Coalesces ascending absolute indices (or whole word-aligned blocks) into a CosMask. Indices/blocks
-// must arrive in ascending order.
+// Coalesces absolute indices (or whole word-aligned blocks) into a CosMask. Indices/blocks must arrive in
+// ascending order.
 struct CosineWordBuilder final {
     CosMask list;
     size_t cur_base = std::numeric_limits<size_t>::max();
@@ -198,8 +197,8 @@ private:
     mutable std::optional<LayerExchangeLayout> derivative_exchange_layout_cache_;
 };
 
-// Derived lazily (gradient path only) from the already-validated evolution counts. The 2x overflow check
-// itself is not deferred — build_layer_storage_unified validates it eagerly, see MPGraphEncodingStorage.h.
+// Derived lazily (gradient path only), but the 2x overflow check is not deferred with it:
+// build_layer_storage_unified validates it eagerly.
 inline auto LayerCore::derivative_exchange_layout() const -> const LayerExchangeLayout & {
     if (!derivative_exchange_layout_cache_) {
         derivative_exchange_layout_cache_ = detail::build_derivative_exchange_layout(evolution_exchange_layout);

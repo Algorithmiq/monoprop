@@ -22,9 +22,8 @@
 #include "monoprop/detail/evolution/layer_build/Common.h"
 
 // Query+value fusion codec: the fused R>1 exchange rides the source coefficient (v_src) on each query
-// record as a trailing bit-cast word so one alltoallv carries both streams. These pin that
-// build_fused_query_value, query_read at the fused stride and query_value round-trip the majorana,
-// phase and value byte-for-byte, including the FP corner cases a lossy value channel would mangle.
+// record as a trailing bit-cast word so one alltoallv carries both streams. Round-tripping must be
+// byte-for-byte, including the FP corner cases a lossy value channel would mangle.
 
 namespace {
 
@@ -38,7 +37,7 @@ using monoprop::detail::query_value;
 
 constexpr size_t kModes = 8; // 2*kModes = 16 majorana bits, one 64-bit word
 
-// A deterministic, distinct majorana bit pattern per record index, spread across the 16-bit range.
+// A deterministic, distinct majorana bit pattern per record index.
 auto make_mono(size_t r) -> Monomial<kModes> {
     Monomial<kModes> m;
     for (size_t b = 0; b < 2 * kModes; ++b) {
@@ -49,8 +48,6 @@ auto make_mono(size_t r) -> Monomial<kModes> {
     return m;
 }
 
-// build_fused_query_value(plain, values) then read back at the fused stride must reproduce every
-// majorana, phase, and value exactly, and the buffer must be nq * kQueryWordsFused words long.
 BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
     const std::vector<int> phases = {1, -1, 1, -1, 1, 1, -1};
     const std::vector<double> values = {
@@ -82,15 +79,14 @@ BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
         query_read<kModes, kQueryWordsFused<kModes>>(fused, q, m_out, ph_out);
         BOOST_CHECK(m_out == monos[q]);
         BOOST_CHECK_EQUAL(ph_out, phases[q]);
-        // value is bit-exact: compare the raw payload, so -0.0 and denormals are distinguished from 0.0
+        // Compare the raw payload, so -0.0 and denormals stay distinguished from 0.0.
         const double v_out = query_value<kModes>(fused, q);
         BOOST_CHECK(std::memcmp(&v_out, &values[q], sizeof(double)) == 0);
     }
 }
 
-// The interleave must reuse `out` across calls without leaking stale words: a large build followed by a
-// smaller one must leave exactly the smaller record set readable (capacity is high-water-mark, size is
-// exact). This is the reuse pattern LayerBuildEngine::combined_qv_ relies on gate to gate.
+// Reusing `out` across calls must leak no stale words: capacity is a high-water mark, size is exact.
+// This is the reuse pattern LayerBuildEngine::combined_qv_ relies on gate to gate.
 BOOST_AUTO_TEST_CASE(fused_buffer_reuse_shrinks_logical_size) {
     VecZ plain_big;
     std::vector<double> vbig;
@@ -109,14 +105,14 @@ BOOST_AUTO_TEST_CASE(fused_buffer_reuse_shrinks_logical_size) {
     }
     build_fused_query_value<kModes>(plain_small, vsmall, out);
     BOOST_CHECK_EQUAL(out.size(), vsmall.size() * kQueryWordsFused<kModes>);
-    BOOST_CHECK_GE(out.capacity(), cap_after_big); // HWM: capacity never shrank
+    BOOST_CHECK_GE(out.capacity(), cap_after_big);
     for (size_t q = 0; q < vsmall.size(); ++q) {
         const double v_out = query_value<kModes>(out, q);
         BOOST_CHECK(std::memcmp(&v_out, &vsmall[q], sizeof(double)) == 0);
     }
 }
 
-// Empty input (the self slot after resolve_self_queries clears it) must produce an empty fused buffer.
+// Empty input arises for the self slot, which resolve_self_queries clears before the exchange.
 BOOST_AUTO_TEST_CASE(fused_empty_input) {
     VecZ empty;
     std::vector<double> no_values;

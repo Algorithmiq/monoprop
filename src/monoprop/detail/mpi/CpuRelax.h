@@ -22,8 +22,7 @@
 
 namespace monoprop::mpi::detail {
 
-// One iteration of a polite busy-wait: a pause-class hint, off the syscall path, while a sibling
-// finishes its store.
+// One iteration of a polite busy-wait: a pause-class hint, off the syscall path, while a sibling stores.
 inline auto cpu_relax() noexcept -> void {
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
     _mm_pause();

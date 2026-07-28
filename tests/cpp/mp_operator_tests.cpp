@@ -79,8 +79,6 @@ auto sparse_state_equals(const detail::MPOperator<8>::SparseState &sparse, const
 
 } // namespace
 
-// ── state scoring: paired-only, ±1 phases, both algebra branches, sparse and dense surfaces ──────
-
 BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_pauli) {
     const VecZ initial_state = {0, 1}; // occupied modes
     for (const Basis basis : {Basis::Majorana, Basis::Pauli}) {
@@ -106,7 +104,6 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_paul
         BOOST_CHECK_EQUAL(sparse.rows[0], 0U);
         BOOST_CHECK_EQUAL(sparse.rows[1], 1U);
 
-        // Both dense surfaces must scatter to exactly the same vector.
         const VecD state = op.materialize_state();
         BOOST_REQUIRE_EQUAL(state.size(), 3U);
         BOOST_CHECK(state == expected_state(op, basis, initial_state));
@@ -156,12 +153,10 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) 
     BOOST_CHECK(op.dense_state() == second);
 }
 
-// ── get_operator: lazy sizing + init-map drain ───────────────────────────────────────────────────
-
 BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map) {
     const auto a = indices_to_bitset<8>({0, 1});
     const auto b = indices_to_bitset<8>({2, 3});
-    auto op = build_indexed_op({a, b}); // rows 0,1 indexed
+    auto op = build_indexed_op({a, b});
 
     const auto absent = indices_to_bitset<8>({4, 5});
     op.init_op_map[a] = 3.0;      // present in store -> should land on row 0 and be erased
@@ -177,8 +172,6 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map
     // Second call is a no-op fast path (size already matches).
     BOOST_CHECK(op.get_operator() == coeffs);
 }
-
-// ── update_initial_operator: picture branches + Pauli coeff encode ───────────────────────────────
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pauli) {
     const auto present = indices_to_bitset<8>({0, 2});
@@ -198,7 +191,6 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pau
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_rejects_absent_term) {
-    // store has only this term, init_op_map empty
     auto op = build_indexed_op({indices_to_bitset<8>({0, 2})}, Basis::Pauli);
 
     OperatorDict dict;
@@ -212,7 +204,6 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_abse
     OperatorDict dict;
     const auto fresh = indices_to_bitset<8>({1, 3, 5});
     dict[VecZ{1, 3, 5}] = cd(4.0, 0.0);
-    // Schrödinger admits an unknown term (goes to pending) rather than throwing.
     op.update_initial_operator(dict, /*schrodinger=*/true);
     BOOST_CHECK(op.init_op_map.find(fresh) != op.init_op_map.end());
 }
@@ -231,12 +222,10 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identit
     BOOST_CHECK_EQUAL(op.op_coeffs[0], 2.75);
 }
 
-// ── insert_absent_terms / inverted index / memory estimate / copy ────────────────────────────────
-
 BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {
     const auto e0 = indices_to_bitset<8>({0, 1});
     const auto e1 = indices_to_bitset<8>({2, 3});
-    auto op = build_indexed_op({e0, e1}); // two existing indexed rows
+    auto op = build_indexed_op({e0, e1});
 
     const std::vector<Monomial<8>> fresh = {indices_to_bitset<8>({4, 5}),
                                             indices_to_bitset<8>({6, 7}),

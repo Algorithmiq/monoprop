@@ -26,13 +26,13 @@
 
 namespace monoprop::detail {
 
-// Marks matched followers without a per-gate O(n) memset: slot i is marked iff epoch_[i] == cur_, so
-// starting a gate is one counter bump and all marks clear in O(1). Reused across gates.
+// Marks matched followers without a per-gate O(n) memset: one counter bump clears every mark. Reused
+// across gates.
 struct MatchedEpochSet {
     std::vector<uint32_t> epoch_;
     uint32_t cur_ = 0;
 
-    // Start a gate over slots [0, n). u32 wrap resets the array — once per 2^32-1 gates.
+    // u32 wrap resets the array — once per 2^32-1 gates.
     auto begin_gate(size_t n) -> void {
         if (cur_ == std::numeric_limits<uint32_t>::max()) {
             std::fill(epoch_.begin(), epoch_.end(), 0);
@@ -47,8 +47,8 @@ struct MatchedEpochSet {
     [[nodiscard]] auto is_marked(size_t i) const -> bool { return epoch_[i] == cur_; }
 };
 
-// A local operator index plus its ±1 phase. A trivial aggregate on purpose — not std::pair — so
-// DefaultInitVector can skip the zero-fill and lower the gather to memmove.
+// A trivial aggregate on purpose — not std::pair — so DefaultInitVector can skip the zero-fill and lower
+// the gather to memmove.
 struct PhasedEntry {
     size_t idx; // local target index for in_entries, local source index for out_entries
     int phase;
@@ -79,7 +79,7 @@ struct RotationRec {
 struct HalfRotationRec {
     size_t local_idx = 0;     // slot this rank owns: T (resolver) or S (querier)
     double v_partner = 0.0;   // partner's pre-cos coeff: v_src (resolver) / v_tgt (querier)
-    int32_t phase_signed = 0; // +φ (resolver) / −φ (querier), pre-signed for apply_cross_rank_evolution_exchange_impl
+    int32_t phase_signed = 0; // +φ (resolver) / −φ (querier), pre-signed so the apply never negates
     // Resolver miss halves write a slot inserted this gate (after the fused cos sweep), so the apply folds
     // the gate's cos in (c = cos·c + sin) instead of a plain add. False for hit/querier halves: pre-gate terms.
     bool is_insert = false;
@@ -104,8 +104,8 @@ inline constexpr size_t kQueryWords = mpi_detail::kWords<NumModes> + 1;
 template <size_t NumModes>
 inline constexpr size_t kQueryWordsFused = kQueryWords<NumModes> + 1;
 
-// Phase ↔ word codec for the trailing phase word. The unsigned-int intermediate normalizes the ±1 sign
-// bit into a fixed 32-bit pattern so the round-trip is exact for any VecZ element width. Edit as a pair.
+// The unsigned-int intermediate normalizes the ±1 sign bit into a fixed 32-bit pattern so the round-trip
+// is exact for any VecZ element width. Edit encode/decode as a pair.
 inline auto encode_phase(int phase) -> size_t {
     return static_cast<size_t>(static_cast<unsigned int>(phase));
 }
@@ -113,8 +113,7 @@ inline auto decode_phase(size_t word) -> int {
     return static_cast<int>(static_cast<unsigned int>(word));
 }
 
-// Value ↔ word codec for the fused record's trailing coefficient word. A lossless bit_cast between the
-// 64-bit VecZ element and double (static_assert guards the size match) ⇒ v_src arrives bit-identical.
+// bit_cast, not a conversion, so v_src arrives over the wire bit-identical.
 static_assert(sizeof(size_t) == sizeof(double), "fused query value word assumes 64-bit VecZ element");
 inline auto encode_value(double v) -> size_t {
     return std::bit_cast<size_t>(v);
@@ -138,20 +137,18 @@ inline auto query_read(const VecZ &buf, size_t q, Monomial<NumModes> &mono_out, 
     phase_out = decode_phase(buf[base + mpi_detail::kWords<NumModes>]);
 }
 
-// Read only the trailing phase word of query q — no monomial reconstruction (see process_responses).
+// No monomial reconstruction: process_responses needs only the phase.
 template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
 inline auto query_phase(const VecZ &buf, size_t q) -> int {
     return decode_phase(buf[q * QW + mpi_detail::kWords<NumModes>]);
 }
 
-// Read the value word of a fused record: v_src, the word right after the phase word.
 template <size_t NumModes>
 inline auto query_value(const VecZ &buf, size_t q) -> double {
     return decode_value(buf[q * kQueryWordsFused<NumModes> + mpi_detail::kWords<NumModes> + 1]);
 }
 
-// Interleave a rank's plain query records (`q`) with its parallel value stream (`v`, one double per query)
-// into the fused send buffer `out`. Requires v.size() == q.size()/kQueryWords.
+// Requires v.size() == q.size()/kQueryWords: exactly one value per query record.
 template <size_t NumModes>
 inline auto build_fused_query_value(const VecZ &q, const std::vector<double> &v, VecZ &out) -> void {
     constexpr size_t W = kQueryWords<NumModes>;

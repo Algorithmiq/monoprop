@@ -15,7 +15,7 @@
 #pragma once
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/algebra/MajoranaAlgebra.h" // CutoffEvaluator, Monomial
+#include "monoprop/algebra/MajoranaAlgebra.h"
 
 namespace monoprop::detail {
 

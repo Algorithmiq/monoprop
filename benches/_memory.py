@@ -14,13 +14,10 @@
 
 """RSS-based memory-measurement primitives for the benchmark suite.
 
-Two notes on what the per-test peak means:
-
-- **RSS.** We sample the process's resident set size directly.
-- **Peak-of-sum, not sum-of-peaks.** The peak is ``max over time`` of the summed
-  RSS. Summing each rank's independently-timed peak counts transients that never
-  coexisted. Comparable wall-clock timestamps let :func:`merge_peak_of_sum`
-  recover the true peak-of-sum.
+What the per-test peak means: **peak-of-sum, not sum-of-peaks.** The peak is
+``max over time`` of the summed RSS. Summing each rank's independently-timed peak
+counts transients that never coexisted. Comparable wall-clock timestamps let
+:func:`merge_peak_of_sum` recover the true peak-of-sum.
 """
 
 from __future__ import annotations
@@ -38,8 +35,8 @@ if TYPE_CHECKING:
     from types import TracebackType
     from typing import Self
 
-# RSS sampling cadence. monoprop's heavy work runs in C++  with the
-# GIL released, so the background sampler costs an idle core, not the timed thread.
+# RSS sampling cadence. monoprop's heavy work runs in C++ with the GIL released, so
+# the background sampler costs an idle core, not the timed thread.
 SAMPLE_INTERVAL_S = 0.005
 
 
@@ -99,7 +96,7 @@ class RssSampler:
             self._stop.wait(self._interval)
 
     def __enter__(self) -> Self:
-        self._samples.append((time.time(), rss_bytes()))  # baseline before the op
+        self._samples.append((time.time(), rss_bytes()))
         self._thread.start()
         return self
 
@@ -111,7 +108,7 @@ class RssSampler:
     ) -> None:
         self._stop.set()
         self._thread.join()
-        self._samples.append((time.time(), rss_bytes()))  # final state after the op
+        self._samples.append((time.time(), rss_bytes()))
 
     @property
     def samples(self) -> list[tuple[float, int]]:

@@ -22,9 +22,8 @@
 
 namespace monoprop::detail {
 
-// Per-layer cosine callbacks; `layer` selects the cosine set to replay.
-//   LayerCosScale      — forward: scale operator coefficients in place by cos θ.
-//   LayerCosAccumulate — reverse: apply cos θ / sec θ to state and ham, returning the layer's gradient term.
+// Per-layer cosine callbacks; `layer` selects the cosine set to replay. Scale is the forward path
+// (coeff *= cos); Accumulate is the reverse path (state *= cos, ham *= sec) and returns Σ state·ham.
 using LayerCosScale = std::function<void(size_t layer, double *coeff, double cos_val)>;
 using LayerCosAccumulate =
     std::function<double(size_t layer, double *state, double *ham, double cos_val, double sec_val)>;

@@ -55,9 +55,6 @@ def _rebase(gates):
     return tuple(ExpGate._with_index(gate, None) for gate in gates)
 
 
-# -- the Circuit type -----------------------------------------------------------
-
-
 def test_exp_rejects_bare_term() -> None:
     majorana_term = Majorana(0, 1)
     pauli_term = Pauli("X", 0)
@@ -69,7 +66,6 @@ def test_exp_rejects_bare_term() -> None:
 
 def test_exp_equality_and_repr() -> None:
     gen = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
-    # Two distinct instances built from the same generator must compare equal.
     first = ExpGate(gen, index=0)
     second = ExpGate(gen, index=0)
     assert first == second
@@ -319,9 +315,6 @@ def test_hermitian_majorana_generator_matches_structural() -> None:
         np.testing.assert_allclose(value, from_structural[key])
 
 
-# -- evaluation contracts -------------------------------------------------------
-
-
 @pytest.mark.parametrize("fixture", FIXTURES)
 def test_expectation_value_matches_exact(fixture: str) -> None:
     problem = load_problem(DATA / f"{fixture}.msgpack")
@@ -330,7 +323,6 @@ def test_expectation_value_matches_exact(fixture: str) -> None:
     prop.build_graph(circuit)
 
     assert prop.n_parameters == circuit.n_parameters
-    # The circuit carries its own parameters, so it can be evaluated directly.
     np.testing.assert_allclose(prop.expval(circuit), problem.exact_expval)
     np.testing.assert_allclose(prop.expval(circuit.parameters), problem.exact_expval)
     np.testing.assert_allclose(prop.grad(circuit), problem.exact_gradient, atol=1e-9)
@@ -373,9 +365,6 @@ def test_from_circuit_propagates_in_place() -> None:
     np.testing.assert_allclose(prop.expval(), manual.expval())
 
 
-# -- the graph-owned parameter mapping ------------------------------------------
-
-
 def test_parameter_mapping_getter_reflects_graph() -> None:
     problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
@@ -397,7 +386,6 @@ def test_parameter_mapping_setter_ties_parameters() -> None:
     prop.build_graph(circuit)
     n_layers = prop.graph_layers
 
-    # Tying every layer to one angle must equal the untied graph with that angle broadcast.
     prop.parameter_mapping = [0] * n_layers
     assert prop.n_parameters == 1
     tied = prop.expval([0.3])
@@ -415,7 +403,7 @@ def test_parameter_mapping_setter_validates() -> None:
     prop.build_graph(circuit)
 
     with pytest.raises(ValueError, match=r"per graph layer.*per gate"):
-        prop.parameter_mapping = [0]  # length matches neither layers nor gates
+        prop.parameter_mapping = [0]
     with pytest.raises(ValueError, match="contiguous"):
         prop.parameter_mapping = [i + 1 for i in range(prop.graph_layers)]  # no 0
 
@@ -424,7 +412,6 @@ def _multi_term_gate_propagator():
     """A propagator whose graph has a multi-term gate (n_gates < graph_layers)."""
     op = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(op, [0, 1], cutoff=4)
-    # two monomials -> two layers
     g0 = ExpGate(MajoranaOperator({(0, 2): 1.0j, (1, 3): 1.0j}, num_modes=2))
     g1 = ExpGate(MajoranaOperator({(2,): 1.0}, num_modes=2))
     prop.build_graph(Circuit((g0, g1)))
@@ -434,7 +421,7 @@ def _multi_term_gate_propagator():
 def test_n_gates_tracks_ingested_gates() -> None:
     prop = _multi_term_gate_propagator()
     assert prop.n_gates == 2
-    assert prop.graph_layers > prop.n_gates  # gate 0 expands to multiple layers
+    assert prop.graph_layers > prop.n_gates
 
 
 def test_n_gates_accumulates_across_builds() -> None:
@@ -450,12 +437,11 @@ def test_parameter_mapping_setter_accepts_per_gate() -> None:
     """A per-gate mapping (length n_gates) ties a multi-term gate's layers together."""
     prop = _multi_term_gate_propagator()
 
-    # Tying both gates to one angle must equal the per-layer-tied graph at the same angle.
-    prop.parameter_mapping = [0, 0]  # length == n_gates
+    prop.parameter_mapping = [0, 0]
     assert prop.n_parameters == 1
     tied_by_gate = prop.expval([0.3])
 
-    prop.parameter_mapping = [0] * prop.graph_layers  # length == graph_layers
+    prop.parameter_mapping = [0] * prop.graph_layers
     tied_by_layer = prop.expval([0.3])
     np.testing.assert_allclose(tied_by_gate, tied_by_layer)
 
@@ -489,9 +475,6 @@ def test_propagate_accepts_empty_initial_state() -> None:
     circuit = Circuit((gate,), parameters=(0.1,))
 
     prop.propagate(circuit)  # does not raise
-
-
-# -- building the graph incrementally -------------------------------------------
 
 
 def _schrodinger_propagator(problem):
@@ -591,8 +574,6 @@ def test_build_graph_twice_with_seed_regeneration(fixture: str) -> None:
     np.testing.assert_allclose(prop.expval(params), problem.exact_expval)
 
 
-# --- Regression tests for the interface-refactor review ---------------------------------
-
 _OBS = MajoranaOperator({(0, 1, 2, 4): 1.0}, 8)
 
 
@@ -619,7 +600,7 @@ def test_empty_default_mapping_gate_dropped_and_evaluable() -> None:
     prop = _small_propagator()
     prop.build_graph(circuit)
     assert prop.graph_layers == 1
-    prop.expval(circuit.parameters)  # previously raised a length mismatch
+    prop.expval(circuit.parameters)  # does not raise
 
 
 def test_empty_gate_in_middle_builds_contiguously() -> None:
@@ -636,7 +617,7 @@ def test_empty_gate_in_middle_builds_contiguously() -> None:
     )
     assert len(circuit.gates) == 2
     prop = _small_propagator()
-    prop.build_graph(circuit)  # gate indices stay contiguous across the drop
+    prop.build_graph(circuit)
     assert prop.graph_layers == 2
 
 
@@ -714,7 +695,6 @@ def test_failed_build_graph_does_not_advance_the_parameter_axis() -> None:
         prop.build_graph(circuit, seed_parameters=[0.5])
     assert prop.n_parameters == 0
 
-    # The retry stores its layers at index 0, exactly as if the failure had never happened.
     prop.build_graph(circuit, seed_parameters=[0.5, 0.3])
     assert prop.n_parameters == 2
     assert min(prop.parameter_mapping) == 0
@@ -745,7 +725,6 @@ def test_inplace_contraction_resets_the_parameter_axis() -> None:
     assert prop.graph_layers == 0
     assert prop.n_parameters == 0
 
-    # One gate on a consumed graph takes one value, at index 0.
     c2 = Circuit(
         gates=(ExpGate(MajoranaOperator({(0, 1): -1.0j}, num_modes=8)),),
         parameters=(0.4,),
@@ -782,13 +761,13 @@ def test_extend_without_seed_builds_structurally() -> None:
 
     extended = _small_propagator(lower_atol=1e-15)
     extended.build_graph(c1)
-    extended.build_graph(c2)  # no seed_parameters: structural extension, no raise
+    extended.build_graph(c2)
     assert extended.n_parameters == 2
     np.testing.assert_allclose(extended.expval(params), reference)
 
     seeded = _small_propagator(lower_atol=1e-15)
     seeded.build_graph(c1)
-    seeded.build_graph(c2, seed_parameters=params)  # explicit full-axis seed
+    seeded.build_graph(c2, seed_parameters=params)
     np.testing.assert_allclose(seeded.expval(params), reference)
 
 
@@ -815,7 +794,7 @@ def test_with_index_preserves_atol() -> None:
     default 1e-8 instead would silently delete terms the author explicitly kept.
     """
     gate = ExpGate(MajoranaOperator({(0, 1): 1e-10j}, num_modes=2), atol=0.0)
-    assert gate.generator.terms  # kept by atol=0.0
+    assert gate.generator.terms
 
     concatenated = Circuit((gate,)) + Circuit(())
 

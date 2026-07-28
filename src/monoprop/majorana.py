@@ -86,8 +86,7 @@ class Majorana:
             ValueError: If any index is negative.
         """
         if any(i < 0 for i in indices):
-            # better to check as negative indices might cancel out
-            # (and should still not be allowed)
+            # Checked first: the pair cancellation below would hide a repeated negative index.
             raise ValueError(f"Majorana indices must be non-negative; got {indices}.")
         sorted_values = _remove_repeated_pairs(tuple(sorted(indices)))
         sign = float(_parity(indices))
@@ -128,7 +127,6 @@ class MajoranaOperator:
         why a propagator and [ExpGate][monoprop.circuit.ExpGate] both take an operator rather than a
         bare [Majorana][] term.
         """
-        # Route raw index tuples through phase-aware canonicalization in _accumulate.
         majoranas = [
             key.indices if isinstance(key, Majorana) else tuple(key) for key in terms
         ]

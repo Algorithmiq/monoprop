@@ -33,8 +33,8 @@ namespace {
 
 constexpr size_t kNumModes = 8;
 
-// Mirrors the streaming provider the pare functional uses: fold the operator's even-parity
-// inverted index truncated to each layer's scaled_count.
+// Mirrors the streaming provider the pare functional uses: fold the operator's inverted index,
+// truncated to each layer's scaled_count.
 template <size_t NumModes>
 auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_index, const LayerTraversal &layer)
     -> CosMask {
@@ -96,7 +96,6 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
         return cos;
     };
 
-    // Keep every real index, but not the synthetic one.
     VecZ seed;
     seed.reserve(state.size());
     for (size_t i = 0; i < state.size(); ++i) {
@@ -122,8 +121,6 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
     BOOST_TEST(pared.get_layer(marked_layer).pruned_cos() != static_cast<const CosMask *>(nullptr));
 }
 
-// The pared energy matches the unpared energy at a tiny threshold (prunes ~nothing) up to
-// floating-point summation order, and stays within tolerance of the exact energy at a real one.
 BOOST_AUTO_TEST_CASE(pare_graph_energy_matches_unpared) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
@@ -142,7 +139,6 @@ BOOST_AUTO_TEST_CASE(pare_graph_energy_matches_unpared) {
     const double e_tiny = ev_tiny(data.parameters);
     BOOST_CHECK_SMALL(std::abs(e_full - e_tiny), 1e-12);
 
-    // Pared at a real threshold: close to the exact energy (mirrors mpi_pare expectations).
     auto sim_real = build_simulator<kNumModes>(data, cfg);
     sim_real.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     auto ev_real = sim_real.expectation_value_functional(std::optional<double>{1e-10});

@@ -151,7 +151,6 @@ jobs:
     runs-on: ubuntu-26.04
 
     env:
-      # The coverage-gcc preset builds here; every path below derives from it.
       BUILD_DIR: build/coverage-gcc
 
     steps:
@@ -254,11 +253,9 @@ jobs:
       contents: read
 
     env:
-      # Build the compiled extension with the Coverage build type so the C++
-      # code exercised through the Python bindings is instrumented for gcov.
+      # Instruments the C++ reached through the Python bindings for gcov.
       SKBUILD_CMAKE_BUILD_TYPE: Coverage
-      # Keep the instrumented build directory around so gcov can find the
-      # .gcno/.gcda files after the tests have run.
+      # A persistent build dir, so gcov can still find the .gcno/.gcda files after the tests run.
       SKBUILD_BUILD_DIR: ${{ github.workspace }}/build-python-coverage
 
     steps:
@@ -475,9 +472,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
 
-      # Builds with a 64-bit TermIndex so the monoprop_WIDE_TERM_INDEX #if branches
-      # (operator_index_tests, large_cosine_storage_tests) are actually compiled and run.
-      # Serial coverage is enough to exercise those branches. No C++ job here enables
+      # Builds with a 64-bit TermIndex so the monoprop_WIDE_TERM_INDEX #if branches are actually
+      # compiled and run; serial coverage is enough to exercise them. No C++ test job here enables
       # monoprop_ENABLE_MPI, so the mpi-labelled variants only run locally (`just test-cpp-mpi`);
       # CI's MPI coverage comes from the Python suite under mpiexec in python-checks.
       - name: Configure (wide TermIndex)

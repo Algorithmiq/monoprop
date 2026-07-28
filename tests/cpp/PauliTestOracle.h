@@ -35,8 +35,6 @@ using cd = std::complex<double>;
 
 inline constexpr char LETTERS[4] = {'I', 'X', 'Y', 'Z'};
 
-// ── Native encoding ──────────────────────────────────────────────────────────
-
 // Native gamma-slot list for a Pauli string: X_q -> slot 2q, Y_q -> slot 2q+1,
 // Z_q -> {2q, 2q+1}. This is the format the propagator's initial_operator and
 // generators expect.
@@ -83,8 +81,6 @@ auto letter_from_bitset(const Monomial<NumModes> &mono, size_t q) -> char {
     }
     return 'Z';
 }
-
-// ── Jordan-Wigner image ──────────────────────────────────────────────────────
 
 // Faithful C++ port of _pauli_to_fermi (conversion_utils.py) -- indices only
 // (coeff dropped; the bitset only cares which Majorana modes are present).
@@ -143,8 +139,6 @@ auto jw_basis(size_t n) -> MonomialList<NumModes> {
     }
     return basis;
 }
-
-// ── Dense Pauli-matrix brute force ───────────────────────────────────────────
 
 inline auto single_letter(char c) -> std::vector<cd> {
     switch (c) {
@@ -223,8 +217,6 @@ inline auto scalar_mul(cd s, const std::vector<cd> &a) -> std::vector<cd> {
     return r;
 }
 
-// ── String-level helpers ─────────────────────────────────────────────────────
-
 // Local anticommutation from the strings alone: anticommute iff an odd number of
 // qubits carry two distinct non-identity letters.
 inline auto string_anticommutes(const std::string &a, const std::string &b) -> bool {
@@ -246,7 +238,6 @@ inline auto is_z_only(const std::string &p) -> bool {
     return true;
 }
 
-// Enumerate all 4^n Pauli strings on n qubits.
 inline auto all_strings(size_t n) -> std::vector<std::string> {
     std::vector<std::string> out;
     size_t total = 1;

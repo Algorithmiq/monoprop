@@ -60,7 +60,6 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
     }
 }
 
-// ── Layer-build sink policies ────────────────────────────────────────────────────────────────────
 // A sink owns the divergent state and supplies the emission surfaces — self-resolve, cross-rank
 // resolve/process, deferred self-insert — plus finalize. Each monomorphizes: no run-time fused/graph branch.
 
@@ -82,12 +81,10 @@ struct GraphSink {
 
     GraphSink(size_t R_, size_t my_rank_) : R(R_), my_rank(my_rank_), acc(R_) {}
 
-    // Self-resolve hit: partner recorded both ways — in={found,φ} (resolver side), out={src,φ} (querier).
     auto self_hit(size_t src, size_t found, int phase, double /*v_src*/) -> void {
         acc[my_rank].in_entries.push_back({found, phase});
         acc[my_rank].out_entries.push_back({src, phase});
     }
-    // Deferred self-miss insert (after both passes): resize once, then indexed scatter.
     auto prepare_deferred(size_t n_miss) -> void {
         def_in_base_ = acc[my_rank].in_entries.size();
         def_out_base_ = acc[my_rank].out_entries.size();
@@ -99,8 +96,8 @@ struct GraphSink {
         acc[my_rank].out_entries[def_out_base_ + k] = {src, phase};
     }
 
-    // Cross-rank (R>1). Send buffer = the plain query stream (no value fusion). ordering contract: the
-    // exchange is positional — responses[s][q] must answer incoming[s][q]; every query yields one resolution.
+    // Cross-rank (R>1). Send buffer = the plain query stream (no value fusion). The exchange is positional:
+    // responses[s][q] must answer incoming[s][q], one resolution per query.
     auto send_buffer(std::vector<VecZ> &queries,
                      std::vector<std::vector<double>> & /*vals*/,
                      std::vector<VecZ> & /*scratch*/) -> std::vector<VecZ> & {
@@ -142,9 +139,9 @@ struct GraphSink {
         }
     }
 
-    // Finalize: drain the per-rank accumulators into the LayerCore's sin_send/sin_recv lists (layout
-    // derivation: see cross_rank_sin_recv_index). cos covers all anticommuting indices, endpoints
-    // included, since the sin_recv apply only adds the sine term.
+    // Drains the per-rank accumulators into the LayerCore's sin_send/sin_recv lists (layout derivation:
+    // see cross_rank_sin_recv_index). cos covers all anticommuting indices, endpoints included, since the
+    // sin_recv apply only adds the sine term.
     auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator<NumModes> &op)
         -> std::shared_ptr<LayerCore> {
         std::vector<CrossRankPartnerData> partners(R);
@@ -221,8 +218,8 @@ struct ContractSink {
         fc.inserts[def_base_ + k] = RotationRec{src, idx, v_src, /*v_tgt=*/0.0, static_cast<int32_t>(phase)};
     }
 
-    // Cross-rank (R>1). Send buffer = queries interleaved with their v_src stream into the
-    // kQueryWordsFused-wide `scratch` (combined_qv_) so a single alltoallv carries query + value.
+    // Cross-rank (R>1). Send buffer = queries interleaved with their v_src stream into `scratch`
+    // (combined_qv_), so one alltoallv carries query + value.
     auto send_buffer(std::vector<VecZ> &queries, std::vector<std::vector<double>> &vals, std::vector<VecZ> &scratch)
         -> std::vector<VecZ> & {
         scratch.resize(queries.size());
@@ -239,8 +236,6 @@ struct ContractSink {
         cross_base_ = fc.cross_half.size();
         fc.cross_half.resize(cross_base_ + pr.nq_total);
     }
-    // Compute v_tgt (hit / Schrödinger-miss / Heisenberg-miss), emit the resolver +φ half on the target
-    // slot this rank owns, and answer with v_tgt. is_insert: see HalfRotationRec.
     auto on_resolved(size_t g,
                      size_t s,
                      size_t q,
@@ -273,7 +268,7 @@ struct ContractSink {
         }
         fc.cross_half.reserve(fc.cross_half.size() + incoming);
     }
-    // Querier −φ half on the source slot this rank owns (a pre-gate term the sweep covered ⇒ is_insert=false).
+    // A querier half always writes a pre-gate term the cos sweep already covered ⇒ is_insert=false.
     auto on_response_block(size_t /*r*/,
                            const std::vector<Response> &rval,
                            const std::vector<size_t> &srcs,
@@ -297,8 +292,7 @@ struct ContractSink {
     }
 };
 
-// Owns build_layer's machinery over a compile-time Sink policy: query streams, matched-follower set,
-// deferred self-misses, and the resolve/exchange/finalize ops. combined_size = the pre-layer operator size.
+// Owns build_layer's machinery over a compile-time Sink policy. combined_size = the pre-layer operator size.
 template <size_t NumModes, class Sink>
 struct LayerBuildEngine {
     struct DeferredSelfMiss {
@@ -311,8 +305,8 @@ struct LayerBuildEngine {
     mpi::Comm comm;
     size_t R;
     size_t my_rank;
-    // Follower-matched set over [0, combined_size): caller-owned + epoch-stamped so no O(n) per-gate
-    // clear (see MatchedEpochSet). Distinct leaders → distinct found, so each slot is marked once.
+    // Follower-matched set over [0, combined_size), caller-owned (see MatchedEpochSet). Distinct leaders
+    // → distinct found, so each slot is marked once.
     MatchedEpochSet &matched;
     size_t combined_size;
     std::vector<VecZ> queries_r;
@@ -360,13 +354,12 @@ struct LayerBuildEngine {
         }
     }
 
-    // One partner-resolution pass over the given query streams, which it takes ownership of: resolve
-    // self-rank queries inline, then (multi-rank) alltoallv-exchange cross-rank queries and fold in the
-    // answers. Round 1 carries the queries (the sink may fuse the v_src stream into them); the resolver
-    // answers one record per query, inserting absent partners in the same round. Round 2 returns those
-    // answers. Taking the streams here rather than having the caller assign the members first is what
-    // makes the two-pass protocol unmissable — the follower pass must also drop the queries a leader
-    // already matched, and that only holds once the leader pass has run.
+    // One partner-resolution pass over the given query streams, which it takes ownership of. Round 1
+    // carries the queries (the sink may fuse the v_src stream into them) and the resolver inserts absent
+    // partners in that same round; round 2 returns the answers. Taking the streams here rather than having
+    // the caller assign the members first is what makes the two-pass protocol unmissable — the follower
+    // pass must also drop the queries a leader already matched, and that only holds once the leader pass
+    // has run.
     auto run_exchange(bool is_leader_pass,
                       std::vector<VecZ> &&queries,
                       std::vector<std::vector<size_t>> &&src_idx,
@@ -392,8 +385,7 @@ struct LayerBuildEngine {
         process_responses<NumModes>(inc_r, src_idx_r, queries_r, R, my_rank, sink);
     }
 
-    // In-place compact the per-rank cross-rank follower query streams, dropping followers a leader
-    // already matched in the leader pass (matched.is_marked(src)) so they are not re-resolved over the wire.
+    // Followers a leader already matched must not be re-resolved over the wire, so compact them out.
     auto drop_matched_cross_rank_followers() -> void {
         constexpr size_t W = kQueryWords<NumModes>;
         for (size_t r = 0; r < R; ++r) {
@@ -413,7 +405,7 @@ struct LayerBuildEngine {
                 if (matched.is_marked(s[k])) {
                     continue;
                 }
-                if (kept != k) { // slide the surviving query's W words down into the next kept slot
+                if (kept != k) {
                     std::copy(q.begin() + static_cast<std::ptrdiff_t>(k * W),
                               q.begin() + static_cast<std::ptrdiff_t>((k + 1) * W),
                               q.begin() + static_cast<std::ptrdiff_t>(kept * W));
@@ -432,9 +424,9 @@ struct LayerBuildEngine {
         }
     }
 
-    // Sub-step of finish() — do not call directly. LOAD-BEARING precondition: call only after both resolve
-    // passes complete, else the base+k ↔ record-slot assignment and per-miss distinctness break. Deferred
-    // self misses are pairwise-distinct (mono = source⊕G, ⊕G injective) and still absent, so miss k gets
+    // Sub-step of finish() — do not call directly. Precondition: call only after both resolve passes
+    // complete, else the base+k ↔ record-slot assignment and per-miss distinctness break. Deferred self
+    // misses are pairwise-distinct (mono = source⊕G, ⊕G injective) and still absent, so miss k gets
     // base+k in leader-then-follower order. See insert_absent_terms.
     auto insert_deferred_self_misses() -> void {
         const size_t n_miss = deferred_self_misses.size();
@@ -450,8 +442,6 @@ struct LayerBuildEngine {
         });
     }
 
-    // Insert deferred self-misses, then hand off to the sink: GraphSink builds the LayerCore, ContractSink
-    // returns nullptr (its in-place apply already drained the records).
     auto finish(CosMask &&cos_all, CosMask *out_cos = nullptr) -> std::shared_ptr<LayerCore> {
         insert_deferred_self_misses();
         return sink.finalize(std::move(cos_all), out_cos, combined_size, local_op);
@@ -468,9 +458,8 @@ private:
         return counts;
     }
 
-    // Batched self-resolve: gather up to kResolveBatch surviving queries, resolve via the index's
-    // group-prefetch find_batch, then emit hit/miss in query order through the sink. `lv` is the per-query
-    // v_src array parallel to `ls` (read only when Sink::wants_values).
+    // Batched self-resolve over the index's group-prefetch find_batch; hits/misses are emitted to the sink
+    // in query order. `lv` is the per-query v_src array parallel to `ls` (read only when Sink::wants_values).
     static constexpr size_t kResolveBatch = 64;
     auto resolve_range_(VecZ &lq,
                         std::vector<size_t> &ls,
@@ -486,7 +475,6 @@ private:
         std::array<size_t, kResolveBatch> found;
         size_t q = lo;
         while (q < hi) {
-            // Gather the next batch of queries that survive the follower-matched skip.
             size_t m = 0;
             for (; q < hi && m < kResolveBatch; ++q) {
                 const size_t src = ls[q];
@@ -524,8 +512,7 @@ private:
     }
 };
 
-// Primary-path layer builder: the fused scan feeds two MPI exchange passes into the chosen sink, then
-// self-rank absent partners are inserted (after both resolves) and the sink finalizes. See LayerBuilder.h.
+// Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
 template <size_t NumModes>
 auto build_layer(MPOperator<NumModes> &local_op,
                  const Monomial<NumModes> &gen,
@@ -565,7 +552,6 @@ auto build_layer(MPOperator<NumModes> &local_op,
     assert(fused_scale_coeffs == nullptr || (local_coeffs && &local_coeffs->get() == fused_scale_coeffs));
 
     FusedScanResult fused = [&] {
-        // Dispatch the scan on the basis at compile time; every other argument is basis-agnostic.
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
         return with_algebra<NumModes>(basis, [&]<class A>() {
             return fused_find_and_collect<NumModes, A>(local_op,
@@ -596,7 +582,6 @@ auto build_layer(MPOperator<NumModes> &local_op,
     }
     fused.cos_blocks = std::vector<CosMask>{};
 
-    // Run the two resolve passes over the chosen sink (fixed at compile time; this is the only dispatch).
     auto run = [&]<class Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
         LayerBuildEngine<NumModes, Sink> eng(local_op,
                                              comm,

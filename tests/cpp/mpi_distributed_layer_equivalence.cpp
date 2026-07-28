@@ -190,14 +190,14 @@ BOOST_AUTO_TEST_CASE(hybrid_mpi_partition_energy_and_size_equivalence) {
         return;
     }
     const auto inputs = load_inputs();
-    const auto [e_serial, n_serial] = run_energy_partitioned(inputs, MPI_COMM_SELF, 1); // pure serial (full op)
+    const auto [e_serial, n_serial] = run_energy_partitioned(inputs, MPI_COMM_SELF, 1);
     const auto [e_hybrid, n_local] = run_energy_partitioned(inputs, MPI_COMM_WORLD, 2);
     // Each rank's facade holds only its local partitions; the global term count is the cross-rank sum.
     const size_t n_hybrid_global = mpi::allreduce_sum<size_t>(n_local, MPI_COMM_WORLD);
     BOOST_TEST_MESSAGE("serial=" << e_serial << " (n=" << n_serial << ") hybrid R*2=" << e_hybrid
                                  << " (global n=" << n_hybrid_global << ")");
     BOOST_TEST(near(e_serial, e_hybrid));
-    BOOST_CHECK_EQUAL(n_serial, n_hybrid_global); // hash-partitioned term set is exactly invariant
+    BOOST_CHECK_EQUAL(n_serial, n_hybrid_global);
 }
 
 } // namespace

@@ -44,7 +44,6 @@ end
 
 
 function main(args)
-    # initialize the settings (the description is for the help screen)
     s = ArgParseSettings(description="Arguments for the 1D Hubbard model benchmark.")
 
     @add_arg_table! s begin
@@ -59,7 +58,7 @@ function main(args)
 
     end
 
-    parsed_args = parse_args(s) # the result is a Dict{String,Any}
+    parsed_args = parse_args(s)
 
     spin_layers_pairs = []
     for i in [20, 40, 60]
@@ -81,19 +80,16 @@ function main(args)
     circ_single = []
     thetas_single = []
 
-    #up hoppings
     for (i, j) in topo
         push!(circ_single, FermionicRotation(:hopup, [i, j]))
         push!(thetas_single, -t * dt)
     end
 
-    #down hoppings
     for (i, j) in topo
         push!(circ_single, FermionicRotation(:hopdn, [i, j]))
         push!(thetas_single, -t * dt)
     end
 
-    #on-site repulsion
     for i = 1:N_spinful_sites
         push!(circ_single, FermionicRotation(:nupndn, i))
         push!(thetas_single, U * dt)

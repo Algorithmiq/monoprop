@@ -25,8 +25,6 @@
 
 using namespace monoprop;
 
-// ── CosineWordBuilder: coalesce ascending indices/words into (base, mask) blocks ──────────────
-
 BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_push_index_coalesces_within_word) {
     CosineWordBuilder b;
     b.push_index(0);
@@ -61,7 +59,6 @@ BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_push_word_skips_zero_and_counts
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_finish_flushes_pending_and_empty_is_empty) {
-    // A pending word (never followed by a word-crossing push) must still be flushed by finish().
     CosineWordBuilder pending;
     pending.push_index(5);
     const CosMask cos = pending.finish();
@@ -73,8 +70,6 @@ BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_finish_flushes_pending_and_empt
     BOOST_CHECK(none.blocks.empty());
     BOOST_CHECK_EQUAL(none.total_count, 0U);
 }
-
-// ── checked_* overflow guards ─────────────────────────────────────────────────────────────────
 
 BOOST_AUTO_TEST_CASE(graph_encoding_checked_term_index_boundary) {
     // At the TermIndex ceiling it round-trips; above it throws only in the narrow build.
@@ -95,8 +90,6 @@ BOOST_AUTO_TEST_CASE(graph_encoding_checked_packed_phase_bounds) {
     BOOST_CHECK_THROW(detail::checked_packed_phase(-129, "phase"), std::overflow_error);
 }
 
-// ── PackedPhaseStorage allocation + int8 read path ─────────────────────────────────────────────
-
 BOOST_AUTO_TEST_CASE(graph_encoding_make_packed_phase_storage_modes_and_zero) {
     BOOST_CHECK(detail::make_packed_phase_storage(0, /*binary=*/true).empty());
     BOOST_CHECK(detail::make_packed_phase_storage(0, /*binary=*/false).empty());
@@ -114,7 +107,6 @@ BOOST_AUTO_TEST_CASE(graph_encoding_make_packed_phase_storage_modes_and_zero) {
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_packed_phase_at_reads_int8_values) {
-    // Exercises the int8 branch of packed_phase_at directly.
     auto storage = detail::make_packed_phase_storage(3, /*binary=*/false);
     storage.phase_values[0] = 5;
     storage.phase_values[1] = -7;
@@ -123,8 +115,6 @@ BOOST_AUTO_TEST_CASE(graph_encoding_packed_phase_at_reads_int8_values) {
     BOOST_CHECK_EQUAL(detail::packed_phase_at(storage, 1), -7);
     BOOST_CHECK_EQUAL(detail::packed_phase_at(storage, 2), 1);
 }
-
-// ── build_layer_exchange_layout: counts*scale, prefix-sum displacements ────────────────────
 
 BOOST_AUTO_TEST_CASE(graph_encoding_exchange_layout_scale_and_displacements) {
     const std::vector<size_t> send_counts = {3, 0, 5};
@@ -142,7 +132,6 @@ BOOST_AUTO_TEST_CASE(graph_encoding_exchange_layout_scale_and_displacements) {
     BOOST_CHECK_GT(detail::layer_exchange_layout_storage_bytes(s1), 0U);
 }
 
-// ── LayerCore::derivative_exchange_layout: the lazily-built 2x layout ─────────────────────────
 // Production only builds scale=1; the 2x layout reaches MPI through this accessor, which is
 // unreachable at comm size 1, so the default non-MPI suite would otherwise never touch it.
 
@@ -169,11 +158,9 @@ BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_overflow_throws) 
     const size_t just_over_half = static_cast<size_t>(std::numeric_limits<int>::max()) / 2 + 1;
 
     LayerCore core;
-    core.evolution_exchange_layout = detail::build_layer_exchange_layout({just_over_half}, 1); // 1x fits int
+    core.evolution_exchange_layout = detail::build_layer_exchange_layout({just_over_half}, 1);
     BOOST_CHECK_THROW(detail::build_derivative_exchange_layout(core.evolution_exchange_layout), std::overflow_error);
 }
-
-// ── D-from-B derivation: exercise both arms of cross_rank_sin_recv_index ─────────────────────────
 
 BOOST_AUTO_TEST_CASE(graph_encoding_d_from_b_derivation_both_arms) {
     // B = [in(P=2)] ++ [out(Q=3)] = [10,11 | 20,21,22]; D = [out] ++ [in], derived from B and in_count.

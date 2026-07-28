@@ -72,8 +72,6 @@ auto filter_layer_cosine_data(const CosMask &cos, const std::vector<char> &nodes
     return {std::move(filtered), false};
 }
 
-// Force every cross-rank endpoint kept, before the cosine filter runs.
-//
 // The cos pass (not the D-apply) scales every D target, since cos holds all anticommuting indices, so no
 // D target may be pruned; a B source is kept exactly when its partner D target is, i.e. always. Every rank
 // reaches the same conclusion about its own endpoints, so no cross-rank agreement is needed.
@@ -103,8 +101,6 @@ auto mark_cross_rank_endpoints_kept(const LayerTraversal &layer, size_t my_rank,
 
 } // namespace
 
-// Prune the graph to the subgraph reaching the surviving output nodes: sweep the keep-set backward, emitting
-// each layer unchanged or with its cosine list filtered. full_cos_of_layer materializes a layer's cos lazily.
 auto pare_graph(const MPGraph &graph,
                 const VecZ &nonzero_inds,
                 size_t local_index_count,
@@ -134,8 +130,6 @@ auto pare_graph(const MPGraph &graph,
         // Order is load-bearing for bit-exact pruning: endpoints kept before the cosine filter.
         mark_cross_rank_endpoints_kept(lt, my_rank, nodes_to_keep);
 
-        // Materialize this layer's full cos lazily, prune to nodes_to_keep, discard it. preserves =>
-        // nothing trimmed => reuse the core with no stored cos (recompute at replay); else store the filter.
         const CosMask full = full_cos_of_layer(layer_idx);
         auto [filtered, preserves] = filter_layer_cosine_data(full, nodes_to_keep);
 

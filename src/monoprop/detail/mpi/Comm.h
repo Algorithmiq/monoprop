@@ -19,8 +19,7 @@
 #if defined(monoprop_ENABLE_MPI)
 #include <mpi.h>
 #else
-// Fallback MPI types for non-MPI builds (single process). The engine names these but the calls are
-// guarded by rank-count and dispatched through the wrappers below, so they never execute.
+// Fallback MPI types for non-MPI builds (single process).
 using MPI_Comm = int;
 constexpr MPI_Comm MPI_COMM_WORLD = 0;
 constexpr MPI_Comm MPI_COMM_SELF = 0;
@@ -28,17 +27,15 @@ constexpr MPI_Comm MPI_COMM_SELF = 0;
 
 namespace monoprop::mpi {
 
-class ShmComm;    // the in-process shared-memory SPMD transport
-class HybridComm; // composes R MPI ranks x S partitions into one flat world
+class ShmComm;
+class HybridComm;
 
-// Runtime-tagged communicator handle threaded through the engine in place of a raw MPI_Comm: the same
-// SPMD code drives real MPI (`Kind::Mpi`) or an in-process ShmComm (`Kind::Shm`). Trivially copyable,
-// passed by value like the MPI_Comm it replaces. The implicit MPI_Comm constructor is deliberate — it
-// keeps every call site / test / binding compiling unchanged; there is no implicit conversion back (that
-// would silently drop a Shm handle), so read `.mpi` explicitly where a raw communicator is required.
+// Runtime-tagged communicator handle: the same SPMD code drives real MPI (`Kind::Mpi`) or an in-process
+// ShmComm (`Kind::Shm`). Trivially copyable, passed by value. The implicit MPI_Comm constructor is
+// deliberate; there is no implicit conversion back (that would silently drop a Shm handle), so read
+// `.mpi` explicitly where a raw communicator is required.
 struct Comm {
-    // Hybrid = R MPI ranks x S in-process partitions presented as one flat P=R*S SPMD world; the engine
-    // sees size()==P and never distinguishes it from plain MPI or plain partitions.
+    // Hybrid = R MPI ranks x S in-process partitions presented as one flat P=R*S SPMD world (size()==P).
     enum class Kind : std::uint8_t { Mpi, Shm, Hybrid };
     Kind kind = Kind::Mpi;
     MPI_Comm mpi = MPI_COMM_SELF; // valid iff kind == Mpi

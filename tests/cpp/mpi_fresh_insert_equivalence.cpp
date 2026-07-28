@@ -36,7 +36,6 @@ using namespace monoprop;
 using namespace test_utils;
 using pauli_oracle::slots_of_string;
 
-// ── Majorana, Schrödinger picture, coefficient-carrying (fused) propagate ────────────────────────
 // schrodinger_cutoff engages the picture; a low structural cutoff plus the upper_atol = 0 rescue
 // forces most partners to be fresh inserts, so the miss arm runs on nearly every partner.
 template <size_t NumModes>
@@ -66,7 +65,6 @@ BOOST_FIXTURE_TEST_CASE(mpi_fresh_insert_schrodinger_majorana_serial_world_equiv
     BOOST_TEST(near(e_serial, e_world));
 }
 
-// ── Native Pauli, Schrödinger picture, fused propagate ───────────────────────────────────────────
 // Drives the pauli_state_phase sub-branch of the same miss arm: a hand Pauli operator with X / ZZ
 // generator layers forces fresh paired cross-rank inserts.
 constexpr size_t kPauliQ = 6;

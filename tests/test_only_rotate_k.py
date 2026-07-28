@@ -89,8 +89,8 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     non_orbital_gates, orbital_gates = _split_orbital_gates(gates)
     # Consecutive prefix/suffix split, so the (identity) parameter values split the same way.
     split = len(non_orbital_gates)
-    # Rebase each sub-circuit onto the identity mapping (gate i -> angle i). _with_index rather
-    # than ExpGate(gate.generator) so _structural is preserved -- see tests/test_circuit.py::_rebase.
+    # _with_index rather than ExpGate(gate.generator) so _structural is preserved -- see
+    # tests/test_circuit.py::_rebase.
     non_orbital = Circuit(
         tuple(ExpGate._with_index(gate, None) for gate in non_orbital_gates),
         parameters=tuple(parameters[:split]),

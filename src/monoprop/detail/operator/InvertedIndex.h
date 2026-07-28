@@ -28,8 +28,8 @@
 
 namespace monoprop::detail {
 
-// Lazy transposed operator storage: one bit-vector per column (mode), bit r set iff term r touches that
-// column. XOR-combining a generator G's columns yields |M ∩ G| mod 2 per term M -- the anticommutation
+// Lazy transposed operator storage: one bit-vector per column (bit position), bit r set iff term r touches
+// that column. XOR-combining a generator G's columns yields |M ∩ G| mod 2 per term M -- the anticommutation
 // bit for an even generator; odd generators add a per-row parity(|M|) correction, so both parities are
 // served. Columns are stored in two tiers, bit-identical to all-dense: dense (density ≥
 // 1/kPromoteDensityInv) full-height uint64 vectors; sparse an ascending set-row list scatter-expanded at
@@ -37,7 +37,6 @@ namespace monoprop::detail {
 template <size_t NumModes>
 struct InvertedIndex {
     static constexpr size_t kNumColumns = Monomial<NumModes>::size();
-    // Promote a column to dense at set density ≥ 1/kPromoteDensityInv.
     static constexpr size_t kPromoteDensityInv = 64;
 
     struct Column {
@@ -52,7 +51,7 @@ struct InvertedIndex {
     size_t row_count = 0;
 
     // Parity of |M| per row, packed 1 bit/row: bit r = popcount(row r) & 1. Built on first use and only
-    // by odd-|G| generators, so even-parity workloads never allocate it; mutable as a lazy derived cache.
+    // by odd-|G| generators, so even-parity workloads never allocate it.
     mutable std::vector<uint64_t> row_parity_{}; // empty == not built
 
     auto row_parity_words() const -> const uint64_t * {
@@ -62,8 +61,7 @@ struct InvertedIndex {
         return row_parity_.data();
     }
 
-    // Fold every column into row_parity_. Callers gate on row_count != 0, so the bitmap is never
-    // sized to zero words here.
+    // Callers gate on row_count != 0, so the bitmap is never sized to zero words here.
     auto build_row_parity_() const -> void {
         const size_t nwords = (row_count + 63) / 64;
         row_parity_.assign(nwords, 0);
@@ -100,8 +98,7 @@ struct InvertedIndex {
     }
 
     // Scatter the set bits of new rows [base, base+n) of `op` into the tiered columns: dense bits to the
-    // word array, sparse rows appended in row order. Sparse columns that cross the density threshold are
-    // promoted to dense afterwards. row_count must already cover [0, base+n).
+    // word array, sparse rows appended in row order. row_count must already cover [0, base+n).
     template <typename Rows>
     auto fill_rows(const Rows &op, size_t base, size_t n) -> void {
         if (n == 0) {
@@ -132,7 +129,6 @@ struct InvertedIndex {
             if (!col.is_dense && col.set_rows.size() * kPromoteDensityInv >= row_count) {
                 promote_to_dense(c);
             }
-            // Verified in debug so a future fill change cannot silently break the ascending invariant.
             assert(col.is_dense || std::ranges::is_sorted(col.set_rows));
         }
     }
@@ -154,7 +150,7 @@ struct InvertedIndex {
         }
         const size_t required_words = (size + 63) / 64;
 
-        // Pass 1: per-column set-bit counts → decide tiers from the final density, so the fill never has
+        // Count per-column set bits first and decide tiers from the final density, so the fill never has
         // to promote.
         using Counts = std::array<size_t, kNumColumns>;
         Counts counts{};
@@ -173,12 +169,11 @@ struct InvertedIndex {
             }
         }
 
-        // Pass 2: scatter the bits into the (now tier-decided) columns.
         fill_rows(op, 0, size);
     }
 
-    // Bulk-append the contiguous new terms op[base .. base+n) (which must equal rows [row_count ..
-    // row_count+n)), extending the lazy parity bitmap if it was already built.
+    // Bulk-append the contiguous new terms op[base .. base+n), which must equal rows [row_count ..
+    // row_count+n).
     template <typename Rows>
     auto append_rows(const Rows &op, size_t base, size_t n) -> void {
         if (n == 0) {
@@ -219,10 +214,6 @@ struct InvertedIndex {
     }
 };
 
-// XOR a generator's inverted-index columns for fold words [bb, be) into blk[0 .. be-bb): dense columns
-// XOR their words directly, sparse columns lower_bound to the block's row range. XOR associativity
-// means any block decomposition reproduces the full-width fold bit-for-bit. the fold-combine kernel,
-// shared by the build scan, the replay cache (make_fold_cache) and the replay recompute.
 inline constexpr size_t kColumnBlockWords = 1024; // 8 KB block ≈ L1-resident (bench knee)
 
 // Reusable fold blocks (thread_local: each partition master owns its copy). Two independent scratches
@@ -242,6 +233,9 @@ inline auto pivot_column_block_scratch() -> std::vector<uint64_t> & {
     return blk;
 }
 
+// XOR a generator's inverted-index columns for fold words [bb, be) into blk[0 .. be-bb): dense columns
+// XOR their words directly, sparse columns lower_bound to the block's row range. XOR associativity means
+// any block decomposition reproduces the full-width fold bit-for-bit.
 template <size_t NumModes>
 [[gnu::always_inline]] inline auto combine_columns_block(const InvertedIndex<NumModes> &sc,
                                                          std::span<const size_t> cols,

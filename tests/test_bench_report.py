@@ -184,7 +184,6 @@ def test_build_report_includes_memory(tmp_path: Path) -> None:
     md = _collapse(report.build_report(tmp_path))
 
     assert "Memory (RSS)" in md
-    # Bytes render as MiB.
     assert "50.00 MiB" in md
     assert "100.00 MiB" in md
 

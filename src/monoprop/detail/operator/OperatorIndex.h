@@ -31,7 +31,6 @@
 
 namespace monoprop::detail {
 
-// Thrown when the term count would exceed the TermIndex range (rebuild with -Dmonoprop_WIDE_TERM_INDEX).
 class TermIndexCeilingReached : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -41,8 +40,7 @@ public:
 // those rows. Row layout: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c =
 // ascending set-bit positions; stride_ is fixed for the container's life so row offsets stay stable.
 // inline_width_ is a free parameter -- any width is correct, over-long rows spill losslessly to overflow.
-// find_batch exists for the group-prefetch pipelined lookup the latency-bound resolve phases need.
-// Single-writer (one partition, one thread; parallelism is cross-partition), non-copyable, deep-copied by clone().
+// Single-writer: one partition, one thread; parallelism is cross-partition.
 template <size_t NumModes>
 class OperatorIndex {
 public:
@@ -50,15 +48,12 @@ public:
     using key_type = Monomial<NumModes>;
     using mapped_type = size_t;
 
-    // Position element: u8 when 2N<=256, widening only for larger mode counts so positions never
-    // truncate.
     using PosT = std::
         conditional_t<(2 * NumModes <= 256), uint8_t, std::conditional_t<(2 * NumModes <= 65536), uint16_t, uint32_t>>;
 
-    // Default inline width when no cutoff-derived bound is supplied (e.g. Schrödinger state rows).
     static constexpr size_t kDefaultInlinePositions = 11;
-    // Ceiling on the caller-requested inline width. A weight-w Pauli needs 2w positions; 32 covers the
-    // common case inline at the supported Pauli cutoffs (2*cutoff <= 32 for cutoff <= 16).
+    // A weight-w Pauli needs 2w positions; 32 covers the common case inline at the supported Pauli
+    // cutoffs (2*cutoff <= 32 for cutoff <= 16).
     static constexpr size_t kMaxInlinePositions = 32;
     static constexpr PosT kOverflowMarker = std::numeric_limits<PosT>::max();
 
@@ -83,7 +78,6 @@ public:
     OperatorIndex(OperatorIndex &&) = delete;
     OperatorIndex &operator=(OperatorIndex &&) = delete;
 
-    // Single named deep-copy: entries are re-inserted into the clone's table (not copied verbatim).
     // Called only on an idle store, so it needs no synchronization.
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
         auto out = std::make_unique<OperatorIndex>(inline_width_);
@@ -101,13 +95,12 @@ public:
 
     [[nodiscard]] auto size() const -> size_t { return size_; }
 
-    // Grows rows and right-sizes the index together.
     auto reserve(size_t n) -> void {
         reserve_rows(n);
         reserve_index(n);
     }
-    // Grow the row store by `n` rows, returning the pre-growth size (the caller's insert base). Growth
-    // is geometric (1.5×), never exact-fit: an exact fit would realloc the whole operator every layer.
+    // Returns the pre-growth size (the caller's insert base). Growth is geometric (1.5×), never
+    // exact-fit: an exact fit would realloc the whole operator every layer.
     auto grow_rows_geometric(size_t n) -> size_t {
         const size_t base = size_;
         if (capacity() < base + n) {
@@ -123,9 +116,8 @@ public:
 
     auto push_back(const value_type &mono) -> void { set(grow_rows_geometric(1), mono); }
 
-    // Write row i from `mono` (grown-but-uninitialized or a prior value). Never pre-reads the row header
-    // (freshly grown headers are indeterminate); a stale overflow entry at i, if any, is dropped — cheap
-    // when the overflow map is empty, which is the common case.
+    // Row i may be grown-but-uninitialized or hold a prior value, so the row header is never pre-read
+    // (freshly grown headers are indeterminate); a stale overflow entry at i, if any, is dropped.
     auto set(size_t i, const value_type &mono) -> void {
         const size_t c = mono.count();
         PosT *row = &rows_[i * stride_];
@@ -183,7 +175,6 @@ public:
         return total;
     }
 
-    // Returns the dense row index for `key`, or nullopt if absent.
     auto find(const key_type &key) const -> std::optional<size_t> {
         const uint32_t h = fold_hash(key);
         if (table_.count == 0) {
@@ -201,7 +192,7 @@ public:
         }
     }
 
-    // Group-prefetch batch find: out[i] = row index of keys[i], or kMissingIndex. Same result as n
+    // Group-prefetch batch find: out[i] = row index of keys[i], or kNotFound. Same result as n
     // find() calls, but overlaps dram misses via a per-group hash/probe/confirm pipeline. An h
     // collision falls back to an exact find. must not run concurrently with inserts.
     auto find_batch(const key_type *keys, size_t n, size_t *out) const -> void {
@@ -285,8 +276,7 @@ public:
             }
         }
     }
-    // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity. Growth is 1.5x
-    // and never exact-fit, so this is bounded by ~1/3 of the row bytes.
+    // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
     [[nodiscard]] auto slack_bytes() const -> size_t {
         return rows_.capacity() * sizeof(PosT) - std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT);
     }
@@ -358,7 +348,7 @@ private:
     auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
 
     // Insert (idx, h) into the table with no duplicate probe — callers on this path insert provably distinct
-    // keys (⊕G-injective miss batches, clone re-insertion). Grows the table first if needed.
+    // keys (⊕G-injective miss batches, clone re-insertion).
     auto insert_slot_(TermIndex idx, uint32_t h) -> void {
         table_.rehash_if_needed();
         size_t s = spread(h) & table_.mask;
@@ -395,13 +385,11 @@ private:
         }
     }
 
-    // default-init: set() writes every row before any read
     DefaultInitVector<PosT> rows_ = {};
     size_t size_ = 0;
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;
-    // Lossless side-map for rows whose popcount exceeds inline_width_. Single-writer: never accessed
-    // concurrently (parallelism is cross-partition), so it needs no lock.
+    // Lossless side-map for rows whose popcount exceeds inline_width_.
     std::unordered_map<size_t, value_type> overflow_ = {};
     Table table_ = {};
 };

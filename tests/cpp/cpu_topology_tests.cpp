@@ -13,7 +13,6 @@
 // limitations under the License.
 
 // Coverage of CpuTopology.h (Linux /sys parsing + affinity pinning; count-only fallback elsewhere).
-// Drives the cpulist parser across its token shapes and the enumerate/place/pin surface on this host.
 
 #include <boost/test/unit_test.hpp>
 
@@ -56,8 +55,8 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
     if (cores.size() < 2) {
         return; // need at least two cores to deal one to each of two co-located ranks
     }
-    // Two co-located ranks, one partition each: each gets a disjoint core. Covers both placement arms --
-    // interleave across the dealt domains (group_count <= #L3), and the flat domain-major slice otherwise.
+    // Two co-located ranks, one partition each. Covers both placement arms -- interleave across the
+    // dealt domains (group_count <= #L3), and the flat domain-major slice otherwise.
     const auto rank0 = partition::partition_cpusets(/*n=*/1, /*group_index=*/0, /*group_count=*/2);
     const auto rank1 = partition::partition_cpusets(/*n=*/1, /*group_index=*/1, /*group_count=*/2);
     // Off Linux there is no pinning, so both come back empty (unpinned, still disjoint by the scheduler).
