@@ -57,8 +57,8 @@ def test_basis_change(serial_comm) -> None:
 
     evolved = propagator.evolved_operator()
 
-    assert list(evolved) == [(0,)]
-    assert np.isclose(evolved[(0,)].real, np.cos(2 * 1.0))
+    assert list(evolved.terms) == [(0,)]
+    assert np.isclose(evolved.terms[(0,)].real, np.cos(2 * 1.0))
 
 
 @pytest.mark.parametrize(

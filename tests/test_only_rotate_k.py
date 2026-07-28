@@ -68,13 +68,17 @@ def test_basic_orbital_rotation(serial_comm):
     mp_orb.propagate(circuit, only_rotate_len_k=4)
     orb_rotated_state = mp_orb.evolved_operator()
 
-    for key in initial_state:
+    for key in initial_state.terms:
         if len(key) > 4:
-            assert np.isclose(initial_state[key], orb_rotated_state[key], atol=1e-12)
+            assert np.isclose(
+                initial_state.terms[key], orb_rotated_state.terms[key], atol=1e-12
+            )
 
-    for key in rotated_state:
+    for key in rotated_state.terms:
         if len(key) <= 4:
-            assert np.isclose(rotated_state[key], orb_rotated_state[key], atol=1e-12)
+            assert np.isclose(
+                rotated_state.terms[key], orb_rotated_state.terms[key], atol=1e-12
+            )
 
 
 @parametrize_with_cases(
