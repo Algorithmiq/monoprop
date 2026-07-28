@@ -236,11 +236,18 @@ struct PendingAlltoallv {
 // skip_self: do not send the self slot (the caller handles self inline) — self send/recv = 0.
 // known_recv_counts: recv counts already known (e.g. the transpose of the query counts), so skip the
 // count exchange. The self slot is also zeroed when skip_self is set.
+// reverse_of_previous: this exchange is the answer leg of the immediately preceding begin_alltoallv on
+// the same comm, and forward_stride is that leg's elements per record (a query is several words, its
+// answer one value). Only the hybrid transport acts on it, reusing that round's offset tables instead of
+// rebuilding them (see HybridComm::alltoallv_reverse); it requires known_recv_counts, and no other
+// collective may intervene on that comm.
 template <class T>
 inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                             Comm comm,
                             bool skip_self = false,
-                            const std::vector<int> *known_recv_counts = nullptr) -> PendingAlltoallv<T> {
+                            const std::vector<int> *known_recv_counts = nullptr,
+                            bool reverse_of_previous = false,
+                            int forward_stride = 1) -> PendingAlltoallv<T> {
     const int num_ranks = size(comm);
     if (static_cast<int>(send_data.size()) != num_ranks) {
         throw CollectiveArgumentError(
@@ -342,15 +349,29 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     }
 #ifdef monoprop_ENABLE_MPI
     else if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv(comm.shm_rank,
-                            h.send_buffer.data(),
-                            h.send_counts.data(),
-                            h.send_displs.data(),
-                            h.recv_buffer.data(),
-                            h.recv_counts.data(),
-                            h.recv_displs.data(),
-                            sizeof(T),
-                            datatype<T>::get());
+        if (reverse_of_previous) {
+            comm.hyb->alltoallv_reverse(comm.shm_rank,
+                                        h.send_buffer.data(),
+                                        h.send_counts.data(),
+                                        h.send_displs.data(),
+                                        h.recv_buffer.data(),
+                                        h.recv_counts.data(),
+                                        h.recv_displs.data(),
+                                        sizeof(T),
+                                        datatype<T>::get(),
+                                        forward_stride);
+        }
+        else {
+            comm.hyb->alltoallv(comm.shm_rank,
+                                h.send_buffer.data(),
+                                h.send_counts.data(),
+                                h.send_displs.data(),
+                                h.recv_buffer.data(),
+                                h.recv_counts.data(),
+                                h.recv_displs.data(),
+                                sizeof(T),
+                                datatype<T>::get());
+        }
     }
 #endif
     else {

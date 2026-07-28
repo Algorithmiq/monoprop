@@ -328,4 +328,132 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_poison_releases_waiters) {
     }
 }
 
+// The cases above give every destination the SAME count per source, which cannot tell the
+// (rank, dest partition, source partition) index order the offset tables are built from from its
+// transpose. So drive counts that depend on source AND destination, and tag every element with both ends
+// of its leg: a swapped index or a wrong base then misroutes payload instead of yielding a
+// coincidentally-correct total. S=5 (> the 3 used above) leaves R*S^2 room to go wrong.
+BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_asymmetric_counts) {
+    if (world_size() < 2) {
+        return;
+    }
+    const int R = world_size();
+    const int S = 5;
+    const int P = R * S;
+    const int rounds = 12;
+    // Deliberately not symmetric under swapping src/dst, and hits 0 for some legs.
+    const auto leg_len = [](int src, int dst, int round) { return (src * 7 + dst * 3 + round) % 5; };
+    const auto tag = [](int src, int dst, int j) { return ((src * 1000 + dst) * 100) + j; };
+    std::atomic<int> failures{0};
+    auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+        Comm c = Comm::make_hybrid(&hyb, u);
+        const int g = monoprop::mpi::rank(c);
+        std::vector<int> recv;
+        std::vector<int> rc(static_cast<size_t>(P)), rd(static_cast<size_t>(P));
+        for (int round = 0; round < rounds; ++round) {
+            std::vector<int> send;
+            std::vector<int> sc(static_cast<size_t>(P)), sd(static_cast<size_t>(P));
+            int off = 0;
+            for (int d = 0; d < P; ++d) {
+                const int len = leg_len(g, d, round);
+                sc[static_cast<size_t>(d)] = len;
+                sd[static_cast<size_t>(d)] = off;
+                for (int j = 0; j < len; ++j) {
+                    send.push_back(tag(g, d, j));
+                }
+                off += len;
+            }
+            hyb.alltoallv_resolve<int>(u,
+                                       send.data(),
+                                       sc.data(),
+                                       sd.data(),
+                                       recv,
+                                       rc.data(),
+                                       rd.data(),
+                                       sizeof(int),
+                                       monoprop::mpi::datatype<int>::get());
+            int expected_total = 0;
+            for (int src = 0; src < P; ++src) {
+                const int len = leg_len(src, g, round);
+                if (rc[static_cast<size_t>(src)] != len || rd[static_cast<size_t>(src)] != expected_total) {
+                    failures.fetch_add(1);
+                }
+                for (int j = 0; j < len; ++j) {
+                    if (recv[static_cast<size_t>(expected_total + j)] != tag(src, g, j)) {
+                        failures.fetch_add(1);
+                    }
+                }
+                expected_total += len;
+            }
+            if (static_cast<int>(recv.size()) != expected_total) {
+                failures.fetch_add(1);
+            }
+        }
+    });
+    for (const auto &e : errs) {
+        BOOST_CHECK(e == nullptr);
+    }
+    BOOST_CHECK_EQUAL(failures.load(), 0);
+}
+
+// Same asymmetric legs through the count-exchange + flat-alltoallv pair, which uses the other
+// sizing entry point (recv counts published per partition rather than resolved from the wire).
+BOOST_AUTO_TEST_CASE(hybrid_comm_alltoall_counts_then_alltoallv_asymmetric) {
+    if (world_size() < 2) {
+        return;
+    }
+    const int R = world_size();
+    const int S = 4;
+    const int P = R * S;
+    const auto leg_len = [](int src, int dst) { return (src * 5 + dst * 11) % 4; };
+    const auto tag = [](int src, int dst, int j) { return ((src * 1000 + dst) * 100) + j; };
+    std::atomic<int> failures{0};
+    auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+        const int g = hyb.global_rank(u);
+        std::vector<int> sc(static_cast<size_t>(P)), sd(static_cast<size_t>(P));
+        std::vector<int> rc(static_cast<size_t>(P)), rd(static_cast<size_t>(P));
+        std::vector<int> send;
+        int off = 0;
+        for (int d = 0; d < P; ++d) {
+            const int len = leg_len(g, d);
+            sc[static_cast<size_t>(d)] = len;
+            sd[static_cast<size_t>(d)] = off;
+            for (int j = 0; j < len; ++j) {
+                send.push_back(tag(g, d, j));
+            }
+            off += len;
+        }
+        hyb.alltoall_counts(u, sc.data(), rc.data());
+        int total = 0;
+        for (int src = 0; src < P; ++src) {
+            if (rc[static_cast<size_t>(src)] != leg_len(src, g)) {
+                failures.fetch_add(1);
+            }
+            rd[static_cast<size_t>(src)] = total;
+            total += rc[static_cast<size_t>(src)];
+        }
+        std::vector<int> recv(static_cast<size_t>(total));
+        hyb.alltoallv(u,
+                      send.data(),
+                      sc.data(),
+                      sd.data(),
+                      recv.data(),
+                      rc.data(),
+                      rd.data(),
+                      sizeof(int),
+                      monoprop::mpi::datatype<int>::get());
+        for (int src = 0; src < P; ++src) {
+            for (int j = 0; j < rc[static_cast<size_t>(src)]; ++j) {
+                if (recv[static_cast<size_t>(rd[static_cast<size_t>(src)] + j)] != tag(src, g, j)) {
+                    failures.fetch_add(1);
+                }
+            }
+        }
+    });
+    for (const auto &e : errs) {
+        BOOST_CHECK(e == nullptr);
+    }
+    BOOST_CHECK_EQUAL(failures.load(), 0);
+}
+
 #endif // monoprop_ENABLE_MPI
