@@ -61,6 +61,20 @@ The full MPI rank matrix (several rank counts) is driven by a helper script:
 ctest -S tools/ctest-mpi-matrix.cmake -VV
 ```
 
+A 64-bit `TermIndex` build is the only configuration that compiles the
+`monoprop_WIDE_TERM_INDEX` branches, so it has its own preset and recipe:
+
+```bash
+just test-cpp-wide   # cmake/build/ctest with the release-gcc-wide preset, -L serial
+```
+
+CTest registers every Boost case individually as a `serial` variant. When the
+build has MPI enabled and a launcher is found, it also registers the whole suite
+once per rank count in `monoprop_MPI_TEST_PROCS`, labelled `mpi` and `mpi-<n>` —
+one entry per rank count rather than per case, because the ranks have to reach
+the same collectives. Select either group with
+`ctest --preset release-gcc-mpi -L serial` (or `-L mpi-2`).
+
 
 ## Adding tests
 

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 def _index(
     quad: tuple[int, int, int, int], shift: tuple[int, int, int, int], num_orbs: int
 ) -> tuple[tuple[int, str], ...]:
+    """Turn an orbital quadruple into the ``c+ c+ c- c-`` term, shifting beta spins by ``num_orbs``."""
     exc = ("+", "+", "-", "-")
     new_quad = tuple(
         q + (num_orbs if s else 0) for q, s in zip(quad, shift, strict=True)
@@ -43,6 +44,7 @@ def _index(
 def _iter_integrals_to_fermion(
     h0: float, h1: ndarray, h2: ndarray
 ) -> Iterator[tuple[tuple[tuple[int, str], ...], float]]:
+    """Yield the ``(fermionic term, coefficient)`` pairs of a zero-, one- and two-body integral set."""
     num_orbs = h1.shape[1]
     # zero-body
     yield (), h0
@@ -86,20 +88,31 @@ def _iter_integrals_to_fermion(
             yield _index(quad, (0, 1, 1, 0), num_orbs), coeff
 
 
-def integrals_to_fermion(
-    hamiltonian: tuple[float, ndarray, ndarray],
-) -> FermiOperator:
-    """Converts a integral Hamiltonian to fermion format.
+def integrals_to_fermion(h0: float, h1: ndarray, h2: ndarray) -> FermiOperator:
+    r"""Convert molecular integrals into a fermionic Hamiltonian.
+
+    integrals should describe an unrestricted molecular Hamiltonian in a spatial-orbital basis.
 
     Args:
-        hamiltonian: Hamiltonian to convert.
+        h0: is the scalar (core) energy containing the nuclear
+            repulsion energy and any frozen-core or inactive-space
+            contributions.
+        h1: is an array of shape ``(2, n_orb, n_orb)`` containing
+            the alpha- and beta-spin one-electron integrals, corresponding
+            to the kinetic-energy operator and electron-nucleus attraction
+            operator (plus any effective one-electron contributions from
+            frozen orbitals or inactive electrons).
+        h2: is an array of shape
+            ``(3, n_orb, n_orb, n_orb, n_orb)`` containing the alpha-alpha,
+            beta-beta, and alpha-beta electron-repulsion integrals in
+            chemist's notation,
+            $(pq|rs)=\int \phi_p(r_1)\phi_q(r_1) r_{12}^{-1}\phi_r(r_2)\phi_s(r_2)\mathrm{d}r_1\mathrm{d}r_2$
 
     Returns:
         Hamiltonian in FermiOperator format.
-
     """
     terms = defaultdict(complex)
-    for ind, coeff in _iter_integrals_to_fermion(*hamiltonian):
+    for ind, coeff in _iter_integrals_to_fermion(h0, h1, h2):
         if np.isclose(coeff, 0, atol=1e-12):
             continue
         terms[ind] += coeff

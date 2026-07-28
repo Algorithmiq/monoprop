@@ -18,26 +18,10 @@
 #include <stdexcept>
 
 #include "monoprop/Evolution.h"
-#include "monoprop/MajoranaAlgebra.h"
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 
 namespace monoprop::detail {
-
-inline auto remove_incoming_cycle_targets_compressed(const VecZ &cos_inds, const SplitCycleResult &split)
-    -> CompressedCosineData {
-    VecZ incoming;
-    size_t total_incoming = 0;
-    for (const auto &cross_rank : split.cross_rank) {
-        total_incoming += cross_rank.in_indices.size();
-    }
-    incoming.reserve(total_incoming);
-
-    for (const auto &cross_rank : split.cross_rank) {
-        incoming.insert(incoming.end(), cross_rank.in_indices.begin(), cross_rank.in_indices.end());
-    }
-
-    return build_filtered_compressed_cosine_data(cos_inds, incoming);
-}
 
 template <size_t NumModes>
 auto cutoff_function(CutoffType cutoff_type, unsigned int cutoff, size_t logical_num_modes = NumModes)
@@ -55,18 +39,18 @@ auto cutoff_function(CutoffType cutoff_type, unsigned int cutoff, size_t logical
 template <size_t NumModes>
 auto cutoff_function_basis_change(CutoffType cutoff_type,
                                   unsigned int cutoff,
-                                  const MajoranaVector<NumModes> &basis,
+                                  const MonomialList<NumModes> &basis,
                                   size_t logical_num_modes = NumModes) -> CutoffFn<NumModes> {
     switch (cutoff_type) {
         case CutoffType::Length:
-            return [cutoff, logical_num_modes, basis_copy = basis](const MajoranaSet<NumModes> &maj) {
-                const auto mapped_maj = change_basis<NumModes>(maj, basis_copy);
-                return length_cutoff<NumModes>(mapped_maj, cutoff, logical_num_modes);
+            return [cutoff, logical_num_modes, basis_copy = basis](const Monomial<NumModes> &mono) {
+                const auto mapped_mono = change_basis<NumModes>(mono, basis_copy);
+                return length_cutoff<NumModes>(mapped_mono, cutoff, logical_num_modes);
             };
         case CutoffType::Support:
-            return [cutoff, logical_num_modes, basis_copy = basis](const MajoranaSet<NumModes> &maj) {
-                const auto mapped_maj = change_basis<NumModes>(maj, basis_copy);
-                return support_cutoff<NumModes>(mapped_maj, cutoff, logical_num_modes);
+            return [cutoff, logical_num_modes, basis_copy = basis](const Monomial<NumModes> &mono) {
+                const auto mapped_mono = change_basis<NumModes>(mono, basis_copy);
+                return support_cutoff<NumModes>(mapped_mono, cutoff, logical_num_modes);
             };
         default:
             throw std::runtime_error("Unknown cutoff type");

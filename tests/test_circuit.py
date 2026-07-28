@@ -26,6 +26,7 @@ from monoprop import (
     Circuit,
     ExpGate,
     MajoranaPropagator,
+    PauliPropagator,
 )
 from monoprop.fermi import FermiOperator
 from monoprop.majorana import Majorana, MajoranaOperator
@@ -45,40 +46,35 @@ def _propagator(problem):
 
 
 def _rebase(gates):
-    """Drop each gate's explicit ``index`` so a gate slice gets the default identity mapping.
+    """Drop each gate's ``index`` so a gate slice gets the default identity mapping.
 
-    Slicing a circuit's gates keeps their absolute ``index`` indices, which are no longer
-    contiguous from 0 in a tail slice; re-basing to the identity restores a valid sub-circuit.
-    ``_with_index`` preserves each gate's ``_structural`` flag -- these gates come from a
-    ``from_dense_arrays`` circuit (already-structural coefficients), so a plain
-    ``ExpGate(gate.generator)`` would re-antihermitian-normalize them and reject the structural
-    real coefficients of weight-2 monomials.
+    ``_with_index`` preserves each gate's ``_structural`` flag; a plain ``ExpGate(gate.generator)``
+    would re-antihermitian-normalize these ``from_dense_arrays`` coefficients and reject the real
+    ones on weight-2 monomials.
     """
     return tuple(ExpGate._with_index(gate, None) for gate in gates)
 
 
-# -- the Circuit type -----------------------------------------------------------
-
-
 def test_exp_rejects_bare_term() -> None:
-    """ExpGate accepts only operator objects; a bare Majorana/Pauli term is a clear TypeError."""
+    majorana_term = Majorana(0, 1)
+    pauli_term = Pauli("X", 0)
     with pytest.raises(TypeError, match="not a bare term"):
-        ExpGate(Majorana(0, 1))  # type: ignore[arg-type]
+        ExpGate(majorana_term)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="not a bare term"):
-        ExpGate(Pauli("X", 0))  # type: ignore[arg-type]
+        ExpGate(pauli_term)  # type: ignore[arg-type]
 
 
 def test_exp_equality_and_repr() -> None:
-    """Two ExpGate gates are equal when generator, param, family, and structural flag match."""
     gen = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
-    assert ExpGate(gen, index=0) == ExpGate(gen, index=0)
+    first = ExpGate(gen, index=0)
+    second = ExpGate(gen, index=0)
+    assert first == second
     assert ExpGate(gen, index=0) != ExpGate(gen, index=1)
     assert ExpGate(gen) != "not an ExpGate"
     assert repr(ExpGate(gen, index=0)).startswith("ExpGate(")
 
 
 def test_exp_from_fermi_generator_becomes_majorana() -> None:
-    """A FermiOperator generator is converted to its Majorana form and the gate is 'majorana'."""
     gate = ExpGate(
         FermiOperator(
             [[(0, "+"), (1, "-")], [(1, "+"), (0, "-")]], [1.0, -1.0], num_modes=2
@@ -91,7 +87,6 @@ def test_exp_from_fermi_generator_becomes_majorana() -> None:
 class ExpGateAtolCases:
     @case(id="single_excitation")
     def case_single_excitation(self):
-        """Without truncation, single excitation can produce up to 4 terms."""
         generator = FermiOperator(
             [
                 [(0, "+"), (1, "-")],
@@ -105,7 +100,6 @@ class ExpGateAtolCases:
 
     @case(id="double_excitation")
     def case_double_excitation(self):
-        """Without truncation, double excitation can produce up to 4 terms."""
         generator = FermiOperator(
             [
                 [(0, "+"), (1, "+"), (2, "-"), (3, "-")],
@@ -151,7 +145,6 @@ def test_exp_gate_applies_atol_truncation(
     atol: float,
     expected: MajoranaOperator | PauliOperator,
 ) -> None:
-    """ExpGate(atol=...) keeps only terms above the provided threshold."""
     truncated = ExpGate(generator, atol=atol).generator
 
     assert isinstance(truncated, type(expected))
@@ -160,7 +153,6 @@ def test_exp_gate_applies_atol_truncation(
 
 
 def test_circuit_equality() -> None:
-    """Circuits are equal on gates/parameters/initial_state; family is derived, not compared."""
     gen = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     a = Circuit((ExpGate(gen),), parameters=(0.3,), initial_state=(0,))
     b = Circuit((ExpGate(gen),), parameters=(0.3,), initial_state=(0,))
@@ -170,7 +162,6 @@ def test_circuit_equality() -> None:
 
 
 def test_circuit_rejects_non_exp_gate() -> None:
-    """A gate that is not an ExpGate is rejected with a clear TypeError."""
     with pytest.raises(TypeError, match="Circuit gates must be ExpGate"):
         Circuit(("not a gate",))  # type: ignore[arg-type]
 
@@ -181,10 +172,9 @@ def test_to_circuit_round_trips_sequence() -> None:
     mc = problem.monomial_circuit
     circuit = mc.to_circuit()
 
-    # Expanding the gates against the mapping reproduces the dense per-monomial arrays.
-    majoranas = [maj for gate in circuit for maj in gate.generator.terms]
+    majoranas = [mono for gate in circuit for mono in gate.generator.terms]
     assert majoranas == [tuple(m) for m in mc.majoranas]
-    assert list(circuit.resolved_mapping) != []  # sanity: mapping is populated
+    assert list(circuit.resolved_mapping) != []
     np.testing.assert_allclose(
         circuit.parameters, np.asarray(mc.parameters, dtype=float)
     )
@@ -192,7 +182,6 @@ def test_to_circuit_round_trips_sequence() -> None:
 
 
 def test_default_mapping_is_identity() -> None:
-    """Omitting the mapping gives each gate its own distinct angle."""
     circuit = Circuit(
         (
             ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),
@@ -204,7 +193,6 @@ def test_default_mapping_is_identity() -> None:
 
 
 def test_shared_mapping_index_ties_gates() -> None:
-    """Reusing one index in the mapping ties gates to one angle."""
     gates = (
         ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), index=0),
         ExpGate(MajoranaOperator({(2, 3): 1.0j}, num_modes=2), index=1),
@@ -218,7 +206,7 @@ def test_shared_mapping_index_ties_gates() -> None:
 
 
 def test_circuit_rejects_non_contiguous_mapping() -> None:
-    """A mapping with an index gap is rejected (it would invent a phantom parameter)."""
+    """An index gap is rejected: it would invent a phantom parameter."""
     gates = (
         ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), index=0),
         ExpGate(MajoranaOperator({(2, 3): 1.0j}, num_modes=2), index=2),
@@ -228,7 +216,6 @@ def test_circuit_rejects_non_contiguous_mapping() -> None:
 
 
 def test_circuit_rejects_mixed_param_scheme() -> None:
-    """Setting `index` on some gates but not others is rejected as ambiguous."""
     gates = (
         ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2), index=0),
         ExpGate(MajoranaOperator({(2, 3): 1.0j}, num_modes=2)),
@@ -245,7 +232,6 @@ def test_circuit_rejects_wrong_parameter_length() -> None:
 
 
 def test_circuit_add_offsets_second_axis() -> None:
-    """Concatenating circuits appends the second's angles on a fresh axis."""
     a = Circuit(
         (
             ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2)),
@@ -263,15 +249,13 @@ def test_circuit_add_offsets_second_axis() -> None:
 
 
 def test_circuit_add_rejects_mixed_families() -> None:
-    """Concatenating a Majorana circuit with a qubit circuit raises a clear TypeError."""
-    maj = Circuit((ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),))
+    majorana = Circuit((ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),))
     qubit = Circuit((ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)),))
     with pytest.raises(TypeError, match="gate families differ"):
-        _ = maj + qubit
+        _ = majorana + qubit
 
 
 def test_circuit_add_rejects_different_initial_states() -> None:
-    """Concatenating circuits with conflicting initial states raises a ValueError."""
     a = Circuit(
         (ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2)),), initial_state=(0,)
     )
@@ -293,11 +277,10 @@ def test_bound_circuit_with_identity_gate_wrong_param_count_raises() -> None:
 
 
 def test_non_hermitian_majorana_generator_rejected() -> None:
-    """A Majorana gate whose generator is not Hermitian is rejected on ingestion.
+    """A non-Hermitian Majorana generator is rejected rather than silently normalized.
 
-    A Majorana generator carries the *Hermitian* operator (the same convention as an
-    observable): a weight-2 monomial takes an imaginary coefficient. A *real* weight-2
-    coefficient is not Hermitian, so it is rejected rather than silently normalized.
+    A Majorana generator carries the *Hermitian* operator, so a weight-2 monomial takes an
+    imaginary coefficient; a real one is not Hermitian.
     """
     obs = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(obs, [0, 1], cutoff=4)
@@ -309,12 +292,10 @@ def test_non_hermitian_majorana_generator_rejected() -> None:
 
 
 def test_hermitian_majorana_generator_matches_structural() -> None:
-    """A Hermitian Majorana generator reproduces the equivalent structural (dense) gate.
+    """A Hermitian Majorana generator matches the equivalent structural (dense) gate.
 
-    The Hermitian generator ``i·m_4 m_5`` (coefficient ``1j`` on the bare product) is
-    antihermitian-normalized to the structural coefficient ``g = -1.0``, so
-    ``ExpGate(MajoranaOperator({(4, 5): 1j}))`` must evolve an observable identically to the
-    dense/wire gate carrying ``g = -1.0`` directly.
+    ``i·m_4 m_5`` antihermitian-normalizes to the structural coefficient ``g = -1.0``, so both
+    spellings must evolve an observable identically.
     """
     obs = MajoranaOperator({(0, 1, 2, 4): 1.0}, 8)
     hermitian = Circuit(
@@ -334,74 +315,57 @@ def test_hermitian_majorana_generator_matches_structural() -> None:
         np.testing.assert_allclose(value, from_structural[key])
 
 
-# -- evaluation contracts -------------------------------------------------------
-
-
 @pytest.mark.parametrize("fixture", FIXTURES)
 def test_expectation_value_matches_exact(fixture: str) -> None:
-    """Building the graph then evaluating reproduces the exact expectation value."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
     prop.build_graph(circuit)
 
     assert prop.n_parameters == circuit.n_parameters
-    # The circuit carries its own parameters, so it can be evaluated directly.
-    np.testing.assert_allclose(prop.expectation_value(circuit), problem.exact_expval)
-    np.testing.assert_allclose(
-        prop.expectation_value(circuit.parameters), problem.exact_expval
-    )
-    np.testing.assert_allclose(
-        prop.gradient(circuit), problem.exact_gradient, atol=1e-9
-    )
+    np.testing.assert_allclose(prop.expval(circuit), problem.exact_expval)
+    np.testing.assert_allclose(prop.expval(circuit.parameters), problem.exact_expval)
+    np.testing.assert_allclose(prop.grad(circuit), problem.exact_gradient, atol=1e-9)
 
 
 def test_eval_rejects_wrong_parameter_length() -> None:
-    """expectation_value validates the parameter vector length against the graph."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
     prop.build_graph(circuit)
     with pytest.raises(RuntimeError):
-        prop.expectation_value([0.1])  # graph has more than one parameter
+        prop.expval([0.1])  # graph has more than one parameter
 
 
 @pytest.mark.parametrize("fixture", FIXTURES)
 def test_pared_functional_matches_unpared(fixture: str) -> None:
-    """A pared functional agrees with the exact (unpared) evaluation."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
     prop.build_graph(circuit)
 
-    pared = prop.expectation_value_functional(pare_threshold=1e-12)
+    pared = prop.expval_functional(pare_threshold=1e-12)
     np.testing.assert_allclose(
         pared(circuit.parameters), problem.exact_expval, atol=1e-9
     )
 
 
 def test_from_circuit_propagates_in_place() -> None:
-    """from_circuit constructs and propagates in one step, in-place with no graph."""
     problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = MajoranaPropagator.from_circuit(
         circuit, problem.operator, cutoff=2 * problem.n_modes
     )
-    # No graph is stored; the circuit's angles are already applied, so the value is read
-    # off with no parameters (and matches a manual construct + propagate).
+    # No graph is stored and the angles are already applied, so there are no parameters left.
     assert prop.n_parameters == 0
-    np.testing.assert_allclose(prop.expectation_value(), problem.exact_expval)
+    np.testing.assert_allclose(prop.expval(), problem.exact_expval)
 
     manual = _propagator(problem)
     manual.propagate(circuit)
-    np.testing.assert_allclose(prop.expectation_value(), manual.expectation_value())
-
-
-# -- the graph-owned parameter mapping ------------------------------------------
+    np.testing.assert_allclose(prop.expval(), manual.expval())
 
 
 def test_parameter_mapping_getter_reflects_graph() -> None:
-    """The propagator exposes the graph's per-layer mapping; re-setting it is a no-op."""
     problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
@@ -410,41 +374,36 @@ def test_parameter_mapping_getter_reflects_graph() -> None:
     mapping = prop.parameter_mapping
     assert len(mapping) == prop.graph_layers  # per-layer (per-monomial) granularity
     assert max(mapping) + 1 == prop.n_parameters
-    # Round-trip: writing the mapping back changes nothing.
     prop.parameter_mapping = mapping
     assert prop.parameter_mapping == mapping
-    np.testing.assert_allclose(prop.expectation_value(circuit), problem.exact_expval)
+    np.testing.assert_allclose(prop.expval(circuit), problem.exact_expval)
 
 
 def test_parameter_mapping_setter_ties_parameters() -> None:
-    """Re-wiring the graph mapping ties layers to a shared angle without rebuilding."""
     problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
     prop.build_graph(circuit)
     n_layers = prop.graph_layers
 
-    # Tie every layer to one shared angle: evaluating at [theta] must equal the untied
-    # graph evaluated with that same theta broadcast across every parameter.
     prop.parameter_mapping = [0] * n_layers
     assert prop.n_parameters == 1
-    tied = prop.expectation_value([0.3])
+    tied = prop.expval([0.3])
 
     prop.parameter_mapping = list(range(n_layers))
     assert prop.n_parameters == n_layers
-    reference = prop.expectation_value([0.3] * n_layers)
+    reference = prop.expval([0.3] * n_layers)
     np.testing.assert_allclose(tied, reference)
 
 
 def test_parameter_mapping_setter_validates() -> None:
-    """The setter rejects a wrong-length or non-contiguous mapping."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
     prop.build_graph(circuit)
 
     with pytest.raises(ValueError, match=r"per graph layer.*per gate"):
-        prop.parameter_mapping = [0]  # length matches neither layers nor gates
+        prop.parameter_mapping = [0]
     with pytest.raises(ValueError, match="contiguous"):
         prop.parameter_mapping = [i + 1 for i in range(prop.graph_layers)]  # no 0
 
@@ -453,7 +412,6 @@ def _multi_term_gate_propagator():
     """A propagator whose graph has a multi-term gate (n_gates < graph_layers)."""
     op = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(op, [0, 1], cutoff=4)
-    # two monomials -> two layers
     g0 = ExpGate(MajoranaOperator({(0, 2): 1.0j, (1, 3): 1.0j}, num_modes=2))
     g1 = ExpGate(MajoranaOperator({(2,): 1.0}, num_modes=2))
     prop.build_graph(Circuit((g0, g1)))
@@ -461,14 +419,12 @@ def _multi_term_gate_propagator():
 
 
 def test_n_gates_tracks_ingested_gates() -> None:
-    """n_gates counts authoring gates; a multi-term gate spans several layers."""
     prop = _multi_term_gate_propagator()
     assert prop.n_gates == 2
-    assert prop.graph_layers > prop.n_gates  # gate 0 expands to multiple layers
+    assert prop.graph_layers > prop.n_gates
 
 
 def test_n_gates_accumulates_across_builds() -> None:
-    """Each build_graph call extends the gate count on the accumulated axis."""
     op = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
     prop = MajoranaPropagator(op, [0, 1], cutoff=4)
     prop.build_graph(Circuit((ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2)),)))
@@ -481,19 +437,16 @@ def test_parameter_mapping_setter_accepts_per_gate() -> None:
     """A per-gate mapping (length n_gates) ties a multi-term gate's layers together."""
     prop = _multi_term_gate_propagator()
 
-    # Per-gate mapping tying both gates to one angle: equals the per-layer-tied graph
-    # evaluated at the same broadcast angle.
-    prop.parameter_mapping = [0, 0]  # length == n_gates
+    prop.parameter_mapping = [0, 0]
     assert prop.n_parameters == 1
-    tied_by_gate = prop.expectation_value([0.3])
+    tied_by_gate = prop.expval([0.3])
 
-    prop.parameter_mapping = [0] * prop.graph_layers  # length == graph_layers
-    tied_by_layer = prop.expectation_value([0.3])
+    prop.parameter_mapping = [0] * prop.graph_layers
+    tied_by_layer = prop.expval([0.3])
     np.testing.assert_allclose(tied_by_gate, tied_by_layer)
 
 
 def test_majorana_propagator_rejects_pauli_circuit() -> None:
-    """A Circuit fed to MajoranaPropagator raises a clear TypeError."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)
     circuit = Circuit(
@@ -505,7 +458,6 @@ def test_majorana_propagator_rejects_pauli_circuit() -> None:
 
 
 def test_propagate_rejects_mismatched_initial_state() -> None:
-    """A circuit whose initial_state disagrees with the propagator's raises ValueError."""
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)  # built with the fixture's initial state ([])
     gate = ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2))
@@ -520,12 +472,9 @@ def test_propagate_accepts_empty_initial_state() -> None:
     problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
     prop = _propagator(problem)
     gate = ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2))
-    circuit = Circuit((gate,), parameters=(0.1,))  # empty initial_state
+    circuit = Circuit((gate,), parameters=(0.1,))
 
     prop.propagate(circuit)  # does not raise
-
-
-# -- building the graph incrementally -------------------------------------------
 
 
 def _schrodinger_propagator(problem):
@@ -539,7 +488,6 @@ def _schrodinger_propagator(problem):
 
 @pytest.mark.parametrize("fixture", FIXTURES)
 def test_build_graph_accumulates_layers_and_parameters(fixture: str) -> None:
-    """Two build_graph calls accumulate the graph (layers + parameters)."""
     problem = load_problem(DATA / f"{fixture}.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
     gates = circuit.gates
@@ -562,9 +510,8 @@ def test_build_graph_accumulates_layers_and_parameters(fixture: str) -> None:
 def test_compose_then_single_build_matches_single_call(fixture: str) -> None:
     """Composing two circuit halves with ``+`` and building in one call matches.
 
-    Composition is picture-independent: because the whole sequence is fed in a single
-    build_graph call, there is no back-to-front reordering across calls to
-    reason about (in either picture).
+    Picture-independent: the whole sequence goes in one build_graph call, so there is no
+    back-to-front reordering across calls to reason about.
     """
     problem = load_problem(DATA / f"{fixture}.msgpack")
     circuit = problem.monomial_circuit.to_circuit()
@@ -581,10 +528,8 @@ def test_compose_then_single_build_matches_single_call(fixture: str) -> None:
     fused = _propagator(problem)
     fused.build_graph(composed)
 
-    np.testing.assert_allclose(
-        fused.expectation_value(composed), single.expectation_value(circuit)
-    )
-    np.testing.assert_allclose(fused.expectation_value(composed), problem.exact_expval)
+    np.testing.assert_allclose(fused.expval(composed), single.expval(circuit))
+    np.testing.assert_allclose(fused.expval(composed), problem.exact_expval)
 
 
 @pytest.mark.parametrize("fixture", FIXTURES)
@@ -607,10 +552,8 @@ def test_build_graph_in_two_calls_schrodinger(fixture: str) -> None:
     twice.build_graph(Circuit(_rebase(gates[:split])))
     twice.build_graph(Circuit(_rebase(gates[split:])))
 
-    np.testing.assert_allclose(
-        twice.expectation_value(params), single.expectation_value(params)
-    )
-    np.testing.assert_allclose(twice.expectation_value(params), problem.exact_expval)
+    np.testing.assert_allclose(twice.expval(params), single.expval(params))
+    np.testing.assert_allclose(twice.expval(params), problem.exact_expval)
 
 
 @pytest.mark.parametrize("fixture", FIXTURES)
@@ -624,14 +567,12 @@ def test_build_graph_twice_with_seed_regeneration(fixture: str) -> None:
 
     prop = _schrodinger_propagator(problem)
     prop.build_graph(Circuit(_rebase(gates[:split])))
-    # seed_parameters on the second call exercises the internal seed regeneration
-    # (the former operator_coeffs round-trip) used for coefficient-informed truncation.
+    # seed_parameters on the second call exercises the internal seed regeneration used
+    # for coefficient-informed truncation.
     prop.build_graph(Circuit(_rebase(gates[split:])), seed_parameters=params)
 
-    np.testing.assert_allclose(prop.expectation_value(params), problem.exact_expval)
+    np.testing.assert_allclose(prop.expval(params), problem.exact_expval)
 
-
-# --- Regression tests for the interface-refactor review ---------------------------------
 
 _OBS = MajoranaOperator({(0, 1, 2, 4): 1.0}, 8)
 
@@ -659,7 +600,7 @@ def test_empty_default_mapping_gate_dropped_and_evaluable() -> None:
     prop = _small_propagator()
     prop.build_graph(circuit)
     assert prop.graph_layers == 1
-    prop.expectation_value(circuit.parameters)  # previously raised a length mismatch
+    prop.expval(circuit.parameters)  # does not raise
 
 
 def test_empty_gate_in_middle_builds_contiguously() -> None:
@@ -676,7 +617,7 @@ def test_empty_gate_in_middle_builds_contiguously() -> None:
     )
     assert len(circuit.gates) == 2
     prop = _small_propagator()
-    prop.build_graph(circuit)  # previously raised "gate_indices must be contiguous"
+    prop.build_graph(circuit)
     assert prop.graph_layers == 2
 
 
@@ -685,14 +626,18 @@ def test_surplus_parameters_raise_not_truncated() -> None:
     generator = FermiOperator(
         [[(0, "+"), (1, "-")], [(1, "+"), (0, "-")]], [1.0, 1.0], num_modes=4
     )
+    gate = ExpGate(generator)
     with pytest.raises(ValueError, match="1 parameter"):
-        Circuit(gates=(ExpGate(generator),), parameters=(1.0, 2.0))
+        Circuit(gates=(gate,), parameters=(1.0, 2.0))
 
 
 def test_non_commuting_pauli_generator_rejected() -> None:
     """A multi-term Pauli gate whose terms anticommute is rejected at construction."""
-    with pytest.raises(ValueError, match="anticommute"):
-        ExpGate(PauliOperator({Pauli("X", 0): 1.0, Pauli("Z", 0): 1.0}, num_qubits=1))
+    generator = PauliOperator({Pauli("X", 0): 1.0, Pauli("Z", 0): 1.0}, num_qubits=1)
+    with pytest.raises(
+        ValueError, match=r"The provided generator must be composed of commuting terms."
+    ):
+        ExpGate(generator)
 
 
 def test_commuting_pauli_generator_accepted() -> None:
@@ -702,35 +647,6 @@ def test_commuting_pauli_generator_accepted() -> None:
             {Pauli("XX", (0, 1)): 1.0, Pauli("ZZ", (0, 1)): 1.0}, num_qubits=2
         )
     )
-
-
-@pytest.mark.parametrize(
-    ("terms", "should_raise"),
-    [
-        pytest.param({(0,): 1.0, (1,): 1.0}, True, id="odd_odd_anticommuting"),
-        pytest.param({(0, 1): 1.0j, (2, 3): 1.0j}, False, id="even_even_commuting"),
-        pytest.param(
-            {(0, 2, 3, 5): 1.0, (0, 2, 4, 6): 1.0},
-            False,
-            id="even_even_commuting_overlap",
-        ),
-        pytest.param(
-            {(0,): 1.0, (0, 1): 1.0}, True, id="mixed_parity_lengths_anticommuting"
-        ),
-        pytest.param(
-            {(0,): 1.0, (1, 2): 1.0}, False, id="mixed_parity_lengths_commuting"
-        ),
-    ],
-)
-def test_majorana_generator_commutation_validation(
-    terms: dict[tuple[int, ...], complex], *, should_raise: bool
-) -> None:
-    """Majorana multi-term gates are accepted iff all terms pairwise commute."""
-    if should_raise:
-        with pytest.raises(ValueError, match="anticommute"):
-            ExpGate(MajoranaOperator(terms, num_modes=10))
-    else:
-        ExpGate(MajoranaOperator(terms, num_modes=10))
 
 
 def test_build_graph_seed_parameters_accepts_numpy() -> None:
@@ -760,6 +676,71 @@ def test_build_graph_rejects_too_short_seed() -> None:
         prop.build_graph(circuit, seed_parameters=[0.5])
 
 
+def test_failed_build_graph_does_not_advance_the_parameter_axis() -> None:
+    """A build_graph that raises must leave n_parameters where it was.
+
+    The axis is what the next call's layers are stored at, so advancing it on a failed build
+    would offset every later mapping by a phantom parameter -- silently, since the retry
+    itself succeeds.
+    """
+    circuit = Circuit(
+        gates=(
+            ExpGate(MajoranaOperator({(4, 5): -1.0j}, num_modes=8)),
+            ExpGate(MajoranaOperator({(2, 3): -1.0j}, num_modes=8)),
+        ),
+        parameters=(0.5, 0.3),
+    )
+    prop = _small_propagator(lower_atol=1e-12)
+    with pytest.raises(RuntimeError, match="length of parameters"):
+        prop.build_graph(circuit, seed_parameters=[0.5])
+    assert prop.n_parameters == 0
+
+    prop.build_graph(circuit, seed_parameters=[0.5, 0.3])
+    assert prop.n_parameters == 2
+    assert min(prop.parameter_mapping) == 0
+
+    reference = _small_propagator(lower_atol=1e-12)
+    reference.build_graph(circuit, seed_parameters=[0.5, 0.3])
+    np.testing.assert_allclose(prop.expval([0.5, 0.3]), reference.expval([0.5, 0.3]))
+
+
+def test_inplace_contraction_resets_the_parameter_axis() -> None:
+    """An in-place contraction consumes the graph, so the axis has to follow it back to 0.
+
+    Left stale, the next single-parameter build_graph would store its layer at the old index
+    and then demand that many dummy values for a graph that no longer exists.
+    """
+    c1 = Circuit(
+        gates=(
+            ExpGate(MajoranaOperator({(4, 5): -1.0j}, num_modes=8)),
+            ExpGate(MajoranaOperator({(2, 3): -1.0j}, num_modes=8)),
+        ),
+        parameters=(0.5, 0.3),
+    )
+    prop = _small_propagator(lower_atol=1e-15)
+    prop.build_graph(c1)
+    assert prop.n_parameters == 2
+
+    prop.contract_partially([0.5, 0.3])
+    assert prop.graph_layers == 0
+    assert prop.n_parameters == 0
+
+    c2 = Circuit(
+        gates=(ExpGate(MajoranaOperator({(0, 1): -1.0j}, num_modes=8)),),
+        parameters=(0.4,),
+    )
+    prop.build_graph(c2)
+    assert prop.n_parameters == 1
+    assert prop.parameter_mapping == [0]
+
+    # And it evaluates: a stale axis would reject a length-1 vector here.
+    reference = _small_propagator(lower_atol=1e-15)
+    reference.build_graph(c1)
+    reference.contract_partially([0.5, 0.3])
+    reference.build_graph(c2)
+    np.testing.assert_allclose(prop.expval([0.4]), reference.expval([0.4]))
+
+
 def test_extend_without_seed_builds_structurally() -> None:
     """Extending a non-empty graph without a seed builds the new layers structurally (no
     raise, no silent corruption); the result matches a single-call build, and an explicit
@@ -776,18 +757,18 @@ def test_extend_without_seed_builds_structurally() -> None:
 
     single = _small_propagator(lower_atol=1e-15)
     single.build_graph(c1 + c2)
-    reference = single.expectation_value(params)
+    reference = single.expval(params)
 
     extended = _small_propagator(lower_atol=1e-15)
     extended.build_graph(c1)
-    extended.build_graph(c2)  # no seed_parameters: structural extension, no raise
+    extended.build_graph(c2)
     assert extended.n_parameters == 2
-    np.testing.assert_allclose(extended.expectation_value(params), reference)
+    np.testing.assert_allclose(extended.expval(params), reference)
 
     seeded = _small_propagator(lower_atol=1e-15)
     seeded.build_graph(c1)
-    seeded.build_graph(c2, seed_parameters=params)  # explicit full-axis seed
-    np.testing.assert_allclose(seeded.expectation_value(params), reference)
+    seeded.build_graph(c2, seed_parameters=params)
+    np.testing.assert_allclose(seeded.expval(params), reference)
 
 
 def test_propagate_after_build_graph_rejected() -> None:
@@ -804,3 +785,95 @@ def test_propagate_after_build_graph_rejected() -> None:
     prop.build_graph(c1)
     with pytest.raises(RuntimeError, match="non-empty graph"):
         prop.propagate(c2)
+
+
+def test_with_index_preserves_atol() -> None:
+    """Cloning a gate re-truncates at ITS atol, not the default.
+
+    ``Circuit.__add__`` clones every gate through ``ExpGate._with_index``; forwarding the
+    default 1e-8 instead would silently delete terms the author explicitly kept.
+    """
+    gate = ExpGate(MajoranaOperator({(0, 1): 1e-10j}, num_modes=2), atol=0.0)
+    assert gate.generator.terms
+
+    concatenated = Circuit((gate,)) + Circuit(())
+
+    assert concatenated.gates[0].generator.terms.keys() == {(0, 1)}
+
+
+def test_negligible_gate_expands_to_the_identity() -> None:
+    """A gate whose every term falls below atol becomes an identity layer, not a hole.
+
+    Emitting nothing would leave a gap in the engine's ``gate_indices`` (which must be
+    contiguous runs from 0) and orphan the gate's slot on the parameter axis. The gate must
+    instead contribute nothing physically: same expectation value, same gradient with respect
+    to the surviving angle, and zero gradient with respect to its own.
+    """
+    observable = MajoranaOperator({(0, 1): 1.0j}, num_modes=3)
+    params = [0.11, 0.37]
+
+    plain = MajoranaPropagator(observable, [], cutoff=6)
+    plain.build_graph(
+        Circuit.from_dense_arrays(
+            majoranas=[(0, 2)], gen_coeffs=[1.0], param_inds=[0], parameters=[params[1]]
+        )
+    )
+
+    with_identity = MajoranaPropagator(observable, [], cutoff=6)
+    with_identity.build_graph(
+        Circuit.from_dense_arrays(
+            majoranas=[(1, 3), (0, 2)],
+            gen_coeffs=[1e-12, 1.0],  # the first gate is dropped by the default atol
+            param_inds=[0, 1],
+            parameters=params,
+        )
+    )
+
+    np.testing.assert_allclose(
+        with_identity.expectation_value(params), plain.expectation_value([params[1]])
+    )
+    gradient = with_identity.gradient(params)
+    assert gradient[0] == pytest.approx(0.0)
+    assert gradient[1] == pytest.approx(plain.gradient([params[1]])[0])
+
+
+def test_explicit_vacuum_initial_state_is_checked() -> None:
+    """``initial_state=()`` is the vacuum, not "unspecified", so it is checked.
+
+    Treating the empty tuple as unset let a vacuum-authored circuit be evolved silently
+    against a half-filled reference -- exactly the mistake the check exists to catch.
+    """
+    observable = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
+    circuit = Circuit(
+        (ExpGate(MajoranaOperator({(0, 3): 1.0j}, num_modes=2)),),
+        parameters=(0.3,),
+        initial_state=(),
+    )
+
+    prop = MajoranaPropagator(observable, [0], cutoff=4)
+    with pytest.raises(
+        ValueError, match="does not match the propagator's initial state"
+    ):
+        prop.build_graph(circuit)
+
+    # An unspecified state still defers to the propagator's, and a matching one is accepted.
+    MajoranaPropagator(observable, [0], cutoff=4).build_graph(
+        Circuit(circuit.gates, parameters=circuit.parameters)
+    )
+    MajoranaPropagator(observable, [], cutoff=4).build_graph(circuit)
+
+
+def test_pauli_generator_wider_than_the_system_rejected() -> None:
+    """A Pauli generator acting past the propagator's qubit count is rejected.
+
+    ``PauliOperator`` only bounds-checks against its own ``num_qubits``, which may be larger
+    than the system's; an out-of-range slot would otherwise be packed past the end of the
+    monomial.
+    """
+    propagator = PauliPropagator(PauliOperator({Pauli("Z", 0): 1.0}, 2), [], cutoff=4)
+    circuit = Circuit(
+        (ExpGate(PauliOperator({Pauli("Z", 5): 1.0}, num_qubits=8)),), parameters=(0.3,)
+    )
+
+    with pytest.raises(ValueError, match="qubit index >= the system's num_qubits"):
+        propagator.build_graph(circuit)
