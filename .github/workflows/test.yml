@@ -336,9 +336,13 @@ jobs:
             https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
           unzip -q -o build-wrapper-linux-x86.zip
 
+      # MPI is ON here so the analyzer sees detail/mpi/*: HybridComm.h includes <mpi.h>
+      # unconditionally and every includer guards it behind #ifdef monoprop_ENABLE_MPI, so an
+      # MPI-off configure keeps that whole layer out of compile_commands.json and reports
+      # #ifdef'd-away members as smells (e.g. Exchange.h's Ticket losing its request_).
       - name: Configure for SonarQube CFamily analysis
         run: |
-          cmake -S. -Bbuild-sonar -DCMAKE_CXX_COMPILER=g++
+          cmake -S. -Bbuild-sonar -DCMAKE_CXX_COMPILER=g++ -Dmonoprop_ENABLE_MPI=ON
 
       - name: Build with Build Wrapper
         run: |
