@@ -48,5 +48,7 @@ def integral_hamiltonian(lazy_shared_datadir):
 
 
 def test_to_fermion(integral_hamiltonian, fermion_operator):
-    fermion_ham = integrals_to_fermion(integral_hamiltonian)
+    """Test that the conversion from integrals to fermion format is correct."""
+    h0, h1, h2 = integral_hamiltonian
+    fermion_ham = integrals_to_fermion(h0, h1, h2)
     assert fermion_operator.isclose(fermion_ham)

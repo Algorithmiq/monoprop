@@ -49,8 +49,7 @@ auto expect_equal(const Bitset<N> &bs, const std::bitset<N> &ref) -> void {
 
 } // namespace
 
-// The single-word ctor must mask off bits beyond NumBits (kTopMask), so a partial top word never
-// leaks stray high bits into count()/any().
+// The ctor masks off bits beyond NumBits (kTopMask), so a partial top word never leaks stray high bits.
 BOOST_AUTO_TEST_CASE(bitset_ctor_sanitizes_top) {
     const Bitset<10> b(0xFFFFULL);
     BOOST_TEST(b.count() == 10U);
@@ -59,7 +58,6 @@ BOOST_AUTO_TEST_CASE(bitset_ctor_sanitizes_top) {
     BOOST_TEST(full.count() == 64U);
 }
 
-// set()/test() must address the correct word across the 64-bit word boundary.
 BOOST_AUTO_TEST_CASE(bitset_set_test_word_boundaries) {
     auto [bs, ref] = make_pair<100>({0, 63, 64, 99});
     expect_equal<100>(bs, ref);
@@ -70,21 +68,18 @@ BOOST_AUTO_TEST_CASE(bitset_set_test_word_boundaries) {
     BOOST_TEST(bs.count() == 4U);
 }
 
-// count_and / parity_and must fold across every word, matching (a & b).count() and its parity.
 BOOST_AUTO_TEST_CASE(bitset_count_and_parity_and_cross_word) {
     auto [a, ra] = make_pair<192>({1, 63, 64, 130, 191});
     auto [b, rb] = make_pair<192>({63, 64, 65, 130});
-    const size_t expected = (ra & rb).count(); // {63, 64, 130} -> 3
+    const size_t expected = (ra & rb).count();
     BOOST_TEST(a.count_and(b) == expected);
     BOOST_TEST(a.parity_and(b) == ((expected & 1U) != 0U));
-    // Disjoint sets -> zero overlap, even parity.
     auto [c, rc] = make_pair<192>({0, 2, 4});
     auto [d, rd] = make_pair<192>({1, 3, 5});
     BOOST_TEST(c.count_and(d) == 0U);
     BOOST_TEST(!c.parity_and(d));
 }
 
-// operator~ must respect the top mask (the complement of the empty set is exactly NumBits ones).
 BOOST_AUTO_TEST_CASE(bitset_not_respects_top_mask) {
     BOOST_TEST((~Bitset<100>{}).count() == 100U);
     BOOST_TEST((~Bitset<64>{}).count() == 64U);
@@ -94,8 +89,7 @@ BOOST_AUTO_TEST_CASE(bitset_not_respects_top_mask) {
     (void)ref;
 }
 
-// Multi-word right shift vs the oracle at exact word multiples, sub-word crossings, and >= NumBits
-// (which must zero the whole set).
+// Shift amounts cover exact word multiples, sub-word crossings, and >= NumBits (which must zero the set).
 BOOST_AUTO_TEST_CASE(bitset_shift_right_cross_word) {
     const std::vector<size_t> pos{0, 5, 63, 64, 65, 130, 191};
     for (size_t s : {size_t{0},
@@ -119,7 +113,6 @@ BOOST_AUTO_TEST_CASE(bitset_shift_right_cross_word) {
     expect_equal<64>(bs, ref >> 8);
 }
 
-// find_first / find_next must walk set bits ascending, cross words, and return NumBits when exhausted.
 BOOST_AUTO_TEST_CASE(bitset_find_first_next_chain) {
     auto [bs, ref] = make_pair<192>({5, 63, 64, 130, 191});
     (void)ref;
@@ -138,7 +131,7 @@ BOOST_AUTO_TEST_CASE(bitset_find_first_next_chain) {
     BOOST_TEST(sb.find_next(40) == 64U);
 }
 
-// The multi-word hash must depend on WHICH word carries a bit (the +i mix guard), and be deterministic.
+// The multi-word hash must depend on which word carries a bit (the +i mix guard), and be deterministic.
 BOOST_AUTO_TEST_CASE(bitset_splitmix_hash_position_sensitive) {
     Bitset<128> low;
     low.set(0);
@@ -152,7 +145,6 @@ BOOST_AUTO_TEST_CASE(bitset_splitmix_hash_position_sensitive) {
     BOOST_TEST(h(low) == h(low_copy));
 }
 
-// Randomized differential fuzz against std::bitset for the bitwise ops, shift, and scans.
 BOOST_AUTO_TEST_CASE(bitset_random_differential) {
     constexpr size_t N = 128;
     std::mt19937_64 rng(0xB175E7ULL);

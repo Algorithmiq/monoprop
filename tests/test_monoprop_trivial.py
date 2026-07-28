@@ -110,10 +110,10 @@ def test_update_initial_operator(
     )
 
     if expval_check:
-        expval_init = mp.expectation_value()
+        expval_init = mp.expval()
         assert expval_init == expval_check[0]
         mp.update_initial_operator(new_op)
-        expval_new = mp.expectation_value()
+        expval_new = mp.expval()
         assert np.isclose(expval_new, expval_check[1])
     else:
         op_init = mp.contract_partially(inplace=False)

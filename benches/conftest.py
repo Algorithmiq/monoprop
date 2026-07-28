@@ -60,7 +60,7 @@ try:
     from mpi4py import MPI
 except (ImportError, OSError, RuntimeError):  # pragma: no cover - optional MPI build
     # mpi4py may be absent, or (the ABI wheel) present but unable to dlopen libmpi
-    # on a serial node with no MPI module loaded. Either way, run without MPI.
+    # on a serial node with no MPI module loaded.
     MPI = None
 
 
@@ -81,7 +81,6 @@ def _reduce_sum(comm: Any, value: int) -> int:
     return value
 
 
-# Random-benchmark options as ``(name, default, help)`` (all int).
 _RANDOM_OPTIONS = (
     ("gen-length", 4, "Majorana operators per generator."),
     ("obs-terms", 10000, "Observable terms."),
@@ -261,13 +260,12 @@ def record_model_stats(bench_comm: Any) -> Callable[..., None]:
     def _do(model: str, propagator: Any, baseline_rss: int) -> None:
         _record("opsize", model, {"terms": _reduce_sum(bench_comm, propagator.size())})
 
-        # Per-field operator memory split. total_bytes() alone cannot say whether the packed
-        # row store or the transposed inverted index dominates -- sparse InvertedIndex columns
-        # cost a TermIndex (4B) per set bit against ~1-2B per set bit in the rows -- and that
-        # ratio is what row-representation sizing decisions turn on.
-        # The C++ bindings hang off ._simulator; the Python front-end does not re-export them.
+        # Sparse InvertedIndex columns cost a TermIndex (4B) per set bit against ~1-2B per
+        # set bit in the rows, so which of the two dominates is what sizing decisions turn on.
+        # The Python front-end does not re-export the C++ accounting; it hangs off ._simulator.
         breakdown = getattr(propagator._simulator, "operator_memory_breakdown", None)
-        if breakdown is not None:  # None => binding predates operator_memory_breakdown()
+        # None => binding predates operator_memory_breakdown()
+        if breakdown is not None:
             _record(
                 "opmem",
                 model,
@@ -363,7 +361,7 @@ def built_graph(
     )
     mp.build_graph(circuit)
 
-    # Under MPI the operator is partitioned, so sum the shards.
+    # Under MPI the operator is partitioned, so sum the partitions.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})
 
     # Settled RSS once the build's transients are released -- the persistent

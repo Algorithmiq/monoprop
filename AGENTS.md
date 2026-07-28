@@ -13,6 +13,7 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - Prefix PR descriptions and comments on PRs with the line ":robot: _AI text below_ :robot:" to indicate you are an agent speaking on a user's behalf.
 - Python docstrings use Google style, and are rendered into the docs site by `just gen-api` — keep
   them accurate.
+- In prose docs (`docs/content/docs/**.mdx`) and Python docstrings, link to API symbols with the mkdocstrings-style `[Symbol][]` reference (or `[Display][fully.qualified.path]`) — never hard-code `/api/...` URLs. Do not backtick the name in the `[Symbol][]` form. See `docs/content/docs/documenting.mdx`.
 - C++ comments: bare `///` one-liners on declarations in `include/monoprop/` (the installed public
   API); plain `//` everywhere else. No Doxygen `@` tags (`@brief`, `@param`, `@return`, …) and no
   `/* */` block comments — there is no Doxygen build, so those tags produce nothing.
@@ -24,7 +25,7 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 ## Architecture Overview
 
 - **Core C++ Engine**: High-performance simulation logic in `src/` and `include/monoprop/`
-- **Python Interface**: User-facing API in `src/monoprop/` with C++ bindings in `src/bindings/`
+- **Python Interface**: User-facing API in `src/monoprop/` with C++ bindings in `src/monoprop/bindings/`
 - **Template-Based Design**: Heavily templated C++ code with compile-time mode limits (`monoprop_MAX_NUM_MODES`)
 - **Generated Code**: Python dispatch and C++ bindings auto-generated via `tools/generate-*.py`
 
@@ -36,6 +37,11 @@ Key files:
   (the Majorana/Pauli choice is a runtime `Basis`, not a separate class).
 - `src/monoprop/bindings/binder.h`: hand-written binding template; `tools/generate-*.py` generate the
   per-mode-width `bindings.cpp` and `_dispatch.py` from it (do not hand-edit the generated files).
+  Both generators take the 32-mode storage-block rule from `tools/_binding_layout.py` — they must
+  agree, or dispatch routes at a template the bindings never instantiated.
+- `CMakePresets.json`: the single source of truth for build configurations. CI, the `justfile`, and
+  the docs all configure through presets; add a preset rather than a new set of `-D` flags. Each
+  preset builds into `build/<preset>/`.
 
 ### Core abstractions (the propagation backbone)
 
@@ -46,6 +52,12 @@ Key files:
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
   templated on the algebra policy and bound to a runtime `Basis` once, via `with_algebra`.
+- **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
+  propagators, one hash partition each. Every method that fans out must use the private partition
+  vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`
+  for the mutating/collecting paths, which run on the partitions' own pinned masters; `sum_partitions_`,
+  `fold_partitions_`, `first_partition_` for reads off quiescent partitions) rather than hand-rolling a
+  `run_on_all` loop — the declarations record which helper is legal where.
 
 
 ### Environment Management
@@ -106,6 +118,16 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 7. Add Python bindings in `src/monoprop/bindings/binder.h`
 8. Regenerate bindings with `tools/generate-binders.py`
 9. Test with both C++ and Python tests
+
+## Documentation Maintenance Policy
+
+When changing behavior, APIs, build/test workflows, paths, or developer conventions:
+
+1. Update `AGENTS.md` in the same change.
+2. Update `README.md` in the same change.
+3. Update the docs under `docs/` for user-facing or contributor-facing guidance.
+4. Keep commands and paths consistent across all three (`AGENTS.md`, `README.md`, and `docs/`).
+5. If a section no longer reflects the codebase, either fix it immediately or remove it.
 
 ### Debugging Build Issues
 - Check `build/*/compile_commands.json` for compilation flags

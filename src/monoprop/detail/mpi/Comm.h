@@ -19,8 +19,7 @@
 #if defined(monoprop_ENABLE_MPI)
 #include <mpi.h>
 #else
-// Fallback MPI types for non-MPI builds (single process). The engine names these but the calls are
-// guarded by rank-count and dispatched through the wrappers below, so they never execute.
+// Fallback MPI types for non-MPI builds (single process).
 using MPI_Comm = int;
 constexpr MPI_Comm MPI_COMM_WORLD = 0;
 constexpr MPI_Comm MPI_COMM_SELF = 0;
@@ -28,23 +27,21 @@ constexpr MPI_Comm MPI_COMM_SELF = 0;
 
 namespace monoprop::mpi {
 
-class ShmComm;    // the in-process shared-memory SPMD transport
-class HybridComm; // composes R MPI ranks x S shards into one flat world
+class ShmComm;
+class HybridComm;
 
-// Runtime-tagged communicator handle threaded through the engine in place of a raw MPI_Comm: the same
-// SPMD code drives real MPI (`Kind::Mpi`) or an in-process ShmComm (`Kind::Shm`). Trivially copyable,
-// passed by value like the MPI_Comm it replaces. The implicit MPI_Comm constructor is deliberate — it
-// keeps every call site / test / binding compiling unchanged; there is no implicit conversion back (that
-// would silently drop a Shm handle), so read `.mpi` explicitly where a raw communicator is required.
+// Runtime-tagged communicator handle: the same SPMD code drives real MPI (`Kind::Mpi`) or an in-process
+// ShmComm (`Kind::Shm`). Trivially copyable, passed by value. The implicit MPI_Comm constructor is
+// deliberate; there is no implicit conversion back (that would silently drop a Shm handle), so read
+// `.mpi` explicitly where a raw communicator is required.
 struct Comm {
-    // Hybrid = R MPI ranks x S in-process shards presented as one flat P=R*S SPMD world; the engine
-    // sees size()==P and never distinguishes it from plain MPI or plain shards.
+    // Hybrid = R MPI ranks x S in-process partitions presented as one flat P=R*S SPMD world (size()==P).
     enum class Kind : std::uint8_t { Mpi, Shm, Hybrid };
     Kind kind = Kind::Mpi;
     MPI_Comm mpi = MPI_COMM_SELF; // valid iff kind == Mpi
-    ShmComm *shm = nullptr;       // non-owning (ShardGroup owns); valid iff kind == Shm
-    HybridComm *hyb = nullptr;    // non-owning (ShardGroup owns); valid iff kind == Hybrid
-    int shm_rank = 0;             // this participant's LOCAL shard index; valid iff kind == Shm | Hybrid
+    ShmComm *shm = nullptr;       // non-owning (PartitionGroup owns); valid iff kind == Shm
+    HybridComm *hyb = nullptr;    // non-owning (PartitionGroup owns); valid iff kind == Hybrid
+    int shm_rank = 0;             // this participant's local partition index; valid iff kind == Shm | Hybrid
 
     constexpr Comm() = default;
     constexpr Comm(MPI_Comm c) : mpi(c) {} // implicit on purpose (see above)
@@ -57,11 +54,11 @@ struct Comm {
         return c;
     }
 
-    static auto make_hybrid(HybridComm *group, int local_shard) -> Comm {
+    static auto make_hybrid(HybridComm *group, int local_partition) -> Comm {
         Comm c;
         c.kind = Kind::Hybrid;
         c.hyb = group;
-        c.shm_rank = local_shard;
+        c.shm_rank = local_partition;
         return c;
     }
 };

@@ -18,19 +18,17 @@
 #include <cstdlib>
 #include <optional>
 
-// Single home for runtime environment configuration: every `monoprop_*` env var is parsed once here
-// (function-local static in config::get()) and exposed as a config::Settings field. Dependency-free by
-// design (only <cstdlib>) because it is pulled into hot-path headers.
+// Single home for runtime environment configuration. Kept dependency-free by design, because it is
+// pulled into hot-path headers.
 //
 //   monoprop_NUM_THREADS    positive int (1..1e6), else ignored                → num_threads
-//   monoprop_SHARD_PINNING  bool, default ON; 0/false disables per-core pinning → shard_pinning
-//   monoprop_SHARDS         int N | "auto" | "off"; parsed where it is used (resolve_shard_count_)
+//   monoprop_PARTITION_PINNING  bool, default ON; 0/false disables per-core pinning → partition_pinning
+//   monoprop_PARTITIONS         int N | "auto" | "off"; parsed where it is used (resolve_partition_count_)
 
 namespace monoprop::config {
 
 namespace detail {
 
-// Truthy parse: unset/empty ⇒ default; else false iff first char is one of {0,f,F,n,N}.
 inline auto parse_flag(const char *value, bool default_value) -> bool {
     if (value == nullptr || value[0] == '\0') {
         return default_value;
@@ -57,8 +55,8 @@ inline auto parse_positive_int(const char *text) -> std::optional<int> {
 } // namespace detail
 
 struct Settings {
-    std::optional<int> num_threads; // monoprop_NUM_THREADS
-    bool shard_pinning = true;      // monoprop_SHARD_PINNING
+    std::optional<int> num_threads;
+    bool partition_pinning = true;
 };
 
 // Parse the environment once; the Settings are cached and shared across TUs.
@@ -66,7 +64,7 @@ inline auto get() -> const Settings & {
     static const Settings settings = [] {
         Settings s;
         s.num_threads = detail::parse_positive_int(std::getenv("monoprop_NUM_THREADS"));
-        s.shard_pinning = detail::parse_flag(std::getenv("monoprop_SHARD_PINNING"), true);
+        s.partition_pinning = detail::parse_flag(std::getenv("monoprop_PARTITION_PINNING"), true);
         return s;
     }();
     return settings;

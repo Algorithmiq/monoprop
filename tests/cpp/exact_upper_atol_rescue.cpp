@@ -34,8 +34,7 @@ constexpr double kEnergyAtol = 1e-9;
 
 enum class CommMode { Self, World };
 
-// Zero structural cutoff + upper_atol = 0; build_simulator cannot express this (it hardcodes
-// cutoff = 2*NumModes).
+// build_simulator cannot express this: it hardcodes cutoff = 2*NumModes.
 template <size_t NumModes>
 auto build_zero_cutoff_full_rescue(const CaseData& data, MPI_Comm comm) -> MonomialPropagator<NumModes> {
     return MonomialPropagator<NumModes>(data.hamiltonian,

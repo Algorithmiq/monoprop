@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #pragma once
-// std::print polyfill for compilers that lack <print> (GCC < 14).
+// std::print polyfill for compilers that lack <print> (gcc < 14).
 #if __has_include(<print>)
 #include <print>
 #else

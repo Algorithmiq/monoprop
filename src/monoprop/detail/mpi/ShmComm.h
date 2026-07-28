@@ -24,9 +24,10 @@
 #include <type_traits>
 #include <vector>
 
-#include "monoprop/detail/mpi/ShardBarrier.h"
+#include "monoprop/detail/mpi/CheckedCount.h"
+#include "monoprop/detail/mpi/PartitionBarrier.h"
 
-// In-process shared-memory SPMD transport: S shard-master threads each call the same collective
+// In-process shared-memory SPMD transport: S partition-master threads each call the same collective
 // sequence in program order, every collective two-phase (publish slot → barrier → read peers →
 // barrier). Two guarantees the engine relies on: alltoallv delivers each source's block contiguously
 // in ascending source-rank order (Resolve.h's positional pairing needs it), and allreduce sums in
@@ -43,7 +44,7 @@ public:
 
     auto size() const -> int { return n_; }
 
-    // Transpose per-rank send counts into per-rank recv counts: recv[s] = amount rank s sends to me.
+    // recv_counts[s] = what rank s sends to me (the transpose of the send-count matrix).
     auto alltoall_counts(int rank, const int *send_counts, int *recv_counts) -> void {
         slots_[static_cast<size_t>(rank)].counts = send_counts;
         sync();
@@ -53,7 +54,7 @@ public:
         sync();
     }
 
-    // Variable all-to-all over caller-owned FLAT buffers (counts/displs in ELEMENTS, `elem` = element
+    // Variable all-to-all over caller-owned flat buffers (counts/displs in elements, `elem` = element
     // bytes). Fills recv per source s ascending at recv_displs[s]; recv_counts must already hold the
     // transpose — same contract as MPI_Alltoallv.
     auto alltoallv(int rank,
@@ -82,9 +83,8 @@ public:
         sync();
     }
 
-    // Fused count-resolve + payload all-to-all in ONE round (2 syncs vs 4). recv_counts / recv_displs
-    // and `recv` (resized) are OUTPUTS. Same contiguous ascending-source ordering as alltoallv, which
-    // the query/response positional pairing depends on.
+    // Fused count-resolve + payload all-to-all in one round (2 syncs vs 4). Same contiguous
+    // ascending-source ordering as alltoallv, which the query/response positional pairing depends on.
     template <class T>
     auto alltoallv_resolve(int rank,
                            const T *send,
@@ -98,14 +98,14 @@ public:
         me.displs = send_displs;
         me.counts = send_counts;
         sync(); // B1: send buffers published
-        size_t total = 0;
+        long long total = 0;
         for (int s = 0; s < n_; ++s) {
             const int c = slots_[static_cast<size_t>(s)].counts[rank]; // what s sends to me
             recv_counts[s] = c;
-            recv_displs[s] = static_cast<int>(total);
-            total += static_cast<size_t>(c);
+            recv_displs[s] = checked_mpi_count(total, "Recv displacement");
+            total += c;
         }
-        recv.resize(total);
+        recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
         auto *dst = reinterpret_cast<char *>(recv.data());
         for (int s = 0; s < n_; ++s) {
             const Slot &src = slots_[static_cast<size_t>(s)];
@@ -120,7 +120,6 @@ public:
         sync(); // B2: peers finished reading our send buffer before the caller may reuse it
     }
 
-    // Summed in ascending rank order.
     template <class T>
     auto allreduce_sum(int rank, T local_val) -> T {
         Slot &me = slots_[static_cast<size_t>(rank)];
@@ -145,8 +144,8 @@ public:
         return acc;
     }
 
-    // In-place element-wise allreduce-sum, ascending rank order (bit-identical on every rank). Safe in
-    // place: each element is read then overwritten by its single slice owner, and slices are cache-line-rounded.
+    // Safe in place: each element is read then overwritten by its single slice owner, and slices are
+    // cache-line-rounded.
     auto allreduce_sum_inplace(int rank, double *values, size_t len) -> void {
         slots_[static_cast<size_t>(rank)].vec = values;
         sync();
@@ -167,15 +166,14 @@ public:
         sync(); // peers write into our buffer (and read from it) until here
     }
 
-    // Called by the shard dispatcher when a participant unwinds. See ShardBarrier::poison.
+    // See PartitionBarrier::poison / ::reset for when each is legal to call.
     auto poison() -> void { barrier_.poison(); }
 
-    // Clear the poison flag and arrival counter between collective rounds. See ShardBarrier::reset.
     auto reset() -> void { barrier_.reset(); }
 
 private:
-    // One cache-line-isolated publish slot per rank (no false sharing). A rank writes only its own slot,
-    // and reads peers' slots only between the two barriers of a collective.
+    // One cache-line-isolated publish slot per rank. A rank writes only its own slot, and reads peers'
+    // slots only between the two barriers of a collective.
     struct alignas(64) Slot {
         const void *ptr = nullptr;
         const int *counts = nullptr;
@@ -189,7 +187,7 @@ private:
 
     int n_;
     std::vector<Slot> slots_;
-    ShardBarrier barrier_;
+    PartitionBarrier barrier_;
 };
 
 } // namespace monoprop::mpi

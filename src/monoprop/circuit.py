@@ -14,26 +14,25 @@
 
 r"""Authoring types for Majorana/qubit circuits.
 
-An :class:`ExpGate` is the exponential of a generator *operator* -- a
-:class:`~monoprop.majorana.MajoranaOperator`, :class:`~monoprop.pauli.PauliOperator`, or
-:class:`~monoprop.fermi.FermiOperator` (converted to Majorana form on construction). A bare term
+An [ExpGate][] is the exponential of a generator *operator* -- a
+[MajoranaOperator][monoprop.majorana.MajoranaOperator], [PauliOperator][monoprop.pauli.PauliOperator], or
+[FermiOperator][monoprop.fermi.FermiOperator] (converted to Majorana form on construction). A bare term
 is rejected: only an operator carries the system ``num_modes`` / ``num_qubits``, and its type
-fixes the gate's family and normalization. A :class:`Circuit` is an ordered sequence of such
+fixes the gate's family and normalization. A [Circuit][] is an ordered sequence of such
 gates, all of one family, each gate carrying one variational angle. The propagators dispatch on
-:attr:`Circuit.family`: :class:`~monoprop.majorana_propagator.MajoranaPropagator` takes a
-Majorana/fermionic circuit, :class:`~monoprop.pauli_propagator.PauliPropagator` a qubit one.
+[Circuit.family][]: [MajoranaPropagator][monoprop.majorana_propagator.MajoranaPropagator] takes a
+Majorana/fermionic circuit, [PauliPropagator][monoprop.pauli_propagator.PauliPropagator] a qubit one.
 """
 
 from __future__ import annotations
 
-import itertools
 from typing import TYPE_CHECKING, Literal
 
 from .conversion_utils import (
     _pauli_to_local_slots,
 )
 from .majorana import MajoranaOperator
-from .pauli import Pauli, PauliOperator
+from .pauli import PauliOperator
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -50,9 +49,9 @@ CircuitFamily = Literal["pauli", "majorana", "empty"]
 class ExpGate:
     r"""The exponential of a generator: one variational gate, abstract over the family.
 
-    Applies :math:`e^{+i\theta H}` for driving angle :math:`\theta` and Hermitian generator
-    :math:`H`. Note the **positive** sign: qiskit's ``PauliEvolutionGate`` and ``r<P>`` rotations
-    use :math:`e^{-itH}`, so :mod:`monoprop.qiskit_conversion` negates the generator both ways.
+    Applies $e^{+i\theta H}$ for driving angle $\theta$ and Hermitian generator
+    $H$. Note the **positive** sign: qiskit's ``PauliEvolutionGate`` and ``r<P>`` rotations
+    use $e^{-itH}$, so [monoprop.qiskit_conversion][] negates the generator both ways.
     Every family supplies the **Hermitian** generator -- for a Majorana one that means the
     observable convention: imaginary coefficient for a weight-2 monomial, real for weight-4.
 
@@ -75,20 +74,22 @@ class ExpGate:
         """Wrap a generator operator; its type selects the family and normalization convention.
 
         Args:
-            generator: A :class:`~monoprop.majorana.MajoranaOperator`,
-                :class:`~monoprop.pauli.PauliOperator`, or
-                :class:`~monoprop.fermi.FermiOperator`. A bare ``Majorana`` / ``Pauli`` term is
+            generator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator],
+                [PauliOperator][monoprop.pauli.PauliOperator], or
+                [FermiOperator][monoprop.fermi.FermiOperator]. A bare ``Majorana`` / ``Pauli`` term is
                 *not* accepted; wrap it, e.g. ``MajoranaOperator({(0, 1): 1j}, num_modes)`` --
                 the Hermitian convention makes a weight-2 coefficient imaginary.
             index: The variational-angle index, or ``None`` for the identity mapping (see
-                :class:`Circuit`).
+                [Circuit][]).
             atol: Generator terms with ``|coeff| <= atol`` are dropped.
-            _structural: Internal. Set by :meth:`_structural_gate` when the generator already
+            _structural: Internal. Set by ``_structural_gate`` when the generator already
                 carries the real structural coefficients ``g`` (the wire/dense format), so
-                :func:`_gate_layers` passes them through unnormalized.
+                ``_gate_layers`` passes them through unnormalized.
 
         Raises:
             TypeError: If ``generator`` is not one of the three operator types.
+            ValueError: If the generator's terms do not all pairwise commute (a single
+                exponential cannot stand in for non-commuting generators).
         """
         if isinstance(generator, PauliOperator):
             family: GateFamily = "pauli"
@@ -107,10 +108,10 @@ class ExpGate:
 
         self.generator = self._truncated_term(generator, atol)
 
-        if isinstance(self.generator, PauliOperator):
-            _validate_commuting_pauli_generator(self.generator)
-        elif isinstance(self.generator, MajoranaOperator):
-            _validate_commuting_majorana_generator(self.generator)
+        if not self.generator.all_pairwise_commute():
+            raise ValueError(
+                "The provided generator must be composed of commuting terms."
+            )
 
         self.index = None if index is None else int(index)
         self.family = family
@@ -168,8 +169,8 @@ class ExpGate:
 class Circuit:
     """A variational circuit: an ordered sequence of exponential gates, angles, and a state.
 
-    All gates must share a family (see :class:`ExpGate`). Empty ``parameters`` means unbound; a
-    bound circuit needs exactly :attr:`n_parameters` values.
+    All gates must share a family (see [ExpGate][]). Empty ``parameters`` means unbound; a
+    bound circuit needs exactly [n_parameters][] values.
 
     The per-gate ``index`` values give the parameter mapping: with none set, each gate gets its
     own angle in order; otherwise every gate must set a contiguous ``0..n-1`` index, and gates
@@ -199,8 +200,8 @@ class Circuit:
 
         Raises:
             ValueError: On duplicate initial-state indices, a bad parameter mapping, or a bound
-                circuit whose parameter count does not match :attr:`n_parameters`.
-            TypeError: On a non-:class:`ExpGate` gate, or a mix of gate families.
+                circuit whose parameter count does not match [n_parameters][].
+            TypeError: On a non-[ExpGate][] gate, or a mix of gate families.
         """
         gates = tuple(gates)
         parameters = tuple(float(v) for v in parameters)
@@ -283,7 +284,7 @@ class Circuit:
 
     @property
     def resolved_mapping(self) -> tuple[int, ...]:
-        """Per-gate angle index, derived from each gate's ``index`` (see :class:`Circuit`)."""
+        """Per-gate angle index, derived from each gate's ``index`` (see [Circuit][])."""
         indices = [gate.index for gate in self.gates]
         if all(i is None for i in indices):
             return tuple(range(len(self.gates)))
@@ -315,7 +316,7 @@ class Circuit:
 
         ``other``'s angle indices are shifted up by ``self.n_parameters``, so the two halves keep
         independent angles and every gate in the result gets an explicit ``index``. Prefer one
-        :meth:`~monoprop.monomial_propagator.MonomialPropagator.build_graph` call over
+        [MonomialPropagator.build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] call over
         incremental multi-call building, whose ordering is picture-dependent.
         """
         if not isinstance(other, Circuit):
@@ -360,12 +361,12 @@ class Circuit:
         gen_coeffs: Sequence[float],
         param_inds: Sequence[int],
         parameters: Sequence[float] = (),
-        initial_state: Sequence[int] = (),
+        initial_state: Sequence[int] | None = None,
     ) -> Circuit:
         """Build a Majorana circuit from flat, per-monomial dense arrays.
 
         The native dense/wire format (also the on-disk msgpack-fixture layout): consecutive
-        monomials sharing a ``param_ind`` become one Majorana :class:`ExpGate` with that
+        monomials sharing a ``param_ind`` become one Majorana [ExpGate][] with that
         ``param_ind`` as its ``index``, so weight-tying is preserved and the expanded engine
         arrays stay identical.
 
@@ -374,7 +375,10 @@ class Circuit:
             gen_coeffs: Generator coefficient per monomial (already structural).
             param_inds: Variational-angle index per monomial; contiguous runs group into gates.
             parameters: Optional angle values.
-            initial_state: Optional reference state (occupied mode indices).
+            initial_state: Reference state (occupied mode indices), or ``None`` to defer to the
+                propagator's. ``()`` is the explicit vacuum, exactly as in the constructor -- the
+                wire format has no third state, so a caller round-tripping it decides which of the
+                two an absent field means.
         """
         indices = [int(p) for p in param_inds]
         gates: list[ExpGate] = []
@@ -383,7 +387,6 @@ class Circuit:
         current_coeffs: list[complex] = []
 
         def _flush() -> None:
-            # Wire-format coefficients are already structural, so skip normalization.
             gates.append(
                 ExpGate._structural_gate(
                     MajoranaOperator._from_terms(
@@ -407,7 +410,9 @@ class Circuit:
         return cls(
             gates=tuple(gates),
             parameters=tuple(float(p) for p in parameters),
-            initial_state=tuple(int(i) for i in initial_state),
+            initial_state=(
+                None if initial_state is None else tuple(int(i) for i in initial_state)
+            ),
         )
 
 
@@ -457,65 +462,15 @@ def _real_generator_coefficient(majorana: Sequence[int], value: complex) -> floa
 
 
 def _antihermitian_gen_coeff(majorana: Sequence[int], coeff: complex) -> float:
-    """Antihermitian-normalize a raw Majorana-product coefficient to a real ``g``.
+    r"""Antihermitian-normalize a raw Majorana-product coefficient to a real ``g``.
 
     Divides out the Hermitian phase ``(1j)**(w(w-1)/2)`` of the weight-``w`` monomial to get the
-    structural coefficient of the antihermitian generator the engine rotates by.
+    structural coefficient of the antihermitian generator the engine rotates by, and negates it --
+    the sign is what makes the rotation come out as the ``exp(+i*theta*H)`` [ExpGate][] documents.
     """
     weight = len(majorana)
     gen = -coeff / (1j) ** (weight * (weight - 1) / 2)
     return _real_generator_coefficient(majorana, gen)
-
-
-def _paulis_commute(p1: Pauli, p2: Pauli) -> bool:
-    """Whether two Pauli terms commute as operators.
-
-    They anticommute iff they act with *different* letters on an odd number of shared qubits
-    (:class:`~monoprop.pauli.Pauli` drops identity letters on construction).
-    """
-    op1 = dict(zip(p1.qubits, p1.string, strict=True))
-    op2 = dict(zip(p2.qubits, p2.string, strict=True))
-    anticommuting = sum(1 for q in op1.keys() & op2.keys() if op1[q] != op2[q])
-    return anticommuting % 2 == 0
-
-
-def _validate_commuting_pauli_generator(generator: PauliOperator) -> None:
-    """Reject a multi-term Pauli generator whose terms do not pairwise commute.
-
-    :func:`_gate_layers` realizes a multi-term generator as a *product* of one rotation per term,
-    which equals the single exponential of their sum only if the terms commute; otherwise the
-    evolution would be silently Trotterized.
-    """
-    for p1, p2 in itertools.combinations(generator.terms, 2):
-        if not _paulis_commute(p1, p2):
-            raise ValueError(
-                "A multi-term Pauli gate generator must have mutually commuting terms so the "
-                f"gate is a single exponential of their sum; {p1} and {p2} anticommute."
-            )
-
-
-def _majoranas_commute(m1: Sequence[int], m2: Sequence[int]) -> bool:
-    """Whether two Majorana monomials commute as operators.
-
-    Swapping canonicalized products contributes the sign
-    ``(-1)**(len(m1)*len(m2) - |set(m1) & set(m2)|)``.
-    """
-    n_common = len(set(m1) & set(m2))
-    return ((len(m1) * len(m2) - n_common) % 2) == 0
-
-
-def _validate_commuting_majorana_generator(generator: MajoranaOperator) -> None:
-    """Reject a multi-term Majorana generator whose terms do not pairwise commute.
-
-    Same reason as :func:`_validate_commuting_pauli_generator`.
-    """
-    for m1, m2 in itertools.combinations(generator.terms, 2):
-        if not _majoranas_commute(m1, m2):
-            raise ValueError(
-                "A multi-term Majorana gate generator must have mutually commuting terms "
-                "so the gate is a single exponential of their sum; "
-                f"{tuple(m1)} and {tuple(m2)} anticommute."
-            )
 
 
 def _gate_layers(
@@ -557,7 +512,7 @@ def expand_monomials(
     """Flatten gates + an already-resolved per-gate mapping into per-monomial arrays.
 
     Args:
-        gates: :class:`ExpGate` gates, in application order.
+        gates: [ExpGate][] gates, in application order.
         mapping: The angle index driving each gate (one entry per gate).
         num_qubits: System qubit count, required to place Pauli generators; unused for Majorana.
 

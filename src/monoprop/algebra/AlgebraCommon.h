@@ -14,9 +14,6 @@
 
 #pragma once
 
-// Basis-agnostic structural primitives (pairing, cutoffs, index<->bit conversions) meaningful in
-// either basis; the basis-specific algebra lives in the sibling MajoranaAlgebra.h / PauliAlgebra.h.
-
 #include <array>
 #include <bit>
 #include <cstdint>
@@ -41,9 +38,8 @@ auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
     return bs;
 }
 
-// indices_to_bitset() with a bound on each index. The bound is the LOGICAL width
-// (2 * logical_num_modes), not the storage width 2 * NumModes: a propagator over fewer modes than its
-// instantiation must still reject indices outside its own system.
+// The bound is the logical width (2 * logical_num_modes), not the storage width 2 * NumModes: a
+// propagator over fewer modes than its instantiation must still reject indices outside its own system.
 template <size_t NumModes>
 auto indices_to_bitset_checked(const VecZ &arr, size_t max_index) -> Monomial<NumModes> {
     for (const auto &bit_loc : arr) {
@@ -55,7 +51,7 @@ auto indices_to_bitset_checked(const VecZ &arr, size_t max_index) -> Monomial<Nu
     return indices_to_bitset<NumModes>(arr);
 }
 
-// Indices of the set bits, scanned in O(popcount) via find_first/find_next rather than O(NumModes).
+// O(popcount) via find_first/find_next rather than an O(NumModes) scan.
 template <size_t NumModes>
 auto bitset_to_indices(const Monomial<NumModes> &bs) -> VecZ {
     const auto pop = bs.count();
@@ -90,7 +86,6 @@ template <size_t NumModes, typename Rows>
 auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     VecZ result;
     const auto mask = even_bits<2 * NumModes, LSb0>();
-    // Appended in ascending `inds` order; only the SET is observable, but the order is deterministic.
     for (const auto index : inds) {
         const auto &op_row = materialize_row<NumModes>(op, index);
         if (is_paired<NumModes>(op_row, mask)) {
@@ -101,8 +96,8 @@ auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
 }
 
 // Occupation mask of the initial product state: the even index 2*i of each listed mode (Majorana) or
-// qubit (Pauli) that starts in state 1. Algebra-agnostic -- both algebras read the same mask, and
-// differ only in the phase they score against it (majorana_state_phase / pauli_state_phase).
+// qubit (Pauli) that starts in state 1. Both algebras read the same mask and differ only in the phase
+// they score against it (majorana_state_phase / pauli_state_phase).
 template <size_t NumModes>
 auto initial_state_mask(const VecZ &initial_state) -> Monomial<NumModes> {
     VecZ bits;
@@ -113,12 +108,11 @@ auto initial_state_mask(const VecZ &initial_state) -> Monomial<NumModes> {
     return indices_to_bitset<NumModes>(bits);
 }
 
-// The per-mode sums the structural cutoffs measure, over the ACTIVE modes only; one implementation
-// shared by both cutoffs.
+// The per-mode sums the structural cutoffs measure, over the active modes only.
 struct CutoffSums {
     size_t xor_sum;      // modes with exactly one of their two Majoranas set; 0 == fully paired
-    size_t popcount_sum; // Majorana operators present -- the LENGTH measure
-    size_t or_sum;       // modes with either Majorana present -- the SUPPORT measure (JW Pauli weight)
+    size_t popcount_sum; // Majorana operators present -- the length measure
+    size_t or_sum;       // modes with either Majorana present -- the support measure (JW Pauli weight)
 };
 
 template <size_t NumModes>
@@ -151,7 +145,6 @@ template <size_t NumModes>
 // terms contributing to an expectation value against a product reference state, so bounding them by
 // length or support would discard signal.
 
-// Length cutoff: keep iff the Majorana count is within cutoff, or fully paired.
 template <size_t NumModes>
 auto length_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
     const auto sums = cutoff_sums<NumModes>(mono, logical_num_modes);
@@ -163,8 +156,6 @@ auto length_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff) -> bool 
     return length_cutoff<NumModes>(mono, cutoff, NumModes);
 }
 
-// Support cutoff: keep iff the orbital support is within cutoff, or fully paired. Support (or_sum) is
-// coarser than length; under Jordan-Wigner it equals the qubit Pauli weight.
 template <size_t NumModes>
 auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
     const auto sums = cutoff_sums<NumModes>(mono, logical_num_modes);
@@ -238,9 +229,9 @@ public:
         return cutoff_fn_(mono);
     }
 
-    // Upper bound on the SET BITS (physical slots) a surviving term can carry, so the store can size
-    // its packed inline rows (nullopt for an arbitrary user cutoff_fn). A length cutoff counts set
-    // bits directly; a support cutoff counts modes/qubits, each spanning two slots, hence the x2.
+    // Upper bound on the set bits (physical slots) a surviving term can carry, so the store can size
+    // its packed inline rows. A length cutoff counts set bits directly; a support cutoff counts
+    // modes/qubits, each spanning two slots, hence the x2.
     auto max_slot_bound() const -> std::optional<size_t> {
         if (length_cutoff_ != nullptr) {
             return length_cutoff_->cutoff;

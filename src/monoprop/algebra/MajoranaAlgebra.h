@@ -14,12 +14,6 @@
 
 #pragma once
 
-// The Majorana algebra: how a Monomial is read as a product of Majorana operators. Sibling of
-// algebra/PauliAlgebra.h over the shared primitives in algebra/AlgebraCommon.h: the Hermitian
-// coefficient normalization i^C(|maj|,2), the ordering (interleave) sign and its per-layer mask form,
-// the initial-state phase, the real<->complex codec, and Majorana basis changes. Reached through the
-// MajoranaAlgebra policy in algebra/Algebra.h.
-
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -52,14 +46,13 @@ inline auto is_antihermitian(const VecZ &indices) -> bool {
     return ((indices.size() / 2) % 2) != 0;
 }
 
-// Generator correction for an L-index Majorana product: i^(C(L,2)+1).
 inline auto antihermitian_generator_correction(const VecZ &indices) -> std::complex<double> {
     return POWERS_OF_I[(n_choose_2(indices.size()) + 1) % 4];
 }
 
-// Diagonal element <b|M|b> of a fully-paired Majorana term against the initial product state, whose
-// occupation mask is state_mask (initial_state_mask): (-1)^(|maj & state_mask| + |maj|/2) -- the
-// pairing sign folds in on top of the occupation parity. Only meaningful for fully-paired terms.
+// Diagonal element <b|M|b> against the initial product state, whose occupation mask is state_mask
+// (initial_state_mask): (-1)^(|maj & state_mask| + |maj|/2) -- the pairing sign folds in on top of the
+// occupation parity. Only meaningful for fully-paired terms.
 template <size_t NumModes>
 auto majorana_state_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &state_mask) -> double {
     const auto num_pairs = maj.count_and(state_mask);
@@ -93,8 +86,11 @@ auto interleave_phase(const Monomial<NumModes> &maj_bs, const Monomial<NumModes>
         }
 
         const uint64_t prefix_xor = prefix_xor_64(maj_word);
-        // Shift left by 1 to exclude the bit itself; -carry broadcasts the previous words' parity.
-        const uint64_t running_parity = (prefix_xor << 1) ^ (-carry);
+        // Shift left by 1 to exclude the bit itself; carry_mask is 0 or all-ones, broadcasting the
+        // previous words' parity across the word. Written as 0 - carry, not -carry: same result,
+        // without a unary minus on an unsigned operand.
+        const uint64_t carry_mask = 0ULL - carry;
+        const uint64_t running_parity = (prefix_xor << 1) ^ carry_mask;
         parity ^= static_cast<size_t>(std::popcount(running_parity & gen_word));
         carry ^= prefix_xor >> 63;
     }
@@ -103,7 +99,7 @@ auto interleave_phase(const Monomial<NumModes> &maj_bs, const Monomial<NumModes>
 }
 
 // Per-generator mask W collapsing the per-term interleave sign to one masked parity.
-// IDENTITY: interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : #{g∈G : g>c} odd}, FIXED for
+// Identity: interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : #{g∈G : g>c} odd}, fixed for
 // the layer; the per-term sign is then one maj.parity_and(W) instead of the prefix-XOR scan.
 template <size_t NumModes>
 auto interleave_phase_mask(const Monomial<NumModes> &gen) -> Monomial<NumModes> {
@@ -129,7 +125,8 @@ inline auto hermitian_phase(size_t maj_count, size_t gen_count, size_t overlap) 
 template <size_t NumModes>
 auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialList<NumModes> {
     MonomialList<NumModes> combinations;
-    max_ones = std::min(max_ones, 2 * logical_num_modes);
+    // Clamp in pairs, not bits: max_ones counts pairs and bounds the fill over `selector`, one slot per mode.
+    max_ones = std::min(max_ones, logical_num_modes);
     auto selector = std::vector(logical_num_modes, false);
     const size_t inactive_mode_prefix = NumModes - logical_num_modes;
 

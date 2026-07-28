@@ -14,8 +14,7 @@
 
 #pragma once
 
-// Reference forms of the Majorana algebra that the production kernels are checked against.
-// Exercised only by tests/cpp/mpfunctions.cpp, never called by the shipped library.
+// Majorana helpers the shipped library no longer calls, kept alive for tests/cpp/mpfunctions.cpp.
 
 #include <algorithm>
 #include <vector>
@@ -31,7 +30,6 @@ auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MonomialList<N
     return majorana_operator;
 }
 
-// Multiplicative phase for Majorana evolution: the interleave (ordering) sign times the Hermitian phase.
 template <size_t NumModes>
 auto get_multiplicative_phase(const Monomial<NumModes> &mono,
                               const Monomial<NumModes> &gen_mono,

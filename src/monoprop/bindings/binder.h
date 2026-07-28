@@ -50,7 +50,6 @@ auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string;
 auto basis_str_2_enum(const std::string &basis) -> Basis;
 auto basis_enum_2_str(Basis basis) -> std::string;
 
-// Binds the MonomialPropagator class to Python.
 template <size_t NumModes>
 auto bind_monomial_propagator(nb::module_ &mod) -> void {
     using namespace monoprop;
@@ -72,7 +71,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
            std::optional<std::vector<std::vector<size_t>>> basis_change,
            size_t logical_num_modes,
            const std::string &basis,
-           size_t shards) {
+           size_t partitions) {
             new (t) MonomialPropagator<NumModes>(initial_operator,
                                                  cutoff,
                                                  initial_state,
@@ -84,7 +83,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                                  basis_change,
                                                  logical_num_modes,
                                                  basis_str_2_enum(basis),
-                                                 shards);
+                                                 partitions);
         },
         "initial_operator"_a,
         "cutoff"_a,
@@ -97,7 +96,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "basis_change"_a = std::nullopt,
         "logical_num_modes"_a = NumModes,
         "basis"_a = "majorana",
-        "shards"_a = 0,
+        "partitions"_a = 0,
         "Instantiate the simulator.");
 
     cls.def("build_graph",
@@ -110,7 +109,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "only_rotate_len_k"_a = 0,
             "Build the propagation graph, recording per-layer gate information");
 
-    // Deep copy (operator store deep-cloned; immutable graph layer cores shared). Only __deepcopy__ is exposed.
+    // Deep copy: the operator store is cloned, the immutable graph layer cores are shared.
     cls.def(
         "__deepcopy__",
         [](const MonomialPropagator<NumModes> &self, nb::handle) { return MonomialPropagator<NumModes>(self); },
@@ -198,7 +197,6 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         [](const MonomialPropagator<NumModes> &self) -> std::string { return basis_enum_2_str(self.basis()); },
         "The operator basis: 'majorana' (default) or 'pauli'");
 
-    // Shard-transparent: evolved_operator_terms merges each shard's disjoint hash partition.
     cls.def(
         "evolved_operator",
         [](MonomialPropagator<NumModes> &self, const VecD &parameters, double atol) -> nb::dict {
@@ -255,8 +253,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         [](const MonomialPropagator<NumModes> &self) { return self.graph_memory_usage().total_bytes(); },
         "Total bytes held by the graph on this rank");
 
-    // total_bytes() alone cannot say whether the row store or the transposed inverted index dominates,
-    // which is what sizing decisions turn on.
+    // total_bytes() alone cannot say whether the row store or the transposed inverted index dominates.
     cls.def("operator_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
         const auto b = self.operator_memory_usage();
         return std::map<std::string, size_t>{{"operator_terms_bytes", b.operator_terms_bytes},
@@ -267,7 +264,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"initial_state_bytes", b.initial_state_bytes},
                                              {"inverted_index_bytes", b.inverted_index_bytes},
                                              {"total_bytes", b.total_bytes()},
-                                             // Diagnostics (NOT part of total_bytes; see the struct).
+                                             // Diagnostics (not part of total_bytes; see the struct).
                                              {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
                                              {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
                                              {"d_invidx_dense_columns", b.inverted_index_dense_columns},

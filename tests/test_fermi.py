@@ -303,9 +303,8 @@ class TestExp:
     def test_creation_from_fermi_operator(self):
         gate = ExpGate(generator=_number_op())
 
-        # ExpGate converts a fermionic generator to its Majorana form, so the gate is native
-        # "majorana" carrying raw-product coefficients (imaginary on the weight-2 term); it is
-        # _gate_layers that antihermitian-normalizes them later.
+        # The stored coefficients are the raw Majorana products (imaginary on the weight-2
+        # term); it is _gate_layers that antihermitian-normalizes them later.
         assert gate.family == "majorana"
         assert gate.generator.num_modes == 1
         assert gate.generator.terms == {(): 0.5, (0, 1): 0.5j}
@@ -327,7 +326,6 @@ class TestCircuit:
         assert len(circuit) == 2
 
     def test_converts_fermi_gates_to_majorana(self):
-        # A hopping term c_0^+ c_1 + c_1^+ c_0 on two modes.
         hop = FermiOperator(
             [[(0, "+"), (1, "-")], [(1, "+"), (0, "-")]], [1.0, 1.0], num_modes=2
         )
@@ -366,5 +364,6 @@ class TestCircuit:
         assert circuit.parameters == (0.1, 0.3)
 
     def test_validate_inputs_duplicate_initial_state_raises(self):
+        gate = ExpGate(_number_op())
         with pytest.raises(ValueError, match="Duplicate indices in initial state"):
-            Circuit(gates=[ExpGate(_number_op())], initial_state=[0, 0])
+            Circuit(gates=[gate], initial_state=[0, 0])

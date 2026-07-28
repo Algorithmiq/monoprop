@@ -13,27 +13,44 @@
 // limitations under the License.
 
 #pragma once
+< < < < < < < < HEAD : src / monoprop / detail / print_compat.h
+// std::print polyfill for compilers that lack <print> (GCC < 14).
+#if __has_include(<print>)
+#include <print>
+#else
+#include <cstdio>
+#include <format>
+namespace std { // NOLINT(cert-dcl58-cpp)
+template <class... Args>
+void print(FILE* f, format_string<Args...> fmt, Args&&... args) {
+    auto s = std::vformat(fmt.get(), std::make_format_args(args...));
+std::fwrite(s.data(), 1, s.size(), f);
+}
+template <class... Args>
+void print(format_string<Args...> fmt, Args&&... args) {
+    ::std::print(stdout, fmt, std::forward<Args>(args)...);
+}
+} // namespace std
+#endif
+    == == == ==
 
 #include <vector>
 
-// Plain receive-layout types for the variable all-to-all facade (see Exchange.h). Kept MPI-free and
-// dependency-light so graph-encoding types (LayerExchangeLayout) can embed the cache without pulling
-// in <mpi.h> or the exchange machinery.
+    // Kept MPI-free and dependency-light so graph-encoding types (LayerExchangeLayout) can embed the cache
+    // without pulling in <mpi.h> or the exchange machinery (see Exchange.h).
 
-namespace monoprop::mpi {
+    namespace monoprop::mpi {
 
-// Resolved receive side of a variable all-to-all: per-rank recv counts + displacements and the total.
-struct RecvLayout {
-    std::vector<int> counts;
-    std::vector<int> displs;
-    int total = 0;
-};
+    struct RecvLayout {
+        std::vector<int> counts;
+        std::vector<int> displs;
+        int total = 0;
+    };
 
-// Per-layer cache of a resolved RecvLayout, keyed by communicator size: a replayed graph's send pattern
-// is fixed, so a hit (comm_size unchanged) skips the count round. Reset state is comm_size == -1.
-struct RecvLayoutCache {
-    RecvLayout layout;
-    int comm_size = -1;
-};
+    struct RecvLayoutCache {
+        RecvLayout layout;
+        int comm_size = -1;
+    };
 
 } // namespace monoprop::mpi
+>>>>>>>> main : src / monoprop / detail / mpi / RecvLayout.h

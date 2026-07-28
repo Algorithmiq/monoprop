@@ -69,9 +69,9 @@ def _pauli_to_local_slots(string: str, qubits: Sequence[int]) -> tuple[int, ...]
     Each qubit maps to its own two slots, independent of every other qubit:
     ``X_q -> {2q}``, ``Y_q -> {2q+1}``, ``Z_q -> {2q, 2q+1}`` (``I`` contributes nothing).
     This is the engine's ``Basis::Pauli`` encoding (mirrors ``slots_of_string`` in
-    ``tests/cpp/pauli_build_layer_tests.cpp``); a weight-``w`` Pauli occupies at most ``2w``
+    ``tests/cpp/PauliTestOracle.h``); a weight-``w`` Pauli occupies at most ``2w``
     slots, so the packed popcount is ``O(weight)`` and independent of the qubit count -- unlike
-    the Jordan-Wigner image (:func:`_pauli_to_majorana`), whose ``Z`` prefix makes a single
+    the Jordan-Wigner image (``_pauli_to_majorana``), whose ``Z`` prefix makes a single
     ``X_q`` span ``2q+1`` slots.
 
     Returns:
@@ -91,12 +91,12 @@ def _pauli_to_local_slots(string: str, qubits: Sequence[int]) -> tuple[int, ...]
 def _local_slots_to_pauli(slots: Sequence[int]) -> tuple[str, tuple[int, ...]]:
     """Decode native symplectic gamma-slots back to a local Pauli term.
 
-    Inverse of :func:`_pauli_to_local_slots` (mirrors ``letter_from_bitset`` in
-    ``tests/cpp/pauli_build_layer_tests.cpp``): for qubit ``q`` the slots ``2q`` (``u``) and
+    Inverse of ``_pauli_to_local_slots`` (mirrors ``letter_from_bitset`` in
+    ``tests/cpp/PauliTestOracle.h``): for qubit ``q`` the slots ``2q`` (``u``) and
     ``2q+1`` (``v``) decode as ``(1,0)=X``, ``(0,1)=Y``, ``(1,1)=Z``.
 
     Returns:
-        A ``(string, qubits)`` pair ready for :class:`~monoprop.pauli.Pauli`.
+        A ``(string, qubits)`` pair ready for [Pauli][monoprop.pauli.Pauli].
     """
     present = set(slots)
     letters: list[str] = []

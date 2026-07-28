@@ -3,7 +3,6 @@
 set -euo pipefail
 
 # Script to install dependencies for monoprop project
-# Usage: ./install-deps.sh [install_prefix] [--skip-boost-unordered] [--skip-boost-test] [--skip-msgpack] [--help]
 
 show_help() {
     cat << EOF

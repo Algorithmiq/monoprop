@@ -28,7 +28,6 @@ namespace {
 
 constexpr size_t kModes = 2;
 
-// A simple propagator with a non-trivial initial operator, one gate per test.
 auto make_sim() -> MonomialPropagator<kModes> {
     OperatorDict ham;
     ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
@@ -68,15 +67,14 @@ BOOST_AUTO_TEST_CASE(set_parameter_mapping_per_gate_ties_layers) {
     const std::vector<VecZ> monos{{0}, {1}, {2}};
     sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
 
-    // Per-gate mapping (length n_gates == 2) tying both gates to one angle: every layer
-    // ends up on parameter 0.
+    // Length n_gates (2) selects the per-gate branch; both gates tied to one angle.
     sim.set_parameter_mapping(VecZ{0, 0});
     auto per_layer = sim.parameter_mapping();
     BOOST_TEST(per_layer.size() == 3u);
     BOOST_TEST(std::ranges::all_of(per_layer, [](size_t p) { return p == 0; }));
 
-    // Per-gate mapping with distinct angles: gate 0's two layers share one param, gate 1's
-    // layer gets the other -- so counts are 2 and 1 regardless of layer ordering.
+    // Distinct angles: gate 0's two layers share one param, gate 1's layer gets the other -- counted
+    // rather than compared positionally, so the check holds regardless of layer ordering.
     sim.set_parameter_mapping(VecZ{0, 1});
     per_layer = sim.parameter_mapping();
     const auto zeros = std::ranges::count(per_layer, 0u);
@@ -109,7 +107,7 @@ BOOST_AUTO_TEST_CASE(set_parameter_mapping_after_gradient_matches_before) {
 
     auto after = make_sim();
     after.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0}, VecZ{0, 0, 1});
-    // Materialize the derivative layout first, THEN relabel: the copied cores must not inherit it.
+    // Materialize the derivative layout first, then relabel: the copied cores must not inherit it.
     static_cast<void>(after.expectation_value_and_gradient(VecD{0.1, 0.2, 0.5}));
     after.set_parameter_mapping(VecZ{0, 1});
     const auto [value_after, grad_after] = after.expectation_value_and_gradient(params);
@@ -143,4 +141,45 @@ BOOST_AUTO_TEST_CASE(build_graph_rejects_malformed_gate_indices) {
     const std::vector<VecZ> monos{{0}, {1}};
     // A jump from 0 to 2 is not a contiguous run.
     BOOST_CHECK_THROW(sim.build_graph(monos, VecZ{0, 1}, VecD{1.0, 1.0}, VecZ{0, 2}), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(coeff_informed_build_graph_rejects_too_few_parameters) {
+    auto sim = make_sim();
+    sim.build_graph(std::vector<VecZ>{{0}, {1}}, VecZ{0, 1}, VecD{1.0, 1.0});
+
+    // A coefficient-informed second build must supply enough parameters to replay that graph
+    // (>= 2). Its own mapping references only parameter 0, so a length-1 vector passes the
+    // per-mapping length check but is too short to contract the existing graph -- the guard
+    // rejects it up front rather than seeding from a silently truncated prefix.
+    BOOST_CHECK_THROW(
+        sim.build_graph(std::vector<VecZ>{{2}}, VecZ{0}, VecD{1.0}, std::nullopt, std::optional<VecD>{VecD{0.5}}),
+        std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(contract_partially_replays_existing_graph_and_supports_inplace) {
+    auto sim = make_sim();
+    sim.build_graph(std::vector<VecZ>{{0}, {1}}, VecZ{0, 1}, VecD{1.0, 1.0});
+    BOOST_TEST(sim.graph_layers() == 2u);
+
+    // Coefficient-informed extend on a non-empty graph: build_graph internally calls
+    // contract_partially(existing_params, /*inplace=*/false) to reseed atol truncation. The new layer's
+    // own parameter index (2) must be >= the existing graph's max index (1), so `parameters` here can
+    // simultaneously satisfy this call's own length check (against its local mapping, {2}) and be long
+    // enough to replay the existing graph (which needs 2 values).
+    sim.build_graph(std::vector<VecZ>{{0}},
+                    VecZ{2},
+                    VecD{1.0},
+                    std::nullopt,
+                    std::optional<VecD>{VecD{0.5, 0.25, 0.1}});
+    BOOST_TEST(sim.graph_layers() == 3u);
+
+    // inplace=false: returns coefficients, leaves the graph intact.
+    const auto peeked = sim.contract_partially(VecD{0.5, 0.25, 0.1}, false);
+    BOOST_TEST(!peeked.empty());
+    BOOST_TEST(sim.graph_layers() == 3u);
+
+    // inplace=true: consumes the (entire) graph into the operator.
+    const auto consumed = sim.contract_partially(VecD{0.5, 0.25, 0.1}, true);
+    BOOST_TEST(consumed.size() == peeked.size());
+    BOOST_TEST(sim.graph_layers() == 0u);
 }

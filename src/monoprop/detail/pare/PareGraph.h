@@ -14,7 +14,7 @@
 
 #pragma once
 
-// pare_graph is declared in MPFunctions.h; this is the .cpp's include set.
+// pare_graph is declared in MPFunctions.h.
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"

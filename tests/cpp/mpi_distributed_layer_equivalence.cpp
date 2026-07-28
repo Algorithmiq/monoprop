@@ -25,8 +25,8 @@
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
-// Single-rank (SELF) vs multi-rank (WORLD) equivalence of energy, gradient, native-Pauli energy and
-// the MPI x shard hybrid. Oracle: the SELF run; the only expected difference is summation order,
+// Single-rank (self) vs multi-rank (world) equivalence of energy, gradient, native-Pauli energy and
+// the MPI x partition hybrid. Oracle: the self run; the only expected difference is summation order,
 // covered by near()'s kFpRtol = 1e-7.
 
 namespace {
@@ -107,7 +107,7 @@ BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
 }
 
 // Native Pauli engine across rank counts. The same owner hash and cross-rank resolve path drive the
-// intra-process shard runtime, so this guards both.
+// intra-process partition runtime, so this guards both.
 
 constexpr size_t kPauliQ = 6;
 
@@ -160,12 +160,12 @@ BOOST_AUTO_TEST_CASE(pauli_rank_count_energy_within_fp_tolerance) {
     BOOST_TEST(near(e_serial, e_world));
 }
 
-// MPI x shard hybrid: shards=S under R ranks builds the HybridComm flat R*S world, which only changes
+// MPI x partition hybrid: partitions=S under R ranks builds the HybridComm flat R*S world, which only changes
 // allreduce association, so the energy must match serial and the global term count must be exactly
-// invariant. Explicit shards= wins over the suite's monoprop_SHARDS=off, so this is the sole case
+// invariant. Explicit partitions= wins over the suite's monoprop_PARTITIONS=off, so this is the sole case
 // exercising the hybrid transport end to end.
 
-auto run_energy_sharded(const TestInputs& inputs, MPI_Comm comm, size_t shards) -> std::pair<double, size_t> {
+auto run_energy_partitioned(const TestInputs& inputs, MPI_Comm comm, size_t partitions) -> std::pair<double, size_t> {
     MonomialPropagator<kNumModes> sim(inputs.data.hamiltonian,
                                       kCutoff,
                                       inputs.data.initial_state,
@@ -177,27 +177,27 @@ auto run_energy_sharded(const TestInputs& inputs, MPI_Comm comm, size_t shards) 
                                       std::nullopt,
                                       kNumModes,
                                       Basis::Majorana,
-                                      shards);
+                                      partitions);
     sim.build_graph(inputs.data.majoranas, inputs.data.param_inds, inputs.data.gen_coeffs);
     auto fn = sim.expectation_value_functional();
     const double e = fn(inputs.data.parameters);
     return {e, sim.size()};
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_mpi_shard_energy_and_size_equivalence) {
+BOOST_AUTO_TEST_CASE(hybrid_mpi_partition_energy_and_size_equivalence) {
     if (mpi::size(MPI_COMM_WORLD) < 2) {
         BOOST_TEST_MESSAGE("Skipping hybrid case: requires at least 2 ranks.");
         return;
     }
     const auto inputs = load_inputs();
-    const auto [e_serial, n_serial] = run_energy_sharded(inputs, MPI_COMM_SELF, 1); // pure serial (full op)
-    const auto [e_hybrid, n_local] = run_energy_sharded(inputs, MPI_COMM_WORLD, 2);
-    // Each rank's facade holds only its local shards; the GLOBAL term count is the cross-rank sum.
+    const auto [e_serial, n_serial] = run_energy_partitioned(inputs, MPI_COMM_SELF, 1);
+    const auto [e_hybrid, n_local] = run_energy_partitioned(inputs, MPI_COMM_WORLD, 2);
+    // Each rank's facade holds only its local partitions; the global term count is the cross-rank sum.
     const size_t n_hybrid_global = mpi::allreduce_sum<size_t>(n_local, MPI_COMM_WORLD);
     BOOST_TEST_MESSAGE("serial=" << e_serial << " (n=" << n_serial << ") hybrid R*2=" << e_hybrid
                                  << " (global n=" << n_hybrid_global << ")");
     BOOST_TEST(near(e_serial, e_hybrid));
-    BOOST_CHECK_EQUAL(n_serial, n_hybrid_global); // hash-partitioned term set is exactly invariant
+    BOOST_CHECK_EQUAL(n_serial, n_hybrid_global);
 }
 
 } // namespace

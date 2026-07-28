@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// HybridComm transport equivalence: R MPI ranks x S in-process shards must behave as one flat P=R*S
-// SPMD world, with only shard 0 touching MPI, exactly as ShardGroup drives it.
+// HybridComm transport equivalence: R MPI ranks x S in-process partitions must behave as one flat P=R*S
+// SPMD world, with only partition 0 touching MPI, exactly as PartitionGroup drives it.
 
 #include <boost/test/unit_test.hpp>
 
@@ -56,7 +56,6 @@ auto world_rank() -> int {
 
 } // namespace
 
-// Global size() and rank() reflect the flat P=R*S world with rank-major ids.
 BOOST_AUTO_TEST_CASE(hybrid_comm_flat_size_and_rank) {
     if (world_size() < 2) {
         return;
@@ -80,7 +79,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_flat_size_and_rank) {
     }
 }
 
-// allreduce_sum: partition g contributes its global id g; every partition ends with sum_{0..P-1} g.
+// Each partition contributes its global id, so the expected total is sum_{g<P} g.
 BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_global) {
     if (world_size() < 2) {
         return;
@@ -104,8 +103,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_global) {
     }
 }
 
-// begin_alltoallv must deliver each source's block contiguously in ascending GLOBAL source order with
-// tags intact (Resolve.h's positional pairing). Partition g sends everyone (g%3+1) elts tagged g*1000+j.
+// begin_alltoallv must deliver each source's block contiguously in ascending global source order with
+// tags intact (Resolve.h's positional pairing).
 BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
     if (world_size() < 2) {
         return;
@@ -113,7 +112,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
     const int R = world_size();
     for (const int S : {1, 2, 3}) {
         const int P = R * S;
-        // recv[u] = what this rank's shard u received, indexed by global source.
+        // recv[u] = what this rank's partition u received, indexed by global source.
         std::vector<std::vector<std::vector<int>>> recv(static_cast<size_t>(S));
         auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
             Comm c = Comm::make_hybrid(&hyb, u);
@@ -148,7 +147,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
     }
 }
 
-// Back-to-back alltoallvs with varying counts (zeros, growth, shrink) on ONE HybridComm: staging and
+// Back-to-back alltoallvs with varying counts (zeros, growth, shrink) on one HybridComm: staging and
 // offset-table reuse (a stale staged byte surfaces as a wrong tag), and the no-trailing-barrier rule.
 BOOST_AUTO_TEST_CASE(hybrid_comm_repeated_alltoallv_varying_sizes) {
     if (world_size() < 2) {
@@ -203,7 +202,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_repeated_alltoallv_varying_sizes) {
 }
 
 // alltoallv_resolve driven directly: it folds the count MPI_Alltoall into the payload verb's B1→B2
-// window and sizes recv itself. Varying-size rounds check the total, the transpose, and source order.
+// window and sizes recv itself.
 BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
     if (world_size() < 2) {
         return;
@@ -267,7 +266,6 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
     BOOST_CHECK_EQUAL(failures.load(), 0);
 }
 
-// allreduce_sum_inplace: element-wise global sum over all P partitions, bit-identical on every shard.
 BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global) {
     if (world_size() < 2) {
         return;
@@ -305,9 +303,9 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global) {
     }
 }
 
-// Poison releases barrier waiters on every rank; the test completing at all proves that. Shard 0 poisons
-// BEFORE entering a collective, so no rank is committed to MPI and the shard-0 guard deliberately does
-// not fire. Poisoning INSIDE a collective calls MPI_Abort instead, so it cannot be a ctest case.
+// Poison releases barrier waiters on every rank; the test completing at all proves that. Partition 0 poisons
+// before entering a collective, so no rank is committed to MPI and the partition-0 guard deliberately does
+// not fire. Poisoning inside a collective calls MPI_Abort instead, so it cannot be a ctest case.
 BOOST_AUTO_TEST_CASE(hybrid_comm_poison_releases_waiters) {
     if (world_size() < 2) {
         return;
@@ -315,7 +313,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_poison_releases_waiters) {
     for (const int S : {2, 3}) {
         auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
             if (u == 0) {
-                hyb.poison(); // shard 0 unwinds before reaching the collective — on every rank
+                hyb.poison();
                 return;
             }
             std::vector<int> send(static_cast<size_t>(world_size() * S), 1);

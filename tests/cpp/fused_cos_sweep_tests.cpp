@@ -18,10 +18,8 @@
 
 #include "TestUtilities.h"
 
-// Fused cos sweep (ContractImmediately k==0): the scan multiplies anticommuting coefficients by
-// cos(2θ) in place, and resolve recovers a hit partner's pre-cos value as stored·(1/cos) — the one
-// deliberate FP deviation (≤1 ulp per hit endpoint) from the two-pass path. Oracle: the untouched
-// build_graph()+replay evaluation, in both pictures and with/without the lower_atol gate.
+// The fused cos sweep's one deliberate FP deviation from the two-pass path (≤1 ulp per hit endpoint,
+// from resolve's stored·(1/cos) recovery), against the build_graph()+replay evaluation as oracle.
 
 namespace {
 
@@ -64,14 +62,14 @@ BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg, ExampleData
     check_agreement(data, SimulatorConfig{}, "heisenberg");
 }
 
-// lower_atol active: the sin gate reads the PRE-cos value, so the in-place store that follows must
+// lower_atol active: the sin gate reads the pre-cos value, so the in-place store that follows must
 // not change which terms are emitted.
 BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg_atol, ExampleDataFix) {
     check_agreement(data, SimulatorConfig{.atol = 1e-10}, "heisenberg atol=1e-10");
 }
 
-// Schrödinger: fresh inserts carry a nonzero state-scored value born AFTER the sweep, so the apply's
-// insert arm must fold the gate's cos into those slots itself (c = cos·c + sin term).
+// Schrödinger: fresh inserts are born after the sweep with a nonzero coeff, so the apply's insert arm
+// must fold the gate's cos into those slots itself.
 BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger, ExampleDataFix) {
     check_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes}, "schrodinger");
 }

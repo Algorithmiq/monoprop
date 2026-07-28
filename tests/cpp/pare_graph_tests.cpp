@@ -33,15 +33,18 @@ namespace {
 
 constexpr size_t kNumModes = 8;
 
-// Mirrors the streaming provider the pare functional uses: fold the operator's even-parity
-// inverted index truncated to each layer's scaled_count.
+// Mirrors the streaming provider the pare functional uses: fold the operator's inverted index,
+// truncated to each layer's scaled_count.
 template <size_t NumModes>
 auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_index, const LayerTraversal &layer)
     -> CosMask {
     Monomial<NumModes> gen{};
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
-    const auto combined = monoprop::detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count());
+    const auto combined = monoprop::detail::make_fold_cache<NumModes>(inverted_index,
+                                                                      gen,
+                                                                      layer.scaled_count(),
+                                                                      monoprop::Basis::Majorana);
     return monoprop::detail::fold_to_cos_mask<NumModes>(combined);
 }
 
@@ -96,7 +99,6 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
         return cos;
     };
 
-    // Keep every real index, but not the synthetic one.
     VecZ seed;
     seed.reserve(state.size());
     for (size_t i = 0; i < state.size(); ++i) {
@@ -108,23 +110,37 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
 
     size_t pruned_count = 0;
     for (size_t i = 0; i < pared.layers(); ++i) {
-        const auto &layer = pared.get_layer(i);
-        if (const CosMask *pruned = layer.pruned_cos(); pruned != nullptr) {
+        if (const CosMask *pruned = pared.get_layer(i).pruned_cos(); pruned != nullptr) {
             ++pruned_count;
-            BOOST_TEST(pruned->total_count <= provider(i).total_count);
-        }
-        else {
-            // Preserved layers store nothing; their cos is recomputed at replay.
-            BOOST_TEST(layer.pruned_cos() == static_cast<const CosMask *>(nullptr));
+            // The synthetic index is the only one outside the keep-set, so a stored cos must be the
+            // recomputed one minus exactly that index. `<=` here would also pass on a sweep that
+            // dropped real indices.
+            BOOST_CHECK_EQUAL(pruned->total_count + 1, provider(i).total_count);
+
+            // Same block-mask walk graph_data() uses to turn a stored cos back into indices: the
+            // decoded set must be the recomputed one with only synth_index missing, so a stored cos
+            // is never read as the unpruned fold.
+            const auto decode = [](const CosMask &cos) {
+                VecZ inds;
+                inds.reserve(cos.total_count);
+                for (const auto &[base, bits] : cos.blocks) {
+                    monoprop::detail::for_each_cos_index(base, bits, [&](size_t idx) { inds.push_back(idx); });
+                }
+                return inds;
+            };
+            const auto kept = decode(*pruned);
+            auto expected = decode(provider(i));
+            std::erase(expected, synth_index);
+            BOOST_CHECK_EQUAL(kept.size(), pruned->total_count);
+            BOOST_TEST(kept == expected, boost::test_tools::per_element());
         }
     }
-    // Exactly the marked layer should be pruned (its synthetic index dropped).
-    BOOST_TEST(pruned_count >= 1u);
+    // Exactly the marked layer is pruned: every other layer's cos lies entirely inside the keep-set,
+    // and a preserved layer stores nothing (its cos is recomputed at replay).
+    BOOST_CHECK_EQUAL(pruned_count, 1u);
     BOOST_TEST(pared.get_layer(marked_layer).pruned_cos() != static_cast<const CosMask *>(nullptr));
 }
 
-// The pared energy matches the unpared energy at a tiny threshold (prunes ~nothing) up to
-// floating-point summation order, and stays within tolerance of the exact energy at a real one.
 BOOST_AUTO_TEST_CASE(pare_graph_energy_matches_unpared) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
@@ -143,7 +159,6 @@ BOOST_AUTO_TEST_CASE(pare_graph_energy_matches_unpared) {
     const double e_tiny = ev_tiny(data.parameters);
     BOOST_CHECK_SMALL(std::abs(e_full - e_tiny), 1e-12);
 
-    // Pared at a real threshold: close to the exact energy (mirrors mpi_pare expectations).
     auto sim_real = build_simulator<kNumModes>(data, cfg);
     sim_real.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     auto ev_real = sim_real.expectation_value_functional(std::optional<double>{1e-10});

@@ -89,8 +89,8 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     non_orbital_gates, orbital_gates = _split_orbital_gates(gates)
     # Consecutive prefix/suffix split, so the (identity) parameter values split the same way.
     split = len(non_orbital_gates)
-    # Rebase each sub-circuit onto the identity mapping (gate i -> angle i). _with_index rather
-    # than ExpGate(gate.generator) so _structural is preserved -- see tests/test_circuit.py::_rebase.
+    # _with_index rather than ExpGate(gate.generator) so _structural is preserved -- see
+    # tests/test_circuit.py::_rebase.
     non_orbital = Circuit(
         tuple(ExpGate._with_index(gate, None) for gate in non_orbital_gates),
         parameters=tuple(parameters[:split]),
@@ -104,7 +104,7 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
         problem.operator, problem.monomial_circuit.initial_state, **serial_mp_kwargs
     )
     mp_act.build_graph(circuit)
-    act_ener = mp_act.expectation_value_functional()(parameters)
+    act_ener = mp_act.expval_functional()(parameters)
 
     mp = MajoranaPropagator(
         problem.operator, problem.monomial_circuit.initial_state, **serial_mp_kwargs
@@ -113,11 +113,11 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     if inplace:
         mp.propagate(non_orbital)
         mp.propagate(orbital, only_rotate_len_k=4)
-        test_expval = mp.expectation_value()
+        test_expval = mp.expval()
     else:
         mp.build_graph(non_orbital)
         mp.build_graph(orbital, only_rotate_len_k=4)
-        test_expval = mp.expectation_value_functional()(parameters)
+        test_expval = mp.expval_functional()(parameters)
         assert sum(mp.graph_size()) < sum(mp_act.graph_size())
 
     assert mp.size() < mp_act.size()

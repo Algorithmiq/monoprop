@@ -17,33 +17,33 @@
 #include <cmath>
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/detail/evolution/CosineRecompute.h"    // scale_cos_mask, CosMask
-#include "monoprop/detail/evolution/layer_build/Common.h" // FusedContract, RotationRec
+#include "monoprop/detail/evolution/CosineRecompute.h"
+#include "monoprop/detail/evolution/layer_build/Common.h"
 
 namespace monoprop::detail {
 
 // The drain paired with build_layer's fused emission: complete each rotation by adding its sine term
-// directly to op_coeffs (the ContractImmediately forward path at ALL rank counts). The gate's cosine
+// directly to op_coeffs (the ContractImmediately forward path at all rank counts). The gate's cosine
 // scale reaches the coefficients two ways:
 //   • fused_scale (k==0, default): the scan already scaled every anticommuting coeff, so no cos pass runs
-//     here; slots born AFTER that sweep (fresh inserts) fold cos in via their apply arm below.
+//     here; slots born after that sweep (fresh inserts) fold cos in via their apply arm below.
 //   • two-pass (k>0 / cos==0 fallback): scale_cos_mask runs here, then every arm is a plain add.
-// At R>1 each rank applies only the ADD to the slot it owns (half rotations in fc.cross_half).
+// At R>1 each rank applies only the add to the slot it owns (half rotations in fc.cross_half).
 inline auto apply_fused_contract(FusedContract &fc,
                                  VecD &op_coeffs,
                                  const CosMask &cos,
                                  double param,
                                  bool schrodinger,
                                  bool fused_scale) -> void {
-    // (1) INSERT records: v_tgt is the freshly-inserted term's PRE-cos coeff, readable only now op_coeffs
-    // is extended. Needed ONLY in Schrödinger — a Heisenberg fresh insert has coeff 0, so skip the gather.
+    // (1) insert records: v_tgt is the freshly-inserted term's pre-cos coeff, readable only now op_coeffs
+    // is extended. Needed only in Schrödinger — a Heisenberg fresh insert has coeff 0, so skip the gather.
     if (schrodinger) {
         for (size_t k = 0; k < fc.inserts.size(); ++k) {
             fc.inserts[k].v_tgt = op_coeffs[fc.inserts[k].tgt];
         }
     }
 
-    // (2) Two-pass mode only: cos scale over ALL anticommuting endpoints (inserts included).
+    // (2) Two-pass mode only: cos scale over all anticommuting endpoints (inserts included).
     const double cos_val = std::cos(2 * param);
     const double sin_val = std::sin(2 * param);
     double *const c = op_coeffs.data();
@@ -52,9 +52,9 @@ inline auto apply_fused_contract(FusedContract &fc,
     }
 
     // (3) One pass over hits ++ inserts ++ cross_half. Each op slot is touched by exactly one add (pivot
-    // split + ⊕G-injective targets + drop_matched_cross_rank_followers). Full rotations write BOTH local
-    // endpoints; half rotations write only the slot THIS rank owns. In fused_scale mode a slot born after
-    // the sweep (insert targets, resolver MISS halves) folds the gate's cos in here (c = cos·c + sin).
+    // split + ⊕G-injective targets + drop_matched_cross_rank_followers), which is what makes the plain +=
+    // safe. In fused_scale mode a slot born after the sweep (insert targets, resolver miss halves) folds
+    // the gate's cos in here (c = cos·c + sin).
     const size_t n_hit = fc.hits.size();
     const size_t n_full = n_hit + fc.inserts.size();
     const size_t n_cross = fc.cross_half.size();
@@ -71,7 +71,6 @@ inline auto apply_fused_contract(FusedContract &fc,
             }
         }
         else {
-            // Cross-rank half rotations (R>1): the wire-carried partner term, on the one slot this rank owns.
             const HalfRotationRec &h = fc.cross_half[k - n_full];
             if (fused_scale && h.is_insert) {
                 c[h.local_idx] = cos_val * c[h.local_idx] + sin_val * static_cast<double>(h.phase_signed) * h.v_partner;

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-# Only entries whose step is >= min_step are plotted to skip the early noisy steps
+# The early steps are too noisy to plot.
 min_step = 5
 
 colors = {

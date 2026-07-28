@@ -1,3 +1,17 @@
+# Copyright 2026 Algorithmiq
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 using MajoranaPropagation
 using BenchmarkTools
 using ArgParse
@@ -77,7 +91,6 @@ end
 
 
 function main(args)
-    # initialize the settings (the description is for the help screen)
     s = ArgParseSettings(description="Arguments for the 1D Hubbard model benchmark.")
 
     @add_arg_table! s begin
@@ -98,7 +111,7 @@ function main(args)
 
     end
 
-    parsed_args = parse_args(s) # the result is a Dict{String,Any}
+    parsed_args = parse_args(s)
 
     N_spinful_sites = parsed_args["n_spins"]
     n_layers = parsed_args["max_layers"]
@@ -113,19 +126,16 @@ function main(args)
     circ_single = []
     thetas_single = []
 
-    #up hoppings
     for (i, j) in topo
         push!(circ_single, FermionicRotation(:hopup, [i, j]))
         push!(thetas_single, -t * dt)
     end
 
-    #down hoppings
     for (i, j) in topo
         push!(circ_single, FermionicRotation(:hopdn, [i, j]))
         push!(thetas_single, -t * dt)
     end
 
-    #on-site repulsion
     for i = 1:N_spinful_sites
         push!(circ_single, FermionicRotation(:nupndn, i))
         push!(thetas_single, U * dt)

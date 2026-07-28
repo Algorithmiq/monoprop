@@ -56,13 +56,14 @@ test-cpp-mpi:
     cmake --build --preset release-gcc-mpi
     ctest --preset release-gcc-mpi
 
-# Configure + build the Coverage tree, run the C++ suite, and emit a gcovr report over src/include.
-# Mirrors the flags the CI cpp-checks job uses (adjust --gcov-executable to your gcov-14).
+# Run the C++ suite under coverage and report with gcovr.
+# Approximates the CI cpp-checks gcovr invocation; set $GCOV to pick another gcov binary.
 coverage-cpp:
     cmake --preset coverage-gcc
     cmake --build --preset coverage-gcc
     ctest --preset coverage-gcc
-    uvx gcovr --gcov-executable "${GCOV:-gcov-14}" --gcov-ignore-parse-errors \
+    uvx gcovr --gcov-executable "${GCOV:-gcov}" --gcov-ignore-parse-errors \
+        --exclude-throw-branches --exclude-unreachable-branches \
         --root . --filter '^(src|include)/' --exclude '^tests/' build/coverage-gcc --txt
 
 # Install the documentation site's JavaScript dependencies.
@@ -139,5 +140,5 @@ build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
     cd {{ site }} && npm run build
 
 # Serve the documentation locally with hot reloading.
-serve-docs: docs-install gen-api gen-notebooks
+serve-docs:
     cd {{ site }} && npm run dev

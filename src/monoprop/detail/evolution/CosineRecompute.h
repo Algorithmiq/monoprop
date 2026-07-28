@@ -17,8 +17,7 @@
 // Recompute a layer's cosine index set from the persistent inverted index instead of a stored per-layer
 // bitmap. A layer's cos = the terms anticommuting with its generator G = the per-word XOR-fold of G's
 // inverted-index columns, with the odd-|G| row_parity(|M|) correction, truncated to the first
-// `scaled_count` indices (the term count BEFORE that layer's own inserts). LazyFold recomputes it on the
-// fly (the sole runtime replay path); FoldCache materialises it into one buffer.
+// `scaled_count` indices (the term count before that layer's own inserts).
 
 #include <algorithm>
 #include <array>
@@ -33,10 +32,10 @@
 #include <utility>
 #include <vector>
 
-#include "monoprop/algebra/Algebra.h" // algebra_fold_generator / algebra_fold_needs_odd_correction
-#include "monoprop/detail/evolution/CosineRecomputeCallbacks.h" // LayerCosScale, LayerCosAccumulate
-#include "monoprop/detail/evolution/layer_build/Scan.h" // gen columns, inverted index, CosMask (only scan-side symbols used)
-#include "monoprop/detail/operator/InvertedIndex.h" // combine_columns_block, column_block_scratch
+#include "monoprop/algebra/Algebra.h"
+#include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
+#include "monoprop/detail/evolution/layer_build/Scan.h"
+#include "monoprop/detail/operator/InvertedIndex.h"
 
 namespace monoprop::detail {
 
@@ -89,8 +88,7 @@ struct FoldCache {
     const uint64_t *row_parity = nullptr;
 };
 
-// The odd-|G| row-parity words for a fold, or nullptr when the correction does not apply. Hoisted out
-// of the per-word loop by callers.
+// The odd-|G| row-parity words for a fold, or nullptr when the correction does not apply.
 template <size_t NumModes>
 inline auto fold_row_parity(const InvertedIndex<NumModes> &sc, const FoldMask &f) -> const uint64_t * {
     return f.g_odd ? sc.row_parity_words() : nullptr;
@@ -100,11 +98,11 @@ template <size_t NumModes>
 auto make_fold_cache(const InvertedIndex<NumModes> &sc,
                      const Monomial<NumModes> &gen,
                      uint64_t scaled_count,
-                     Basis basis = Basis::Majorana) -> FoldCache<NumModes> {
+                     Basis basis) -> FoldCache<NumModes> {
     FoldCache<NumModes> p;
     p.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
     p.row_parity = fold_row_parity<NumModes>(sc, p.fold);
-    // generator_words stores the REAL G; re-derive the fold generator (J(G) for Pauli) as the scan did.
+    // generator_words stores the real G; re-derive the fold generator (J(G) for Pauli) as the scan did.
     const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);
     const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
 
@@ -120,10 +118,9 @@ auto make_fold_cache(const InvertedIndex<NumModes> &sc,
     return p;
 }
 
-// The one fold-word mask rule (shared by fold_word and recipe_fold_word, matching even_parity_scan_pass1):
-// apply the odd-|G| row_parity correction, then the last-word scaled_count truncation mask. `row_parity`
-// is passed in so callers hoist it out of the loop and no long-lived mask holds an index pointer (see
-// FoldMask).
+// The one fold-word mask rule, shared by fold_word and recipe_fold_word and matching
+// even_parity_scan_pass1. `row_parity` is passed in so callers hoist it out of the loop and no long-lived
+// mask holds an index pointer (see FoldMask).
 [[gnu::always_inline]] inline auto apply_fold_mask(uint64_t bits,
                                                    size_t wi,
                                                    const FoldMask &f,
@@ -142,8 +139,7 @@ template <size_t NumModes>
     return apply_fold_mask(p.combined[wi], wi, p.fold, p.row_parity);
 }
 
-// Visit each set bit of `bits` ascending, calling op(base + bit). THE bit-scatter kernel behind every cos
-// scale/accumulate loop; always_inline so the per-bit op has no call overhead.
+// Visit each set bit of `bits` ascending, calling op(base + bit).
 template <typename BitOp>
 [[gnu::always_inline]] inline auto for_each_cos_index(size_t base, uint64_t bits, BitOp op) -> void {
     while (bits) {
@@ -152,11 +148,10 @@ template <typename BitOp>
     }
 }
 
-// Metadata to recompute a layer's cosine fold on the fly, fused with the bit scatter: the generator's
-// ≤|G| inverted index column indices plus the cos truncation bounds — no per-layer buffer.
+// Metadata to recompute a layer's cosine fold on the fly, with no per-layer cos buffer.
 //
 // `columns` is heap-sized to |G| (typically 2-4) rather than reusing EvenParityGeneratorColumns' fixed
-// std::array<size_t, 2*NumModes>: a LazyFold is RETAINED per graph layer, 4 KB each at NumModes=256.
+// std::array<size_t, 2*NumModes>: a LazyFold is retained per graph layer, 4 KB each at NumModes=256.
 template <size_t NumModes>
 struct LazyFold {
     std::vector<size_t> columns;
@@ -167,7 +162,7 @@ template <size_t NumModes>
 auto make_lazy_fold(const InvertedIndex<NumModes> &sc,
                     const Monomial<NumModes> &gen,
                     uint64_t scaled_count,
-                    Basis basis = Basis::Majorana) -> LazyFold<NumModes> {
+                    Basis basis) -> LazyFold<NumModes> {
     LazyFold<NumModes> r;
     r.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
     const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);
@@ -228,7 +223,6 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
     return loc;
 }
 
-// Scale/accumulate over a stored CosMask instead of a recomputed fold.
 inline auto scale_cos_mask(double *coeff, const CosMask &cos, double cos_val) -> void {
     const size_t n = cos.blocks.size();
     for (size_t k = 0; k < n; ++k) {
@@ -263,8 +257,7 @@ inline auto fold_to_cos_mask(const FoldCache<NumModes> &p) -> CosMask {
     }
     return c;
 }
-// How many cosine indices a fold covers without materialising them: the count fold_to_cos_mask would
-// report, with no blocks vector. For diagnostics (graph_size).
+// Cos-index count without materialising the blocks; for diagnostics (graph_size).
 template <size_t NumModes>
 inline auto fold_popcount(const FoldCache<NumModes> &p) -> size_t {
     size_t total = 0;

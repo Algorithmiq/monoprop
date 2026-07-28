@@ -33,6 +33,8 @@ using namespace monoprop;
 namespace {
 
 constexpr size_t kNumModes = 8;
+// These oracles cover the Majorana fold only; the Pauli J(G) fold generator has no equivalence test yet.
+constexpr auto kBasis = Basis::Majorana;
 
 template <size_t NumModes>
 auto generator_of(const LayerTraversal &layer) -> Monomial<NumModes> {
@@ -42,8 +44,7 @@ auto generator_of(const LayerTraversal &layer) -> Monomial<NumModes> {
     return gen;
 }
 
-// Reference oracle (test-only): replay a MATERIALISED FoldCache buffer. The live path recomputes each
-// layer's fold on the fly, so these cached replays exist only as the independent reference.
+// Reference oracle (test-only): replay a materialised FoldCache buffer, which the live path never does.
 template <size_t NumModes>
 void scale_cos_cached(const monoprop::detail::FoldCache<NumModes> &p, double *coeff, double cos_val) {
     const size_t mask_words = p.fold.mask_words;
@@ -105,8 +106,8 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
             ++odd_layers;
         }
 
-        auto prepared = monoprop::detail::make_fold_cache<kNumModes>(inverted_index, gen, layer.scaled_count());
-        auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(inverted_index, gen, layer.scaled_count());
+        auto prepared = monoprop::detail::make_fold_cache<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
+        auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
 
         std::vector<double> a = baseline;
         std::vector<double> b = baseline;
@@ -148,8 +149,8 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
             continue;
         }
         const auto gen = generator_of<kNumModes>(layer);
-        auto prepared = monoprop::detail::make_fold_cache<kNumModes>(inverted_index, gen, layer.scaled_count());
-        auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(inverted_index, gen, layer.scaled_count());
+        auto prepared = monoprop::detail::make_fold_cache<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
+        auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
 
         std::vector<double> sa = state0, ha = ham0;
         std::vector<double> sb = state0, hb = ham0;
@@ -169,8 +170,7 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
     }
 }
 
-// Snapshot invariance: the energy functional called twice with identical parameters must agree. It
-// lives here because it re-runs the same recompute machinery exercised above.
+// Lives here because it re-runs the same recompute machinery exercised above.
 BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto sim = build_simulator<n_modes>(data, cfg);
@@ -212,7 +212,7 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
 
     const uint64_t *before = sim.mp_op().inverted_index().row_parity_words();
     BOOST_REQUIRE(before != nullptr);
-    auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count);
+    auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count, kBasis);
 
     // Grow the operator, forcing the index and its row parity onto fresh storage.
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
@@ -227,7 +227,8 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
     }
     const double cos_val = 0.6234;
 
-    auto prepared = monoprop::detail::make_fold_cache<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count);
+    auto prepared =
+        monoprop::detail::make_fold_cache<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count, kBasis);
     std::vector<double> expected = baseline;
     std::vector<double> actual = baseline;
     scale_cos_cached<kNumModes>(prepared, expected.data(), cos_val);

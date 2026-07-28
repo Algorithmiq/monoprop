@@ -47,8 +47,7 @@ inline auto read_monomial_from_words(const VecZ &buffer, size_t start) -> Monomi
 
 namespace monoprop {
 
-// Deterministic owner rank for a term: hash(mono) % n_ranks. Stateless and identical on every rank, so
-// all ranks agree on the owner of any term without communication.
+// Stateless and identical on every rank, so all ranks agree on a term's owner without communication.
 template <size_t NumModes>
 auto find_rank(const Monomial<NumModes> &mono, const size_t n_ranks) -> size_t {
     if (n_ranks == 0) {

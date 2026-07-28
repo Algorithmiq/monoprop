@@ -48,7 +48,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_alltoall_counts_transpose) {
         auto errs = run_shm(S, [&](ShmComm &sh, int r) {
             std::vector<int> send(static_cast<size_t>(S));
             for (int t = 0; t < S; ++t) {
-                send[static_cast<size_t>(t)] = r * 100 + t; // r sends (r*100+t) to t
+                send[static_cast<size_t>(t)] = r * 100 + t;
             }
             std::vector<int> got(static_cast<size_t>(S));
             sh.alltoall_counts(r, send.data(), got.data());
@@ -122,7 +122,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_skip_self) {
         for (int s = 0; s < S; ++s) {
             const auto &blk = recv[static_cast<size_t>(r)][static_cast<size_t>(s)];
             if (s == r) {
-                BOOST_CHECK(blk.empty()); // self slot skipped
+                BOOST_CHECK(blk.empty());
             }
             else {
                 BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), 2);
@@ -132,7 +132,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_skip_self) {
     }
 }
 
-// allreduce_sum is bit-identical on every rank and equals the fixed-order reference. Integer + double.
+// allreduce_sum is bit-identical on every rank and equals the fixed-order reference.
 BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_bit_identical) {
     for (const int S : {2, 4, 8}) {
         std::vector<size_t> int_res(static_cast<size_t>(S));
@@ -160,7 +160,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_inplace_vector) {
     for (const int S : {2, 4, 8}) {
         for (const size_t N :
              {size_t{1}, size_t{5}, size_t{8 * 2 + 3}, size_t{8} * static_cast<size_t>(S) + 7, size_t{257}}) {
-            // Materialize every rank's input ONCE and reduce those exact stored doubles at both sites:
+            // Materialize every rank's input once and reduce those exact stored doubles at both sites:
             // aarch64 gcc-14 -ffp-contract=fast fuses `r*0.3 + k*1.7` at one site and not the other (1 ulp).
             std::vector<std::vector<double>> inputs(static_cast<size_t>(S), std::vector<double>(N));
             for (int r = 0; r < S; ++r) {
@@ -188,7 +188,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_inplace_vector) {
             for (int r = 0; r < S; ++r) {
                 BOOST_REQUIRE_EQUAL(res[static_cast<size_t>(r)].size(), N);
                 for (size_t k = 0; k < N; ++k) {
-                    BOOST_CHECK_EQUAL(res[static_cast<size_t>(r)][k], ref[k]); // bit-identical
+                    BOOST_CHECK_EQUAL(res[static_cast<size_t>(r)][k], ref[k]);
                 }
             }
         }
@@ -202,7 +202,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_post_flat_alltoallv_flat_buffers) {
     std::vector<std::vector<int>> recv(static_cast<size_t>(S));
     auto errs = run_shm(S, [&](ShmComm &sh, int r) {
         Comm c = Comm::make_shm(&sh, r);
-        std::vector<int> send(static_cast<size_t>(S), r); // one element per target, value = my rank
+        std::vector<int> send(static_cast<size_t>(S), r);
         std::vector<int> sc(static_cast<size_t>(S), 1), sd(static_cast<size_t>(S));
         for (int i = 0; i < S; ++i) {
             sd[static_cast<size_t>(i)] = i;
@@ -234,7 +234,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_post_flat_alltoallv_flat_buffers) {
 }
 
 // alltoallv_resolve resolves recv_counts (the transpose) AND moves the payload in one 2-sync round,
-// sizing recv itself — what begin_alltoallv takes for unknown-layout Shm rounds. recv is REUSED here.
+// sizing recv itself — what begin_alltoallv takes for unknown-layout Shm rounds.
 BOOST_AUTO_TEST_CASE(shm_comm_alltoallv_resolve_fused) {
     for (const int S : {2, 4, 8}) {
         const int rounds = 25;
@@ -339,7 +339,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_poison_releases_waiters) {
             std::vector<int> send(static_cast<size_t>(S), 1), got(static_cast<size_t>(S));
             sh.alltoall_counts(r, send.data(), got.data());
         });
-        BOOST_CHECK(errs[0] == nullptr); // rank 0 returned cleanly
+        BOOST_CHECK(errs[0] == nullptr);
         for (int r = 1; r < S; ++r) {
             BOOST_REQUIRE(errs[static_cast<size_t>(r)] != nullptr);
             BOOST_CHECK_THROW(std::rethrow_exception(errs[static_cast<size_t>(r)]), ShmCommPoisoned);

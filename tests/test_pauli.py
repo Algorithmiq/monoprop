@@ -49,8 +49,9 @@ class TestPauliPropagatorCutoff:
             (ExpGate(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=1)),),
             parameters=(0.3,),
         )
+        mp = self._propagator(serial_comm)
         with pytest.raises(ValueError, match="not Hermitian"):
-            self._propagator(serial_comm).propagate(circuit)
+            mp.propagate(circuit)
 
     @pytest.mark.parametrize("schrodinger_cutoff", [3, 4, 5])
     def test_schrodinger_cutoff(self, schrodinger_cutoff, serial_comm):
@@ -224,6 +225,27 @@ class TestPauliOperator:
         assert mon_op.terms == {(0, 1): pytest.approx(-1.0j)}
 
     @pytest.mark.parametrize(
+        ("terms", "expected"),
+        [
+            pytest.param({}, True, id="empty"),
+            pytest.param({Pauli("X", 0): 1.0}, True, id="single_term"),
+            pytest.param(
+                {Pauli("XX", (0, 1)): 1.0, Pauli("ZZ", (0, 1)): 1.0},
+                True,
+                id="different_letters_on_two_shared_qubits",
+            ),
+            pytest.param(
+                {Pauli("X", 0): 1.0, Pauli("Z", 0): 1.0},
+                False,
+                id="different_letters_on_one_shared_qubit",
+            ),
+        ],
+    )
+    def test_all_pairwise_commute(self, terms, expected):
+        """Pairwise commutation follows the parity of differing shared Pauli letters."""
+        assert PauliOperator(terms, num_qubits=2).all_pairwise_commute() is expected
+
+    @pytest.mark.parametrize(
         ("left", "right", "expected"),
         [
             pytest.param(
@@ -274,8 +296,9 @@ class TestPauliOperator:
         assert left.isclose(right) is expected
 
     def test_is_closely_equal_type_error(self):
+        op = PauliOperator({"X": 1.0}, num_qubits=1)
         with pytest.raises(TypeError):
-            PauliOperator({"X": 1.0}, num_qubits=1).isclose("not an operator")
+            op.isclose("not an operator")
 
 
 class TestCircuit:
@@ -298,17 +321,16 @@ class TestCircuit:
         assert circuit.n_parameters == 2
 
     def test_rejects_mixed_gate_families(self):
+        pauli_gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1))
+        majorana_gate = ExpGate(MajoranaOperator({(0, 1): 1.0}, num_modes=2))
         with pytest.raises(TypeError, match="mix"):
-            Circuit(
-                (
-                    ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),
-                    ExpGate(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),
-                )
-            )
+            Circuit((pauli_gate, majorana_gate))
 
     def test_pauli_gate_equality(self):
         gen = PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)
-        assert ExpGate(gen) == ExpGate(gen)
+        first = ExpGate(gen)
+        second = ExpGate(gen)
+        assert first == second
         assert ExpGate(gen) != ExpGate(
             PauliOperator({Pauli("X", 1): 1.0}, num_qubits=2)
         )

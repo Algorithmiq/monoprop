@@ -63,7 +63,7 @@ class TestGraphAndParameterValidation:
     def test_wrong_parameter_length_raises(self, serial_comm, parameters):
         mp, _ = _two_gate_graph(serial_comm)
         with pytest.raises(RuntimeError, match="Parameter length"):
-            mp.expectation_value(parameters)
+            mp.expval(parameters)
 
     def test_non_contiguous_mapping_raises(self):
         gates = (
@@ -105,8 +105,7 @@ class TestGraphAndParameterValidation:
                 )
             )
         )
-        functional = mp.expectation_value_functional()
-        # build_graph appends, mutating the graph the functional was planned against.
+        functional = mp.expval_functional()
         mp.build_graph(Circuit((ExpGate(MajoranaOperator({(2,): 1.0}, num_modes=2)),)))
         # Two parameters, so the stale-graph guard fires rather than the length check.
         with pytest.raises(RuntimeError, match=r"MP object has been modified"):

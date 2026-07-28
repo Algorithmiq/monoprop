@@ -27,8 +27,7 @@
 
 namespace monoprop {
 
-/// Ordered per-rank record of the evolution circuit, one Layer per generator. Each Layer holds a shared
-/// immutable LayerCore plus an optional pruned cosine list; an unpruned cosine set is recomputed, not stored.
+/// Ordered per-rank record of the evolution circuit, one Layer per generator.
 class monoprop_EXPORT MPGraph {
 private:
     using LayerIterator = std::vector<Layer>::iterator;
@@ -66,16 +65,14 @@ private:
     }
 
 public:
-    /// Initialize an empty graph.
     explicit MPGraph(bool schrodinger) : schrodinger_(schrodinger) {}
 
-    /// Initialize a graph with existing layers.
     explicit MPGraph(bool schrodinger, std::vector<Layer> layers)
         : schrodinger_(schrodinger),
           layers_(std::move(layers)) {}
 
-    /// Append a new layer. Gate info (param_index, gen_coeff, gate_index) is written onto `storage` here
-    /// while it is still mutable, before it is frozen into the Layer's shared const core.
+    /// Gate info (param_index, gen_coeff, gate_index) is written onto `storage` here while it is still
+    /// mutable, before it is frozen into the Layer's shared const core.
     auto append(std::shared_ptr<LayerCore> storage,
                 size_t param_index = 0,
                 double gen_coeff = 0.0,
@@ -105,8 +102,8 @@ public:
 
     auto is_schrodinger() const -> bool { return schrodinger_; }
 
-    /// Total rotation cycles across all layers. The companion cosine-index count is not here: a
-    /// normally-built layer stores no cosine set, so only the operator's inverted index can supply it.
+    /// A normally-built layer stores no cosine set, so the companion cosine-index count cannot come from
+    /// the graph: only the operator's inverted index can supply it.
     auto total_cycles() const -> size_t;
     auto storage_memory_usage() const -> GraphMemoryBreakdown;
 };

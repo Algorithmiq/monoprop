@@ -14,10 +14,6 @@
 
 #pragma once
 
-// The basis-agnostic monomial container: ONE basis operator stored as a fixed Bitset<2*NumModes>, two
-// bits per fermionic mode / qubit. The SAME container serves EITHER algebra -- the choice is a runtime
-// Basis (see algebra/Algebra.h), never a distinct type.
-
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -33,12 +29,10 @@ namespace monoprop {
 template <size_t NumModes>
 using Monomial = Bitset<2 * NumModes>;
 
-// A plain list of monomials -- NOT the evolved operator's row storage (detail::OperatorIndex, see
-// TypeAliases.h).
+// Not the evolved operator's row storage -- that is detail::OperatorIndex (see TypeAliases.h).
 template <size_t NumModes>
 using MonomialList = std::vector<Monomial<NumModes>>;
 
-// is_transparent enables heterogeneous map lookup.
 template <size_t NumModes>
 struct MonomialHash final {
     using is_transparent = void;
@@ -57,7 +51,6 @@ struct MonomialEqual final {
     }
 };
 
-// An operator as a weighted sum of monomials: monomial -> real coefficient.
 template <size_t NumModes>
 using MonomialMap =
     boost::unordered_flat_map<Monomial<NumModes>, double, MonomialHash<NumModes>, MonomialEqual<NumModes>>;
@@ -81,7 +74,6 @@ enum class CutoffType {
     Support // Keep if the orbital support (number of distinct orbitals) <= cutoff (or fully paired)
 };
 
-// Operator basis: the algebra a monomial is read in -- Majorana (default) or Pauli (JW-image).
 enum class Basis : uint8_t { Majorana, Pauli };
 
 } // namespace monoprop

@@ -38,7 +38,7 @@ class FermiString:
 
         Args:
             expression: A sequence of ``(mode index, '+' or '-')`` pairs, with non-negative
-                indices, or another :class:`FermiString` to copy.
+                indices, or another [FermiString][] to copy.
         """
         if isinstance(expression, FermiString):
             self.expression = expression.expression
@@ -104,7 +104,7 @@ def _fermi_string_to_majorana_terms(
 
 
 class FermiOperator:
-    """A weighted sum of :class:`FermiString` terms."""
+    """A weighted sum of [FermiString][] terms."""
 
     def __init__(
         self,
@@ -115,9 +115,10 @@ class FermiOperator:
         """Initialize the fermi operator.
 
         Args:
-            terms: The :class:`FermiString` terms, or ``(index, '+'/'-')`` sequences to build them.
+            terms: The [FermiString][] terms, or ``(index, '+'/'-')`` sequences to build them.
             coefficients: One coefficient per term, in the same order.
-            num_modes: Inferred from the largest index in ``terms`` when ``None``.
+            num_modes: Inferred as one past the largest index in ``terms`` when ``None``, which
+                needs at least one term -- pass it explicitly to build an empty operator.
         """
         self.terms = [
             t if isinstance(t, FermiString) else FermiString(t) for t in terms
@@ -168,7 +169,11 @@ class FermiOperator:
     __hash__ = None  # type: ignore[assignment]  # value-equal but mutable
 
     def _as_dict(self) -> dict[tuple, complex]:
-        """Return ``{canonical expression: coefficient}``, with the reordering sign folded in."""
+        """Return ``{canonical expression: coefficient}``, with the reordering sign folded in.
+
+        Two terms that canonicalize alike collapse to the last one rather than summing, so this
+        is a comparison aid ([isclose][]), not an operator normal form.
+        """
         result = {}
         for term, coeff in zip(self.terms, self.coefficients):
             cano, sign = term._canonicalize()
@@ -178,11 +183,11 @@ class FermiOperator:
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1.0e-8) -> bool:
         """Check that two operators are almost equal, term-wise.
 
-        Terms are compared after canonicalization, with :func:`numpy.isclose` at ``rtol``/``atol``;
+        Terms are compared after canonicalization, with ``numpy.isclose`` at ``rtol``/``atol``;
         a differing mode count is False, not an error.
 
         Raises:
-            TypeError: If ``other`` is not a :class:`FermiOperator`.
+            TypeError: If ``other`` is not a [FermiOperator][].
         """
         if not isinstance(other, FermiOperator):
             raise TypeError(

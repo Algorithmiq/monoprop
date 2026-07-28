@@ -19,32 +19,31 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/algebra/Algebra.h" // is_paired / initial_state_mask / algebra_state_phase
+#include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/operator/MPOperator.h"
 
 namespace monoprop::detail {
 
-// Picture-independent probe/insert machinery shared by resolve_incoming and its callers: deserialize
-// every incoming record, batch-find it, and assign each miss the next index base+j in (sender,record)
-// order, so the assignment (and multi-rank bit-exactness) cannot drift between resolvers. Queries are
-// source⊕G over globally-distinct sources, ⊕G injective ⇒ queries pairwise distinct ⇒ misses distinct and absent.
+// Picture-independent probe/insert machinery shared by resolve_incoming and its callers. Each miss takes
+// the next index base+j in (sender,record) order, so the assignment (and multi-rank bit-exactness) cannot
+// drift between resolvers. Queries are source⊕G over globally-distinct sources, ⊕G injective ⇒ queries
+// pairwise distinct ⇒ misses distinct and absent.
 template <size_t NumModes>
 struct IncomingProbe {
     std::vector<size_t> goff;                   // rank_count+1 flat offsets: g = goff[s] + q
     DefaultInitVector<uint32_t> sender_of;      // g → sender rank
     DefaultInitVector<Monomial<NumModes>> mono; // g → deserialized query monomial
     DefaultInitVector<int> phase_of;            // g → query phase
-    DefaultInitVector<size_t> idx_of;           // g → resolved index (HIT: < base; MISS: base+j)
+    DefaultInitVector<size_t> idx_of;           // g → resolved index (hit: < base; miss: base+j)
     std::vector<TermIndex> miss_g;              // j → the g that became miss j (Phase 4 reads mono[miss_g[j]])
     size_t base = 0;                            // op size before the miss inserts (the miss-index base)
     size_t nq_total = 0;
 };
 
-// Phases 1-2 for QUERY records: deserialize + batch-find every incoming record and assign miss indices
-// (read-only w.r.t. operator contents). QW = per-record stride: the plain query width, or kQueryWordsFused
-// for the fused resolver. The caller runs Phase 3, then insert_incoming_misses.
+// Phases 1-2, read-only w.r.t. operator contents. QW = per-record stride: the plain query width, or
+// kQueryWordsFused for the fused resolver. The caller runs Phase 3, then insert_incoming_misses.
 template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
 auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                             MPOperator<NumModes> &op,
@@ -92,9 +91,8 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
         }
     }
 
-    // Phase 2 ((sender,query) prefix order): each miss takes the next index base+j. miss_g[j] records
-    // which query g became miss j, so Phase 4 reads the deserialized mono[miss_g[j]] directly.
-    pr.base = op.store->size(); // LOCAL insert base into the op being mutated
+    // Phase 2 ((sender,query) prefix order): each miss takes the next index base+j.
+    pr.base = op.store->size();
     for (size_t g = 0; g < pr.nq_total; ++g) {
         if (pr.idx_of[g] == kMissingIndex) {
             pr.idx_of[g] = pr.base + pr.miss_g.size();
@@ -104,16 +102,14 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     return pr;
 }
 
-// Phase 4 (bulk insert of the distinct absent terms): scatter monomials into op slots [base, base+n_miss),
-// insert the keys, resync the inverted index. Call AFTER the caller's Phase-3 scatter, which reads
-// pre-insert op_coeffs for hits and needs base == op.size().
+// Phase 4 (bulk insert of the distinct absent terms) into op slots [base, base+n_miss). Call after the
+// caller's Phase-3 scatter, which reads pre-insert op_coeffs for hits and needs base == op.size().
 template <size_t NumModes>
 auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumModes> &pr) -> void {
     const size_t n_miss = pr.miss_g.size();
     if (n_miss == 0) {
         return;
     }
-    // pr.base (captured at Phase 2) still equals op.size(); the term comes straight from pr's deserialization buffer.
     insert_absent_terms<NumModes>(
         op,
         n_miss,
@@ -122,11 +118,11 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
 }
 
 // resolve_incoming / process_responses are the picture-independent cross-rank exchange skeletons; what
-// each resolved query records and answers with is supplied by a compile-time SINK. The two concrete sinks
+// each resolved query records and answers with is supplied by a compile-time sink. The two concrete sinks
 // (GraphSink / ContractSink) live in Engine.h, each also carrying the self-resolve + finalize policy.
 
 // Resolver rank (any cross-rank sink): for each query from sender s, look up M' locally; found → answer
-// with its index/value, absent → INSERT it in the SAME round (the resolver is the sole inserter of
+// with its index/value, absent → insert it in the same round (the resolver is the sole inserter of
 // cross-rank absent terms). Matched-follower marks stay here so both sinks mark byte-identically.
 template <size_t NumModes, class Sink>
 auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
@@ -175,7 +171,7 @@ auto process_responses(const std::vector<std::vector<typename Sink::Response>> &
     sink.process_reserve(inc_r, rank_count, my_rank);
     for (size_t r = 0; r < rank_count; ++r) {
         if (r == my_rank) {
-            continue; // local already handled inline
+            continue;
         }
         sink.on_response_block(r, inc_r[r], src_idx[r], queries[r]);
     }

@@ -39,8 +39,7 @@ auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ;
 template <size_t NumModes>
 auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes>;
 
-// Initial-state scoring and the coefficient codec; each binds the runtime Basis to its algebra model
-// internally, so no `if (basis == Basis::Pauli)` branch is needed here.
+// Each binds the runtime Basis to its algebra model internally, so no basis branch is needed here.
 template <size_t NumModes, typename Rows, typename Sink>
 auto algebra_score_state(Basis basis,
                          const VecZ &paired_inds,
@@ -54,33 +53,29 @@ auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const 
 
 namespace monoprop::detail {
 
-// Thrown by set-coefficient / update paths when a requested operator term is absent from the store.
 class OperatorTermNotFound : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
-// The propagated operator: the term store (entropy-packed rows + keyless hash index), its coefficient
-// vectors, the initial-operator map, and the lazily-built even-parity scan inverted index.
 template <size_t NumModes>
 struct MPOperator {
     // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
-    // itself cheaply movable). Always non-null. Rows go through the backend-agnostic accessors.
+    // itself cheaply movable). Always non-null.
     std::unique_ptr<OperatorIndex<NumModes>> store = std::make_unique<OperatorIndex<NumModes>>();
     VecD op_coeffs = {};
-    // ── The initial (reference) state, in its resting SPARSE form ────────────────────────────────
     // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
-    // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ASCENDING: rows are
+    // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are
     // scored in ascending order and the set is only ever appended to.
     std::vector<TermIndex> state_rows_ = {};
     VecD state_vals_ = {};         // parallel to state_rows_; every entry is a unit phase (+-1), never 0
     size_t state_scored_rows_ = 0; // rows [0, state_scored_rows_) have been scored into state_rows_/state_vals_
-    // The DENSE state: empty in Heisenberg unless a caller asks dense_state() to cache one; in Schrödinger
+    // The dense state: empty in Heisenberg unless a caller asks dense_state() to cache one; in Schrödinger
     // it is the live coefficient vector evolution mutates in place.
     VecD state_coeffs = {};
     MonomialMap<NumModes> init_op_map = {};
     VecZ initial_state = {};
-    // Majorana monomials (default) or native Pauli strings; set once at propagator construction.
+    // Set once at propagator construction.
     Basis basis = Basis::Majorana;
     mutable std::optional<InvertedIndex<NumModes>> inverted_index_ = std::nullopt;
 
@@ -88,7 +83,6 @@ struct MPOperator {
     MPOperator(MPOperator &&) noexcept = default;
     MPOperator &operator=(MPOperator &&) noexcept = default;
 
-    // Deep copy: the non-copyable `store` is rebuilt via clone(), everything else is plain value data.
     MPOperator(const MPOperator &other)
         : store(other.store->clone()),
           op_coeffs(other.op_coeffs),
@@ -103,7 +97,7 @@ struct MPOperator {
 
     auto size() const -> size_t { return store->size(); }
 
-    // Does NOT keep the lazy inverted index in sync: appends happen during setup, before the index is
+    // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.
     auto append_term(const Monomial<NumModes> &mono) -> void { store->push_back(mono); }
 
@@ -114,8 +108,6 @@ struct MPOperator {
         }
     }
 
-    // Rebuilt whenever stale (rows() != store size); that rebuild is also the only mechanism that
-    // resyncs an append_term made after the index was first materialized.
     auto inverted_index() const -> const InvertedIndex<NumModes> & {
         if (!inverted_index_.has_value() || inverted_index_->rows() != store->size()) {
             inverted_index_.emplace();
@@ -124,8 +116,8 @@ struct MPOperator {
         return *inverted_index_;
     }
 
-    // Drains pending init_op_map terms into op_coeffs, erasing them AFTER the lookup loop (the flat_map
-    // is not iterable while mutating).
+    // Pending init_op_map terms are erased after the lookup loop: the flat_map is not iterable while
+    // mutating.
     auto get_operator() -> const VecD & {
         if (size() == op_coeffs.size()) {
             return op_coeffs;
@@ -154,17 +146,11 @@ struct MPOperator {
         return op_coeffs;
     }
 
-    // A read-only view of the sparse reference state: ascending rows and their matching scores.
     struct SparseState {
         std::span<const TermIndex> rows; // strictly ascending row indices with a nonzero score
         std::span<const double> values;  // parallel to `rows`
     };
 
-    // The three views of the reference state. sparse_state() is the resting form and touches nothing for
-    // the ~99.9% of rows that score zero; materialize_state() builds a FRESH dense vector and caches
-    // nothing; dense_state() caches in state_coeffs -- the Schrödinger live vector, which evolution
-    // mutates in place, so later calls only EXTEND it and never rewrite an already-scored row, and a
-    // caller that snapshots it must COPY.
     auto sparse_state() -> SparseState {
         score_new_state_rows_();
         return SparseState{std::span<const TermIndex>(state_rows_), std::span<const double>(state_vals_)};
@@ -180,6 +166,9 @@ struct MPOperator {
         return dense;
     }
 
+    // Caches in state_coeffs -- the Schrödinger live vector, which evolution mutates in place, so later
+    // calls only extend it and never rewrite an already-scored row, and a caller that snapshots it must
+    // copy.
     auto dense_state() -> const VecD & {
         score_new_state_rows_();
         if (state_coeffs.size() == size()) {
@@ -191,17 +180,16 @@ struct MPOperator {
         return state_coeffs;
     }
 
-    // Trim the slack of every state representation once the term count has stabilized.
     auto shrink_state_to_fit() -> void {
         state_rows_.shrink_to_fit();
         state_vals_.shrink_to_fit();
         state_coeffs.shrink_to_fit();
     }
 
-    // Rewrite the initial Hamiltonian from a new coefficient dictionary. Each term lands on its existing
-    // evolved-operator row, or in the pending map if not yet materialized. Heisenberg REJECTS a term
-    // absent from both (new monomials may have no graph paths); Schrödinger admits them freely (the
-    // state was already evolved). Returns the supplied terms with their encoded coefficients, in order.
+    // Each term lands on its existing evolved-operator row, or in the pending map if not yet materialized.
+    // Heisenberg rejects a term absent from both (new monomials may have no graph paths); Schrödinger
+    // admits them freely (the state was already evolved). Returns the supplied terms with their encoded
+    // coefficients, in order.
     auto update_initial_operator(const OperatorDict &op_dict, bool schrodinger)
         -> std::pair<MonomialList<NumModes>, VecD> {
         MonomialMap<NumModes> new_op_map;
@@ -244,8 +232,6 @@ struct MPOperator {
         return new_grad_op;
     }
 
-    // Score the newly-appended terms [state_scored_rows_, size()) into the sparse state set; already-scored
-    // rows are never revisited.
     auto score_new_state_rows_() -> void {
         if (state_scored_rows_ == size()) {
             return;
@@ -277,9 +263,9 @@ struct MPOperator {
     }
 };
 
-// Insert `n` provably-distinct, currently-absent terms into `op` in one batch. Callers pass pairwise-
-// distinct keys, so bulk_insert can skip duplicate probes and slot k deterministically lands at base+k.
-// Call AFTER any pass that reads pre-insert op state (op.size() must equal the returned base).
+// Callers must pass pairwise-distinct, currently-absent keys: bulk_insert then skips duplicate probes and
+// slot k deterministically lands at base+k. Call after any pass that reads pre-insert op state
+// (op.size() must equal the returned base).
 template <size_t NumModes, typename KeyAt, typename PerSlot>
 inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
     const size_t base = op.store->grow_rows_geometric(n);
@@ -306,8 +292,8 @@ struct MPOperatorMemoryBreakdown final {
     size_t initial_state_bytes = 0;
     size_t inverted_index_bytes = 0;
 
-    // Diagnostics: breakdowns OF the fields above, deliberately excluded from total_bytes() so they can
-    // never double-count. They size compression choices, which turn on *which part* of a field holds bytes.
+    // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
+    // never double-count.
     size_t inverted_index_dense_bytes = 0;  // of inverted_index_bytes: full-height bitmap columns
     size_t inverted_index_sparse_bytes = 0; // of inverted_index_bytes: ascending set-row lists
     size_t inverted_index_dense_columns = 0;
@@ -320,7 +306,6 @@ struct MPOperatorMemoryBreakdown final {
                + initial_state_bytes + inverted_index_bytes;
     }
 
-    // Field-wise sum, so a sharded propagator can aggregate its per-shard operator breakdowns.
     auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
         operator_terms_bytes += o.operator_terms_bytes;
         op_coeffs_bytes += o.op_coeffs_bytes;
@@ -343,8 +328,7 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
     MPOperatorMemoryBreakdown<NumModes> breakdown;
     breakdown.operator_terms_bytes = op.store->memory_bytes();
     breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
-    // Every representation of the state at once: the sparse scored set plus the dense vector, which is
-    // empty unless a live Schrödinger vector or an explicit dense_state() cache exists.
+    // Every representation of the state at once: the sparse scored set plus the dense vector.
     breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)
                                    + op.state_rows_.capacity() * sizeof(TermIndex)
                                    + op.state_vals_.capacity() * sizeof(double);

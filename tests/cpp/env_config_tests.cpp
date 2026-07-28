@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Every branch of EnvConfig.h's two pure parsers (parse_flag / parse_positive_int), plus one pass
-// over config::get() for the cached-Settings path.
-
 #include <boost/test/unit_test.hpp>
 
 #include <optional>
@@ -25,7 +22,6 @@ using monoprop::config::detail::parse_flag;
 using monoprop::config::detail::parse_positive_int;
 
 BOOST_AUTO_TEST_CASE(env_config_parse_flag_default_when_unset_or_empty) {
-    // nullptr and empty string both fall through to the supplied default (either polarity).
     BOOST_CHECK_EQUAL(parse_flag(nullptr, true), true);
     BOOST_CHECK_EQUAL(parse_flag(nullptr, false), false);
     BOOST_CHECK_EQUAL(parse_flag("", true), true);
@@ -33,7 +29,7 @@ BOOST_AUTO_TEST_CASE(env_config_parse_flag_default_when_unset_or_empty) {
 }
 
 BOOST_AUTO_TEST_CASE(env_config_parse_flag_falsey_first_char) {
-    // Falsey iff the first character is one of {0,f,F,n,N}; the default is irrelevant once set.
+    // Only the first character decides, so "0abc" is falsey too.
     for (const char *v : {"0", "f", "F", "n", "N"}) {
         BOOST_CHECK_MESSAGE(parse_flag(v, true) == false, v);
     }
@@ -48,26 +44,25 @@ BOOST_AUTO_TEST_CASE(env_config_parse_flag_truthy_first_char) {
 
 BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_null_and_malformed) {
     BOOST_CHECK(parse_positive_int(nullptr) == std::nullopt);
-    BOOST_CHECK(parse_positive_int("") == std::nullopt);    // end == text
-    BOOST_CHECK(parse_positive_int("abc") == std::nullopt); // end == text
-    BOOST_CHECK(parse_positive_int("12x") == std::nullopt); // trailing junk (*end != '\0')
-    BOOST_CHECK(parse_positive_int("  ") == std::nullopt);  // strtol consumes ws then end == text
+    BOOST_CHECK(parse_positive_int("") == std::nullopt);
+    BOOST_CHECK(parse_positive_int("abc") == std::nullopt);
+    BOOST_CHECK(parse_positive_int("12x") == std::nullopt); // trailing junk rejects, not a partial 12
+    BOOST_CHECK(parse_positive_int("  ") == std::nullopt);  // strtol consumes ws, then end == text
 }
 
 BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_range) {
-    BOOST_CHECK(parse_positive_int("0") == std::nullopt);       // value <= 0
-    BOOST_CHECK(parse_positive_int("-5") == std::nullopt);      // value <= 0
-    BOOST_CHECK(parse_positive_int("1000001") == std::nullopt); // value > 1e6
+    BOOST_CHECK(parse_positive_int("0") == std::nullopt);
+    BOOST_CHECK(parse_positive_int("-5") == std::nullopt);
+    BOOST_CHECK(parse_positive_int("1000001") == std::nullopt); // above the 1e6 ceiling
     BOOST_CHECK(parse_positive_int("1") == std::optional<int>(1));
     BOOST_CHECK(parse_positive_int("42") == std::optional<int>(42));
     BOOST_CHECK(parse_positive_int("1000000") == std::optional<int>(1'000'000)); // inclusive upper bound
 }
 
 BOOST_AUTO_TEST_CASE(env_config_settings_cached_singleton) {
-    // get() parses the environment once and returns the same immutable instance every call.
     const auto &a = monoprop::config::get();
     const auto &b = monoprop::config::get();
     BOOST_CHECK_EQUAL(&a, &b);
     // Touch a field so the Settings aggregate is actually read.
-    BOOST_CHECK(a.shard_pinning == true || a.shard_pinning == false);
+    BOOST_CHECK(a.partition_pinning == true || a.partition_pinning == false);
 }

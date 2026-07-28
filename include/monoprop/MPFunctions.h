@@ -31,57 +31,48 @@ namespace monoprop {
 
 monoprop_EXPORT auto inner_product(const VecD &v, const VecD &w) -> double;
 
-/// The indices of @p v whose magnitude exceeds @p threshold, ascending. A NEGATIVE threshold clears
-/// even the exact zeros, so every index qualifies -- see EvalState::indices_above, which must agree.
+/// The indices of `v` whose magnitude exceeds `threshold`, ascending. A negative threshold admits even
+/// the exact zeros, so every index qualifies -- EvalState::indices_above must agree.
 monoprop_EXPORT auto indices_above(const VecD &v, double threshold) -> VecZ;
 
-/**
- * @brief The evolved operator's contraction partner: the reference state, sparse or dense.
- *
- * Heisenberg stores the reference state SPARSELY (ascending rows carrying a unit +-1 phase; on
- * production models ~0.07% of rows are nonzero), and the energy path only ever dots it against the
- * evolved operator -- so nothing densifies it. Schrödinger's state is the LIVE evolved coefficient
- * vector, which is dense in general and must be snapshotted whole.
- *
- * The three operations below are everything any consumer needs: dot it (energy), scatter it into a
- * mutable dense buffer (the gradient's in-place back-evolution), or ask which rows clear a paring
- * threshold. Values are OWNED, and `length` is snapshotted: the operator's sparse rows grow by
- * push_back as terms are appended, so a view would both dangle and outrun the captured operator.
- */
+/// The evolved operator's contraction partner: the reference state, sparse (Heisenberg) or dense
+/// (Schrödinger, whose state is the live evolved coefficient vector). Values are OWNED and `length` is
+/// snapshotted: the operator's sparse rows grow by push_back as terms are appended, so a view would
+/// both dangle and outrun the captured operator.
 class monoprop_EXPORT EvalState {
 public:
     EvalState() = default;
 
-    /// The sparse form: @p rows must be strictly ascending and < @p length, @p values parallel to it.
+    /// `rows` must be strictly ascending and < `length`, `values` parallel to it.
     static auto sparse(size_t length, std::span<const TermIndex> rows, std::span<const double> values) -> EvalState;
 
-    /// The dense form: @p values is the whole vector, one entry per operator term.
+    /// `values` is the whole vector, one entry per operator term.
     static auto dense(VecD values) -> EvalState;
 
-    /// The number of operator terms this state spans (its logical dense length).
+    /// The logical dense length: the number of operator terms spanned, in either form.
     auto length() const -> size_t { return length_; }
 
-    /// @brief The inner product with @p op, which must be at least length() long.
-    /// Bit-identical across both forms for finite @p op: the skipped rows contribute an exact 0.0 and
-    /// ascending rows preserve the dense summation order.
+    /// The inner product with `op`, which must be at least length() long. Bit-identical across both
+    /// forms for finite `op`: the skipped rows contribute an exact 0.0 and ascending rows preserve the
+    /// dense summation order.
     auto dot(const VecD &op) const -> double;
 
-    /// @brief Overwrite @p out with this state, resized to length().
-    /// ASSIGNS every entry rather than resizing: the sole caller's buffer is thread-local scratch
-    /// reused across calls and across propagators, and it arrives holding a previous back-evolution.
+    /// Overwrite `out` with this state, resized to length(); entries this state does not name read as
+    /// an exact zero.
     auto scatter_into(VecD &out) const -> void;
 
-    /// The rows whose magnitude exceeds @p threshold, ascending; the paring keep-set. Agrees exactly
-    /// with indices_above() over the equivalent dense vector, for every threshold.
+    /// The rows whose magnitude exceeds `threshold`, ascending; the paring keep-set. Agrees with
+    /// indices_above() over the equivalent dense vector, for every threshold.
     auto indices_above(double threshold) const -> VecZ;
 
 private:
     size_t length_ = 0;
     bool is_dense_ = false;
-    /// Sparse form only: ascending nonzero rows. Widened from TermIndex, whose width is a build knob
-    /// (monoprop_WIDE_TERM_INDEX) that has no business in an exported signature.
+    /// Widened from TermIndex, whose width is a build knob (monoprop_WIDE_TERM_INDEX) that has no
+    /// business in an exported signature.
     VecZ rows_ = {};
-    VecD values_ = {}; ///< sparse: parallel to rows_; dense: the whole vector
+    /// sparse: parallel to rows_; dense: the whole vector
+    VecD values_ = {};
 };
 
 monoprop_EXPORT auto map_params(const VecD &parameters,

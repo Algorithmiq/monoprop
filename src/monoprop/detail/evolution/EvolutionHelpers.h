@@ -15,7 +15,7 @@
 #pragma once
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/algebra/MajoranaAlgebra.h" // CutoffEvaluator, Monomial
+#include "monoprop/algebra/MajoranaAlgebra.h"
 
 namespace monoprop::detail {
 
@@ -37,8 +37,8 @@ struct CutoffContext {
     auto abs_coeff_for(size_t i, const VecD &coeffs) const -> double {
         return use_coeff_checks ? std::abs(i < coeffs.size() ? coeffs[i] : 0.0) : 0.0;
     }
-    // upper_atol RESCUE predicate: a sine-partner term dropped by the structural cutoff is kept alive if
-    // its magnitude (the PARTNER's sine coefficient |sin(2θ)|·|c|, not the source) is >= upper_atol.
+    // upper_atol rescue predicate: a sine-partner term dropped by the structural cutoff is kept alive if
+    // its magnitude (the partner's sine coefficient |sin(2θ)|·|c|, not the source) is >= upper_atol.
     auto is_above_upper(double abs_coeff) const -> bool {
         return check_upper_atol && (abs_sin_val * abs_coeff >= upper_atol_value);
     }

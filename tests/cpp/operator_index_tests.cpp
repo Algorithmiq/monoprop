@@ -103,13 +103,11 @@ BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
         a.push_back(bs({static_cast<size_t>(i % 62), static_cast<size_t>((i + 7) % 62)}));
         a.emplace(a.row(static_cast<size_t>(i)), static_cast<size_t>(i));
     }
-    auto f = a.find(a.row(50)); // find confirms against a's own rows after rehash
+    auto f = a.find(a.row(50));
     BOOST_TEST(f.has_value());
     BOOST_TEST(*f == 50u);
 }
 
-// clone() must hand back a fresh, fully independent heap store whose index confirms against the
-// CLONE's own rows, not the source's.
 BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
     Store a(4); // non-default width must carry over
     a.push_back(bs({0, 3, 5}));
@@ -124,7 +122,6 @@ BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
     BOOST_TEST(f.has_value());
     BOOST_TEST(*f == 1u);
 
-    // Deep independence: growing the source must not touch the clone.
     a.push_back(bs({6, 7}));
     a.emplace(bs({6, 7}), 2);
     BOOST_TEST(b->size() == 2u);
@@ -163,15 +160,13 @@ BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
         s.emplace(key, i);
     }
 
-    // Interleave present keys with never-inserted 3-position keys, then one trailing absent key so
-    // the total is not a multiple of G=16 and the short-tail path runs too.
     std::vector<MSet> queries;
     for (size_t i = 0; i < kRows; ++i) {
         queries.push_back(bs({i / 60, 4 + (i % 60)}));
         queries.push_back(bs({0, 1, 2 + (i % 20)}));
     }
-    queries.push_back(bs({0, 1, 2}));       // 401 total
-    BOOST_TEST(queries.size() % 16u != 0u); // a genuine short tail group
+    queries.push_back(bs({0, 1, 2})); // 401 total
+    BOOST_TEST(queries.size() % 16u != 0u);
 
     std::vector<size_t> out(queries.size(), 424242);
     s.find_batch(queries.data(), queries.size(), out.data());
@@ -189,7 +184,7 @@ BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
     BOOST_TEST(out[1] == Store::kNotFound); // first absent key
 }
 
-// An empty store must report every key missing (find_batch's shard.count == 0 early-out).
+// Pins find_batch's partition.count == 0 early-out.
 BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
     Store s;
     const std::array<MSet, 3> keys{bs({0, 3}), bs({1, 2}), bs({4, 5, 6})};

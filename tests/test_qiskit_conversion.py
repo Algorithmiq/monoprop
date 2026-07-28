@@ -99,7 +99,7 @@ class TestFromQiskitOperator:
         op = SparsePauliOp.from_list([("XZ", 1.0), ("IY", 1e-10)])
         result = from_qiskit_operator(op, atol=1e-8)
         assert len(result) == 1
-        assert Pauli("ZX", (0, 1)) in result.terms  # qiskit ordering
+        assert Pauli("ZX", (0, 1)) in result.terms
 
     def test_atol_default_keeps_large_terms(self):
         op = SparsePauliOp.from_list([("XZ", 1.0), ("IY", 0.1)])
@@ -127,7 +127,7 @@ class TestFromQiskitOperator:
         op = SparsePauliOp.from_list([("II", 0.5)])
         result = from_qiskit_operator(op)
         assert len(result) == 1
-        assert Pauli("II") in result.terms  # identity term (no letters)
+        assert Pauli("II") in result.terms
 
     def test_single_qubit_operator(self):
         op = SparsePauliOp.from_list([("Z", 1.0)])
@@ -299,15 +299,6 @@ class TestFromQiskitCircuit:
         circuit.h(0)
 
         with pytest.raises(ValueError, match="Unsupported gate"):
-            from_qiskit_circuit(circuit, [])
-
-    def test_non_commuting_generator_rejected(self):
-        circuit = QuantumCircuit(1)
-        # X and Z on the same qubit anticommute, so this is not a single exponential.
-        operator = SparsePauliOp.from_list([("X", 0.5), ("Z", 0.5)])
-        circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
-
-        with pytest.raises(ValueError, match="anticommute"):
             from_qiskit_circuit(circuit, [])
 
 

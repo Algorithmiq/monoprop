@@ -14,11 +14,9 @@
 
 #pragma once
 
-// The algebra policy models (MajoranaAlgebra, PauliAlgebra) the propagation backbone is generic over:
-// how a Monomial evolves under a rotation exp(i*theta*G) -- which columns to fold, the per-term
-// rotation sign and emitted sine phase, the coeff codec, and the diagonal initial-state score.
-// with_algebra binds the runtime Basis to one model exactly once; each model forwards to the
-// sibling-header kernels.
+// Each model answers the same fixed set of questions about a rotation exp(i*theta*G): which columns to
+// fold, a term's rotation sign and emitted sine phase, the coefficient codec, and the diagonal
+// initial-state score. The arithmetic behind each answer lives in MajoranaAlgebra.h / PauliAlgebra.h.
 
 #include <complex>
 #include <concepts>
@@ -32,7 +30,6 @@
 
 namespace monoprop {
 
-// The Majorana algebra model: a Monomial read as a product of Majorana operators.
 template <size_t NumModes>
 struct MajoranaAlgebra {
     static constexpr Basis basis = Basis::Majorana;
@@ -40,8 +37,10 @@ struct MajoranaAlgebra {
     static constexpr bool allows_basis_change = true;
 
     // Built once per layer: the generator G and its fixed interleave mask W (see interleave_phase_mask).
+    // G is stored by value so the context can outlive a caller's temporary; the cost is one bitset copy
+    // per layer, cheaper than a lifetime contract on every call site.
     struct GenContext {
-        const Monomial<NumModes> &gen;
+        Monomial<NumModes> gen;
         Monomial<NumModes> interleave_mask;
     };
     static auto make_gen_context(const Monomial<NumModes> &gen) -> GenContext {
@@ -49,13 +48,12 @@ struct MajoranaAlgebra {
     }
     static auto generator(const GenContext &ctx) -> const Monomial<NumModes> & { return ctx.gen; }
 
-    // Ordering sign of mono·G via the per-layer mask (branch/scan-free). new_mono unused.
+    // Ordering sign of mono·G via the per-layer mask (branch/scan-free).
     static auto rotation_sign(const GenContext &ctx,
                               const Monomial<NumModes> &mono,
                               const Monomial<NumModes> & /*new_mono*/) -> int {
         return mono.parity_and(ctx.interleave_mask) ? -1 : 1;
     }
-    // Emitted sine phase = ordering sign folded with the Hermitian phase of the product.
     static auto emit_phase(int rotation_sign, size_t mono_pop, size_t gen_pop, size_t overlap) -> int {
         return rotation_sign * hermitian_phase(mono_pop, gen_pop, overlap);
     }
@@ -76,7 +74,6 @@ struct MajoranaAlgebra {
     }
 };
 
-// The Pauli algebra model: a Monomial read as a Pauli string (native JW-image encoding).
 template <size_t NumModes>
 struct PauliAlgebra {
     static constexpr Basis basis = Basis::Pauli;
@@ -117,8 +114,7 @@ struct PauliAlgebra {
     }
 };
 
-// Shape check only. The members the backbone actually calls (make_gen_context, rotation_sign,
-// emit_phase, fold_generator, the coeff codec, state_phase) are enforced by use, not by this concept.
+// Shape check only: the members the backbone actually calls are enforced by use, not by this concept.
 template <typename A>
 concept Algebra = requires {
     typename A::GenContext;
@@ -164,10 +160,9 @@ auto algebra_state_phase(Basis basis, const Monomial<NumModes> &mono, const Mono
     return with_algebra<NumModes>(basis, [&]<class A>() { return A::state_phase(mono, state_mask); });
 }
 
-// Score each fully-paired term's diagonal element against the initial product state: emits
-// sink(row, phase) in ascending paired_inds order. A sink rather than a dense out[row] because the
-// scored set is a vanishing fraction of the rows. with_algebra hoists the runtime->policy branch out
-// of the per-term loop, keeping the loop monomorphic in A.
+// Score each fully-paired term's diagonal element against the initial product state, emitting
+// sink(row, phase). A sink rather than a dense out[row] because the scored set is a vanishing
+// fraction of the rows.
 template <size_t NumModes, typename Rows, typename Sink>
 auto algebra_score_state(Basis basis,
                          const VecZ &paired_inds,

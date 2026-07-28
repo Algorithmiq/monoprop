@@ -28,8 +28,7 @@
 
 namespace monoprop::detail {
 
-// Bounds-check a term-space index. Capped by the TermIndex width (~2^32, or ~2^64 under
-// -Dmonoprop_WIDE_TERM_INDEX), so it must track TermIndex, NOT a fixed 32-bit limit.
+// The ceiling has to track the TermIndex width, not a fixed 32-bit limit.
 inline auto checked_term_index(size_t value, const char *what) -> TermIndex {
     if (value > static_cast<size_t>(std::numeric_limits<TermIndex>::max())) {
         throw std::overflow_error(
@@ -87,6 +86,17 @@ inline auto packed_phase_at(const PackedPhaseStorage &storage, size_t idx) -> in
     return static_cast<int>(storage.phase_values[idx]);
 }
 
+// In binary storage only φ<0 sets a bit, because the words are assigned zeroed in
+// make_packed_phase_storage.
+inline auto store_packed_phase(PackedPhaseStorage &storage, size_t idx, int phase, const char *what) -> void {
+    if (!storage.uses_binary_phases) {
+        storage.phase_values[idx] = checked_packed_phase(phase, what);
+    }
+    else if (phase < 0) {
+        storage.phase_words[packed_phase_word_index(idx)] |= packed_phase_bit_mask(idx);
+    }
+}
+
 inline auto packed_phase_storage_bytes(const PackedPhaseStorage &storage) -> size_t {
     return storage.uses_binary_phases ? storage.phase_words.capacity() * sizeof(uint64_t)
                                       : storage.phase_values.capacity() * sizeof(int8_t);
@@ -97,13 +107,12 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
     const size_t num_ranks = data.size();
     storage.ranges.resize(num_ranks);
 
-    // Pass 1: per-rank offsets/counts + totals.
     size_t total_b = 0;
     size_t total_d = 0;
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         const auto &partner = data[rank];
         auto &range = storage.ranges[rank];
-        range.sin_send_offset = total_b; // size_t; cumulative offset must not narrow (may exceed 2^32)
+        range.sin_send_offset = total_b;
         range.sin_send_count = static_cast<TermIndex>(partner.sin_send_indices.size());
         range.sin_recv_offset = total_d;
         range.sin_recv_count = static_cast<TermIndex>(partner.sin_recv_entries.size());
@@ -112,7 +121,6 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
         total_d += partner.sin_recv_entries.size();
     }
 
-    // Pass 2: are all D phases ±1?
     bool uses_binary_phases = true;
     for (const auto &partner : data) {
         bool non_binary_phase = false;
@@ -125,7 +133,6 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
     storage.sin_send_indices.resize(total_b);
     storage.sin_recv_phases = make_packed_phase_storage(total_d, uses_binary_phases);
 
-    // Pass 3: fill the flat B-index and packed-phase arrays.
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         const auto &partner = data[rank];
         const size_t b_off = storage.ranges[rank].sin_send_offset;
@@ -138,16 +145,7 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
         for (size_t k = 0; k < partner.sin_recv_entries.size(); ++k) {
             const auto &[i, phi] = partner.sin_recv_entries[k];
             (void)i;
-            const size_t slot = d_off + k;
-            if (uses_binary_phases) {
-                // Only φ<0 sets a bit; the words start zeroed.
-                if (phi < 0) {
-                    storage.sin_recv_phases.phase_words[packed_phase_word_index(slot)] |= packed_phase_bit_mask(slot);
-                }
-            }
-            else {
-                storage.sin_recv_phases.phase_values[slot] = checked_packed_phase(phi, "Cross-rank D phase");
-            }
+            store_packed_phase(storage.sin_recv_phases, d_off + k, phi, "Cross-rank D phase");
         }
     }
 
@@ -159,8 +157,8 @@ inline auto cross_rank_sin_send_index(const PackedCrossRankStorage &storage, siz
     return static_cast<size_t>(storage.sin_send_indices[offset]);
 }
 
-// Derive the D index from B. Invariant B=[in(P)]++[out(Q)], D=[out(Q)]++[in(P)] (P=in_count,
-// Q=sin_recv_count-P): D[idx] = (idx<Q) ? B[P+idx] : B[idx-Q]. So D is not stored (saves ~half of cross_rank).
+// Invariant B=[in(P)]++[out(Q)], D=[out(Q)]++[in(P)] (P=in_count, Q=sin_recv_count-P):
+// D[idx] = (idx<Q) ? B[P+idx] : B[idx-Q]. So D is not stored (saves ~half of cross_rank).
 inline auto cross_rank_sin_recv_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
     const auto &range = storage.ranges[rank];
     const size_t in_count = range.in_count;                   // P
@@ -198,7 +196,7 @@ inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_pa
         }
         storage->evolution_exchange_layout = build_layer_exchange_layout(send_counts, 1);
 
-        // The derivative layout (2x) is ALLOCATED lazily on first gradient read, but validated here: an
+        // The derivative layout (2x) is allocated lazily on first gradient read, but validated here: an
         // overflow must throw during build_graph, not from inside the gradient collective window, where
         // peers are already blocked in mpi::resolve_recv's count round -> a distributed hang, not an error.
         static_cast<void>(build_derivative_exchange_layout(storage->evolution_exchange_layout));
@@ -206,7 +204,7 @@ inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_pa
 
     storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
 
-    // Both are indexed by the same rank space; check it here, where both are built.
+    // Both are indexed by the same rank space.
     if (storage->evolution_exchange_layout.counts.size() != storage->cross_rank.rank_count()) {
         throw std::logic_error(std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
                                            storage->evolution_exchange_layout.counts.size(),

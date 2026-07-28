@@ -25,14 +25,13 @@
 namespace monoprop {
 
 // A layer replays one of two ways, by whether it carries a stored cosine list (pruned_cos_):
-//   RECOMPUTE (nullopt)   — cosine rebuilt from the generator's inverted-index columns at replay.
-//   PRUNED    (has value) — cosine pre-filtered to a backward-reachable subset, stored explicitly; an
-//                           EMPTY stored list is still PRUNED (replay as nothing, do NOT recompute).
-// Cores are shared and immutable IN VALUE only: their eval-time caches (recv_cache, the lazy derivative
+//   recompute (nullopt)   — cosine rebuilt from the generator's inverted-index columns at replay.
+//   pruned    (has value) — cosine pre-filtered to a backward-reachable subset, stored explicitly; an
+//                           empty stored list is still pruned (replay as nothing, do not recompute).
+// Cores are shared and immutable in value only: their eval-time caches (recv_cache, the lazy derivative
 // layout) are filled through const handles, so evaluating two aliasing propagators concurrently is a race.
 
-// Read-only view over an immutable LayerCore plus an optional pruned-cosine word list. Cross-rank data is
-// always read verbatim (no logical→stored remap).
+// Cross-rank data is always read verbatim; only the cosine set is ever filtered.
 struct LayerTraversal final {
     explicit LayerTraversal(const LayerCore &core, const CosMask *pruned_cos = nullptr)
         : core_(&core),
@@ -44,6 +43,10 @@ struct LayerTraversal final {
 
     auto has_stored_cos() const -> bool { return pruned_cos_ != nullptr; }
 
+    // The stored set itself, for readers that need its indices and not just the count; nullptr on a
+    // recompute layer.
+    auto stored_cos() const -> const CosMask * { return pruned_cos_; }
+
     auto scaled_count() const -> uint64_t { return core_->scaled_count; }
     auto generator_words() const -> const std::vector<uint64_t> & { return core_->generator_words; }
 
@@ -53,7 +56,7 @@ struct LayerTraversal final {
     auto cross_rank_sin_recv_size(size_t rank) const -> size_t { return core_->cross_rank.sin_recv_size(rank); }
     auto cross_rank_in_count(size_t rank) const -> size_t { return core_->cross_rank.in_count(rank); }
 
-    // O(1) random access into the verbatim D list (paired self-slot derivative fetches d[k], d[k+P]).
+    // Random access into the D list, for the paired self-slot derivative fetches d[k], d[k+P].
     auto cross_rank_sin_recv_index_at(size_t rank, size_t idx) const -> size_t {
         return detail::cross_rank_sin_recv_index(core_->cross_rank, rank, idx);
     }
@@ -96,8 +99,8 @@ struct LayerTraversal final {
         return count;
     }
 
-    // Total rotation endpoints (in+out) across ranks. Every endpoint is also in cos_data, so cosine-only
-    // indices = num_cos_inds() - total_rotation_endpoints(). Used by graph_size() reporting.
+    // Endpoints are counted in+out across ranks. Every endpoint is also in cos_data, so cosine-only
+    // indices = num_cos_inds() - total_rotation_endpoints().
     auto total_rotation_endpoints() const -> size_t {
         size_t count = 0;
         for (size_t rank = 0; rank < cross_rank_rank_count(); ++rank) {

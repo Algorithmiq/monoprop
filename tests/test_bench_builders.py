@@ -34,12 +34,11 @@ def test_random_default_sizes_are_meaningful() -> None:
     assert defaults["num_generators"] == 100
     assert defaults["num_modes"] == 128
     assert defaults["cutoff"] == 6
-    # The seed is left to the caller; the bench CLI fixes it via ``--seed``.
+    # The bench CLI fixes the seed via ``--seed``.
     assert defaults["seed"] is None
 
 
 def test_built_graph_is_populated(serial_comm) -> None:
-    # A tiny problem proves the energy/gradient/pare path gets a real (non-empty) graph.
     # gen_length=4: a length-4 Majorana monomial is Hermitian with real coefficients, while a
     # length-2 one is anti-Hermitian and would be rejected.
     # serial_comm because graph_size() is rank-local: on COMM_WORLD a problem this small leaves

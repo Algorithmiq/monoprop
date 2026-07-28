@@ -48,7 +48,6 @@ def hubbard_fermion_terms(num_sites, hopping, interaction, chemical_potential):
     terms = []
     topology = bricklayer_topology(num_sites)
 
-    # nearest-neighbour hopping: all spin-up bonds (bricklayer order), then all spin-down bonds
     for spin in ("up", "down"):
         for left_site, right_site in topology:
             left, right = mode(left_site, spin), mode(right_site, spin)
@@ -57,7 +56,6 @@ def hubbard_fermion_terms(num_sites, hopping, interaction, chemical_potential):
                 FermiOperator(terms=op_terms, coefficients=[-hopping, -hopping])
             )
 
-    # on-site Hubbard interaction
     for site in range(num_sites):
         up, down = mode(site, "up"), mode(site, "down")
         terms.append(
@@ -67,7 +65,6 @@ def hubbard_fermion_terms(num_sites, hopping, interaction, chemical_potential):
             )
         )
 
-    # chemical potential (one term per spin-orbital)
     for site in range(num_sites):
         for spin in ("up", "down"):
             m = mode(site, spin)
@@ -167,24 +164,21 @@ def main():
 
     n_spinful_sites, n_layers = args.n_spins, args.max_layers
     trotter_steps = n_layers
-    # Parameters
     t = 1.0
     u = 1.5
     dt = 0.07
     min_abs = 1.0e-8
     max_cutoff = 10
     chemical_potential = 0
-    # checkerboard state |up down up down ...> across spinful sites
     intial_state = neel_occupied_modes(n_spinful_sites, start_spin="up")
     num_qubits = 2 * n_spinful_sites
 
-    # Majorana Operator (0-indexed equivalent of Julia's 1-indexed N // 2 site)
+    # 0-indexed equivalent of Julia's 1-indexed N // 2 observable site.
     obs_site = n_spinful_sites // 2 - 1
     obs_spin = "up"
     observable = number_operator_majorana(obs_site, obs_spin, num_qubits)
 
     trotter_gates = build_trotter_gates(n_spinful_sites, t, u, chemical_potential)
-    # each gate shares the same Trotter time step
     trotter_parameters = [dt for _ in trotter_gates]
 
     fermi_circuit = Circuit(

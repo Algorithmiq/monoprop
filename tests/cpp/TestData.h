@@ -21,8 +21,7 @@
 
 namespace test_utils {
 
-// The flat msgpack schema documented in tests/data/README.md, restricted to the fields the C++
-// suite uses.
+// The subset of the tests/data/README.md fixture schema that the C++ suite uses.
 struct CaseData {
     double actual_expval{0.0};
     monoprop::VecZ initial_state;

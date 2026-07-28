@@ -59,8 +59,6 @@ auto jw_basis_indices(size_t n) -> std::vector<VecZ> {
     return table;
 }
 
-// ── Native Pauli propagator drivers ──────────────────────────────────────────────────────────
-
 template <size_t N>
 auto build_pauli_sim(const std::map<std::string, double> &obs,
                      unsigned int cutoff,
@@ -84,7 +82,6 @@ auto build_pauli_sim(const std::map<std::string, double> &obs,
                                  Basis::Pauli);
 }
 
-// Dense matrix of the propagator's current Heisenberg operator, decoded term by term.
 template <size_t N>
 auto dense_operator(MonomialPropagator<N> &mp) -> std::vector<cd> {
     const size_t d = size_t{1} << N;
@@ -258,12 +255,8 @@ auto build_jw_sim(const std::map<std::string, double> &obs,
 
 } // namespace
 
-// ctest discovery treats every --list_content line as a top-level test name, so these cases share a
-// flat pauli_build_layer_* prefix instead of a BOOST_AUTO_TEST_SUITE.
-
-// Dense-matrix ground truth: pins the emit sign.
+// Pins the emit sign.
 BOOST_AUTO_TEST_CASE(pauli_build_layer_dense_matrix_ground_truth) {
-    // n = 2: single- and two-qubit generators, Y-heavy observables, several angles.
     const std::map<std::string, double> o2{{"XY", 0.5}, {"ZZ", -0.3}, {"YX", 0.7}, {"IZ", 0.2}, {"YY", -0.15}};
     for (double th : {0.37, 0.8, 1.3, -0.6}) {
         check_pauli_gate<2>(o2, "XX", 1.0, th);
@@ -275,7 +268,6 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_dense_matrix_ground_truth) {
         check_pauli_gate<2>(o2, "ZI", 0.7, th);
     }
 
-    // n = 3: Y-heavy observable, various generators.
     const std::map<std::string, double> o3{{"XYZ", 0.4},
                                            {"YYY", -0.6},
                                            {"ZIZ", 0.25},
@@ -290,7 +282,6 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_dense_matrix_ground_truth) {
         check_pauli_gate<3>(o3, "YYZ", 0.5, th);
     }
 
-    // n = 4: random Hermitian observables and random generators.
     std::mt19937 rng(0xB0A710U);
     for (size_t trial = 0; trial < 40; ++trial) {
         std::map<std::string, double> o4;
@@ -310,7 +301,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_dense_matrix_ground_truth) {
         if (gstr == "IIII") {
             gstr = "XIII";
         }
-        const double g = 0.5 + coeff(rng); // in (-0.5, 1.5)
+        const double g = 0.5 + coeff(rng);
         const double th = coeff(rng) * 1.5;
         check_pauli_gate<4>(o4, gstr, g, th);
     }
@@ -329,15 +320,15 @@ auto heisenberg_expval(MonomialPropagator<N> &sim) -> double {
     return sim.core_term() + s;
 }
 
-// JW-vs-native isomorphism: for the same observable and gates, the native Pauli propagator must match
-// the JW-image Majorana propagator on expectation value AND term count, across pictures/cutoffs/atol.
+// For the same observable and gates, the native Pauli propagator and the JW-image Majorana propagator
+// must agree on expectation value and term count, across pictures/cutoffs/atol.
 BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
     constexpr size_t N = 3;
     // Kicked-Ising-like: single-qubit X rotations (incl. odd-popcount generators) + ZZ rotations.
     PauliCircuit circ;
     circ.gens = {"XII", "IXI", "IIX", "ZZI", "IZZ", "XIX"};
     circ.gs = {1.0, 0.8, 1.2, 0.9, 1.1, 0.7};
-    circ.param_map = {0, 1, 2, 3, 4, 5}; // one distinct parameter per gate
+    circ.param_map = {0, 1, 2, 3, 4, 5};
     circ.params = {0.31, -0.5, 0.7, 0.42, -0.9, 0.25};
     const std::map<std::string, double> obs{{"ZII", 0.6},
                                             {"IZI", -0.4},
@@ -401,13 +392,13 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
 BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
     constexpr size_t N = 3;
     const std::map<std::string, double> obs{{"ZII", 0.5}, {"IZI", -0.3}, {"YIY", 0.4}, {"XZI", 0.2}, {"IIZ", 0.6}};
-    const VecZ initial_state{0}; // qubit 0 occupied
+    const VecZ initial_state{0};
 
     // Direct fold guard: for a single odd-popcount X gate, graph_data's fold-recomputed cos set must
     // equal the terms anticommuting with X in the Pauli sense.
     {
         auto mp = build_pauli_sim<N>(obs, 3);
-        mp.build_graph({slots_of_string("XII")}, VecZ{0}, VecD{1.0}); // structural single gate
+        mp.build_graph({slots_of_string("XII")}, VecZ{0}, VecD{1.0});
         const auto layers = mp.graph_data();
         BOOST_TEST_REQUIRE(layers.size() == 1U);
         const VecZ &cos_inds = std::get<0>(layers[0]);
@@ -423,7 +414,6 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
         BOOST_TEST((got == expected));
     }
 
-    // Self-consistency + JW arbiter over a multi-gate circuit including the odd-popcount X layer.
     PauliCircuit circ;
     circ.gens = {"XII", "ZZI", "IXI", "IZZ", "XIX"};
     circ.gs = {1.0, 0.9, 0.8, 1.1, 0.7};

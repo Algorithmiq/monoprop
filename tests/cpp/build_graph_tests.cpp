@@ -50,10 +50,27 @@ BOOST_DATA_TEST_CASE_F(ExampleDataFix,
     test_evolve_build_graph_with_coeffs<n_modes>(data, cfg, pare, data.actual_expval);
 }
 
-// graph_size()'s cosine count must be the real one, recomputed from the operator's inverted index.
-// Cosine-ONLY means cos-scaled but not a rotation endpoint, so it is legitimately zero when nothing is
-// truncated (every anticommuting term's sine partner survives and is an endpoint). A tight cutoff drops
-// those partners and the count must become positive.
+// Schrodinger-only by construction; the reason is on test_evolve_build_graph_with_coeffs_extend.
+BOOST_DATA_TEST_CASE_F(ExampleDataFix, build_graph_with_coeffs_extend_cases, bdata::make(ds_pare_values), pare) {
+    const auto schrodinger_cutoff = make_schrodinger_cutoff(/*enabled=*/true, cutoff);
+    SimulatorConfig cfg{
+        .schrodinger_cutoff = std::optional<unsigned int>(*schrodinger_cutoff),
+        .cutoff_type = cutoff_type,
+        .basis_change = basis_change,
+    };
+
+    // Truncating cutoff: some cos-scaled terms lose their sine partner, so cosine-only is positive.
+    const auto truncated = sized(8);
+    BOOST_CHECK_GT(truncated.first, 0U);
+    BOOST_CHECK_GT(truncated.second, 0U);
+
+    // Exact cutoff: every cos index is also a rotation endpoint, so cosine-only is genuinely zero.
+    const auto exact = sized(2 * N);
+    BOOST_CHECK_EQUAL(exact.first, 0U);
+    BOOST_CHECK_GT(exact.second, truncated.second);
+}
+
+// graph_size().first counts cos-scaled non-endpoints, recomputed from the operator's inverted index.
 BOOST_AUTO_TEST_CASE(graph_size_reports_real_cosine_only_count) {
     constexpr size_t N = 8;
     const auto data = test_utils::load_case_data<N>("random_exact.msgpack");
