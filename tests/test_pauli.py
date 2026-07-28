@@ -293,9 +293,9 @@ class TestPauliOperator:
 
     def test_non_hermitian_pauli_gate_rejected(self):
         """PauliOperator with a complex (non-Hermitian) coefficient is rejected."""
-
+        pauli  = Pauli("X", 0)
         with pytest.raises(ValueError, match="Operator has complex terms"):
-            PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=1)
+            PauliOperator({pauli: 1.0j}, num_qubits=1)
 
 
 class TestCircuit:

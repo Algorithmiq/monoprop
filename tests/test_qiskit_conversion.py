@@ -180,8 +180,9 @@ class TestToQiskitOperator:
         assert "II" in labels
 
     def test_missing_num_qubits(self):
+        pauili_op = PauliOperator({"XZ": 1.0}, num_qubits=None)
         with pytest.raises(ValueError, match="Number of qubits must be specified"):
-            to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=None))
+            to_qiskit_operator(pauli_op)
 
     def test_default_operator_missing_num_qubits(self):
         to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=None), num_qubits=2)
