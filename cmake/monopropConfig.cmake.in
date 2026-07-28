@@ -28,7 +28,7 @@ find_dependency(
   REQUIRED
 )
 find_dependency(
-  TBB
+  Threads
   REQUIRED
 )
 

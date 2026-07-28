@@ -28,13 +28,13 @@ namespace utf = boost::unit_test;
 
 BOOST_AUTO_TEST_CASE(update_initial_operator_updates_core_expval) {
     constexpr size_t n_modes = 2;
-    FermiOperatorMap initial_ham;
+    OperatorDict initial_ham;
     initial_ham[VecZ{}] = std::complex<double>{1.0, 0.0};
 
-    VecZ hartree_fock{0, 1};
+    VecZ initial_state{0, 1};
     MonomialPropagator<n_modes> simulator(initial_ham,
                                           2 * n_modes,
-                                          hartree_fock,
+                                          initial_state,
                                           std::nullopt,
                                           MPI_COMM_SELF,
                                           std::nullopt,
@@ -46,7 +46,7 @@ BOOST_AUTO_TEST_CASE(update_initial_operator_updates_core_expval) {
     auto expval_fn = simulator.expectation_value_functional(std::nullopt);
     BOOST_TEST(expval_fn(empty_params) == 1.0, tt::tolerance(1e-12));
 
-    FermiOperatorMap updated;
+    OperatorDict updated;
     updated[VecZ{}] = std::complex<double>{2.75, 0.0};
     simulator.update_initial_operator(updated);
 
@@ -56,13 +56,13 @@ BOOST_AUTO_TEST_CASE(update_initial_operator_updates_core_expval) {
 
 BOOST_AUTO_TEST_CASE(update_initial_operator_throws_for_unknown_term_in_heisenberg) {
     constexpr size_t n_modes = 2;
-    FermiOperatorMap initial_ham;
+    OperatorDict initial_ham;
     initial_ham[VecZ{0, 1}] = std::complex<double>{0, 1.0};
 
-    VecZ hartree_fock{0, 1};
+    VecZ initial_state{0, 1};
     MonomialPropagator<n_modes> simulator(initial_ham,
                                           2 * n_modes,
-                                          hartree_fock,
+                                          initial_state,
                                           std::nullopt,
                                           MPI_COMM_SELF,
                                           std::nullopt,
@@ -71,7 +71,7 @@ BOOST_AUTO_TEST_CASE(update_initial_operator_throws_for_unknown_term_in_heisenbe
                                           std::nullopt);
 
     const VecZ invalid_term{2, 3};
-    FermiOperatorMap missing_term;
+    OperatorDict missing_term;
     missing_term[invalid_term] = std::complex<double>{0.0, 0.5};
 
     // On a single rank, the owning rank always sees the error.
@@ -80,14 +80,14 @@ BOOST_AUTO_TEST_CASE(update_initial_operator_throws_for_unknown_term_in_heisenbe
 
 BOOST_AUTO_TEST_CASE(update_initial_operator_accepts_new_terms_in_schrodinger) {
     constexpr size_t n_modes = 2;
-    FermiOperatorMap initial_ham;
+    OperatorDict initial_ham;
     initial_ham[VecZ{0, 1}] = std::complex<double>{0, 1.0};
 
-    VecZ hartree_fock{0, 1};
+    VecZ initial_state{0, 1};
     const unsigned int cutoff = static_cast<unsigned int>(2 * n_modes);
     MonomialPropagator<n_modes> simulator(initial_ham,
                                           cutoff,
-                                          hartree_fock,
+                                          initial_state,
                                           cutoff,
                                           MPI_COMM_SELF,
                                           std::nullopt,
@@ -95,7 +95,7 @@ BOOST_AUTO_TEST_CASE(update_initial_operator_accepts_new_terms_in_schrodinger) {
                                           CutoffType::Support,
                                           std::nullopt);
 
-    FermiOperatorMap new_term;
+    OperatorDict new_term;
     new_term[VecZ{2, 3}] = std::complex<double>{0.0, 0.25};
     BOOST_CHECK_NO_THROW(simulator.update_initial_operator(new_term));
 }

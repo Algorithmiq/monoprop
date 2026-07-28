@@ -24,16 +24,7 @@ if TYPE_CHECKING:
 
 
 def _extend_pauli_string(pauli: str, qubits: Sequence[int], n_qubits: int) -> str:
-    """Extend a Pauli string to a full Pauli string including identities.
-
-    Args:
-        pauli: String representing a shrunken Pauli operator.
-        qubits: Qubits specifying where the Pauli operators are applied.
-        n_qubits: Number of qubits in the full system.
-
-    Returns:
-        Extended Pauli string to a n_qubits-system.
-    """
+    """Pad a local Pauli term with identities into a full ``n_qubits``-wide Pauli string."""
     if len(pauli) != len(qubits):
         raise ValueError("Pauli string and qubits must have the same length")
 
@@ -44,13 +35,11 @@ def _extend_pauli_string(pauli: str, qubits: Sequence[int], n_qubits: int) -> st
 
 
 def _pauli_to_majorana(pauli: str) -> tuple[tuple[int, ...], complex]:
-    # Jordan-Wigner map a full-width Pauli string to a Majorana monomial: returns the
-    # (Majorana index tuple, phase coefficient) pair, not a fermionic operator.
-    # the algorithms starts with last qubit and checks it's Pauli. Knowing, that
-    # JW Majoranas are Z...ZX or Z...ZY, we can determine Majorana to be added
-    # by tracking if currently the Z should be applied and what we are seeing
+    """Jordan-Wigner map a full-width Pauli string to a ``(Majorana indices, phase)`` pair."""
+    # Scans right to left. A JW Majorana is Z...ZX or Z...ZY, so which index each letter emits
+    # depends only on whether a Z string is still pending, tracked in flag_z.
     new_p = []
-    flag_z = False  # flag to keep track of the last Z
+    flag_z = False
     coeff = 1 + 0j
     for i, p in reversed(list(enumerate(pauli))):
         if (p, flag_z) in {("Z", False), ("I", True)}:
@@ -70,67 +59,63 @@ def _pauli_to_majorana(pauli: str) -> tuple[tuple[int, ...], complex]:
             new_p.append(2 * i)
             flag_z = False
             coeff *= 1j  # cause Z X =  i X
-    # no need to fix coeff for reversing because we were multiplying by phases above, not dividing
+    # Reversing needs no phase fix: the loop multiplied by phases rather than dividing.
     return tuple(reversed(new_p)), coeff
 
 
-# Map (flag_z, has_even, has_odd) -> (pauli_char, new_flag_z, coeff_mult)
-# Encodes the Jordan-Wigner transformation logic.
-_MAJORANA_TRANSFORM = {
-    (False, True, True): ("Z", False, -1j),
-    (False, True, False): ("X", True, 1),
-    (False, False, True): ("Y", True, 1),
-    (False, False, False): ("I", False, 1),
-    (True, True, True): ("I", True, -1j),
-    (True, True, False): ("Y", False, 1j),
-    (True, False, True): ("X", False, -1j),
-    (True, False, False): ("Z", True, 1),
-}
+def _pauli_to_local_slots(string: str, qubits: Sequence[int]) -> tuple[int, ...]:
+    """Pack a local Pauli term into native symplectic gamma-slots (no Jordan-Wigner string).
 
-
-def _majorana_to_pauli(
-    majorana: tuple[int, ...], *, n_qubits: int
-) -> tuple[str, complex]:
-    """Invert :func:`_pauli_to_majorana` for a fixed system width.
-
-    Args:
-        majorana: Majorana-index tuple.
-        n_qubits: expected number of qubits.
+    Each qubit maps to its own two slots, independent of every other qubit:
+    ``X_q -> {2q}``, ``Y_q -> {2q+1}``, ``Z_q -> {2q, 2q+1}`` (``I`` contributes nothing).
+    This is the engine's ``Basis::Pauli`` encoding (mirrors ``slots_of_string`` in
+    ``tests/cpp/PauliTestOracle.h``); a weight-``w`` Pauli occupies at most ``2w``
+    slots, so the packed popcount is ``O(weight)`` and independent of the qubit count -- unlike
+    the Jordan-Wigner image (``_pauli_to_majorana``), whose ``Z`` prefix makes a single
+    ``X_q`` span ``2q+1`` slots.
 
     Returns:
-        A tuple ``(pauli, coeff)`` where ``pauli`` maps back to ``majorana`` under
-        :func:`_pauli_to_majorana`, and ``coeff`` is the complex conjugate of the
-        coefficient returned by :func:`_pauli_to_majorana` for that ``pauli``.
+        The sorted tuple of gamma-slot indices encoding the term.
     """
-    majorana_set = set(majorana)
-    if any(el >= 2 * n_qubits for el in majorana_set):
-        raise ValueError(
-            f"Majorana indices {majorana} out of range for {n_qubits} qubits"
-        )
+    slots: list[int] = []
+    for letter, qubit in zip(string, qubits, strict=True):
+        if letter == "X":
+            slots.append(2 * qubit)
+        elif letter == "Y":
+            slots.append(2 * qubit + 1)
+        elif letter == "Z":
+            slots.extend((2 * qubit, 2 * qubit + 1))
+    return tuple(sorted(slots))
 
-    pauli = ["I"] * n_qubits
-    flag_z = False
-    forward_coeff = 1 + 0j
 
-    for i in range(n_qubits - 1, -1, -1):
-        has_even = (2 * i) in majorana_set
-        has_odd = (2 * i + 1) in majorana_set
+def _local_slots_to_pauli(slots: Sequence[int]) -> tuple[str, tuple[int, ...]]:
+    """Decode native symplectic gamma-slots back to a local Pauli term.
 
-        pauli_char, new_flag_z, coeff_mult = _MAJORANA_TRANSFORM[
-            (flag_z, has_even, has_odd)
-        ]
-        pauli[i] = pauli_char
-        flag_z = new_flag_z
-        forward_coeff *= coeff_mult
+    Inverse of ``_pauli_to_local_slots`` (mirrors ``letter_from_bitset`` in
+    ``tests/cpp/PauliTestOracle.h``): for qubit ``q`` the slots ``2q`` (``u``) and
+    ``2q+1`` (``v``) decode as ``(1,0)=X``, ``(0,1)=Y``, ``(1,1)=Z``.
 
-    return "".join(pauli), forward_coeff.conjugate()
+    Returns:
+        A ``(string, qubits)`` pair ready for [Pauli][monoprop.pauli.Pauli].
+    """
+    present = set(slots)
+    letters: list[str] = []
+    acting_qubits: list[int] = []
+    for qubit in sorted({s // 2 for s in slots}):
+        u = 2 * qubit in present
+        v = 2 * qubit + 1 in present
+        if u and not v:
+            letters.append("X")
+        elif v and not u:
+            letters.append("Y")
+        else:  # u and v
+            letters.append("Z")
+        acting_qubits.append(qubit)
+    return "".join(letters), tuple(acting_qubits)
 
 
 def _parity(perm: Sequence[int]) -> int:
     r"""Compute parity of a permutation.
-
-    Args:
-        perm: sequence of integers.
 
     Returns:
         The value of $(-1)^{\sigma}$.
@@ -143,9 +128,6 @@ def _parity(perm: Sequence[int]) -> int:
         -1
 
         ```
-
-    Notes:
-        Uses the technique described here: https://math.stackexchange.com/a/1170666
     """
     parity: int = 1
     for i, x in enumerate(perm):
@@ -156,7 +138,7 @@ def _parity(perm: Sequence[int]) -> int:
 
 
 def _remove_repeated_pairs(term: tuple[int, ...]) -> tuple[int, ...]:
-    # assumes elements are sorted
+    """Cancel adjacent duplicate indices (``m_i m_i = 1``) in a sorted index tuple."""
     mut_term = list(term)
     i = 0
     while i < len(mut_term) - 1:
@@ -173,6 +155,7 @@ def _n_product(
     plus_inds: list[int],
     minus_inds: list[int],
 ) -> Iterator[tuple[tuple[int, ...], complex]]:
+    """Expand a product of ladder operators into its ``(Majorana indices, coefficient)`` terms."""
     ind: tuple[int, ...]
     term_len = len(term)
     for ind in it.product(*[[2 * el[0], 2 * el[0] + 1] for el in term]):

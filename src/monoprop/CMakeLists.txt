@@ -6,9 +6,8 @@ add_library(
   SHARED
   Evolution.cpp
   MPFunctions.cpp
+  detail/pare/PareGraph.cpp
   MPGraph.cpp
-  Threading.cpp
-  Utilities.cpp
   Validation.cpp
 )
 
@@ -42,11 +41,7 @@ list(
   ${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h
 )
 
-set(
-  monoprop_PRIVATE_HEADERS
-  ${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/masked_execution_plan/BuildExecutionPlan.h
-  ${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/masked_execution_plan/LayerFiltering.h
-)
+set(monoprop_PRIVATE_HEADERS)
 
 set_target_properties(
   monoprop
@@ -61,8 +56,6 @@ set_target_properties(
       "${monoprop_PRIVATE_HEADERS}"
 )
 
-add_subdirectory(masked_execution_plan)
-
 target_include_directories(
   monoprop
   PUBLIC
@@ -76,7 +69,7 @@ target_link_libraries(
   monoprop
   PUBLIC
     Boost::boost
-    TBB::tbb
+    Threads::Threads
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
 )
 

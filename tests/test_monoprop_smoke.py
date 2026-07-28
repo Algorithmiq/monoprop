@@ -35,7 +35,7 @@ def _make_bound_simulator(bound_type, problem, serial_comm, *, schrodinger: bool
     return bound_type(
         initial_operator=problem.operator.terms,
         cutoff=2 * problem.n_modes,
-        slater_determinant=problem.monomial_circuit.initial_state,
+        initial_state=problem.monomial_circuit.initial_state,
         comm=serial_comm,
         schrodinger_cutoff=2 * problem.n_modes if schrodinger else None,
         lower_atol=None,
@@ -152,7 +152,6 @@ def test_bound_graph_methods_accept_declared_arguments(
     assert core.size() > 0
     graph_size = core.graph_size()
     assert len(graph_size) == 2
-    assert core.graph_data() is not None
     assert core.graph_layers() is not None
 
     core.update_initial_operator(op_dict=problem.operator.terms)

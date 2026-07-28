@@ -3,7 +3,7 @@ title: Initialisation and updates
 description: Constructing the simulator, choosing the Heisenberg or Schrödinger picture, and updating the operator in place.
 ---
 
-The top-level classes are `MajoranaPropagator` and `PauliPropagator` (Python) /
+The top-level classes are [MajoranaPropagator][] and [PauliPropagator][] (Python) /
 `MonomialPropagator<NumModes>` (C++). Every significant aspect of the
 simulation can be tuned at construction time and updated at runtime without
 rebuilding. The structural and coefficient cutoffs are covered separately in
@@ -20,7 +20,7 @@ picture they are applied to the observable.
 set higher than the regular `cutoff` for the Schrödinger-picture result to
 match the Heisenberg-picture one. A good value of the parameter depends on the circuit
 and observable, although setting `schrodinger_cutoff = cutoff + 2` for MajoranaPropagator and
-`schrodinger_cutoff = cutoff + 1` for PauliPropagator is usually a good starting point.
+`schrodinger_cutoff = cutoff + 1` for [PauliPropagator][] is usually a good starting point.
 For second-quantized Hamiltonians and usual Fermionic circuits coming from variational
 quantum computing, under length truncation the two pictures agree when
 `schrodinger_cutoff = cutoff + 2` (see Appendix of [@chakraborty2026scalablequantumcircuitgeneration]).

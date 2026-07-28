@@ -3,17 +3,14 @@
 
 [![Documentation](https://github.com/Algorithmiq/monoprop/actions/workflows/docpages.yml/badge.svg)](https://docs.algorithmiq.fi/monoprop)
 [![Test monoprop](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml/badge.svg)](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml)
-[![CLA assistant](https://cla-assistant.io/readme/badge/Algorithmiq/monoprop)](https://cla-assistant.io/Algorithmiq/monoprop)
-
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Algorithmiq_monoprop&metric=alert_status&token=b8f15100fbda929efa33b226a723216e0163cfc9)](https://sonarcloud.io/summary/new_code?id=Algorithmiq_monoprop)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=Algorithmiq_monoprop&metric=coverage&token=b8f15100fbda929efa33b226a723216e0163cfc9)](https://sonarcloud.io/summary/new_code?id=Algorithmiq_monoprop)
+[![codecov](https://codecov.io/gh/Algorithmiq/monoprop/graph/badge.svg?token=1GgmPnNUxk)](https://codecov.io/gh/Algorithmiq/monoprop)
 
 `monoprop` is a high-performance C++ library with Python bindings for **Majorana and
 Pauli propagation** — a backend for classically simulating and variationally
 optimising quantum circuits. Rather than storing the full quantum state, it
 expands an operator in the Majorana basis and propagates it through a circuit,
-truncating terms that contribute little. It scales to large systems through
-shared-memory threading (oneTBB) and multi-node MPI.
+truncating terms that contribute little. It scales to large systems by partitioning
+the operator across cores and across nodes with MPI.
 
 > [!WARNING]
 > This package is under active development. This project follows [Semantic Versioning](https://semver.org/). While in `0.x.y`, breaking changes may occur in minor releases.
@@ -84,7 +81,7 @@ uv sync --all-extras -v
 uv sync --all-extras -v --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
 ```
 
-C++ library and executables (via CMake presets):
+C++ library and executables (via CMake presets — the same ones CI configures with):
 
 ```bash
 cmake --preset release-gcc        # release-gcc-mpi to enable MPI
@@ -100,6 +97,7 @@ executable — are in the [building guide](https://docs.algorithmiq.fi/monoprop/
 uv run python -m pytest -m "not mpi"   # Python tests (serial)
 just test-py-mpi                       # Python tests under MPI
 ctest --preset release-gcc             # C++ unit tests (release-gcc-mpi for MPI)
+just test-cpp-wide                     # C++ unit tests with a 64-bit TermIndex
 ```
 
 See the [building guide](https://docs.algorithmiq.fi/monoprop/docs/building#running-the-tests)
@@ -145,6 +143,15 @@ executed from the notebooks in `docs/notebooks/`. To build it locally:
 just build-docs   # output: docs/out/
 just serve-docs   # live-reloading dev server
 ```
+
+### Keeping documentation up to date
+
+Any PR that changes behavior, public APIs, build/test commands, or repository paths
+must update the relevant docs in the same change:
+
+1. `AGENTS.md` for agent/developer workflow instructions.
+2. `README.md` for top-level usage and contributor guidance.
+3. `docs/` pages for user-facing and in-depth technical documentation.
 
 ## Citation
 

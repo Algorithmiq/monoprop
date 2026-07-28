@@ -44,43 +44,38 @@ constexpr auto make_repeating_bitset(uint64_t pattern) -> Bitset<N> {
     return bits;
 }
 
-/// Repeating 0x5555...5555 pattern (even bits set) truncated to N bits.
 template <size_t N>
 constexpr auto even_bits() -> Bitset<N> {
     return make_repeating_bitset<N>(0x5555555555555555ULL);
 }
 
-/// Repeating 0xAAAA...AAAA pattern (odd bits set) truncated to N bits.
 template <size_t N>
 constexpr auto odd_bits() -> Bitset<N> {
     return make_repeating_bitset<N>(0xAAAAAAAAAAAAAAAAULL);
 }
 } // namespace detail
 
+// Under MSb0 the logical even positions are physically odd, so the pattern is swapped vs LSb0.
 template <size_t N, typename Ordering>
 constexpr auto even_bits() -> Bitset<N> {
-    if constexpr (std::is_same_v<Ordering, MSb0>) { // MSb0
+    if constexpr (std::is_same_v<Ordering, MSb0>) {
         return detail::odd_bits<N>();
     }
-    else { // LSb0
+    else {
         return detail::even_bits<N>();
     }
 };
+// Same MSb0/LSb0 swap as even_bits().
 template <size_t N, typename Ordering>
 constexpr auto odd_bits() -> Bitset<N> {
-    if constexpr (std::is_same_v<Ordering, MSb0>) { // MSb0
+    if constexpr (std::is_same_v<Ordering, MSb0>) {
         return detail::even_bits<N>();
     }
-    else { // LSb0
+    else {
         return detail::odd_bits<N>();
     }
 };
 
-/*!
- * @brief Compute n-choose-2
- * @param n
- * @return size_t
- */
 inline auto n_choose_2(std::integral auto n) -> size_t {
     return static_cast<size_t>(n * (n - 1) / 2);
 }
@@ -97,10 +92,4 @@ auto join_with_separator(std::ranges::range auto const &values, std::string_view
     }
     return joined;
 }
-
-/*!
- * @brief Get maximum resident set size in KiB.
- * @return double maximum RSS in KiB.
- */
-monoprop_EXPORT auto get_memory_usage() -> double;
 } // namespace monoprop

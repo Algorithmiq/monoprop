@@ -19,9 +19,7 @@ from monoprop.majorana import MajoranaOperator
 
 
 def test_nonfermi(serial_comm):
-    # NOTE: this test checks against a faithful hand-computed result
-    # for a non-fermionic operator evolution.
-
+    # Oracle: a hand-computed evolution of a non-fermionic operator.
     num_modes = 2
     majoranas = [(0,), (0, 1), (0, 1, 3), (2, 3)]
     gen_coeffs = np.array([-1.0, 1.0, -1.0, 1.0])

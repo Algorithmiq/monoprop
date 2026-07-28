@@ -24,6 +24,8 @@ expval = sim.expectation_value(parameters)
 expval, grad = sim.expectation_value_and_gradient(parameters)
 ```
 
+Shorter aliases are also available: `sim.expval(parameters)` and `sim.expval_and_grad(parameters)`.
+
 The gradient is returned in parameter-index order (`grad[i]` is the derivative with
 respect to the angle at index `i`), and `expectation_value_and_gradient` computes
 both quantities in one backward pass over the graph.
@@ -42,6 +44,8 @@ expval = expval_fn(parameters)
 expval_grad_fn = sim.expectation_value_and_gradient_functional()
 expval, grad = expval_grad_fn(parameters)
 ```
+
+Shorter aliases are also available: `sim.expval_functional()` and `sim.expval_and_grad_functional()`.
 
 Both functionals accept an optional `pare_threshold` — see *Paring* below.
 

@@ -1,5 +1,5 @@
 ---
-title: Building from source
+title: Building from Source
 description: Build the Python bindings and the C++ library and executables, with or without MPI.
 ---
 
@@ -84,13 +84,12 @@ mpiexec -n 8 uv run python your_script.py
 ```
 
 See [Parallelism and distribution](/features/parallelism) for the communicator options and the
-shared-memory thread controls.
+operator-partitioning controls.
 
 ## Building the C++ library and executables
 
 The standalone build uses CMake presets (Ninja generator). It produces the
-`monoprop` library plus the example, benchmark, and test executables under
-`build/<preset>/bin/`.
+`monoprop` library plus the test executable under `build/<preset>/bin/`.
 
 ### Default preset (no MPI)
 
@@ -108,11 +107,24 @@ cmake --preset release-gcc-mpi
 cmake --build --preset release-gcc-mpi
 ```
 
-`debug-gcc` / `debug-gcc-mpi` presets are available for debug builds. To build a
-single target, pass `--target`:
+### Other presets
+
+| Preset | What it changes |
+| --- | --- |
+| `release-clang` | Same as `release-gcc`, built with `clang++`. |
+| `release-gcc-wide` | Sets `monoprop_WIDE_TERM_INDEX=ON` (64-bit term indices, for more than 2^32 terms per partition). |
+| `debug-gcc` / `debug-gcc-mpi` | Debug builds, without and with MPI. |
+| `coverage-gcc` | Coverage build type, for `gcovr` (see `just coverage-cpp`). |
+
+Every preset writes to `build/<preset>/` and has a matching build and test
+preset of the same name. These presets are the single source of truth for the
+project's build configurations: CI configures through them too, so a
+locally-reproduced preset build matches what CI ran.
+
+To build a single target, pass `--target`:
 
 ```bash
-cmake --build --preset release-gcc --target example.x
+cmake --build --preset release-gcc --target monoprop_unit_tests.x
 ```
 
 
