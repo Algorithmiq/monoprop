@@ -68,10 +68,12 @@ A 64-bit `TermIndex` build is the only configuration that compiles the
 just test-cpp-wide   # cmake/build/ctest with the release-gcc-wide preset, -L serial
 ```
 
-CTest registers each Boost case twice: once as a `serial` variant, and — when the
-build has MPI enabled and a launcher is found — once per rank count in
-`monoprop_MPI_TEST_PROCS` as a suite-level `mpi` / `mpi-<n>` variant. Select them
-with `ctest --preset release-gcc-mpi -L serial` (or `-L mpi-2`).
+CTest registers every Boost case individually as a `serial` variant. When the
+build has MPI enabled and a launcher is found, it also registers the whole suite
+once per rank count in `monoprop_MPI_TEST_PROCS`, labelled `mpi` and `mpi-<n>` —
+one entry per rank count rather than per case, because the ranks have to reach
+the same collectives. Select either group with
+`ctest --preset release-gcc-mpi -L serial` (or `-L mpi-2`).
 
 
 ## Adding tests
