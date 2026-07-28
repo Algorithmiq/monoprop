@@ -117,10 +117,12 @@ needed.
 ## MPI Test Configuration
 
 With an MPI launcher on PATH (`MPIEXEC_EXECUTABLE`, `mpiexec`, or `mpirun`),
-CMake wraps the suite in `mpiexec -n <rank>` for each rank in
-`monoprop_MPI_TEST_PROCS` (default `2`). For exhaustive rank coverage:
-`-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. For per-test MPI expansion (debugging):
-`-Dmonoprop_MPI_TEST_LAYOUT=per-test`.
+CMake wraps the whole suite in `mpiexec -n <rank>` for each rank in
+`monoprop_MPI_TEST_PROCS` (default `2`) — one CTest entry per rank count, not
+per case, because the ranks have to reach the same collectives. For exhaustive
+rank coverage: `-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under
+MPI while debugging, invoke the binary directly:
+`mpirun -n 2 ./tests/cpp/monoprop_unit_tests.x --run_test=<case>`.
 
 ## Adding New Tests
 
