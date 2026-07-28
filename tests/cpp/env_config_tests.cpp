@@ -69,5 +69,5 @@ BOOST_AUTO_TEST_CASE(env_config_settings_cached_singleton) {
     const auto &b = monoprop::config::get();
     BOOST_CHECK_EQUAL(&a, &b);
     // Touch a field so the Settings aggregate is actually read.
-    BOOST_CHECK(a.shard_pinning == true || a.shard_pinning == false);
+    BOOST_CHECK(a.partition_pinning == true || a.partition_pinning == false);
 }

@@ -74,11 +74,11 @@ auto filter_layer_cosine_data(const CosMask &cos, const std::vector<char> &nodes
 
 // Force every cross-rank endpoint kept, before the cosine filter runs.
 //
-// The cos pass (not the D-apply) scales EVERY D target, since cos holds all anticommuting indices, so no
+// The cos pass (not the D-apply) scales every D target, since cos holds all anticommuting indices, so no
 // D target may be pruned; a B source is kept exactly when its partner D target is, i.e. always. Every rank
 // reaches the same conclusion about its own endpoints, so no cross-rank agreement is needed.
 //
-// B sources are marked for REMOTE ranks only: the self-rank slot carries local cycles, whose sources
+// B sources are marked for remote ranks only: the self-rank slot carries local cycles, whose sources
 // follow the ordinary backward reachability instead of being force-kept.
 auto mark_cross_rank_endpoints_kept(const LayerTraversal &layer, size_t my_rank, std::vector<char> &nodes_to_keep)
     -> void {
@@ -125,16 +125,16 @@ auto pare_graph(const MPGraph &graph,
 
     // Single backward sweep, entirely rank-local: every cross-rank endpoint is force-kept (see
     // mark_cross_rank_endpoints_kept), so nodes_to_keep stays consistent across ranks with no exchange.
-    // Cross-rank lists are NEVER pruned; the keep-set only has to be right so cos pruning stays exact.
+    // Cross-rank lists are never pruned; the keep-set only has to be right so cos pruning stays exact.
     for (size_t iter = 0; iter < num_layers; ++iter) {
         const size_t layer_idx = schrodinger ? iter : (num_layers - 1 - iter);
         const auto &layer = graph.get_layer(layer_idx);
         const auto lt = layer.traversal();
 
-        // Order is load-bearing for bit-exact pruning: endpoints kept BEFORE the cosine filter.
+        // Order is load-bearing for bit-exact pruning: endpoints kept before the cosine filter.
         mark_cross_rank_endpoints_kept(lt, my_rank, nodes_to_keep);
 
-        // Materialize THIS layer's full cos lazily, prune to nodes_to_keep, discard it. preserves =>
+        // Materialize this layer's full cos lazily, prune to nodes_to_keep, discard it. preserves =>
         // nothing trimmed => reuse the core with no stored cos (recompute at replay); else store the filter.
         const CosMask full = full_cos_of_layer(layer_idx);
         auto [filtered, preserves] = filter_layer_cosine_data(full, nodes_to_keep);

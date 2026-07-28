@@ -21,7 +21,7 @@
 
 namespace test_utils {
 
-// The flat msgpack schema documented in tests/data/README.md, restricted to the fields the C++
+// The flat msgpack schema documented in tests/data/readme.md, restricted to the fields the C++
 // suite uses.
 struct CaseData {
     double actual_expval{0.0};

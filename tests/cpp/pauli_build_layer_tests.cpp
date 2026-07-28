@@ -330,7 +330,7 @@ auto heisenberg_expval(MonomialPropagator<N> &sim) -> double {
 }
 
 // JW-vs-native isomorphism: for the same observable and gates, the native Pauli propagator must match
-// the JW-image Majorana propagator on expectation value AND term count, across pictures/cutoffs/atol.
+// the JW-image Majorana propagator on expectation value and term count, across pictures/cutoffs/atol.
 BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
     constexpr size_t N = 3;
     // Kicked-Ising-like: single-qubit X rotations (incl. odd-popcount generators) + ZZ rotations.

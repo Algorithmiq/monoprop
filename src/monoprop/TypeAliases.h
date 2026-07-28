@@ -85,8 +85,8 @@ using VecI = std::vector<int>;
 using VecZ = std::vector<size_t>;
 
 // Compile-time build knobs (cmake -D<name>=...):
-//   monoprop_ENABLE_MPI         real MPI transport vs single-rank stubs         (default OFF)
-//   monoprop_WIDE_TERM_INDEX    TermIndex = u64 vs u32 → >2^32 terms per shard  (default OFF)
+//   monoprop_ENABLE_MPI         real MPI transport vs single-rank stubs         (default off)
+//   monoprop_WIDE_TERM_INDEX    TermIndex = u64 vs u32 → >2^32 terms per partition  (default off)
 //   monoprop_MAX_NUM_MODES      NumModes codegen/instantiation ceiling          (default 250)
 //   monoprop_ENABLE_ARCH_FLAGS  -march=native / -xHost (non-Debug)              (default ON)
 // Runtime (env-var) knobs live in detail/EnvConfig.h.
@@ -97,7 +97,7 @@ using TermIndex = std::uint64_t;
 using TermIndex = std::uint32_t;
 #endif
 
-// Allocator that DEFAULT-initializes (no zero-fill) on the no-arg construct. Use ONLY for buffers whose
+// Allocator that default-initializes (no zero-fill) on the no-arg construct. Use only for buffers whose
 // every grown element is overwritten before read — otherwise it exposes indeterminate values.
 template <typename T, typename A = std::allocator<T>>
 struct default_init_allocator : A {
@@ -135,8 +135,8 @@ using OperatorDict = std::map<VecZ, std::complex<double>>;
 // Included here (not at the top) because OperatorIndex needs TermIndex/MonomialHash defined above.
 #include "monoprop/detail/operator/OperatorIndex.h"
 
-// OperatorIndex row-accessor overloads. MUST be declared BEFORE InvertedIndex.h/MPOperator.h: those
-// templates reach these via ordinary lookup, not ADL (ADL searches only monoprop::detail).
+// OperatorIndex row-accessor overloads. Must be declared before InvertedIndex.h/MPOperator.h: those
+// templates reach these via ordinary lookup, not ADL (which searches only monoprop::detail).
 namespace monoprop {
 template <size_t NumModes>
 [[nodiscard]] inline auto materialize_row(const detail::OperatorIndex<NumModes> &op, size_t i) -> Monomial<NumModes> {

@@ -64,13 +64,13 @@ BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg, ExampleData
     check_agreement(data, SimulatorConfig{}, "heisenberg");
 }
 
-// lower_atol active: the sin gate reads the PRE-cos value, so the in-place store that follows must
+// lower_atol active: the sin gate reads the pre-cos value, so the in-place store that follows must
 // not change which terms are emitted.
 BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg_atol, ExampleDataFix) {
     check_agreement(data, SimulatorConfig{.atol = 1e-10}, "heisenberg atol=1e-10");
 }
 
-// Schrödinger: fresh inserts carry a nonzero state-scored value born AFTER the sweep, so the apply's
+// Schrödinger: fresh inserts carry a nonzero state-scored value born after the sweep, so the apply's
 // insert arm must fold the gate's cos into those slots itself (c = cos·c + sin term).
 BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger, ExampleDataFix) {
     check_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes}, "schrodinger");

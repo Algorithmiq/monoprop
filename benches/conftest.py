@@ -364,7 +364,7 @@ def built_graph(
     )
     mp.build_graph(circuit)
 
-    # Under MPI the operator is partitioned, so sum the shards.
+    # Under MPI the operator is partitioned, so sum the partitions.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})
 
     # Settled RSS once the build's transients are released -- the persistent

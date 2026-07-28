@@ -26,9 +26,9 @@ static auto init() -> bool {
 
 auto main(int argc, char* argv[]) -> int {
     // The white-box accessors (mp_op()/indexing()/graph()/graph_data()) read this partition's state,
-    // which is empty on a shard-backed facade, so sharding is forced off for the suite. overwrite=0
-    // keeps an explicit dev override working; shard_equivalence_tests passes shards= and wins anyway.
-    setenv("monoprop_SHARDS", "off", 0);
+    // which is empty on a partition-backed facade, so partitioning is forced off for the suite. overwrite=0
+    // keeps an explicit dev override working; partition_equivalence_tests passes partitions= and wins anyway.
+    setenv("monoprop_PARTITIONS", "off", 0);
     monoprop::mpi::init(&argc, &argv);
     int result = boost::unit_test::unit_test_main(&init, argc, argv);
     monoprop::mpi::finalize();

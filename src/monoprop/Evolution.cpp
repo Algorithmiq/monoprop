@@ -220,7 +220,7 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
             end,
             [&trig, &ds, &dh, &rv, &local, &op, &state](size_t k, size_t i, int phi_signed) {
                 const auto phi = static_cast<double>(phi_signed);
-                // INVERSE-rotation write-back (−sin): un-evolves state/op for the next reverse layer.
+                // Inverse-rotation write-back (−sin): un-evolves state/op for the next reverse layer.
                 const double ps = -trig.sin_val * phi;
                 const double s_old = ds[k];
                 const double h_old = dh[k];
@@ -254,7 +254,7 @@ inline auto begin_cross_rank_derivative_exchange(const std::vector<VecD> &sin_se
         });
 }
 
-// Wait for the transfer, then apply partner payloads at the remote sin_recv endpoints. MUST run after
+// Wait for the transfer, then apply partner payloads at the remote sin_recv endpoints. must run after
 // the cos pass — the ordering is floating-point significant.
 inline auto finish_cross_rank_derivative_exchange(VecD &state,
                                                   VecD &op,
@@ -305,7 +305,7 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
                                               const VecD &recv_buffer,
                                               const std::vector<int> &recv_displs,
                                               int my_rank) {
-    // op[i] is already cos-scaled, so this only ADDS the sine rotation op[i] += sin·φ·partner_old,
+    // op[i] is already cos-scaled, so this only adds the sine rotation op[i] += sin·φ·partner_old,
     // where recv[k] is the partner's pre-cos sin_send snapshot.
     const size_t num_ranks = layer.cross_rank_rank_count();
     for (size_t rank = 0; rank < num_ranks; ++rank) {
@@ -353,7 +353,7 @@ inline auto finish_cross_rank_evolution_exchange(VecD &op,
 
 // Snapshot-free self-slot endpoint pass: sin_recv entries k and k+pairs are the two endpoints of one
 // rotation, so reading both (pre-cos recovered from the post-cos slots) before writing either avoids the
-// RAW hazard.
+// read-after-write hazard.
 auto apply_self_slot_derivative_paired(VecD &state,
                                        VecD &op,
                                        const LayerTraversal &layer,
@@ -377,7 +377,7 @@ auto apply_self_slot_derivative_paired(VecD &state,
         const double h2 = op[i2] * trig.cos_val;
         local.cos_terms += (s1 * h1) + (s2 * h2);
         local.sin_terms += (phi1 * s1 * h2) + (phi2 * s2 * h1);
-        // INVERSE-rotation write-back (−sin); see apply_cross_rank_derivative_exchange_impl.
+        // Inverse-rotation write-back (−sin); see apply_cross_rank_derivative_exchange_impl.
         const double ps1 = -trig.sin_val * phi1;
         const double ps2 = -trig.sin_val * phi2;
         op[i1] = (h1 * trig.cos_val) + (ps1 * h2);
@@ -401,7 +401,7 @@ auto derivative_snapshot_scratch() -> DerivativeSnapshotScratch & {
     return scratch;
 }
 
-// Snapshot pre-cos (state, op) at every REMOTE rank's sin_send/sin_recv endpoints before the cos pass
+// Snapshot pre-cos (state, op) at every remote rank's sin_send/sin_recv endpoints before the cos pass
 // clobbers them. The self slot needs none — it recovers live — so it is cleared.
 void snapshot_remote_endpoints(const VecD &state,
                                const VecD &op,
@@ -491,7 +491,7 @@ auto state_operator_derivative_local_impl(VecD &state,
         finish_cross_rank_derivative_exchange(state, op, layer, sin_recv_state, sin_recv_op, trig, in_flight);
     ep = combine_endpoint_contrib(ep, remote);
 
-    // dE/dθ = −g·(tan·(A − ep.cos_terms) − ep.sin_terms); note the PLUS sign on ep.sin_terms.
+    // dE/dθ = −g·(tan·(A − ep.cos_terms) − ep.sin_terms); note the plus sign on ep.sin_terms.
     return -trig.g_val * (trig.tan_val * (A - ep.cos_terms) - ep.sin_terms);
 }
 
@@ -519,7 +519,7 @@ auto evolve_step_traversal_impl(VecD &op,
     const int my_rank_int = mpi::rank(comm);
     const auto my_rank = static_cast<size_t>(my_rank_int);
 
-    // Snapshot my_rank's own sin_send values BEFORE the cos pass; runs unconditionally (the remote pack
+    // Snapshot my_rank's own sin_send values before the cos pass; runs unconditionally (the remote pack
     // skips my_rank) so single-rank works.
     const size_t self_b_count = (my_rank < layer.cross_rank_rank_count()) ? layer.cross_rank_sin_send_size(my_rank) : 0;
     VecD self_b_snapshot;
@@ -531,13 +531,13 @@ auto evolve_step_traversal_impl(VecD &op,
         });
     }
 
-    // Pack + start the exchange BEFORE the cos scan so partner values are pre-cos and the transfer overlaps.
+    // Pack + start the exchange before the cos scan so partner values are pre-cos and the transfer overlaps.
     auto in_flight = begin_cross_rank_evolution_exchange(op, layer, comm);
-    // Cos scaling via the mandatory callback; MUST stay between begin_/finish so the transfer overlaps it.
+    // Cos scaling via the mandatory callback; must stay between begin_/finish so the transfer overlaps it.
     cos_scale(layer_idx, op_data, cos_val);
     finish_cross_rank_evolution_exchange(op, layer, sin_val, in_flight);
 
-    // Apply the self-slot sin_recv entries: op[i] is already cos-scaled, so this only ADDS the sine
+    // Apply the self-slot sin_recv entries: op[i] is already cos-scaled, so this only adds the sine
     // rotation op[i] += sin·φ·self_b_snapshot[k].
     if (self_b_count > 0) {
         const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);

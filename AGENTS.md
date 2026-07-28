@@ -52,11 +52,11 @@ Key files:
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
   templated on the algebra policy and bound to a runtime `Basis` once, via `with_algebra`.
-- **The shard facade**: `shards > 1` makes a `MonomialPropagator` a facade over S single-shard
-  propagators, one hash partition each. Every method that fans out must use the private shard
-  vocabulary declared in `MonomialPropagator.h` (`for_each_shard_`, `map_shards_`, `concat_shards_`
-  for the mutating/collecting paths, which run on the shards' own pinned masters; `sum_shards_`,
-  `fold_shards_`, `first_shard_` for reads off quiescent shards) rather than hand-rolling a
+- **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
+  propagators, one hash partition each. Every method that fans out must use the private partition
+  vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`
+  for the mutating/collecting paths, which run on the partitions' own pinned masters; `sum_partitions_`,
+  `fold_partitions_`, `first_partition_` for reads off quiescent partitions) rather than hand-rolling a
   `run_on_all` loop — the declarations record which helper is legal where.
 
 

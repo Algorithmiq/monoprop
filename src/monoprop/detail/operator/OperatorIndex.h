@@ -42,7 +42,7 @@ public:
 // ascending set-bit positions; stride_ is fixed for the container's life so row offsets stay stable.
 // inline_width_ is a free parameter -- any width is correct, over-long rows spill losslessly to overflow.
 // find_batch exists for the group-prefetch pipelined lookup the latency-bound resolve phases need.
-// Single-writer (one shard, one thread; parallelism is cross-shard), non-copyable, deep-copied by clone().
+// Single-writer (one partition, one thread; parallelism is cross-partition), non-copyable, deep-copied by clone().
 template <size_t NumModes>
 class OperatorIndex {
 public:
@@ -107,14 +107,14 @@ public:
         reserve_index(n);
     }
     // Grow the row store by `n` rows, returning the pre-growth size (the caller's insert base). Growth
-    // is GEOMETRIC (1.5×), never exact-fit: an exact fit would realloc the whole operator every layer.
+    // is geometric (1.5×), never exact-fit: an exact fit would realloc the whole operator every layer.
     auto grow_rows_geometric(size_t n) -> size_t {
         const size_t base = size_;
         if (capacity() < base + n) {
             const size_t cap = capacity();
             reserve_rows(std::max(base + n, cap + cap / 2 + 1));
         }
-        // Default-init grow, NOT a zeroing resize: every freshly grown row is overwritten by set()
+        // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
         rows_.resize((base + n) * stride_);
         size_ = base + n;
@@ -202,8 +202,8 @@ public:
     }
 
     // Group-prefetch batch find: out[i] = row index of keys[i], or kMissingIndex. Same result as n
-    // find() calls, but overlaps DRAM misses via a per-group hash/probe/confirm pipeline. An h
-    // collision falls back to an exact find. MUST NOT run concurrently with inserts.
+    // find() calls, but overlaps dram misses via a per-group hash/probe/confirm pipeline. An h
+    // collision falls back to an exact find. must not run concurrently with inserts.
     auto find_batch(const key_type *keys, size_t n, size_t *out) const -> void {
         static constexpr size_t G = 16; // keys prefetched together per pipeline pass
         std::array<uint32_t, G> hh;
@@ -251,7 +251,7 @@ public:
         }
     }
 
-    // Insert-or-no-op. Row at `value` MUST already be written (the confirm reads dense rows).
+    // Insert-or-no-op. Row at `value` must already be written (the confirm reads dense rows).
     auto emplace(const key_type &key, mapped_type value) -> void {
         check_index_fits(value);
         const uint32_t h = fold_hash(key);
@@ -266,7 +266,7 @@ public:
         table_.slots[s] = Slot{static_cast<TermIndex>(value), h};
         ++table_.count;
     }
-    // Insert n distinct rows with consecutive indices [base, base+n). Rows MUST already be written.
+    // Insert n distinct rows with consecutive indices [base, base+n). Rows must already be written.
     template <typename KeyFn>
     auto bulk_insert(size_t n, mapped_type base, KeyFn &&key_at) -> void {
         if (n == 0) {
@@ -357,7 +357,7 @@ private:
     auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
     auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
 
-    // Insert (idx, h) into the table with NO dup probe — callers on this path insert provably distinct
+    // Insert (idx, h) into the table with no duplicate probe — callers on this path insert provably distinct
     // keys (⊕G-injective miss batches, clone re-insertion). Grows the table first if needed.
     auto insert_slot_(TermIndex idx, uint32_t h) -> void {
         table_.rehash_if_needed();
@@ -391,7 +391,7 @@ private:
     static auto check_index_fits(size_t value) -> void {
         if (value >= kIndexCeiling) {
             throw TermIndexCeilingReached("OperatorIndex: operator index reached the TermIndex ceiling; rebuild with "
-                                          "-Dmonoprop_WIDE_TERM_INDEX (this shard's term count exceeded ~2^32).");
+                                          "-Dmonoprop_WIDE_TERM_INDEX (this partition's term count exceeded ~2^32).");
         }
     }
 
@@ -401,7 +401,7 @@ private:
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;
     // Lossless side-map for rows whose popcount exceeds inline_width_. Single-writer: never accessed
-    // concurrently (parallelism is cross-shard), so it needs no lock.
+    // concurrently (parallelism is cross-partition), so it needs no lock.
     std::unordered_map<size_t, value_type> overflow_ = {};
     Table table_ = {};
 };

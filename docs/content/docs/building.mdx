@@ -84,7 +84,7 @@ mpiexec -n 8 uv run python your_script.py
 ```
 
 See [Parallelism and distribution](/features/parallelism) for the communicator options and the
-operator-sharding controls.
+operator-partitioning controls.
 
 ## Building the C++ library and executables
 
@@ -112,7 +112,7 @@ cmake --build --preset release-gcc-mpi
 | Preset | What it changes |
 | --- | --- |
 | `release-clang` | Same as `release-gcc`, built with `clang++`. |
-| `release-gcc-wide` | Sets `monoprop_WIDE_TERM_INDEX=ON` (64-bit term indices, for more than 2^32 terms per shard). |
+| `release-gcc-wide` | Sets `monoprop_WIDE_TERM_INDEX=ON` (64-bit term indices, for more than 2^32 terms per partition). |
 | `debug-gcc` / `debug-gcc-mpi` | Debug builds, without and with MPI. |
 | `coverage-gcc` | Coverage build type, for `gcovr` (see `just coverage-cpp`). |
 

@@ -68,14 +68,14 @@ struct MPOperator {
     // itself cheaply movable). Always non-null. Rows go through the backend-agnostic accessors.
     std::unique_ptr<OperatorIndex<NumModes>> store = std::make_unique<OperatorIndex<NumModes>>();
     VecD op_coeffs = {};
-    // ── The initial (reference) state, in its resting SPARSE form ────────────────────────────────
+    // ── The initial (reference) state, in its resting sparse form ────────────────────────────────
     // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
-    // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ASCENDING: rows are
+    // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are
     // scored in ascending order and the set is only ever appended to.
     std::vector<TermIndex> state_rows_ = {};
     VecD state_vals_ = {};         // parallel to state_rows_; every entry is a unit phase (+-1), never 0
     size_t state_scored_rows_ = 0; // rows [0, state_scored_rows_) have been scored into state_rows_/state_vals_
-    // The DENSE state: empty in Heisenberg unless a caller asks dense_state() to cache one; in Schrödinger
+    // The dense state: empty in Heisenberg unless a caller asks dense_state() to cache one; in Schrödinger
     // it is the live coefficient vector evolution mutates in place.
     VecD state_coeffs = {};
     MonomialMap<NumModes> init_op_map = {};
@@ -103,7 +103,7 @@ struct MPOperator {
 
     auto size() const -> size_t { return store->size(); }
 
-    // Does NOT keep the lazy inverted index in sync: appends happen during setup, before the index is
+    // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.
     auto append_term(const Monomial<NumModes> &mono) -> void { store->push_back(mono); }
 
@@ -124,7 +124,7 @@ struct MPOperator {
         return *inverted_index_;
     }
 
-    // Drains pending init_op_map terms into op_coeffs, erasing them AFTER the lookup loop (the flat_map
+    // Drains pending init_op_map terms into op_coeffs, erasing them after the lookup loop (the flat_map
     // is not iterable while mutating).
     auto get_operator() -> const VecD & {
         if (size() == op_coeffs.size()) {
@@ -161,10 +161,10 @@ struct MPOperator {
     };
 
     // The three views of the reference state. sparse_state() is the resting form and touches nothing for
-    // the ~99.9% of rows that score zero; materialize_state() builds a FRESH dense vector and caches
+    // the ~99.9% of rows that score zero; materialize_state() builds a fresh dense vector and caches
     // nothing; dense_state() caches in state_coeffs -- the Schrödinger live vector, which evolution
-    // mutates in place, so later calls only EXTEND it and never rewrite an already-scored row, and a
-    // caller that snapshots it must COPY.
+    // mutates in place, so later calls only extend it and never rewrite an already-scored row, and a
+    // caller that snapshots it must copy.
     auto sparse_state() -> SparseState {
         score_new_state_rows_();
         return SparseState{std::span<const TermIndex>(state_rows_), std::span<const double>(state_vals_)};
@@ -199,7 +199,7 @@ struct MPOperator {
     }
 
     // Rewrite the initial Hamiltonian from a new coefficient dictionary. Each term lands on its existing
-    // evolved-operator row, or in the pending map if not yet materialized. Heisenberg REJECTS a term
+    // evolved-operator row, or in the pending map if not yet materialized. Heisenberg rejects a term
     // absent from both (new monomials may have no graph paths); Schrödinger admits them freely (the
     // state was already evolved). Returns the supplied terms with their encoded coefficients, in order.
     auto update_initial_operator(const OperatorDict &op_dict, bool schrodinger)
@@ -279,7 +279,7 @@ struct MPOperator {
 
 // Insert `n` provably-distinct, currently-absent terms into `op` in one batch. Callers pass pairwise-
 // distinct keys, so bulk_insert can skip duplicate probes and slot k deterministically lands at base+k.
-// Call AFTER any pass that reads pre-insert op state (op.size() must equal the returned base).
+// Call after any pass that reads pre-insert op state (op.size() must equal the returned base).
 template <size_t NumModes, typename KeyAt, typename PerSlot>
 inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
     const size_t base = op.store->grow_rows_geometric(n);
@@ -306,7 +306,7 @@ struct MPOperatorMemoryBreakdown final {
     size_t initial_state_bytes = 0;
     size_t inverted_index_bytes = 0;
 
-    // Diagnostics: breakdowns OF the fields above, deliberately excluded from total_bytes() so they can
+    // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
     // never double-count. They size compression choices, which turn on *which part* of a field holds bytes.
     size_t inverted_index_dense_bytes = 0;  // of inverted_index_bytes: full-height bitmap columns
     size_t inverted_index_sparse_bytes = 0; // of inverted_index_bytes: ascending set-row lists
@@ -320,7 +320,7 @@ struct MPOperatorMemoryBreakdown final {
                + initial_state_bytes + inverted_index_bytes;
     }
 
-    // Field-wise sum, so a sharded propagator can aggregate its per-shard operator breakdowns.
+    // Field-wise sum, so a partitioned propagator can aggregate its per-partition operator breakdowns.
     auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
         operator_terms_bytes += o.operator_terms_bytes;
         op_coeffs_bytes += o.op_coeffs_bytes;

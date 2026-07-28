@@ -42,7 +42,7 @@ auto generator_of(const LayerTraversal &layer) -> Monomial<NumModes> {
     return gen;
 }
 
-// Reference oracle (test-only): replay a MATERIALISED FoldCache buffer. The live path recomputes each
+// Reference oracle (test-only): replay a materialised FoldCache buffer. The live path recomputes each
 // layer's fold on the fly, so these cached replays exist only as the independent reference.
 template <size_t NumModes>
 void scale_cos_cached(const monoprop::detail::FoldCache<NumModes> &p, double *coeff, double cos_val) {

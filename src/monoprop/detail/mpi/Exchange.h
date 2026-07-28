@@ -23,7 +23,7 @@
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/RecvLayout.h"
 
-// Variable-size all-to-all over caller-owned FLAT buffers, so consumers (replay/pare exchange) hold
+// Variable-size all-to-all over caller-owned flat buffers, so consumers (replay/pare exchange) hold
 // no #ifdef monoprop_ENABLE_MPI; non-MPI builds get self-copy stubs.
 
 namespace monoprop::mpi {
@@ -105,7 +105,7 @@ private:
 #endif
 };
 
-// Post a variable-size all-to-all over caller-owned FLAT buffers. NEVER skipped on zero total: all
+// Post a variable-size all-to-all over caller-owned flat buffers. never skipped on zero total: all
 // ranks must participate or the collective deadlocks. Non-blocking (MPI_Ialltoallv) in an MPI build
 // (the Ticket completes it); non-MPI build does a per-rank self-copy (recv layout == send layout).
 template <class T>

@@ -17,9 +17,9 @@ Cases that need multiple ranks check `monoprop::mpi::size(MPI_COMM_WORLD)` and
 skip (with a message) when run with too few.
 
 The custom `main()` in `unit_tests.cpp` initializes MPI and forces
-`monoprop_SHARDS=off`, so white-box tests observe the single-partition engine.
-A test that needs the shard runtime must pass an explicit `shards=` argument
-(see `shard_equivalence_tests.cpp`).
+`monoprop_PARTITIONS=off`, so white-box tests observe the single-partition engine.
+A test that needs the partition runtime must pass an explicit `partitions=` argument
+(see `partition_equivalence_tests.cpp`).
 
 ## Building Tests
 
@@ -68,7 +68,7 @@ name and cannot address suite-nested cases, tests use flat
   encoding (`slots_of_string`, `native_bitset`, `jw_basis`), dense Pauli-matrix
   brute force (`matrix_from_string`, `matmul`, ...), and string helpers. Shared
   by the Pauli algebra/build-layer tests and the equivalence suites.
-- **`ThreadHarness.h`**: `run_comm_threads` — spawn S shard threads over a
+- **`ThreadHarness.h`**: `run_comm_threads` — spawn S partition threads over a
   transport and capture per-thread exceptions (used by the ShmComm/HybridComm
   suites).
 - **`GraphBuildHarness.h`**: direct Layer/MPGraph construction helpers
@@ -103,7 +103,7 @@ name and cannot address suite-nested cases, tests use flat
   `mp_graph_tests.cpp` (MPGraph slice_graph/slice_view transforms, the
   front_offset lazy-compaction arms, MPGraphView reverse mapping + OOB throw).
 - **Transports / distribution**: `shm_comm_tests.cpp`, `hybrid_comm_tests.cpp`
-  (MPI-only), `shard_equivalence_tests.cpp`,
+  (MPI-only), `partition_equivalence_tests.cpp`,
   `mpi_distributed_layer_equivalence.cpp`, `mpi_fresh_insert_equivalence.cpp`
   (serial↔world equivalence of the Schrödinger fused-resolve fresh-insert arms,
   Majorana + native Pauli; self-skips at world size 1).

@@ -138,7 +138,7 @@ BOOST_AUTO_TEST_CASE(bitset_find_first_next_chain) {
     BOOST_TEST(sb.find_next(40) == 64U);
 }
 
-// The multi-word hash must depend on WHICH word carries a bit (the +i mix guard), and be deterministic.
+// The multi-word hash must depend on which word carries a bit (the +i mix guard), and be deterministic.
 BOOST_AUTO_TEST_CASE(bitset_splitmix_hash_position_sensitive) {
     Bitset<128> low;
     low.set(0);

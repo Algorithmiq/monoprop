@@ -14,8 +14,8 @@
 
 #pragma once
 
-// The basis-agnostic monomial container: ONE basis operator stored as a fixed Bitset<2*NumModes>, two
-// bits per fermionic mode / qubit. The SAME container serves EITHER algebra -- the choice is a runtime
+// The basis-agnostic monomial container: one basis operator stored as a fixed Bitset<2*NumModes>, two
+// bits per fermionic mode / qubit. The same container serves either algebra -- the choice is a runtime
 // Basis (see algebra/Algebra.h), never a distinct type.
 
 #include <complex>
@@ -33,7 +33,7 @@ namespace monoprop {
 template <size_t NumModes>
 using Monomial = Bitset<2 * NumModes>;
 
-// A plain list of monomials -- NOT the evolved operator's row storage (detail::OperatorIndex, see
+// A plain list of monomials -- not the evolved operator's row storage (detail::OperatorIndex, see
 // TypeAliases.h).
 template <size_t NumModes>
 using MonomialList = std::vector<Monomial<NumModes>>;

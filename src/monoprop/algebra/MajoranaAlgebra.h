@@ -106,7 +106,7 @@ auto interleave_phase(const Monomial<NumModes> &maj_bs, const Monomial<NumModes>
 }
 
 // Per-generator mask W collapsing the per-term interleave sign to one masked parity.
-// IDENTITY: interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : #{g∈G : g>c} odd}, FIXED for
+// Identity: interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : #{g∈G : g>c} odd}, fixed for
 // the layer; the per-term sign is then one maj.parity_and(W) instead of the prefix-XOR scan.
 template <size_t NumModes>
 auto interleave_phase_mask(const Monomial<NumModes> &gen) -> Monomial<NumModes> {

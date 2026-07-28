@@ -14,6 +14,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <map>
@@ -26,7 +27,7 @@
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
-// Intra-process shard equivalence: a propagator with shards>1 (S shard propagators over an in-process
+// Intra-process partition equivalence: a propagator with partitions>1 (S partition propagators over an in-process
 // ShmComm) must match the ordinary single-partition propagator within fp accumulation tolerance.
 // Oracle: the S=1 run. Pure std::thread, so this runs in the serial build with no mpiexec.
 
@@ -41,7 +42,7 @@ constexpr unsigned int kCutoff = 4;
 
 // ─── Majorana (fixture-driven) ───────────────────────────────────────────────
 
-auto majorana_sim(const CaseData &data, size_t shards, std::optional<double> lower_atol = std::nullopt)
+auto majorana_sim(const CaseData &data, size_t partitions, std::optional<double> lower_atol = std::nullopt)
     -> MonomialPropagator<kNumModes> {
     return MonomialPropagator<kNumModes>(data.hamiltonian,
                                          kCutoff,
@@ -54,10 +55,10 @@ auto majorana_sim(const CaseData &data, size_t shards, std::optional<double> low
                                          std::nullopt,
                                          kNumModes,
                                          Basis::Majorana,
-                                         shards);
+                                         partitions);
 }
 
-BOOST_AUTO_TEST_CASE(shard_majorana_energy_matches_across_shard_counts) {
+BOOST_AUTO_TEST_CASE(partition_majorana_energy_matches_across_partition_counts) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto ref = majorana_sim(data, 1);
     ref.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
@@ -67,15 +68,15 @@ BOOST_AUTO_TEST_CASE(shard_majorana_energy_matches_across_shard_counts) {
         auto sim = majorana_sim(data, S);
         sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
         const double e = sim.expectation_value(data.parameters);
-        BOOST_TEST_CONTEXT("shards=" << S << " e=" << e << " ref=" << e1) {
+        BOOST_TEST_CONTEXT("partitions=" << S << " e=" << e << " ref=" << e1) {
             BOOST_TEST(near(e1, e));
         }
-        // Aggregated operator size is shard-count invariant (terms are hash-partitioned, no overlap).
+        // Aggregated operator size is partition-count invariant (terms are hash-partitioned, no overlap).
         BOOST_CHECK_EQUAL(ref.size(), sim.size());
     }
 }
 
-BOOST_AUTO_TEST_CASE(shard_majorana_gradient_matches_across_shard_counts) {
+BOOST_AUTO_TEST_CASE(partition_majorana_gradient_matches_across_partition_counts) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto ref = majorana_sim(data, 1);
     ref.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
@@ -87,7 +88,7 @@ BOOST_AUTO_TEST_CASE(shard_majorana_gradient_matches_across_shard_counts) {
         const auto g = sim.expectation_value_and_gradient(data.parameters).second;
         BOOST_REQUIRE_EQUAL(g1.size(), g.size());
         for (size_t i = 0; i < g1.size(); ++i) {
-            BOOST_TEST_CONTEXT("shards=" << S << " grad idx=" << i) {
+            BOOST_TEST_CONTEXT("partitions=" << S << " grad idx=" << i) {
                 BOOST_TEST(near(g1[i], g[i]));
             }
         }
@@ -95,7 +96,7 @@ BOOST_AUTO_TEST_CASE(shard_majorana_gradient_matches_across_shard_counts) {
 }
 
 // Same, on the contract-immediately propagate() path rather than build_graph().
-BOOST_AUTO_TEST_CASE(shard_majorana_propagate_then_expectation_matches) {
+BOOST_AUTO_TEST_CASE(partition_majorana_propagate_then_expectation_matches) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto run = [&](size_t S) {
         auto sim = majorana_sim(data, S);
@@ -105,16 +106,16 @@ BOOST_AUTO_TEST_CASE(shard_majorana_propagate_then_expectation_matches) {
     const auto [e1, n1] = run(1);
     for (const size_t S : {size_t{2}, size_t{4}}) {
         const auto [e, n] = run(S);
-        BOOST_TEST_CONTEXT("shards=" << S) {
+        BOOST_TEST_CONTEXT("partitions=" << S) {
             BOOST_TEST(near(e1, e));
             BOOST_CHECK_EQUAL(n1, n);
         }
     }
 }
 
-// Two independent S=4 runs are bit-identical: ShmComm sums in ascending rank order and each shard is
-// deterministic, so a given shard count has no run-to-run jitter.
-BOOST_AUTO_TEST_CASE(shard_energy_is_deterministic) {
+// Two independent S=4 runs are bit-identical: ShmComm sums in ascending rank order and each partition is
+// deterministic, so a given partition count has no run-to-run jitter.
+BOOST_AUTO_TEST_CASE(partition_energy_is_deterministic) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto energy_s4 = [&] {
         auto sim = majorana_sim(data, 4);
@@ -124,12 +125,56 @@ BOOST_AUTO_TEST_CASE(shard_energy_is_deterministic) {
     BOOST_CHECK_EQUAL(energy_s4(), energy_s4());
 }
 
-// A facade owns no operator, so a setter that stopped there would leave every shard on its old
+// contract_partially() hands back raw coefficients positioned by the owning partition's own indexing,
+// so a facade's array is the per-partition blocks concatenated in partition order. What IS invariant is
+// the multiset: the partitions are disjoint and cover every term. Sorting both sides is the only
+// comparison the API's contract supports — see the note on contract_partially().
+BOOST_AUTO_TEST_CASE(partition_contract_partially_matches_as_a_multiset) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    auto sorted_coeffs = [&](size_t S) {
+        auto sim = majorana_sim(data, S);
+        sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+        auto coeffs = sim.contract_partially(data.parameters, /*inplace=*/false);
+        std::ranges::sort(coeffs);
+        return coeffs;
+    };
+    const auto ref = sorted_coeffs(1);
+    for (const size_t S : {size_t{2}, size_t{4}}) {
+        const auto coeffs = sorted_coeffs(S);
+        BOOST_REQUIRE_EQUAL(ref.size(), coeffs.size());
+        for (size_t i = 0; i < ref.size(); ++i) {
+            BOOST_TEST_CONTEXT("partitions=" << S << " sorted idx=" << i) {
+                BOOST_TEST(near(ref[i], coeffs[i]));
+            }
+        }
+    }
+}
+
+// The raw per-partition accessors have no facade reading: the facade's own graph_/mp_op_ are never
+// populated, so returning them would hand a C++ consumer empty state that looks valid. The suite
+// itself only ever reaches them at partitions=1, which is why nothing caught this.
+BOOST_AUTO_TEST_CASE(partition_raw_accessors_reject_a_facade) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    auto sim = majorana_sim(data, 4);
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    BOOST_CHECK_THROW(static_cast<void>(sim.graph()), std::runtime_error);
+    BOOST_CHECK_THROW(static_cast<void>(sim.mp_op()), std::runtime_error);
+    BOOST_CHECK_THROW(static_cast<void>(sim.indexing()), std::runtime_error);
+    BOOST_CHECK_THROW(static_cast<void>(sim.graph_data()), std::runtime_error);
+
+    // The same calls on a single-partition propagator keep working.
+    auto solo = majorana_sim(data, 1);
+    solo.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    BOOST_CHECK_GT(solo.graph().layers(), 0U);
+    BOOST_CHECK_EQUAL(solo.graph_data().size(), solo.graph_layers());
+}
+
+// A facade owns no operator, so a setter that stopped there would leave every partition on its old
 // configuration and the run would silently ignore the new value. The cutoff truncates structurally
 // during the graph build, so it shows up in the aggregated term count. LiH is used rather than the
 // random_exact fixture, which is small enough that no setting truncates anything. The tightened
 // oracle must itself differ from the wide run, else the last assertion would hold vacuously.
-BOOST_AUTO_TEST_CASE(shard_setters_reach_every_shard) {
+BOOST_AUTO_TEST_CASE(partition_setters_reach_every_partition) {
     constexpr size_t kLihModes = LihFixture::n_modes;
     const auto data = load_case_data<kLihModes>("lih_fermionic_spin_exact.msgpack");
 
@@ -145,7 +190,7 @@ BOOST_AUTO_TEST_CASE(shard_setters_reach_every_shard) {
                                           std::nullopt,
                                           kLihModes,
                                           Basis::Majorana,
-                                          /*shards=*/4);
+                                          /*partitions=*/4);
         if (cutoff != updated_cutoff) {
             sim.update_cutoff(updated_cutoff);
             BOOST_CHECK_EQUAL(sim.cutoff(), updated_cutoff);
@@ -157,17 +202,17 @@ BOOST_AUTO_TEST_CASE(shard_setters_reach_every_shard) {
     const size_t n_wide = build(2 * kLihModes, 2 * kLihModes);
     const size_t n_tight = build(4, 4);
     BOOST_REQUIRE_NE(n_wide, n_tight);
-    // Constructed wide, then tightened: only the shards' own cutoff can produce the tight count.
+    // Constructed wide, then tightened: only the partitions' own cutoff can produce the tight count.
     BOOST_CHECK_EQUAL(n_tight, build(2 * kLihModes, 4));
 }
 
-BOOST_AUTO_TEST_CASE(shard_deep_copy_matches) {
+BOOST_AUTO_TEST_CASE(partition_deep_copy_matches) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto sim = majorana_sim(data, 4);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const double e = sim.expectation_value(data.parameters);
 
-    MonomialPropagator<kNumModes> copy(sim); // clones the shard group (fresh threads + ShmComm)
+    MonomialPropagator<kNumModes> copy(sim); // clones the partition group (fresh threads + ShmComm)
     const double e_copy = copy.expectation_value(data.parameters);
     BOOST_CHECK_EQUAL(e, e_copy);
     BOOST_CHECK_EQUAL(sim.size(), copy.size());
@@ -178,7 +223,7 @@ BOOST_AUTO_TEST_CASE(shard_deep_copy_matches) {
 
 constexpr size_t kNq = 6;
 
-auto pauli_sim(const std::map<std::string, double> &obs, size_t shards) -> MonomialPropagator<kNq> {
+auto pauli_sim(const std::map<std::string, double> &obs, size_t partitions) -> MonomialPropagator<kNq> {
     OperatorDict init;
     for (const auto &[p, c] : obs) {
         init[slots_of_string(p)] = std::complex<double>(c, 0.0);
@@ -194,15 +239,15 @@ auto pauli_sim(const std::map<std::string, double> &obs, size_t shards) -> Monom
                                    std::nullopt,
                                    kNq,
                                    Basis::Pauli,
-                                   shards);
+                                   partitions);
 }
 
 // A kicked-Ising-style layer: transverse X rotations then ZZ couplings, driven at fixed angles.
-auto run_pauli_energy(size_t shards) -> std::pair<double, size_t> {
+auto run_pauli_energy(size_t partitions) -> std::pair<double, size_t> {
     std::map<std::string, double> obs;
     obs["ZIIIII"] = 1.0;
     obs["IIZZII"] = 0.5;
-    auto sim = pauli_sim(obs, shards);
+    auto sim = pauli_sim(obs, partitions);
 
     std::vector<VecZ> gens;
     VecZ pmap;
@@ -228,11 +273,11 @@ auto run_pauli_energy(size_t shards) -> std::pair<double, size_t> {
     return {sim.expectation_value({}), sim.size()};
 }
 
-BOOST_AUTO_TEST_CASE(shard_pauli_energy_matches_across_shard_counts) {
+BOOST_AUTO_TEST_CASE(partition_pauli_energy_matches_across_partition_counts) {
     const auto [e1, n1] = run_pauli_energy(1);
     for (const size_t S : {size_t{2}, size_t{4}}) {
         const auto [e, n] = run_pauli_energy(S);
-        BOOST_TEST_CONTEXT("pauli shards=" << S << " e=" << e << " ref=" << e1) {
+        BOOST_TEST_CONTEXT("pauli partitions=" << S << " e=" << e << " ref=" << e1) {
             BOOST_TEST(near(e1, e));
             BOOST_CHECK_EQUAL(n1, n);
         }
@@ -241,12 +286,12 @@ BOOST_AUTO_TEST_CASE(shard_pauli_energy_matches_across_shard_counts) {
 
 } // namespace
 
-// A shard factory that throws must surface the exception, not std::terminate: the ctor starts the
-// master threads BEFORE building the shards on them (first-touch locality), so the unwind has to join
+// A partition factory that throws must surface the exception, not std::terminate: the ctor starts the
+// master threads before building the partitions on them (first-touch locality), so the unwind has to join
 // already-started threads. Every MonomialPropagator ctor validation reaches this path.
-BOOST_AUTO_TEST_CASE(shard_factory_exception_propagates_without_terminate) {
+BOOST_AUTO_TEST_CASE(partition_factory_exception_propagates_without_terminate) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
-    // logical_num_modes = 0 is rejected by each shard's own constructor, on its own master thread.
+    // logical_num_modes = 0 is rejected by each partition's own constructor, on its own master thread.
     BOOST_CHECK_THROW(MonomialPropagator<kNumModes>(data.hamiltonian,
                                                     kCutoff,
                                                     data.initial_state,
@@ -258,7 +303,7 @@ BOOST_AUTO_TEST_CASE(shard_factory_exception_propagates_without_terminate) {
                                                     std::nullopt,
                                                     /*logical_num_modes=*/0,
                                                     Basis::Majorana,
-                                                    /*shards=*/4),
+                                                    /*partitions=*/4),
                       std::runtime_error);
 
     // An out-of-range operator index takes the same path, and the group stays usable afterwards.
@@ -275,7 +320,7 @@ BOOST_AUTO_TEST_CASE(shard_factory_exception_propagates_without_terminate) {
                                                     std::nullopt,
                                                     kNumModes,
                                                     Basis::Majorana,
-                                                    /*shards=*/4),
+                                                    /*partitions=*/4),
                       std::runtime_error);
     BOOST_CHECK_NO_THROW(majorana_sim(data, 4));
 }

@@ -22,7 +22,7 @@
 #include "monoprop/detail/evolution/layer_build/Common.h"
 
 // Query+value fusion codec: the fused R>1 exchange rides the source coefficient (v_src) on each query
-// record as a trailing bit-cast word so ONE alltoallv carries both streams. These pin that
+// record as a trailing bit-cast word so one alltoallv carries both streams. These pin that
 // build_fused_query_value, query_read at the fused stride and query_value round-trip the majorana,
 // phase and value byte-for-byte, including the FP corner cases a lossy value channel would mangle.
 

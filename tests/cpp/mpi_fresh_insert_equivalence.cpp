@@ -38,7 +38,7 @@ using pauli_oracle::slots_of_string;
 
 // ── Majorana, Schrödinger picture, coefficient-carrying (fused) propagate ────────────────────────
 // schrodinger_cutoff engages the picture; a low structural cutoff plus the upper_atol = 0 rescue
-// forces most partners to be FRESH inserts, so the miss arm runs on nearly every partner.
+// forces most partners to be fresh inserts, so the miss arm runs on nearly every partner.
 template <size_t NumModes>
 auto run_schrodinger_majorana(const CaseData& data, MPI_Comm comm) -> double {
     MonomialPropagator<NumModes> sim(data.hamiltonian,

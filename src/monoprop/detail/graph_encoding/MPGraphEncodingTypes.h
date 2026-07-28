@@ -98,7 +98,7 @@ struct CosMask final {
 };
 
 // Coalesces ascending absolute indices (or whole word-aligned blocks) into a CosMask. Indices/blocks
-// MUST arrive in ascending order.
+// must arrive in ascending order.
 struct CosineWordBuilder final {
     CosMask list;
     size_t cur_base = std::numeric_limits<size_t>::max();
@@ -141,7 +141,7 @@ struct PackedPhaseStorage final {
     auto empty() const -> bool { return total_count == 0; }
 };
 
-// NAMING LEGEND for the cross-rank structs below. sin_send (B) = local indices whose coefficient this rank
+// naming legend for the cross-rank structs below. sin_send (B) = local indices whose coefficient this rank
 // sends; sin_recv (D) = local targets to add into — the off-diagonal sin(θ) endpoints of each Givens
 // rotation. P = in-block size, Q = out-block size; B = [in]++[out] and D = [out]++[in], so D is derived from B.
 
@@ -184,7 +184,7 @@ struct LayerCore final {
     auto reset_derivative_exchange_layout() -> void { derivative_exchange_layout_cache_.reset(); }
 
     // Per-layer recompute metadata: generator_words = this layer's generator G as backing words;
-    // scaled_count = fold truncation bound = operator size AFTER this layer's partner inserts.
+    // scaled_count = fold truncation bound = operator size after this layer's partner inserts.
     std::vector<uint64_t> generator_words;
     uint64_t scaled_count = 0;
 
@@ -199,7 +199,7 @@ private:
 };
 
 // Derived lazily (gradient path only) from the already-validated evolution counts. The 2x overflow check
-// itself is NOT deferred — build_layer_storage_unified validates it eagerly, see MPGraphEncodingStorage.h.
+// itself is not deferred — build_layer_storage_unified validates it eagerly, see MPGraphEncodingStorage.h.
 inline auto LayerCore::derivative_exchange_layout() const -> const LayerExchangeLayout & {
     if (!derivative_exchange_layout_cache_) {
         derivative_exchange_layout_cache_ = detail::build_derivative_exchange_layout(evolution_exchange_layout);

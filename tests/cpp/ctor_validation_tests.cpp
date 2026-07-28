@@ -119,7 +119,7 @@ BOOST_AUTO_TEST_CASE(build_graph_generator_index_out_of_range_throws) {
     BOOST_CHECK_NO_THROW(sim.build_graph({VecZ{0, 3}}, VecZ{0}, VecD{1.0}));
 }
 
-// A propagator over fewer LOGICAL modes than its instantiation must reject indices outside its own
+// A propagator over fewer logical modes than its instantiation must reject indices outside its own
 // system, not merely outside the storage width.
 BOOST_AUTO_TEST_CASE(generator_index_bound_is_logical_not_storage) {
     OperatorDict op;

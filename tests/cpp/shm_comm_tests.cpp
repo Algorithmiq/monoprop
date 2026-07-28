@@ -160,7 +160,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_inplace_vector) {
     for (const int S : {2, 4, 8}) {
         for (const size_t N :
              {size_t{1}, size_t{5}, size_t{8 * 2 + 3}, size_t{8} * static_cast<size_t>(S) + 7, size_t{257}}) {
-            // Materialize every rank's input ONCE and reduce those exact stored doubles at both sites:
+            // Materialize every rank's input once and reduce those exact stored doubles at both sites:
             // aarch64 gcc-14 -ffp-contract=fast fuses `r*0.3 + k*1.7` at one site and not the other (1 ulp).
             std::vector<std::vector<double>> inputs(static_cast<size_t>(S), std::vector<double>(N));
             for (int r = 0; r < S; ++r) {
@@ -234,7 +234,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_post_flat_alltoallv_flat_buffers) {
 }
 
 // alltoallv_resolve resolves recv_counts (the transpose) AND moves the payload in one 2-sync round,
-// sizing recv itself — what begin_alltoallv takes for unknown-layout Shm rounds. recv is REUSED here.
+// sizing recv itself — what begin_alltoallv takes for unknown-layout Shm rounds. recv is reused here.
 BOOST_AUTO_TEST_CASE(shm_comm_alltoallv_resolve_fused) {
     for (const int S : {2, 4, 8}) {
         const int rounds = 25;

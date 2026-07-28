@@ -28,9 +28,7 @@ find_dependency(
   REQUIRED
 )
 
-# monoprop::monoprop links Threads::Threads PUBLIC, so the imported target must be
-# recreated for downstream consumers (otherwise the exported link interface names a
-# target that does not exist).
+# Threads::Threads is PUBLIC on monoprop::monoprop, so the exported link interface names it.
 find_dependency(
   Threads
   REQUIRED

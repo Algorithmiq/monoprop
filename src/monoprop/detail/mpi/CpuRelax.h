@@ -22,7 +22,7 @@
 
 namespace monoprop::mpi::detail {
 
-// One iteration of a polite busy-wait: a PAUSE-class hint, off the syscall path, while a sibling
+// One iteration of a polite busy-wait: a pause-class hint, off the syscall path, while a sibling
 // finishes its store.
 inline auto cpu_relax() noexcept -> void {
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
@@ -36,7 +36,7 @@ inline auto cpu_relax() noexcept -> void {
 #endif
 }
 
-// cpu_relax() iterations a barrier spinner burns before donating its timeslice. PAUSE ~140 cycles on
+// cpu_relax() iterations a barrier spinner burns before donating its timeslice. PAUSE is ~140 cycles on
 // Sapphire Rapids ⇒ 2048 iters ≈ 0.1 ms, past a balanced exchange's arrival gaps; longer waits yield.
 inline constexpr int kSpinPauseIters = 2048;
 

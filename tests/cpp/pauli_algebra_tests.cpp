@@ -47,7 +47,7 @@ template <size_t NumModes>
     return weight;
 }
 
-// The mod-4 exponent of the product-phase i^e for A*B, with A the LEFT operand.
+// The mod-4 exponent of the product-phase i^e for A*B, with A the left operand.
 //   e = yA + yB - yR + 2*(zA . xB)  (mod 4),  R = A ^ B.
 // e is odd iff A,B anticommute (phase = +/- i); even iff they commute (phase = +/- 1).
 template <size_t NumModes>
@@ -68,15 +68,15 @@ template <size_t NumModes>
     return detail::mod4(y_a + y_b - y_r + 2 * cross);
 }
 
-// Product phase phi (unit modulus) such that A*B = phi * (A ^ B), A the LEFT operand.
+// Product phase phi (unit modulus) such that A*B = phi * (A ^ B), A the left operand.
 template <size_t NumModes>
 [[nodiscard]] auto pauli_product_phase(const Monomial<NumModes> &a, const Monomial<NumModes> &b)
     -> std::complex<double> {
     return POWERS_OF_I[product_phase_exponent<NumModes>(a, b)];
 }
 
-// Emit sign +/-1 such that A*B = sign * i * (A ^ B), valid when A,B ANTICOMMUTE (exponent e odd).
-// The RAW product sign; pauli_rotation_sign returns exactly -pauli_emit_sign_antic.
+// Emit sign +/-1 such that A*B = sign * i * (A ^ B), valid when A,B anticommute (exponent e odd).
+// The raw product sign; pauli_rotation_sign returns exactly -pauli_emit_sign_antic.
 template <size_t NumModes>
 [[nodiscard]] auto pauli_emit_sign_antic(const Monomial<NumModes> &a, const Monomial<NumModes> &b) -> int {
     return product_phase_exponent<NumModes>(a, b) == 1 ? 1 : -1;
@@ -132,7 +132,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_pair_swap_and_anticommutation) {
     }
 }
 
-// The encoding is EXACTLY the Jordan-Wigner image: native == change_basis(jw(P), jw_basis).
+// The encoding is exactly the Jordan-Wigner image: native == change_basis(jw(P), jw_basis).
 BOOST_AUTO_TEST_CASE(pauli_algebra_encoding_is_jw_image) {
     constexpr size_t N = 8;
     for (size_t n : {size_t{1}, size_t{2}}) {
@@ -180,7 +180,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
                     BOOST_TEST((sign == 1 || sign == -1));
                     // A*B = sign * i * R for anticommuting Hermitian Paulis.
                     BOOST_TEST(approx_equal(ab, scalar_mul(cd(0, static_cast<double>(sign)), mr)));
-                    // Hot kernel returns the ROTATION sign = negated raw emit sign.
+                    // Hot kernel returns the rotation sign = negated raw emit sign.
                     const auto ctx = make_pauli_gen_context<N>(b);
                     BOOST_TEST(pauli_rotation_sign<N>(ctx, a, r) == -sign);
                 }
@@ -188,7 +188,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
         }
     }
 
-    // pauli_rotation_sign == -pauli_emit_sign_antic for ALL pairs, including multiword (N=40).
+    // pauli_rotation_sign == -pauli_emit_sign_antic for all pairs, including multiword (N=40).
     constexpr size_t NW = 40;
     std::mt19937 rng(0xBEEF01U);
     for (size_t trial = 0; trial < 3000; ++trial) {

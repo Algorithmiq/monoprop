@@ -31,7 +31,7 @@ namespace monoprop {
 
 monoprop_EXPORT auto inner_product(const VecD &v, const VecD &w) -> double;
 
-/// The indices of @p v whose magnitude exceeds @p threshold, ascending. A NEGATIVE threshold clears
+/// The indices of @p v whose magnitude exceeds @p threshold, ascending. A negative threshold clears
 /// even the exact zeros, so every index qualifies -- see EvalState::indices_above, which must agree.
 monoprop_EXPORT auto indices_above(const VecD &v, double threshold) -> VecZ;
 
@@ -67,7 +67,7 @@ public:
     auto dot(const VecD &op) const -> double;
 
     /// @brief Overwrite @p out with this state, resized to length().
-    /// ASSIGNS every entry rather than resizing: the sole caller's buffer is thread-local scratch
+    /// Assigns every entry rather than resizing: the sole caller's buffer is thread-local scratch
     /// reused across calls and across propagators, and it arrives holding a previous back-evolution.
     auto scatter_into(VecD &out) const -> void;
 

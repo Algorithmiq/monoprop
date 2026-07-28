@@ -91,7 +91,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_logical_num_modes_masks_prefix_single_word)
     BOOST_TEST(!length_cutoff<N>(prefix_only, 0, N));
     BOOST_TEST(!length_cutoff<N>(prefix_only, 0)); // whole-register overload
 
-    // A lone unpaired bit INSIDE the active window is still dropped at cutoff 0.
+    // A lone unpaired bit inside the active window is still dropped at cutoff 0.
     Monomial<N> active_bit;
     active_bit.set(52);
     BOOST_TEST(!length_cutoff<N>(active_bit, 0, logical));

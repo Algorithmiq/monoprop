@@ -36,7 +36,7 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
     for (size_t idx = 0; idx < 8; ++idx) {
         p.sin_send_indices.push_back(100 + idx);
     }
-    // Single phased D list: D- (out) block first with negated phase, then D+ (in) block.
+    // Single phased D list: D- (out) block first with the phase negated, then D+ (in) block as-is.
     for (size_t idx = 0; idx < 8; ++idx) {
         p.sin_recv_entries.push_back({100 + idx, -(idx % 2 == 0 ? 1 : -1)});
     }
@@ -77,7 +77,7 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
 }
 
 // The per-rank cross-rank counts index into one layer's term set, so under the wide build they must
-// be TermIndex-wide; uint32_t would silently cap a single shard/layer at ~2^32 terms.
+// be TermIndex-wide; uint32_t would silently cap a single partition/layer at ~2^32 terms.
 BOOST_AUTO_TEST_CASE(cross_rank_partner_range_counts_track_term_index_width) {
     CrossRankPartnerRange r{};
     BOOST_CHECK_EQUAL(sizeof(r.sin_send_count), sizeof(TermIndex));
@@ -157,14 +157,15 @@ BOOST_AUTO_TEST_CASE(packed_cross_rank_storage_bit_packs_binary_phases) {
     for (size_t idx = 0; idx < 128; ++idx) {
         binary_cross_rank[1].sin_send_indices.push_back(idx + 5);
     }
-    // Single phased D list: D- (out) block first (stored -phase), then D+ (in) block (stored +(-phase)).
+    // Single phased D list, as GraphSink::finalize() builds it: D- (out) block first with the phase
+    // negated, then D+ (in) block with the phase stored as-is.
     for (size_t idx = 0; idx < 128; ++idx) {
         const int phase = idx % 2 == 0 ? 1 : -1;
         binary_cross_rank[1].sin_recv_entries.push_back({idx + 5, -phase});
     }
     for (size_t idx = 0; idx < 128; ++idx) {
         const int phase = idx % 2 == 0 ? 1 : -1;
-        binary_cross_rank[1].sin_recv_entries.push_back({idx + 1005, -phase});
+        binary_cross_rank[1].sin_recv_entries.push_back({idx + 1005, phase});
     }
     binary_cross_rank[1].in_count = 128;
     wide_phase_cross_rank[1] = binary_cross_rank[1];
@@ -179,10 +180,10 @@ BOOST_AUTO_TEST_CASE(packed_cross_rank_storage_bit_packs_binary_phases) {
     // The single non-binary phase forces full int8 storage.
     BOOST_CHECK(!wide_phase_storage.sin_recv_phases.uses_binary_phases);
 
-    // D^-[1] = {idx+5=6, phase=-1}; stored as -(-1) = 1.
+    // D^-[1] = term idx+5=6, phase -1, stored negated: -(-1) = 1.
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_recv_phase(binary_storage, 1, 1), 1);
-    // D^+[0] = {idx+1005=1005, -phase=-1}; stored as +(-1) = -1. (D^+ at flat index 128)
-    BOOST_CHECK_EQUAL(detail::cross_rank_sin_recv_phase(binary_storage, 1, 128), -1);
+    // D^+[0] = term idx+1005=1005, phase +1, stored as-is. (D^+ starts at flat index 128.)
+    BOOST_CHECK_EQUAL(detail::cross_rank_sin_recv_phase(binary_storage, 1, 128), 1);
 
     BOOST_CHECK_LT(detail::cross_rank_storage_bytes(binary_storage),
                    detail::cross_rank_storage_bytes(wide_phase_storage));

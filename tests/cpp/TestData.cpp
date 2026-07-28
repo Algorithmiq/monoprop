@@ -86,8 +86,8 @@ auto load_case(const std::filesystem::path& filename) -> CaseData {
     }
 
     return {data.at("actual_energy").as<double>(),
-            // `hartree_fock` is the FROZEN on-disk name of the initial state; the fixtures predate the
-            // algebra-agnostic notation and are not rewritten (see tests/data/README.md).
+            // `hartree_fock` is the frozen on-disk name of the initial state; the fixtures predate the
+            // algebra-agnostic notation and are not rewritten (see tests/data/readme.md).
             data.at("hartree_fock").as<VecZ>(),
             data.at("param_inds").as<VecZ>(),
             data.at("gen_coeffs").as<VecD>(),

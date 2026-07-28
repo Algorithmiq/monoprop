@@ -39,7 +39,7 @@ struct GraphMemoryBreakdown final {
                + exchange_layout_bytes;
     }
 
-    // Field-wise sum, so a sharded propagator can aggregate its per-shard graph breakdowns.
+    // Field-wise sum, so a partitioned propagator can aggregate its per-partition graph breakdowns.
     auto operator+=(const GraphMemoryBreakdown &o) -> GraphMemoryBreakdown & {
         layer_descriptor_bytes += o.layer_descriptor_bytes;
         layer_storage_object_bytes += o.layer_storage_object_bytes;

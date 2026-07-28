@@ -29,7 +29,7 @@
 namespace monoprop::detail {
 
 // Bounds-check a term-space index. Capped by the TermIndex width (~2^32, or ~2^64 under
-// -Dmonoprop_WIDE_TERM_INDEX), so it must track TermIndex, NOT a fixed 32-bit limit.
+// -Dmonoprop_WIDE_TERM_INDEX), so it must track TermIndex, not a fixed 32-bit limit.
 inline auto checked_term_index(size_t value, const char *what) -> TermIndex {
     if (value > static_cast<size_t>(std::numeric_limits<TermIndex>::max())) {
         throw std::overflow_error(
@@ -200,7 +200,7 @@ inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_pa
         }
         storage->evolution_exchange_layout = build_layer_exchange_layout(send_counts, 1);
 
-        // The derivative layout (2x) is ALLOCATED lazily on first gradient read, but validated here: an
+        // The derivative layout (2x) is allocated lazily on first gradient read, but validated here: an
         // overflow must throw during build_graph, not from inside the gradient collective window, where
         // peers are already blocked in mpi::resolve_recv's count round -> a distributed hang, not an error.
         static_cast<void>(build_derivative_exchange_layout(storage->evolution_exchange_layout));

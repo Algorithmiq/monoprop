@@ -173,7 +173,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_overflow_throws) 
     BOOST_CHECK_THROW(detail::build_derivative_exchange_layout(core.evolution_exchange_layout), std::overflow_error);
 }
 
-// ── D-from-B derivation: exercise BOTH arms of cross_rank_sin_recv_index ─────────────────────────
+// ── D-from-B derivation: exercise both arms of cross_rank_sin_recv_index ─────────────────────────
 
 BOOST_AUTO_TEST_CASE(graph_encoding_d_from_b_derivation_both_arms) {
     // B = [in(P=2)] ++ [out(Q=3)] = [10,11 | 20,21,22]; D = [out] ++ [in], derived from B and in_count.

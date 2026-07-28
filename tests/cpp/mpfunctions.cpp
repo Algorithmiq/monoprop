@@ -152,7 +152,7 @@ BOOST_AUTO_TEST_CASE(bit_flipping_utilities) {
 
 // ── EvalState: the sparse form must be indistinguishable from the dense one ───────────────────────
 //
-// The evaluation functional carries the reference state SPARSELY, so every EvalState operation has to
+// The evaluation functional carries the reference state sparsely, so every EvalState operation has to
 // agree with what the equivalent dense vector would have produced -- exactly, not approximately.
 
 namespace {
@@ -185,7 +185,7 @@ auto make_op(size_t length) -> VecD {
 
 } // namespace
 
-// dot() over the sparse rows is BIT-IDENTICAL to the dense inner product: the omitted rows contribute
+// dot() over the sparse rows is bit-identical to the dense inner product: the omitted rows contribute
 // an exact 0.0, and ascending rows preserve the dense summation order.
 BOOST_AUTO_TEST_CASE(eval_state_sparse_dot_is_bit_identical_to_dense) {
     const auto op = make_op(kStateLength);
@@ -202,7 +202,7 @@ BOOST_AUTO_TEST_CASE(eval_state_sparse_dot_is_bit_identical_to_dense) {
     BOOST_CHECK_EQUAL(empty.length(), kStateLength);
     BOOST_CHECK_EQUAL(empty.dot(op), 0.0);
 
-    // An operator LONGER than the state is fine (dot spans the state); shorter is a hard error.
+    // An operator longer than the state is fine (dot spans the state); shorter is a hard error.
     VecD longer = op;
     longer.push_back(1.0);
     BOOST_CHECK_EQUAL(sparse.dot(longer), sparse.dot(op));
@@ -210,7 +210,7 @@ BOOST_AUTO_TEST_CASE(eval_state_sparse_dot_is_bit_identical_to_dense) {
     BOOST_CHECK_THROW(sparse.dot(shorter), std::invalid_argument);
 }
 
-// scatter_into() must ASSIGN: its only caller hands it thread-local scratch that arrives holding a
+// scatter_into() must assign: its only caller hands it thread-local scratch that arrives holding a
 // previous, longer, fully back-evolved state. Resize-and-scatter would leak those entries through.
 BOOST_AUTO_TEST_CASE(eval_state_scatter_into_overwrites_a_dirty_buffer) {
     const auto dense = make_dense(kStateLength, kRows, kVals);
@@ -220,7 +220,7 @@ BOOST_AUTO_TEST_CASE(eval_state_scatter_into_overwrites_a_dirty_buffer) {
     sparse.scatter_into(out);
     BOOST_CHECK(out == dense);
 
-    // Pre-dirtied and LONGER: every entry must be rewritten and the length must come from the state.
+    // Pre-dirtied and longer: every entry must be rewritten and the length must come from the state.
     VecD dirty(kStateLength * 2, 7.5);
     sparse.scatter_into(dirty);
     BOOST_CHECK_EQUAL(dirty.size(), kStateLength);
@@ -239,7 +239,7 @@ BOOST_AUTO_TEST_CASE(eval_state_scatter_into_overwrites_a_dirty_buffer) {
     BOOST_CHECK(from_dense == dense);
 }
 
-// indices_above() is the paring keep-set. It must match the dense scan for EVERY threshold -- including
+// indices_above() is the paring keep-set. It must match the dense scan for every threshold -- including
 // a negative one, where |0.0| > threshold keeps even the unscored rows.
 BOOST_AUTO_TEST_CASE(eval_state_indices_above_matches_the_dense_scan) {
     const auto dense = make_dense(kStateLength, kRows, kVals);
@@ -263,9 +263,9 @@ BOOST_AUTO_TEST_CASE(eval_state_indices_above_matches_the_dense_scan) {
 }
 
 // End-to-end sparse-vs-dense equivalence, with no synthetic operator involved: the gradient path still
-// takes its value from the DENSE inner_product over its back-evolution buffer, while the energy path
+// takes its value from the dense inner_product over its back-evolution buffer, while the energy path
 // now takes it from the sparse dot -- over the very same forward-evolved operator. So the two must
-// agree BIT-EXACTLY, on the exact graph and on the pared one, in both pictures.
+// agree bit-exactly, on the exact graph and on the pared one, in both pictures.
 BOOST_AUTO_TEST_CASE(sparse_energy_matches_the_dense_gradient_value_bit_exactly) {
     constexpr size_t kNumModes = 8;
     const auto data = test_utils::load_case_data<kNumModes>("random_exact.msgpack");
@@ -289,7 +289,7 @@ BOOST_AUTO_TEST_CASE(sparse_energy_matches_the_dense_gradient_value_bit_exactly)
 }
 
 // End-to-end counterpart of the scatter_into contract: the gradient's dense state now lives in
-// thread-local scratch shared by every functional on the thread, so two propagators of DIFFERENT
+// thread-local scratch shared by every functional on the thread, so two propagators of different
 // operator sizes interleaving gradient calls must each keep reproducing their isolated value exactly.
 BOOST_AUTO_TEST_CASE(interleaved_gradients_do_not_share_scratch_state) {
     constexpr size_t kNumModes = 8;

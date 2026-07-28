@@ -38,7 +38,7 @@ set(
 option(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
 option(
   monoprop_WIDE_TERM_INDEX
-  "Use 64-bit term indices (support > 2^32 terms per shard)"
+  "Use 64-bit term indices (support > 2^32 terms per partition)"
   OFF
 )
 if(monoprop_WIDE_TERM_INDEX)

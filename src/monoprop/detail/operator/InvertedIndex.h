@@ -30,19 +30,19 @@ namespace monoprop::detail {
 
 // Lazy transposed operator storage: one bit-vector per column (mode), bit r set iff term r touches that
 // column. XOR-combining a generator G's columns yields |M ∩ G| mod 2 per term M -- the anticommutation
-// bit for an EVEN generator; ODD generators add a per-row parity(|M|) correction, so both parities are
-// served. Columns are stored in two tiers, bit-identical to all-dense: DENSE (density ≥
-// 1/kPromoteDensityInv) full-height uint64 vectors; SPARSE an ASCENDING set-row list scatter-expanded at
+// bit for an even generator; odd generators add a per-row parity(|M|) correction, so both parities are
+// served. Columns are stored in two tiers, bit-identical to all-dense: dense (density ≥
+// 1/kPromoteDensityInv) full-height uint64 vectors; sparse an ascending set-row list scatter-expanded at
 // scan time. Promotion is one-way (the operator is append-only).
 template <size_t NumModes>
 struct InvertedIndex {
     static constexpr size_t kNumColumns = Monomial<NumModes>::size();
-    // Promote a column to DENSE at set density ≥ 1/kPromoteDensityInv.
+    // Promote a column to dense at set density ≥ 1/kPromoteDensityInv.
     static constexpr size_t kPromoteDensityInv = 64;
 
     struct Column {
         std::vector<uint64_t> words{}; // full-height bit-vector; used iff is_dense
-        // Ascending set-row indices (used iff !is_dense). MUST stay ascending: combine_columns_block
+        // Ascending set-row indices (used iff !is_dense). must stay ascending: combine_columns_block
         // lower_bounds these to a word range, and every fill path appends in row order.
         std::vector<TermIndex> set_rows{};
         bool is_dense = false;
@@ -154,7 +154,7 @@ struct InvertedIndex {
         }
         const size_t required_words = (size + 63) / 64;
 
-        // Pass 1: per-column set-bit counts → decide tiers from the FINAL density, so the fill never has
+        // Pass 1: per-column set-bit counts → decide tiers from the final density, so the fill never has
         // to promote.
         using Counts = std::array<size_t, kNumColumns>;
         Counts counts{};
@@ -221,11 +221,11 @@ struct InvertedIndex {
 
 // XOR a generator's inverted-index columns for fold words [bb, be) into blk[0 .. be-bb): dense columns
 // XOR their words directly, sparse columns lower_bound to the block's row range. XOR associativity
-// means any block decomposition reproduces the full-width fold bit-for-bit. THE fold-combine kernel,
+// means any block decomposition reproduces the full-width fold bit-for-bit. the fold-combine kernel,
 // shared by the build scan, the replay cache (make_fold_cache) and the replay recompute.
 inline constexpr size_t kColumnBlockWords = 1024; // 8 KB block ≈ L1-resident (bench knee)
 
-// Reusable fold blocks (thread_local: each shard master owns its copy). Two independent scratches
+// Reusable fold blocks (thread_local: each partition master owns its copy). Two independent scratches
 // because the build scan needs the generator fold and a sparse pivot column expanded simultaneously.
 inline auto column_block_scratch() -> std::vector<uint64_t> & {
     static thread_local std::vector<uint64_t> blk;

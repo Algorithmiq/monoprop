@@ -23,21 +23,21 @@
 #include <string>
 #include <vector>
 
-#include "monoprop/detail/shard/CpuTopology.h"
+#include "monoprop/detail/partition/CpuTopology.h"
 
-namespace shard = monoprop::detail::shard;
+namespace partition = monoprop::detail::partition;
 
 // The enumerate/place/pin surface exists on every platform; exercise it regardless of OS.
 BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
-    const auto cores = shard::enumerate_physical_cores();
+    const auto cores = partition::enumerate_physical_cores();
 
-    const auto one = shard::shard_cpusets(/*n=*/1);
+    const auto one = partition::partition_cpusets(/*n=*/1);
     BOOST_CHECK(one.size() <= 1u);
     if (!one.empty()) {
         // A placement only comes back where the engine can pin (Linux /sys), which implies cores were
         // found. Pinning itself is best-effort and no-op-safe; drive it.
         BOOST_CHECK(!cores.empty());
-        shard::pin_this_thread(one.front());
+        partition::pin_this_thread(one.front());
     }
 #if defined(__linux__)
     // With a readable /sys and pinning enabled, a non-empty core list must yield a placement.
@@ -47,19 +47,19 @@ BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
 #endif
 
     // Asking for more physical cores than exist disables pinning (empty), never oversubscribes.
-    const auto too_many = shard::shard_cpusets(/*n=*/1'000'000);
+    const auto too_many = partition::partition_cpusets(/*n=*/1'000'000);
     BOOST_CHECK(too_many.empty());
 }
 
 BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
-    const auto cores = shard::enumerate_physical_cores();
+    const auto cores = partition::enumerate_physical_cores();
     if (cores.size() < 2) {
         return; // need at least two cores to deal one to each of two co-located ranks
     }
-    // Two co-located ranks, one shard each: each gets a disjoint core. Covers both placement arms --
+    // Two co-located ranks, one partition each: each gets a disjoint core. Covers both placement arms --
     // interleave across the dealt domains (group_count <= #L3), and the flat domain-major slice otherwise.
-    const auto rank0 = shard::shard_cpusets(/*n=*/1, /*group_index=*/0, /*group_count=*/2);
-    const auto rank1 = shard::shard_cpusets(/*n=*/1, /*group_index=*/1, /*group_count=*/2);
+    const auto rank0 = partition::partition_cpusets(/*n=*/1, /*group_index=*/0, /*group_count=*/2);
+    const auto rank1 = partition::partition_cpusets(/*n=*/1, /*group_index=*/1, /*group_count=*/2);
     // Off Linux there is no pinning, so both come back empty (unpinned, still disjoint by the scheduler).
 #if defined(__linux__)
     BOOST_CHECK_EQUAL(rank0.size(), 1u);
@@ -69,19 +69,19 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
     BOOST_CHECK(rank1.empty());
 #endif
 
-    const auto past_end = shard::shard_cpusets(/*n=*/cores.size(), /*group_index=*/1, /*group_count=*/2);
+    const auto past_end = partition::partition_cpusets(/*n=*/cores.size(), /*group_index=*/1, /*group_count=*/2);
     BOOST_CHECK(past_end.empty());
 }
 
 #if defined(__linux__)
 
-using shard::topo_detail::parse_cpulist;
-using shard::topo_detail::read_line;
+using partition::topo_detail::parse_cpulist;
+using partition::topo_detail::read_line;
 
 // Enumeration must span holes in the CPU id space (offline or hot-plugged CPUs leave unreadable ids).
 // Oracle: the sibling groups re-derived straight from /sys over the whole allowed range.
 BOOST_AUTO_TEST_CASE(cpu_topology_enumeration_spans_gaps_in_the_id_space) {
-    const auto allowed = shard::topo_detail::allowed_cpus();
+    const auto allowed = partition::topo_detail::allowed_cpus();
     if (allowed.empty()) {
         return; // affinity unreadable; enumeration accepts every CPU and there is nothing to compare
     }
@@ -105,7 +105,7 @@ BOOST_AUTO_TEST_CASE(cpu_topology_enumeration_spans_gaps_in_the_id_space) {
         return; // /sys unreadable on this host
     }
 
-    const auto cores = shard::enumerate_physical_cores();
+    const auto cores = partition::enumerate_physical_cores();
     BOOST_CHECK_EQUAL(cores.size(), expected_groups.size());
     for (const auto &core : cores) {
         BOOST_TEST(allowed.contains(core.cpu));
@@ -134,7 +134,7 @@ BOOST_AUTO_TEST_CASE(cpu_topology_read_line_present_and_absent) {
 
 BOOST_AUTO_TEST_CASE(cpu_topology_allowed_cpus_nonempty_on_ci) {
     // sched_getaffinity succeeds on Linux CI, so the process's allowed set is non-empty.
-    const auto allowed = shard::topo_detail::allowed_cpus();
+    const auto allowed = partition::topo_detail::allowed_cpus();
     BOOST_CHECK(!allowed.empty());
 }
 

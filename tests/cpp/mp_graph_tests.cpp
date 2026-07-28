@@ -46,7 +46,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_heisenberg_prefix_no_contract) {
 BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_schrodinger_contract_newest_first_copy_and_resize) {
     // Schrödinger stores newest-first: appending gates 0..4 gives layers_ = [4,3,2,1,0].
     auto graph = graph_with_gates(/*schrodinger=*/true, 5);
-    // Slice the 2 EARLIEST operations (gates 0,1) with contract -> they leave the source.
+    // Slice the 2 earliest operations (gates 0,1) with contract -> they leave the source.
     auto sliced = graph.slice_graph(2, /*contract=*/true);
 
     // sliced = layers_[active_end-1-i] = layers_[4], layers_[3] = gates 0, 1 (oldest-first).
@@ -123,7 +123,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_slice_view_schrodinger_reversed_window) {
     BOOST_CHECK_EQUAL(view.get_layer_traversal(2).gate_index(), 2U);
 }
 
-// ── MPGraphView directly: the reverse mapping and the OOB throw ──────────────────────────────────
+// ── MPGraphView directly: the reverse mapping and the oob throw ──────────────────────────────────
 
 BOOST_AUTO_TEST_CASE(mp_graph_view_reverse_flag_flips_index_mapping) {
     std::vector<Layer> layers;

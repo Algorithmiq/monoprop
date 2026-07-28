@@ -32,7 +32,7 @@ using cd = std::complex<double>;
 
 namespace {
 
-// Build an MPOperator whose store rows are also INDEXED (findable). append_term writes a row only;
+// Build an MPOperator whose store rows are also indexed (findable). append_term writes a row only;
 // find() needs the hash index, which only the insert_absent_terms path populates.
 auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis::Majorana) -> detail::MPOperator<8> {
     detail::MPOperator<8> op;
@@ -58,7 +58,7 @@ auto expected_state(detail::MPOperator<8> &op, Basis basis, const VecZ &initial_
     return expected;
 }
 
-// Independent expected SPARSE state: ascending rows that score nonzero, and their phases.
+// Independent expected sparse state: ascending rows that score nonzero, and their phases.
 auto expected_sparse_state(detail::MPOperator<8> &op, Basis basis, const VecZ &initial_state) -> std::pair<VecZ, VecD> {
     const auto dense = expected_state(op, basis, initial_state);
     std::pair<VecZ, VecD> expected;
@@ -146,7 +146,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) 
     BOOST_CHECK_EQUAL(second[0], 7.5);
     BOOST_CHECK_EQUAL(second[1], expected_state(op, Basis::Majorana, initial_state)[1]);
 
-    // The sparse set was EXTENDED, not rebuilt: row 0 still carries its original state score.
+    // The sparse set was extended, not rebuilt: row 0 still carries its original state score.
     const auto sparse = op.sparse_state();
     BOOST_CHECK(sparse_state_equals(sparse, expected_sparse_state(op, Basis::Majorana, initial_state)));
     BOOST_REQUIRE_EQUAL(sparse.rows.size(), 2U);
@@ -202,7 +202,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_rejects_abse
     auto op = build_indexed_op({indices_to_bitset<8>({0, 2})}, Basis::Pauli);
 
     OperatorDict dict;
-    dict[VecZ{1, 3, 5}] = cd(1.0, 0.0); // absent from BOTH store and init_op_map
+    dict[VecZ{1, 3, 5}] = cd(1.0, 0.0); // absent from both store and init_op_map
     BOOST_CHECK_THROW(op.update_initial_operator(dict, /*schrodinger=*/false), std::runtime_error);
 }
 

@@ -109,7 +109,7 @@ BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
 }
 
 // clone() must hand back a fresh, fully independent heap store whose index confirms against the
-// CLONE's own rows, not the source's.
+// clone's own rows, not the source's.
 BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
     Store a(4); // non-default width must carry over
     a.push_back(bs({0, 3, 5}));
@@ -189,7 +189,7 @@ BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
     BOOST_TEST(out[1] == Store::kNotFound); // first absent key
 }
 
-// An empty store must report every key missing (find_batch's shard.count == 0 early-out).
+// An empty store must report every key missing (find_batch's partition.count == 0 early-out).
 BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
     Store s;
     const std::array<MSet, 3> keys{bs({0, 3}), bs({1, 2}), bs({4, 5, 6})};

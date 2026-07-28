@@ -41,7 +41,7 @@ auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
     return bs;
 }
 
-// indices_to_bitset() with a bound on each index. The bound is the LOGICAL width
+// indices_to_bitset() with a bound on each index. The bound is the logical width
 // (2 * logical_num_modes), not the storage width 2 * NumModes: a propagator over fewer modes than its
 // instantiation must still reject indices outside its own system.
 template <size_t NumModes>
@@ -90,7 +90,7 @@ template <size_t NumModes, typename Rows>
 auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     VecZ result;
     const auto mask = even_bits<2 * NumModes, LSb0>();
-    // Appended in ascending `inds` order; only the SET is observable, but the order is deterministic.
+    // Appended in ascending `inds` order; only the set is observable, but the order is deterministic.
     for (const auto index : inds) {
         const auto &op_row = materialize_row<NumModes>(op, index);
         if (is_paired<NumModes>(op_row, mask)) {
@@ -113,12 +113,12 @@ auto initial_state_mask(const VecZ &initial_state) -> Monomial<NumModes> {
     return indices_to_bitset<NumModes>(bits);
 }
 
-// The per-mode sums the structural cutoffs measure, over the ACTIVE modes only; one implementation
+// The per-mode sums the structural cutoffs measure, over the active modes only; one implementation
 // shared by both cutoffs.
 struct CutoffSums {
     size_t xor_sum;      // modes with exactly one of their two Majoranas set; 0 == fully paired
-    size_t popcount_sum; // Majorana operators present -- the LENGTH measure
-    size_t or_sum;       // modes with either Majorana present -- the SUPPORT measure (JW Pauli weight)
+    size_t popcount_sum; // Majorana operators present -- the length measure
+    size_t or_sum;       // modes with either Majorana present -- the support measure (JW Pauli weight)
 };
 
 template <size_t NumModes>
@@ -238,7 +238,7 @@ public:
         return cutoff_fn_(mono);
     }
 
-    // Upper bound on the SET BITS (physical slots) a surviving term can carry, so the store can size
+    // Upper bound on the set bits (physical slots) a surviving term can carry, so the store can size
     // its packed inline rows (nullopt for an arbitrary user cutoff_fn). A length cutoff counts set
     // bits directly; a support cutoff counts modes/qubits, each spanning two slots, hence the x2.
     auto max_slot_bound() const -> std::optional<size_t> {

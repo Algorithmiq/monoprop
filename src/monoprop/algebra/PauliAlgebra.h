@@ -14,7 +14,7 @@
 
 #pragma once
 
-// Pauli-native algebra over the shared Monomial container: a qubit Pauli string is stored in the SAME
+// Pauli-native algebra over the shared Monomial container: a qubit Pauli string is stored in the same
 // bitset as a Majorana monomial, under the per-qubit JW image -- qubit q owns the physical pair
 // {2m, 2m+1}, m = N-1-q. (u,v) symplectic split with E = pauli_even_mask (physical even bits):
 // v (z-plane) = w & E, u = (w >> 1) & E, x-plane = u ^ v; a qubit is Y iff (v=1, u=0), Z-only iff the
@@ -117,10 +117,10 @@ template <size_t NumModes>
     return ctx;
 }
 
-// HOT kernel: the rotation sign +/-1 for the anticommuting product mono*gen (new_mono = mono^gen).
-// Returns the sign O' = U†OU (U = exp(iθ·gen)) needs on the off-diagonal partner term: the NEGATED
+// Hot kernel: the rotation sign +/-1 for the anticommuting product mono*gen (new_mono = mono^gen).
+// Returns the sign O' = U†OU (U = exp(iθ·gen)) needs on the off-diagonal partner term: the negated
 // raw product sign, so the emit site needs no extra negation (pinned by pauli_algebra_tests.cpp).
-// Loops ONLY over gen's nonzero words (elsewhere mono/new_mono Y counts cancel and x_gen = 0). Exponent
+// Loops only over gen's nonzero words (elsewhere mono/new_mono Y counts cancel and x_gen = 0). Exponent
 // e = g_y + Σ_w(yMono - yNew) + 2·Σ_w(v_mono & x_gen); raw sign = (e mod 4 == 1 ? +1 : -1), negated here.
 template <size_t NumModes>
 [[gnu::always_inline]] inline auto pauli_rotation_sign(const PauliGenContext<NumModes> &ctx,

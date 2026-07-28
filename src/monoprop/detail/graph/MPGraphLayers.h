@@ -25,10 +25,10 @@
 namespace monoprop {
 
 // A layer replays one of two ways, by whether it carries a stored cosine list (pruned_cos_):
-//   RECOMPUTE (nullopt)   — cosine rebuilt from the generator's inverted-index columns at replay.
-//   PRUNED    (has value) — cosine pre-filtered to a backward-reachable subset, stored explicitly; an
-//                           EMPTY stored list is still PRUNED (replay as nothing, do NOT recompute).
-// Cores are shared and immutable IN VALUE only: their eval-time caches (recv_cache, the lazy derivative
+//   recompute (nullopt)   — cosine rebuilt from the generator's inverted-index columns at replay.
+//   pruned    (has value) — cosine pre-filtered to a backward-reachable subset, stored explicitly; an
+//                           empty stored list is still pruned (replay as nothing, do not recompute).
+// Cores are shared and immutable in value only: their eval-time caches (recv_cache, the lazy derivative
 // layout) are filled through const handles, so evaluating two aliasing propagators concurrently is a race.
 
 // Read-only view over an immutable LayerCore plus an optional pruned-cosine word list. Cross-rank data is

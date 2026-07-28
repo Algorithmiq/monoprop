@@ -17,7 +17,7 @@
 // Recompute a layer's cosine index set from the persistent inverted index instead of a stored per-layer
 // bitmap. A layer's cos = the terms anticommuting with its generator G = the per-word XOR-fold of G's
 // inverted-index columns, with the odd-|G| row_parity(|M|) correction, truncated to the first
-// `scaled_count` indices (the term count BEFORE that layer's own inserts). LazyFold recomputes it on the
+// `scaled_count` indices (the term count before that layer's own inserts). LazyFold recomputes it on the
 // fly (the sole runtime replay path); FoldCache materialises it into one buffer.
 
 #include <algorithm>
@@ -104,7 +104,7 @@ auto make_fold_cache(const InvertedIndex<NumModes> &sc,
     FoldCache<NumModes> p;
     p.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
     p.row_parity = fold_row_parity<NumModes>(sc, p.fold);
-    // generator_words stores the REAL G; re-derive the fold generator (J(G) for Pauli) as the scan did.
+    // generator_words stores the real G; re-derive the fold generator (J(G) for Pauli) as the scan did.
     const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);
     const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
 
@@ -142,7 +142,7 @@ template <size_t NumModes>
     return apply_fold_mask(p.combined[wi], wi, p.fold, p.row_parity);
 }
 
-// Visit each set bit of `bits` ascending, calling op(base + bit). THE bit-scatter kernel behind every cos
+// Visit each set bit of `bits` ascending, calling op(base + bit). the bit-scatter kernel behind every cos
 // scale/accumulate loop; always_inline so the per-bit op has no call overhead.
 template <typename BitOp>
 [[gnu::always_inline]] inline auto for_each_cos_index(size_t base, uint64_t bits, BitOp op) -> void {
@@ -156,7 +156,7 @@ template <typename BitOp>
 // ≤|G| inverted index column indices plus the cos truncation bounds — no per-layer buffer.
 //
 // `columns` is heap-sized to |G| (typically 2-4) rather than reusing EvenParityGeneratorColumns' fixed
-// std::array<size_t, 2*NumModes>: a LazyFold is RETAINED per graph layer, 4 KB each at NumModes=256.
+// std::array<size_t, 2*NumModes>: a LazyFold is retained per graph layer, 4 KB each at NumModes=256.
 template <size_t NumModes>
 struct LazyFold {
     std::vector<size_t> columns;
