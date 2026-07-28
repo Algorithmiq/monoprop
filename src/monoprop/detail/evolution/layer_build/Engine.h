@@ -39,7 +39,7 @@ namespace monoprop::detail {
 // Every rotation target must be in cos so the gradient reverse-sweep can un-do this layer's cosine
 // scaling; only freshly inserted half-terms can be absent (see tests/test_infinite_cutoff.py), and those
 // sit in [combined_size, op.size()). Scan cos bits and inserted endpoint bits are disjoint, so only the
-// seam word can carry both — OR that one, append the rest, keeping blocks ascending/disjoint.
+// seam word can carry both — bitwise-or that one, append the rest, keeping blocks ascending/disjoint.
 template <size_t NumModes>
 inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, const MPOperator<NumModes> &op) -> void {
     const size_t cos_lo = combined_size;
