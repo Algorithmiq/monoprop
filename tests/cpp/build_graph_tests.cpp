@@ -58,16 +58,7 @@ BOOST_DATA_TEST_CASE_F(ExampleDataFix, build_graph_with_coeffs_extend_cases, bda
         .cutoff_type = cutoff_type,
         .basis_change = basis_change,
     };
-
-    // Truncating cutoff: some cos-scaled terms lose their sine partner, so cosine-only is positive.
-    const auto truncated = sized(8);
-    BOOST_CHECK_GT(truncated.first, 0U);
-    BOOST_CHECK_GT(truncated.second, 0U);
-
-    // Exact cutoff: every cos index is also a rotation endpoint, so cosine-only is genuinely zero.
-    const auto exact = sized(2 * N);
-    BOOST_CHECK_EQUAL(exact.first, 0U);
-    BOOST_CHECK_GT(exact.second, truncated.second);
+    test_evolve_build_graph_with_coeffs_extend<n_modes>(data, cfg, pare, data.actual_expval);
 }
 
 // graph_size().first counts cos-scaled non-endpoints, recomputed from the operator's inverted index.

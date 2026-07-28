@@ -126,7 +126,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_evaluator_dispatch_and_popcount) {
     // A support cutoff counts modes/qubits and each spans two slots, so the slot bound doubles.
     BOOST_TEST(support_ev.max_slot_bound().value() == 4U);
 
-    CutoffFn<N> opaque_fn = [](const Monomial<N>&) { return true; };
+    CutoffFn<N> opaque_fn = [](const Monomial<N> &) { return true; };
     detail::CutoffEvaluator<N> opaque_ev(opaque_fn);
     BOOST_TEST((opaque_ev.length_cutoff() == nullptr));
     BOOST_TEST((opaque_ev.support_cutoff() == nullptr));

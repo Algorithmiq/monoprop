@@ -13,44 +13,23 @@
 // limitations under the License.
 
 #pragma once
-< < < < < < < < HEAD : src / monoprop / detail / print_compat.h
-// std::print polyfill for compilers that lack <print> (GCC < 14).
-#if __has_include(<print>)
-#include <print>
-#else
-#include <cstdio>
-#include <format>
-namespace std { // NOLINT(cert-dcl58-cpp)
-template <class... Args>
-void print(FILE* f, format_string<Args...> fmt, Args&&... args) {
-    auto s = std::vformat(fmt.get(), std::make_format_args(args...));
-std::fwrite(s.data(), 1, s.size(), f);
-}
-template <class... Args>
-void print(format_string<Args...> fmt, Args&&... args) {
-    ::std::print(stdout, fmt, std::forward<Args>(args)...);
-}
-} // namespace std
-#endif
-    == == == ==
 
 #include <vector>
 
-    // Kept MPI-free and dependency-light so graph-encoding types (LayerExchangeLayout) can embed the cache
-    // without pulling in <mpi.h> or the exchange machinery (see Exchange.h).
+// Kept MPI-free and dependency-light so graph-encoding types (LayerExchangeLayout) can embed the cache
+// without pulling in <mpi.h> or the exchange machinery (see Exchange.h).
 
-    namespace monoprop::mpi {
+namespace monoprop::mpi {
 
-    struct RecvLayout {
-        std::vector<int> counts;
-        std::vector<int> displs;
-        int total = 0;
-    };
+struct RecvLayout {
+    std::vector<int> counts;
+    std::vector<int> displs;
+    int total = 0;
+};
 
-    struct RecvLayoutCache {
-        RecvLayout layout;
-        int comm_size = -1;
-    };
+struct RecvLayoutCache {
+    RecvLayout layout;
+    int comm_size = -1;
+};
 
 } // namespace monoprop::mpi
->>>>>>>> main : src / monoprop / detail / mpi / RecvLayout.h
