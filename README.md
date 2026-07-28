@@ -143,6 +143,14 @@ just build-docs   # output: docs/out/
 just serve-docs   # live-reloading dev server
 ```
 
+Building it locally requires `npm`, the Node.js package manager.
+In the DevContainer, install it as follows:
+
+```bash
+sudo apt update
+sudo apt install -y npm
+```
+
 ### Keeping documentation up to date
 
 Any PR that changes behavior, public APIs, build/test commands, or repository paths
