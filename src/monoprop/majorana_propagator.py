@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
+    from .monomial_propagator import ParameterValues
     from .quantum_data import IQuantumOperator
 
 
@@ -137,3 +138,147 @@ class MajoranaPropagator(MonomialPropagator):
     def cutoff_type(self, new_cutoff_type: str) -> None:
         """Set the cutoff type (``"length"`` or ``"support"``)."""
         self._simulator.cutoff_type = new_cutoff_type
+
+    @property
+    def n_gates(self) -> int:
+        """Number of authoring gates ingested into the graph.
+
+        A single-Majorana-monomial gate expands to one graph layer; a multi-monomial gate
+        expands to several layers sharing one gate, so ``n_gates <= graph_layers``. Stays
+        correct after a graph prefix is consumed by [contract_partially][] / [propagate][].
+        """
+        return super().n_gates
+
+    @property
+    def parameter_mapping(self) -> list[int]:
+        """The parameter mapping owned by the graph, one entry per graph layer.
+
+        Entry ``i`` is the variational-parameter index driving the ``i``-th graph layer (a
+        generated Majorana monomial), in the same order as the parameter vector passed to
+        [expectation_value][]. This is the graph's native (per-monomial) mapping, which
+        is finer-grained than the per-gate mapping of the authoring
+        [Circuit][monoprop.circuit.Circuit] when gates bundle several monomials.
+        """
+        return super().parameter_mapping
+
+    @parameter_mapping.setter
+    def parameter_mapping(self, mapping: Sequence[int]) -> None:
+        """Re-wire which parameter drives each gate/layer, without rebuilding the graph.
+
+        The graph structure depends only on the generators, not the parameter labels, so
+        this is a cheap relabel -- use it to tie or untie parameters on an already-built
+        graph. The mapping may be given at either granularity and must be contiguous
+        ``0..n-1``:
+
+        - **per graph layer** (length [graph_layers][], in the parameter-vector order):
+          relabels each layer directly.
+        - **per gate** (length [n_gates][], indexed by gate): expanded to per-layer via
+          each layer's gate, so a multi-monomial gate's layers stay tied. This is the
+          granularity of the authoring [Circuit][monoprop.circuit.Circuit]'s mapping.
+
+        When the two lengths coincide the per-layer reading is used. Functionals created
+        earlier keep the mapping they were built with; rebuild a functional to pick up the
+        new one.
+        """
+        MonomialPropagator.parameter_mapping.fset(self, mapping)
+
+    def build_graph(
+        self,
+        circuit: Circuit,
+        *,
+        seed_parameters: ParameterValues = None,
+        only_rotate_len_k: int | None = None,
+    ) -> None:
+        """Append a circuit to the propagation graph.
+
+        Builds (or extends) the reusable evolution graph, recording each layer's gate
+        information (the parameter that drives it and its generator coefficient) so that
+        later evaluation takes only ``parameters``. The circuit's angle indices are local
+        (``0``-based); when extending a non-empty graph they are shifted up onto the
+        accumulated parameter axis automatically, so each call's circuit is authored
+        independently.
+
+        Args:
+            circuit: Gates to append, as a [Circuit][monoprop.circuit.Circuit].
+            seed_parameters: The full parameter vector covering the whole accumulated graph,
+                used to regenerate the coefficient seed (by contracting the existing graph) so
+                coefficient truncation sees realistic coefficients when extending. Only needed
+                when extending a non-empty graph *with* coefficient-informed truncation; on the
+                first (or a single) call it defaults to the circuit's own parameters. When
+                omitted while extending, the new layers are built structurally (coefficient
+                truncation is skipped for them); the engine validates the length of an explicit
+                seed.
+            only_rotate_len_k: If provided, apply gates to Majorana monomials of length <= k
+                in the evolved operator even if they anticommute. Useful when many
+                free-fermionic gates (generators that are length-2 Majorana monomials) are
+                applied before expectation-value estimation in Schrodinger-picture
+                simulations.
+        """
+        super().build_graph(
+            circuit,
+            seed_parameters=seed_parameters,
+            only_rotate_len_k=only_rotate_len_k,
+        )
+
+    def evolved_operator(
+        self,
+        parameters: ParameterValues = None,
+        *,
+        atol: float = 1e-12,
+    ) -> dict[tuple[int, ...], complex]:
+        """Return the evolved operator/state as a dict, without modifying state.
+
+        Equivalent to [contract_partially][] with ``inplace=False``, returned as a
+        mapping keyed by Majorana indices and without touching the simulator state.
+
+        Args:
+            parameters: Variational parameter values (see [expectation_value][]).
+            atol: Absolute tolerance for filtering small coefficients; terms with
+                ``|coeff| < atol`` are dropped. Defaults to ``1e-12``; set to ``0.0`` to
+                keep all terms.
+
+        Returns:
+            The evolved operator (Heisenberg picture) or the evolved state (Schrodinger
+            picture) as a dict mapping Majorana-index tuples to complex coefficients.
+        """
+        return super().evolved_operator(parameters, atol=atol)
+
+    def update_initial_operator(
+        self, new_operator: dict[tuple[int, ...], complex]
+    ) -> None:
+        """Replace coefficients of the *initial operator* (existing terms only).
+
+        Re-weights the initial operator the graph is evaluated against, without touching
+        the evolution graph or rebuilding the simulator. Only the initial operator is
+        affected -- the gates and their generator coefficients are unchanged -- and only
+        Majorana terms already present in the initial operator can be updated (no new
+        terms are introduced).
+
+        Args:
+            new_operator: Mapping from Majorana-index tuples to their new complex
+                coefficients.
+
+        Raises:
+            RuntimeError: If a term in ``new_operator`` is not present in the current
+                initial operator.
+        """
+        super().update_initial_operator(new_operator)
+
+    def size(self) -> int:
+        """Number of Majorana terms currently tracked.
+
+        Returns:
+            The number of distinct Majorana monomial terms in the simulator's current
+            representation.
+        """
+        return super().size()
+
+    @property
+    def graph_layers(self) -> int:
+        """Number of evolved Majorana monomials (graph layers)."""
+        return super().graph_layers
+
+    @property
+    def num_modes(self) -> int:
+        """Number of fermionic modes for the simulator."""
+        return self._simulator.num_modes

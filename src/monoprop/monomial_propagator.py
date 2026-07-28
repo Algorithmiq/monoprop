@@ -632,11 +632,6 @@ class MonomialPropagator(ABC):
         return self._simulator.graph_size()
 
     @property
-    def num_modes(self) -> int:
-        """Number of fermionic modes for the simulator."""
-        return self._simulator.num_modes
-
-    @property
     def graph_layers(self) -> int:
         """Number of evolved terms (graph layers)."""
         return self._simulator.graph_layers()
