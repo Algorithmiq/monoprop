@@ -108,7 +108,8 @@ class PauliPropagator(MonomialPropagator):
         them into qubit Pauli terms.
 
         Args:
-            parameters: Variational parameter values (see [expectation_value][]).
+            parameters: Variational parameter values (see
+                [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]).
             atol: Terms with ``|coeff| < atol`` are dropped; ``0.0`` keeps all of them.
 
         Returns:
@@ -135,7 +136,9 @@ class PauliPropagator(MonomialPropagator):
 
         A single-Pauli-term gate expands to one graph layer; a multi-term gate expands to
         several layers sharing one gate, so ``n_gates <= graph_layers``. Stays correct after
-        a graph prefix is consumed by [contract_partially][] / [propagate][].
+        a graph prefix is consumed by
+        [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially] /
+        [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate].
         """
         return super().n_gates
 
@@ -144,8 +147,9 @@ class PauliPropagator(MonomialPropagator):
         """The parameter mapping owned by the graph, one entry per graph layer.
 
         Entry ``i`` is the variational-parameter index driving the ``i``-th graph layer (a
-        generated Pauli operator), in the same order as the parameter vector
-        passed to [expectation_value][]. This is the graph's native (per-Pauli operators)
+        generated Pauli operator), in the same order as the parameter vector passed to
+        [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value].
+        This is the graph's native (per-Pauli operators)
         mapping, which is finer-grained than the per-gate mapping of the authoring
         [Circuit][monoprop.circuit.Circuit] when gates bundle several Pauli terms.
         """

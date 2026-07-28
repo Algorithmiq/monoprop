@@ -111,7 +111,9 @@ class MajoranaPropagator(MonomialPropagator):
 
         A single-Majorana-monomial gate expands to one graph layer; a multi-monomial gate
         expands to several layers sharing one gate, so ``n_gates <= graph_layers``. Stays
-        correct after a graph prefix is consumed by [contract_partially][] / [propagate][].
+        correct after a graph prefix is consumed by
+        [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially] /
+        [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate].
         """
         return super().n_gates
 
@@ -121,7 +123,8 @@ class MajoranaPropagator(MonomialPropagator):
 
         Entry ``i`` is the variational-parameter index driving the ``i``-th graph layer (a
         generated Majorana monomial), in the same order as the parameter vector passed to
-        [expectation_value][]. This is the graph's native (per-monomial) mapping, which
+        [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value].
+        This is the graph's native (per-monomial) mapping, which
         is finer-grained than the per-gate mapping of the authoring
         [Circuit][monoprop.circuit.Circuit] when gates bundle several monomials.
         """
@@ -194,11 +197,14 @@ class MajoranaPropagator(MonomialPropagator):
     ) -> dict[tuple[int, ...], complex]:
         """Return the evolved operator/state as a dict, without modifying state.
 
-        Equivalent to [contract_partially][] with ``inplace=False``, returned as a
-        mapping keyed by Majorana indices and without touching the simulator state.
+        Equivalent to
+        [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially]
+        with ``inplace=False``, returned as a mapping keyed by Majorana indices and without
+        touching the simulator state.
 
         Args:
-            parameters: Variational parameter values (see [expectation_value][]).
+            parameters: Variational parameter values (see
+                [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]).
             atol: Absolute tolerance for filtering small coefficients; terms with
                 ``|coeff| < atol`` are dropped. Defaults to ``1e-12``; set to ``0.0`` to
                 keep all terms.
