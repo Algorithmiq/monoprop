@@ -23,6 +23,9 @@ from datetime import date
 from pathlib import Path
 from textwrap import indent
 
+# Run as a script, so sys.path[0] is tools/ regardless of the working directory CMake picks.
+from _binding_layout import binding_blocks
+
 FN_SIGNATURE_TEMPLATE = """/**
  * @brief Binds the {binding_label} class to Python for NumModes in [{modes}].
  *
@@ -57,12 +60,6 @@ auto bind_up_to_{end:03d}(nanobind::module_ &mod) -> void {{
 }}
 }} // namespace monoprop::bindings
 """
-
-
-def binding_blocks(max_logical_num_modes: int) -> list[int]:
-    """Return the storage-width blocks needed to cover all logical mode counts."""
-    max_storage_modes = max(32, ((max_logical_num_modes + 31) // 32) * 32)
-    return list(range(32, max_storage_modes + 1, 32))
 
 
 def main(

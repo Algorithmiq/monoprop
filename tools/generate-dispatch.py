@@ -21,22 +21,14 @@ from datetime import date
 from pathlib import Path
 from textwrap import indent
 
+# Run as a script, so sys.path[0] is tools/ regardless of the working directory CMake picks.
+from _binding_layout import binding_block, binding_blocks
+
 
 def python_comment_header_from_text(header_text: str) -> str:
     """Convert a plain-text license header to Python comment lines."""
     lines = header_text.strip().splitlines()
     return "\n".join(f"# {line}" if line else "#" for line in lines)
-
-
-def binding_block(logical_num_modes: int) -> int:
-    """Return the storage-width binding block for a logical mode count."""
-    return max(32, ((logical_num_modes + 31) // 32) * 32)
-
-
-def binding_blocks(max_logical_num_modes: int) -> list[int]:
-    """Return the storage-width binding blocks needed to cover max_logical_num_modes."""
-    max_storage_modes = binding_block(max_logical_num_modes)
-    return list(range(32, max_storage_modes + 1, 32))
 
 
 def _simulator_adapter_source() -> str:
