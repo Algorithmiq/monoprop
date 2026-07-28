@@ -113,14 +113,9 @@ class PauliOperator:
 
     Constructed from a ``{term: coefficient}`` mapping, where each key is a :class:`Pauli`
     term (or, equivalently, a raw full-width Pauli string like ``"ZZ"``, which is read as a
-    term on qubits ``0..len-1``). The total qubit count lives here, on the operator, and is
-    required so a propagator can be built from it directly. A gate generator is also authored
-    as a :class:`PauliOperator` (wrapped in :class:`~monoprop.circuit.ExpGate`) -- bare
-    :class:`Pauli` terms are not accepted by ``ExpGate``, since the operator is what carries the
-    qubit count.
+    term on qubits ``0..len-1``).
 
     PauliOperator is always interpreted in the Jordan-Wigner basis.
-
     """
 
     def __init__(
