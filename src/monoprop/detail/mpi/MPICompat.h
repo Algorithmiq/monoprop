@@ -28,6 +28,7 @@
 
 // Comm.h owns the MPI_Comm typedef and the runtime-tagged mpi::Comm handle; ShmComm.h is the
 // in-process transport a Kind::Shm handle dispatches to.
+#include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/ShmComm.h"
 #ifdef monoprop_ENABLE_MPI
@@ -40,42 +41,21 @@
 
 namespace monoprop::mpi {
 
-// Thrown when a collective's inputs are inconsistent with its communicator (e.g. a per-rank count
-// vector whose width is not the rank count).
-class CollectiveArgumentError : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
-
-// Narrow a running count/displacement total to the int MPI takes, throwing rather than overflowing.
-// Per-rank counts are individually int-sized but their prefix sums need not be, so accumulate in
-// `long long` and funnel every result through here: a signed int accumulator would be UB on overflow,
-// and the wrapped value then sizes a buffer or becomes a negative displacement.
-inline auto checked_mpi_count(long long value, const char *what = "Aggregate MPI count") -> int {
-    if (value < 0 || value > static_cast<long long>(std::numeric_limits<int>::max())) {
-        throw CollectiveArgumentError(std::format("{} {} does not fit in the MPI int limit {} (message too large).",
-                                                  what,
-                                                  value,
-                                                  std::numeric_limits<int>::max()));
-    }
-    return static_cast<int>(value);
-}
-
 #ifdef monoprop_ENABLE_MPI
 // Idempotent.
 inline auto init(int *argc = nullptr, char ***argv = nullptr) -> void {
     auto initialized = 0;
     MPI_Initialized(&initialized);
     if (!initialized) {
-        // SERIALIZED (not FUNNELED): under the hybrid the one-at-a-time MPI calls come from each rank's
-        // shard-0 master, not the main thread. mpi4py already requests >= SERIALIZED.
+        // serialized (not funneled): under the hybrid the one-at-a-time MPI calls come from each rank's
+        // partition-0 master, not the main thread. mpi4py already requests >= serialized.
         auto required = MPI_THREAD_SERIALIZED;
         auto provided = 0;
         MPI_Init_thread(argc, argv, required, &provided);
         if (provided < required) {
             auto comm = MPI_COMM_WORLD;
             std::print("Sorry, the MPI library does not provide MPI_THREAD_SERIALIZED support, which is required "
-                       "by the shard/MPI hybrid transport.\n");
+                       "by the partition/MPI hybrid transport.\n");
             MPI_Abort(comm, 1);
         }
     }
@@ -280,18 +260,21 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     h.recv_displs.resize(static_cast<size_t>(num_ranks));
 
     const int self = skip_self ? rank(comm) : -1;
-    size_t total_send = 0;
+    // Wide accumulator + checked narrowing on the send side too, mirroring the recv prefix sum below:
+    // a wrapped count would size send_buffer short and then feed MPI a negative count/displacement.
+    long long total_send = 0;
     for (int i = 0; i < num_ranks; ++i) {
-        const int c = (i == self) ? 0 : static_cast<int>(send_data[static_cast<size_t>(i)].size());
+        const size_t n = (i == self) ? 0 : send_data[static_cast<size_t>(i)].size();
+        const int c = checked_mpi_count(n, "Send count");
         h.send_counts[static_cast<size_t>(i)] = c;
-        total_send += static_cast<size_t>(c);
+        total_send += c;
     }
-    h.send_displs[0] = 0;
-    for (int i = 1; i < num_ranks; ++i) {
-        h.send_displs[static_cast<size_t>(i)] =
-            h.send_displs[static_cast<size_t>(i - 1)] + h.send_counts[static_cast<size_t>(i - 1)];
+    long long running_send = 0;
+    for (int i = 0; i < num_ranks; ++i) {
+        h.send_displs[static_cast<size_t>(i)] = checked_mpi_count(running_send, "Send displacement");
+        running_send += h.send_counts[static_cast<size_t>(i)];
     }
-    h.send_buffer.resize(total_send);
+    h.send_buffer.resize(static_cast<size_t>(checked_mpi_count(total_send, "Total send count")));
     for (int i = 0; i < num_ranks; ++i) {
         const int c = h.send_counts[static_cast<size_t>(i)];
         if (c == 0) {

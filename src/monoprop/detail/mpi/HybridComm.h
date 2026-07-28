@@ -29,11 +29,11 @@
 
 #include <mpi.h>
 
-#include "monoprop/detail/mpi/ShardBarrier.h"
+#include "monoprop/detail/mpi/PartitionBarrier.h"
 
-// Composes R MPI ranks x S in-process shards into one flat P=R*S SPMD world. Global id is RANK-MAJOR
-// (g = mpi_rank*S + shard), keeping each rank's shards contiguous in ascending-global order — the
-// contract Resolve.h's positional pairing relies on. Only shard-0 masters call MPI (bracketed by
+// Composes R MPI ranks x S in-process partitions into one flat P=R*S SPMD world. Global id is rank-major
+// (g = mpi_rank*S + partition), keeping each rank's partitions contiguous in ascending-global order — the
+// contract Resolve.h's positional pairing relies on. Only partition-0 masters call MPI (bracketed by
 // intra-rank barriers ⇒ requires MPI_THREAD_SERIALIZED); ascending-order local sums + order-preserving
 // MPI ⇒ bit-identical, repeatable results for fixed (R, S).
 
@@ -41,18 +41,18 @@ namespace monoprop::mpi {
 
 class HybridComm {
 public:
-    // n_local_shards = S, identical on every rank (the facade ctor checks that before constructing).
-    HybridComm(MPI_Comm parent, int n_local_shards)
+    // n_local_partitions = S, identical on every rank (the facade ctor checks that before constructing).
+    HybridComm(MPI_Comm parent, int n_local_partitions)
         : parent_(parent),
-          s_(n_local_shards),
-          slots_(static_cast<size_t>(n_local_shards)),
-          barrier_(n_local_shards) {
+          s_(n_local_partitions),
+          slots_(static_cast<size_t>(n_local_partitions)),
+          barrier_(n_local_partitions) {
         MPI_Comm_size(parent_, &r_);
         MPI_Comm_rank(parent_, &mpi_rank_);
         int provided = MPI_THREAD_SINGLE;
         MPI_Query_thread(&provided);
         if (provided < MPI_THREAD_SERIALIZED) {
-            throw std::runtime_error("HybridComm requires MPI_THREAD_SERIALIZED (shard-0 masters call "
+            throw std::runtime_error("HybridComm requires MPI_THREAD_SERIALIZED (partition-0 masters call "
                                      "MPI while peers are parked); provided level is lower. Ensure "
                                      "mpi::init / mpi4py requests SERIALIZED or MULTIPLE.");
         }
@@ -72,15 +72,15 @@ public:
     auto operator=(const HybridComm &) -> HybridComm & = delete;
 
     auto size() const -> int { return r_ * s_; }
-    auto global_rank(int local_shard) const -> int { return mpi_rank_ * s_ + local_shard; }
+    auto global_rank(int local_partition) const -> int { return mpi_rank_ * s_ + local_partition; }
 
-    // Once shard 0 -- this rank's only participant on parent_ -- is inside a collective, the peer ranks
-    // are committed: their shard-0 threads enter theirs and block inside MPI with no timeout. So a
+    // Once partition 0 -- this rank's only participant on parent_ -- is inside a collective, the peer ranks
+    // are committed: their partition-0 threads enter theirs and block inside MPI with no timeout. So a
     // rank-local failure here must MPI_Abort with the underlying error rather than throw, which would
-    // hang the job. Single-rank sharded runs use ShmComm, not HybridComm, and keep their exceptions.
+    // hang the job. Single-rank partitioned runs use ShmComm, not HybridComm, and keep their exceptions.
     template <class Body>
-    auto guard_shard0_(int local_shard, const char *verb, Body &&body) -> decltype(body()) {
-        if (local_shard != 0) {
+    auto guard_partition0_(int local_partition, const char *verb, Body &&body) -> decltype(body()) {
+        if (local_partition != 0) {
             return body();
         }
         try {
@@ -94,13 +94,13 @@ public:
         }
     }
 
-    auto alltoall_counts(int local_shard, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
-        guard_shard0_(local_shard, "alltoall_counts", [&] {
-            alltoall_counts_impl_(local_shard, send_counts, recv_counts);
+    auto alltoall_counts(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
+        guard_partition0_(local_partition, "alltoall_counts", [&] {
+            alltoall_counts_impl_(local_partition, send_counts, recv_counts);
         });
     }
 
-    auto alltoallv(int local_shard,
+    auto alltoallv(int local_partition,
                    const void *send,
                    const int *send_counts /*[P]*/,
                    const int *send_displs /*[P]*/,
@@ -109,13 +109,13 @@ public:
                    const int *recv_displs /*[P]*/,
                    size_t elem,
                    MPI_Datatype dt) -> void {
-        guard_shard0_(local_shard, "alltoallv", [&] {
-            alltoallv_impl_(local_shard, send, send_counts, send_displs, recv, recv_counts, recv_displs, elem, dt);
+        guard_partition0_(local_partition, "alltoallv", [&] {
+            alltoallv_impl_(local_partition, send, send_counts, send_displs, recv, recv_counts, recv_displs, elem, dt);
         });
     }
 
     template <class T>
-    auto alltoallv_resolve(int local_shard,
+    auto alltoallv_resolve(int local_partition,
                            const T *send,
                            const int *send_counts /*[P]*/,
                            const int *send_displs /*[P]*/,
@@ -124,8 +124,8 @@ public:
                            int *recv_displs /*[P]*/,
                            size_t elem,
                            MPI_Datatype dt) -> void {
-        guard_shard0_(local_shard, "alltoallv_resolve", [&] {
-            alltoallv_resolve_impl_<T>(local_shard,
+        guard_partition0_(local_partition, "alltoallv_resolve", [&] {
+            alltoallv_resolve_impl_<T>(local_partition,
                                        send,
                                        send_counts,
                                        send_displs,
@@ -138,25 +138,25 @@ public:
     }
 
     template <class T>
-    auto allreduce_sum(int local_shard, T local_val) -> T {
-        return guard_shard0_(local_shard, "allreduce_sum", [&] {
-            return allreduce_sum_impl_<T>(local_shard, local_val);
+    auto allreduce_sum(int local_partition, T local_val) -> T {
+        return guard_partition0_(local_partition, "allreduce_sum", [&] {
+            return allreduce_sum_impl_<T>(local_partition, local_val);
         });
     }
 
-    auto allreduce_sum_inplace(int local_shard, double *values, size_t len) -> void {
-        guard_shard0_(local_shard, "allreduce_sum_inplace", [&] {
-            allreduce_sum_inplace_impl_(local_shard, values, len);
+    auto allreduce_sum_inplace(int local_partition, double *values, size_t len) -> void {
+        guard_partition0_(local_partition, "allreduce_sum_inplace", [&] {
+            allreduce_sum_inplace_impl_(local_partition, values, len);
         });
     }
 
     // recv_counts[g] = amount global partition g sends to this partition. 2 barriers + one S*S-int MPI_Alltoall.
-    auto alltoall_counts_impl_(int local_shard, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
-        const size_t u = static_cast<size_t>(local_shard);
+    auto alltoall_counts_impl_(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
+        const size_t u = static_cast<size_t>(local_partition);
         slots_[u].counts = send_counts;
         sync();
-        if (local_shard == 0) {
-            // Pack the S*S count matrix per dest rank, dest-shard-major (t) then source-shard-minor (su).
+        if (local_partition == 0) {
+            // Pack the S*S count matrix per dest rank, dest-partition-major (t) then source-partition-minor (su).
             // Every element is written here and MPI_Alltoall fills counts_recv_ fully, so neither is pre-zeroed.
             for (int b = 0; b < r_; ++b) {
                 for (int t = 0; t < s_; ++t) {
@@ -171,8 +171,8 @@ public:
             MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
         }
         sync();
-        // Shard t extracts its row: recv from (rank a, shard su) is contiguous per source rank a.
-        const int t = local_shard;
+        // Partition t extracts its row: recv from (rank a, partition su) is contiguous per source rank a.
+        const int t = local_partition;
         for (int a = 0; a < r_; ++a) {
             for (int su = 0; su < s_; ++su) {
                 const size_t idx = (static_cast<size_t>(a) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
@@ -180,14 +180,14 @@ public:
                 recv_counts[a * s_ + su] = counts_recv_[idx];
             }
         }
-        // No trailing barrier: past the last sync only counts_recv_ is read, and shard 0 cannot rewrite
+        // No trailing barrier: past the last sync only counts_recv_ is read, and partition 0 cannot rewrite
         // it until a future call's second barrier — unreachable until every extractor here has arrived.
         // send_counts was consumed before the last sync, so peers may free/reuse it on return.
     }
 
-    // Flat variable all-to-all over caller-owned buffers (counts/displs in ELEMENTS, `elem` = element
+    // Flat variable all-to-all over caller-owned buffers (counts/displs in elements, `elem` = element
     // bytes, `dt` = MPI datatype). recv_counts must already hold the transpose — same contract as MPI_Alltoallv.
-    auto alltoallv_impl_(int local_shard,
+    auto alltoallv_impl_(int local_partition,
                          const void *send,
                          const int *send_counts /*[P]*/,
                          const int *send_displs /*[P]*/,
@@ -196,7 +196,7 @@ public:
                          const int *recv_displs /*[P]*/,
                          size_t elem,
                          MPI_Datatype dt) -> void {
-        const size_t u = static_cast<size_t>(local_shard);
+        const size_t u = static_cast<size_t>(local_partition);
         Slot &me = slots_[u];
         me.ptr = send;
         me.send_counts = send_counts;
@@ -204,18 +204,18 @@ public:
         me.recv_counts = recv_counts;
         sync(); // B1
 
-        // B2: shard 0 sizes/reallocates staging; MUST finish before any shard packs into stage_send_.
-        if (local_shard == 0) {
+        // B2: partition 0 sizes/reallocates staging; must finish before any partition packs into stage_send_.
+        if (local_partition == 0) {
             size_staging_(elem);
         }
         sync(); // B2
 
-        // B3: each shard packs its own cross-rank blocks into stage_send_ (disjoint writes).
-        pack_send_(local_shard, elem);
+        // B3: each partition packs its own cross-rank blocks into stage_send_ (disjoint writes).
+        pack_send_(local_partition, elem);
         sync(); // B3
 
-        // B4: shard 0 runs the single MPI_Alltoallv while peers park at the barrier.
-        if (local_shard == 0) {
+        // B4: partition 0 runs the single MPI_Alltoallv while peers park at the barrier.
+        if (local_partition == 0) {
             MPI_Alltoallv(stage_send_.data(),
                           mpi_send_counts_.data(),
                           mpi_send_displs_.data(),
@@ -231,7 +231,7 @@ public:
         // Scatter each global source's contiguous run from stage_recv_ to recv_displs[g] (all legs, incl.
         // self-rank, go through staging). Block starts come from scatter_off_: no peer slot is read past B4.
         char *dst = static_cast<char *>(recv);
-        const int t = local_shard;
+        const int t = local_partition;
         for (int a = 0; a < r_; ++a) {
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
@@ -247,10 +247,10 @@ public:
     }
 
     // Fused count-resolve + payload alltoallv: folds the standalone count exchange into this verb's
-    // B1→B2 window (4 syncs instead of 6). recv_counts / recv_displs and `recv` (resized) are OUTPUTS.
+    // B1→B2 window (4 syncs instead of 6). recv_counts / recv_displs and `recv` (resized) are outputs.
     // Bit-identical to alltoall_counts + alltoallv.
     template <class T>
-    auto alltoallv_resolve_impl_(int local_shard,
+    auto alltoallv_resolve_impl_(int local_partition,
                                  const T *send,
                                  const int *send_counts /*[P]*/,
                                  const int *send_displs /*[P]*/,
@@ -259,15 +259,15 @@ public:
                                  int *recv_displs /*[P]*/,
                                  size_t elem,
                                  MPI_Datatype dt) -> void {
-        const size_t u = static_cast<size_t>(local_shard);
+        const size_t u = static_cast<size_t>(local_partition);
         Slot &me = slots_[u];
         me.ptr = send;
         me.send_counts = send_counts;
         me.send_displs = send_displs;
-        // recv_counts is an OUTPUT here — deliberately NOT published; the count Alltoall resolves it.
+        // recv_counts is an output here — deliberately not published; the count Alltoall resolves it.
         sync(); // B1
 
-        if (local_shard == 0) {
+        if (local_partition == 0) {
             for (int b = 0; b < r_; ++b) {
                 for (int t = 0; t < s_; ++t) {
                     for (int su = 0; su < s_; ++su) {
@@ -276,7 +276,7 @@ public:
                 }
             }
             MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
-            // Size staging from counts_recv_: recv of shard t from (rank, su) sits at rank*S*S + t*S + su.
+            // Size staging from counts_recv_: recv of partition t from (rank, su) sits at rank*S*S + t*S + su.
             size_staging_impl_(elem, [this](int t, int rank, int su) {
                 return counts_recv_[(static_cast<size_t>(rank) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
                                     + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
@@ -284,8 +284,8 @@ public:
         }
         sync(); // B2
 
-        const int t = local_shard;
-        size_t total = 0;
+        const int t = local_partition;
+        long long total = 0;
         for (int a = 0; a < r_; ++a) {
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
@@ -293,16 +293,16 @@ public:
                     counts_recv_[(static_cast<size_t>(a) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
                                  + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
                 recv_counts[g] = c;
-                recv_displs[g] = static_cast<int>(total);
-                total += static_cast<size_t>(c);
+                recv_displs[g] = checked_int_(total);
+                total += c;
             }
         }
-        recv.resize(total);
+        recv.resize(static_cast<size_t>(checked_int_(total)));
 
-        pack_send_(local_shard, elem);
+        pack_send_(local_partition, elem);
         sync(); // B3
 
-        if (local_shard == 0) {
+        if (local_partition == 0) {
             MPI_Alltoallv(stage_send_.data(),
                           mpi_send_counts_.data(),
                           mpi_send_displs_.data(),
@@ -331,8 +331,8 @@ public:
     }
 
     template <class T>
-    auto allreduce_sum_impl_(int local_shard, T local_val) -> T {
-        Slot &me = slots_[static_cast<size_t>(local_shard)];
+    auto allreduce_sum_impl_(int local_partition, T local_val) -> T {
+        Slot &me = slots_[static_cast<size_t>(local_partition)];
         if constexpr (std::is_floating_point_v<T>) {
             me.f64 = static_cast<double>(local_val);
         }
@@ -340,7 +340,7 @@ public:
             me.u64 = static_cast<uint64_t>(local_val);
         }
         sync();
-        if (local_shard == 0) {
+        if (local_partition == 0) {
             if constexpr (std::is_floating_point_v<T>) {
                 double local = 0.0;
                 for (int s = 0; s < s_; ++s) {
@@ -368,29 +368,29 @@ public:
         return out;
     }
 
-    // In-place element-wise allreduce-sum across the flat P-world, slice-partitioned across shards in
+    // In-place element-wise allreduce-sum across the flat P-world, slice-partitioned across partitions in
     // ascending order (bit-identical to a sequential sum). red_vec_ sizing gets its own barrier phase.
-    auto allreduce_sum_inplace_impl_(int local_shard, double *values, size_t len) -> void {
-        slots_[static_cast<size_t>(local_shard)].vec = values;
+    auto allreduce_sum_inplace_impl_(int local_partition, double *values, size_t len) -> void {
+        slots_[static_cast<size_t>(local_partition)].vec = values;
         sync(); // all inputs published
-        if (local_shard == 0) {
+        if (local_partition == 0) {
             grow_(red_vec_, len);
         }
         sync(); // red_vec_ sized
         constexpr size_t kLine = 64 / sizeof(double);
         const size_t lines = (len + kLine - 1) / kLine;
         const size_t per = (lines + static_cast<size_t>(s_) - 1) / static_cast<size_t>(s_);
-        const size_t lo = std::min(len, static_cast<size_t>(local_shard) * per * kLine);
+        const size_t lo = std::min(len, static_cast<size_t>(local_partition) * per * kLine);
         const size_t hi = std::min(len, lo + per * kLine);
         for (size_t k = lo; k < hi; ++k) {
             double acc = 0.0;
             for (int s = 0; s < s_; ++s) {
                 acc += slots_[static_cast<size_t>(s)].vec[k];
             }
-            red_vec_[k] = acc; // disjoint line-rounded slices: no two shards store to one line
+            red_vec_[k] = acc; // disjoint line-rounded slices: no two partitions store to one line
         }
         sync(); // local reduction complete
-        if (local_shard == 0) {
+        if (local_partition == 0) {
             MPI_Allreduce(MPI_IN_PLACE, red_vec_.data(), static_cast<int>(len), MPI_DOUBLE, MPI_SUM, parent_);
         }
         sync(); // global result in red_vec_
@@ -413,7 +413,7 @@ private:
         uint64_t u64 = 0;
     };
 
-    // Flat index of the (rank, dest shard, source shard) block in the R*S*S offset/count tables.
+    // Flat index of the (rank, dest partition, source partition) block in the R*S*S offset/count tables.
     auto block_idx_(int b, int t, int u) const -> size_t {
         return (static_cast<size_t>(b) * static_cast<size_t>(s_) + static_cast<size_t>(t)) * static_cast<size_t>(s_)
                + static_cast<size_t>(u);
@@ -426,15 +426,15 @@ private:
         }
     }
 
-    // Shard 0: aggregate the published count matrices into per-rank counts/displs, size staging and
-    // precompute the pack/scatter offsets, reading recv counts from shard t's published recv_counts.
+    // Partition 0: aggregate the published count matrices into per-rank counts/displs, size staging and
+    // precompute the pack/scatter offsets, reading recv counts from partition t's published recv_counts.
     auto size_staging_(size_t elem) -> void {
         size_staging_impl_(elem, [this](int t, int rank, int su) {
             return slots_[static_cast<size_t>(t)].recv_counts[rank * s_ + su];
         });
     }
 
-    // recv_count(t, rank, su) yields the count shard t on this rank receives from (rank, source shard su).
+    // recv_count(t, rank, su) yields the count partition t on this rank receives from (rank, source partition su).
     template <class RecvCountFn>
     auto size_staging_impl_(size_t elem, RecvCountFn recv_count) -> void {
         for (int b = 0; b < r_; ++b) {
@@ -464,7 +464,7 @@ private:
         // fills every live byte of stage_recv_, so stale bytes past a prior high-water mark are never read.
         grow_(stage_send_, total_send * elem);
         grow_(stage_recv_, total_recv * elem);
-        // Precompute each (rank b, dest shard t, source shard u) block start in ELEMENTS, dest-major/
+        // Precompute each (rank b, dest partition t, source partition u) block start in elements, dest-major/
         // source-minor to match staging: pack/scatter become O(1) lookups that read no peer slot past B4
         // (re-summing peer count matrices instead would be O(R*S^3)).
         for (int b = 0; b < r_; ++b) {
@@ -487,9 +487,9 @@ private:
         }
     }
 
-    // Pack local shard `u`'s cross-rank blocks into stage_send_ at shard 0's precomputed pack_off_ starts.
-    auto pack_send_(int local_shard, size_t elem) -> void {
-        const int u = local_shard;
+    // Pack local partition `u`'s cross-rank blocks into stage_send_ at partition 0's precomputed pack_off_ starts.
+    auto pack_send_(int local_partition, size_t elem) -> void {
+        const int u = local_partition;
         const char *src = static_cast<const char *>(slots_[static_cast<size_t>(u)].ptr);
         const int *my_send_counts = slots_[static_cast<size_t>(u)].send_counts;
         const int *my_send_displs = slots_[static_cast<size_t>(u)].send_displs;
@@ -512,7 +512,7 @@ private:
         return static_cast<int>(v);
     }
 
-    // Terminate the job: this rank cannot reach a collective its peers are entering (see guard_shard0_).
+    // Terminate the job: this rank cannot reach a collective its peers are entering (see guard_partition0_).
     [[noreturn]] auto abort_rank_(const char *verb, const char *what) -> void {
         std::print(stderr,
                    "monoprop: rank {} cannot complete the collective '{}' ({}). Its peer ranks are "
@@ -525,7 +525,7 @@ private:
         std::abort(); // MPI_Abort is not marked [[noreturn]]; unreachable in practice
     }
 
-    // See ShardBarrier.
+    // See PartitionBarrier.
     auto sync() -> void { barrier_.sync(); }
 
     MPI_Comm parent_;
@@ -534,7 +534,7 @@ private:
     int mpi_rank_ = 0;
     std::vector<Slot> slots_;
 
-    // Shard-0-managed shared state (written by shard 0, read by all between barriers).
+    // Partition-0-managed shared state (written by partition 0, read by all between barriers).
     // S*S per rank, the counts alltoall.
     std::vector<int> counts_send_;
     std::vector<int> counts_recv_;
@@ -553,7 +553,7 @@ private:
     uint64_t red_u64_ = 0;
     std::vector<double> red_vec_;
 
-    ShardBarrier barrier_;
+    PartitionBarrier barrier_;
 };
 
 } // namespace monoprop::mpi

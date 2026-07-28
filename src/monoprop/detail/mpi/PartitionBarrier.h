@@ -22,22 +22,22 @@
 
 namespace monoprop::mpi {
 
-// Thrown when a peer shard poisoned the barrier instead of arriving: a permanent hang becomes a
+// Thrown when a peer partition poisoned the barrier instead of arriving: a permanent hang becomes a
 // propagating exception on every participant.
 class ShmCommPoisoned : public std::runtime_error {
 public:
-    ShmCommPoisoned() : std::runtime_error("ShmComm poisoned: a peer shard threw during a collective") {}
+    ShmCommPoisoned() : std::runtime_error("ShmComm poisoned: a peer partition threw during a collective") {}
 };
 
-// Sense-reversing generation barrier for a fixed number of in-process shard threads, with a poison
+// Sense-reversing generation barrier for a fixed number of in-process partition threads, with a poison
 // escape. Each barrier word gets a private cache line: if `gen_` shared `arrived_`'s line, spinners'
 // reloads would miss to L3 on every peer arrival — O(S) coherence bounces (measured top hotspot at S=112).
-class ShardBarrier {
+class PartitionBarrier {
 public:
-    explicit ShardBarrier(int participants) : participants_(participants) {}
+    explicit PartitionBarrier(int participants) : participants_(participants) {}
 
-    ShardBarrier(const ShardBarrier &) = delete;
-    auto operator=(const ShardBarrier &) -> ShardBarrier & = delete;
+    PartitionBarrier(const PartitionBarrier &) = delete;
+    auto operator=(const PartitionBarrier &) -> PartitionBarrier & = delete;
 
     auto sync() -> void {
         const unsigned g = gen_.load(std::memory_order_acquire);
@@ -46,7 +46,7 @@ public:
             gen_.store(g + 1, std::memory_order_release);
         }
         else {
-            // Bounded on-core spin first (pinned shards ⇒ the release store lands in the pause window,
+            // Bounded on-core spin first (pinned partitions ⇒ the release store lands in the pause window,
             // no syscall); only long waits (imbalance, oversubscription) fall to yield.
             int spins = 0;
             while (gen_.load(std::memory_order_acquire) == g) {
@@ -71,7 +71,7 @@ public:
     // barrier so they throw ShmCommPoisoned rather than hang forever. Idempotent.
     auto poison() -> void { poisoned_.store(true, std::memory_order_release); }
 
-    // Clear the poison flag and arrival counter. MUST be called only when every participant is quiescent
+    // Clear the poison flag and arrival counter. must be called only when every participant is quiescent
     // (between rounds), so a poison-aborted round leaves no dirty state. `gen_` deliberately stays
     // monotonic: each participant re-reads it at its next barrier.
     auto reset() -> void {

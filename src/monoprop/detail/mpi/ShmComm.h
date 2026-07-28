@@ -24,9 +24,10 @@
 #include <type_traits>
 #include <vector>
 
-#include "monoprop/detail/mpi/ShardBarrier.h"
+#include "monoprop/detail/mpi/CheckedCount.h"
+#include "monoprop/detail/mpi/PartitionBarrier.h"
 
-// In-process shared-memory SPMD transport: S shard-master threads each call the same collective
+// In-process shared-memory SPMD transport: S partition-master threads each call the same collective
 // sequence in program order, every collective two-phase (publish slot → barrier → read peers →
 // barrier). Two guarantees the engine relies on: alltoallv delivers each source's block contiguously
 // in ascending source-rank order (Resolve.h's positional pairing needs it), and allreduce sums in
@@ -53,7 +54,7 @@ public:
         sync();
     }
 
-    // Variable all-to-all over caller-owned FLAT buffers (counts/displs in ELEMENTS, `elem` = element
+    // Variable all-to-all over caller-owned flat buffers (counts/displs in elements, `elem` = element
     // bytes). Fills recv per source s ascending at recv_displs[s]; recv_counts must already hold the
     // transpose — same contract as MPI_Alltoallv.
     auto alltoallv(int rank,
@@ -82,8 +83,8 @@ public:
         sync();
     }
 
-    // Fused count-resolve + payload all-to-all in ONE round (2 syncs vs 4). recv_counts / recv_displs
-    // and `recv` (resized) are OUTPUTS. Same contiguous ascending-source ordering as alltoallv, which
+    // Fused count-resolve + payload all-to-all in one round (2 syncs vs 4). recv_counts / recv_displs
+    // and `recv` (resized) are outputs. Same contiguous ascending-source ordering as alltoallv, which
     // the query/response positional pairing depends on.
     template <class T>
     auto alltoallv_resolve(int rank,
@@ -98,14 +99,14 @@ public:
         me.displs = send_displs;
         me.counts = send_counts;
         sync(); // B1: send buffers published
-        size_t total = 0;
+        long long total = 0;
         for (int s = 0; s < n_; ++s) {
             const int c = slots_[static_cast<size_t>(s)].counts[rank]; // what s sends to me
             recv_counts[s] = c;
-            recv_displs[s] = static_cast<int>(total);
-            total += static_cast<size_t>(c);
+            recv_displs[s] = checked_mpi_count(total, "Recv displacement");
+            total += c;
         }
-        recv.resize(total);
+        recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
         auto *dst = reinterpret_cast<char *>(recv.data());
         for (int s = 0; s < n_; ++s) {
             const Slot &src = slots_[static_cast<size_t>(s)];
@@ -167,10 +168,10 @@ public:
         sync(); // peers write into our buffer (and read from it) until here
     }
 
-    // Called by the shard dispatcher when a participant unwinds. See ShardBarrier::poison.
+    // Called by the partition dispatcher when a participant unwinds. See PartitionBarrier::poison.
     auto poison() -> void { barrier_.poison(); }
 
-    // Clear the poison flag and arrival counter between collective rounds. See ShardBarrier::reset.
+    // Clear the poison flag and arrival counter between collective rounds. See PartitionBarrier::reset.
     auto reset() -> void { barrier_.reset(); }
 
 private:
@@ -189,7 +190,7 @@ private:
 
     int n_;
     std::vector<Slot> slots_;
-    ShardBarrier barrier_;
+    PartitionBarrier barrier_;
 };
 
 } // namespace monoprop::mpi
