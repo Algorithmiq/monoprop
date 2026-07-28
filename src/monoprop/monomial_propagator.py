@@ -223,7 +223,6 @@ class MonomialPropagator(ABC):
         gates = self._circuit_gates(circuit)
         num_qubits = self._num_qubits
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
-        self._n_params += circuit.n_parameters
         majoranas, gen_coeffs, per_monomial, gate_indices = expand_monomials(
             gates, mapping, num_qubits
         )
@@ -238,6 +237,9 @@ class MonomialPropagator(ABC):
             bound,
             only_rotate_len_k,
         )
+        # Advance the axis only once the graph owns the layers: expand_monomials, _bind and the C++
+        # validation all raise, and a retry after such a failure must reuse the same indices.
+        self._n_params += circuit.n_parameters
 
     def propagate(
         self, circuit: Circuit, *, only_rotate_len_k: int | None = None
@@ -459,11 +461,20 @@ class MonomialPropagator(ABC):
 
         Returns:
             The evolved coefficients as a NumPy array, core term excluded -- of the state in the
-            Schrodinger picture, of the operator in the Heisenberg picture.
+            Schrodinger picture, of the operator in the Heisenberg picture. The array carries no term
+            labels, and across partitions it is each partition's block concatenated in partition
+            order: the same values as an unpartitioned run, but not in a reproducible order, since the
+            partition count is auto-picked from the host's core count. Use [evolved_operator][] when
+            you need coefficients tied to their terms.
         """
-        return np.asarray(
+        coeffs = np.asarray(
             self._simulator.contract_partially(self._bind(parameters), inplace)
         )
+        if inplace:
+            # The contraction consumed the layers it folded, so the parameter axis has to follow the
+            # graph that is left; otherwise the next build_graph() would append at a stale index.
+            self._n_params = max(self._simulator.parameter_mapping, default=-1) + 1
+        return coeffs
 
     def evolved_operator(
         self,

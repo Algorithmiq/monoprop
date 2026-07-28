@@ -695,6 +695,73 @@ def test_build_graph_rejects_too_short_seed() -> None:
         prop.build_graph(circuit, seed_parameters=[0.5])
 
 
+def test_failed_build_graph_does_not_advance_the_parameter_axis() -> None:
+    """A build_graph that raises must leave n_parameters where it was.
+
+    The axis is what the next call's layers are stored at, so advancing it on a failed build
+    would offset every later mapping by a phantom parameter -- silently, since the retry
+    itself succeeds.
+    """
+    circuit = Circuit(
+        gates=(
+            ExpGate(MajoranaOperator({(4, 5): -1.0j}, num_modes=8)),
+            ExpGate(MajoranaOperator({(2, 3): -1.0j}, num_modes=8)),
+        ),
+        parameters=(0.5, 0.3),
+    )
+    prop = _small_propagator(lower_atol=1e-12)
+    with pytest.raises(RuntimeError, match="length of parameters"):
+        prop.build_graph(circuit, seed_parameters=[0.5])
+    assert prop.n_parameters == 0
+
+    # The retry stores its layers at index 0, exactly as if the failure had never happened.
+    prop.build_graph(circuit, seed_parameters=[0.5, 0.3])
+    assert prop.n_parameters == 2
+    assert min(prop.parameter_mapping) == 0
+
+    reference = _small_propagator(lower_atol=1e-12)
+    reference.build_graph(circuit, seed_parameters=[0.5, 0.3])
+    np.testing.assert_allclose(prop.expval([0.5, 0.3]), reference.expval([0.5, 0.3]))
+
+
+def test_inplace_contraction_resets_the_parameter_axis() -> None:
+    """An in-place contraction consumes the graph, so the axis has to follow it back to 0.
+
+    Left stale, the next single-parameter build_graph would store its layer at the old index
+    and then demand that many dummy values for a graph that no longer exists.
+    """
+    c1 = Circuit(
+        gates=(
+            ExpGate(MajoranaOperator({(4, 5): -1.0j}, num_modes=8)),
+            ExpGate(MajoranaOperator({(2, 3): -1.0j}, num_modes=8)),
+        ),
+        parameters=(0.5, 0.3),
+    )
+    prop = _small_propagator(lower_atol=1e-15)
+    prop.build_graph(c1)
+    assert prop.n_parameters == 2
+
+    prop.contract_partially([0.5, 0.3])
+    assert prop.graph_layers == 0
+    assert prop.n_parameters == 0
+
+    # One gate on a consumed graph takes one value, at index 0.
+    c2 = Circuit(
+        gates=(ExpGate(MajoranaOperator({(0, 1): -1.0j}, num_modes=8)),),
+        parameters=(0.4,),
+    )
+    prop.build_graph(c2)
+    assert prop.n_parameters == 1
+    assert prop.parameter_mapping == [0]
+
+    # And it evaluates: a stale axis would reject a length-1 vector here.
+    reference = _small_propagator(lower_atol=1e-15)
+    reference.build_graph(c1)
+    reference.contract_partially([0.5, 0.3])
+    reference.build_graph(c2)
+    np.testing.assert_allclose(prop.expval([0.4]), reference.expval([0.4]))
+
+
 def test_extend_without_seed_builds_structurally() -> None:
     """Extending a non-empty graph without a seed builds the new layers structurally (no
     raise, no silent corruption); the result matches a single-call build, and an explicit

@@ -359,7 +359,7 @@ class Circuit:
         gen_coeffs: Sequence[float],
         param_inds: Sequence[int],
         parameters: Sequence[float] = (),
-        initial_state: Sequence[int] = (),
+        initial_state: Sequence[int] | None = None,
     ) -> Circuit:
         """Build a Majorana circuit from flat, per-monomial dense arrays.
 
@@ -373,7 +373,10 @@ class Circuit:
             gen_coeffs: Generator coefficient per monomial (already structural).
             param_inds: Variational-angle index per monomial; contiguous runs group into gates.
             parameters: Optional angle values.
-            initial_state: Optional reference state (occupied mode indices).
+            initial_state: Reference state (occupied mode indices), or ``None`` to defer to the
+                propagator's. ``()`` is the explicit vacuum, exactly as in the constructor -- the
+                wire format has no third state, so a caller round-tripping it decides which of the
+                two an absent field means.
         """
         indices = [int(p) for p in param_inds]
         gates: list[ExpGate] = []
@@ -406,7 +409,9 @@ class Circuit:
         return cls(
             gates=tuple(gates),
             parameters=tuple(float(p) for p in parameters),
-            initial_state=tuple(int(i) for i in initial_state),
+            initial_state=(
+                None if initial_state is None else tuple(int(i) for i in initial_state)
+            ),
         )
 
 
