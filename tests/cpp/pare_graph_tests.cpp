@@ -108,18 +108,17 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
 
     size_t pruned_count = 0;
     for (size_t i = 0; i < pared.layers(); ++i) {
-        const auto &layer = pared.get_layer(i);
-        if (const CosMask *pruned = layer.pruned_cos(); pruned != nullptr) {
+        if (const CosMask *pruned = pared.get_layer(i).pruned_cos(); pruned != nullptr) {
             ++pruned_count;
-            BOOST_TEST(pruned->total_count <= provider(i).total_count);
-        }
-        else {
-            // Preserved layers store nothing; their cos is recomputed at replay.
-            BOOST_TEST(layer.pruned_cos() == static_cast<const CosMask *>(nullptr));
+            // The synthetic index is the only one outside the keep-set, so a stored cos must be the
+            // recomputed one minus exactly that index. `<=` here would also pass on a sweep that
+            // dropped real indices.
+            BOOST_CHECK_EQUAL(pruned->total_count + 1, provider(i).total_count);
         }
     }
-    // Exactly the marked layer should be pruned (its synthetic index dropped).
-    BOOST_TEST(pruned_count >= 1u);
+    // Exactly the marked layer is pruned: every other layer's cos lies entirely inside the keep-set,
+    // and a preserved layer stores nothing (its cos is recomputed at replay).
+    BOOST_CHECK_EQUAL(pruned_count, 1u);
     BOOST_TEST(pared.get_layer(marked_layer).pruned_cos() != static_cast<const CosMask *>(nullptr));
 }
 

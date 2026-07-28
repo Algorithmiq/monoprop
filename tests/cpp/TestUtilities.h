@@ -180,6 +180,54 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
     }
 }
 
+// As above, but split across two build_graph calls so the second one lands on an already non-empty
+// graph -- the only path that reaches build_graph's contract_partially() seeding branch. Schrodinger
+// only: a Heisenberg build consumes each call back-to-front, so a forward split is not equivalent to
+// one call, and a coefficient-informed extend needs each call's mapping to reference indices at least
+// as high as the stored graph's, which only a forward split gives. `cfg.schrodinger_cutoff` must be
+// set. Each call's `parameters` covers the prefix its own mapping reaches, which is also exactly what
+// the seeding guard demands of the second call.
+template <size_t n_modes>
+inline auto test_evolve_build_graph_with_coeffs_extend(const CaseData& data,
+                                                       const SimulatorConfig& cfg,
+                                                       bool pare,
+                                                       double exact_expval) -> void {
+    auto mp = build_simulator<n_modes>(data, cfg);
+
+    const size_t k = data.majoranas.size() / 2;
+    const auto slice_z = [](const VecZ& v, size_t lo, size_t hi) {
+        return VecZ(v.begin() + static_cast<std::ptrdiff_t>(lo), v.begin() + static_cast<std::ptrdiff_t>(hi));
+    };
+    const auto slice_d = [](const VecD& v, size_t lo, size_t hi) {
+        return VecD(v.begin() + static_cast<std::ptrdiff_t>(lo), v.begin() + static_cast<std::ptrdiff_t>(hi));
+    };
+    const std::vector<VecZ> majs1(data.majoranas.begin(), data.majoranas.begin() + static_cast<std::ptrdiff_t>(k));
+    const std::vector<VecZ> majs2(data.majoranas.begin() + static_cast<std::ptrdiff_t>(k), data.majoranas.end());
+
+    const auto params_for = [&data](const VecZ& mapping) -> VecD {
+        const auto m = static_cast<size_t>(*std::ranges::max_element(mapping)) + 1;
+        return VecD(data.parameters.begin(), data.parameters.begin() + static_cast<std::ptrdiff_t>(m));
+    };
+
+    const auto pinds1 = slice_z(data.param_inds, 0, k);
+    const auto pinds2 = slice_z(data.param_inds, k, data.param_inds.size());
+    mp.build_graph(majs1, pinds1, slice_d(data.gen_coeffs, 0, k), std::nullopt, params_for(pinds1));
+    mp.build_graph(majs2,
+                   pinds2,
+                   slice_d(data.gen_coeffs, k, data.gen_coeffs.size()),
+                   std::nullopt,
+                   params_for(pinds2));
+
+    const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
+    auto expval_fn = mp.expectation_value_functional(pare_threshold);
+    double expval = expval_fn(data.parameters);
+    BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare) {
+        check_expval_close("Expectation Value Build Graph with coeffs (split build, schrodinger)",
+                           expval,
+                           exact_expval);
+    }
+}
+
 struct ExampleDataFix {
     static constexpr size_t n_modes = 8;
     int cutoff = 2 * n_modes;

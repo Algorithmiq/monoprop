@@ -50,8 +50,21 @@ BOOST_DATA_TEST_CASE_F(ExampleDataFix,
     test_evolve_build_graph_with_coeffs<n_modes>(data, cfg, pare, data.actual_expval);
 }
 
+// Extending a non-empty graph with a coefficient-informed (seeded) second build_graph call only
+// reproduces a single-call result in the Schrodinger picture (see test_evolve_build_graph_with_
+// coeffs_extend's doc comment), so this always builds a Schrodinger-picture simulator.
+BOOST_DATA_TEST_CASE_F(ExampleDataFix, build_graph_with_coeffs_extend_cases, bdata::make(ds_pare_values), pare) {
+    const auto schrodinger_cutoff = make_schrodinger_cutoff(/*enabled=*/true, cutoff);
+    SimulatorConfig cfg{
+        .schrodinger_cutoff = std::optional<unsigned int>(*schrodinger_cutoff),
+        .cutoff_type = cutoff_type,
+        .basis_change = basis_change,
+    };
+    test_evolve_build_graph_with_coeffs_extend<n_modes>(data, cfg, pare, data.actual_expval);
+}
+
 // graph_size()'s cosine count must be the real one, recomputed from the operator's inverted index.
-// Cosine-ONLY means cos-scaled but not a rotation endpoint, so it is legitimately zero when nothing is
+// Cosine-only means cos-scaled but not a rotation endpoint, so it is legitimately zero when nothing is
 // truncated (every anticommuting term's sine partner survives and is an endpoint). A tight cutoff drops
 // those partners and the count must become positive.
 BOOST_AUTO_TEST_CASE(graph_size_reports_real_cosine_only_count) {
