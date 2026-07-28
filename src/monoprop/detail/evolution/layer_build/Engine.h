@@ -36,8 +36,8 @@
 
 namespace monoprop::detail {
 
-// Every rotation TARGET must be in cos so the gradient reverse-sweep can un-do this layer's cosine
-// scaling; only freshly INSERTED half-terms can be absent (see tests/test_infinite_cutoff.py), and those
+// Every rotation target must be in cos so the gradient reverse-sweep can un-do this layer's cosine
+// scaling; only freshly inserted half-terms can be absent (see tests/test_infinite_cutoff.py), and those
 // sit in [combined_size, op.size()). Scan cos bits and inserted endpoint bits are disjoint, so only the
 // seam word can carry both — OR that one, append the rest, keeping blocks ascending/disjoint.
 template <size_t NumModes>
@@ -82,7 +82,7 @@ struct GraphSink {
 
     GraphSink(size_t R_, size_t my_rank_) : R(R_), my_rank(my_rank_), acc(R_) {}
 
-    // Self-resolve HIT: partner recorded both ways — in={found,φ} (resolver side), out={src,φ} (querier).
+    // Self-resolve hit: partner recorded both ways — in={found,φ} (resolver side), out={src,φ} (querier).
     auto self_hit(size_t src, size_t found, int phase, double /*v_src*/) -> void {
         acc[my_rank].in_entries.push_back({found, phase});
         acc[my_rank].out_entries.push_back({src, phase});
@@ -99,7 +99,7 @@ struct GraphSink {
         acc[my_rank].out_entries[def_out_base_ + k] = {src, phase};
     }
 
-    // Cross-rank (R>1). Send buffer = the plain query stream (no value fusion). ORDERING CONTRACT: the
+    // Cross-rank (R>1). Send buffer = the plain query stream (no value fusion). ordering contract: the
     // exchange is positional — responses[s][q] must answer incoming[s][q]; every query yields one resolution.
     auto send_buffer(std::vector<VecZ> &queries,
                      std::vector<std::vector<double>> & /*vals*/,
@@ -143,8 +143,8 @@ struct GraphSink {
     }
 
     // Finalize: drain the per-rank accumulators into the LayerCore's sin_send/sin_recv lists (layout
-    // derivation: see cross_rank_sin_recv_index). cos covers ALL anticommuting indices, endpoints
-    // included, since the sin_recv apply only ADDS the sine term.
+    // derivation: see cross_rank_sin_recv_index). cos covers all anticommuting indices, endpoints
+    // included, since the sin_recv apply only adds the sine term.
     auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator<NumModes> &op)
         -> std::shared_ptr<LayerCore> {
         std::vector<CrossRankPartnerData> partners(R);
@@ -181,7 +181,7 @@ struct GraphSink {
     }
 };
 
-// Fused ContractImmediately sink: applies each resolved rotation DIRECTLY to op_coeffs via the
+// Fused ContractImmediately sink: applies each resolved rotation directly to op_coeffs via the
 // FusedContract record streams (no LayerCore — finalize returns nullptr). wants_values=true: the scan
 // captures the signed pre-cos v_src, and resolve reads v_tgt from op_coeffs (·inv_cos under the cos sweep).
 template <size_t NumModes>
@@ -194,34 +194,20 @@ struct ContractSink {
     size_t R;
     size_t my_rank;
     FusedContract &fc;
-    const VecD &op_coeffs; // SAME array the scan read (= *op_coeffs)
+    const VecD &op_coeffs; // the very array the scan read, not a copy
     bool fused_scale;      // fused cos sweep active: hit v_tgt recovered as stored·inv_cos
     double inv_cos;
-    bool schrodinger;                 // fresh cross-rank MISS coeff: 0 (Heisenberg) vs state-scored (Schrödinger)
+    bool schrodinger;                 // fresh cross-rank miss coeff: 0 (Heisenberg) vs state-scored (Schrödinger)
     Basis basis;                      // Pauli vs Majorana state scoring of fresh cross-rank Schrödinger misses
     size_t def_base_ = 0;             // deferred self-insert base into fc.inserts
     size_t cross_base_ = 0;           // cross-rank resolver-half base into fc.cross_half
     Monomial<NumModes> state_mask_{}; // Schrödinger fresh-insert scoring mask (empty in Heisenberg)
 
-    ContractSink(size_t R_,
-                 size_t my_rank_,
-                 FusedContract &fc_,
-                 const VecD &op_coeffs_,
-                 bool fused_scale_,
-                 double inv_cos_,
-                 bool schrodinger_,
-                 Basis basis_)
-        : R(R_),
-          my_rank(my_rank_),
-          fc(fc_),
-          op_coeffs(op_coeffs_),
-          fused_scale(fused_scale_),
-          inv_cos(inv_cos_),
-          schrodinger(schrodinger_),
-          basis(basis_) {}
+    // No constructor on purpose: as an aggregate the call site names each field, so the two adjacent
+    // bools cannot be swapped silently. GraphSink keeps its ctor because it sizes `acc` from R.
 
-    // Self-resolve HIT (both endpoints local). always_inline: called once per surviving rotation in the
-    // R=1 hot loop; a real call here costs ~15% on pauli.
+    // Self-resolve hit (both endpoints local). always_inline: called once per surviving rotation in the
+    // R=1 hot loop, where a real call is a measurable regression on the Pauli benches.
     [[gnu::always_inline]] auto self_hit(size_t src, size_t found, int phase, double v_src) -> void {
         const double v_tgt = fused_scale ? op_coeffs[found] * inv_cos : op_coeffs[found];
         fc.hits.push_back(RotationRec{src, found, v_src, v_tgt, static_cast<int32_t>(phase)});
@@ -236,7 +222,7 @@ struct ContractSink {
     }
 
     // Cross-rank (R>1). Send buffer = queries interleaved with their v_src stream into the
-    // kQueryWordsFused-wide `scratch` (combined_qv_) so a SINGLE alltoallv carries query + value.
+    // kQueryWordsFused-wide `scratch` (combined_qv_) so a single alltoallv carries query + value.
     auto send_buffer(std::vector<VecZ> &queries, std::vector<std::vector<double>> &vals, std::vector<VecZ> &scratch)
         -> std::vector<VecZ> & {
         scratch.resize(queries.size());
@@ -253,7 +239,7 @@ struct ContractSink {
         cross_base_ = fc.cross_half.size();
         fc.cross_half.resize(cross_base_ + pr.nq_total);
     }
-    // Compute v_tgt (HIT / Schrödinger-miss / Heisenberg-miss), emit the resolver +φ half on the target
+    // Compute v_tgt (hit / Schrödinger-miss / Heisenberg-miss), emit the resolver +φ half on the target
     // slot this rank owns, and answer with v_tgt. is_insert: see HalfRotationRec.
     auto on_resolved(size_t g,
                      size_t s,
@@ -334,7 +320,7 @@ struct LayerBuildEngine {
     std::vector<DeferredSelfMiss> deferred_self_misses;
     // Scan-captured v_src per query (ContractSink only via Sink::wants_values; empty for GraphSink).
     std::vector<std::vector<double>> src_val_r;
-    // Fused query+value send scratch (ContractSink, R>1): reused across gates.
+    // Fused query+value send scratch (ContractSink, R>1): shared by a gate's two exchange passes.
     std::vector<VecZ> combined_qv_;
     Sink sink;
 
@@ -357,7 +343,7 @@ struct LayerBuildEngine {
         matched.begin_gate(combined_size);
     }
 
-    // Resolve THIS rank's own query stream inline, then clear it so the alltoallv never sends to self.
+    // Resolve this rank's own query stream inline, then clear it so the alltoallv never sends to self.
     auto resolve_self_queries(bool is_leader_pass) -> void {
         VecZ &lq = queries_r[my_rank];
         std::vector<size_t> &ls = src_idx_r[my_rank];
@@ -374,11 +360,24 @@ struct LayerBuildEngine {
         }
     }
 
-    // One partner-resolution pass: resolve self-rank queries inline, then (multi-rank) alltoallv-exchange
-    // cross-rank queries and fold in the answers. Round 1 carries the queries (the sink may fuse the v_src
-    // stream into them); the resolver answers one record per query, inserting absent partners in the SAME
-    // round. Round 2 returns those answers.
-    auto run_exchange(bool is_leader_pass) -> void {
+    // One partner-resolution pass over the given query streams, which it takes ownership of: resolve
+    // self-rank queries inline, then (multi-rank) alltoallv-exchange cross-rank queries and fold in the
+    // answers. Round 1 carries the queries (the sink may fuse the v_src stream into them); the resolver
+    // answers one record per query, inserting absent partners in the same round. Round 2 returns those
+    // answers. Taking the streams here rather than having the caller assign the members first is what
+    // makes the two-pass protocol unmissable — the follower pass must also drop the queries a leader
+    // already matched, and that only holds once the leader pass has run.
+    auto run_exchange(bool is_leader_pass,
+                      std::vector<VecZ> &&queries,
+                      std::vector<std::vector<size_t>> &&src_idx,
+                      std::vector<std::vector<double>> &&src_val) -> void {
+        queries_r = std::move(queries);
+        src_idx_r = std::move(src_idx);
+        // src_val is empty unless Sink::wants_values, so the move is a no-op under GraphSink.
+        src_val_r = std::move(src_val);
+        if (!is_leader_pass && R > 1) {
+            drop_matched_cross_rank_followers();
+        }
         resolve_self_queries(is_leader_pass);
         if (R <= 1) {
             return;
@@ -433,9 +432,9 @@ struct LayerBuildEngine {
         }
     }
 
-    // Sub-step of finish() — do not call directly. LOAD-BEARING precondition: call only AFTER both resolve
+    // Sub-step of finish() — do not call directly. LOAD-BEARING precondition: call only after both resolve
     // passes complete, else the base+k ↔ record-slot assignment and per-miss distinctness break. Deferred
-    // SELF misses are pairwise-distinct (mono = source⊕G, ⊕G injective) and still absent, so miss k gets
+    // self misses are pairwise-distinct (mono = source⊕G, ⊕G injective) and still absent, so miss k gets
     // base+k in leader-then-follower order. See insert_absent_terms.
     auto insert_deferred_self_misses() -> void {
         const size_t n_miss = deferred_self_misses.size();
@@ -459,7 +458,7 @@ struct LayerBuildEngine {
     }
 
 private:
-    // Response counts are the TRANSPOSE of the query counts (one answer per query), so passing them as
+    // Response counts are the transpose of the query counts (one answer per query), so passing them as
     // known_recv_counts skips the response count-Alltoall round.
     auto response_recv_counts() const -> std::vector<int> {
         std::vector<int> counts(R);
@@ -526,7 +525,7 @@ private:
 };
 
 // Primary-path layer builder: the fused scan feeds two MPI exchange passes into the chosen sink, then
-// self-rank absent partners are inserted (AFTER both resolves) and the sink finalizes. See LayerBuilder.h.
+// self-rank absent partners are inserted (after both resolves) and the sink finalizes. See LayerBuilder.h.
 template <size_t NumModes>
 auto build_layer(MPOperator<NumModes> &local_op,
                  const Monomial<NumModes> &gen,
@@ -546,7 +545,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
-    // Fused contraction runs at ALL rank counts (R>1 via the cross-rank half-rotation exchange).
+    // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
     const auto &coeffs = local_coeffs ? local_coeffs->get() : empty_coeffs();
@@ -606,22 +605,14 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              matched_scratch,
                                              /*combined_size=*/local_op.store->size(),
                                              std::move(sink));
-        eng.queries_r = std::move(fused.leader_queries);
-        eng.src_idx_r = std::move(fused.leader_src);
-        if constexpr (Sink::wants_values) {
-            eng.src_val_r = std::move(fused.leader_val);
-        }
-        eng.run_exchange(/*is_leader_pass=*/true);
-
-        eng.queries_r = std::move(fused.follower_queries);
-        eng.src_idx_r = std::move(fused.follower_src);
-        if constexpr (Sink::wants_values) {
-            eng.src_val_r = std::move(fused.follower_val);
-        }
-        if (R > 1) {
-            eng.drop_matched_cross_rank_followers();
-        }
-        eng.run_exchange(/*is_leader_pass=*/false);
+        eng.run_exchange(/*is_leader_pass=*/true,
+                         std::move(fused.leader_queries),
+                         std::move(fused.leader_src),
+                         std::move(fused.leader_val));
+        eng.run_exchange(/*is_leader_pass=*/false,
+                         std::move(fused.follower_queries),
+                         std::move(fused.follower_src),
+                         std::move(fused.follower_val));
 
         return eng.finish(std::move(cos_all), out_cos);
     };
@@ -629,15 +620,21 @@ auto build_layer(MPOperator<NumModes> &local_op,
     std::shared_ptr<LayerCore> storage;
     if (use_fused) {
         const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
-        storage =
-            run(ContractSink<NumModes>{R, my_rank, *fused_contract, coeffs, fused_scale, inv_cos, schrodinger, basis});
+        storage = run(ContractSink<NumModes>{.R = R,
+                                             .my_rank = my_rank,
+                                             .fc = *fused_contract,
+                                             .op_coeffs = coeffs,
+                                             .fused_scale = fused_scale,
+                                             .inv_cos = inv_cos,
+                                             .schrodinger = schrodinger,
+                                             .basis = basis});
     }
     else {
         storage = run(GraphSink<NumModes>{R, my_rank});
     }
 
-    // Recompute metadata rides WITH the layer so it survives every graph transform. scaled_count is the
-    // POST-insert operator size: the fold truncated to it reproduces the "all anticommuting" cos
+    // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the
+    // post-insert operator size: the fold truncated to it reproduces the "all anticommuting" cos
     // bit-for-bit with no stored bitmap. Fused mode has no LayerCore to stamp.
     if (storage != nullptr) {
         storage->generator_words.assign(gen.data(), gen.data() + mpi_detail::kWords<NumModes>);
