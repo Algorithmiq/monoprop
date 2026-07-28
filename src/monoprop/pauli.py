@@ -233,10 +233,11 @@ class PauliOperator:
         """Pack the operator into the engine's native Pauli basis, as a MajoranaOperator.
 
         Each term maps to its per-qubit gamma-slots -- ``X_q -> {2q}``, ``Y_q -> {2q+1}``,
-        ``Z_q -> {2q, 2q+1}`` (see ``_pauli_to_local_slots``) --
-        carrying its (real, Hermitian) coefficient. The result is a
-        [MajoranaOperator][monoprop.majorana.MajoranaOperator] only as a container for those slot tuples;
-        it is not the Jordan-Wigner image (that is [get_majorana_operator][]).
+        ``Z_q -> {2q, 2q+1}`` (see ``_pauli_to_local_slots``) -- carrying its coefficient
+        unchanged; a Hermitian Pauli operator's coefficients are real, but that is not checked
+        here. The result is a [MajoranaOperator][monoprop.majorana.MajoranaOperator] only as a
+        container for those slot tuples; it is not the Jordan-Wigner image (that is
+        [get_majorana_operator][]).
 
         Raises:
             ValueError: If ``num_qubits`` is unset.

@@ -32,9 +32,10 @@ if TYPE_CHECKING:
 class Majorana:
     """A single Majorana monomial.
 
-    Represents an ordered product $m_{i_1} ... m_{i_w}$. A [MajoranaOperator][] is built
-    from Majorana terms, and is the generator an [ExpGate][monoprop.circuit.ExpGate] gate
-    exponentiates. Indices must be sorted, distinct and non-negative; a repeated index is
+    Represents an ordered product $m_{i_1} ... m_{i_w}$. Majorana terms are what a
+    [MajoranaOperator][] is built from, and that operator is in turn what an
+    [ExpGate][monoprop.circuit.ExpGate] exponentiates. Indices must be sorted, distinct and
+    non-negative; a repeated index is
     rejected because ``m_i^2 = 1`` would silently change the monomial's weight. Use
     [Majorana.from_unsorted][] to create a canonical term from an unsorted and/or repeated
     index sequence.
@@ -71,16 +72,15 @@ class Majorana:
     def from_unsorted(cls, *indices: int) -> tuple[Majorana, float]:
         """Create a canonical term from an unsorted index sequence.
 
-        Returns the sorted :class:`Majorana` term together with the sign coming
-        from reordering the indices under Majorana anticommutation.
+        Returns the sorted [Majorana][] term together with the sign coming from reordering the
+        indices under Majorana anticommutation. Repeated indices are canceled in pairs using
+        ``m_i^2 = 1``.
 
         Args:
             indices: Majorana indices in arbitrary order.
 
         Returns:
             ``(term, sign)``, where ``sign`` is ``+1.0`` or ``-1.0``.
-
-        Repeated indices are canceled in pairs using ``m_i^2 = 1``.
 
         Raises:
             ValueError: If any index is negative.

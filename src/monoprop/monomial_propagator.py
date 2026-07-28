@@ -15,8 +15,8 @@
 """Monomial propagator base class.
 
 Shared engine for [MajoranaPropagator][monoprop.majorana_propagator.MajoranaPropagator] and
-[PauliPropagator][monoprop.pauli_propagator.PauliPropagator], which select Majorana or Pauli behaviour
-from a runtime basis on the same compiled C++ engine.
+[PauliPropagator][monoprop.pauli_propagator.PauliPropagator], which pick the Majorana or Pauli
+behavior of one compiled C++ engine through a runtime basis.
 """
 
 from __future__ import annotations
@@ -272,7 +272,12 @@ class MonomialPropagator(ABC):
 
     @property
     def n_parameters(self) -> int:
-        """Number of distinct variational parameters seen while building the graph."""
+        """Size of the current graph's parameter axis.
+
+        Follows the graph rather than accumulating: [build_graph][] extends it, a re-wire through
+        [parameter_mapping][] resets it, and an in-place [contract_partially][] shrinks it to the
+        axis of the layers that are left.
+        """
         return self._n_params
 
     @property
@@ -456,8 +461,10 @@ class MonomialPropagator(ABC):
 
         Args:
             parameters: Variational parameter values (see [expectation_value][]).
-            inplace: ``True`` (default) consumes the graph into the internal state; ``False`` only
-                returns the coefficients, leaving the graph reusable.
+            inplace: ``True`` (default) consumes the graph into the internal state, which also
+                rewinds [n_parameters][] to the axis of the layers left behind -- a following
+                [build_graph][] numbers its angles from there. ``False`` only returns the
+                coefficients, leaving both the graph and the axis untouched.
 
         Returns:
             The evolved coefficients as a NumPy array, core term excluded -- of the state in the

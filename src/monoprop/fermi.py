@@ -117,7 +117,8 @@ class FermiOperator:
         Args:
             terms: The [FermiString][] terms, or ``(index, '+'/'-')`` sequences to build them.
             coefficients: One coefficient per term, in the same order.
-            num_modes: Inferred from the largest index in ``terms`` when ``None``.
+            num_modes: Inferred as one past the largest index in ``terms`` when ``None``, which
+                needs at least one term -- pass it explicitly to build an empty operator.
         """
         self.terms = [
             t if isinstance(t, FermiString) else FermiString(t) for t in terms
@@ -168,7 +169,11 @@ class FermiOperator:
     __hash__ = None  # type: ignore[assignment]  # value-equal but mutable
 
     def _as_dict(self) -> dict[tuple, complex]:
-        """Return ``{canonical expression: coefficient}``, with the reordering sign folded in."""
+        """Return ``{canonical expression: coefficient}``, with the reordering sign folded in.
+
+        Two terms that canonicalize alike collapse to the last one rather than summing, so this
+        is a comparison aid ([isclose][]), not an operator normal form.
+        """
         result = {}
         for term, coeff in zip(self.terms, self.coefficients):
             cano, sign = term._canonicalize()

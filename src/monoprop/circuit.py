@@ -88,6 +88,8 @@ class ExpGate:
 
         Raises:
             TypeError: If ``generator`` is not one of the three operator types.
+            ValueError: If the generator's terms do not all pairwise commute (a single
+                exponential cannot stand in for non-commuting generators).
         """
         if isinstance(generator, PauliOperator):
             family: GateFamily = "pauli"
@@ -463,7 +465,8 @@ def _antihermitian_gen_coeff(majorana: Sequence[int], coeff: complex) -> float:
     r"""Antihermitian-normalize a raw Majorana-product coefficient to a real ``g``.
 
     Divides out the Hermitian phase ``(1j)**(w(w-1)/2)`` of the weight-``w`` monomial to get the
-    structural coefficient of the antihermitian generator the engine rotates by.
+    structural coefficient of the antihermitian generator the engine rotates by, and negates it --
+    the sign is what makes the rotation come out as the ``exp(+i*theta*H)`` [ExpGate][] documents.
     """
     weight = len(majorana)
     gen = -coeff / (1j) ** (weight * (weight - 1) / 2)
