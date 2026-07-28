@@ -19,7 +19,7 @@ import pytest
 from pytest_cases import parametrize_with_cases
 
 from monoprop import Circuit, ExpGate, MajoranaPropagator
-from monoprop.fermi import MajoranaOperator
+from monoprop.majorana import MajoranaOperator
 from tests.cases import CasesFermionicProblem, FermionicProblem
 
 
@@ -44,6 +44,10 @@ def _create_mp(
 
 
 def _check_dicts(d1, d2):
+    if isinstance(d1, MajoranaOperator):
+        d1 = d1.terms
+    if isinstance(d2, MajoranaOperator):
+        d2 = d2.terms
     assert len(d1) == len(d2), f"Length mismatch: {len(d1)} vs {len(d2)}"
     for k in d1:
         assert k in d2, f"Key {k} not found in second dictionary"

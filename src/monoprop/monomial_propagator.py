@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import numpy as np
 
@@ -35,6 +35,8 @@ from .circuit import (
     expand_monomials,
     validate_parameter_mapping,
 )
+from .majorana import MajoranaOperator
+from .pauli import PauliOperator
 from .utils import validate_basis_change
 
 if TYPE_CHECKING:
@@ -43,14 +45,14 @@ if TYPE_CHECKING:
 
     from mpi4py import MPI
 
-    from .majorana import MajoranaOperator
-
     ParameterValues = Circuit | Sequence[float] | np.ndarray | None
 
 logger = logging.getLogger(__name__)
 
+T_op = TypeVar("T_op", MajoranaOperator, PauliOperator)
 
-class MonomialPropagator(ABC):
+
+class MonomialPropagator(ABC, Generic[T_op]):
     """Abstract base for the classical monomial-propagation simulators.
 
     Subclasses implement ``__init__`` -- resolve their operator family to a
@@ -488,8 +490,8 @@ class MonomialPropagator(ABC):
         parameters: ParameterValues = None,
         *,
         atol: float = 1e-12,
-    ) -> dict[tuple[int, ...], complex]:
-        """Return the evolved operator/state as a dict, without modifying state.
+    ) -> T_op:
+        """Return the evolved operator/state without modifying simulator state.
 
         Equivalent to [contract_partially][] with ``inplace=False``, decoded into a term dict.
 
@@ -503,10 +505,8 @@ class MonomialPropagator(ABC):
         """
         return self._simulator.evolved_operator(self._bind(parameters), atol)
 
-    def update_initial_operator(
-        self, new_operator: dict[tuple[int, ...], complex]
-    ) -> None:
-        """Replace coefficients of the *initial operator* the graph is evaluated against.
+    def update_initial_operator(self, new_operator: T_op) -> None:
+        """Replace coefficients of the *initial operator* (existing terms only).
 
         A re-weight, not a rebuild: the graph, its gates, and their generator coefficients are kept.
 
