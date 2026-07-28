@@ -26,41 +26,21 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-# Options handling utilities Macro for printing an option in a consistent manner
-# Written by Lori A. Burns (@loriab) and Ryan M. Richard (@ryanmrichard) Syntax:
-# print_option(<option to print> <was specified>)
-macro(print_option variable default)
-  if(NOT DEFINED ${variable} OR "${${variable}}" STREQUAL "")
-    message(STATUS "Setting (unspecified) option ${variable}: ${default}")
-  else()
-    message(STATUS "Setting option ${variable}: ${${variable}}")
-  endif()
-endmacro()
-
-# Wraps an option with default ON/OFF. Adds nice messaging to option() Written
-# by Lori A. Burns (@loriab) and Ryan M. Richard (@ryanmrichard) Syntax:
-# option_with_print(<option name> <description> <default value>)
-macro(option_with_print variable msge default)
-  print_option(${variable} ${default})
-  option(${variable} ${msge} ${default})
-endmacro()
-
-# Wraps an option with a default other than ON/OFF and prints it Written by Lori
-# A. Burns (@loriab) and Ryan M. Richard (@ryanmrichard) NOTE: Can't combine
-# with above b/c CMake handles ON/OFF options specially NOTE2: CMake variables
-# are always defined so need to further check for if they are the NULL string.
-# This is also why we need the force Syntax: option_with_default(<option name>
-# <description> <default value>)
-macro(option_with_default variable msge default)
-  print_option(${variable} "${default}")
-  if(NOT DEFINED ${variable} OR "${${variable}}" STREQUAL "")
-    set(${variable} "${default}" CACHE STRING ${msge} FORCE)
-  endif()
-endmacro()
-
-option_with_default(monoprop_MAX_NUM_MODES "Maximum number of simulable Fermionic modes with Python bindings" 250)
-option_with_print(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
-option_with_print(monoprop_WIDE_TERM_INDEX "Use 64-bit term indices (support > 2^32 terms per shard)" OFF)
+# A cache STRING rather than an option(): it holds a mode count, not a boolean. An explicitly
+# empty -Dmonoprop_MAX_NUM_MODES= is left empty and fails in the binding generators, instead of
+# silently reverting to the default. Every option below is echoed in the configuration report.
+set(
+  monoprop_MAX_NUM_MODES
+  "250"
+  CACHE STRING
+  "Maximum number of simulable Fermionic modes with Python bindings"
+)
+option(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
+option(
+  monoprop_WIDE_TERM_INDEX
+  "Use 64-bit term indices (support > 2^32 terms per shard)"
+  OFF
+)
 if(monoprop_WIDE_TERM_INDEX)
   add_compile_definitions(monoprop_WIDE_TERM_INDEX)
 endif()
@@ -73,12 +53,8 @@ endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
 
-if(DEFINED SKBUILD)
-  message(
-    STATUS
-    "Maximum simulable Fermionic modes with Python bindings: ${monoprop_MAX_NUM_MODES}"
-  )
-else()
+# PROJECT_VERSION_FULL comes from dynamic_version(), which is skipped under scikit-build-core.
+if(NOT DEFINED SKBUILD)
   message(STATUS "${PROJECT_NAME} version: ${PROJECT_VERSION_FULL}")
 endif()
 
@@ -103,6 +79,8 @@ message(
 )
 message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
+message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
+message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
 
 include(GNUInstallDirs)
 

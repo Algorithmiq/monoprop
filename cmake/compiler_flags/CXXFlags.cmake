@@ -37,7 +37,11 @@
 #
 #   CXXFLAGS
 
-option_with_print(monoprop_ENABLE_ARCH_FLAGS "Enable architecture-specific compiler flags" ON)
+option(
+  monoprop_ENABLE_ARCH_FLAGS
+  "Enable architecture-specific compiler flags"
+  ON
+)
 
 # code needs C++23 at least
 set(CMAKE_CXX_STANDARD 23)
