@@ -90,7 +90,7 @@ file(
   GLOB _bind_cpps
   LIST_DIRECTORIES false
   CONFIGURE_DEPENDS
-  "${CMAKE_CURRENT_BINARY_DIR}/generated/bind_up_to_[0-9][0-9][0-9].cpp"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/bind_up_to_[0-9]*.cpp"
 )
 set(_bind_cpps_print "")
 foreach(_cpp IN LISTS _bind_cpps)
