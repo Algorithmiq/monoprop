@@ -17,6 +17,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdlib>
+#include <type_traits>
 #include <utility>
 
 #include "monoprop/MPGraph.h"
@@ -120,6 +121,49 @@ inline auto wait_flat_exchange(CrossRankExchangeHandle &handle) -> void {
     handle.ticket.wait();
 }
 
+// One in-flight cross-rank round, shared by the evolution and derivative paths: !active means the
+// caller's participation guard declined and no transfer was posted.
+struct InFlightExchange {
+    CrossRankExchangeHandle handle;
+    int my_rank = 0;
+    bool active = false;
+};
+
+// Buffer lifecycle for one round: acquire the thread's scratch, size it, let `pack` fill the send
+// buffer, then post. Callers run the participation guard first (see
+// active_evolution_exchange_layout) so the layout is never materialized at a single rank.
+template <typename Pack>
+inline auto begin_layer_exchange(const LayerExchangeLayout &layout, const mpi::Comm &comm, Pack pack)
+    -> InFlightExchange {
+    InFlightExchange in_flight;
+    in_flight.my_rank = mpi::rank(comm);
+    in_flight.active = true;
+
+    auto &buffers = acquire_flat_exchange_buffers();
+    resize_flat_exchange_buffers(layout, buffers);
+    pack(in_flight.my_rank, layout, buffers.send_buffer);
+    in_flight.handle = begin_flat_exchange(layout, buffers, comm);
+    return in_flight;
+}
+
+// Wait for the transfer, then hand the payload to `apply(recv_buffer, recv_displs, my_rank)` and
+// return whatever it returns (an inactive round yields a default-constructed result).
+template <typename Apply>
+inline auto finish_layer_exchange(InFlightExchange &in_flight, Apply apply)
+    -> std::invoke_result_t<Apply &, const VecD &, const std::vector<int> &, int> {
+    using Result = std::invoke_result_t<Apply &, const VecD &, const std::vector<int> &, int>;
+    if (!in_flight.active || in_flight.handle.layout == nullptr) {
+        if constexpr (std::is_void_v<Result>) {
+            return;
+        }
+        else {
+            return Result{};
+        }
+    }
+    wait_flat_exchange(in_flight.handle);
+    return apply(in_flight.handle.buffers->recv_buffer, in_flight.handle.buffers->recv_displs, in_flight.my_rank);
+}
+
 // Pack sin_send entries from the pre-cos snapshots; the live state/op there are clobbered by the cos pass.
 void pack_cross_rank_derivative_payload_impl(const std::vector<VecD> &sin_send_state,
                                              const std::vector<VecD> &sin_send_op,
@@ -193,36 +237,21 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
 
 // In-flight cross-rank derivative exchange: pack + Ialltoallv fire up front so the transfer overlaps the
 // cos pass + self-slot; finish_cross_rank_derivative_exchange waits and applies the payloads.
-struct InFlightCrossRankDerivative {
-    CrossRankExchangeHandle handle;
-    int my_rank = 0;
-    bool active = false;
-};
-
 inline auto begin_cross_rank_derivative_exchange(const std::vector<VecD> &sin_send_state,
                                                  const std::vector<VecD> &sin_send_op,
                                                  const LayerTraversal &layer,
-                                                 const mpi::Comm &comm) -> InFlightCrossRankDerivative {
-    InFlightCrossRankDerivative in_flight;
+                                                 const mpi::Comm &comm) -> InFlightExchange {
     // Single-rank (or no peer participating): nothing to exchange — the self slot covers everything.
     if (active_evolution_exchange_layout(layer, comm) == nullptr) {
-        return in_flight;
+        return {};
     }
-    in_flight.my_rank = mpi::rank(comm);
-    in_flight.active = true;
-
-    const auto &layout = layer.derivative_exchange_layout();
-    auto &buffers = acquire_flat_exchange_buffers();
-    resize_flat_exchange_buffers(layout, buffers);
     // Safe to fire before the cos pass: pack reads pre-cos snapshots and the transfer touches only buffers.
-    pack_cross_rank_derivative_payload_impl(sin_send_state,
-                                            sin_send_op,
-                                            layer,
-                                            in_flight.my_rank,
-                                            layout,
-                                            buffers.send_buffer);
-    in_flight.handle = begin_flat_exchange(layout, buffers, comm);
-    return in_flight;
+    return begin_layer_exchange(
+        layer.derivative_exchange_layout(),
+        comm,
+        [&](int my_rank, const LayerExchangeLayout &layout, VecD &send_buffer) {
+            pack_cross_rank_derivative_payload_impl(sin_send_state, sin_send_op, layer, my_rank, layout, send_buffer);
+        });
 }
 
 // Wait for the transfer, then apply partner payloads at the remote sin_recv endpoints. MUST run after
@@ -233,20 +262,20 @@ inline auto finish_cross_rank_derivative_exchange(VecD &state,
                                                   const std::vector<VecD> &sin_recv_state,
                                                   const std::vector<VecD> &sin_recv_op,
                                                   const TrigValues &trig,
-                                                  InFlightCrossRankDerivative &in_flight) -> EndpointContrib {
-    if (!in_flight.active || in_flight.handle.layout == nullptr) {
-        return {};
-    }
-    wait_flat_exchange(in_flight.handle);
-    return apply_cross_rank_derivative_exchange_impl(state,
-                                                     op,
-                                                     layer,
-                                                     sin_recv_state,
-                                                     sin_recv_op,
-                                                     trig,
-                                                     in_flight.handle.buffers->recv_buffer,
-                                                     in_flight.handle.buffers->recv_displs,
-                                                     in_flight.my_rank);
+                                                  InFlightExchange &in_flight) -> EndpointContrib {
+    return finish_layer_exchange(
+        in_flight,
+        [&](const VecD &recv_buffer, const std::vector<int> &recv_displs, int my_rank) -> EndpointContrib {
+            return apply_cross_rank_derivative_exchange_impl(state,
+                                                             op,
+                                                             layer,
+                                                             sin_recv_state,
+                                                             sin_recv_op,
+                                                             trig,
+                                                             recv_buffer,
+                                                             recv_displs,
+                                                             my_rank);
+        });
 }
 
 void pack_cross_rank_evolution_payload_impl(VecD &op,
@@ -299,45 +328,27 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
 
 // In-flight cross-rank evolution exchange: pack + Ialltoallv fire up front so local compute overlaps;
 // finish_cross_rank_evolution_exchange applies the received contributions.
-struct InFlightCrossRankEvolution {
-    CrossRankExchangeHandle handle;
-    int my_rank = 0;
-    bool active = false;
-};
-
 inline auto begin_cross_rank_evolution_exchange(VecD &op, const LayerTraversal &layer, const mpi::Comm &comm)
-    -> InFlightCrossRankEvolution {
-    InFlightCrossRankEvolution in_flight;
+    -> InFlightExchange {
     const auto *layout = active_evolution_exchange_layout(layer, comm);
     if (layout == nullptr) {
-        return in_flight;
+        return {};
     }
-
-    in_flight.my_rank = mpi::rank(comm);
-    in_flight.active = true;
-
-    auto &buffers = acquire_flat_exchange_buffers();
-    resize_flat_exchange_buffers(*layout, buffers);
-    pack_cross_rank_evolution_payload_impl(op, layer, in_flight.my_rank, *layout, buffers.send_buffer);
-    in_flight.handle = begin_flat_exchange(*layout, buffers, comm);
-    return in_flight;
+    return begin_layer_exchange(
+        *layout,
+        comm,
+        [&](int my_rank, const LayerExchangeLayout &active_layout, VecD &send_buffer) {
+            pack_cross_rank_evolution_payload_impl(op, layer, my_rank, active_layout, send_buffer);
+        });
 }
 
 inline auto finish_cross_rank_evolution_exchange(VecD &op,
                                                  const LayerTraversal &layer,
                                                  double sin_val,
-                                                 InFlightCrossRankEvolution &in_flight) -> void {
-    if (!in_flight.active || in_flight.handle.layout == nullptr) {
-        return;
-    }
-
-    wait_flat_exchange(in_flight.handle);
-    apply_cross_rank_evolution_exchange_impl(op,
-                                             layer,
-                                             sin_val,
-                                             in_flight.handle.buffers->recv_buffer,
-                                             in_flight.handle.buffers->recv_displs,
-                                             in_flight.my_rank);
+                                                 InFlightExchange &in_flight) -> void {
+    finish_layer_exchange(in_flight, [&](const VecD &recv_buffer, const std::vector<int> &recv_displs, int my_rank) {
+        apply_cross_rank_evolution_exchange_impl(op, layer, sin_val, recv_buffer, recv_displs, my_rank);
+    });
 }
 
 // Snapshot-free self-slot endpoint pass: sin_recv entries k and k+pairs are the two endpoints of one
