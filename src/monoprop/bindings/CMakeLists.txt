@@ -94,7 +94,7 @@ file(
   # monoprop_MAX_NUM_MODES >= 993 emits four-digit batch ends (bind_up_to_1024.cpp). Match the
   # trailing digits too, or those translation units silently leave the target and the
   # bind_up_to_<end> that bind.h declares fails to link.
-  "${CMAKE_CURRENT_BINARY_DIR}/generated/bind_up_to_[0-9][0-9][0-9]*.cpp"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/bind_up_to_[0-9]*.cpp"
 )
 set(_bind_cpps_print "")
 foreach(_cpp IN LISTS _bind_cpps)
