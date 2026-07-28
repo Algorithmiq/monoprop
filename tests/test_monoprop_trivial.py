@@ -37,7 +37,6 @@ from monoprop.fermi import MajoranaOperator
 def test_trivial_evolved_operator_cases(
     initial_op, cutoff, schrodinger_cutoff, expected, serial_comm
 ):
-    """Test trivial evolved operator dict for various initial conditions."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
     quantum_circuit = Circuit(initial_state=[], gates=[])
     mp = MajoranaPropagator(
@@ -100,7 +99,6 @@ def test_update_initial_operator(
     expval_check,
     serial_comm,
 ):
-    """Test updating coefficients in both regular and Schrodinger pictures."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
     quantum_circuit = Circuit(initial_state=[], gates=[])
     mp = MajoranaPropagator(

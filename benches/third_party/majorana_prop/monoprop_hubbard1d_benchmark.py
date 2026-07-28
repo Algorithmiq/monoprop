@@ -18,8 +18,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-
-# import tracemalloc
 from time import perf_counter
 
 import numpy as np
@@ -27,8 +25,6 @@ from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.fermi import FermiOperator
 
 os.environ["YAQS_LOG_LEVEL"] = "INFO"
-
-# proc = psutil.Process(os.getpid())
 
 
 def mode(site, spin):
@@ -48,7 +44,6 @@ def hubbard_fermion_terms(num_sites, hopping, interaction, chemical_potential):
     terms = []
     topology = bricklayer_topology(num_sites)
 
-    # nearest-neighbour hopping: all spin-up bonds (bricklayer order), then all spin-down bonds
     for spin in ("up", "down"):
         for left_site, right_site in topology:
             left, right = mode(left_site, spin), mode(right_site, spin)
@@ -57,7 +52,6 @@ def hubbard_fermion_terms(num_sites, hopping, interaction, chemical_potential):
                 FermiOperator(terms=op_terms, coefficients=[-hopping, -hopping])
             )
 
-    # on-site Hubbard interaction
     for site in range(num_sites):
         up, down = mode(site, "up"), mode(site, "down")
         terms.append(
@@ -67,7 +61,6 @@ def hubbard_fermion_terms(num_sites, hopping, interaction, chemical_potential):
             )
         )
 
-    # chemical potential (one term per spin-orbital)
     for site in range(num_sites):
         for spin in ("up", "down"):
             m = mode(site, spin)
@@ -133,24 +126,21 @@ def main():
     case_pair = args.case
     n_spinful_sites, n_layers = spin_layer_cases[case_pair]
     trotter_steps = n_layers
-    # Parameters
     t = 1.0
     u = 1.5
     dt = 0.07
     min_abs = 1.0e-8
     max_cutoff = 10
     chemical_potential = 0
-    # checkerboard state |up down up down ...> across spinful sites
     intial_state = neel_occupied_modes(n_spinful_sites, start_spin="up")
     num_qubits = 2 * n_spinful_sites
 
-    # Majorana Operator (0-indexed equivalent of Julia's 1-indexed N // 2 site)
+    # 0-indexed equivalent of Julia's 1-indexed N // 2 observable site.
     obs_site = n_spinful_sites // 2 - 1
     obs_spin = "up"
     observable = number_operator_majorana(obs_site, obs_spin, num_qubits)
 
     trotter_gates = build_trotter_gates(n_spinful_sites, t, u, chemical_potential)
-    # each gate shares the same Trotter time step
     trotter_parameters = [dt for _ in trotter_gates]
 
     fermi_circuit = Circuit(
@@ -180,7 +170,6 @@ def main():
         term_counts[step + 1] = simulator.size()
     t_total = perf_counter() - t_start
     memory_size = simulator._simulator.operator_memory_bytes() / 1024**2
-    # rss0 = proc.memory_info().rss
     print(
         f"{n_spinful_sites} n_spin {n_layers} layers {term_counts[-1]} num_terms {values[-1]} final overlap  runtime {t_total:.3f} seconds"
     )

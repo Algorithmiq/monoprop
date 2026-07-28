@@ -31,14 +31,14 @@ _VALID_FERMI_CHARS = frozenset("+-")
 
 
 class FermiString:
-    """Class representing a Fermi string."""
+    """An ordered product of fermionic ladder operators."""
 
     def __init__(self, expression: Sequence[tuple[int, str]] | FermiString) -> None:
         """Initialize the Fermi string.
 
         Args:
-            expression: List of (index, char +/-) pairs representing the Fermi string.
-                The index should be a non-negative integer, and the char should be either '+' or '-'.
+            expression: A sequence of ``(mode index, '+' or '-')`` pairs, with non-negative
+                indices, or another [FermiString][] to copy.
         """
         if isinstance(expression, FermiString):
             self.expression = expression.expression
@@ -47,6 +47,7 @@ class FermiString:
             self.expression = tuple(expression)
 
     def _validate_signal(self, ferm_expression: Sequence[tuple[int, str]]) -> None:
+        """Reject negative mode indices and operator characters other than ``+``/``-``."""
         for idx, op in ferm_expression:
             if idx < 0:
                 raise ValueError(f"Invalid index {idx}: must be non-negative")
@@ -55,7 +56,7 @@ class FermiString:
             raise ValueError(f"Invalid operator(s) {invalid!r}: must be '+' or '-'")
 
     def _canonicalize(self) -> tuple[tuple[tuple[int, str], ...], int]:
-        """Return the FermiString in a predefined order and a permutation sign."""
+        """Return the expression ordered ``+`` before ``-`` (each ascending) and the swap sign."""
         expr = list(self.expression)
 
         def key(op: tuple[int, str]) -> tuple[int, int]:
@@ -103,7 +104,7 @@ def _fermi_string_to_majorana_terms(
 
 
 class FermiOperator:
-    """Class representing a summed fermi operator."""
+    """A weighted sum of [FermiString][] terms."""
 
     def __init__(
         self,
@@ -114,12 +115,10 @@ class FermiOperator:
         """Initialize the fermi operator.
 
         Args:
-            terms: List of FermiString objects representing the operator.
-            coefficients: List of coefficients corresponding to the terms.
-            num_modes: Optional number of modes. If not provided, it will be inferred from the terms.
-
-        Raises:
-            ValueError: If any index is out of bounds or if there are duplicate indices.
+            terms: The [FermiString][] terms, or ``(index, '+'/'-')`` sequences to build them.
+            coefficients: One coefficient per term, in the same order.
+            num_modes: Inferred as one past the largest index in ``terms`` when ``None``, which
+                needs at least one term -- pass it explicitly to build an empty operator.
         """
         self.terms = [
             t if isinstance(t, FermiString) else FermiString(t) for t in terms
@@ -170,7 +169,11 @@ class FermiOperator:
     __hash__ = None  # type: ignore[assignment]  # value-equal but mutable
 
     def _as_dict(self) -> dict[tuple, complex]:
-        """Return the operator as a dictionary."""
+        """Return ``{canonical expression: coefficient}``, with the reordering sign folded in.
+
+        Two terms that canonicalize alike collapse to the last one rather than summing, so this
+        is a comparison aid ([isclose][]), not an operator normal form.
+        """
         result = {}
         for term, coeff in zip(self.terms, self.coefficients):
             cano, sign = term._canonicalize()
@@ -180,13 +183,8 @@ class FermiOperator:
     def isclose(self, other: object, rtol: float = 1e-05, atol: float = 1.0e-8) -> bool:
         """Check that two operators are almost equal, term-wise.
 
-        Args:
-            other: the other FermiOperator to compare to.
-            rtol: the relative tolerance parameter.
-            atol: the absolute tolerance parameter.
-
-        Returns:
-            A boolean.
+        Terms are compared after canonicalization, with ``numpy.isclose`` at ``rtol``/``atol``;
+        a differing mode count is False, not an error.
 
         Raises:
             TypeError: If ``other`` is not a [FermiOperator][].

@@ -12,18 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pauli propagator.
-
-Concrete [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] that accepts qubit (Pauli)
-operators and gates.
-"""
+"""Pauli propagator: the qubit front-end of the shared monomial-propagation engine."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .conversion_utils import _local_slots_to_pauli
 from .monomial_propagator import MonomialPropagator
-from .utils import jordan_wigner_basis_change
+from .pauli import Pauli, PauliOperator
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -33,19 +30,15 @@ if TYPE_CHECKING:
 
     from .circuit import Circuit, ExpGate
     from .monomial_propagator import ParameterValues
-    from .pauli import PauliOperator
 
 
 class PauliPropagator(MonomialPropagator):
     """Classical simulator for qubit (Pauli) operators.
 
-    Accepts a [PauliOperator][monoprop.pauli.PauliOperator] observable and a
-    [Circuit][monoprop.circuit.Circuit] of qubit (Pauli) [ExpGate][monoprop.circuit.ExpGate] gates.
-    See [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] for the shared building,
-    evaluation, and introspection surface.
-
-    The cutoff is measured as qubit Pauli weight (the number of qubits a retained term
-    touches); ``cutoff_type`` is fixed and read-only on this class.
+    Accepts a [PauliOperator][monoprop.pauli.PauliOperator] and a [Circuit][monoprop.circuit.Circuit] of
+    qubit gates; see [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] for the shared
+    surface. The cutoff is qubit Pauli weight -- the number of qubits a retained term touches --
+    so ``cutoff_type`` is fixed and read-only here.
     """
 
     def __init__(
@@ -61,69 +54,74 @@ class PauliPropagator(MonomialPropagator):
     ) -> None:
         """Initialize the qubit propagator.
 
-        See [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] for the shared
-        arguments. The cutoff is always measured as Pauli weight, so ``cutoff`` bounds the
-        number of qubits a retained term touches.
-
         Args:
-            initial_operator: Initial qubit operator as a
-                [PauliOperator][monoprop.pauli.PauliOperator].
+            initial_operator: Initial qubit operator; its ``num_qubits`` sizes the simulator.
             initial_state: Computational-basis reference (indices of qubits set to 1).
-            cutoff: Maximum Pauli weight (number of qubits touched) retained during
-                evolution. The fully-paired exception described in
-                [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] still applies.
-            schrodinger_cutoff: Optional cutoff for Schrodinger-picture evolution. If
-                provided, enables the Schrodinger picture, starting in a n initial state
-                with terms truncated with that parameter; if ``None``, the Heisenberg
-                picture is used. It is recommended that ``schrodinger_cutoff`` be slightly
-                larger than ``cutoff`` for comparable accuracy.
-            lower_atol: Optional lower coefficient-truncation tolerance.
-            upper_atol: Optional upper coefficient-retention tolerance.
+            cutoff: Maximum Pauli weight retained during evolution. The fully-paired exception
+                described on [MajoranaPropagator.__init__][monoprop.majorana_propagator.MajoranaPropagator.__init__]
+                still applies.
+            schrodinger_cutoff: ``None`` (default) keeps the Heisenberg picture; an integer selects
+                the Schrodinger picture and bounds the Pauli weight of the evolved state, including
+                its initialization from ``initial_state``. Choose it at least as large as ``cutoff``
+                for comparable accuracy.
+            lower_atol: Monomials with ``|coeff| < lower_atol`` are discarded during evolution.
+            upper_atol: Monomials with ``|coeff| > upper_atol`` are kept regardless of weight.
             comm: Optional MPI communicator (must outlive the propagator).
         """
-        # The PauliOperator carries its own qubit count (a required constructor argument), so
-        # the propagator reads it directly rather than validating it here.
         num_qubits = initial_operator.num_qubits
-
-        # we have to multiply the Schrodinger cutoff by 2, because the Majorana
-        # cutoff is measured in terms of Majorana operators, while PauliPropagator
-        # measures it in terms of qubits. Each qubit corresponds to 2 Majorana operators.
+        # The engine takes the Schrodinger cutoff in gamma slots (two per qubit); this API in qubits.
         schrodinger_cutoff = (
             None if schrodinger_cutoff is None else 2 * schrodinger_cutoff
         )
-
         self._init_simulator(
-            initial_operator.get_majorana_operator(),
+            initial_operator.get_local_operator(),
             initial_state,
             cutoff=cutoff,
             schrodinger_cutoff=schrodinger_cutoff,
             cutoff_type="support",
             lower_atol=lower_atol,
             upper_atol=upper_atol,
-            basis_change=jordan_wigner_basis_change(num_qubits),
+            basis_change=None,
             comm=comm,
+            basis="pauli",
         )
-        # The qubit count comes from the observable and is carried into Pauli gate expansion
-        # via build_graph (_init_simulator initializes it to None).
+        # Must follow _init_simulator, which resets it to None.
         self._num_qubits = num_qubits
 
     @property
     def num_qubits(self) -> int:
         """Number of qubits the propagator acts on."""
-        # Always set in __init__ (which raises if the observable has no qubit count); the base
-        # declares it Optional for the native Majorana propagator.
+        # Always set in __init__; the base declares it Optional for the Majorana propagator.
         if self._num_qubits is None:
             raise RuntimeError("PauliPropagator has no qubit count set.")
         return self._num_qubits
 
-    def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
-        """Accept a qubit circuit; its gates are expanded by the shared pipeline.
+    def evolved_operator(  # type: ignore[override]
+        self,
+        parameters: ParameterValues = None,
+        *,
+        atol: float = 1e-12,
+    ) -> PauliOperator:
+        """Return the evolved operator as a [PauliOperator][monoprop.pauli.PauliOperator].
 
-        A ``PauliPropagator`` rejects a Majorana/fermionic circuit. The Jordan-Wigner mapping
-        and antihermitian normalization live in [expand_monomials][monoprop.circuit.expand_monomials];
-        the propagator's ``num_qubits`` (from the observable) reaches the expander via
-        ``self._num_qubits``.
+        Unlike the base method, which hands back the engine's raw gamma-slot keys, this decodes
+        them into qubit Pauli terms.
+
+        Args:
+            parameters: Variational parameter values (see [expectation_value][]).
+            atol: Terms with ``|coeff| < atol`` are dropped; ``0.0`` keeps all of them.
+
+        Returns:
+            The evolved qubit operator (Heisenberg picture) or evolved state (Schrodinger picture).
         """
+        raw = super().evolved_operator(parameters, atol=atol)
+        terms: dict[Pauli, complex] = {
+            Pauli(*_local_slots_to_pauli(slots)): coeff for slots, coeff in raw.items()
+        }
+        return PauliOperator(terms, self.num_qubits)
+
+    def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
+        """Accept a qubit circuit and return its gates; reject a Majorana/fermionic one."""
         if circuit.family == "majorana":
             raise TypeError(
                 "PauliPropagator requires a qubit circuit; its gates are Majorana/fermionic. "
@@ -163,7 +161,7 @@ class PauliPropagator(MonomialPropagator):
         ``0..n-1``:
 
         - **per graph layer** (length [graph_layers][], in the parameter-vector order):
-          relabels each Jordan-Wigner-mapped Majorana monomial layer directly.
+          relabels each generated Pauli monomial layer directly.
         - **per gate** (length [n_gates][], indexed by gate): expanded to per-layer via
           each layer's gate, so a multi-term Pauli gate's layers stay tied. This is the
           granularity of the authoring [Circuit][monoprop.circuit.Circuit]'s mapping.
@@ -200,42 +198,16 @@ class PauliPropagator(MonomialPropagator):
                 omitted while extending, the new layers are built structurally (coefficient
                 truncation is skipped for them); the engine validates the length of an explicit
                 seed.
-            only_rotate_len_k: If provided, apply gates to Pauli operators of length <= k
-                in the evolved operator (the qubit gates are Jordan-Wigner-mapped to Pauli
-                operators first, so ``k`` ranges up to ``num_qubits``) even if they
-                anticommute. In here, length is understood as the number of X and Z
-                operators that are required to express a given Pauli term.
+            only_rotate_len_k: If provided, apply gates to Pauli terms of length <= k in the
+                evolved operator even if they anticommute. Length is counted in the engine's
+                gamma slots, not in qubits: ``X`` or ``Y`` on a qubit costs one slot and ``Z``
+                costs two, so ``k`` ranges up to ``2 * num_qubits``.
         """
         super().build_graph(
             circuit,
             seed_parameters=seed_parameters,
             only_rotate_len_k=only_rotate_len_k,
         )
-
-    def evolved_operator(
-        self,
-        parameters: ParameterValues = None,
-        *,
-        atol: float = 1e-12,
-    ) -> dict[tuple[int, ...], complex]:
-        """Return the evolved operator/state as a dict, without modifying state.
-
-        Equivalent to [contract_partially][] with ``inplace=False``, returned as a mapping
-        keyed by Majorana indices -- the underlying representation is Majorana even for a
-        qubit propagator (qubit gates are Jordan-Wigner-mapped to Majorana monomials) --
-        without touching the simulator state.
-
-        Args:
-            parameters: Variational parameter values (see [expectation_value][]).
-            atol: Absolute tolerance for filtering small coefficients; terms with
-                ``|coeff| < atol`` are dropped. Defaults to ``1e-12``; set to ``0.0`` to
-                keep all terms.
-
-        Returns:
-            The evolved operator (Heisenberg picture) or the evolved state (Schrodinger
-            picture) as a dict mapping Majorana-index tuples to complex coefficients.
-        """
-        return super().evolved_operator(parameters, atol=atol)
 
     def update_initial_operator(
         self, new_operator: dict[tuple[int, ...], complex]
@@ -244,17 +216,16 @@ class PauliPropagator(MonomialPropagator):
 
         Re-weights the initial operator the graph is evaluated against, without touching
         the evolution graph or rebuilding the simulator. Only the initial operator is
-        affected -- the gates and their generator coefficients are unchanged -- and only
-        Majorana terms already present in the initial operator (the Jordan-Wigner-mapped
-        representation of the qubit operator) can be updated (no new terms are introduced).
+        affected -- the gates and their generator coefficients are unchanged.
 
         Args:
-            new_operator: Mapping from Majorana-index tuples to their new complex
-                coefficients.
+            new_operator: Mapping from gamma-slot tuples -- the engine's native Pauli keys, where
+                qubit ``q`` contributes ``{2q}`` for ``X``, ``{2q+1}`` for ``Y`` and both for
+                ``Z`` -- to their new complex coefficients.
 
         Raises:
-            RuntimeError: If a term in ``new_operator`` is not present in the current
-                initial operator.
+            RuntimeError: In the Heisenberg picture, if a term in ``new_operator`` is not
+                present in the current initial operator.
         """
         super().update_initial_operator(new_operator)
 

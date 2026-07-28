@@ -357,11 +357,11 @@ before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
 environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
 
 [tool.cibuildwheel.macos]
-before-all = "brew install boost tbb"
+before-all = "brew install boost"
 environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
 
 [[tool.cibuildwheel.overrides]]
-# override on x86_64 to set TBB environment variables
+# override on x86_64 to keep the gcc-toolset runtime and /usr/local pkg-config paths visible
 select = "*_x86_64"
 inherit.environment = "prepend"
-environment = { ONEAPI_ROOT = "/opt/intel/oneapi", TBBROOT = "$ONEAPI_ROOT/tbb/latest", LD_LIBRARY_PATH = "$TBBROOT/lib/intel64/gcc4.8:/opt/rh/gcc-toolset-14/root/usr/lib64:/opt/rh/gcc-toolset-14/root/usr/lib:/opt/rh/gcc-toolset-14/root/usr/lib64/dyninst:/opt/rh/gcc-toolset-14/root/usr/lib/dyninst", C_INCLUDE_PATH = "$TBBROOT/include", CMAKE_PREFIX_PATH = "$TBBROOT", LIBRARY_PATH = "$TBBROOT/lib/intel64/gcc4.8", CPLUS_INCLUDE_PATH = "$TBBROOT/include", PKG_CONFIG_PATH = "$TBBROOT/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig" }
+environment = { LD_LIBRARY_PATH = "/opt/rh/gcc-toolset-14/root/usr/lib64:/opt/rh/gcc-toolset-14/root/usr/lib:/opt/rh/gcc-toolset-14/root/usr/lib64/dyninst:/opt/rh/gcc-toolset-14/root/usr/lib/dyninst", PKG_CONFIG_PATH = "/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig" }

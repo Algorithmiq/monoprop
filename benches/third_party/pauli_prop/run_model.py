@@ -70,7 +70,6 @@ def _grid_edges(nx: int, ny: int) -> list[tuple[int, int]]:
     return edges
 
 
-# --- Simulation parameters (shared by every engine, see settings.json) ---
 with open(Path(__file__).parent / "settings.json") as settings_file:
     settings = json.load(settings_file)
 
@@ -108,7 +107,6 @@ theta_z = dt * hz
 theta_zz = dt * j
 grid_edges = _grid_edges(nx, ny)
 
-# One Trotter step of the tilted TFIM: ZZ couplings, then the Z field, then the X field.
 step_circ = QuantumCircuit(nq)
 for i, k in grid_edges:
     step_circ.rzz(theta_zz, i, k)
@@ -119,7 +117,6 @@ for i in range(nq):
 
 obs = SparsePauliOp.from_sparse_list([("ZZ", list(obs_qubits), 1.0)], num_qubits=nq)
 
-# --- monoprop ---
 mp_circ = from_qiskit_circuit(step_circ, initial_state=[])
 mp_obs = from_qiskit_operator(obs)
 mp = PauliPropagator(
@@ -129,7 +126,6 @@ mp = PauliPropagator(
     lower_atol=lower_atol,
 )
 
-# --- QuEra ppvm ---
 ppvm_obs = PauliSum.new(
     n_qubits=nq,
     terms=[f"Z{obs_qubits[0]}Z{obs_qubits[1]}"],
@@ -137,10 +133,8 @@ ppvm_obs = PauliSum.new(
     max_pauli_weight=max_pauli_weight,
 )
 
-# --- Qiskit pauli-prop (reuses the qiskit circuit and observable built above) ---
 qiskit_obs = obs
 
-# --- cuPauliProp (GPU, via cuquantum) ---
 cupp_handle = LibraryHandle()
 
 num_packed = get_num_packed_integers(nq)
@@ -170,7 +164,6 @@ cupp_step_gates += [PauliRotationGate(theta_z, ["Z"], [i]) for i in range(nq)]
 cupp_step_gates += [PauliRotationGate(theta_x, ["X"], [i]) for i in range(nq)]
 
 for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
-    # --- monoprop --- (exposes its own C++ operator-memory accounting)
     t1 = time.perf_counter()
     mp.propagate(mp_circ)
     expval = mp.expectation_value()
@@ -181,7 +174,7 @@ for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
     num_terms_dict["monoprop"].append(mp.size())
     memory_dict["monoprop"].append(mp._simulator.operator_memory_bytes() / 1024**2)
 
-    # --- QuEra ppvm --- (no memory accounting exposed: approximate via RSS growth over this step)
+    # ppvm exposes no memory accounting: approximate it via RSS growth over its own step.
     mem_before = process.memory_info().rss
     t1 = time.perf_counter()
     for i, k in grid_edges:
@@ -200,8 +193,8 @@ for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
     num_terms_dict["QuEra ppvm"].append(len(ppvm_obs))
     memory_dict["QuEra ppvm"].append(ppvm_mem_bytes / 1024**2)
 
-    # --- Qiskit pauli-prop --- (max_terms tracks monoprop's own term count at this step, since
-    # this API has no weight-based cutoff, only a mandatory positive term budget)
+    # max_terms tracks monoprop's own term count at this step: this API has no weight-based
+    # cutoff, only a mandatory positive term budget.
     mem_before = process.memory_info().rss
     max_terms = mp.size()
     t1 = time.perf_counter()
@@ -218,7 +211,6 @@ for step_idx, _ in enumerate(tqdm(step_range, desc="Running simulations")):
     num_terms_dict["Qiskit pauli-prop"].append(len(qiskit_obs))
     memory_dict["Qiskit pauli-prop"].append(qiskit_mem_bytes / 1024**2)
 
-    # --- cuPauliProp (GPU) --- (exposes its own cupy device-memory pool accounting)
     t1 = time.perf_counter()
     for gate in reversed(cupp_step_gates):
         cupp_expansion = cupp_expansion.apply_gate(

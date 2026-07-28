@@ -55,8 +55,6 @@ export default defineConfig({
     // Tutorial pages inline figures as base64 `data:` URIs; keep them as plain
     // `<img src>` instead of turning images into static imports.
     remarkImageOptions: { useImport: false },
-    // `remarkXref` resolves mkdocstrings-style `[Symbol][]` prose references into
-    // links to the API reference, reusing the generator's symbol->URL map.
     remarkPlugins: [remarkMath, remarkXref],
     // `rehypeCitation` resolves `[@key]` references against bibliography.bib
     // (replacing sphinxcontrib-bibtex); `rehypeKatex` renders the math nodes

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""monoprop: because your operators deserve to propagate at escape velocity."""
+"""monoprop: classical Majorana and Pauli monomial propagation."""
 
 from __future__ import annotations
 

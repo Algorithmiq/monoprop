@@ -256,11 +256,10 @@ def build_report(results_dir: Path) -> str:
     def sec(name: str) -> dict[str, dict]:
         return {lbl: results.get(lbl, {}).get(name, {}) for lbl in labels}
 
-    params, opsize, memrest, storage, memory = (
+    params, opsize, memrest, memory = (
         sec("params"),
         sec("opsize"),
         sec("memrest"),
-        sec("storage"),
         sec("mem"),
     )
 
@@ -277,11 +276,6 @@ def build_report(results_dir: Path) -> str:
     # with conftest.
     param_keys = next((list(params[lbl]) for lbl in labels if params.get(lbl)), [])
     pictures = _pictures_present(opsize, labels)
-    storage_rows = [
-        ((p, comp), f"{_PICTURE_NAMES[p]} / {comp}")
-        for p in _pictures_present(storage, labels)
-        for comp in ("operator", "graph")
-    ]
 
     def ops_section(name: str, picture: str) -> list[str]:
         ops = [(op, _display_op(op)) for op in all_ops if _picture_of(op) == picture]
@@ -300,7 +294,7 @@ def build_report(results_dir: Path) -> str:
                 level=3,
             ),
             *_section(
-                "Memory (PSS)",
+                "Memory (RSS)",
                 "",
                 "Operation",
                 ops,
@@ -314,9 +308,9 @@ def build_report(results_dir: Path) -> str:
         "# monoprop benchmark report",
         "",
         f"Run labels: **{', '.join(labels)}**. Times are the mean over rounds; "
-        "memory is the peak physical footprint (PSS) during each operation. Under "
-        "MPI it is the peak of the PSS summed across ranks (true physical RAM, "
-        "shared pages counted once), not the sum of per-rank peaks.",
+        "memory is the peak resident footprint (RSS) during each operation. Under "
+        "MPI it is the peak of the RSS summed across ranks (shared pages counted "
+        "per rank, so an upper bound), not the sum of per-rank peaks.",
         "",
         *_config_table(labels, results),
         *_section(
@@ -340,22 +334,13 @@ def build_report(results_dir: Path) -> str:
             ),
         ),
         *_section(
-            "Operator resting footprint (PSS)",
+            "Operator resting footprint (RSS)",
             "Settled resident memory of the built operator + graph, after the "
             "build's transient buffers are freed (`gc.collect()` + `heap_trim`).",
             "Picture",
             [(p, _PICTURE_NAMES[p]) for p in _pictures_present(memrest, labels)],
             labels,
             lambda lbl, p: _fmt_mem(memrest.get(lbl, {}).get(p)),
-        ),
-        *_section(
-            "Storage breakdown: operator vs graph",
-            "Structural memory of the built propagator (C++ capacity-based "
-            "accounting, not PSS), split between the operator and the graph.",
-            "Picture / component",
-            storage_rows,
-            labels,
-            lambda lbl, key: _fmt_mem(storage.get(lbl, {}).get(key[0], {}).get(key[1])),
         ),
         *_model_config_section(labels, results),
         *ops_section("Heisenberg", "heisenberg"),
