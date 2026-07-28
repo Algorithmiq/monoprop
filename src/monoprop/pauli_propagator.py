@@ -246,3 +246,13 @@ class PauliPropagator(MonomialPropagator):
     def graph_layers(self) -> int:
         """Number of evolved Pauli operators (graph layers)."""
         return super().graph_layers
+
+    @property
+    def num_modes(self) -> int:
+        """Number of qubits the propagator acts on -- the same value as [num_qubits][].
+
+        The Pauli basis counts one mode per qubit (two gamma slots each), so the inherited
+        mode-count name and [num_qubits][] never disagree here; prefer [num_qubits][] in
+        qubit-facing code.
+        """
+        return super().num_modes

@@ -253,4 +253,4 @@ class MajoranaPropagator(MonomialPropagator):
     @property
     def num_modes(self) -> int:
         """Number of fermionic modes for the simulator."""
-        return self._simulator.num_modes
+        return super().num_modes
