@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include <cstddef>
 #include <format>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -25,15 +27,7 @@
 
 namespace monoprop {
 
-/**
- * @brief Class for storing and manipulating the Monomial Propagator graph.
- *
- * This class represents the graph for a single rank. Each layer contains:
- * - Cosine indices (local)
- * - Local cycles (both indices on this rank)
- * - Outgoing sources (source indices to send to each target rank)
- * - Incoming targets (target indices to update from each source rank)
- */
+/// Ordered per-rank record of the evolution circuit, one Layer per generator.
 class monoprop_EXPORT MPGraph {
 private:
     using LayerIterator = std::vector<Layer>::iterator;
@@ -70,131 +64,47 @@ private:
         return active_begin_index() + layer_idx;
     }
 
-    auto append_active_layers_to(std::vector<Layer> &target) const -> void {
-        target.insert(target.end(), active_begin_iterator(), active_end_iterator());
-    }
-
 public:
-    /**
-     * @brief Initialize the Majorana graph.
-     *
-     * @param schrodinger Whether the simulation is in the Schrodinger picture.
-     */
     explicit MPGraph(bool schrodinger) : schrodinger_(schrodinger) {}
 
-    /**
-     * @brief Initialize the Majorana graph with existing layers.
-     *
-     * @param schrodinger Whether the simulation is in the Schrodinger picture.
-     * @param layers Vector of Layer objects.
-     */
     explicit MPGraph(bool schrodinger, std::vector<Layer> layers)
         : schrodinger_(schrodinger),
           layers_(std::move(layers)) {}
 
-    /**
-     * @brief Append a new layer to the graph with flattened cross-rank storage.
-     *
-     * @param cos_inds Cosine indices for this layer.
-     * @param local_cycles Local cycles (source, target, phase on this rank).
-     * @param cross_rank Cross-rank cycles indexed by remote rank.
-     */
-    auto append(VecZ cos_inds,
-                std::vector<LocalCycle> local_cycles,
-                std::vector<CrossRankCycles> cross_rank,
+    /// Gate info (param_index, gen_coeff, gate_index) is written onto `storage` here while it is still
+    /// mutable, before it is frozen into the Layer's shared const core.
+    auto append(std::shared_ptr<LayerCore> storage,
                 size_t param_index = 0,
                 double gen_coeff = 0.0,
                 size_t gate_index = 0) -> void {
-        Layer layer(std::move(cos_inds), std::move(local_cycles), std::move(cross_rank));
-        layer.set_gate_info(param_index, gen_coeff, gate_index);
-        append_layer(std::move(layer));
+        storage->param_index = param_index;
+        storage->gen_coeff = gen_coeff;
+        storage->gate_index = gate_index;
+        append_layer(Layer(std::move(storage)));
     }
 
-    auto append(CompressedCosineData cos_data,
-                std::vector<LocalCycle> local_cycles,
-                std::vector<CrossRankCycles> cross_rank,
-                size_t param_index = 0,
-                double gen_coeff = 0.0,
-                size_t gate_index = 0) -> void {
-        Layer layer(std::move(cos_data), std::move(local_cycles), std::move(cross_rank));
-        layer.set_gate_info(param_index, gen_coeff, gate_index);
-        append_layer(std::move(layer));
-    }
-
-    /**
-     * @brief Slice the graph at the given key.
-     *
-     * @param key Number of earliest operations to include in the slice.
-     * @param contract If true, modify this graph to remove the sliced part.
-     * @return A new graph containing the sliced layers.
-     */
+    /// Slice the graph at `key` (the number of earliest operations to include); `contract` also removes
+    /// the sliced part from this graph.
     auto slice_graph(size_t key, bool contract = false) -> MPGraph;
 
     auto slice_view(size_t key) const -> MPGraphView;
 
-    auto consume_prefix(size_t key) -> void;
-
-    /**
-     * @brief Create a union of two graphs without copying layer data.
-     *
-     * @param other The other graph to union with.
-     * @return A new graph containing references to all layers from both graphs.
-     */
-    auto union_with(const MPGraph &other) const -> MPGraph;
-
-    /**
-     * @brief Get the number of layers.
-     *
-     * @return The number of layers in the graph.
-     */
     auto layers() const -> size_t { return active_end_index() - active_begin_index(); }
 
-    /**
-     * @brief Get a specific layer from the graph.
-     *
-     * @param layer_idx The layer index.
-     * @return Reference to the Layer object.
-     */
-    auto get_layer(size_t layer_idx) -> Layer & { return layers_[checked_layer_offset(layer_idx)]; }
+    auto get_layer(size_t layer_idx) -> Layer& { return layers_[checked_layer_offset(layer_idx)]; }
 
-    auto get_layer(size_t layer_idx) const -> const Layer & { return layers_[checked_layer_offset(layer_idx)]; }
+    auto get_layer(size_t layer_idx) const -> const Layer& { return layers_[checked_layer_offset(layer_idx)]; }
 
     auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
 
-    /**
-     * @brief Check if the graph is in Schrodinger picture.
-     *
-     * @return True if the graph is in Schrodinger picture, false otherwise.
-     */
+    /// Non-owning replay view over the active layers, in build order.
+    auto replay_view() const -> MPGraphView { return MPGraphView(layers_, active_begin_index(), layers(), false); }
+
     auto is_schrodinger() const -> bool { return schrodinger_; }
 
-    /**
-     * @brief Return the number of cos_inds and cycles across all layers.
-     *
-     * @return Pair containing the number of (cos_inds, cycles).
-     */
-    auto num_cos_inds_and_cycles() const -> std::pair<size_t, size_t>;
+    /// A normally-built layer stores no cosine set, so the companion cosine-index count cannot come from
+    /// the graph: only the operator's inverted index can supply it.
+    auto total_cycles() const -> size_t;
     auto storage_memory_usage() const -> GraphMemoryBreakdown;
 };
 } // namespace monoprop
-
-namespace std {
-template <>
-struct formatter<monoprop::Layer> {
-    constexpr auto parse(format_parse_context &ctx) { return ctx.begin(); }
-    template <typename FormatContext>
-    auto format(const monoprop::Layer &layer, FormatContext &ctx) const {
-        size_t outgoing_count = 0, incoming_count = 0;
-        for (size_t rank = 0; rank < layer.cross_rank_rank_count(); ++rank) {
-            outgoing_count += layer.cross_rank_out_size(rank);
-            incoming_count += layer.cross_rank_in_size(rank);
-        }
-        return std::format_to(ctx.out(),
-                              "Layer{{cos_inds={}, local={}, outgoing={}, incoming={}}}",
-                              layer.num_cos_inds(),
-                              layer.local_cycle_count(),
-                              outgoing_count,
-                              incoming_count);
-    }
-};
-} // namespace std

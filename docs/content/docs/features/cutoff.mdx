@@ -20,10 +20,9 @@ that is **fully paired** — every Majorana operator it contains comes as a
 complete pair $m_{2j-1}m_{2j}$ on some mode, or, in qubit space, the monomial is
 a product of Pauli-$Z$ operators — is *always kept*, regardless of
 its size. Fully paired monomials are exactly the terms that can contribute to an
-expectation value against a computational-basis or Slater-determinant reference,
-so discarding them would throw away signal (see
-[Propagation Algorithm](/concepts/algorithm)). The cutoff therefore only ever
-prunes the remaining, partially paired monomials.
+expectation value against a product reference state, so discarding them would
+throw away signal (see [Propagation Algorithm](/concepts/algorithm)). The cutoff
+therefore only ever prunes the remaining, partially paired monomials.
 
 ## Majorana operators: `length` or `support`
 

@@ -14,6 +14,8 @@
 
 #define BOOST_TEST_MODULE "MonoProp Unit Tests"
 
+#include <cstdlib>
+
 #include <boost/test/unit_test.hpp>
 
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -23,6 +25,8 @@ static auto init() -> bool {
 }
 
 auto main(int argc, char* argv[]) -> int {
+    // overwrite=0, so an explicit environment override still wins; why it is off: tests/cpp/README.md.
+    setenv("monoprop_PARTITIONS", "off", 0);
     monoprop::mpi::init(&argc, &argv);
     int result = boost::unit_test::unit_test_main(&init, argc, argv);
     monoprop::mpi::finalize();

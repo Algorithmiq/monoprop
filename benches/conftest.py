@@ -45,7 +45,7 @@ from _builders import (
     build_random_propagator,
     make_random_problem,
 )
-from _memory import PssSampler, merge_peak_of_sum, resting_pss_bytes
+from _memory import RssSampler, merge_peak_of_sum, resting_rss_bytes
 
 import monoprop
 
@@ -58,7 +58,9 @@ if TYPE_CHECKING:
 
 try:
     from mpi4py import MPI
-except ImportError:  # pragma: no cover - depends on optional MPI build
+except (ImportError, OSError, RuntimeError):  # pragma: no cover - optional MPI build
+    # mpi4py may be absent, or (the ABI wheel) present but unable to dlopen libmpi
+    # on a serial node with no MPI module loaded.
     MPI = None
 
 
@@ -79,9 +81,6 @@ def _reduce_sum(comm: Any, value: int) -> int:
     return value
 
 
-# Random-benchmark options as ``(name, default, help)`` (all int). This is the
-# single source of truth: the CLI options and the recorded hyperparameters (in
-# this display order) are both derived from it.
 _RANDOM_OPTIONS = (
     ("gen-length", 4, "Majorana operators per generator."),
     ("obs-terms", 10000, "Observable terms."),
@@ -96,11 +95,12 @@ _RANDOM_OPTIONS = (
 _RESULTS: dict[str, Any] = {
     "meta": {},  # run configuration (ranks, threads, host, ...)
     "params": {},  # resolved random-problem hyperparameters
-    "mem": {},  # node id -> peak PSS bytes (per operation)
-    "opsize": {},  # picture -> {"terms": n}
-    "memrest": {},  # picture -> resting PSS bytes
-    "storage": {},  # picture -> {"operator": bytes, "graph": bytes}
+    "mem": {},  # node id -> peak RSS bytes (per operation)
+    "opsize": {},  # picture / model -> {"terms": n}
+    "memrest": {},  # picture / model -> resting RSS bytes
+    "membase": {},  # fixed model -> resting RSS bytes before the model is built
     "configs": {},  # fixed model -> config dataclass fields
+    "opmem": {},  # fixed model -> per-field operator memory split (bytes)
 }
 
 
@@ -111,11 +111,7 @@ def _record(section: str, key: str, value: Any) -> None:
 
 
 def _results_path() -> Path | None:
-    """Return ``results/<label>.json``, or ``None`` when recording is off.
-
-    Recording is on only when ``just bench`` exported ``monoprop_BENCH_LABEL``
-    and ``monoprop_BENCH_RESULTS``.
-    """
+    """Return ``results/<label>.json``, or ``None`` when recording is off."""
     label = os.environ.get("monoprop_BENCH_LABEL")  # noqa: SIM112
     results = os.environ.get("monoprop_BENCH_RESULTS")  # noqa: SIM112
     if not label or not results:
@@ -124,9 +120,9 @@ def _results_path() -> Path | None:
 
 
 def _peak_of_sum(comm: Any, samples: list[tuple[float, int]]) -> int:
-    """Reduce per-rank PSS timelines to the job's peak summed PSS (bytes).
+    """Reduce per-rank RSS timelines to the job's peak summed RSS (bytes).
 
-    Gathers every rank's ``(wall_clock, pss)`` samples to rank 0 and merges them
+    Gathers every rank's ``(wall_clock, rss)`` samples to rank 0 and merges them
     via :func:`_memory.merge_peak_of_sum`. Collective; returns ``0`` off root.
     """
     if comm is None or comm.Get_size() == 1:
@@ -143,8 +139,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     for name, default, help_text in _RANDOM_OPTIONS:
         group.addoption(f"--{name}", type=int, default=default, help=help_text)
 
-    # One override option per model config field, defaulting to the field's own
-    # default so the config classes stay the source of truth.
     models = parser.getgroup("monoprop-models", "monoprop fixed-model overrides")
     for model, (config_cls, _builder, _steps) in MODELS.items():
         for field in fields(config_cls):
@@ -259,17 +253,47 @@ def record_model_config() -> Callable[[str, Any], None]:
     return _do
 
 
+@pytest.fixture
+def record_model_stats(bench_comm: Any) -> Callable[..., None]:
+    """Return ``record(model, propagator, baseline_rss)`` for fixed-model runs."""
+
+    def _do(model: str, propagator: Any, baseline_rss: int) -> None:
+        _record("opsize", model, {"terms": _reduce_sum(bench_comm, propagator.size())})
+
+        # Sparse InvertedIndex columns cost a TermIndex (4B) per set bit against ~1-2B per
+        # set bit in the rows, so which of the two dominates is what sizing decisions turn on.
+        # The Python front-end does not re-export the C++ accounting; it hangs off ._simulator.
+        breakdown = getattr(propagator._simulator, "operator_memory_breakdown", None)
+        # None => binding predates operator_memory_breakdown()
+        if breakdown is not None:
+            _record(
+                "opmem",
+                model,
+                {k: _reduce_sum(bench_comm, v) for k, v in breakdown().items()},
+            )
+
+        resting = _reduce_sum(bench_comm, resting_rss_bytes())
+        if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
+            _record("memrest", model, resting)
+
+        baseline = _reduce_sum(bench_comm, baseline_rss)
+        if baseline:
+            _record("membase", model, baseline)
+
+    return _do
+
+
 @pytest.fixture(autouse=True)
 def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[None]:
-    """Record each benchmark's peak physical-memory footprint (PSS) for the report.
+    """Record each benchmark's peak physical-memory footprint (RSS) for the report.
 
-    A background :class:`PssSampler` samples this rank's live PSS while the test
+    A background :class:`RssSampler` samples this rank's live RSS while the test
     runs. It is a footprint: it includes structures already resident when the
     operation starts (e.g. the shared :func:`built_graph`). Under MPI the per-rank
     timelines are merged into the peak-of-sum (see :func:`_peak_of_sum`); the
     gather is collective, but only rank 0 records.
     """
-    with PssSampler() as sampler:
+    with RssSampler() as sampler:
         yield
     mem = _peak_of_sum(bench_comm, sampler.samples)
     if mem:  # 0 => non-root rank or /proc unavailable: nothing to record
@@ -329,32 +353,20 @@ def built_graph(
     Session-scoped per picture so the graph is built once and shared across the
     read-only graph benchmarks (``pare``, ``energy``, ``gradient``).
 
-    Also records the operator size, operator-vs-graph storage breakdown, and
-    resting footprint for this picture while the graph is resident.
+    Also records the operator size and resting footprint for this picture while the
+    graph is resident.
     """
     mp, circuit = build_random_propagator(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
     )
     mp.build_graph(circuit)
 
-    # Under MPI the operator is partitioned, so sum the shards.
+    # Under MPI the operator is partitioned, so sum the partitions.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})
 
-    # Structural byte totals from the C++ accounting, which a process-wide PSS
-    # reading cannot attribute to a structure.
-    sim = mp._simulator
-    _record(
-        "storage",
-        picture,
-        {
-            "operator": _reduce_sum(bench_comm, sim.operator_memory_bytes()),
-            "graph": _reduce_sum(bench_comm, sim.graph_memory_bytes()),
-        },
-    )
-
-    # Settled PSS once the build's transients are released -- the persistent
+    # Settled RSS once the build's transients are released -- the persistent
     # footprint the per-operation peak cannot see.
-    resting = _reduce_sum(bench_comm, resting_pss_bytes())
+    resting = _reduce_sum(bench_comm, resting_rss_bytes())
     if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
         _record("memrest", picture, resting)
 

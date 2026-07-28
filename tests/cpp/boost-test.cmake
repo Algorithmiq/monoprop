@@ -5,22 +5,6 @@ set(
   "Semicolon-separated list of ranks for MPI test variants"
 )
 
-set(
-  monoprop_MPI_TEST_LAYOUT
-  "suite"
-  CACHE STRING
-  "MPI test registration layout: suite (default) or per-test"
-)
-
-set_property(
-  CACHE
-    monoprop_MPI_TEST_LAYOUT
-  PROPERTY
-    STRINGS
-      "suite"
-      "per-test"
-)
-
 set(_monoprop_mpiexec "${MPIEXEC_EXECUTABLE}")
 if(NOT _monoprop_mpiexec)
   find_program(
@@ -85,7 +69,6 @@ function(discover_tests TARGET)
       "TEST_LIST=${_TEST_LIST}" -D "CTEST_FILE=${ctest_tests_file}" -D
       "TEST_ENABLE_MPI_VARIANTS=${_enable_mpi_variants}" -D
       "TEST_MPI_NUMPROCS=${monoprop_MPI_TEST_PROCS}" -D
-      "TEST_MPI_LAYOUT=${monoprop_MPI_TEST_LAYOUT}" -D
       "MPIEXEC_EXECUTABLE=${_monoprop_mpiexec}" -D
       "MPIEXEC_NUMPROC_FLAG=${_monoprop_mpiexec_numproc_flag}" -D
       "MPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}" -D

@@ -2,8 +2,7 @@
 // `fumapy-generate monoprop` (see the `gen-api` recipe in the justfile).
 //
 // fumadocs-python's `convert`/`write` do the heavy lifting; this script only
-//  1. prunes the griffe dump to the public surface (the modules that the old
-//     docs reference documented, minus private `_`-prefixed members),
+//  1. prunes the griffe dump to the public surface (minus private `_`-prefixed members),
 //  2. fixes the package-name segment that `convert` puts in cross-links but
 //     `write` strips from file paths, and
 //  3. emits a `meta.json` so the API section is ordered like the old reference.
@@ -64,20 +63,16 @@ function scopeFromPath(filePath) {
 }
 
 /**
- * Resolve cross-references in a rendered MDX page into real links. `scope` is
- * the page's fully-qualified scope (see `scopeFromPath`).
- *
- * The input is the griffe/mkdocstrings Markdown reference-link form. The target
- * is a Python path, resolved fully-qualified or relative to `scope`:
+ * Resolve cross-references in a rendered MDX page into real links. Targets are
+ * Python paths, resolved fully-qualified or relative to `scope`, the page's own
+ * fully-qualified scope (see `scopeFromPath`):
  *   `[Circuit][monoprop.circuit.Circuit]`  ->  `[Circuit](/api/circuit/Circuit)`
  *   `[ExpGate][]`  (on a page scoped to `monoprop.circuit`)  ->  `[ExpGate](/api/circuit/ExpGate)`
- * `[X][]` is shorthand for target == display. The display text is rendered as a
- * code span (symbol names read as code). Unresolved targets are collected in
- * `unresolved` (surfaced by the caller) and left untouched.
+ * Unresolved targets are collected in `unresolved` (surfaced by the caller) and
+ * left untouched.
  */
 function resolveXrefs(content, xref, unresolved, scope) {
-  // Wrap the display text in a code span, avoiding a double-wrap if the
-  // docstring already backticked it.
+  // Avoid double-wrapping a display text the docstring already backticked.
   const code = (text) => (/^`.*`$/.test(text) ? text : `\`${text}\``);
 
   return content.replaceAll(/\[([^\]]+)\]\[([^\]]*)\]/g, (match, display, target) => {
@@ -89,7 +84,6 @@ function resolveXrefs(content, xref, unresolved, scope) {
   });
 }
 
-/** Collapse internal whitespace/newlines to a single line. */
 function foldToOneLine(text) {
   return String(text).replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -100,12 +94,7 @@ function foldToOneLine(text) {
  * Upstream markdown serialization escapes braces (`\{` and `\}`), but KaTeX
  * requires unescaped braces for proper grouping (subscripts, superscripts, and
  * command arguments). This function selectively unescapes braces only inside
- * `$...$` (inline) and `$$...$$` (display) math spans.
- *
- * Examples:
- * - `$r_\{12\}$` -> `$r_{12}$`
- * - `$$^\{-1\}$$` -> `$$^{-1}$$`
- * - `$\mathrm\{d\}$` -> `$\mathrm{d}$`
+ * `$...$` (inline) and `$$...$$` (display) math spans, e.g. `$r_\{12\}$` -> `$r_{12}$`.
  */
 function normalizeMathGroupingEscapes(content) {
   const normalizeMathSegment = (math) =>
@@ -171,7 +160,6 @@ function normalizeFunctionReturnsSection(funcNode) {
   }
 }
 
-/** Recursively visit modules/classes and normalize function Returns text. */
 function normalizeFunctionReturns(mod) {
   if (!mod || typeof mod !== 'object') return;
 
@@ -207,8 +195,6 @@ async function main() {
   const files = convert(pkg, { baseUrl: API_BASE_URL });
 
   for (const file of files) {
-    // Resolve Markdown `[text][path]` cross-references into real links before
-    // other processing. Bare/relative targets resolve against the page's own scope.
     file.content = resolveXrefs(file.content, xref, unresolved, scopeFromPath(file.path));
 
     // `convert` keeps the package name ("monoprop") in hrefs, but `write`
@@ -223,8 +209,6 @@ async function main() {
     if (githubPath) {
       file.frontmatter.githubPath = githubPath;
     }
-    // Fumadocs parameter rendering can escape braces in math arguments
-    // (e.g. `\mathrm\{d\}`), which breaks KaTeX grouping.
     file.content = normalizeMathGroupingEscapes(file.content);
 
     // Add titles to the frontmatter for the modules we documented. The title

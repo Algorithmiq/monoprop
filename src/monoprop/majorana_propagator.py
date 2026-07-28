@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Majorana propagator.
-
-Concrete [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] that accepts Majorana (or
-fermionic) operators and gates. Gate information (the Majorana generators, their coefficients,
-and the parameter each drives) is owned by the propagation graph, so evaluation methods take
-only ``parameters``.
-"""
+"""Majorana propagator: the fermionic front-end of the shared monomial-propagation engine."""
 
 from __future__ import annotations
 
@@ -41,11 +35,9 @@ class MajoranaPropagator(MonomialPropagator):
     """Classical simulator for Majorana operators.
 
     Accepts a [MajoranaOperator][monoprop.majorana.MajoranaOperator] (or any object implementing
-    ``get_majorana_operator()``, such as a [FermiOperator][monoprop.fermi.FermiOperator])
-    observable and a [Circuit][monoprop.circuit.Circuit] of Majorana/fermionic
-    [ExpGate][monoprop.circuit.ExpGate] gates. See
-    [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] for the shared building,
-    evaluation, and introspection surface.
+    ``get_majorana_operator()``, such as a [FermiOperator][monoprop.fermi.FermiOperator]) and a
+    [Circuit][monoprop.circuit.Circuit] of Majorana/fermionic gates. See
+    [MonomialPropagator][monoprop.monomial_propagator.MonomialPropagator] for the shared surface.
     """
 
     def __init__(
@@ -62,46 +54,24 @@ class MajoranaPropagator(MonomialPropagator):
     ) -> None:
         """Initialize the propagator.
 
-        Creates a simulator for quantum-system evolution in the Majorana
-        representation. Both Heisenberg (operator evolution, the default) and
-        Schrodinger (state evolution) pictures are supported, with configurable
-        truncation.
-
         Args:
-            initial_operator: Initial operator, either a
-                [MajoranaOperator][monoprop.majorana.MajoranaOperator] or an object
+            initial_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] or any object
                 implementing ``get_majorana_operator()``.
-            initial_state: Slater determinant (occupied mode indices) for the initial
-                state.
-            cutoff: Truncation parameter controlling the maximum complexity of the
-                Majorana monomials retained during evolution; its meaning depends on
-                ``cutoff_type``. Higher values increase accuracy at greater cost. A
-                *fully paired* monomial -- one whose support consists entirely of
-                complete pairs $(m_{2j-1} m_{2j})$ on a mode -- is always kept
-                regardless of this cutoff, because only paired monomials can contribute
-                to an expectation value against a computational-basis state or Slater
-                determinant; discarding them would throw away signal.
-            schrodinger_cutoff: Selects and configures Schrodinger-picture evolution.
-                If ``None`` (default), the simulator runs in the Heisenberg picture.
-                If an integer is provided, the simulator runs in the Schrodinger
-                picture and this value is used as the truncation limit for the evolved
-                state (including initialization from ``initial_state``), using the same
-                complexity notion as ``cutoff_type``. In practice, choose
-                ``schrodinger_cutoff`` at least as large as ``cutoff`` (often slightly
-                larger) for comparable accuracy.
-            cutoff_type: Truncation scheme (the fully-paired exception above always
-                applies on top of either). ``"length"`` (default) keeps monomials
-                whose length -- the number of Majorana operators -- does not exceed
-                ``cutoff``; ``"support"`` keeps monomials acting on at most ``cutoff``
-                distinct orbitals (their orbital support).
-            lower_atol: Optional lower absolute-tolerance threshold for coefficient
-                truncation. Monomials with ``|coeff| < lower_atol`` are discarded during
-                evolution to improve performance.
-            upper_atol: Optional upper absolute-tolerance threshold. Monomials with
-                ``|coeff| > upper_atol`` are always retained regardless of their
-                complexity, overriding cutoff-based truncation.
-            comm: Optional MPI communicator. The communicator must remain valid for the
-                simulator's lifetime.
+            initial_state: Slater determinant, as occupied mode indices.
+            cutoff: Bound on the complexity of the Majorana monomials retained during evolution,
+                read according to ``cutoff_type``. A *fully paired* monomial -- support made up
+                entirely of complete pairs ``(m_{2j-1} m_{2j})`` -- is kept regardless: only paired
+                monomials contribute against a computational-basis state or Slater determinant.
+            schrodinger_cutoff: ``None`` (default) keeps the Heisenberg picture; an integer selects
+                the Schrodinger picture and bounds the evolved state -- including its initialization
+                from ``initial_state`` -- by the same notion as ``cutoff_type``. Choose it at least
+                as large as ``cutoff`` for comparable accuracy.
+            cutoff_type: ``"length"`` (default) bounds the number of Majorana operators in a
+                monomial; ``"support"`` bounds the distinct orbitals it acts on. The fully-paired
+                exception applies on top of either.
+            lower_atol: Monomials with ``|coeff| < lower_atol`` are discarded during evolution.
+            upper_atol: Monomials with ``|coeff| > upper_atol`` are kept regardless of complexity.
+            comm: Optional MPI communicator (must outlive the simulator).
         """
         majorana_operator: MajoranaOperator = (
             initial_operator
@@ -121,11 +91,7 @@ class MajoranaPropagator(MonomialPropagator):
         )
 
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
-        """Validate the circuit's gate family and return its gates for expansion.
-
-        A ``MajoranaPropagator`` rejects a qubit circuit; the shared conversion lives in
-        [expand_monomials][monoprop.circuit.expand_monomials].
-        """
+        """Accept a Majorana/fermionic circuit and return its gates; reject a qubit one."""
         if circuit.family == "pauli":
             raise TypeError(
                 "MajoranaPropagator cannot consume a qubit circuit; its gates are Pauli. "

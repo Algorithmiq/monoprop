@@ -1,10 +1,7 @@
-// Shared cross-reference machinery for the docs pipeline.
-//
-// The API-reference generator (`generate-api.mjs`) and the prose remark plugin
-// (`remark-xref.mjs`) both need to turn a fully-qualified (or scope-relative)
-// Python symbol path into the doc URL that documents it. These pure helpers are
-// the single source of truth for that mapping, built from the griffe dump
-// `monoprop.json`.
+// Shared cross-reference machinery for the docs pipeline: the API-reference
+// generator (`generate-api.mjs`) and the prose remark plugin (`remark-xref.mjs`)
+// must map a Python symbol path to the same doc URL, so these helpers -- built
+// from the griffe dump `monoprop.json` -- are the single source of truth for it.
 
 export const API_BASE_URL = '/api';
 
@@ -33,7 +30,6 @@ export function pageUrl(dottedPath) {
 export function buildXrefMap(pkg) {
   const map = new Map();
 
-  // A module or class page: itself at the page top, its inline members at `#<name>`.
   const addScope = (node, pageUrl) => {
     map.set(node.path, pageUrl);
     for (const fn of Object.values(node.functions ?? {})) map.set(fn.path, `${pageUrl}#${fn.name}`);

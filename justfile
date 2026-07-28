@@ -40,6 +40,32 @@ test-py-mpi-matrix:
     uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v; \
     ranks="${monoprop_MPI_TEST_PROCS:-1;2;4}"; for r in ${ranks//;/ }; do echo "Running MPI-marked Python tests with ${r} rank(s)"; mpiexec --allow-run-as-root -n "$r" uv run --no-sync python -m pytest tests --with-mpi -m mpi -v; done
 
+# Build and run the C++ suite with a 64-bit TermIndex (monoprop_WIDE_TERM_INDEX=ON).
+# This is the only configuration that compiles the wide `#if defined(monoprop_WIDE_TERM_INDEX)`
+# branches (operator_index_tests, large_cosine_storage_tests, graph_encoding_tests), so it
+# guards them from bit-rotting. Serial is enough to exercise those branches.
+test-cpp-wide:
+    cmake --preset release-gcc-wide
+    cmake --build --preset release-gcc-wide
+    ctest --preset release-gcc-wide -L serial
+
+# Build and run the C++ suite with MPI enabled. `monoprop_MPI_TEST_PROCS` (default 2, a
+# semicolon list) picks the rank counts the mpi-labelled tests are registered for.
+test-cpp-mpi:
+    cmake --preset release-gcc-mpi
+    cmake --build --preset release-gcc-mpi
+    ctest --preset release-gcc-mpi
+
+# Run the C++ suite under coverage and report with gcovr.
+# Approximates the CI cpp-checks gcovr invocation; set $GCOV to pick another gcov binary.
+coverage-cpp:
+    cmake --preset coverage-gcc
+    cmake --build --preset coverage-gcc
+    ctest --preset coverage-gcc
+    uvx gcovr --gcov-executable "${GCOV:-gcov}" --gcov-ignore-parse-errors \
+        --exclude-throw-branches --exclude-unreachable-branches \
+        --root . --filter '^(src|include)/' --exclude '^tests/' build/coverage-gcc --txt
+
 # Install the documentation site's JavaScript dependencies.
 docs-install:
     cd {{ site }} && npm ci
