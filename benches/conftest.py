@@ -267,7 +267,8 @@ def record_model_stats(bench_comm: Any) -> Callable[..., None]:
         # ratio is what row-representation sizing decisions turn on.
         # The C++ bindings hang off ._simulator; the Python front-end does not re-export them.
         breakdown = getattr(propagator._simulator, "operator_memory_breakdown", None)
-        if breakdown is not None:  # None => binding predates operator_memory_breakdown()
+        # None => binding predates operator_memory_breakdown()
+        if breakdown is not None:
             _record(
                 "opmem",
                 model,

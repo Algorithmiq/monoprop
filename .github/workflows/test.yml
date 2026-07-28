@@ -54,34 +54,16 @@ jobs:
       - name: Install dependencies
         run: |
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            brew install boost tbb open-mpi
+            brew install boost open-mpi
           else
             sudo apt-get update
             sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
-            ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
           fi
 
       - name: Set build environment variables
         if: ${{ matrix.runner == 'macos-15' }}
         run: |
           echo "MACOSX_DEPLOYMENT_TARGET=15.0" >> "$GITHUB_ENV"
-
-      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
-        if: ${{ matrix.runner == 'ubuntu-26.04' }}
-        run: |
-          BEFORE_ENV=$(mktemp)
-          AFTER_ENV=$(mktemp)
-
-          env | sort > "$BEFORE_ENV"
-          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
-          env | sort > "$AFTER_ENV"
-
-          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
-
-      - name: Set build environment variables
-        if: ${{ matrix.runner == 'ubuntu-26.04-arm' }}
-        run: |
-          echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -177,18 +159,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
-          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
-
-      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
-        run: |
-          BEFORE_ENV=$(mktemp)
-          AFTER_ENV=$(mktemp)
-
-          env | sort > "$BEFORE_ENV"
-          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
-          env | sort > "$AFTER_ENV"
-
-          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Configure
         run: |
@@ -297,18 +267,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
-          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
-
-      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
-        run: |
-          BEFORE_ENV=$(mktemp)
-          AFTER_ENV=$(mktemp)
-
-          env | sort > "$BEFORE_ENV"
-          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
-          env | sort > "$AFTER_ENV"
-
-          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -371,18 +329,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
-          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
-
-      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
-        run: |
-          BEFORE_ENV=$(mktemp)
-          AFTER_ENV=$(mktemp)
-
-          env | sort > "$BEFORE_ENV"
-          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
-          env | sort > "$AFTER_ENV"
-
-          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       - name: Install matching Build Wrapper
         run: |
@@ -472,29 +418,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
-          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
-
-      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
-        if: ${{ matrix.runner == 'ubuntu-26.04' }}
-        run: |
-          BEFORE_ENV=$(mktemp)
-          AFTER_ENV=$(mktemp)
-
-          env | sort > "$BEFORE_ENV"
-          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
-          env | sort > "$AFTER_ENV"
-
-          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
-
-      - name: Set build environment variables
-        if: ${{ matrix.runner == 'ubuntu-26.04-arm' }}
-        run: |
-          echo "CMAKE_PREFIX_PATH=/opt/Software" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         if: ${{ matrix.runner == 'macos-15' }}
         run: |
-          brew install boost msgpack-cxx tbb open-mpi
+          brew install boost msgpack-cxx open-mpi
 
       - name: Configure
         if: ${{ matrix.runner != 'macos-15' }}
@@ -542,18 +470,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
-          ./tools/install-deps.sh /opt/Software --skip-boost-unordered --skip-boost-test --skip-msgpack
-
-      - name: Add environment variables from sourcing /opt/intel/oneapi/setvars.sh
-        run: |
-          BEFORE_ENV=$(mktemp)
-          AFTER_ENV=$(mktemp)
-
-          env | sort > "$BEFORE_ENV"
-          source /opt/intel/oneapi/setvars.sh > /dev/null 2>&1
-          env | sort > "$AFTER_ENV"
-
-          python .github/scripts/diff-env.py "$BEFORE_ENV" "$AFTER_ENV"
 
       # Builds with a 64-bit TermIndex so the monoprop_WIDE_TERM_INDEX #if branches
       # (operator_index_tests, large_cosine_storage_tests) are actually compiled and run.
