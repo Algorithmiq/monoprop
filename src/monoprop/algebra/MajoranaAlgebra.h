@@ -125,7 +125,8 @@ inline auto hermitian_phase(size_t maj_count, size_t gen_count, size_t overlap) 
 template <size_t NumModes>
 auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialList<NumModes> {
     MonomialList<NumModes> combinations;
-    max_ones = std::min(max_ones, 2 * logical_num_modes);
+    // Clamp in pairs, not bits: max_ones counts pairs and bounds the fill over `selector`, one slot per mode.
+    max_ones = std::min(max_ones, logical_num_modes);
     auto selector = std::vector(logical_num_modes, false);
     const size_t inactive_mode_prefix = NumModes - logical_num_modes;
 

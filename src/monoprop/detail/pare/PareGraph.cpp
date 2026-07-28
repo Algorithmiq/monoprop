@@ -20,7 +20,6 @@
 #include <vector>
 
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
-#include "monoprop/detail/mpi/Exchange.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
 namespace monoprop {

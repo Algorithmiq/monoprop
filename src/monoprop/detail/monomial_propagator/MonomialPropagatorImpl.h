@@ -381,10 +381,16 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
             b_data.emplace_back(std::move(sin_send_indices), std::move(b_phases));
             d_data.emplace_back(std::move(d_indices), std::move(sin_recv_phases));
         }
-        // cos is not stored per-layer; recompute it from the inverted-index fold.
+        // Same two-way read as cos_index_count_(): a pared layer's stored set is authoritative, and
+        // recomputing the fold over it would report the indices the pare removed.
         VecZ cos_inds;
-        const auto &gw = traversal.generator_words();
-        if (!gw.empty()) {
+        if (const CosMask *stored = traversal.stored_cos(); stored != nullptr) {
+            cos_inds.reserve(stored->total_count);
+            for (const auto &[base, bits] : stored->blocks) {
+                detail::for_each_cos_index(base, bits, [&](size_t idx) { cos_inds.push_back(idx); });
+            }
+        }
+        else if (const auto &gw = traversal.generator_words(); !gw.empty()) {
             const auto gen = detail::generator_from_words<NumModes>(gw);
             auto p = detail::make_fold_cache<NumModes>(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
             cos_inds = detail::fold_to_indices<NumModes>(p);

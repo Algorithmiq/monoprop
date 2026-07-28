@@ -62,7 +62,8 @@ coverage-cpp:
     cmake --preset coverage-gcc
     cmake --build --preset coverage-gcc
     ctest --preset coverage-gcc
-    uvx gcovr --gcov-executable "${GCOV:-gcov-14}" --gcov-ignore-parse-errors \
+    uvx gcovr --gcov-executable "${GCOV:-gcov}" --gcov-ignore-parse-errors \
+        --exclude-throw-branches --exclude-unreachable-branches \
         --root . --filter '^(src|include)/' --exclude '^tests/' build/coverage-gcc --txt
 
 # Install the documentation site's JavaScript dependencies.

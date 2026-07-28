@@ -43,6 +43,10 @@ struct LayerTraversal final {
 
     auto has_stored_cos() const -> bool { return pruned_cos_ != nullptr; }
 
+    // The stored set itself, for readers that need its indices and not just the count; nullptr on a
+    // recompute layer.
+    auto stored_cos() const -> const CosMask * { return pruned_cos_; }
+
     auto scaled_count() const -> uint64_t { return core_->scaled_count; }
     auto generator_words() const -> const std::vector<uint64_t> & { return core_->generator_words; }
 

@@ -41,7 +41,10 @@ auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_ind
     Monomial<NumModes> gen{};
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
-    const auto combined = monoprop::detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count());
+    const auto combined = monoprop::detail::make_fold_cache<NumModes>(inverted_index,
+                                                                      gen,
+                                                                      layer.scaled_count(),
+                                                                      monoprop::Basis::Majorana);
     return monoprop::detail::fold_to_cos_mask<NumModes>(combined);
 }
 
@@ -113,6 +116,23 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
             // recomputed one minus exactly that index. `<=` here would also pass on a sweep that
             // dropped real indices.
             BOOST_CHECK_EQUAL(pruned->total_count + 1, provider(i).total_count);
+
+            // Same block-mask walk graph_data() uses to turn a stored cos back into indices: the
+            // decoded set must be the recomputed one with only synth_index missing, so a stored cos
+            // is never read as the unpruned fold.
+            const auto decode = [](const CosMask &cos) {
+                VecZ inds;
+                inds.reserve(cos.total_count);
+                for (const auto &[base, bits] : cos.blocks) {
+                    monoprop::detail::for_each_cos_index(base, bits, [&](size_t idx) { inds.push_back(idx); });
+                }
+                return inds;
+            };
+            const auto kept = decode(*pruned);
+            auto expected = decode(provider(i));
+            std::erase(expected, synth_index);
+            BOOST_CHECK_EQUAL(kept.size(), pruned->total_count);
+            BOOST_TEST(kept == expected, boost::test_tools::per_element());
         }
     }
     // Exactly the marked layer is pruned: every other layer's cos lies entirely inside the keep-set,

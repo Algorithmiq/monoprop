@@ -189,3 +189,22 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_encode_decode_coeff) {
     const cd non_hermitian = decode_coeff<N>(cd(1.0, 0.0), mono) * cd(0.0, 1.0);
     BOOST_CHECK_THROW(encode_coeff<N>(non_hermitian, mono), std::runtime_error);
 }
+
+// max_ones counts pairs, so it saturates at logical_num_modes, not at the bit count 2*logical_num_modes.
+// Over-asking must land on the same full set rather than indexing past the pair selector.
+BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_op_saturates_at_one_pair_per_mode) {
+    constexpr size_t N = 32;
+    constexpr size_t kLogical = 4;
+
+    const auto full = generate_paired_op<N>(kLogical, kLogical);
+    // Every subset of the kLogical pairs, so 2^kLogical monomials.
+    BOOST_TEST(full.size() == (size_t{1} << kLogical));
+
+    for (const size_t over : {kLogical + 1, 2 * kLogical, 2 * kLogical + 3}) {
+        const auto clamped = generate_paired_op<N>(over, kLogical);
+        BOOST_TEST(clamped.size() == full.size());
+        for (size_t i = 0; i < full.size(); ++i) {
+            BOOST_TEST(clamped[i] == full[i]);
+        }
+    }
+}

@@ -98,7 +98,7 @@ template <size_t NumModes>
 auto make_fold_cache(const InvertedIndex<NumModes> &sc,
                      const Monomial<NumModes> &gen,
                      uint64_t scaled_count,
-                     Basis basis = Basis::Majorana) -> FoldCache<NumModes> {
+                     Basis basis) -> FoldCache<NumModes> {
     FoldCache<NumModes> p;
     p.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
     p.row_parity = fold_row_parity<NumModes>(sc, p.fold);
@@ -162,7 +162,7 @@ template <size_t NumModes>
 auto make_lazy_fold(const InvertedIndex<NumModes> &sc,
                     const Monomial<NumModes> &gen,
                     uint64_t scaled_count,
-                    Basis basis = Basis::Majorana) -> LazyFold<NumModes> {
+                    Basis basis) -> LazyFold<NumModes> {
     LazyFold<NumModes> r;
     r.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
     const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);

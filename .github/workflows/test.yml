@@ -211,7 +211,6 @@ jobs:
             --root . \
             --filter '^(src|include)/' \
             --exclude '^tests/' \
-            --exclude '^src/example\.cpp$' \
             "$BUILD_DIR" \
             --json cpp-coverage-native.json
 
@@ -292,7 +291,6 @@ jobs:
             --root . \
             --filter '^(src|include)/' \
             --exclude '^tests/' \
-            --exclude '^src/example\.cpp$' \
             "$SKBUILD_BUILD_DIR" \
             --json cpp-coverage-python.json
 

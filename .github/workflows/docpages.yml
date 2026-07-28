@@ -70,8 +70,9 @@ jobs:
 
       # `just build-docs` runs, in order: docs-install (npm ci), gen-api
       # (docstrings -> API reference MDX), doctest-py (runnable docstring
-      # examples), gen-notebooks (executes the tutorial notebooks, failing on
-      # any cell error), then the static Next.js export into `docs/out`.
+      # examples), doctest-docs (runnable examples in the prose docs),
+      # gen-notebooks (executes the tutorial notebooks, failing on any cell
+      # error), then the static Next.js export into `docs/out`.
       - name: Build docs
         run: |
           just build-docs

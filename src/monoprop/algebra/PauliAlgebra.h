@@ -94,7 +94,6 @@ namespace detail {
 template <size_t NumModes>
 struct PauliGenContext final {
     Monomial<NumModes> gen{};
-    size_t gen_pop = 0;
     size_t g_y = 0;
     std::array<size_t, Monomial<NumModes>::num_words()> nz_words{};
     size_t nz_count = 0;
@@ -105,7 +104,6 @@ template <size_t NumModes>
 [[nodiscard]] auto make_pauli_gen_context(const Monomial<NumModes> &gen) -> PauliGenContext<NumModes> {
     PauliGenContext<NumModes> ctx;
     ctx.gen = gen;
-    ctx.gen_pop = gen.count();
     ctx.g_y = pauli_y_count<NumModes>(gen);
     for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
         if (gen.word(w) != 0) {
