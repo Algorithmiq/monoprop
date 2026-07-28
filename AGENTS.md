@@ -37,6 +37,11 @@ Key files:
   (the Majorana/Pauli choice is a runtime `Basis`, not a separate class).
 - `src/monoprop/bindings/binder.h`: hand-written binding template; `tools/generate-*.py` generate the
   per-mode-width `bindings.cpp` and `_dispatch.py` from it (do not hand-edit the generated files).
+  Both generators take the 32-mode storage-block rule from `tools/_binding_layout.py` — they must
+  agree, or dispatch routes at a template the bindings never instantiated.
+- `CMakePresets.json`: the single source of truth for build configurations. CI, the `justfile`, and
+  the docs all configure through presets; add a preset rather than a new set of `-D` flags. Each
+  preset builds into `build/<preset>/`.
 
 ### Core abstractions (the propagation backbone)
 
@@ -47,6 +52,12 @@ Key files:
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
   templated on the algebra policy and bound to a runtime `Basis` once, via `with_algebra`.
+- **The shard facade**: `shards > 1` makes a `MonomialPropagator` a facade over S single-shard
+  propagators, one hash partition each. Every method that fans out must use the private shard
+  vocabulary declared in `MonomialPropagator.h` (`for_each_shard_`, `map_shards_`, `concat_shards_`
+  for the mutating/collecting paths, which run on the shards' own pinned masters; `sum_shards_`,
+  `fold_shards_`, `first_shard_` for reads off quiescent shards) rather than hand-rolling a
+  `run_on_all` loop — the declarations record which helper is legal where.
 
 
 ### Environment Management
