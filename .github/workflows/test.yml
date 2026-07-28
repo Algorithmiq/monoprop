@@ -150,6 +150,10 @@ jobs:
     name: Check C++ on ubuntu-26.04 (coverage)
     runs-on: ubuntu-26.04
 
+    env:
+      # The coverage-gcc preset builds here; every path below derives from it.
+      BUILD_DIR: build/coverage-gcc
+
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -158,24 +162,23 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
 
       - name: Configure
-        run: |
-          cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Coverage
+        run: cmake --preset coverage-gcc
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build --preset coverage-gcc
 
+      # --output-junit resolves relative to the test directory (build/coverage-gcc), so ../../
+      # puts the report at the workspace root where the Codecov step looks for it.
       - name: Test
-        env:
-          OMPI_MCA_rmaps_base_oversubscribe: "1"
         run: |
-          ctest --test-dir build --output-junit ../ctest-ubuntu_latest.xml
+          ctest --preset coverage-gcc --output-junit ../../ctest-ubuntu_latest.xml
 
       - name: Verify CMake install and find_package(monoprop)
         run: |
-          cmake --install build --prefix "$PWD/monoprop-install"
+          cmake --install "$BUILD_DIR" --prefix "$PWD/monoprop-install"
 
           mkdir -p find-package-smoke
 
@@ -210,7 +213,7 @@ jobs:
             --filter '^(src|include)/' \
             --exclude '^tests/' \
             --exclude '^src/example\.cpp$' \
-            build \
+            "$BUILD_DIR" \
             --json cpp-coverage-native.json
 
       - name: Convert C++ tracefile to Cobertura XML for Codecov
@@ -328,7 +331,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
 
       - name: Install matching Build Wrapper
         run: |
@@ -341,14 +344,13 @@ jobs:
       # MPI-off configure keeps that whole layer out of compile_commands.json and reports
       # #ifdef'd-away members as smells (e.g. Exchange.h's Ticket losing its request_).
       - name: Configure for SonarQube CFamily analysis
-        run: |
-          cmake -S. -Bbuild-sonar -DCMAKE_CXX_COMPILER=g++ -Dmonoprop_ENABLE_MPI=ON
+        run: cmake --preset release-gcc-mpi
 
       - name: Build with Build Wrapper
         run: |
           ./build-wrapper-linux-x86/build-wrapper-linux-x86-64 \
             --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} \
-            cmake --build build-sonar
+            cmake --build --preset release-gcc-mpi
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v8.2.1
@@ -370,19 +372,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `preset` picks the compiler: the update-alternatives steps below point the plain
+        # g++/clang++ the presets name at the matrix's toolchain version.
         include:
           - runner: ubuntu-26.04-arm
             compiler: gcc-14
-            cmake_cxx_compiler: g++
+            preset: release-gcc
           - runner: ubuntu-26.04-arm
             compiler: clang-18
-            cmake_cxx_compiler: clang++
+            preset: release-clang
           - runner: ubuntu-26.04
             compiler: clang-18
-            cmake_cxx_compiler: clang++
+            preset: release-clang
           - runner: macos-15
             compiler: apple-clang
-            cmake_cxx_compiler: clang++
+            preset: release-clang
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -421,32 +425,28 @@ jobs:
         if: ${{ matrix.runner != 'macos-15' }}
         run: |
           sudo apt-get update
-          sudo apt-get install libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          sudo apt-get install ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
 
       - name: Install dependencies
         if: ${{ matrix.runner == 'macos-15' }}
         run: |
-          brew install boost msgpack-cxx open-mpi
+          brew install ninja boost msgpack-cxx open-mpi
 
       - name: Configure
-        if: ${{ matrix.runner != 'macos-15' }}
         run: |
-          cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=${{ matrix.cmake_cxx_compiler }}
-
-      - name: Configure
-        if: ${{ matrix.runner == 'macos-15' }}
-        run: |
-          export MACOSX_DEPLOYMENT_TARGET=15.0
-          cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=${{ matrix.cmake_cxx_compiler }}
+          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
+            export MACOSX_DEPLOYMENT_TARGET=15.0
+          fi
+          cmake --preset ${{ matrix.preset }}
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build --preset ${{ matrix.preset }}
 
+      # --output-junit resolves relative to the test directory (build/<preset>), so ../../ puts the
+      # report at the workspace root where the Codecov step looks for it.
       - name: Test
-        env:
-          OMPI_MCA_rmaps_base_oversubscribe: "1"
         run: |
-          ctest --test-dir build --output-junit ../ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
+          ctest --preset ${{ matrix.preset }} --output-junit ../../ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
 
       - name: Upload test results to Codecov
         uses: codecov/codecov-action@v7
@@ -473,20 +473,22 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
 
       # Builds with a 64-bit TermIndex so the monoprop_WIDE_TERM_INDEX #if branches
       # (operator_index_tests, large_cosine_storage_tests) are actually compiled and run.
-      # Serial coverage is enough to exercise those branches; MPI is left to cpp-checks.
+      # Serial coverage is enough to exercise those branches. No C++ job here enables
+      # monoprop_ENABLE_MPI, so the mpi-labelled variants only run locally (`just test-cpp-mpi`);
+      # CI's MPI coverage comes from the Python suite under mpiexec in python-checks.
       - name: Configure (wide TermIndex)
-        run: |
-          cmake -S. -Bbuild -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Release -Dmonoprop_WIDE_TERM_INDEX=ON
+        run: cmake --preset release-gcc-wide
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build --preset release-gcc-wide
 
+      # --output-junit resolves relative to the test directory (build/release-gcc-wide).
       - name: Test (serial)
-        run: ctest --test-dir build -L serial --output-junit ../ctest-ubuntu_26_04-wide.xml
+        run: ctest --preset release-gcc-wide -L serial --output-junit ../../ctest-ubuntu_26_04-wide.xml
 
       - name: Upload test results to Codecov
         uses: codecov/codecov-action@v7
