@@ -30,42 +30,42 @@
 #ifdef monoprop_ENABLE_MPI
 #include "monoprop/detail/mpi/HybridComm.h"
 #endif
-#include "monoprop/detail/shard/CpuTopology.h"
+#include "monoprop/detail/partition/CpuTopology.h"
 
-// Intra-process shard runtime: S master threads, each pinned to a core and running an independent
+// Intra-process partition runtime: S master threads, each pinned to a core and running an independent
 // MonomialPropagator over one hash partition — the SPMD engine an MPI rank runs, with an in-process
-// comm for the network. run_on_all must fan out to ALL masters: the collectives are barrier-synced.
+// comm for the network. run_on_all must fan out to all masters: the collectives are barrier-synced.
 
 namespace monoprop {
 
 template <size_t NumModes>
-class MonomialPropagator; // completed before any ShardGroup member body is instantiated (Impl.h)
+class MonomialPropagator; // completed before any PartitionGroup member body is instantiated (Impl.h)
 
-namespace detail::shard {
+namespace detail::partition {
 
 template <size_t NumModes>
-class ShardGroup {
+class PartitionGroup {
 public:
-    // Builds each shard's propagator via `factory(shard_comm)` ON its master thread, so heap allocations
-    // are first-touched on the owning core. `factory` must build a shards=1 propagator.
+    // Builds each partition's propagator via `factory(partition_comm)` ON its master thread, so heap allocations
+    // are first-touched on the owning core. `factory` must build a partitions=1 propagator.
     using Factory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
 
     // `parent` is the enclosing communicator (size R): R == 1 ⇒ an in-process ShmComm; R > 1 ⇒ a
-    // HybridComm folding R ranks x S shards into one flat P=R*S world.
-    ShardGroup(int n_shards, const Factory &factory, mpi::Comm parent)
-        : n_(n_shards),
+    // HybridComm folding R ranks x S partitions into one flat P=R*S world.
+    PartitionGroup(int n_partitions, const Factory &factory, mpi::Comm parent)
+        : n_(n_partitions),
           parent_(parent),
-          shards_(static_cast<size_t>(n_shards)),
-          errs_(static_cast<size_t>(n_shards)) {
+          partitions_(static_cast<size_t>(n_partitions)),
+          errs_(static_cast<size_t>(n_partitions)) {
         make_transport_();
         discover_node_peers_();
-        cpusets_ = topo_shard_cpusets(n_, node_rank_, node_size_);
+        cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_);
         start_masters_();
-        // First job: build each shard on its pinned master (first-touch locality). The masters are
-        // already running, so a ctor throw must not escape: ~ShardGroup would never run, and destroying
+        // First job: build each partition on its pinned master (first-touch locality). The masters are
+        // already running, so a ctor throw must not escape: ~PartitionGroup would never run, and destroying
         // joinable threads during unwinding calls std::terminate.
         try {
-            run_on_all([&](int r) { shards_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
+            run_on_all([&](int r) { partitions_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
         }
         catch (...) {
             stop_and_join_();
@@ -73,23 +73,23 @@ public:
         }
     }
 
-    // Clone: fresh transport and threads over the same parent, deep-copy each shard on its new master,
+    // Clone: fresh transport and threads over the same parent, deep-copy each partition on its new master,
     // then rebind the copy's comm (it inherited src's handle).
-    ShardGroup(const ShardGroup &src)
+    PartitionGroup(const PartitionGroup &src)
         : n_(src.n_),
           parent_(src.parent_),
           node_rank_(src.node_rank_),
           node_size_(src.node_size_),
-          shards_(static_cast<size_t>(src.n_)),
+          partitions_(static_cast<size_t>(src.n_)),
           errs_(static_cast<size_t>(src.n_)) {
         make_transport_();
-        cpusets_ = topo_shard_cpusets(n_, node_rank_, node_size_);
+        cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_);
         start_masters_();
         try { // see the primary ctor: a throw past live masters would std::terminate
             run_on_all([&](int r) {
-                auto p = std::make_unique<MonomialPropagator<NumModes>>(*src.shards_[static_cast<size_t>(r)]);
-                p->comm_ = comm_for_(r); // ShardGroup is a friend of MonomialPropagator
-                shards_[static_cast<size_t>(r)] = std::move(p);
+                auto p = std::make_unique<MonomialPropagator<NumModes>>(*src.partitions_[static_cast<size_t>(r)]);
+                p->comm_ = comm_for_(r); // PartitionGroup is a friend of MonomialPropagator
+                partitions_[static_cast<size_t>(r)] = std::move(p);
             });
         }
         catch (...) {
@@ -97,15 +97,15 @@ public:
             throw;
         }
     }
-    auto operator=(const ShardGroup &) -> ShardGroup & = delete;
+    auto operator=(const PartitionGroup &) -> PartitionGroup & = delete;
 
-    ~ShardGroup() { stop_and_join_(); }
+    ~PartitionGroup() { stop_and_join_(); }
 
-    auto shard_count() const -> int { return n_; }
-    auto shard(int s) -> MonomialPropagator<NumModes> & { return *shards_[static_cast<size_t>(s)]; }
-    auto shard(int s) const -> const MonomialPropagator<NumModes> & { return *shards_[static_cast<size_t>(s)]; }
+    auto partition_count() const -> int { return n_; }
+    auto partition(int s) -> MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
+    auto partition(int s) const -> const MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
 
-    // Run `body(shard_rank)` on ALL masters, block until every one finishes, then rethrow the first
+    // Run `body(partition_rank)` on all masters, block until every one finishes, then rethrow the first
     // exception raised (peers were released via poison, so a throw on one master never hangs the rest).
     auto run_on_all(const std::function<void(int)> &body) -> void {
         {
@@ -147,16 +147,16 @@ private:
         }
     }
 
-    // Free-function wrapper so the header compiles on non-Linux (where shard_cpusets returns {}).
-    static auto topo_shard_cpusets(int n, int group_index, int group_count)
-        -> std::vector<monoprop::detail::shard::CpuSet> {
-        return monoprop::detail::shard::shard_cpusets(static_cast<size_t>(n),
-                                                      static_cast<size_t>(group_index),
-                                                      static_cast<size_t>(group_count));
+    // Free-function wrapper so the header compiles on non-Linux (where partition_cpusets returns {}).
+    static auto topo_partition_cpusets(int n, int group_index, int group_count)
+        -> std::vector<monoprop::detail::partition::CpuSet> {
+        return monoprop::detail::partition::partition_cpusets(static_cast<size_t>(n),
+                                                              static_cast<size_t>(group_index),
+                                                              static_cast<size_t>(group_count));
     }
 
     // Under an MPI parent, find how many ranks share this host and which we are, so each co-located rank
-    // pins to a disjoint core block (see shard_cpusets). Collective over `parent`; clones copy the result.
+    // pins to a disjoint core block (see partition_cpusets). Collective over `parent`; clones copy the result.
     auto discover_node_peers_() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
@@ -205,10 +205,20 @@ private:
         shm_->reset();
     }
 
+    // Spawning is itself a failure point — one std::thread per partition is O(100) threads, and a mid-loop
+    // std::system_error must not escape with live masters parked in masters_: they are joinable, and
+    // destroying a joinable thread while the caller's ctor unwinds calls std::terminate. Release and
+    // join what did start, then rethrow.
     auto start_masters_() -> void {
         masters_.reserve(static_cast<size_t>(n_));
-        for (int r = 0; r < n_; ++r) {
-            masters_.emplace_back([this, r] { master_loop_(r); });
+        try {
+            for (int r = 0; r < n_; ++r) {
+                masters_.emplace_back([this, r] { master_loop_(r); });
+            }
+        }
+        catch (...) {
+            stop_and_join_();
+            throw;
         }
     }
 
@@ -216,7 +226,7 @@ private:
         if (!cpusets_.empty()) {
             pin_this_thread(cpusets_[static_cast<size_t>(rank)]);
         }
-        // Each shard runs the engine fully serially, keeping its mutable data owned by one core.
+        // Each partition runs the engine fully serially, keeping its mutable data owned by one core.
         unsigned seen = 0;
         for (;;) {
             const std::function<void(int)> *job = nullptr;
@@ -252,9 +262,9 @@ private:
 #ifdef monoprop_ENABLE_MPI
     std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1
 #endif
-    std::vector<std::unique_ptr<MonomialPropagator<NumModes>>> shards_;
+    std::vector<std::unique_ptr<MonomialPropagator<NumModes>>> partitions_;
     std::vector<std::exception_ptr> errs_;
-    std::vector<monoprop::detail::shard::CpuSet> cpusets_;
+    std::vector<monoprop::detail::partition::CpuSet> cpusets_;
     std::vector<std::thread> masters_;
 
     // Job dispatch: the facade thread publishes one job and waits for all masters to complete it.
@@ -266,20 +276,20 @@ private:
     bool stop_ = false;
 };
 
-// Run `body(shard_rank)` on every master and collect one result per shard, indexed by shard rank.
+// Run `body(partition_rank)` on every master and collect one result per partition, indexed by partition rank.
 // The slots are written from the owning master, so `body` must not touch the vector itself.
 template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, int>>
-auto collect_on_all(ShardGroup<NumModes> &group, Body body) -> std::vector<R> {
-    std::vector<R> results(static_cast<size_t>(group.shard_count()));
+auto collect_on_all(PartitionGroup<NumModes> &group, Body body) -> std::vector<R> {
+    std::vector<R> results(static_cast<size_t>(group.partition_count()));
     group.run_on_all([&](int r) { results[static_cast<size_t>(r)] = body(r); });
     return results;
 }
 
-// collect_on_all over the shard propagators themselves: `body(shard)` on each shard's master.
+// collect_on_all over the partition propagators themselves: `body(partition)` on each partition's master.
 template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, MonomialPropagator<NumModes> &>>
-auto map_shards(ShardGroup<NumModes> &group, Body body) -> std::vector<R> {
-    return collect_on_all(group, [&](int r) -> R { return body(group.shard(r)); });
+auto map_partitions(PartitionGroup<NumModes> &group, Body body) -> std::vector<R> {
+    return collect_on_all(group, [&](int r) -> R { return body(group.partition(r)); });
 }
 
-} // namespace detail::shard
+} // namespace detail::partition
 } // namespace monoprop

@@ -62,6 +62,12 @@ auto prepare_evolved_operator(EvalScratch &scratch,
                               const MPGraphView &graph,
                               const mpi::Comm &comm,
                               const detail::LayerCosScale &cos_scale) -> void {
+    // Checked once here rather than at each caller: evolve_operator invokes cos_scale per layer, so an
+    // empty callback would surface as a std::bad_function_call naming nothing. Only a direct C++ caller
+    // can trip it — every in-tree entry point passes a bound callback.
+    if (!cos_scale) {
+        throw std::invalid_argument("Evaluating at non-empty parameters requires a cos_scale (forward) callback.");
+    }
     fill_mapped_params(scratch.mapped_params, params, parameter_mapping, gen_coeffs, 1.0, true);
     scratch.op = op;
     scratch.op = evolve_operator(std::move(scratch.op), graph, scratch.mapped_params, cos_scale, comm);
@@ -106,13 +112,13 @@ auto ev_and_grad_impl(double e_core,
         return {e_core + mpi::allreduce_sum(state.dot(op), comm), VecD(0)};
     }
 
-    // Both callbacks are required on the with-parameters path; fail loudly rather than with a cryptic
-    // std::bad_function_call.
-    if (!cos_scale || !cos_acc) {
-        throw std::invalid_argument("ev_and_grad requires both cos_scale (forward) and cos_acc (reverse) callbacks.");
+    // cos_scale is checked in prepare_evolved_operator, which both paths share; the reverse sweep's
+    // callback is this path's alone.
+    if (!cos_acc) {
+        throw std::invalid_argument("ev_and_grad requires a cos_acc (reverse) callback.");
     }
 
-    // The ONLY dense state in the whole library: the reverse pass back-evolves it in place, which
+    // The only dense state in the whole library: the reverse pass back-evolves it in place, which
     // destroys sparsity at the first layer. It lives in the reused thread-local scratch rather than on
     // the functional, so energy-only runs never build one and N functionals on a thread share this one.
     auto &scratch = eval_scratch();

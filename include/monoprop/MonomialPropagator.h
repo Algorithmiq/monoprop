@@ -48,11 +48,11 @@ namespace monoprop {
 namespace detail {
 // Fused-contraction record sink (layer_build/Common.h).
 struct FusedContract;
-namespace shard {
-// Intra-process shard runtime; held by unique_ptr, so a forward declaration suffices here.
+namespace partition {
+// Intra-process partition runtime; held by unique_ptr, so a forward declaration suffices here.
 template <size_t NumModes>
-class ShardGroup;
-} // namespace shard
+class PartitionGroup;
+} // namespace partition
 } // namespace detail
 
 template <size_t NumModes>
@@ -69,13 +69,13 @@ public:
                        std::optional<std::vector<VecZ>> basis_change = std::nullopt,
                        size_t logical_num_modes = NumModes,
                        Basis basis = Basis::Majorana,
-                       size_t shards = 0);
+                       size_t partitions = 0);
 
-    /// Out-of-line because shard_group_ is a unique_ptr to an incomplete type here.
+    /// Out-of-line because partition_group_ is a unique_ptr to an incomplete type here.
     virtual ~MonomialPropagator();
 
     /// Deep copy: clones the operator store, shares the immutable graph cores, and clones the whole
-    /// shard group on a facade. The virtual destructor suppresses implicit moves, so a "move" deep-copies.
+    /// partition group on a facade. The virtual destructor suppresses implicit moves, so a "move" deep-copies.
     MonomialPropagator(const MonomialPropagator &other);
     auto operator=(const MonomialPropagator &) -> MonomialPropagator & = delete;
 
@@ -85,35 +85,45 @@ public:
     auto logical_num_modes() const -> size_t { return logical_num_modes_; }
 
     /// Term count on this rank (allreduce for global).
-    auto size() const -> size_t { return shard_group_ ? sharded_size_() : mp_op_.size(); }
+    auto size() const -> size_t { return partition_group_ ? partitioned_size_() : mp_op_.size(); }
 
     /// (cosine-only indices, cycles) on this rank; cosine-only = cos-scaled but not a rotation endpoint.
     auto graph_size() const -> std::pair<size_t, size_t> {
-        return shard_group_ ? sharded_graph_size_() : std::pair{cos_index_count_(), graph_.total_cycles()};
+        return partition_group_ ? partitioned_graph_size_() : std::pair{cos_index_count_(), graph_.total_cycles()};
     }
 
-    /// The propagation graph (local to this rank).
-    auto graph() const -> const MPGraph & { return graph_; }
+    /// The propagation graph (local to this rank). Single-partition only — see require_single_partition_.
+    auto graph() const -> const MPGraph & {
+        require_single_partition_("graph()");
+        return graph_;
+    }
 
-    auto mp_op() -> detail::MPOperator<NumModes> & { return mp_op_; }
-    auto mp_op() const -> const detail::MPOperator<NumModes> & { return mp_op_; }
+    /// This rank's operator storage. Single-partition only — see require_single_partition_.
+    auto mp_op() -> detail::MPOperator<NumModes> & {
+        require_single_partition_("mp_op()");
+        return mp_op_;
+    }
+    auto mp_op() const -> const detail::MPOperator<NumModes> & {
+        require_single_partition_("mp_op()");
+        return mp_op_;
+    }
 
-    // Memory breakdowns sum across shards (the fields are additive over disjoint hash partitions).
+    // Memory breakdowns sum across partitions (the fields are additive over disjoint hash partitions).
     auto graph_memory_usage() const -> GraphMemoryBreakdown {
-        if (shard_group_) {
-            return sharded_graph_memory_usage_();
+        if (partition_group_) {
+            return partitioned_graph_memory_usage_();
         }
         return graph_.storage_memory_usage();
     }
 
     auto operator_memory_usage() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
-        if (shard_group_) {
-            return sharded_operator_memory_usage_();
+        if (partition_group_) {
+            return partitioned_operator_memory_usage_();
         }
         return detail::estimate_memory_usage(mp_op_);
     }
 
-    auto graph_layers() const -> size_t { return shard_group_ ? sharded_graph_layers_() : graph_.layers(); }
+    auto graph_layers() const -> size_t { return partition_group_ ? partitioned_graph_layers_() : graph_.layers(); }
 
     /// Distinct gate count. A multi-term gate spans several layers, so n_gates() <= graph_layers().
     auto n_gates() const -> size_t;
@@ -125,12 +135,18 @@ public:
     /// graph_layers(), optimizer order) or a per-gate one (length n_gates()); on a tie, per-layer wins.
     auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
-    /// This rank's indexing map (monomial → coefficient index). C++-only.
-    auto indexing() -> detail::OperatorIndex<NumModes> & { return *mp_op_.store; }
-    auto indexing() const -> const detail::OperatorIndex<NumModes> & { return *mp_op_.store; }
+    /// This rank's indexing map (monomial → coefficient index). C++-only, single-partition only.
+    auto indexing() -> detail::OperatorIndex<NumModes> & {
+        require_single_partition_("indexing()");
+        return *mp_op_.store;
+    }
+    auto indexing() const -> const detail::OperatorIndex<NumModes> & {
+        require_single_partition_("indexing()");
+        return *mp_op_.store;
+    }
 
     /// Per-layer (cos_inds, local_cycles, cross_rank_sin_send, cross_rank_sin_recv) for this
-    /// rank/shard. local_cycles is always empty: local cycles are folded into cross_rank[my_rank].
+    /// rank/partition. local_cycles is always empty: local cycles are folded into cross_rank[my_rank].
     using LocalCycleData = std::tuple<size_t, size_t, int>;
     using CrossRankData = std::tuple<VecZ, VecI>; // (indices, phases)
     using LayerData =
@@ -189,7 +205,7 @@ public:
 
     auto basis() const -> Basis { return basis_; }
 
-    auto core_term() const -> double { return shard_group_ ? sharded_core_term_() : core_term_; }
+    auto core_term() const -> double { return partition_group_ ? partitioned_core_term_() : core_term_; }
 
     auto cutoff() const -> unsigned int { return cutoff_; }
 
@@ -201,7 +217,7 @@ public:
 
     auto basis_change() const -> std::optional<std::vector<VecZ>> { return basis_change_; }
 
-    /// The MPI communicator (MPI_COMM_SELF for a shard, which trades over an in-process comm).
+    /// The MPI communicator (MPI_COMM_SELF for a partition, which trades over an in-process comm).
     auto comm() const -> MPI_Comm { return comm_.mpi; }
 
     /// Build the propagation graph, one layer per generator, recording each layer's gate info
@@ -209,7 +225,7 @@ public:
     /// 0-based per call, offset internally by the gate count already in the graph. Pass `parameters` to
     /// seed atol truncation while extending a non-empty graph. `only_rotate_len_k` > 0 applies gates to
     /// monomials of length <= k even if they anticommute. Heisenberg consumes each call's sequence in
-    /// reverse, so a forward split across calls is NOT equivalent; Schrodinger is front-to-back, so it is.
+    /// reverse, so a forward split across calls is not equivalent; Schrodinger is front-to-back, so it is.
     auto build_graph(const std::vector<VecZ> &majoranas,
                      const VecZ &parameter_mapping,
                      const VecD &gen_coeffs,
@@ -240,9 +256,13 @@ public:
 
     /// Contract the graph into the operator (Heisenberg) or state (Schrodinger). `inplace` consumes the
     /// graph and updates internal state; otherwise nothing is mutated. Core term excluded either way.
+    /// Coefficients are positioned by the owning partition's indexing(), so on a facade the result is
+    /// the per-partition blocks concatenated in partition order: the same multiset as an unpartitioned
+    /// run, but not positionally stable across partition counts — and the count is auto-picked from the
+    /// host's core count unless pinned. Use evolved_operator_terms() when positions must mean something.
     auto contract_partially(const VecD &parameters, bool inplace) -> VecD;
 
-    /// Decoded (indices, coefficient) terms with |coeff| >= atol, gathered across every shard's
+    /// Decoded (indices, coefficient) terms with |coeff| >= atol, gathered across every partition's
     /// disjoint partition. Contracts non-inplace. Core term excluded.
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
@@ -290,7 +310,7 @@ protected:
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
 
     bool schrodinger_;
-    mpi::Comm comm_; // real MPI across nodes, or an in-process comm across shards
+    mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions
     CutoffFn<NumModes> cutoff_fn_;
     detail::MPOperator<NumModes> mp_op_;
     MPGraph graph_;
@@ -315,66 +335,80 @@ private:
     // Operator basis (Majorana default / native Pauli), immutable after construction.
     Basis basis_{Basis::Majorana};
 
-    // Intra-process shard runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a shard FACADE
-    // whose own mp_op_/graph_ are unused and every method fans out to the S shard propagators.
-    std::unique_ptr<detail::shard::ShardGroup<NumModes>> shard_group_;
-    // ShardGroup rebinds a cloned shard's comm_ to its own transport during a deep copy.
-    friend class detail::shard::ShardGroup<NumModes>;
+    // Intra-process partition runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a partition facade
+    // whose own mp_op_/graph_ are unused and every method fans out to the S partition propagators.
+    std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
+    // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
+    friend class detail::partition::PartitionGroup<NumModes>;
 
-    // Resolve the effective shard count (ctor arg 0 ⇒ env/auto). Returns 1 for the ordinary path.
-    static auto resolve_shard_count_(size_t requested, mpi::Comm comm) -> size_t;
-    // Fan-out helpers for the inline accessors (defined in the impl, where ShardGroup is complete).
-    auto sharded_size_() const -> size_t;
-    auto sharded_graph_size_() const -> std::pair<size_t, size_t>;
-    auto sharded_graph_layers_() const -> size_t;
-    auto sharded_core_term_() const -> double; // core term is replicated on every shard; read shard 0
-    auto sharded_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes>;
-    auto sharded_graph_memory_usage_() const -> GraphMemoryBreakdown;
+    // Guard for the raw per-partition accessors (graph(), mp_op(), indexing(), graph_data()). A facade's
+    // own graph_/mp_op_ are never populated, so handing them out would return plausible-looking empty
+    // state; there is no meaningful merge either, since the callers want one partition's raw layout.
+    // Throwing sends a C++ consumer to the partition-transparent accessors, or to partitions=1.
+    auto require_single_partition_(const char *what) const -> void {
+        if (partition_group_) {
+            throw std::runtime_error(std::format("{} is not available on a multi-partition propagator: the facade owns "
+                                                 "no operator or graph of its own. Use the partition-transparent "
+                                                 "accessors (size(), graph_size(), evolved_operator_terms(), ...) or "
+                                                 "construct with partitions=1.",
+                                                 what));
+        }
+    }
 
-    // Shard fan-out vocabulary. Every one of these is FACADE-ONLY: shard_group_ != nullptr is a
-    // precondition, and all are defined in the impl, where ShardGroup is complete.
+    // Resolve the effective partition count (ctor arg 0 ⇒ env/auto). Returns 1 for the ordinary path.
+    static auto resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t;
+    // Fan-out helpers for the inline accessors (defined in the impl, where PartitionGroup is complete).
+    auto partitioned_size_() const -> size_t;
+    auto partitioned_graph_size_() const -> std::pair<size_t, size_t>;
+    auto partitioned_graph_layers_() const -> size_t;
+    auto partitioned_core_term_() const -> double; // core term is replicated on every partition; read partition 0
+    auto partitioned_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes>;
+    auto partitioned_graph_memory_usage_() const -> GraphMemoryBreakdown;
+
+    // Partition fan-out vocabulary. Every one of these is facade-only: partition_group_ != nullptr is a
+    // precondition, and all are defined in the impl, where PartitionGroup is complete.
     //
-    // `for_each_shard_` / `map_shards_` / `concat_shards_` dispatch to the shards' own pinned master
-    // threads, which is mandatory for anything that touches shard state: the shards trade over an
+    // `for_each_partition_` / `map_partitions_` / `concat_partitions_` dispatch to the partitions' own pinned master
+    // threads, which is mandatory for anything that touches partition state: the partitions trade over an
     // in-process comm and their collectives are barrier-synced, so all S must run together.
-    // `fold_shards_` / `sum_shards_` / `first_shard_` instead read QUIESCENT shards straight from the
+    // `fold_partitions_` / `sum_partitions_` / `first_partition_` instead read quiescent partitions straight from the
     // facade thread, which is safe precisely because they mutate nothing.
 
-    // Run `fn` on every shard concurrently.
-    auto for_each_shard_(const std::function<void(MonomialPropagator &)> &fn) -> void;
+    // Run `fn` on every partition concurrently.
+    auto for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void;
 
-    // Run `fn` on every shard concurrently; one result per shard, in shard order.
+    // Run `fn` on every partition concurrently; one result per partition, in partition order.
     template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
-    auto map_shards_(Fn fn) -> std::vector<R>;
+    auto map_partitions_(Fn fn) -> std::vector<R>;
 
-    // map_shards_ with the per-shard sequences concatenated in shard order. The partitions are
-    // disjoint, so the result enumerates the whole operator (deterministic for a fixed shard count).
+    // map_partitions_ with the per-partition sequences concatenated in partition order. The partitions are
+    // disjoint, so the result enumerates the whole operator (deterministic for a fixed partition count).
     template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
-    auto concat_shards_(Fn fn) -> R;
+    auto concat_partitions_(Fn fn) -> R;
 
-    // Sequential fold of `proj(shard)` over the quiescent shards; `accumulate(total, value)` combines.
+    // Sequential fold of `proj(partition)` over the quiescent partitions; `accumulate(total, value)` combines.
     template <typename Proj, typename Accumulate, typename R = std::invoke_result_t<Proj &, const MonomialPropagator &>>
-    auto fold_shards_(Proj proj, Accumulate accumulate) const -> R;
+    auto fold_partitions_(Proj proj, Accumulate accumulate) const -> R;
 
-    // fold_shards_ for the additive breakdowns: the fields sum over the disjoint hash partitions.
+    // fold_partitions_ for the additive breakdowns: the fields sum over the disjoint hash partitions.
     template <typename Proj, typename R = std::invoke_result_t<Proj &, const MonomialPropagator &>>
-    auto sum_shards_(Proj proj) const -> R;
+    auto sum_partitions_(Proj proj) const -> R;
 
-    // Shard 0 for values that are NOT partitioned: the graph structure and gate info are identical on
-    // every shard, the core (identity) term is replicated on all of them, and an allreduced scalar is
-    // already global on each. Anything hash-partitioned must go through sum_/concat_shards_ instead.
-    auto first_shard_() const -> const MonomialPropagator &;
+    // Partition 0 for values that are not partitioned: the graph structure and gate info are identical on
+    // every partition, the core (identity) term is replicated on all of them, and an allreduced scalar is
+    // already global on each. Anything hash-partitioned must go through sum_/concat_partitions_ instead.
+    auto first_partition_() const -> const MonomialPropagator &;
 
     /// Cosine-only index count across the active layers (see graph_size()).
     auto cos_index_count_() const -> size_t;
 
-    // The shared tail of every update_* setter: apply `mutate` here, then replicate it to each shard.
+    // The shared tail of every update_* setter: apply `mutate` here, then replicate it to each partition.
     // Validation stays at the call site, so a rejected value throws before anything is mutated, and
-    // the shards do not re-validate what the facade already checked against identical field values.
+    // the partitions do not re-validate what the facade already checked against identical field values.
     auto update_setting_(const std::function<void(MonomialPropagator &)> &mutate) -> void {
         mutate(*this);
-        if (shard_group_) {
-            for_each_shard_(mutate);
+        if (partition_group_) {
+            for_each_partition_(mutate);
         }
     }
 

@@ -14,11 +14,11 @@
 
 #pragma once
 
-// The algebra policy models (MajoranaAlgebra, PauliAlgebra) the propagation backbone is generic over:
-// how a Monomial evolves under a rotation exp(i*theta*G) -- which columns to fold, the per-term
-// rotation sign and emitted sine phase, the coeff codec, and the diagonal initial-state score.
-// with_algebra binds the runtime Basis to one model exactly once; each model forwards to the
-// sibling-header kernels.
+// The two algebra models the propagation backbone is generic over. Each answers the same fixed set of
+// questions about a rotation exp(i*theta*G): which columns to fold, a term's rotation sign and emitted
+// sine phase, the coefficient codec, and the diagonal initial-state score. The arithmetic behind each
+// answer lives in MajoranaAlgebra.h / PauliAlgebra.h; with_algebra (below) turns a runtime Basis into
+// one of these models.
 
 #include <complex>
 #include <concepts>
@@ -40,8 +40,10 @@ struct MajoranaAlgebra {
     static constexpr bool allows_basis_change = true;
 
     // Built once per layer: the generator G and its fixed interleave mask W (see interleave_phase_mask).
+    // G is stored by value, as PauliGenContext does — the context outliving a caller's temporary is a
+    // per-layer copy of one bitset, which is not worth a lifetime contract on every call site.
     struct GenContext {
-        const Monomial<NumModes> &gen;
+        Monomial<NumModes> gen;
         Monomial<NumModes> interleave_mask;
     };
     static auto make_gen_context(const Monomial<NumModes> &gen) -> GenContext {
@@ -166,8 +168,7 @@ auto algebra_state_phase(Basis basis, const Monomial<NumModes> &mono, const Mono
 
 // Score each fully-paired term's diagonal element against the initial product state: emits
 // sink(row, phase) in ascending paired_inds order. A sink rather than a dense out[row] because the
-// scored set is a vanishing fraction of the rows. with_algebra hoists the runtime->policy branch out
-// of the per-term loop, keeping the loop monomorphic in A.
+// scored set is a vanishing fraction of the rows.
 template <size_t NumModes, typename Rows, typename Sink>
 auto algebra_score_state(Basis basis,
                          const VecZ &paired_inds,
