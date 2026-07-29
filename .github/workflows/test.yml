@@ -334,7 +334,7 @@ jobs:
 
       - name: Install matching Build Wrapper
         run: |
-          curl --location --output build-wrapper-linux-x86.zip \
+          curl --fail --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output build-wrapper-linux-x86.zip \
             https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
           unzip -q -o build-wrapper-linux-x86.zip
 
