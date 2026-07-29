@@ -174,15 +174,16 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         """Re-wire which parameter drives each gate/layer, without rebuilding the graph.
 
         The graph structure depends only on the generators, not the parameter labels, so
-        this is a cheap relabel -- use it to tie or untie parameters on an already-built
+        this is an efficient relabel -- use it to tie or untie parameters on an already-built
         graph. The mapping may be given at either granularity and must be contiguous
         ``0..n-1``:
 
-        - **per graph layer** (length [graph_layers][], in the parameter-vector order):
-          relabels each layer directly.
-        - **per gate** (length [n_gates][], indexed by gate): expanded to per-layer via
-          each layer's gate, so a multi-monomial gate's layers stay tied. This is the
-          granularity of the authoring [Circuit][monoprop.circuit.Circuit]'s mapping.
+        - **per graph layer** (length [graph_layers][]): entry ``i`` is the parameter index
+          for layer ``i``.
+        - **per gate** (length [n_gates][]): entry ``g`` is the parameter index for gate
+          ``g``, and every layer that gate generated inherits it -- so the layers of a
+          multi-monomial gate necessarily share one parameter. This is the granularity of
+          the authoring [Circuit][monoprop.circuit.Circuit]'s mapping.
 
         When the two lengths coincide the per-layer reading is used. Functionals created
         earlier keep the mapping they were built with; rebuild a functional to pick up the
