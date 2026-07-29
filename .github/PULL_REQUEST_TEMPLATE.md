@@ -26,7 +26,7 @@
 <!-- Any code generated or substantially modified by an LLM must be noted inline too. -->
 
 > [!IMPORTANT]
-> By opening this PR I confirm that I have read [CONTRIBUTING.md](https://github.com/Algorithmiq/monoprop/blob/ed30341adbb0a8aea3aabac02ce329be61b2d92e/CONTRIBUTING.md) and I agree to the terms of the [Contributor License Agreement](https://github.com/Algorithmiq/monoprop/blob/ed30341adbb0a8aea3aabac02ce329be61b2d92e/CLA.md).
+> By opening this PR I confirm that I have read [CONTRIBUTING.md](https://github.com/Algorithmiq/monoprop/blob/fa820c3e5a90f773417c367fedbf2bd50683b496/CONTRIBUTING.md) and I agree to the terms of the [Contributor License Agreement](https://github.com/Algorithmiq/monoprop/blob/fa820c3e5a90f773417c367fedbf2bd50683b496/CLA.md).
 
 > [!WARNING]
 > If you're contributing on behalf of your employer, contact [cla@algorithmiq.fi](mailto:cla@algorithmiq.fi) to arrange a Corporate CLA.
