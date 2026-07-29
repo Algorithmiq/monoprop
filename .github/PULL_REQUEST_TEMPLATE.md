@@ -1,7 +1,5 @@
 <!-- Use "Fixes #<issue>" to auto-close the related issue when this PR is merged. -->
 
-By opening this PR I confirm that I have read [CONTRIBUTING.md](https://github.com/Algorithmiq/monoprop/blob/ed30341adbb0a8aea3aabac02ce329be61b2d92e/CONTRIBUTING.md) and I agree to the terms of the [Contributor License Agreement](https://github.com/Algorithmiq/monoprop/blob/ed30341adbb0a8aea3aabac02ce329be61b2d92e/CLA.md).
-
 ## Summary
 
 <!-- Provide a self-contained description of what this PR does and why.
@@ -26,3 +24,9 @@ By opening this PR I confirm that I have read [CONTRIBUTING.md](https://github.c
 - [ ] I used the following tool to generate or modify code:
 
 <!-- Any code generated or substantially modified by an LLM must be noted inline too. -->
+
+> [!IMPORTANT]
+> By opening this PR I confirm that I have read [CONTRIBUTING.md](https://github.com/Algorithmiq/monoprop/blob/ed30341adbb0a8aea3aabac02ce329be61b2d92e/CONTRIBUTING.md) and I agree to the terms of the [Contributor License Agreement](https://github.com/Algorithmiq/monoprop/blob/ed30341adbb0a8aea3aabac02ce329be61b2d92e/CLA.md).
+
+> [!WARNING]
+> If you're contributing on behalf of your employer, contact [cla@algorithmiq.fi](mailto:cla@algorithmiq.fi) to arrange a Corporate CLA.
