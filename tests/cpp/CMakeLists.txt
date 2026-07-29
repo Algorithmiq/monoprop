@@ -4,10 +4,12 @@ include(${PROJECT_SOURCE_DIR}/cmake/CPM.cmake)
 
 cpmaddpackage(
   NAME "msgpack-cxx"
-  VERSION "7.0.0...<9.0.0"
+  VERSION "7.0.0"
   GIT_REPOSITORY "https://github.com/msgpack/msgpack-c"
   GIT_TAG "cpp-7.0.0"
   OPTIONS "MSGPACK_USE_BOOST OFF" "MSGPACK_CXX20 ON"
+  SYSTEM YES
+  EXCLUDE_FROM_ALL YES
 )
 
 file(
