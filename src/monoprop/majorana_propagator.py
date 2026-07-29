@@ -123,7 +123,7 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         return MajoranaOperator(terms, self.num_modes)
 
     def update_initial_operator(self, new_operator: MajoranaOperator) -> None:
-        """Replace coefficients of the *initial operator* (existing terms only).
+        """Replace the *initial operator* (existing terms only).
 
         Re-weights the initial operator the graph is evaluated against, without touching
         the evolution graph or rebuilding the simulator. Only the initial operator is

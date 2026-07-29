@@ -524,7 +524,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     @abstractmethod
     def update_initial_operator(self, new_operator: T_op) -> None:
-        """Replace coefficients of the *initial operator* (existing terms only).
+        """Replace the *initial operator* (existing terms only).
 
         A re-weight, not a rebuild: the graph, its gates, and their generator coefficients are kept.
         Each concrete front-end implements this over its own operator type, encoding the terms into
@@ -533,7 +533,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Args:
             new_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
                 [PauliOperator][monoprop.pauli.PauliOperator], per the front-end, whose terms replace
-                the matching initial-operator coefficients.
+                the matching initial-operator.
 
         Raises:
             RuntimeError: In the Heisenberg picture, if a term is absent from the current operator.
