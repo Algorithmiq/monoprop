@@ -79,9 +79,6 @@ bench = [{ include-group = "test" }, "pytest-benchmark>=5"]
 [tool.uv]
 python-preference = "only-managed"
 keyring-provider = "subprocess"
-# Full dev environment by default. `docs` is intentionally excluded since it
-# is only needed when building the documentation site (see `just build-docs`).
-default-groups = ["dev", "test", "interactive"]
 cache-keys = [
   { file = "pyproject.toml" },
   { file = "include/**/*.h" },
