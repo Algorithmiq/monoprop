@@ -55,7 +55,7 @@ option(
   OFF
 )
 
-option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" OFF)
+option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
 set(Python_FIND_VIRTUALENV FIRST)
 find_package(
