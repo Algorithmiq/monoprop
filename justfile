@@ -1,8 +1,10 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+
 # Pass recipe arguments through as real argv (preserves quoting, e.g. a
 # `--mpiexec-args="--bind-to core"` value with spaces) via "$@" instead of the
 # space-splitting `{{ ARGS }}` interpolation.
-set positional-arguments
+
+set positional-arguments := true
 
 version := `uvx setuptools-scm | tr -d '\n'`
 project_source_dir := `pwd | tr -d '\n'`
@@ -12,13 +14,17 @@ bench_results := "benches/results"
 
 # Fumadocs (Next.js) documentation site lives in `docs/`; the static export
 # is written to `docs/out`.
+
 site := "docs"
 
 # Run the Python docs toolchain in the synced docs environment.
+
 docs_uv := "uv run --only-group docs --all-extras"
+
 # `fumapy` (the fumadocs Python docgen) ships inside the npm package; inject it
 # ephemerally and pin griffe to the 1.x line it targets (its newer
 # griffe-typingdoc dependency otherwise pulls an incompatible griffe).
+
 fumapy := "--with " + site + "/node_modules/fumadocs-python --with 'griffe<2' --with 'griffe-typingdoc==0.2.8'"
 
 default: build-docs
@@ -27,6 +33,7 @@ test-py:
     uv run python -m pytest -m "not mpi"
 
 # MPI is off by default in source builds, so build an MPI-enabled editable install
+
 # first, then run the suite under mpiexec with --no-sync (avoids a per-rank resync).
 test-py-mpi:
     uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v; \
@@ -43,6 +50,7 @@ test-py-mpi-matrix:
 # Build and run the C++ suite with a 64-bit TermIndex (monoprop_WIDE_TERM_INDEX=ON).
 # This is the only configuration that compiles the wide `#if defined(monoprop_WIDE_TERM_INDEX)`
 # branches (operator_index_tests, large_cosine_storage_tests, graph_encoding_tests), so it
+
 # guards them from bit-rotting. Serial is enough to exercise those branches.
 test-cpp-wide:
     cmake --preset release-gcc-wide
@@ -50,6 +58,7 @@ test-cpp-wide:
     ctest --preset release-gcc-wide -L serial
 
 # Build and run the C++ suite with MPI enabled. `monoprop_MPI_TEST_PROCS` (default 2, a
+
 # semicolon list) picks the rank counts the mpi-labelled tests are registered for.
 test-cpp-mpi:
     cmake --preset release-gcc-mpi
@@ -57,6 +66,7 @@ test-cpp-mpi:
     ctest --preset release-gcc-mpi
 
 # Run the C++ suite under coverage and report with gcovr.
+
 # Approximates the CI cpp-checks gcovr invocation; set $GCOV to pick another gcov binary.
 coverage-cpp:
     cmake --preset coverage-gcc
@@ -77,33 +87,36 @@ docs-install:
 # --all-extras` (or `just bench-build-mpi` for MPI). Examples:
 #   just bench serial
 #   monoprop_NUM_THREADS=10 just bench serial-t10 --num-modes 64 --bench-rounds 10
+
 # Run the suite (timing + memory) for one LABEL; extra args go to pytest.
 bench LABEL *ARGS:
-    @mkdir -p "{{bench_results}}"
+    @mkdir -p "{{ bench_results }}"
     label="$1"; shift; \
-    monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{bench_results}}" \
+    monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
         uv run --no-sync python -m pytest benches -o filterwarnings=default \
-        --benchmark-json="{{bench_results}}/time-$label.json" "$@"
-    uv run --no-sync python benches/report.py "{{bench_results}}"
+        --benchmark-json="{{ bench_results }}/time-$label.json" "$@"
+    uv run --no-sync python benches/report.py "{{ bench_results }}"
 
 # Needs an MPI build (`just bench-build-mpi`) -- a non-MPI build is rejected by the
 # preflight. Extra args are passed to mpiexec for pinning (and, as root, add
 # `--allow-run-as-root`), e.g.
 #   monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
+
 # Run under MPI: RANKS ranks recorded as one LABEL column.
 bench-mpi LABEL RANKS *MPIARGS:
     uv run --no-sync python -c "import monoprop, sys; sys.exit(0 if monoprop.has_mpi else 'monoprop was built without MPI; run just bench-build-mpi first')"
-    @mkdir -p "{{bench_results}}"
+    @mkdir -p "{{ bench_results }}"
     label="$1"; ranks="$2"; shift 2; \
-    monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{bench_results}}" \
+    monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
         uv run --no-sync mpiexec -n "$ranks" \
         -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS "$@" \
         python -m pytest benches -o filterwarnings=default \
-        --benchmark-json="{{bench_results}}/time-$label.json"
-    uv run --no-sync python benches/report.py "{{bench_results}}"
+        --benchmark-json="{{ bench_results }}/time-$label.json"
+    uv run --no-sync python benches/report.py "{{ bench_results }}"
 
 # A plain `just bench` uses `--no-sync`, so this MPI build survives until the next
 # explicit `uv sync` / rebuild.
+
 # Rebuild monoprop with MPI enabled (editable). Run once before `just bench-mpi`.
 bench-build-mpi:
     uv sync --all-extras --group bench --reinstall-package monoprop --no-cache \
@@ -111,14 +124,15 @@ bench-build-mpi:
 
 # Quick sanity run: tiny sizes, skip the slow static benchmarks.
 bench-smoke:
-    @mkdir -p "{{bench_results}}"
-    monoprop_BENCH_LABEL=smoke monoprop_BENCH_RESULTS="{{bench_results}}" \
+    @mkdir -p "{{ bench_results }}"
+    monoprop_BENCH_LABEL=smoke monoprop_BENCH_RESULTS="{{ bench_results }}" \
         uv run --no-sync python -m pytest benches -o filterwarnings=default \
-        --benchmark-json="{{bench_results}}/time-smoke.json" \
+        --benchmark-json="{{ bench_results }}/time-smoke.json" \
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16
-    uv run --no-sync python benches/report.py "{{bench_results}}"
+    uv run --no-sync python benches/report.py "{{ bench_results }}"
 
 # Execute the tutorial notebooks and convert them to Markdown. Notebook
+
 # execution fails the build on any cell error -- this is the notebook doctest.
 gen-notebooks:
     {{ docs_uv }} python docs/scripts/notebooks_to_mdx.py
