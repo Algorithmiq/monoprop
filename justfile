@@ -19,7 +19,7 @@ site := "docs"
 
 # Run the Python docs toolchain in the synced docs environment.
 
-docs_uv := "uv run --group docs --all-extras"
+docs_uv := "uv run --group docs --group test --no-dev --all-extras"
 
 # `fumapy` (the fumadocs Python docgen) ships inside the npm package; inject it
 # ephemerally and pin griffe to the 1.x line it targets (its newer
