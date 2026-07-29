@@ -4,12 +4,12 @@ include(${PROJECT_SOURCE_DIR}/cmake/CPM.cmake)
 
 cpmaddpackage(
   NAME "msgpack-cxx"
-<<<<<<< New base: ci: msgpack-cxx 8.0.0 is fine on macos-15
+<<<<<<< New base: chore(cmake): do not install msgpack with the wheel
 ||||||| Common ancestor
-  VERSION "7.0.0"
-=======
   VERSION "7.0.0...<9.0.0"
->>>>>>> Current commit: ci: msgpack-cxx 8.0.0 is fine on macos-15
+=======
+  VERSION "7.0.0"
+>>>>>>> Current commit: chore(cmake): do not install msgpack with the wheel
   GIT_REPOSITORY "https://github.com/msgpack/msgpack-c"
   GIT_TAG "cpp-7.0.0"
   OPTIONS "MSGPACK_USE_BOOST OFF" "MSGPACK_CXX20 ON"
