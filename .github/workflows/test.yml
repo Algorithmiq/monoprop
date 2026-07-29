@@ -54,7 +54,7 @@ jobs:
       - name: Install dependencies
         run: |
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            brew install boost open-mpi msgpack-cxx
+            brew install boost open-mpi msgpack-cxx@7.0.0
           else
             sudo apt-get update
             sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
