@@ -96,7 +96,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             raise RuntimeError("PauliPropagator has no qubit count set.")
         return self._num_qubits
 
-    def evolved_operator(  # type: ignore[override]
+    def evolved_operator(
         self,
         parameters: ParameterValues = None,
         *,
@@ -104,8 +104,10 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
     ) -> PauliOperator:
         """Return the evolved operator as a [PauliOperator][monoprop.pauli.PauliOperator].
 
-        Unlike the base method, which hands back the engine's raw gamma-slot keys, this decodes
-        them into qubit Pauli terms.
+        Equivalent to
+        [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially]
+        with ``inplace=False``, without touching the simulator state. The engine hands back raw
+        gamma-slot keys; this decodes them into qubit Pauli terms.
 
         Args:
             parameters: Variational parameter values (see
@@ -115,7 +117,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         Returns:
             The evolved qubit operator (Heisenberg picture) or evolved state (Schrodinger picture).
         """
-        raw = super().evolved_operator(parameters, atol=atol)
+        raw = self._simulator.evolved_operator(self._bind(parameters), atol)  # type: ignore[attr-defined]
         terms: dict[Pauli, complex] = {
             Pauli(*_local_slots_to_pauli(slots)): coeff for slots, coeff in raw.items()
         }

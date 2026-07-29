@@ -498,6 +498,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
             self._n_params = max(self._simulator.parameter_mapping, default=-1) + 1
         return coeffs
 
+    @abstractmethod
     def evolved_operator(
         self,
         parameters: ParameterValues = None,
@@ -506,12 +507,11 @@ class MonomialPropagator(ABC, Generic[T_op]):
     ) -> T_op:
         """Return the evolved operator/state without modifying simulator state.
 
-        Equivalent to [contract_partially][] with ``inplace=False``, decoded into terms without
-        touching the simulator state. This returns the engine's raw keys -- index tuples mapped to
-        complex coefficients, Majorana indices or gamma slots depending on the basis; each concrete
-        front-end overrides it to hand back its own operator type instead
-        ([MajoranaOperator][monoprop.majorana.MajoranaOperator] or
-        [PauliOperator][monoprop.pauli.PauliOperator]).
+        Equivalent to [contract_partially][] with ``inplace=False``, decoded into terms. Each
+        concrete front-end implements this over its own operator type -- the engine yields raw index
+        tuples (Majorana indices, or gamma slots in the Pauli basis), which the subclass wraps into a
+        [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
+        [PauliOperator][monoprop.pauli.PauliOperator].
 
         Args:
             parameters: Variational parameter values (see [expectation_value][]).
@@ -520,23 +520,25 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Returns:
             The evolved operator (Heisenberg picture) or evolved state (Schrodinger picture).
         """
-        return self._simulator.evolved_operator(self._bind(parameters), atol)
+        raise NotImplementedError
 
+    @abstractmethod
     def update_initial_operator(self, new_operator: T_op) -> None:
         """Replace coefficients of the *initial operator* (existing terms only).
 
         A re-weight, not a rebuild: the graph, its gates, and their generator coefficients are kept.
+        Each concrete front-end implements this over its own operator type, encoding the terms into
+        the engine's raw index tuples.
 
         Args:
-            new_operator: The engine's raw keys -- monomial index tuples mapped to their new complex
-                coefficients. Each concrete front-end overrides this to accept its own operator type
-                instead ([MajoranaOperator][monoprop.majorana.MajoranaOperator] or
-                [PauliOperator][monoprop.pauli.PauliOperator]).
+            new_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
+                [PauliOperator][monoprop.pauli.PauliOperator], per the front-end, whose terms replace
+                the matching initial-operator coefficients.
 
         Raises:
             RuntimeError: In the Heisenberg picture, if a term is absent from the current operator.
         """
-        self._simulator.update_initial_operator(new_operator)
+        raise NotImplementedError
 
     def size(self) -> int:
         """Number of distinct monomial terms in the simulator's current representation."""
