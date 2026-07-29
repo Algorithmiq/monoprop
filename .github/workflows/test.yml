@@ -29,18 +29,23 @@ jobs:
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
-    name: Check project for ${{ matrix.python-version }} on ${{ matrix.runner }}
+    name: Check project for ${{ matrix.python-version }} on ${{ matrix.runner }} (${{ matrix.compiler}})
 
     strategy:
       fail-fast: false
       matrix:
-        python-version:
-          - "3.11"
-          - "3.14"
-        runner:
-          - ubuntu-26.04
-          - ubuntu-26.04-arm
-          - macos-15
+        python-version: ["3.11", "3.14"]
+        runner: [ubuntu-26.04, ubuntu-26.04-arm, macos-15]
+        compiler: [default, gcc-14, clang-18]
+        exclude:
+          - compiler: gcc-14
+            python-version: "3.14"
+          - compiler: clang-18
+            python-version: "3.14"
+          - compiler: gcc-14
+            runner: macos-15
+          - compiler: clang-18
+            runner: macos-15
 
     runs-on: ${{ matrix.runner}}
 
@@ -55,13 +60,21 @@ jobs:
             brew install boost open-mpi msgpack-cxx
           else
             sudo apt-get update
-            sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+            packages="libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev"
+            if [[ "${{ matrix.compiler }}" == "clang-18" ]]; then
+              packages="$packages clang-18"
+            fi
+            sudo apt-get install -y $packages
           fi
 
       - name: Set build environment variables
-        if: ${{ matrix.runner == 'macos-15' }}
         run: |
-          echo "MACOSX_DEPLOYMENT_TARGET=15.0" >> "$GITHUB_ENV"
+          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
+            echo "MACOSX_DEPLOYMENT_TARGET=15.0" >> "$GITHUB_ENV"
+          fi
+          if [[ "${{ matrix.compiler }}" != "default" ]]; then
+            echo "CXX=${{ matrix.compiler }}" >> "$GITHUB_ENV"
+          fi
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -292,92 +305,6 @@ jobs:
         with:
           args: >
             -Dsonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
-
-  cpp-checks-other:
-    # in combination with the PR types selection, this top-level if statement
-    # skips running the workflow for Draft PRs
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
-
-    name: Check C++ on ${{ matrix.runner }} (${{ matrix.compiler }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # `preset` picks the compiler: the update-alternatives steps below point the plain
-        # g++/clang++ the presets name at the matrix's toolchain version.
-        include:
-          - runner: ubuntu-26.04-arm
-            compiler: gcc-14
-            preset: release-gcc
-          - runner: ubuntu-26.04-arm
-            compiler: clang-18
-            preset: release-clang
-          - runner: ubuntu-26.04
-            compiler: clang-18
-            preset: release-clang
-          - runner: macos-15
-            compiler: apple-clang
-            preset: release-clang
-
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Set gcc-14/g++-14 as default compilers
-        if: ${{ matrix.compiler == 'gcc-14' }}
-        run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
-          sudo update-alternatives --set cc /usr/bin/gcc-14
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-          sudo update-alternatives --set g++ /usr/bin/g++-14
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
-          sudo update-alternatives --set c++ /usr/bin/g++-14
-
-      - name: Set clang-18/clang++-18 as default compilers
-        if: ${{ matrix.compiler == 'clang-18' }}
-        run: |
-          if ! command -v clang-18 >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y clang-18
-          fi
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 180
-          sudo update-alternatives --set clang /usr/bin/clang-18
-          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang-18 180
-          sudo update-alternatives --set cc /usr/bin/clang-18
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 180
-          sudo update-alternatives --set clang++ /usr/bin/clang++-18
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++-18 180
-          sudo update-alternatives --set c++ /usr/bin/clang++-18
-
-      - name: Install dependencies
-        if: ${{ matrix.runner != 'macos-15' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
-
-      - name: Install dependencies
-        if: ${{ matrix.runner == 'macos-15' }}
-        run: |
-          brew install ninja boost msgpack-cxx open-mpi
-
-      - name: Configure
-        run: |
-          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            export MACOSX_DEPLOYMENT_TARGET=15.0
-          fi
-          cmake --preset ${{ matrix.preset }}
-
-      - name: Build
-        run: cmake --build --preset ${{ matrix.preset }}
-
-      # --output-junit resolves relative to the test directory (build/<preset>), so ../../ puts the
-      # report at the workspace root where the Codecov step looks for it.
-      - name: Test
-        run: |
-          ctest --preset ${{ matrix.preset }} --output-junit ../../ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
 
   cpp-wide:
     # in combination with the PR types selection, this top-level if statement
