@@ -266,9 +266,10 @@ jobs:
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
     name: SonarQube analysis
-    env:
-      BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory
     runs-on: ubuntu-26.04
+    env:
+      SKBUILD_CMAKE_DEFINE: "monoprop_ENABLE_MPI=ON"
+
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -279,24 +280,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
 
-      - name: Install matching Build Wrapper
-        run: |
-          curl --fail --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output build-wrapper-linux-x86.zip \
-            https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
-          unzip -q -o build-wrapper-linux-x86.zip
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
 
-      # MPI is ON here so the analyzer sees detail/mpi/*: HybridComm.h includes <mpi.h>
-      # unconditionally and every includer guards it behind #ifdef monoprop_ENABLE_MPI, so an
-      # MPI-off configure keeps that whole layer out of compile_commands.json and reports
-      # #ifdef'd-away members as smells (e.g. Exchange.h's Ticket losing its request_).
-      - name: Configure for SonarQube CFamily analysis
-        run: cmake --preset release-gcc-mpi
-
-      - name: Build with Build Wrapper
+      - name: Install package
         run: |
-          ./build-wrapper-linux-x86/build-wrapper-linux-x86-64 \
-            --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} \
-            cmake --build --preset release-gcc-mpi
+          uv sync --no-progress --all-extras -v
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v8.2.1
@@ -304,7 +296,7 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
+            -Dsonar.cfamily.compile-commands=build/editable/Release/compile_commands.json
 
   cpp-wide:
     # in combination with the PR types selection, this top-level if statement
