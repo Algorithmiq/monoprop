@@ -36,7 +36,7 @@ using namespace pauli_oracle;
 
 namespace {
 
-// JW basis-change table (basis vector -> gamma indices) for the basis_change parameter.
+// JW basis-change table (basis vector -> slot indices) for the basis_change parameter.
 template <size_t NumModes>
 auto jw_basis_indices(size_t n) -> std::vector<VecZ> {
     std::vector<VecZ> table(2 * NumModes);
@@ -153,7 +153,7 @@ auto check_pauli_gate(const std::map<std::string, double> &obs, const std::strin
 
 // ── Jordan-Wigner Majorana arm (mirrors src/monoprop/{conversion_utils,circuit}.py) ──────────
 
-// _pauli_to_fermi(pauli): JW-image gamma indices (ascending) plus the phase coeff, exactly as Python.
+// _pauli_to_fermi(pauli): JW-image Majorana indices (ascending) plus the phase coeff, as in Python.
 auto pauli_to_fermi_full(const std::string &pauli) -> std::pair<VecZ, cd> {
     std::vector<size_t> acc;
     bool flag_z = false;

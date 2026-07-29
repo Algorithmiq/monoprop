@@ -233,7 +233,7 @@ class PauliOperator:
     def get_local_operator(self) -> MajoranaOperator:
         """Pack the operator into the engine's native Pauli basis, as a MajoranaOperator.
 
-        Each term maps to its per-qubit gamma-slots -- ``X_q -> {2q}``, ``Y_q -> {2q+1}``,
+        Each term maps to its per-qubit slots -- ``X_q -> {2q}``, ``Y_q -> {2q+1}``,
         ``Z_q -> {2q, 2q+1}`` (see ``_pauli_to_local_slots``) -- carrying its coefficient
         unchanged; a Hermitian Pauli operator's coefficients are real, but that is not checked
         here. The result is a [MajoranaOperator][monoprop.majorana.MajoranaOperator] only as a

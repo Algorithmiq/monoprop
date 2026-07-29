@@ -509,8 +509,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
         Equivalent to [contract_partially][] with ``inplace=False``, decoded into terms. Each
         concrete front-end implements this over its own operator type -- the engine yields raw index
-        tuples (Majorana indices, or gamma slots in the Pauli basis), which the subclass wraps into a
-        [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
+        tuples (Majorana indices, or symplectic slots in the Pauli basis), which the subclass wraps
+        into a [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
         [PauliOperator][monoprop.pauli.PauliOperator].
 
         Args:

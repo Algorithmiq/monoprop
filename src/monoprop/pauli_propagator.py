@@ -69,7 +69,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             comm: Optional MPI communicator (must outlive the propagator).
         """
         num_qubits = initial_operator.num_qubits
-        # The engine takes the Schrodinger cutoff in gamma slots (two per qubit); this API in qubits.
+        # The engine takes the Schrodinger cutoff in slots (two per qubit); this API in qubits.
         schrodinger_cutoff = (
             None if schrodinger_cutoff is None else 2 * schrodinger_cutoff
         )
@@ -107,7 +107,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         Equivalent to
         [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially]
         with ``inplace=False``, without touching the simulator state. The engine hands back raw
-        gamma-slot keys; this decodes them into qubit Pauli terms.
+        symplectic-slot keys; this decodes them into qubit Pauli terms.
 
         Args:
             parameters: Variational parameter values (see
@@ -206,7 +206,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
                 seed.
             only_rotate_len_k: If provided, apply gates to Pauli terms of length <= k in the
                 evolved operator even if they anticommute. Length is counted in the engine's
-                gamma slots, not in qubits: ``X`` or ``Y`` on a qubit costs one slot and ``Z``
+                slots, not in qubits: ``X`` or ``Y`` on a qubit costs one slot and ``Z``
                 costs two, so ``k`` ranges up to ``2 * num_qubits``.
         """
         super().build_graph(
@@ -221,7 +221,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         Re-weights the initial operator the graph is evaluated against, without touching
         the evolution graph or rebuilding the simulator. Only the initial operator is
         affected -- the gates and their generator coefficients are unchanged. Unlike the
-        base method, which takes the engine's raw gamma-slot keys, this accepts qubit Pauli
+        base method, which takes the engine's raw symplectic-slot keys, this accepts qubit Pauli
         terms and encodes them via
         [get_local_operator][monoprop.pauli.PauliOperator.get_local_operator].
 
@@ -255,7 +255,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
     def num_modes(self) -> int:
         """Number of qubits the propagator acts on -- the same value as [num_qubits][].
 
-        The Pauli basis counts one mode per qubit (two gamma slots each), so the inherited
+        The Pauli basis counts one mode per qubit (two slots each), so the inherited
         mode-count name and [num_qubits][] never disagree here; prefer [num_qubits][] in
         qubit-facing code.
         """

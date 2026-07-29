@@ -35,7 +35,7 @@ using cd = std::complex<double>;
 
 inline constexpr char LETTERS[4] = {'I', 'X', 'Y', 'Z'};
 
-// Native gamma-slot list for a Pauli string: X_q -> slot 2q, Y_q -> slot 2q+1,
+// Native symplectic-slot list for a Pauli string: X_q -> slot 2q, Y_q -> slot 2q+1,
 // Z_q -> {2q, 2q+1}. This is the format the propagator's initial_operator and
 // generators expect.
 inline auto slots_of_string(const std::string &p) -> VecZ {
@@ -121,7 +121,7 @@ auto jw_bitset(const std::string &p) -> Monomial<NumModes> {
 }
 
 // jordan_wigner_basis_change(n) as a full-width (2*NumModes) basis so
-// change_basis can index it by gamma slot.
+// change_basis can index it by slot.
 template <size_t NumModes>
 auto jw_basis(size_t n) -> MonomialList<NumModes> {
     MonomialList<NumModes> basis(2 * NumModes);
