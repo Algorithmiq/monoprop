@@ -119,4 +119,4 @@ class TestEvolvedOperatorBothPictures:
             operator, [0, 1], cutoff=4, schrodinger_cutoff=2, comm=serial_comm
         )
         result = mp.evolved_operator()
-        assert isinstance(result, dict)
+        assert isinstance(result, MajoranaOperator)

@@ -61,8 +61,8 @@ circuit = Circuit(gates=[gate], parameters=[0.5])
 mbs = MajoranaPropagator.from_circuit(circuit, observable, cutoff=16)
 result = mbs.evolved_operator()
 
-assert sorted(result) == [(0, 1, 2, 4), (0, 1, 2, 5)]  # original (cosine) term plus the new (sine) term
-assert np.isclose(result[(0, 1, 2, 4)].real, np.cos(2 * 0.5))  # cosine branch
+assert sorted(result.terms) == [(0, 1, 2, 4), (0, 1, 2, 5)]  # original (cosine) term plus the new (sine) term
+assert np.isclose(result.terms[(0, 1, 2, 4)].real, np.cos(2 * 0.5))  # cosine branch
 ```
 
 For qubit problems there is a dedicated simulator, `PauliPropagator`, which takes
