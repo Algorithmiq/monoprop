@@ -119,9 +119,7 @@ class PauliOperator:
     """
 
     def __init__(
-        self,
-        terms: Mapping[Pauli | str, complex],
-        num_qubits: int | None,
+        self, terms: Mapping[Pauli | str, float], num_qubits: int | None
     ) -> None:
         """Initialize the Pauli operator from a term mapping.
 
@@ -132,11 +130,14 @@ class PauliOperator:
         Raises:
             ValueError: If a term acts on a qubit index ``>= num_qubits``.
         """
-        accumulated: dict[Pauli, complex] = defaultdict(complex)
+        accumulated: dict[Pauli, float] = defaultdict(float)
         for key, coeff in terms.items():
             pauli = key if isinstance(key, Pauli) else Pauli(key)
-            accumulated[pauli] += coeff
-        self.terms: dict[Pauli, complex] = dict(accumulated)
+            float_coeff = np.real_if_close(coeff)
+            if np.iscomplexobj(float_coeff):
+                raise ValueError("Operator has complex terms")
+            accumulated[pauli] += float(float_coeff)
+        self.terms: dict[Pauli, float] = dict(accumulated)
         self.num_qubits = num_qubits
         if num_qubits is not None:
             for pauli in self.terms:
@@ -150,11 +151,11 @@ class PauliOperator:
     def _from_terms(
         cls,
         strings: Sequence[Pauli | str],
-        coefficients: Sequence[complex],
+        coefficients: Sequence[float],
         num_qubits: int | None = None,
     ) -> PauliOperator:
         """Build from parallel ``strings``/``coefficients`` lists (internal)."""
-        accumulated: dict[Pauli, complex] = defaultdict(complex)
+        accumulated: dict[Pauli, float] = defaultdict(float)
         for string, coeff in zip(strings, coefficients, strict=True):
             pauli = string if isinstance(string, Pauli) else Pauli(string)
             accumulated[pauli] += coeff
