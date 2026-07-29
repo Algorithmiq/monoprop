@@ -103,7 +103,6 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - **uv**: Package management
 - **fmt**: C++ formatting library
 - **Boost**: Used for various utilities (unordered_map, unit tests)
-- **hwloc**: Portable physical-core and cache-topology discovery and partition-thread affinity
 - **msgpack**: Serialization of the test-data fixtures only (`tests/data/*.msgpack`); consumed by the Python test loaders and the C++ test suite, not by the shipped library
 
 ## Common Tasks

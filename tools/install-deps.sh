@@ -10,7 +10,7 @@ Usage: $0 [INSTALL_PREFIX] [OPTIONS]
 
 Install C++ dependencies for monoprop project.
 
-This script can install Boost Unordered, Boost Test, hwloc, and msgpack-cxx.
+This script can install Boost Unordered, Boost Test, and msgpack-cxx.
 Each component can be skipped with the corresponding option.
 The default installation prefix is /usr/local.
 
@@ -20,7 +20,6 @@ Arguments:
 Options:
     --skip-boost-unordered  Skip installing Boost unordered
     --skip-boost-test   Skip installing Boost Test library (only install unordered)
-    --skip-hwloc        Skip installing hwloc
     --skip-msgpack      Skip installing msgpack-cxx library
     --help, -h          Show this help message
 
@@ -38,7 +37,6 @@ DEFAULT_PREFIX="/usr/local"
 INSTALL_PREFIX="$DEFAULT_PREFIX"
 INSTALL_BOOST_UNORDERED=true
 INSTALL_BOOST_TEST=true
-INSTALL_HWLOC=true
 INSTALL_MSGPACK=true
 
 # Parse arguments
@@ -50,10 +48,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-boost-test)
             INSTALL_BOOST_TEST=false
-            shift
-            ;;
-        --skip-hwloc)
-            INSTALL_HWLOC=false
             shift
             ;;
         --skip-msgpack)
@@ -86,7 +80,6 @@ done
 echo "Installing C++ dependencies to: $INSTALL_PREFIX"
 echo "Boost unordered: $([ "$INSTALL_BOOST_UNORDERED" = true ] && echo "YES" || echo "SKIP")"
 echo "Boost Test: $([ "$INSTALL_BOOST_TEST" = true ] && echo "YES" || echo "SKIP")"
-echo "hwloc: $([ "$INSTALL_HWLOC" = true ] && echo "YES" || echo "SKIP")"
 echo "msgpack-cxx: $([ "$INSTALL_MSGPACK" = true ] && echo "YES" || echo "SKIP")"
 echo
 
@@ -136,27 +129,6 @@ install_boost() {
     fi
 }
 
-install_hwloc() {
-    if [ "$INSTALL_HWLOC" != true ]; then
-        echo "Skipping hwloc installation"
-        return 0
-    fi
-
-    local hwloc_version="2.12.2"
-    echo "Installing hwloc $hwloc_version..."
-    curl -fsSL "https://download.open-mpi.org/release/hwloc/v2.12/hwloc-$hwloc_version.tar.gz" | tar -xz
-    cd "hwloc-$hwloc_version"
-    ./configure \
-        --prefix="$INSTALL_PREFIX" \
-        --disable-cairo \
-        --disable-libxml2 \
-        --disable-static \
-        --enable-shared
-    make -j"$(nproc)"
-    make install
-    cleanup_build "hwloc-$hwloc_version"
-}
-
 install_msgpack() {
     if [ "$INSTALL_MSGPACK" != true ]; then
         echo "Skipping msgpack-cxx installation"
@@ -184,7 +156,8 @@ install_msgpack() {
 . /etc/os-release
 echo "Detected OS: $PRETTY_NAME"
 install_boost
-install_hwloc
+
+
 install_msgpack
 
 echo
@@ -197,5 +170,4 @@ echo
 echo "Installed components:"
 [ "$INSTALL_BOOST_UNORDERED" = true ] && echo "  ✓ Boost unordered" || echo "  ✗ Boost unordered (skipped)"
 [ "$INSTALL_BOOST_TEST" = true ] && echo "  ✓ Boost Test" || echo "  ✗ Boost Test (skipped)"
-[ "$INSTALL_HWLOC" = true ] && echo "  ✓ hwloc" || echo "  ✗ hwloc (skipped)"
 [ "$INSTALL_MSGPACK" = true ] && echo "  ✓ msgpack-cxx" || echo "  ✗ msgpack-cxx (skipped)"

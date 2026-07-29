@@ -121,7 +121,46 @@ target_include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(_core PRIVATE monoprop-objs)
+target_link_libraries(_core PRIVATE monoprop)
+
+# flags to prepend
+target_compile_options(
+  _core
+  BEFORE
+  PRIVATE
+    "${monoprop_CXX_FLAGS}"
+    "${ARCH_FLAG}"
+)
+
+# flags to append
+target_compile_options(_core PRIVATE "${EXTRA_CXXFLAGS}")
+
+# handle RPATH
+set(_plat_token "")
+if(APPLE)
+  set(_plat_token "@loader_path")
+else()
+  set(_plat_token "\$ORIGIN")
+endif()
+set(
+  _RPATH
+  "${_plat_token}/${PROJECT_NAME}/${CMAKE_INSTALL_LIBDIR}/lib;${_plat_token}/${CMAKE_INSTALL_LIBDIR}"
+)
+
+set_target_properties(
+  _core
+  PROPERTIES
+    MACOSX_RPATH
+      ON
+    SKIP_BUILD_RPATH
+      OFF
+    BUILD_WITH_INSTALL_RPATH
+      OFF
+    INSTALL_RPATH
+      "${_RPATH}"
+    INSTALL_RPATH_USE_LINK_PATH
+      ON
+)
 
 # generate dispatch function module
 install(

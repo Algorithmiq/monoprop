@@ -51,7 +51,7 @@ mpi = ["mpi4py>=4.1.0"]
 qiskit = ["qiskit>=2.0.0"]
 
 [dependency-groups]
-dev = ["prek>=0.4", "ruff==0.15.20"]
+dev = ["prek>=0.4", "ruff==0.15.20", "gcovr"]
 # The documentation site is built with Fumadocs (Next.js); see `docs/`.
 # Python's only roles are converting the tutorial notebooks to Markdown
 # (`nbconvert`) and generating the API reference from docstrings (`griffe`,
@@ -349,9 +349,15 @@ test-groups = ["test"]
 test-extras = ["qiskit", "openfermion", "pyscf"]
 
 [tool.cibuildwheel.linux]
-before-build = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
-environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
+before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
+environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
 
 [tool.cibuildwheel.macos]
-before-build = "brew install boost hwloc"
-environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
+before-all = "brew install boost"
+environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
+
+[[tool.cibuildwheel.overrides]]
+# override on x86_64 to keep the gcc-toolset runtime and /usr/local pkg-config paths visible
+select = "*_x86_64"
+inherit.environment = "prepend"
+environment = { LD_LIBRARY_PATH = "/opt/rh/gcc-toolset-14/root/usr/lib64:/opt/rh/gcc-toolset-14/root/usr/lib:/opt/rh/gcc-toolset-14/root/usr/lib64/dyninst:/opt/rh/gcc-toolset-14/root/usr/lib/dyninst", PKG_CONFIG_PATH = "/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig" }

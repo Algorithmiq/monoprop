@@ -29,7 +29,7 @@ whose partner lives in another partition are resolved through a per-gate exchang
 | --- | --- | --- |
 | `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. Set it to run fewer partitions than cores. |
 | `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
-| `monoprop_PARTITION_PINNING` | `on` | `0`/`false`/`no` disables pinning each partition to a core. Pinning is used where hwloc reports current-thread binding support. |
+| `monoprop_PARTITION_PINNING` | `on` | `0`/`false`/`no` disables pinning each partition to a core. Has an effect only on Linux. |
 
 ```bash
 # Run 8 partitions instead of one-per-core:

@@ -6,24 +6,21 @@ FROM mcr.microsoft.com/devcontainers/base:ubuntu26.04
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install \
     clang \
-    clang-format \
     clang-tidy \
+    clang-format \
     cmake \
     doxygen \
-    g++ \
     gcc \
+    g++ \
     gdb \
     just \
-    lcov \
+    ninja-build \
+    python3 \
+    openmpi-bin \
     libboost-dev \
     libboost-test-dev \
-    libhwloc-dev \
     libmsgpack-cxx-dev \
     libopenmpi-dev \
-    ninja-build \
-    openmpi-bin \
-    pkg-config \
-    python3 \
     && apt-get autoremove -y \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*

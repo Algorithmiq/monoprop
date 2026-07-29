@@ -1,5 +1,3 @@
-target_sources(monoprop-objs PRIVATE "CpuTopology.cpp")
-
 target_sources(
   monoprop
   PUBLIC
