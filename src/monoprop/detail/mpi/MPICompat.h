@@ -36,7 +36,6 @@
 
 // These includes are here on purpose and should not be moved to the top
 #include "monoprop/TypeAliases.h"
-#include "monoprop/detail/print_compat.h"
 
 namespace monoprop::mpi {
 
