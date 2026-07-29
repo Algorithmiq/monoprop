@@ -49,8 +49,6 @@ Changelog = "https://github.com/Algorithmiq/monoprop/releases"
 [project.optional-dependencies]
 mpi = ["mpi4py>=4.1.0"]
 qiskit = ["qiskit>=2.0.0"]
-openfermion = ["openfermion"]
-pyscf = ["pyscf"]
 
 [dependency-groups]
 dev = ["prek>=0.4", "ruff==0.15.20", "gcovr"]
@@ -63,7 +61,8 @@ interactive = [
   "ipykernel",
   "matplotlib",
   "pylatexenc",
-  "monoprop[qiskit,openfermion,pyscf]",
+  "qiskit>=2.0.0",
+  "pyscf",
 ]
 test = [
   "psutil>=7.2",
@@ -80,9 +79,6 @@ bench = [{ include-group = "test" }, "pytest-benchmark>=5"]
 [tool.uv]
 python-preference = "only-managed"
 keyring-provider = "subprocess"
-# Full dev environment by default. `docs` is intentionally excluded since it
-# is only needed when building the documentation site (see `just build-docs`).
-default-groups = ["dev", "test", "interactive"]
 cache-keys = [
   { file = "pyproject.toml" },
   { file = "include/**/*.h" },
