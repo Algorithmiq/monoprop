@@ -1,49 +1,74 @@
 ---
 title: Parallelism and distribution
-description: Scaling across MPI ranks and shared-memory threads.
+description: Scaling by partitioning the operator across cores and across MPI ranks.
 ---
 
-monoprop scales in two complementary ways: across MPI ranks (distributing the
-operator) and across threads within each rank (shared-memory parallelism).
-The MPI distribution shards both the operator and the graph across ranks,
-which can allow variational optimisation and simulation of larger systems
-than would fit in memory on a single node.
+monoprop scales the same way on one node and on many: it **partitions the
+operator** into disjoint pieces and applies each gate to every partition in
+lock-step, exchanging only the terms that cross a partition boundary. Two axes
+compose:
+
+- **Across cores (default):** one single-threaded partition per physical core,
+  within a single process. This is on automatically, and can be configured with
+  environment variables (see below).
+- **Across nodes (opt-in):** MPI ranks, each of which partitions further across its
+  own cores. Distributing the operator and its graph across ranks lets you
+  simulate and variationally optimise systems larger than one node's memory.
+
+## Operator partitioning (single node)
+
+By default monoprop splits the operator into one partition per physical core and
+gives each partition a pinned worker thread that runs it serially. Each partition
+keeps its own small, cache-resident term index; a gate is applied to all
+partitions at once, synchronised by a lightweight barrier, and anticommuting terms
+whose partner lives in another partition are resolved through a per-gate exchange.
+
+## Runtime environment variables
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. Set it to run fewer partitions than cores. |
+| `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
+| `monoprop_PARTITION_PINNING` | `on` | `0`/`false`/`no` disables pinning each partition to a core. Has an effect only on Linux. |
+
+```bash
+# Run 8 partitions instead of one-per-core:
+export monoprop_NUM_THREADS=8
+```
+
+## MPI distribution (multi-node)
+
+MPI partitions the operator and graph across ranks, composing with per-rank
+partitioning into one flat world of `R × S` partitions (`R` ranks, `S` partitions each).
+MPI communication is serialised through each rank's first partition, bracketed by
+the intra-rank barriers.
 
 ### Single-node (`MPI.COMM_SELF`)
 
-```python
+```python notest
 from mpi4py import MPI
-sim = MonomialPropagator(..., comm=MPI.COMM_SELF)
+sim = MajoranaPropagator(..., comm=MPI.COMM_SELF)
 ```
 
 ### Multi-node (`MPI.COMM_WORLD`)
 
 Replace the communicator and launch with `mpiexec`:
 
-```python
+```python notest
 from mpi4py import MPI
-sim = MonomialPropagator(..., comm=MPI.COMM_WORLD)
+sim = MajoranaPropagator(..., comm=MPI.COMM_WORLD)
 ```
 
 ```bash
 mpiexec -n 8 uv run python your_script.py
 ```
 
+A pure-MPI rank keeps its whole share in one partition unless
+`monoprop_NUM_THREADS` is set, so an MPI user who has not asked for threads gets
+one partition per rank.
+
 ### Enabling MPI
 
 MPI is **off by default**, so the prebuilt PyPI wheels run single-rank and the
 communicators above only distribute work after a from-source build with MPI
 enabled. See [Building from source](/building) for the full build instructions.
-
-## Shared-memory parallelism
-
-Within each MPI rank, monoprop uses Intel oneTBB for shared-memory parallelism.
-The thread count is read from the `monoprop_NUM_THREADS` environment variable,
-for example:
-
-```bash
-export monoprop_NUM_THREADS=8
-```
-
-When the variable is unset, TBB falls back to its own hardware-concurrency
-detection.

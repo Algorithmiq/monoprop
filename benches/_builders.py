@@ -27,20 +27,26 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
 
-from monoprop import MonomialPropagator, jordan_wigner_basis_change
-from monoprop.fermi_data import (
-    FermiCircuit,
-    FermiEvGate,
+from monoprop import (
+    Circuit,
+    ExpGate,
+    MajoranaPropagator,
+    Pauli,
+    PauliPropagator,
+)
+from monoprop.circuit import expand_monomials
+from monoprop.fermi import (
     FermiOperator,
     MajoranaOperator,
 )
-from monoprop.monomial_data import MonomialCircuit
-from monoprop.pauli_data import PauliEvCircuit, PauliEvGate, PauliOperator
+from monoprop.pauli import PauliOperator
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 _T = TypeVar("_T")
+
+Built = tuple[MajoranaPropagator, Circuit]
 
 
 def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
@@ -76,18 +82,24 @@ class RandomProblem:
     """
 
     observable: MajoranaOperator
-    circuit: MonomialCircuit
+    circuit: Circuit
     cutoff: int
 
     @property
     def parameter_mapping(self) -> np.ndarray:
-        """Return the circuit's parameter-index mapping."""
-        return np.asarray(self.circuit.param_inds, dtype=int)
+        """Return the circuit's per-monomial parameter-index mapping."""
+        _, _, mapping, _ = expand_monomials(
+            self.circuit.gates, self.circuit.resolved_mapping
+        )
+        return np.asarray(mapping, dtype=int)
 
     @property
     def gen_coeffs(self) -> np.ndarray:
-        """Return the circuit's generator coefficients."""
-        return np.asarray(self.circuit.gen_coeffs, dtype=float)
+        """Return the circuit's per-monomial generator coefficients."""
+        _, coeffs, _, _ = expand_monomials(
+            self.circuit.gates, self.circuit.resolved_mapping
+        )
+        return np.asarray(coeffs, dtype=float)
 
     @property
     def parameters(self) -> np.ndarray:
@@ -142,7 +154,7 @@ def make_random_problem(
 
     obs_majoranas = _random_terms(rng, obs_terms, gen_length, num_majorana_indices)
     obs_coeffs = rng.standard_normal(obs_terms).tolist()  # Hermitian -> real
-    observable = MajoranaOperator(obs_majoranas, obs_coeffs, num_modes)
+    observable = MajoranaOperator(dict(zip(obs_majoranas, obs_coeffs)), num_modes)
 
     gen_majoranas = _random_terms(rng, num_generators, gen_length, num_majorana_indices)
     gen_coeffs = rng.standard_normal(num_generators).tolist()
@@ -150,12 +162,12 @@ def make_random_problem(
     parameters = (0.1 * rng.standard_normal(num_generators)).tolist()
     param_inds = list(range(num_generators))
 
-    circuit = MonomialCircuit(
-        initial_state=[],
+    circuit = Circuit.from_dense_arrays(
         majoranas=gen_majoranas,
-        parameters=parameters,
         gen_coeffs=gen_coeffs,
         param_inds=param_inds,
+        parameters=parameters,
+        initial_state=[],
     )
     return RandomProblem(observable=observable, circuit=circuit, cutoff=cutoff)
 
@@ -166,8 +178,8 @@ def build_random_propagator(
     comm: Any | None = None,
     lower_atol: float | None = None,
     schrodinger: bool = False,
-) -> MonomialPropagator:
-    """Construct a propagator for a random problem (optionally MPI-aware).
+) -> Built:
+    """Construct a propagator + gates for a random problem (optionally MPI-aware).
 
     Args:
         problem: The random observable/circuit problem.
@@ -177,16 +189,17 @@ def build_random_propagator(
             ``schrodinger_cutoff = problem.cutoff + 2``; otherwise Heisenberg.
 
     Returns:
-        A fresh :class:`MonomialPropagator`.
+        ``(propagator, circuit)`` ready for build_graph / propagate.
     """
-    return MonomialPropagator(
+    propagator = MajoranaPropagator(
         problem.observable,
-        problem.circuit,
-        problem.cutoff,
+        problem.circuit.initial_state,
+        cutoff=problem.cutoff,
         schrodinger_cutoff=problem.cutoff + 2 if schrodinger else None,
         lower_atol=lower_atol,
         comm=comm,
     )
+    return propagator, problem.circuit
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,7 +278,7 @@ def build_hubbard_problem(
     config: HubbardConfig | None = None,
     *,
     comm: Any | None = None,
-) -> MonomialPropagator:
+) -> Built:
     """Build the static Hubbard propagator (120 qubits, sandbox default input).
 
     Args:
@@ -273,15 +286,13 @@ def build_hubbard_problem(
         comm: Optional MPI communicator (``None`` for a serial run).
 
     Returns:
-        A :class:`MonomialPropagator` ready for in-place propagation.
+        ``(propagator, circuit)`` for one Trotter step, re-applied by the driver.
     """
     config = config or HubbardConfig()
-    gates = [
-        FermiEvGate(generator=term, parameter=config.trotter_dt)
-        for term in _hubbard_fermion_terms(config)
-    ]
+    fermi_gates = [ExpGate(term) for term in _hubbard_fermion_terms(config)]
+    parameters = [config.trotter_dt] * len(fermi_gates)
     occupied = _neel_occupied_modes(config.num_sites, config.neel_start_spin)
-    fermi_circuit = FermiCircuit(initial_state=occupied, gates=gates)
+    circuit = Circuit(gates=fermi_gates, parameters=parameters, initial_state=occupied)
 
     observable = FermiOperator(
         terms=[
@@ -294,15 +305,15 @@ def build_hubbard_problem(
         num_modes=config.num_qubits,
     )
 
-    # CutoffType is Length | Support in the current API.
-    return MonomialPropagator(
-        initial_operator=observable,
-        quantum_circuit=fermi_circuit,
+    propagator = MajoranaPropagator(
+        observable,
+        circuit.initial_state,
         cutoff=config.cutoff,
         cutoff_type="length",
         lower_atol=config.lower_atol,
         comm=comm,
     )
+    return propagator, circuit
 
 
 # IBM Eagle 127-qubit heavy-hex coupling map (i < j for all pairs).
@@ -467,19 +478,22 @@ class KickedIsingConfig:
     lower_atol: float = 1e-4
 
 
-def _xlayer(num_qubits: int, angle: float) -> list[PauliEvGate]:
-    """Single-qubit X rotations exp(-i·angle·X) on all qubits."""
+def _xlayer(num_qubits: int, angle: float) -> list[tuple[ExpGate, float]]:
+    """Single-qubit X rotations exp(-i·angle·X) on all qubits, with their angles."""
     return [
-        PauliEvGate(qubits=[i], paulis=PauliOperator(["X"], [1.0]), parameter=-angle)
+        (ExpGate(PauliOperator({Pauli("X", (i,)): 1.0}, num_qubits=num_qubits)), -angle)
         for i in range(num_qubits)
     ]
 
 
-def _zzlayer(angle: float, topology: list[tuple[int, int]]) -> list[PauliEvGate]:
-    """Two-qubit ZZ interactions exp(-i·angle·ZZ) on every edge in ``topology``."""
+def _zzlayer(
+    angle: float, topology: list[tuple[int, int]], num_qubits: int
+) -> list[tuple[ExpGate, float]]:
+    """Two-qubit ZZ interactions exp(-i·angle·ZZ) on every edge, with their angles."""
     return [
-        PauliEvGate(
-            qubits=[i, j], paulis=PauliOperator(["ZZ"], [1.0]), parameter=-angle
+        (
+            ExpGate(PauliOperator({Pauli("ZZ", (i, j)): 1.0}, num_qubits=num_qubits)),
+            -angle,
         )
         for i, j in topology
     ]
@@ -489,7 +503,7 @@ def build_kicked_ising_problem(
     config: KickedIsingConfig | None = None,
     *,
     comm: Any | None = None,
-) -> MonomialPropagator:
+) -> Built:
     """Build the static kicked-Ising propagator (127 qubits, Pauli basis).
 
     Args:
@@ -497,15 +511,19 @@ def build_kicked_ising_problem(
         comm: Optional MPI communicator (``None`` for a serial run).
 
     Returns:
-        A :class:`MonomialPropagator` ready for in-place propagation.
+        ``(propagator, circuit)`` ready for in-place propagation.
     """
     config = config or KickedIsingConfig()
-    gates: list[PauliEvGate] = []
+    gate_angles: list[tuple[ExpGate, float]] = []
     for _ in range(config.num_layers):
-        gates.extend(_xlayer(config.num_qubits, config.theta / 2))
-        gates.extend(_zzlayer(config.coupling, HEAVY_HEX_TOPOLOGY))
-    circuit = PauliEvCircuit(
-        gates=gates, initial_state=[], num_qubits=config.num_qubits
+        gate_angles.extend(_xlayer(config.num_qubits, config.theta / 2))
+        gate_angles.extend(
+            _zzlayer(config.coupling, HEAVY_HEX_TOPOLOGY, config.num_qubits)
+        )
+    circuit = Circuit(
+        gates=tuple(gate for gate, _ in gate_angles),
+        parameters=tuple(angle for _, angle in gate_angles),
+        initial_state=[],
     )
 
     obs_str = (
@@ -513,25 +531,24 @@ def build_kicked_ising_problem(
         + "Z"
         + "I" * (config.num_qubits - config.observable_qubit - 1)
     )
-    observable = PauliOperator.from_dict({obs_str: 1.0})
+    observable = PauliOperator({obs_str: 1.0}, num_qubits=config.num_qubits)
 
-    return MonomialPropagator(
+    propagator = PauliPropagator(
         observable,
-        circuit,
-        config.cutoff,
+        circuit.initial_state,
+        cutoff=config.cutoff,
         lower_atol=config.lower_atol,
         upper_atol=None,
-        cutoff_type="support",
-        basis_change=jordan_wigner_basis_change(config.num_qubits),
         comm=comm,
     )
+    return propagator, circuit
 
 
 # Fixed-model registry: model -> (config class, builder, steps-per-run). Steps
 # derive from the config: Hubbard re-applies its one-step circuit ``trotter_steps``
 # times; the Pauli circuit already holds all layers, so one propagate suffices.
 # The benchmark suite and the conftest CLI options are both built from this.
-MODELS: dict[str, tuple[type, Callable[..., MonomialPropagator], Callable]] = {
+MODELS: dict[str, tuple[type, Callable[..., Built], Callable]] = {
     "hubbard": (
         HubbardConfig,
         build_hubbard_problem,

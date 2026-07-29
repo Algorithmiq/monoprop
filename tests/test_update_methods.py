@@ -12,32 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for update methods in MonomialPropagator."""
-
 import pytest
 from pytest_cases import parametrize_with_cases
 
-from monoprop import MonomialPropagator, jordan_wigner_basis_change
-from monoprop.monomial_data import MonomialCircuit, MonomialOperator
+from monoprop import (
+    Circuit,
+    ExpGate,
+    MajoranaPropagator,
+)
+from monoprop.majorana import MajoranaOperator
 from tests.cases import CasesFermionicProblem
 
 
 class TestUpdateMethods:
-    """Test class for update methods in MonomialPropagator."""
-
     @pytest.fixture
     def mp(self, serial_comm):
-        return MonomialPropagator(
-            initial_operator=MonomialOperator.from_dict(
-                terms_dict={(0, 1): 1.0j}, num_modes=4
-            ),
-            quantum_circuit=MonomialCircuit(
-                initial_state=[],
-                majoranas=[],
-                gen_coeffs=[],
-                param_inds=[],
-                parameters=[],
-            ),
+        return MajoranaPropagator(
+            initial_operator=MajoranaOperator({(0, 1): 1.0j}, num_modes=4),
+            initial_state=[],
             cutoff=4,
             lower_atol=1e-8,
             upper_atol=1e-4,
@@ -109,7 +101,9 @@ class TestUpdateMethods:
 
     def test_update_cutoff_valid(self, mp):
         mp.cutoff = 6
-        mp.propagate([(0, 1, 2, 3, 4, 5)])
+        # A weight-6 monomial takes an imaginary Hermitian coefficient (like weight-2).
+        gate = ExpGate(MajoranaOperator({(0, 1, 2, 3, 4, 5): 1.0j}, num_modes=4))
+        mp.build_graph(Circuit((gate,)))
         assert mp.size() > 0
 
     def test_update_cutoff_invalid(self, mp):
@@ -140,54 +134,17 @@ class TestUpdateMethods:
         with pytest.raises((ValueError, RuntimeError, TypeError)):
             mp.cutoff_type = invalid_value
 
-    @pytest.mark.parametrize("use_none", [False, True])
-    def test_update_basis_change_valid(self, mp, use_none):
-        if use_none:
-            mp.basis_change = None
-            assert mp.basis_change is None
-        else:
-            jw_basis = jordan_wigner_basis_change(mp.num_modes)
-            mp.basis_change = jw_basis
-            assert mp.basis_change == jw_basis
-
-    def test_update_basis_change_invalid(self, mp):
-        with pytest.raises(ValueError, match="must have length 8"):
-            mp.basis_change = [[0], [1]]
-
-    @pytest.mark.parametrize(
-        "basis_generator",
-        [lambda: [[i] for i in range(8)], lambda: [[] for _ in range(8)]],
-    )
-    def test_update_basis_change_edge_cases_valid(self, mp, basis_generator):
-        basis = basis_generator()
-        mp.basis_change = basis
-        assert mp.basis_change == basis
-
-    @pytest.mark.parametrize(
-        ("invalid_basis", "expected_match"),
-        [
-            ([[0, 1, 2, 3, 4, 5, 6, 7]], "must have length 8, but got 1"),
-            ("invalid", "must have length 8, but got 7"),
-        ],
-    )
-    def test_update_basis_change_edge_cases_invalid(
-        self, mp, invalid_basis, expected_match
-    ):
-        with pytest.raises(ValueError, match=expected_match):
-            mp.basis_change = invalid_basis
-
     def test_integration(self, serial_comm):
-        mp = MonomialPropagator(
-            initial_operator=MonomialOperator.from_dict(
-                terms_dict={(0, 1): 1.0j}, num_modes=4
-            ),
-            quantum_circuit=MonomialCircuit(
-                initial_state=[],
-                majoranas=[(0, 2), (1, 3)],
-                gen_coeffs=[0.0, 0.0],
-                param_inds=[0, 1],
-                parameters=[1.0, 1.0],
-            ),
+        sequence = Circuit.from_dense_arrays(
+            initial_state=[],
+            majoranas=[(0, 2), (1, 3)],
+            gen_coeffs=[0.0, 0.0],
+            param_inds=[0, 1],
+            parameters=[1.0, 1.0],
+        )
+        mp = MajoranaPropagator(
+            initial_operator=MajoranaOperator({(0, 1): 1.0j}, num_modes=4),
+            initial_state=sequence.initial_state,
             cutoff=4,
             comm=serial_comm,
         )
@@ -196,13 +153,13 @@ class TestUpdateMethods:
             "upper_atol": 1e-6,
             "cutoff": 6,
             "cutoff_type": "support",
-            "basis_change": jordan_wigner_basis_change(4),
         }
         for attr, value in updates.items():
             setattr(mp, attr, value)
 
-        mp.propagate(evolve_with_coeffs=True)
-        expval = mp.expectation_value()
+        circuit = sequence
+        mp.propagate(circuit)
+        expval = mp.expval()
         assert isinstance(expval, (int, float))
 
     @pytest.mark.parametrize("order", ["lower_first", "upper_first"])
@@ -224,100 +181,50 @@ class TestUpdateMethods:
             "upper_atol": 1e-2,
             "cutoff": 10,
             "cutoff_type": "length",
-            "basis_change": jordan_wigner_basis_change(4),
         }.items():
             setattr(mp, attr, value)
         for attr, value in {
             "lower_atol": None,
             "upper_atol": None,
-            "basis_change": None,
             "cutoff_type": "support",
             "cutoff": 4,
         }.items():
             setattr(mp, attr, value)
         assert mp.lower_atol is None
         assert mp.upper_atol is None
-        assert mp.basis_change is None
         assert mp.cutoff_type == "support"
         assert mp.cutoff == 4
 
 
 @parametrize_with_cases("problem", cases=CasesFermionicProblem, has_tag="molecule")
-@pytest.mark.parametrize(
-    "test_type", ["cutoff", "lower_atol", "upper_atol", "basis_change"]
-)
+@pytest.mark.parametrize("test_type", ["cutoff", "lower_atol", "upper_atol"])
 def test_evolutions_after_updates(problem, test_type, serial_comm):
-    """Test that evolutions work correctly after parameter updates."""
+    circuit = problem.monomial_circuit.to_circuit()
 
-    mp = MonomialPropagator(
+    # upper_atol only rescues over-cutoff partners, of which cutoff 6 produces none here.
+    cutoff = 2 if test_type == "upper_atol" else 6
+
+    mp = MajoranaPropagator(
         problem.operator,
-        problem.monomial_circuit,
-        cutoff=6,
+        problem.monomial_circuit.initial_state,
+        cutoff=cutoff,
         comm=serial_comm,
     )
-    mp.propagate(
-        evolve_with_coeffs=True,
-    )
+    mp.propagate(circuit)
     mp_size = mp.size()
 
-    mp_tes = MonomialPropagator(
+    mp_tes = MajoranaPropagator(
         problem.operator,
-        problem.monomial_circuit,
-        cutoff=6,
+        problem.monomial_circuit.initial_state,
+        cutoff=cutoff,
         comm=serial_comm,
     )
     if test_type == "lower_atol":
         mp_tes.lower_atol = 1
     elif test_type == "upper_atol":
         mp_tes.upper_atol = 0.001
-    elif test_type == "basis_change":
-        mp_tes.basis_change = jordan_wigner_basis_change(problem.n_modes)
     else:
         mp_tes.cutoff = 4
 
-    mp_tes.propagate(
-        evolve_with_coeffs=True,
-    )
+    mp_tes.propagate(circuit)
     assert mp_tes.size() != mp_size
-
-
-@pytest.mark.parametrize("num_modes", [2, 4, 8, 16])
-def test_update_methods_different_modes(num_modes, serial_comm):
-    mp = MonomialPropagator(
-        initial_operator=MonomialOperator.from_dict(
-            terms_dict={(0, 1): 1.0j}, num_modes=num_modes
-        ),
-        quantum_circuit=MonomialCircuit(
-            initial_state=[],
-            majoranas=[],
-            gen_coeffs=[],
-            param_inds=[],
-            parameters=[],
-        ),
-        cutoff=4,
-        comm=serial_comm,
-    )
-    jw_basis = jordan_wigner_basis_change(num_modes)
-    mp.basis_change = jw_basis
-    assert mp.basis_change == jw_basis
-
-
-@pytest.mark.parametrize("num_modes", [4, 8, 16])
-def test_basis_change_invalid_dimensions(num_modes, serial_comm):
-    mp = MonomialPropagator(
-        initial_operator=MonomialOperator.from_dict(
-            terms_dict={(0, 1): 1.0j}, num_modes=num_modes
-        ),
-        quantum_circuit=MonomialCircuit(
-            initial_state=[],
-            majoranas=[],
-            gen_coeffs=[],
-            param_inds=[],
-            parameters=[],
-        ),
-        cutoff=4,
-        comm=serial_comm,
-    )
-    wrong_basis = jordan_wigner_basis_change(num_modes - 2)
-    with pytest.raises(ValueError, match=f"must have length {2 * num_modes}"):
-        mp.basis_change = wrong_basis

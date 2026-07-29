@@ -12,22 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""PSS-based memory-measurement primitives for the benchmark suite.
+"""RSS-based memory-measurement primitives for the benchmark suite.
 
-Import-only (no pytest, no MPI) so the logic stays unit-testable. Provides the
-PSS readers, the resting-footprint reader, and the background :class:`PssSampler`
-+ :func:`merge_peak_of_sum` used for the job's peak-of-sum physical memory.
-
-Two choices make the per-test peak honest under MPI:
-
-- **PSS, not peak RSS.** PSS splits shared pages (libraries, MPI's shared-memory
-  transport segments) across their sharers, so summing across ranks counts them
-  once; peak RSS counts them at full size in every rank and has no PSS high-water
-  mark to correct from. Sampling PSS directly sidesteps that.
-- **Peak-of-sum, not sum-of-peaks.** The peak is ``max over time`` of the summed
-  PSS. Summing each rank's independently-timed peak counts transients that never
-  coexisted. Comparable wall-clock timestamps let :func:`merge_peak_of_sum`
-  recover the true peak-of-sum.
+What the per-test peak means: **peak-of-sum, not sum-of-peaks.** The peak is
+``max over time`` of the summed RSS. Summing each rank's independently-timed peak
+counts transients that never coexisted. Comparable wall-clock timestamps let
+:func:`merge_peak_of_sum` recover the true peak-of-sum.
 """
 
 from __future__ import annotations
@@ -45,8 +35,8 @@ if TYPE_CHECKING:
     from types import TracebackType
     from typing import Self
 
-# PSS sampling cadence. monoprop's heavy work runs in C++/TBB with the GIL
-# released, so the background sampler costs an idle core, not the timed thread.
+# RSS sampling cadence. monoprop's heavy work runs in C++ with the GIL released, so
+# the background sampler costs an idle core, not the timed thread.
 SAMPLE_INTERVAL_S = 0.005
 
 
@@ -62,42 +52,31 @@ def proc_field(path: str, key: str) -> int:
     return 0
 
 
-def pss_bytes() -> int:
-    """Return this process's current proportional set size (PSS) in bytes.
+def rss_bytes() -> int:
+    """Return this process's current resident set size (RSS) in bytes.
 
-    PSS splits shared pages across their sharers, so summing it across ranks gives
-    the job's true footprint -- unlike RSS, which counts them fully in every rank.
+    Read from ``/proc/self/status`` (``VmRSS``), which is a cheap single-line lookup
     """
-    return proc_field("/proc/self/smaps_rollup", "Pss:")
+    return proc_field("/proc/self/status", "VmRSS:")
 
 
 def heap_trim() -> None:
-    """Ask the C allocator to return unused heap pages to the OS.
-
-    The allocator keeps freed pages in its per-arena heaps, so without trimming a
-    resting reading still includes transient build buffers. Best-effort: modern
-    allocators may decline, and the call is unsupported on some platforms.
-    """
+    """Ask the C allocator to return unused heap pages to the OS."""
     with contextlib.suppress(Exception):  # unsupported platform / allocator
         psutil.heap_trim()
 
 
-def resting_pss_bytes() -> int:
-    """Return current PSS after collecting garbage and trimming the C heap.
-
-    Unlike the per-operation peak (a mid-operation high-water mark), this is the
-    settled footprint once transients are freed -- the persistent-memory metric
-    the peak cannot see.
-    """
+def resting_rss_bytes() -> int:
+    """Return current RSS after collecting garbage and trimming the C heap."""
     gc.collect()
     heap_trim()
-    return pss_bytes()
+    return rss_bytes()
 
 
-class PssSampler:
-    """Background thread sampling this process's live PSS over time.
+class RssSampler:
+    """Background thread sampling this process's live RSS over time.
 
-    Records ``(wall_clock, pss_bytes)`` pairs while active. Uses ``time.time``
+    Records ``(wall_clock, rss_bytes)`` pairs while active. Uses ``time.time``
     (not ``time.monotonic``) so timestamps are comparable across ranks sharing a
     node's clock, which :func:`merge_peak_of_sum` needs to correlate readings.
 
@@ -113,11 +92,11 @@ class PssSampler:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            self._samples.append((time.time(), pss_bytes()))
+            self._samples.append((time.time(), rss_bytes()))
             self._stop.wait(self._interval)
 
     def __enter__(self) -> Self:
-        self._samples.append((time.time(), pss_bytes()))  # baseline before the op
+        self._samples.append((time.time(), rss_bytes()))
         self._thread.start()
         return self
 
@@ -129,21 +108,20 @@ class PssSampler:
     ) -> None:
         self._stop.set()
         self._thread.join()
-        self._samples.append((time.time(), pss_bytes()))  # final state after the op
+        self._samples.append((time.time(), rss_bytes()))
 
     @property
     def samples(self) -> list[tuple[float, int]]:
-        """Return the recorded ``(wall_clock, pss_bytes)`` samples."""
+        """Return the recorded ``(wall_clock, rss_bytes)`` samples."""
         return self._samples
 
 
 def merge_peak_of_sum(per_rank: list[list[tuple[float, int]]]) -> int:
-    """Return the peak of the summed live PSS across ranks, in bytes.
+    """Return the peak of the summed live RSS across ranks, in bytes.
 
     ``per_rank[i]`` is rank ``i``'s samples. Walks all samples in time order,
     step-holding each rank's most recent reading, and tracks the maximum of the
-    running sum -- the largest summed footprint that actually coexisted. A serial
-    run passes one series and gets back its own peak.
+    running sum -- the largest summed footprint that actually coexisted.
     """
     # Seed each rank at its pre-op baseline sample; empty series contribute 0.
     current = [series[0][1] if series else 0 for series in per_rank]

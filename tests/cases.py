@@ -14,38 +14,47 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from msgpack import unpackb
 from pytest_cases import case
 
-from monoprop.monomial_data import MonomialCircuit, MonomialOperator
+from monoprop.circuit import Circuit
+from monoprop.majorana import MajoranaOperator
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from numpy import ndarray
 
-class SplitOrbitalRotations(NamedTuple):
-    """Data class for Monomial Propagator Fermionic data."""
 
-    majs: list[tuple[int, ...]]
-    param_inds: np.ndarray
-    gen_coeffs: np.ndarray
-    parameters: np.ndarray
-    majs_orb: list[tuple[int, ...]]
-    param_inds_orb: np.ndarray
-    gen_coeffs_orb: np.ndarray
-    parameters_orb: np.ndarray
+@dataclass
+class DenseMajoranaArrays:
+    """Flat per-monomial arrays for a Majorana gate sequence, mirroring the msgpack layout."""
+
+    initial_state: list[int] | ndarray
+    majoranas: list[tuple[int, ...]] | ndarray
+    parameters: list[float] | ndarray
+    gen_coeffs: list[float] | ndarray
+    param_inds: list[int] | ndarray
+
+    def to_circuit(self) -> Circuit:
+        return Circuit.from_dense_arrays(
+            majoranas=self.majoranas,
+            gen_coeffs=self.gen_coeffs,
+            param_inds=self.param_inds,
+            parameters=self.parameters,
+            initial_state=self.initial_state,
+        )
 
 
 class FermionicProblem:
-    """Data class for Fermionic problems."""
-
     def __init__(
         self,
-        monomial_circuit: MonomialCircuit,
-        operator: MonomialOperator,
+        monomial_circuit: DenseMajoranaArrays,
+        operator: MajoranaOperator,
         exact_expval: float,
         exact_gradient: np.ndarray,
         n_modes: int,
@@ -56,50 +65,15 @@ class FermionicProblem:
         self.exact_gradient = exact_gradient
         self.n_modes = n_modes
 
-    def split_only_rotate_len_k(self) -> SplitOrbitalRotations:
-        """Split the Majorana operators into non-orbital and orbital rotation parts."""
-        majoranas = self.monomial_circuit.majoranas
-        param_inds = self.monomial_circuit.param_inds
-        gen_coeffs = self.monomial_circuit.gen_coeffs
-        parameters = self.monomial_circuit.parameters
-
-        # Find split index
-        idx = None
-        lens = [len(maj) for maj in majoranas]
-        for i in range(len(lens)):
-            if all(length == 2 for length in lens[i:]):
-                idx = i
-                break
-
-        # Split the lists at the appropriate index
-        if idx is None:
-            raise ValueError("No single excitations found")
-
-        m1, m2 = majoranas[:idx], majoranas[idx:]
-        pi1, pi2 = param_inds[:idx], param_inds[idx:] - idx  # adjust indices
-        gc1, gc2 = gen_coeffs[:idx], gen_coeffs[idx:]
-        p1, p2 = parameters[: param_inds[idx]], parameters[param_inds[idx] :]
-        return SplitOrbitalRotations(m1, pi1, gc1, p1, m2, pi2, gc2, p2)
-
 
 def load_problem(path: Path) -> FermionicProblem:
-    """Load a fermionic test case from a minimal-schema msgpack file.
-
-    See ``tests/data/README.md`` for the on-disk schema.
-
-    Args:
-        path: Path to the ``.msgpack`` fixture.
-
-    Returns:
-        A :class:`FermionicProblem` built directly from the public API
-        (:class:`MonomialCircuit` and :class:`MonomialOperator`).
-    """
+    """Load a fermionic test case from a ``.msgpack`` fixture (schema: ``tests/data/README.md``)."""
     with path.open("rb") as fh:
         data = unpackb(fh.read())
 
-    monomial_circuit = MonomialCircuit(
+    monomial_circuit = DenseMajoranaArrays(
         initial_state=data["hartree_fock"],
-        majoranas=[tuple(maj) for maj in data["majoranas"]],
+        majoranas=[tuple(mono) for mono in data["majoranas"]],
         gen_coeffs=np.asarray(data["gen_coeffs"]),
         param_inds=np.asarray(data["param_inds"], dtype=int),
         parameters=np.asarray(data["parameters"]),
@@ -110,7 +84,7 @@ def load_problem(path: Path) -> FermionicProblem:
         tuple(key): complex(real, imag)
         for key, real, imag in zip(ham["keys"], ham["real"], ham["imag"], strict=True)
     }
-    quantum_operator = MonomialOperator.from_dict(terms, data["num_modes"])
+    quantum_operator = MajoranaOperator(terms, data["num_modes"])
 
     return FermionicProblem(
         monomial_circuit=monomial_circuit,
@@ -126,40 +100,22 @@ def _create_case(pth: Path, fname: str) -> FermionicProblem:
 
 
 class CasesFermionicProblemOrbitalRotations:
-    """
-    A class to represent a fermionic problem case for testing purposes.
-    """
-
     @case(id="S0_8e8o", tags=["molecule", "only_rotate_len_k"])
     def case_s0_8e8o(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        """
-        A test case for the S0_8e8o fermionic problem.
-        """
         return _create_case(lazy_shared_datadir, "S0_8e8o_majoranic_c8")
 
 
 class CasesFermionicProblem:
-    """
-    A class to represent a fermionic problem case for testing purposes.
-    """
-
     @case(id="LiH_fermionic_spin", tags=["molecule", "has_commutator_data"])
     def case_lih_fermionic_spin(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        """
-        A test case for the LiH fermionic problem.
-        """
         return _create_case(lazy_shared_datadir, "lih_fermionic_spin_exact")
 
     @case(id="rx_rz_ry_rz")
     def case_rx_rz_ry_rz(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        """
-        A simple test case for a 1q circuit containing a RX and RZ rotations.
-        """
+        """A 1q circuit of RX and RZ rotations."""
         return _create_case(lazy_shared_datadir, "rx_rz_ry_rz_exact")
 
     @case(id="random_circuit")
     def case_random_circuit(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        """
-        A simple test case for a 1q circuit containing a random rotations.
-        """
+        """A 1q circuit of random rotations."""
         return _create_case(lazy_shared_datadir, "random_exact")

@@ -14,19 +14,11 @@
 
 """Pytest configuration for monoprop tests.
 
-MPI test selection is handled by ``pytest-mpi`` via the ``--with-mpi`` flag
-and ``@pytest.mark.mpi`` markers.
+MPI selection is handled by ``pytest-mpi`` (``--with-mpi``, ``@pytest.mark.mpi``).
 
-Two communicator fixtures are available:
-
-- ``comm`` — parametrized over COMM_SELF and COMM_WORLD.  Every test that
-  uses it appears twice in the VS Code sidebar (``[comm_self]`` and
-  ``[comm_world]``).  Use for tests that compare **energies or gradients**
-  (methods that internally do MPI allreduce).
-
-- ``serial_comm`` — always COMM_SELF.  Use for tests that inspect
-  rank-local state such as ``evolved_operator_dict``, ``contract_partially``,
-  ``size()``, or ``graph_size()``.
+``comm`` is parametrized over COMM_SELF and COMM_WORLD: use it for energies and gradients, which
+allreduce internally. ``serial_comm`` is always COMM_SELF: use it for rank-local state such as
+``evolved_operator``, ``contract_partially``, ``size()``, or ``graph_size()``.
 """
 
 from __future__ import annotations
@@ -42,11 +34,8 @@ except ImportError:  # pragma: no cover - exercised in wheel-test environments
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Force pytest-mpi mode for VS Code adapter runs.
-
-    The VS Code adapter invokes pytest with ``-p vscode_pytest`` and can bypass
-    wrapper-level argument injection. In that mode we explicitly enable
-    pytest-mpi's ``--with-mpi`` behaviour to avoid skipping all ``@pytest.mark.mpi`` tests.
+    """Force pytest-mpi's ``--with-mpi`` under the VS Code adapter, which bypasses
+    wrapper-level argument injection and would otherwise skip every ``mpi``-marked test.
     """
     invocation_args = tuple(str(arg) for arg in config.invocation_params.args)
     is_vscode_run = config.pluginmanager.hasplugin("vscode_pytest") or any(
@@ -68,11 +57,7 @@ _COMM_PARAMS = (
 
 @pytest.fixture(params=_COMM_PARAMS)
 def comm(request: pytest.FixtureRequest) -> Any:  # noqa: ANN401
-    """Parametrized communicator fixture.
-
-    Falls back to ``None`` when ``mpi4py`` is unavailable, which matches the
-    non-MPI wheel configuration used in cibuildwheel tests.
-    """
+    """Parametrized communicator; ``None`` when ``mpi4py`` is unavailable (the non-MPI wheel)."""
     return request.param
 
 

@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Copyright (c) 2025 Algorithmiq. All rights reserved.
-
-monoprop: A great package.
-"""
+"""monoprop: classical Majorana and Pauli monomial propagation."""
 
 from __future__ import annotations
+
+import importlib.util
 
 from ._core import (
     MAX_NUM_MODES,
@@ -28,17 +27,57 @@ from ._core import (
     is_antihermitian,
 )
 from ._version import version as __version__
+from .circuit import (
+    Circuit,
+    ExpGate,
+    expand_monomials,
+    validate_parameter_mapping,
+)
+from .fermi import FermiOperator, FermiString
+from .integral_conversion import integrals_to_fermion
+from .majorana import Majorana, MajoranaOperator
+from .majorana_propagator import MajoranaPropagator
 from .monomial_propagator import MonomialPropagator
+from .pauli import Pauli, PauliOperator
+from .pauli_propagator import PauliPropagator
 from .utils import jordan_wigner_basis_change
 
 __all__ = [
     "MAX_NUM_MODES",
+    "Circuit",
+    "ExpGate",
+    "FermiOperator",
+    "FermiString",
+    "Majorana",
+    "MajoranaOperator",
+    "MajoranaPropagator",
     "MonomialPropagator",
+    "Pauli",
+    "PauliOperator",
+    "PauliPropagator",
     "__build_type__",
     "__compiler_flags__",
     "__version__",
     "antihermitian_generator_correction",
+    "expand_monomials",
     "has_mpi",
+    "integrals_to_fermion",
     "is_antihermitian",
     "jordan_wigner_basis_change",
+    "validate_parameter_mapping",
 ]
+
+if importlib.util.find_spec("qiskit") is not None:
+    from .qiskit_conversion import (
+        from_qiskit_circuit,
+        from_qiskit_operator,
+        to_qiskit_circuit,
+        to_qiskit_operator,
+    )
+
+    __all__ += [
+        "from_qiskit_circuit",
+        "from_qiskit_operator",
+        "to_qiskit_circuit",
+        "to_qiskit_operator",
+    ]

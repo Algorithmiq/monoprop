@@ -3,7 +3,7 @@ title: Initialisation and updates
 description: Constructing the simulator, choosing the Heisenberg or Schrödinger picture, and updating the operator in place.
 ---
 
-The top-level class is `MonomialPropagator` (Python) /
+The top-level classes are [MajoranaPropagator][] and [PauliPropagator][] (Python) /
 `MonomialPropagator<NumModes>` (C++). Every significant aspect of the
 simulation can be tuned at construction time and updated at runtime without
 rebuilding. The structural and coefficient cutoffs are covered separately in
@@ -18,41 +18,44 @@ picture they are applied to the observable.
 
 `schrodinger_cutoff` is the truncation applied to the initial state. It must be
 set higher than the regular `cutoff` for the Schrödinger-picture result to
-match the Heisenberg-picture one: under length truncation the two pictures agree
-on fermionic circuits when `schrodinger_cutoff = cutoff + 2`
-(see Appendix of [@chakraborty2026scalablequantumcircuitgeneration]).
+match the Heisenberg-picture one. A good value of the parameter depends on the circuit
+and observable, although setting `schrodinger_cutoff = cutoff + 2` for MajoranaPropagator and
+`schrodinger_cutoff = cutoff + 1` for [PauliPropagator][] is usually a good starting point.
+For second-quantized Hamiltonians and usual Fermionic circuits coming from variational
+quantum computing, under length truncation the two pictures agree when
+`schrodinger_cutoff = cutoff + 2` (see Appendix of [@chakraborty2026scalablequantumcircuitgeneration]).
 
 ## Operator updates
 
 The coefficients of the initial operator can be patched after construction
-without rebuilding the simulator or the graph:
+without rebuilding the simulator or the graph. For MajoranaPropagator,
+MajoranaOperator is required while PauliPropagator requires PauliOperator.
 
 ```python
->>> from monoprop import MonomialPropagator
->>> from monoprop.fermi_data import MajoranaOperator, FermiCircuit
->>> observable = MajoranaOperator([(0, 1, 2, 3)], [1.0], 4)
->>> circuit = FermiCircuit(initial_state=[0, 1], gates=[])
->>> sim = MonomialPropagator(observable, circuit, cutoff=4)
-# Keys are Majorana monomials (tuples of indices); values are the new
-# coefficients, which must keep each monomial Hermitian (real for length-4
-# terms, imaginary for length-2 — see the Notation page).
->>> sim.update_coeffs({(0, 1, 2, 3): 0.5})
+from monoprop import MajoranaPropagator, MajoranaOperator
+
+observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
+sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
+sim.update_initial_operator(MajoranaOperator({(0, 1, 2, 3): 0.5}, 4))
 ```
 
-This is particularly useful in the Schrödinger picture: since the state is
-evolved independently of the observable, you can re-weight the observable and
-read it off against the same evolved state, estimating several observables
-without re-propagating.
+This lets you estimate several observables without re-propagating: in the
+Schrödinger picture the state is evolved independently, so you can change the
+observable arbitrarily and read it off against the same evolved state; in the Heisenberg
+picture the observable can be re-weighted.
 
 <Callout type="info">
-  Only terms that already exist in the initial operator can be updated; supplying a
+    Only terms that already exist in the initial operator can be updated; supplying a
   monomial that is not present (or a non-Hermitian coefficient) raises
   `RuntimeError`:
 
   ```python
-  >>> sim.update_coeffs({(1, 2, 3, 4): 0.5})  # This monomial doesn't exist
-  Traceback (most recent call last):
-     ...
-  RuntimeError: ...
+  import pytest
+  from monoprop import MajoranaPropagator, MajoranaOperator
+
+  observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
+  sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
+  with pytest.raises(RuntimeError):
+      sim.update_initial_operator(MajoranaOperator({(1, 2, 3, 4): 1.0}, 4))  # This monomial doesn't exist
   ```
 </Callout>

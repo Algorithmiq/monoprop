@@ -16,54 +16,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    import numpy as np
-
-
-def normalize_parameters(
-    parameters: list[float] | np.ndarray | None,
-    parameter_mapping: list[int] | np.ndarray | None,
-    gen_coeffs: list[float] | np.ndarray | None,
-) -> tuple[list[float] | np.ndarray, list[int] | np.ndarray, list[float] | np.ndarray]:
-    """Convert None parameters to empty lists."""
-    parameters = [] if parameters is None else parameters
-    parameter_mapping = [] if parameter_mapping is None else parameter_mapping
-    gen_coeffs = [] if gen_coeffs is None else gen_coeffs
-    return parameters, parameter_mapping, gen_coeffs
-
-
-def wrap_functional_call(
-    fn: Callable,
-    transform: Callable | None = None,
-) -> Callable:
-    """Wrap simulator functionals so ``None`` parameters map to empty lists."""
-
-    def _fn(
-        parameters: list[float] | np.ndarray | None = None,
-    ) -> float | tuple[float, np.ndarray] | np.ndarray:
-        result = fn([] if parameters is None else parameters)
-        if transform is None:
-            return result
-        return transform(result)
-
-    return _fn
-
 
 def jordan_wigner_basis_change(n_qubits: int) -> list[list[int]]:
-    """Generate a basis change for Jordan-Wigner representation.
+    """Return the Jordan-Wigner basis change: the ``2 * n_qubits`` Majoranas as gamma-slot lists.
 
-    This function returns a list of lists, where each inner list represents a basis vector in the Jordan-Wigner
-    representation in terms of Majoranas.
-
-    Args:
-        n_qubits: The number of qubits.
-
-    Returns:
-        A list of lists representing the basis change.
+    Entry ``k`` is the slot support of the Jordan-Wigner image of Majorana ``m_k``, in the same
+    two-slots-per-qubit encoding the engine's native Pauli basis uses (``X_q`` is ``2q``, ``Y_q``
+    is ``2q+1``, ``Z_q`` both), so ``m_{2i}`` spans ``2i+1`` slots via its ``Z`` prefix.
     """
     basis = []
     for i in range(n_qubits):
@@ -81,12 +40,8 @@ def validate_basis_change(
 ) -> None:
     """Validate the basis change.
 
-    Args:
-        basis_change: The basis change to validate.
-        num_modes: The number of modes.
-
     Raises:
-        ValueError: If the basis change is invalid.
+        ValueError: If ``basis_change`` is not ``None`` and does not have ``2 * num_modes`` entries.
     """
     if basis_change is not None and len(basis_change) != 2 * num_modes:
         raise ValueError(

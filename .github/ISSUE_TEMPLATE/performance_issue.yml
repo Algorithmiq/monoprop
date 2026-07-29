@@ -1,0 +1,136 @@
+name: Performance issue
+description: Report a performance regression or unexpectedly slow behavior
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a performance issue!
+        Please include benchmark results so we can reproduce and investigate.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Performance issue description
+      description: Describe the performance problem you observed.
+      placeholder: What is slower than expected, and by how much?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal code snippet that demonstrates the slow behavior.
+      placeholder: |
+        import monoprop
+        # ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux (x86_64)
+        - Linux (aarch64 / ARM64)
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: input
+    id: cpu
+    attributes:
+      label: CPU model
+      placeholder: "e.g. Intel Core i9-13900K, AMD EPYC 7763, Apple M3 Pro"
+    validations:
+      required: true
+
+  - type: input
+    id: ram
+    attributes:
+      label: Total RAM
+      placeholder: "e.g. 32 GB"
+    validations:
+      required: true
+
+  - type: input
+    id: cores_used
+    attributes:
+      label: Number of cores used
+      description: How many CPU cores / threads did monoprop use during the run?
+      placeholder: "e.g. 8 (out of 16 physical cores)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: bench_results
+    attributes:
+      label: Standard benchmark results on this machine
+      description: |
+        Please run the monoprop benchmark suite on the same machine and paste the output here.
+        ```
+        uv run python -m pytest benches/ --benchmark-only
+        ```
+      placeholder: Paste benchmark output here
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_tool
+    attributes:
+      label: Installation tool
+      options:
+        - pip
+        - uv
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_artifact
+    attributes:
+      label: Installation artifact
+      options:
+        - Wheel (pre-built binary)
+        - sdist (built from source)
+        - Editable install from source (git clone)
+    validations:
+      required: true
+
+  - type: textarea
+    id: sdist_details
+    attributes:
+      label: Source build details (sdist only)
+      description: |
+        If you built from source, provide:
+        - Compiler name and version
+        - Versions of Boost, fmt, nanobind
+        - How dependencies were installed
+      placeholder: |
+        Compiler: g++ 13.2
+        Boost: 1.84
+
+  - type: input
+    id: monoprop_version
+    attributes:
+      label: monoprop version
+      placeholder: "e.g. 0.3.1"
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      placeholder: "e.g. 3.11.9"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context

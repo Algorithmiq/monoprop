@@ -15,8 +15,17 @@ set(
   "mpi|-Dmonoprop_ENABLE_MPI=ON"
 )
 
+if(NOT DEFINED CTEST_PROJECT_NAME)
+  set(CTEST_PROJECT_NAME "monoprop")
+endif()
+
 foreach(_entry IN LISTS _matrix)
-  string(REPLACE "|" ";" _parts "${_entry}")
+  string(
+    REPLACE "|"
+    ";"
+    _parts
+    "${_entry}"
+  )
   list(GET _parts 0 config_name)
   list(GET _parts 1 extra_opts)
 
@@ -24,10 +33,14 @@ foreach(_entry IN LISTS _matrix)
   file(MAKE_DIRECTORY "${CTEST_BINARY_DIRECTORY}")
 
   message("==> Configuring ${config_name}")
+  ctest_start(Experimental)
+  # OPTIONS takes ONE `;`-separated list. Space-separating instead ("${a} ${b}") hands cmake a
+  # single argument, and cmake parses -D<var>=<value> greedily: CMAKE_BUILD_TYPE swallows the MPI
+  # flag, monoprop_ENABLE_MPI is never defined, and both matrix rows silently test MPI OFF.
   ctest_configure(
     BUILD "${CTEST_BINARY_DIRECTORY}"
     SOURCE "${CTEST_SOURCE_DIRECTORY}"
-    OPTIONS "${_common_config} ${extra_opts}"
+    OPTIONS "${_common_config};${extra_opts}"
   )
 
   message("==> Building ${config_name}")

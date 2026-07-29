@@ -26,20 +26,44 @@ if(monoprop_ENABLE_MPI)
     )
 
     # Convert the process output into a list
-    string(REGEX REPLACE ";" "\\\\;" _mpi4py_VALUES ${_mpi4py_VALUES})
-    string(REGEX REPLACE "\n" ";" _mpi4py_VALUES ${_mpi4py_VALUES})
+    string(
+      REGEX REPLACE ";"
+      "\\\\;"
+      _mpi4py_VALUES
+      ${_mpi4py_VALUES}
+    )
+    string(
+      REGEX REPLACE "\n"
+      ";"
+      _mpi4py_VALUES
+      ${_mpi4py_VALUES}
+    )
     list(GET _mpi4py_VALUES 0 mpi4py_VERSION)
     list(GET _mpi4py_VALUES 1 mpi4py_INCLUDE_DIRS)
 
     # Make sure all directory separators are '/'
-    string(REGEX REPLACE "\\\\" "/" mpi4py_INCLUDE_DIRS ${mpi4py_INCLUDE_DIRS})
+    string(
+      REGEX REPLACE "\\\\"
+      "/"
+      mpi4py_INCLUDE_DIRS
+      ${mpi4py_INCLUDE_DIRS}
+    )
 
     # Get the major and minor version numbers
-    string(REGEX REPLACE "\\." ";" _mpi4py_VERSION_LIST ${mpi4py_VERSION})
+    string(
+      REGEX REPLACE "\\."
+      ";"
+      _mpi4py_VERSION_LIST
+      ${mpi4py_VERSION}
+    )
     list(GET _mpi4py_VERSION_LIST 0 mpi4py_VERSION_MAJOR)
     list(GET _mpi4py_VERSION_LIST 1 mpi4py_VERSION_MINOR)
     list(GET _mpi4py_VERSION_LIST 2 mpi4py_VERSION_PATCH)
-    string(REGEX MATCH "[0-9]*" mpi4py_VERSION_PATCH ${mpi4py_VERSION_PATCH})
+    string(
+      REGEX MATCH "[0-9]*"
+      mpi4py_VERSION_PATCH
+      ${mpi4py_VERSION_PATCH}
+    )
     math(
       EXPR
       mpi4py_VERSION_DECIMAL
@@ -66,11 +90,16 @@ file(
   GLOB _bind_cpps
   LIST_DIRECTORIES false
   CONFIGURE_DEPENDS
-  "${CMAKE_CURRENT_BINARY_DIR}/generated/bind_up_to_[0-9][0-9][0-9].cpp"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/bind_up_to_[0-9]*.cpp"
 )
 set(_bind_cpps_print "")
 foreach(_cpp IN LISTS _bind_cpps)
-  file(RELATIVE_PATH _rel_cpp "${CMAKE_CURRENT_BINARY_DIR}/generated" "${_cpp}")
+  file(
+    RELATIVE_PATH
+    _rel_cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    "${_cpp}"
+  )
   list(APPEND _bind_cpps_print "${_rel_cpp}")
 endforeach()
 message(STATUS "Generated binding source files: ${_bind_cpps_print}")
@@ -105,6 +134,11 @@ target_include_directories(
 
 target_link_libraries(_core PRIVATE monoprop)
 
+# The hot MonomialPropagator<N> kernels are header templates instantiated in this
+# target's TUs, so ARCH_FLAG must be applied here too: on the library alone it never
+# reached them and they compiled to scalar x86-64.
+target_compile_options(_core BEFORE PRIVATE "${ARCH_FLAG}")
+
 file(
   RELATIVE_PATH
   _rel
@@ -116,7 +150,11 @@ if(APPLE)
 else()
   set(_rpath "\$ORIGIN/${_rel}")
 endif()
-file(TO_NATIVE_PATH "${_rpath}/${CMAKE_INSTALL_LIBDIR}" monoprop_RPATH)
+file(
+  TO_NATIVE_PATH
+  "${_rpath}/${CMAKE_INSTALL_LIBDIR}"
+  monoprop_RPATH
+)
 
 set_target_properties(
   _core

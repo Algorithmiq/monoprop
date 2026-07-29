@@ -1,18 +1,35 @@
 # C++ Test Suite
 
 This directory contains the C++ test suite for monoprop, built using Boost.Test.
+Every `*.cpp` here is globbed into a single executable, `monoprop_unit_tests.x`.
 
 ## Test Organization
 
-Tests are organized using Boost.Test labels to indicate their MPI requirements:
+Tests carry no labels of their own. The CTest harness (`boostAddTests.cmake`)
+discovers every Boost.Test case and registers it twice:
 
-- **`serial`**: Tests that don't use MPI and run with `MPI_COMM_SELF`
-- **`mpi-optional`**: Tests that work with both serial and MPI execution (test both `MPI_COMM_SELF` and `MPI_COMM_WORLD`)
-- **`mpi-required`**: Tests that require multiple MPI ranks to function correctly
+- **`serial`**: the case run in-process with `MPI_COMM_SELF`.
+- **`mpi`** (+ rank-specific `mpi-<n>`): the whole suite wrapped in
+  `mpiexec -n <n>` for each rank in `monoprop_MPI_TEST_PROCS` (default `2`),
+  registered when an MPI launcher is detected.
+
+Cases that need multiple ranks check `monoprop::mpi::size(MPI_COMM_WORLD)` and
+skip (with a message) when run with too few.
+
+The custom `main()` in `unit_tests.cpp` initializes MPI and forces
+`monoprop_PARTITIONS=off`, so white-box tests observe the single-partition engine.
+A test that needs the partition runtime must pass an explicit `partitions=` argument
+(see `partition_equivalence_tests.cpp`).
 
 ## Building Tests
 
-Tests are built automatically when building monoprop with CMake (unless using scikit-build):
+Built automatically with CMake (skipped under scikit-build wheels):
+
+```bash
+cmake --preset release-gcc-mpi && cmake --build --preset release-gcc-mpi
+```
+
+or the plain form:
 
 ```bash
 cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release -Dmonoprop_ENABLE_MPI=ON
@@ -21,124 +38,96 @@ cmake --build build/release
 
 ## Running Tests
 
-### Run All Tests
-
-To run all discovered tests (serial + MPI variants when `mpiexec` is available):
-
 ```bash
-cd build/release
-ctest --output-on-failure
+ctest --preset release-gcc-mpi              # everything
+ctest --test-dir build/... -L serial        # serial variants only
+ctest --test-dir build/... -L mpi           # MPI variants
+ctest --test-dir build/... -L mpi-2         # only the 2-rank run
 ```
 
-### Run Tests by Label
-
-Every discovered Boost.Test case is registered in serial mode and as MPI variants
-for ranks configured by `monoprop_MPI_TEST_PROCS` (default: `2`). By default,
-MPI runs are registered as suite-level tests (`unit_tests.x_mpi_<rank>`) to
-avoid per-case test explosion. Use CTest labels to target the desired execution mode:
+Or drive the binary directly:
 
 ```bash
-# Run only the serial variants
-ctest -L serial --output-on-failure
-
-# Run only the MPI variants
-ctest -L mpi --output-on-failure
-
-# Run only a specific MPI rank variant (if configured)
-ctest -L mpi-2 --output-on-failure
-
-# Run everything (default)
-ctest --output-on-failure
+./tests/cpp/monoprop_unit_tests.x --list_content
+./tests/cpp/monoprop_unit_tests.x --run_test=pauli_algebra_*
+mpirun -n 2 ./tests/cpp/monoprop_unit_tests.x
 ```
 
-### Run Specific Test Directly
+Because CTest discovery treats each `--list_content` line as a top-level test
+name and cannot address suite-nested cases, tests use flat
+`BOOST_AUTO_TEST_CASE`s with a shared name prefix (e.g. `pauli_algebra_*`,
+`inverted_index_*`) rather than `BOOST_AUTO_TEST_SUITE`.
 
-You can also run the test executable directly:
+## Shared Test Utilities
 
-```bash
-# List all available tests
-./tests/cpp/unit_tests.x --list_content
+- **`TestUtilities.h`**: fixtures (`ExampleDataFix` = random_exact/n=8,
+  `LihFixture` = LiH/n=12), the `build_simulator`/`SimulatorConfig` helpers,
+  expectation-value helpers, and the `near()` float comparison used by the
+  equivalence suites.
+- **`PauliTestOracle.h`**: independent Pauli reference oracle — native/JW
+  encoding (`slots_of_string`, `native_bitset`, `jw_basis`), dense Pauli-matrix
+  brute force (`matrix_from_string`, `matmul`, ...), and string helpers. Shared
+  by the Pauli algebra/build-layer tests and the equivalence suites.
+- **`ThreadHarness.h`**: `run_comm_threads` — spawn S partition threads over a
+  transport and capture per-thread exceptions (used by the ShmComm/HybridComm
+  suites).
+- **`GraphBuildHarness.h`**: direct Layer/MPGraph construction helpers
+  (`core_with_gate`, `layer_with_gate`, `graph_with_gates`) for white-box
+  MPGraph transform tests.
+- **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
+- **`boost-test.cmake` / `boostAddTests.cmake`**: CMake test discovery.
 
-# Run a specific test
-./tests/cpp/unit_tests.x --run_test=random_exact_infinite_cutoff_expval
+## Test Files (by area)
 
-# Run all tests with a specific label
-./tests/cpp/unit_tests.x --run_test=@serial
-./tests/cpp/unit_tests.x --run_test=@mpi-optional
+- **Runner**: `unit_tests.cpp`.
+- **Containers / algebra / utilities**: `bitset_tests.cpp` (the Bitset container
+  vs a std::bitset oracle), `mpfunctions.cpp` (MP utilities + bit-flip helpers),
+  `pauli_algebra_tests.cpp`, `majorana_cutoff_tests.cpp` (length/support cutoff,
+  CutoffEvaluator, interleave phase, coeff encode/decode), `validation_tests.cpp`
+  (parameter validators), `mpi_utils_tests.cpp` (find_rank + word serialization),
+  `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
+  `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
+- **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`,
+  `mp_operator_tests.cpp` (MPOperator get_state Pauli/Majorana scoring,
+  get_operator init-map drain, update_initial_operator picture branches,
+  insert_absent_terms, inverted-index sync, memory estimate, deep copy).
+- **Layer build / evolution**: `build_graph_tests.cpp`,
+  `pauli_build_layer_tests.cpp`, `fused_cos_sweep_tests.cpp`,
+  `fused_query_codec_tests.cpp`, `combined_recompute_equivalence.cpp`
+  (recompute equivalence + snapshot invariance), `exact_upper_atol_rescue.cpp`,
+  `large_cosine_storage_tests.cpp`, `gate_boundaries.cpp`.
+- **Graph encoding / packing**: `graph_encoding_tests.cpp` (CosineWordBuilder
+  coalescer, checked_* overflow guards, packed-phase storage + int8 read,
+  build_layer_exchange_layout, and both arms of the D-from-B derivation).
+- **Graph / paring**: `pare_graph_tests.cpp`, `mpi_pare.cpp`,
+  `mp_graph_tests.cpp` (MPGraph slice_graph/slice_view transforms, the
+  front_offset lazy-compaction arms, MPGraphView reverse mapping + OOB throw).
+- **Transports / distribution**: `shm_comm_tests.cpp`, `hybrid_comm_tests.cpp`
+  (MPI-only), `partition_equivalence_tests.cpp`,
+  `mpi_distributed_layer_equivalence.cpp`, `mpi_fresh_insert_equivalence.cpp`
+  (serial↔world equivalence of the Schrödinger fused-resolve fresh-insert arms,
+  Majorana + native Pauli; self-skips at world size 1).
+- **Simulator / operator lifecycle**: `simulator_copy_tests.cpp`,
+  `update_initial_operator.cpp`, `ctor_validation_tests.cpp` (constructor guard
+  rails + MPGraph bounds).
 
-# Run with MPI (single test case)
-mpirun -n 2 ./tests/cpp/unit_tests.x --run_test=random_exact_infinite_cutoff_expval
-```
-
-## Test Files
-
-- **`unit_tests.cpp`**: Main test runner with MPI initialization
-- **`build_graph_tests.cpp`**: Tests for graph construction and layer storage behaviour
-- **`infinite_cutoff.cpp`**: Tests with infinite cutoff across threading/MPI modes (MPI-optional)
-- **`large_cosine_storage_tests.cpp`**: Coverage for compressed cosine and execution-plan storage edge cases
-- **`mpi_compat.cpp`**: MPI compatibility wrappers and size_t collective coverage
-- **`mpi_pare.cpp`**: MPI-specific tests requiring multiple ranks (MPI-required)
-- **`mpfunctions.cpp`**: Unit tests for MP utility functions (serial)
-- **`update_initial_operator.cpp`**: Tests for updating the initial operator in both pictures
-- **`utilities.cpp`**: Unit tests for general utilities (serial)
-- **`word_width_mpi_equivalence.cpp`**: Regression tests for extended word-width and MPI equivalence
-
-## Test Utilities
-
-- **`TestUtilities.h`**: Shared test helpers and fixtures
-- **`boost-test.cmake`**: CMake integration for test discovery
-- **`boostAddTests.cmake`**: Script to automatically discover Boost.Test cases
+New `*.cpp` files are auto-discovered on the next configure — no CMake edit
+needed.
 
 ## MPI Test Configuration
 
-As long as an MPI launcher is detected (`MPIEXEC_EXECUTABLE`, or `mpiexec`/`mpirun` on PATH), CMake automatically creates MPI
-suite tests by wrapping `unit_tests.x` with `mpiexec -n <rank>` for each configured rank in
-`monoprop_MPI_TEST_PROCS` (default: `2`). MPI suite variants carry the `mpi` label and
-rank-specific labels (`mpi-2`, etc.), so `ctest -L mpi` runs all distributed
-variants while `ctest -L mpi-2` targets only rank-2 runs.
-
-For exhaustive rank coverage, configure with:
-`-Dmonoprop_MPI_TEST_PROCS='1;2;4'`
-
-If you need old per-test MPI expansion for debugging, configure with
-`-Dmonoprop_MPI_TEST_LAYOUT=per-test`.
-
-## Design Principles
-
-1. **Tests remain label-free** – the CTest harness assigns `serial`/`mpi` labels automatically
-2. **MPI-optional tests gracefully handle both serial and parallel execution**
-3. **MPI-required tests skip with a message when run with insufficient ranks**
-4. **The test suite uses a single executable** (`unit_tests.x`) for simplicity
-5. **CTest provides flexible filtering** by test name or label
-6. **MPI initialization/finalization is handled once** in the main test runner
+With an MPI launcher on PATH (`MPIEXEC_EXECUTABLE`, `mpiexec`, or `mpirun`),
+CMake wraps the whole suite in `mpiexec -n <rank>` for each rank in
+`monoprop_MPI_TEST_PROCS` (default `2`) — one CTest entry per rank count, not
+per case, because the ranks have to reach the same collectives. For exhaustive
+rank coverage: `-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under
+MPI while debugging, invoke the binary directly:
+`mpirun -n 2 ./tests/cpp/monoprop_unit_tests.x --run_test=<case>`.
 
 ## Adding New Tests
 
-When adding new tests:
-
-1. For MPI-required scenarios, check `monoprop::mpi::size(MPI_COMM_WORLD)` and skip if < 2
-2. For MPI-optional tests, exercise both `MPI_COMM_SELF` and `MPI_COMM_WORLD` communicators when practical
-3. Rebuild to register new tests with CTest
-
-Example:
-
-```cpp
-BOOST_AUTO_TEST_CASE(my_serial_test) {
-    // Test that doesn't use MPI
-}
-
-BOOST_AUTO_TEST_CASE(my_mpi_optional_test) {
-    // Test that works with both MPI_COMM_SELF and MPI_COMM_WORLD
-    MPI_Comm comm = MPI_COMM_WORLD;
-    // ...
-}
-
-BOOST_AUTO_TEST_CASE(my_mpi_required_test) {
-    const int world_size = monoprop::mpi::size(MPI_COMM_WORLD);
-    if (world_size < 2) {
-        BOOST_TEST_MESSAGE("Skipping test: requires MPI world size >= 2");
-        return;
-    }
-    // Test that requires multiple MPI ranks
-}
-```
+1. Add a `*.cpp` with flat `BOOST_AUTO_TEST_CASE`s (shared name prefix).
+2. Reuse the shared helpers above rather than copying oracle/harness code.
+3. For MPI-required scenarios, check `monoprop::mpi::size(MPI_COMM_WORLD)` and
+   skip if `< 2`.
+4. Rebuild to register the new cases with CTest.

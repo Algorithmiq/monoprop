@@ -28,21 +28,21 @@ env:
 jobs:
   check-pr-changes:
     name: Check PR changes for deploy workflow
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       should-run: ${{ steps.check.outputs.should-run }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
       - id: changed-deploy-workflow
         if: ${{ github.event_name == 'pull_request' }}
-        uses: tj-actions/changed-files@v47
+        uses: tj-actions/changed-files@v47.0.6
         with:
           files: .github/workflows/deploy.yml
       - id: changed-pyproject
         if: ${{ github.event_name == 'pull_request' }}
-        uses: tj-actions/changed-files@v47
+        uses: tj-actions/changed-files@v47.0.6
         with:
           files: pyproject.toml
       - id: check
@@ -99,20 +99,20 @@ jobs:
     name: Build source distribution
     needs: check-pr-changes
     if: ${{ github.event_name != 'pull_request' || needs.check-pr-changes.outputs.should-run == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0  # such that setuptools_scm can do its job correctly
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v9.0.0
 
       - name: Build SDist
         run: |
           uv tool run --from build pyproject-build --verbose --sdist --installer uv
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: cibw-sdist
           path: dist/*.tar.gz
@@ -131,18 +131,18 @@ jobs:
           - archs: native
             platform: auto
           - os: linux-intel
-            runs-on: ubuntu-latest
+            runs-on: ubuntu-26.04
           - os: linux-arm
-            runs-on: ubuntu-24.04-arm
+            runs-on: ubuntu-26.04-arm
           - os: macos-arm
             runs-on: macos-15
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: pypa/cibuildwheel@v4.1.0
+      - uses: pypa/cibuildwheel@v4.1.1
         with:
           extras: "uv"
         env:
@@ -151,7 +151,7 @@ jobs:
           CIBW_DEBUG_TRACEBACK: TRUE
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: wheelhouse/*.whl
@@ -163,7 +163,7 @@ jobs:
       - build-wheels
     if: github.event_name == 'release' && github.event.action == 'published'
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: pypi
     permissions:
       id-token: write
@@ -171,7 +171,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           # unpacks all CIBW artifacts into dist/
           pattern: cibw-*
@@ -179,9 +179,9 @@ jobs:
           merge-multiple: true
 
       - name: Generate artifact attestations
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@v4.1.1
         with:
           subject-path: "dist/*"
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@v1.14.1

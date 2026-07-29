@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <complex>
 #include <concepts>
 #include <cstdlib>
@@ -60,15 +62,11 @@ auto boost_test_print_type(std::ostream& os, const std::pair<K, V>& aPair) -> st
 }
 } // namespace std
 
-// ---------------------------------------------------------------------------
-// Shared test utilities
-// ---------------------------------------------------------------------------
 namespace test_utils {
 
 namespace fs = std::filesystem;
 using namespace monoprop;
 
-/// Resolve the path to the test data directory.
 inline auto resolve_test_data_path(int max_depth = 8) -> fs::path {
     if (const char* env_p = std::getenv("monoprop_REF_DATA_PATH")) {
         return fs::path(env_p);
@@ -95,11 +93,6 @@ inline auto resolve_test_data_path(int max_depth = 8) -> fs::path {
     return fs::path("tests/data");
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers (used across multiple test files)
-// ---------------------------------------------------------------------------
-
-/// Load test data from a msgpack file (with Boost assertion on existence).
 template <size_t NumModes>
 inline auto load_case_data(const std::string& filename) -> CaseData {
     const fs::path data_path = resolve_test_data_path() / filename;
@@ -107,7 +100,6 @@ inline auto load_case_data(const std::string& filename) -> CaseData {
     return load_case(data_path);
 }
 
-/// Configuration for building a simulator instance.
 struct SimulatorConfig {
     std::optional<unsigned int> schrodinger_cutoff = std::nullopt;
     MPI_Comm comm = MPI_COMM_SELF;
@@ -117,13 +109,12 @@ struct SimulatorConfig {
     std::optional<std::vector<VecZ>> basis_change = std::nullopt;
 };
 
-/// Build a MonomialPropagator from CaseData and a config struct.
 template <size_t NumModes>
 inline auto build_simulator(const CaseData& data, const SimulatorConfig& cfg = {}) -> MonomialPropagator<NumModes> {
     const auto cutoff = static_cast<unsigned int>(2 * NumModes);
     return MonomialPropagator<NumModes>(data.hamiltonian,
                                         cutoff,
-                                        data.hartree_fock,
+                                        data.initial_state,
                                         cfg.schrodinger_cutoff,
                                         cfg.comm,
                                         cfg.atol,
@@ -132,39 +123,35 @@ inline auto build_simulator(const CaseData& data, const SimulatorConfig& cfg = {
                                         cfg.basis_change);
 }
 
-// ---------------------------------------------------------------------------
-// Expectation value evaluation helpers
-// ---------------------------------------------------------------------------
-
-/// Evolve and evaluate expectation value via expectation_value_functional.
 template <size_t NumModes>
 inline auto evaluate_expval(MonomialPropagator<NumModes>& sim, const CaseData& data, bool pare) -> double {
-    sim.propagate(data.majoranas);
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
-    auto expval_fn = sim.expectation_value_functional(data.param_inds, data.gen_coeffs, pare_threshold);
+    auto expval_fn = sim.expectation_value_functional(pare_threshold);
     return expval_fn(data.parameters);
 }
 
-/// Check that an expectation value is close to the exact value (with Boost assertion).
 inline auto check_expval_close(const char* label, double expval, double exact, double atol = 1e-9) -> void {
     BOOST_TEST_MESSAGE(std::string("[") + label + "] expval=" + std::format("{:.9f}", expval)
                        + ", exact=" + std::format("{:.9f}", exact));
     BOOST_CHECK_SMALL(expval - exact, atol);
 }
 
-// ---------------------------------------------------------------------------
-// Template test functions (used by build_graph_tests.cpp)
-// ---------------------------------------------------------------------------
+// Mixed absolute/relative comparison; rtol absorbs the accumulation drift between n=1 and n>1 runs.
+inline constexpr double kFpRtol = 1e-7;
+inline auto near(double lhs, double rhs, double atol = 1e-9, double rtol = kFpRtol) -> bool {
+    const double scale = std::max(std::abs(lhs), std::abs(rhs));
+    return std::abs(lhs - rhs) <= (atol + rtol * scale);
+}
 
-/// Test evolve + expectation_value_functional.
 template <size_t n_modes>
 inline auto test_evolve_build_graph(const CaseData& data, const SimulatorConfig& cfg, bool pare, double exact_expval)
     -> void {
     auto mp = build_simulator<n_modes>(data, cfg);
-    mp.propagate(data.majoranas);
+    mp.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
-    auto expval_fn = mp.expectation_value_functional(data.param_inds, data.gen_coeffs, pare_threshold);
+    auto expval_fn = mp.expectation_value_functional(pare_threshold);
     double expval = expval_fn(data.parameters);
     BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare << " sch_cutoff="
                                   << (cfg.schrodinger_cutoff ? std::to_string(*cfg.schrodinger_cutoff) : "none")) {
@@ -172,7 +159,6 @@ inline auto test_evolve_build_graph(const CaseData& data, const SimulatorConfig&
     }
 }
 
-/// Test evolve with pre-computed coefficients + expectation_value_functional.
 template <size_t n_modes>
 inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
                                                 const SimulatorConfig& cfg,
@@ -180,11 +166,11 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
                                                 double exact_expval) -> void {
     auto mp = build_simulator<n_modes>(data, cfg);
 
-    auto init_coeffs = mp.contract_partially({}, {}, {}, false);
-    mp.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, init_coeffs, false);
+    // Coefficient-informed build; the seed is computed internally and the bare nullopt is gate_indices.
+    mp.build_graph(data.majoranas, data.param_inds, data.gen_coeffs, std::nullopt, data.parameters);
 
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
-    auto expval_fn = mp.expectation_value_functional(data.param_inds, data.gen_coeffs, pare_threshold);
+    auto expval_fn = mp.expectation_value_functional(pare_threshold);
     double expval = expval_fn(data.parameters);
     BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare << " sch_cutoff="
                                   << (cfg.schrodinger_cutoff ? std::to_string(*cfg.schrodinger_cutoff) : "none")) {
@@ -192,9 +178,51 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test data fixtures
-// ---------------------------------------------------------------------------
+// As above, but split across two build_graph calls so the second one lands on an already non-empty
+// graph -- the only path that reaches build_graph's contract_partially() seeding branch. Schrodinger
+// only, so `cfg.schrodinger_cutoff` must be set: a Heisenberg build consumes each call back-to-front,
+// so a forward split is not equivalent to one call. Each call's `parameters` covers the prefix its own
+// mapping reaches, which is what the seeding guard demands of the second call.
+template <size_t n_modes>
+inline auto test_evolve_build_graph_with_coeffs_extend(const CaseData& data,
+                                                       const SimulatorConfig& cfg,
+                                                       bool pare,
+                                                       double exact_expval) -> void {
+    auto mp = build_simulator<n_modes>(data, cfg);
+
+    const size_t k = data.majoranas.size() / 2;
+    const auto slice_z = [](const VecZ& v, size_t lo, size_t hi) {
+        return VecZ(v.begin() + static_cast<std::ptrdiff_t>(lo), v.begin() + static_cast<std::ptrdiff_t>(hi));
+    };
+    const auto slice_d = [](const VecD& v, size_t lo, size_t hi) {
+        return VecD(v.begin() + static_cast<std::ptrdiff_t>(lo), v.begin() + static_cast<std::ptrdiff_t>(hi));
+    };
+    const std::vector<VecZ> majs1(data.majoranas.begin(), data.majoranas.begin() + static_cast<std::ptrdiff_t>(k));
+    const std::vector<VecZ> majs2(data.majoranas.begin() + static_cast<std::ptrdiff_t>(k), data.majoranas.end());
+
+    const auto params_for = [&data](const VecZ& mapping) -> VecD {
+        const auto m = static_cast<size_t>(*std::ranges::max_element(mapping)) + 1;
+        return VecD(data.parameters.begin(), data.parameters.begin() + static_cast<std::ptrdiff_t>(m));
+    };
+
+    const auto pinds1 = slice_z(data.param_inds, 0, k);
+    const auto pinds2 = slice_z(data.param_inds, k, data.param_inds.size());
+    mp.build_graph(majs1, pinds1, slice_d(data.gen_coeffs, 0, k), std::nullopt, params_for(pinds1));
+    mp.build_graph(majs2,
+                   pinds2,
+                   slice_d(data.gen_coeffs, k, data.gen_coeffs.size()),
+                   std::nullopt,
+                   params_for(pinds2));
+
+    const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
+    auto expval_fn = mp.expectation_value_functional(pare_threshold);
+    double expval = expval_fn(data.parameters);
+    BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare) {
+        check_expval_close("Expectation Value Build Graph with coeffs (split build, schrodinger)",
+                           expval,
+                           exact_expval);
+    }
+}
 
 struct ExampleDataFix {
     static constexpr size_t n_modes = 8;
@@ -208,6 +236,12 @@ struct ExampleDataFix {
         auto msgpack_file = data_path / "random_exact.msgpack";
         data = load_case(msgpack_file);
     }
+};
+
+struct LihFixture {
+    static constexpr size_t n_modes = 12;
+    CaseData data;
+    LihFixture() : data(load_case_data<n_modes>("lih_fermionic_spin_exact.msgpack")) {}
 };
 
 inline constexpr std::array<bool, 2> ds_pare_values{false, true};

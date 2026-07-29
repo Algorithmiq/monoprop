@@ -21,22 +21,14 @@ from datetime import date
 from pathlib import Path
 from textwrap import indent
 
+# Run as a script, so sys.path[0] is tools/ regardless of the working directory CMake picks.
+from _binding_layout import binding_block, binding_blocks
+
 
 def python_comment_header_from_text(header_text: str) -> str:
     """Convert a plain-text license header to Python comment lines."""
     lines = header_text.strip().splitlines()
     return "\n".join(f"# {line}" if line else "#" for line in lines)
-
-
-def binding_block(logical_num_modes: int) -> int:
-    """Return the storage-width binding block for a logical mode count."""
-    return max(32, ((logical_num_modes + 31) // 32) * 32)
-
-
-def binding_blocks(max_logical_num_modes: int) -> list[int]:
-    """Return the storage-width binding blocks needed to cover max_logical_num_modes."""
-    max_storage_modes = binding_block(max_logical_num_modes)
-    return list(range(32, max_storage_modes + 1, 32))
 
 
 def _simulator_adapter_source() -> str:
@@ -49,13 +41,14 @@ def _simulator_adapter_source() -> str:
         logical_num_modes: int,
         initial_operator: dict[tuple[int, ...], complex],
         cutoff: int,
-        slater_determinant: list[int],
+        initial_state: list[int],
         comm=None,
         schrodinger_cutoff: int | None = None,
         lower_atol: float | None = None,
         upper_atol: float | None = None,
         cutoff_type: str = "length",
         basis_change: list[list[int]] | None = None,
+        basis: str = "majorana",
     ) -> None:
         object.__setattr__(self, "_logical_num_modes", logical_num_modes)
         object.__setattr__(
@@ -64,7 +57,7 @@ def _simulator_adapter_source() -> str:
             core_type(
                 initial_operator=initial_operator,
                 cutoff=cutoff,
-                slater_determinant=slater_determinant,
+                initial_state=initial_state,
                 comm=comm,
                 schrodinger_cutoff=schrodinger_cutoff,
                 lower_atol=lower_atol,
@@ -72,6 +65,7 @@ def _simulator_adapter_source() -> str:
                 cutoff_type=cutoff_type,
                 basis_change=basis_change,
                 logical_num_modes=logical_num_modes,
+                basis=basis,
             ),
         )
 
@@ -105,26 +99,28 @@ def _class_defs(
         self,
         initial_operator: dict[tuple[int, ...], complex],
         cutoff: int,
-        slater_determinant: list[int],
+        initial_state: list[int],
         comm=None,
         schrodinger_cutoff: int | None = None,
         lower_atol: float | None = None,
         upper_atol: float | None = None,
         cutoff_type: str = "length",
         basis_change: list[list[int]] | None = None,
+        basis: str = "majorana",
     ) -> None:
         super().__init__(
             {core_alias_prefix}{block:03d}Core,
             {mode},
             initial_operator,
             cutoff,
-            slater_determinant,
+            initial_state,
             comm,
             schrodinger_cutoff,
             lower_atol,
             upper_atol,
             cutoff_type,
             basis_change,
+            basis,
         )
 """
         )
@@ -191,7 +187,10 @@ def dispatch(num_modes: int) -> type[_SimulatorAdapter]:
             raise NumberOfModesInvalidError(errmsg)
 {cases}
         case n if n > {max_logical_num_modes}:
-            errmsg = f"Number of Fermionic modes {{n}} invalid. num_modes must be <= {max_logical_num_modes}."
+            errmsg = (
+                f"Number of Fermionic modes {{n}} invalid. num_modes must be <= {max_logical_num_modes}."
+                " Contact monoprop developers if more than {max_logical_num_modes} Fermionic modes are required."
+            )
             raise NumberOfModesInvalidError(errmsg)
 
     return cls

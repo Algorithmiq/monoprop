@@ -8,7 +8,13 @@ export default function Layout({ children }: LayoutProps<'/'>) {
   return (
     <html lang="en" className={gtPlanar.className} suppressHydrationWarning>
       <body className="flex flex-col min-h-screen">
-        <RootProvider>{children}</RootProvider>
+        <RootProvider
+          // The docs site is exported as static files, so search must load the
+          // prebuilt Orama index instead of calling the dynamic query API.
+          search={{ options: { type: 'static', api: '/api/search' } }}
+        >
+          {children}
+        </RootProvider>
       </body>
     </html>
   );

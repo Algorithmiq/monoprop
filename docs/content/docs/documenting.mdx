@@ -1,0 +1,205 @@
+---
+title: Documenting monoprop
+description: Requirements, recommendations, and guides for writing documentation for monoprop.
+---
+
+This document describes the requirements, recommendations, and guides for writing
+documentation for monoprop, as well as details for contributing to and building the monoprop documentation.
+
+## Documentation structure
+
+The documentation site lives in `docs/` and is built with [Fumadocs](https://fumadocs.dev/) (Next.js).
+Content files are located under `docs/content/docs/` and written in [MDX](https://mdxjs.com/) (`.mdx`).
+
+```
+docs/
+  content/
+    docs/          # all documentation pages (.mdx)
+      concepts/    # conceptual reference pages
+      features/    # feature guides
+  notebooks/       # Jupyter tutorial notebooks (converted to .md at build time)
+  scripts/         # tooling: API generation, notebook conversion
+```
+
+The navigation order is controlled by `docs/content/docs/meta.json`.
+
+## Writing documentation pages
+
+### Page format
+
+Every page must start with a YAML frontmatter block that provides `title` and `description`:
+
+```mdx
+---
+title: My page title
+description: A short description shown in search results and link previews.
+---
+
+Page content goes here.
+```
+
+Pages are written in MDX, so standard Markdown syntax is fully supported alongside
+JSX components provided by Fumadocs UI.
+
+### Math
+
+Inline math uses `$…$` and display math uses `$$…$$`, rendered via KaTeX:
+
+```mdx
+The eigenvalue equation is $H |\psi\rangle = E |\psi\rangle$.
+
+$$
+Z = \text{tr}\!\left(e^{-\beta H}\right)
+$$
+```
+
+### Citations
+
+References are defined in `docs/bibliography.bib`. Cite them with `[@key]`:
+
+```mdx
+This follows the approach of [@smith2024].
+```
+
+### Cross-references to the API
+
+Link to any documented Python symbol with the mkdocstrings-style reference
+syntax `[Symbol][]` — the same form used inside docstrings (see below). The
+symbol resolves to its API-reference page automatically, so you never hard-code
+an `/api/...` URL:
+
+```mdx
+The top-level classes are [MajoranaPropagator][] and [PauliPropagator][].
+```
+
+- **Do not wrap the name in backticks** in the `[Symbol][]` form: write
+  `[MajoranaPropagator][]`, not `` [`MajoranaPropagator`][] ``. The renderer adds
+  the code-span styling for you (backticks would split the reference and stop it
+  resolving).
+- **Bare names must be unambiguous.** `[MajoranaPropagator][]` works because the
+  name is unique across the public API. If a name is defined in more than one
+  module, give the fully-qualified path as an explicit target — and this is also
+  how you set custom display text:
+
+  ```mdx
+  See [the operator class][monoprop.majorana.MajoranaOperator] for details.
+  ```
+
+- **Unresolved references** are left as literal text and print a
+  `remark-xref: unresolved cross-reference …` warning during the build, so typos
+  surface instead of silently producing a broken link.
+
+Links to other documentation *pages* are still ordinary Markdown links, e.g.
+`[Building from source](/building)`.
+
+### Code examples and doctests
+
+Python code blocks in documentation pages are validated as doctests. Write them
+using the standard `>>>` REPL style so they are picked up automatically:
+
+````mdx
+```python
+>>> from monoprop import MonomialPropagator
+>>> mp = MonomialPropagator(...)
+```
+````
+
+Run doctests across all docs pages (excluding tutorials) with:
+
+```bash
+just doctest-docs
+```
+
+## Python API reference
+
+The API reference is **auto-generated** from Python docstrings using
+[`griffe`](https://mkdocstrings.github.io/griffe/) and
+[`fumadocs-python`](https://fumadocs.dev/docs/ui/python).
+Do not edit files under `docs/content/docs/api/` directly — they are overwritten
+every time the generator runs.
+
+To update the API reference after changing docstrings, regenerate it:
+
+```bash
+just gen-api
+```
+
+Python docstrings must follow **Google style**:
+
+```python
+def my_function(x: int) -> str:
+    """Short one-line summary.
+
+    Args:
+        x: Description of x.
+
+    Returns:
+        Description of the return value.
+
+    Example:
+        >>> my_function(1)
+        '1'
+    """
+```
+
+Docstrings may cross-reference other symbols with the same `[Symbol][]` /
+`[Display][fully.qualified.path]` syntax described in
+[Cross-references to the API](#cross-references-to-the-api); griffe resolves
+them into links when the reference is regenerated.
+
+## Tutorial notebooks
+
+Tutorials live as Jupyter notebooks in `docs/notebooks/`. They are executed and
+converted to MDX at build time; a failing cell fails the build, so notebooks act
+as end-to-end integration tests.
+
+To regenerate the tutorial pages from the notebooks:
+
+```bash
+just gen-notebooks
+```
+
+## Building locally
+
+### Development server (recommended)
+
+The fastest way to preview changes is the live-reloading dev server. It
+regenerates the API reference and notebooks once, then watches for file changes:
+
+```bash
+just serve-docs
+```
+
+Open [http://localhost:3000](http://localhost:3000) in your browser. Page edits
+in `docs/content/docs/` appear immediately without a restart.
+
+### Full static build
+
+To reproduce the exact build that runs in CI — including all doctests — run:
+
+```bash
+just build-docs
+```
+
+This executes the following steps in order:
+
+| Step | Command | What it does |
+|------|---------|--------------|
+| Install JS deps | `just docs-install` | Runs `npm ci` inside `docs/` |
+| Generate API | `just gen-api` | Regenerates `docs/content/docs/api/` from docstrings |
+| Doctest (Python) | `just doctest-py` | Validates all docstring examples |
+| Doctest (docs) | `just doctest-docs` | Validates code blocks in MDX pages |
+| Generate notebooks | `just gen-notebooks` | Executes notebooks and converts them to MDX |
+| Build site | `cd docs && npm run build` | Produces the static export in `docs/out/` |
+
+The rendered static site is written to `docs/out/`.
+
+### Running individual steps
+
+```bash
+just docs-install   # install / update npm dependencies
+just gen-api        # regenerate API reference only
+just gen-notebooks  # regenerate tutorial pages only
+just doctest-py     # run Python docstring doctests
+just doctest-docs   # run documentation page doctests
+```

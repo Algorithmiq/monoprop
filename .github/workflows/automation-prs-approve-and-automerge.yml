@@ -3,7 +3,7 @@ on: pull_request
 
 jobs:
   handle-automated-prs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     permissions:
       pull-requests: write
@@ -20,7 +20,7 @@ jobs:
       - name: Dependabot metadata
         if: github.event.pull_request.user.login == 'dependabot[bot]'
         id: metadata
-        uses: dependabot/fetch-metadata@v3
+        uses: dependabot/fetch-metadata@v3.1.0
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
