@@ -26,7 +26,7 @@ env:
   CPM_USE_LOCAL_PACKAGES: "TRUE"
 
 jobs:
-  python-checks:
+  package-tests:
     # in combination with the PR types selection, this top-level if statement
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
@@ -90,7 +90,7 @@ jobs:
           pyver="${{ matrix.python-version }}"
           echo "label=$runner-$pyver" >> $GITHUB_OUTPUT
 
-      - name: Run tests
+      - name: Run Python tests
         run: |
           export COVERAGE_FILE="coverage-${{ steps.test-group-label.outputs.label }}"
 
@@ -102,6 +102,10 @@ jobs:
           --durations-min=5.0 \
           --junit-xml=pytest-"${{ steps.test-group-label.outputs.label }}".xml \
           -o junit_family=legacy
+
+      - name: Run C++ unit tests
+        run: |
+          ctest --test-dir build/editable/Release --output-on-failure --output-junit ctest-"${{ steps.test-group-label.outputs.label }}".xml
 
       - name: Run Python tests under MPI
         env:
@@ -134,10 +138,10 @@ jobs:
           fail_ci_if_error: true
 
       - name: Upload test results to Codecov
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: pytest-${{ steps.test-group-label.outputs.label }}.xml
+          files: pytest-${{ steps.test-group-label.outputs.label }}.xml, ctest-"${{ steps.test-group-label.outputs.label }}".xml
           report_type: test_results
           disable_search: true
           fail_ci_if_error: true
