@@ -49,8 +49,6 @@ Changelog = "https://github.com/Algorithmiq/monoprop/releases"
 [project.optional-dependencies]
 mpi = ["mpi4py>=4.1.0"]
 qiskit = ["qiskit>=2.0.0"]
-openfermion = ["openfermion"]
-pyscf = ["pyscf"]
 
 [dependency-groups]
 dev = ["prek>=0.4", "ruff==0.15.20", "gcovr"]
@@ -63,7 +61,8 @@ interactive = [
   "ipykernel",
   "matplotlib",
   "pylatexenc",
-  "monoprop[qiskit,openfermion,pyscf]",
+  "qiskit>=2.0.0",
+  "pyscf",
 ]
 test = [
   "psutil>=7.2",
