@@ -20,7 +20,7 @@
 #include <vector>
 
 #include <format>
-#include "monoprop/detail/print_compat.h"
+#include <print>
 
 #include "monoprop/detail/graph/MPGraphLayers.h"
 
