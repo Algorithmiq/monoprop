@@ -160,6 +160,8 @@ jobs:
 
     name: Check code coverage
     runs-on: ubuntu-26.04
+    env:
+      SKBUILD_CMAKE_BUILD_TYPE: "Coverage"
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -179,7 +181,7 @@ jobs:
 
       - name: Install package
         run: |
-          uv sync --no-progress --group test --all-extras -v --config-settings-package='monoprop:cmake.build-type=Coverage'
+          uv sync --no-progress --group test --all-extras -v
 
       - name: Run Python tests
         run: |
