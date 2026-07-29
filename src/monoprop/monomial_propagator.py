@@ -520,7 +520,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Returns:
             The evolved operator (Heisenberg picture) or evolved state (Schrodinger picture).
         """
-        raise NotImplementedError
 
     @abstractmethod
     def update_initial_operator(self, new_operator: T_op) -> None:
@@ -538,7 +537,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Raises:
             RuntimeError: In the Heisenberg picture, if a term is absent from the current operator.
         """
-        raise NotImplementedError
 
     def size(self) -> int:
         """Number of distinct monomial terms in the simulator's current representation."""
