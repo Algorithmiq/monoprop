@@ -4,6 +4,10 @@ target_sources(
     FILE_SET headers
       TYPE HEADERS
       FILES
+        "CosineRecompute.h"
+        "CosineRecomputeCallbacks.h"
         "EvolutionHelpers.h"
-        "EvolutionMajorana.h"
+        "LayerBuilder.h"
 )
+
+add_subdirectory(layer_build)

@@ -4,6 +4,7 @@ target_sources(
     FILE_SET headers
       TYPE HEADERS
       FILES
-        "MPGraphEncodingStorage.h"
-        "MPGraphEncodingTypes.h"
+        "PareGraph.h"
 )
+
+target_sources(monoprop PRIVATE PareGraph.cpp)

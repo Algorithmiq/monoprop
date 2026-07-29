@@ -6,7 +6,6 @@ add_library(
   SHARED
   Evolution.cpp
   MPFunctions.cpp
-  detail/pare/PareGraph.cpp
   MPGraph.cpp
   Validation.cpp
 )
@@ -41,9 +40,7 @@ target_sources(
         "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/MPGraph.h"
         "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/MonomialPropagator.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/Bitset.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/MajoranaAlgebra.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/MPGraphEncoding.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Threading.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/TypeAliases.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/Utilities.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/Validation.h"
@@ -60,14 +57,13 @@ set_target_properties(
       YES
 )
 
+add_subdirectory(algebra)
+add_subdirectory(core)
 add_subdirectory(detail)
 
 target_include_directories(
   monoprop
   PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
@@ -84,7 +80,6 @@ target_compile_definitions(
   PUBLIC
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
     $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
-
 )
 
 # flags to prepend

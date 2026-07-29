@@ -122,7 +122,18 @@ target_include_directories(
 )
 
 target_link_libraries(_core PRIVATE monoprop)
-target_compile_options(_core BEFORE PRIVATE "${ARCH_FLAG}")
+
+# flags to prepend
+target_compile_options(
+  _core
+  BEFORE
+  PRIVATE
+    "${monoprop_CXX_FLAGS}"
+    "${ARCH_FLAG}"
+)
+
+# flags to append
+target_compile_options(_core PRIVATE "${EXTRA_CXXFLAGS}")
 
 # handle RPATH
 set(_plat_token "")

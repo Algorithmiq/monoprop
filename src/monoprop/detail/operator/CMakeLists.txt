@@ -4,6 +4,7 @@ target_sources(
     FILE_SET headers
       TYPE HEADERS
       FILES
-        "MPGraphEncodingStorage.h"
-        "MPGraphEncodingTypes.h"
+        "InvertedIndex.h"
+        "MPOperator.h"
+        "OperatorIndex.h"
 )
