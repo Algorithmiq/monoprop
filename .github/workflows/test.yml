@@ -91,16 +91,6 @@ jobs:
           cmake_minimum_required(VERSION 3.28)
           project(monoprop_find_package_smoke LANGUAGES CXX)
 
-          set(Python_FIND_VIRTUALENV FIRST)
-          find_package(
-            Python
-            3.11
-            REQUIRED
-            COMPONENTS
-              Interpreter
-              Development.Module
-          )
-
           find_package(monoprop CONFIG REQUIRED)
 
           add_executable(smoke main.cpp)
@@ -111,7 +101,7 @@ jobs:
           auto main() -> int { return 0; }
           EOF
 
-          cmake -S find-package-smoke -B find-package-smoke/build
+          cmake -S find-package-smoke -B find-package-smoke/build -Dmonoprop_DIR="$(uv run python -c "import sysconfig; print(sysconfig.get_path('purelib'))")"/monoprop/cmake
 
           cmake --build find-package-smoke/build
 
