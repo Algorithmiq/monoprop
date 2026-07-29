@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-import numpy as np
-
 from monoprop.conversion_utils import _extend_pauli_string
 
 try:
@@ -48,42 +46,69 @@ VALID_PAULI_GATES = PAULI_EVOLUTION_EQUIVALENT.union({"PauliEvolution"})
 
 
 def from_qiskit_operator(
-    qiskit_op: SparsePauliOp, *, atol: float = 1e-8, force_real: bool = False
+    qiskit_op: SparsePauliOp, *, atol: float = 1e-8
 ) -> PauliOperator:
     """Convert a Qiskit operator to a PauliOperator.
+
+    Requires the operator to be Hermitian
 
     Args:
         qiskit_op: A qiskit Pauli operator.
         atol: Absolute tolerance for the ``simplify()`` run first, which drops smaller terms.
-        force_real: Cast the coefficients to real, raising if any is not numerically real.
+
+    Returns:
+        A PauliOperator instance representing the given operator.
     """
     qiskit_op = qiskit_op.simplify(atol=atol)
     pauli_strings: list[str] = qiskit_op.paulis.to_labels(array=True)  # type: ignore
     pauli_strings = [
         s[::-1] for s in pauli_strings
     ]  # reverse the strings to match monoprop convention
-    coeffs = qiskit_op.coeffs
-    if force_real:
-        coeffs = np.real_if_close(coeffs)  # type: ignore
-        if np.iscomplexobj(coeffs):
-            raise ValueError("Operator has complex terms")
     return PauliOperator._from_terms(
-        pauli_strings,
-        list(coeffs),  # type: ignore[arg-type]
-        num_qubits=qiskit_op.num_qubits,
+        pauli_strings, list(qiskit_op.coeffs), num_qubits=qiskit_op.num_qubits
+    )
+
+
+def _to_qiskit_operator(pauli_dict: dict[str, float], num_qubits: int) -> SparsePauliOp:
+    """Convert a dictionary of Pauli strings with their coefficients to a Qiskit operator.
+
+    Args:
+        pauli_dict: A dictionary mapping Pauli strings to their coefficients.
+        num_qubits: Number of qubits in the system.
+
+    Returns:
+        The Qiskit operator.
+    """
+    return SparsePauliOp.from_list(
+        [(s[::-1], c) for s, c in pauli_dict.items()], num_qubits=num_qubits
     )
 
 
 def to_qiskit_operator(
-    pauli_dict: dict[str, complex] | dict[str, float],
+    pauli_operator: PauliOperator, num_qubits: int | None = None
 ) -> SparsePauliOp:
-    """Convert a dictionary of Pauli strings with their coefficients to a Qiskit operator.
+    """Convert a PauliOperator to a Qiskit SparsePauliOp.
 
     Args:
-        pauli_dict: Pauli strings in monoprop order (leftmost letter on qubit 0); each key is
-            reversed into qiskit's little-endian label order.
+        pauli_operator: A PauliOperator instance.
+        num_qubits: Number of qubits in the system. If None, it will be inferred from the
+            PauliOperator.
+
+    Returns:
+        The Qiskit operator.
     """
-    return SparsePauliOp.from_list([(k[::-1], v) for k, v in pauli_dict.items()])
+    num_qubits = num_qubits if num_qubits is not None else pauli_operator.num_qubits
+    if num_qubits is None:
+        raise ValueError(
+            "Number of qubits must be specified either in the PauliOperator or as an argument."
+        )
+
+    operator = {
+        _extend_pauli_string(p.string, p.qubits, num_qubits): coeff
+        for p, coeff in pauli_operator.terms.items()
+    }
+
+    return _to_qiskit_operator(operator, num_qubits=num_qubits)
 
 
 def _place_operator(
@@ -174,7 +199,7 @@ def from_qiskit_circuit(
 
 def _extend_generator_minimally(
     generator: PauliOperator,
-) -> tuple[dict[str, complex], list[int]]:
+) -> tuple[dict[str, float], list[int]]:
     """Relabel a generator onto the qubits it touches, returning the strings and those qubits."""
     qubits = sorted({q for p in generator.terms for q in p.qubits})
     localizing_qubit_map = {q: i for i, q in enumerate(qubits)}
@@ -216,7 +241,8 @@ def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
         pauli_dict, qubits = _extend_generator_minimally(_negated(generator))
         qiskit_circuit.append(
             PauliEvolutionGate(
-                to_qiskit_operator(pauli_dict), time=circuit.parameters[param_index]
+                _to_qiskit_operator(pauli_dict, num_qubits=len(qubits)),
+                time=circuit.parameters[param_index],
             ),
             qubits,
         )
