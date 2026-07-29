@@ -20,8 +20,6 @@ concurrency:
 
 env:
   FORCE_COLOR: 3
-  # Directory where build-wrapper output will be placed
-  BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory
   COLUMNS: 120
   CPM_USE_LOCAL_PACKAGES: "TRUE"
 
@@ -253,6 +251,8 @@ jobs:
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
     name: SonarQube analysis
+    env:
+      BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -376,15 +376,6 @@ jobs:
       - name: Test
         run: |
           ctest --preset ${{ matrix.preset }} --output-junit ../../ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
-
-      - name: Upload test results to Codecov
-        uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
-          report_type: test_results
-          disable_search: true
-          fail_ci_if_error: true
 
   cpp-wide:
     # in combination with the PR types selection, this top-level if statement
