@@ -64,10 +64,6 @@ jobs:
           cache: npm
           cache-dependency-path: docs/package-lock.json
 
-      - name: Install package
-        run: |
-          uv sync --group docs --all-extras
-
       # `just build-docs` runs, in order: docs-install (npm ci), gen-api
       # (docstrings -> API reference MDX), doctest-py (runnable docstring
       # examples), doctest-docs (runnable examples in the prose docs),
