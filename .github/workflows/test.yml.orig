@@ -121,13 +121,7 @@ jobs:
           auto main() -> int { return 0; }
           EOF
 
-<<<<<<< New base: ci: build path explicitly
           cmake -S find-package-smoke -B find-package-smoke/build -Dmonoprop_DIR="$(uv run --no-sync python -c "import sysconfig; print(sysconfig.get_path('purelib'))")"/monoprop/cmake
-||||||| Common ancestor
-          cmake -S find-package-smoke -B find-package-smoke/build -Dmonoprop_DIR="$(uv run python -c "import sysconfig; print(sysconfig.get_path('purelib'))")"/monoprop/cmake
-=======
-          cmake -S find-package-smoke -B find-package-smoke/build -Dmonoprop_DIR="$UV_PROJECT_ENVIRONMENT/lib/python${{ matrix.python-version }}/site-packages/monoprop/cmake"
->>>>>>> Current commit: ci: build path explicitly
 
           cmake --build find-package-smoke/build
 
@@ -174,6 +168,640 @@ jobs:
               uv run pytest tests --with-mpi -m mpi -v
           done
 
+<<<<<<< New base: ci: split coverage collection to its own job
+||||||| Common ancestor
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-${{ steps.test-group-label.outputs.label }}.xml
+          flags: python
+          disable_search: true
+          fail_ci_if_error: true
+
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: pytest-${{ steps.test-group-label.outputs.label }}.xml, ctest-"${{ steps.test-group-label.outputs.label }}".xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
+
+  cpp-checks:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Check C++ on ubuntu-26.04 (coverage)
+    runs-on: ubuntu-26.04
+
+    env:
+      BUILD_DIR: build/coverage-gcc
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      - name: Configure
+        run: cmake --preset coverage-gcc
+
+      - name: Build
+        run: cmake --build --preset coverage-gcc
+
+      # --output-junit resolves relative to the test directory (build/coverage-gcc), so ../../
+      # puts the report at the workspace root where the Codecov step looks for it.
+      - name: Test
+        run: |
+          ctest --preset coverage-gcc --output-junit ../../ctest-ubuntu_latest.xml
+
+      - name: Verify CMake install and find_package(monoprop)
+        run: |
+          cmake --install "$BUILD_DIR" --prefix "$PWD/monoprop-install"
+
+          mkdir -p find-package-smoke
+
+          cat > find-package-smoke/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.28)
+          project(monoprop_find_package_smoke LANGUAGES CXX)
+
+          find_package(monoprop CONFIG REQUIRED)
+
+          add_executable(smoke main.cpp)
+          target_link_libraries(smoke PRIVATE monoprop::monoprop)
+          EOF
+
+          cat > find-package-smoke/main.cpp <<'EOF'
+          auto main() -> int { return 0; }
+          EOF
+
+          cmake -S find-package-smoke -B find-package-smoke/build \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_PREFIX_PATH="$PWD/monoprop-install"
+
+          cmake --build find-package-smoke/build
+
+      - name: Collect coverage into a gcovr tracefile
+        run: |
+          pipx run gcovr \
+            --gcov-executable gcov \
+            --gcov-ignore-parse-errors \
+            --exclude-throw-branches \
+            --exclude-unreachable-branches \
+            --root . \
+            --filter '^(src|include)/' \
+            --exclude '^tests/' \
+            "$BUILD_DIR" \
+            --json cpp-coverage-native.json
+
+      - name: Convert C++ tracefile to Cobertura XML for Codecov
+        run: |
+
+          pipx run gcovr \
+            --root . \
+            --merge-lines \
+            --add-tracefile cpp-coverage-native.json \
+            --cobertura cpp-coverage-native.xml
+
+      - name: Upload C++ coverage to Codecov
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: cpp-coverage-native.xml
+          flags: cpp
+          disable_search: true
+          fail_ci_if_error: true
+
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ctest-ubuntu_latest.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
+
+  python-bindings-coverage:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Collect C++ coverage through the Python bindings
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+
+    env:
+      # Instruments the C++ reached through the Python bindings for gcov.
+      SKBUILD_CMAKE_BUILD_TYPE: Coverage
+      # A persistent build dir, so gcov can still find the .gcno/.gcda files after the tests run.
+      SKBUILD_BUILD_DIR: ${{ github.workspace }}/build-python-coverage
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          uv sync --no-progress --group test --all-extras -v
+
+      - name: Run tests to exercise the bindings
+        run: |
+          uv run pytest tests -r aR
+
+      - name: Collect coverage into a gcovr tracefile
+        run: |
+          pipx run gcovr \
+            --gcov-executable gcov \
+            --gcov-ignore-parse-errors \
+            --exclude-throw-branches \
+            --exclude-unreachable-branches \
+            --root . \
+            --filter '^(src|include)/' \
+            --exclude '^tests/' \
+            "$SKBUILD_BUILD_DIR" \
+            --json cpp-coverage-python.json
+
+      - name: Convert C++ tracefile to Cobertura XML for Codecov
+        run: |
+          pipx run gcovr \
+            --root . \
+            --merge-lines \
+            --add-tracefile cpp-coverage-python.json \
+            --cobertura cpp-coverage-python.xml
+
+      - name: Upload C++ coverage to Codecov
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: cpp-coverage-python.xml
+          flags: cpp
+          disable_search: true
+          fail_ci_if_error: true
+
+  sonarqube-analysis:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: SonarQube analysis
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      - name: Install matching Build Wrapper
+        run: |
+          curl --fail --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output build-wrapper-linux-x86.zip \
+            https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
+          unzip -q -o build-wrapper-linux-x86.zip
+
+      # MPI is ON here so the analyzer sees detail/mpi/*: HybridComm.h includes <mpi.h>
+      # unconditionally and every includer guards it behind #ifdef monoprop_ENABLE_MPI, so an
+      # MPI-off configure keeps that whole layer out of compile_commands.json and reports
+      # #ifdef'd-away members as smells (e.g. Exchange.h's Ticket losing its request_).
+      - name: Configure for SonarQube CFamily analysis
+        run: cmake --preset release-gcc-mpi
+
+      - name: Build with Build Wrapper
+        run: |
+          ./build-wrapper-linux-x86/build-wrapper-linux-x86-64 \
+            --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} \
+            cmake --build --preset release-gcc-mpi
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v8.2.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
+
+  cpp-checks-other:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Check C++ on ${{ matrix.runner }} (${{ matrix.compiler }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # `preset` picks the compiler: the update-alternatives steps below point the plain
+        # g++/clang++ the presets name at the matrix's toolchain version.
+        include:
+          - runner: ubuntu-26.04-arm
+            compiler: gcc-14
+            preset: release-gcc
+          - runner: ubuntu-26.04-arm
+            compiler: clang-18
+            preset: release-clang
+          - runner: ubuntu-26.04
+            compiler: clang-18
+            preset: release-clang
+          - runner: macos-15
+            compiler: apple-clang
+            preset: release-clang
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set gcc-14/g++-14 as default compilers
+        if: ${{ matrix.compiler == 'gcc-14' }}
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
+          sudo update-alternatives --set g++ /usr/bin/g++-14
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
+          sudo update-alternatives --set c++ /usr/bin/g++-14
+
+      - name: Set clang-18/clang++-18 as default compilers
+        if: ${{ matrix.compiler == 'clang-18' }}
+        run: |
+          if ! command -v clang-18 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y clang-18
+          fi
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 180
+          sudo update-alternatives --set clang /usr/bin/clang-18
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang-18 180
+          sudo update-alternatives --set cc /usr/bin/clang-18
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 180
+          sudo update-alternatives --set clang++ /usr/bin/clang++-18
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++-18 180
+          sudo update-alternatives --set c++ /usr/bin/clang++-18
+
+      - name: Install dependencies
+        if: ${{ matrix.runner != 'macos-15' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      - name: Install dependencies
+        if: ${{ matrix.runner == 'macos-15' }}
+        run: |
+          brew install ninja boost msgpack-cxx open-mpi
+
+      - name: Configure
+        run: |
+          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
+            export MACOSX_DEPLOYMENT_TARGET=15.0
+          fi
+          cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      # --output-junit resolves relative to the test directory (build/<preset>), so ../../ puts the
+      # report at the workspace root where the Codecov step looks for it.
+      - name: Test
+        run: |
+          ctest --preset ${{ matrix.preset }} --output-junit ../../ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
+
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
+
+  cpp-wide:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Check C++ on ubuntu-26.04 (wide TermIndex)
+    runs-on: ubuntu-26.04
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      # Builds with a 64-bit TermIndex so the monoprop_WIDE_TERM_INDEX #if branches are actually
+      # compiled and run; serial coverage is enough to exercise them. No C++ test job here enables
+      # monoprop_ENABLE_MPI, so the mpi-labelled variants only run locally (`just test-cpp-mpi`);
+      # CI's MPI coverage comes from the Python suite under mpiexec in python-checks.
+      - name: Configure (wide TermIndex)
+        run: cmake --preset release-gcc-wide
+
+      - name: Build
+        run: cmake --build --preset release-gcc-wide
+
+      # --output-junit resolves relative to the test directory (build/release-gcc-wide).
+      - name: Test (serial)
+        run: ctest --preset release-gcc-wide -L serial --output-junit ../../ctest-ubuntu_26_04-wide.xml
+
+=======
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: pytest-${{ steps.test-group-label.outputs.label }}.xml, ctest-"${{ steps.test-group-label.outputs.label }}".xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
+
+  code-coverage:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Check code coverage
+    runs-on: ubuntu-26.04
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          uv sync --no-progress --group test --all-extras -v --config-settings-package='monoprop:cmake.build-type=Coverage'
+
+      - name: Run Python tests
+        run: |
+          uv run pytest \
+          -r aR \
+          --cov=src/monoprop \
+          --cov-report=xml:python-coverage.xml \
+          --durations=50 \
+          --durations-min=5.0
+
+      - name: Collect coverage into a gcovr tracefile (C++ through Python bindings)
+        run: |
+          uvx gcovr \
+            --gcov-executable gcov \
+            --gcov-ignore-parse-errors \
+            --exclude-throw-branches \
+            --exclude-unreachable-branches \
+            --root . \
+            --filter '^(src|include)/' \
+            --exclude '^tests/' \
+            "build/editable/Coverage" \
+            --json cpp-coverage-through-python-bindings.json
+
+      - name: Convert C++ tracefile to Cobertura XML for Codecov (C++ through Python bindings)
+        run: |
+          uvx gcovr \
+            --root . \
+            --merge-lines \
+            --add-tracefile cpp-coverage-through-python-bindings.json \
+            --cobertura cpp-coverage-through-python-bindings.xml
+
+      - name: Run C++ unit tests
+        run: |
+          ctest --test-dir build/editable/Coverage --output-on-failure
+
+      - name: Collect coverage into a gcovr tracefile (C++ unit tests)
+        run: |
+          uvx gcovr \
+            --gcov-executable gcov \
+            --gcov-ignore-parse-errors \
+            --exclude-throw-branches \
+            --exclude-unreachable-branches \
+            --root . \
+            --filter '^(src|include)/' \
+            --exclude '^tests/' \
+            "build/editable/Coverage" \
+            --json cpp-coverage.json
+
+      - name: Convert C++ tracefile to Cobertura XML for Codecov (C++ unit tests)
+        run: |
+          uvx gcovr \
+            --root . \
+            --merge-lines \
+            --add-tracefile cpp-coverage.json \
+            --cobertura cpp-coverage.xml
+
+      - name: Upload C++ coverage to Codecov
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: python-coverage.xml, cpp-coverage-through-python-bindings.xml, cpp-coverage.xml
+          flags: cpp
+          disable_search: true
+          fail_ci_if_error: true
+
+  sonarqube-analysis:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: SonarQube analysis
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      - name: Install matching Build Wrapper
+        run: |
+          curl --fail --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output build-wrapper-linux-x86.zip \
+            https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
+          unzip -q -o build-wrapper-linux-x86.zip
+
+      # MPI is ON here so the analyzer sees detail/mpi/*: HybridComm.h includes <mpi.h>
+      # unconditionally and every includer guards it behind #ifdef monoprop_ENABLE_MPI, so an
+      # MPI-off configure keeps that whole layer out of compile_commands.json and reports
+      # #ifdef'd-away members as smells (e.g. Exchange.h's Ticket losing its request_).
+      - name: Configure for SonarQube CFamily analysis
+        run: cmake --preset release-gcc-mpi
+
+      - name: Build with Build Wrapper
+        run: |
+          ./build-wrapper-linux-x86/build-wrapper-linux-x86-64 \
+            --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} \
+            cmake --build --preset release-gcc-mpi
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v8.2.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
+
+  cpp-checks-other:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Check C++ on ${{ matrix.runner }} (${{ matrix.compiler }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # `preset` picks the compiler: the update-alternatives steps below point the plain
+        # g++/clang++ the presets name at the matrix's toolchain version.
+        include:
+          - runner: ubuntu-26.04-arm
+            compiler: gcc-14
+            preset: release-gcc
+          - runner: ubuntu-26.04-arm
+            compiler: clang-18
+            preset: release-clang
+          - runner: ubuntu-26.04
+            compiler: clang-18
+            preset: release-clang
+          - runner: macos-15
+            compiler: apple-clang
+            preset: release-clang
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set gcc-14/g++-14 as default compilers
+        if: ${{ matrix.compiler == 'gcc-14' }}
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 140
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
+          sudo update-alternatives --set g++ /usr/bin/g++-14
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
+          sudo update-alternatives --set c++ /usr/bin/g++-14
+
+      - name: Set clang-18/clang++-18 as default compilers
+        if: ${{ matrix.compiler == 'clang-18' }}
+        run: |
+          if ! command -v clang-18 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y clang-18
+          fi
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 180
+          sudo update-alternatives --set clang /usr/bin/clang-18
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang-18 180
+          sudo update-alternatives --set cc /usr/bin/clang-18
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 180
+          sudo update-alternatives --set clang++ /usr/bin/clang++-18
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++-18 180
+          sudo update-alternatives --set c++ /usr/bin/clang++-18
+
+      - name: Install dependencies
+        if: ${{ matrix.runner != 'macos-15' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      - name: Install dependencies
+        if: ${{ matrix.runner == 'macos-15' }}
+        run: |
+          brew install ninja boost msgpack-cxx open-mpi
+
+      - name: Configure
+        run: |
+          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
+            export MACOSX_DEPLOYMENT_TARGET=15.0
+          fi
+          cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      # --output-junit resolves relative to the test directory (build/<preset>), so ../../ puts the
+      # report at the workspace root where the Codecov step looks for it.
+      - name: Test
+        run: |
+          ctest --preset ${{ matrix.preset }} --output-junit ../../ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
+
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ctest-${{ matrix.runner }}-${{ matrix.compiler }}.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
+
+  cpp-wide:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Check C++ on ubuntu-26.04 (wide TermIndex)
+    runs-on: ubuntu-26.04
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      # Builds with a 64-bit TermIndex so the monoprop_WIDE_TERM_INDEX #if branches are actually
+      # compiled and run; serial coverage is enough to exercise them. No C++ test job here enables
+      # monoprop_ENABLE_MPI, so the mpi-labelled variants only run locally (`just test-cpp-mpi`);
+      # CI's MPI coverage comes from the Python suite under mpiexec in python-checks.
+      - name: Configure (wide TermIndex)
+        run: cmake --preset release-gcc-wide
+
+      - name: Build
+        run: cmake --build --preset release-gcc-wide
+
+      # --output-junit resolves relative to the test directory (build/release-gcc-wide).
+      - name: Test (serial)
+        run: ctest --preset release-gcc-wide -L serial --output-junit ../../ctest-ubuntu_26_04-wide.xml
+
+>>>>>>> Current commit: ci: split coverage collection to its own job
       - name: Upload test results to Codecov
         uses: codecov/codecov-action@v7.0.0
         with:
