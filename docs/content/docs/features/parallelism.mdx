@@ -22,6 +22,9 @@ gives each partition a pinned worker thread that runs it serially. Each partitio
 keeps its own small, cache-resident term index; a gate is applied to all
 partitions at once, synchronised by a lightweight barrier, and anticommuting terms
 whose partner lives in another partition are resolved through a per-gate exchange.
+When the partitions are pinned and span more than one L3 domain, that barrier fans in
+within each domain and then across domains, so both the arrival counter and the
+release store stay inside one L3 slice instead of crossing the socket interconnect.
 
 ## Runtime environment variables
 
@@ -30,6 +33,7 @@ whose partner lives in another partition are resolved through a per-gate exchang
 | `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. Set it to run fewer partitions than cores. |
 | `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
 | `monoprop_PARTITION_PINNING` | `on` | `0`/`false`/`no` disables pinning each partition to a core. Has an effect only on Linux. |
+| `monoprop_COMM_PROFILE` | `off` | `1`/`true`/`yes` makes each transport print one `COMMPROF` line per rank to stderr when it is destroyed, accounting for where its collectives' wall time went. Diagnostic only; off costs one branch per collective phase. |
 
 ```bash
 # Run 8 partitions instead of one-per-core:
