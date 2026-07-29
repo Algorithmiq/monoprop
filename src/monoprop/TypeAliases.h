@@ -117,7 +117,8 @@ struct default_init_allocator : A {
 template <typename T>
 using DefaultInitVector = std::vector<T, default_init_allocator<T>>;
 
-// The keys are Majorana indices or the JW-image slots of a Pauli string, per the runtime Basis.
+// The keys are Majorana indices or the native symplectic slots of a Pauli string (not its JW
+// image), per the runtime Basis.
 using OperatorDict = std::map<VecZ, std::complex<double>>;
 
 } // namespace monoprop

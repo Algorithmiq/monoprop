@@ -64,7 +64,7 @@ def _pauli_to_majorana(pauli: str) -> tuple[tuple[int, ...], complex]:
 
 
 def _pauli_to_local_slots(string: str, qubits: Sequence[int]) -> tuple[int, ...]:
-    """Pack a local Pauli term into native symplectic gamma-slots (no Jordan-Wigner string).
+    """Pack a local Pauli term into native symplectic slots (no Jordan-Wigner string).
 
     Each qubit maps to its own two slots, independent of every other qubit:
     ``X_q -> {2q}``, ``Y_q -> {2q+1}``, ``Z_q -> {2q, 2q+1}`` (``I`` contributes nothing).
@@ -75,7 +75,7 @@ def _pauli_to_local_slots(string: str, qubits: Sequence[int]) -> tuple[int, ...]
     ``X_q`` span ``2q+1`` slots.
 
     Returns:
-        The sorted tuple of gamma-slot indices encoding the term.
+        The sorted tuple of slot indices encoding the term.
     """
     slots: list[int] = []
     for letter, qubit in zip(string, qubits, strict=True):
@@ -89,7 +89,7 @@ def _pauli_to_local_slots(string: str, qubits: Sequence[int]) -> tuple[int, ...]
 
 
 def _local_slots_to_pauli(slots: Sequence[int]) -> tuple[str, tuple[int, ...]]:
-    """Decode native symplectic gamma-slots back to a local Pauli term.
+    """Decode native symplectic slots back to a local Pauli term.
 
     Inverse of ``_pauli_to_local_slots`` (mirrors ``letter_from_bitset`` in
     ``tests/cpp/PauliTestOracle.h``): for qubit ``q`` the slots ``2q`` (``u``) and

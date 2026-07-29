@@ -48,7 +48,7 @@ class TestPauliPropagatorCutoff:
     def test_schrodinger_cutoff(self, schrodinger_cutoff, serial_comm):
         """schrodinger_cutoff is a Pauli weight in qubits, matching ``cutoff``.
 
-        PauliPropagator doubles it internally (qubit weight -> gamma-slot popcount).
+        PauliPropagator doubles it internally (qubit weight -> slot popcount).
         """
         mp = PauliPropagator(
             PauliOperator({"ZZ": 1.0}, num_qubits=10),
