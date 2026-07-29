@@ -47,6 +47,12 @@ The string $\nu$ records which Majorana operators are present (its set of
 ones is the monomial's **support**), and the **length** $|\nu|$ is the
 number of ones - i.e. how many Majorana operators the monomial contains.
 
+Each of the $2N$ positions of $\nu$ is a **slot**, and API documentation that
+counts something "in slots" means positions of $\nu$ rather than modes or
+qubits. In the Majorana basis slot $j$ is the Majorana operator $m_j$; the Pauli
+basis stores a Pauli string in the same $2N$ slots, two per qubit, so a length
+counted in slots runs up to twice the qubit count.
+
 The phase $i^{\binom{|\nu|}{2}}$ makes $M_\nu$
 Hermitian. Taking the dagger reverses the order of the $n$ Majorana
 operators, and each of the $\binom{n}{2}$ transpositions needed to restore
