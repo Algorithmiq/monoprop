@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from .monomial_propagator import ParameterValues
 
 
-class PauliPropagator(MonomialPropagator):
+class PauliPropagator(MonomialPropagator[PauliOperator]):
     """Classical simulator for qubit (Pauli) operators.
 
     Accepts a [PauliOperator][monoprop.pauli.PauliOperator] and a [Circuit][monoprop.circuit.Circuit] of
@@ -121,3 +121,18 @@ class PauliPropagator(MonomialPropagator):
                 "Use MajoranaPropagator for those."
             )
         return circuit.gates
+
+    def update_initial_operator(self, new_operator: PauliOperator) -> None:
+        """Replace coefficients of the *initial operator* (existing terms only).
+
+        Args:
+            new_operator: :class:`~monoprop.pauli.PauliOperator` whose terms replace
+                the matching initial-operator coefficients.
+
+        Raises:
+            RuntimeError: If a term in ``new_operator`` is not present in the current
+                initial operator.
+        """
+        self._simulator.update_initial_operator(  # type: ignore[union-attr]
+            new_operator.get_local_operator().terms
+        )
