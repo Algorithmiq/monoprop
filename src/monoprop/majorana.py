@@ -113,7 +113,7 @@ class MajoranaOperator:
     Constructed from a ``{term: coefficient}`` mapping whose keys are [Majorana][] terms or
     raw index tuples. Terms are normalized: indices are sorted within each monomial -- which
     anticommutes them, so the coefficient carries the sign of the reordering -- and duplicate
-    monomials are summed. The resulting [terms][] mapping (index tuple to complex coefficient)
+    monomials are simplified. The resulting [terms][] mapping (index tuple to complex coefficient)
     is what the propagator hands to the C++ engine.
     """
 

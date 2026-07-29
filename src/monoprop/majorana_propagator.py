@@ -230,7 +230,7 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         )
 
     def size(self) -> int:
-        """Number of Majorana terms currently tracked.
+        """Number of Majorana monomials currently tracked.
 
         Returns:
             The number of distinct Majorana monomial terms in the simulator's current
