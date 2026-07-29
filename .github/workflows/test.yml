@@ -37,6 +37,7 @@ jobs:
         python-version: ["3.11", "3.14"]
         runner: [ubuntu-26.04, ubuntu-26.04-arm, macos-15]
         compiler: [default, g++-14, clang++-18]
+        wide: ["off"]
         exclude:
           - compiler: g++-14
             python-version: "3.14"
@@ -46,8 +47,16 @@ jobs:
             runner: macos-15
           - compiler: clang++-18
             runner: macos-15
+        include:
+          - python-version: "3.11"
+            runner: ubuntu-26.04
+            compiler: default
+            wide: "on"
 
     runs-on: ${{ matrix.runner}}
+
+    env:
+      SKBUILD_CMAKE_DEFINE: "monoprop_WIDE_TERM_INDEX=${{ matrix.wide }}"
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -121,7 +130,9 @@ jobs:
         run: |
           runner="${{ matrix.runner }}"
           pyver="${{ matrix.python-version }}"
-          echo "label=$runner-$pyver" >> $GITHUB_OUTPUT
+          compiler="${{ matrix.compiler }}"
+          wide="${{ matrix.wide }}"
+          echo "label=$runner-$pyver-$compiler-$wide" >> $GITHUB_OUTPUT
 
       - name: Run Python tests
         run: |
@@ -297,44 +308,3 @@ jobs:
         with:
           args: >
             -Dsonar.cfamily.compile-commands=build/editable/Release/compile_commands.json
-
-  cpp-wide:
-    # in combination with the PR types selection, this top-level if statement
-    # skips running the workflow for Draft PRs
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
-
-    name: Check C++ on ubuntu-26.04 (wide TermIndex)
-    runs-on: ubuntu-26.04
-
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
-
-      # Builds with a 64-bit TermIndex so the monoprop_WIDE_TERM_INDEX #if branches are actually
-      # compiled and run; serial coverage is enough to exercise them. No C++ test job here enables
-      # monoprop_ENABLE_MPI, so the mpi-labelled variants only run locally (`just test-cpp-mpi`);
-      # CI's MPI coverage comes from the Python suite under mpiexec in python-checks.
-      - name: Configure (wide TermIndex)
-        run: cmake --preset release-gcc-wide
-
-      - name: Build
-        run: cmake --build --preset release-gcc-wide
-
-      # --output-junit resolves relative to the test directory (build/release-gcc-wide).
-      - name: Test (serial)
-        run: ctest --preset release-gcc-wide -L serial --output-junit ../../ctest-ubuntu_26_04-wide.xml
-
-      - name: Upload test results to Codecov
-        uses: codecov/codecov-action@v7.0.0
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ctest-ubuntu_26_04-wide.xml
-          report_type: test_results
-          disable_search: true
-          fail_ci_if_error: true
