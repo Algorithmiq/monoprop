@@ -70,6 +70,44 @@ class TestPauliPropagatorCutoff:
         assert max(len(p.qubits) for p in op.terms) == schrodinger_cutoff
 
 
+@pytest.mark.parametrize(
+    "initial_operator",
+    [
+        pytest.param(PauliOperator({"II": 1.0}, num_qubits=2), id="identity"),
+        pytest.param(PauliOperator({"X": 2.0}, num_qubits=1), id="single_x"),
+        pytest.param(PauliOperator({"Y": -0.5}, num_qubits=1), id="single_y"),
+        pytest.param(PauliOperator({"Z": 1.25}, num_qubits=1), id="single_z"),
+        pytest.param(PauliOperator({"IXXZI": 0.7}, num_qubits=5), id="ixxzi"),
+        pytest.param(PauliOperator({"XZYYYXX": -0.3}, num_qubits=7), id="xzyyyxx"),
+        pytest.param(PauliOperator({"IZZI": 1.1}, num_qubits=4), id="izzi"),
+    ],
+)
+def test_evolved_operator_returns_pauli_operator(initial_operator, serial_comm) -> None:
+    """Without a graph, evolved_operator returns the Pauli-domain initial operator."""
+    propagator = PauliPropagator(
+        initial_operator,
+        initial_state=[],
+        cutoff=2 * initial_operator.num_qubits,
+        comm=serial_comm,
+    )
+
+    evolved = propagator.evolved_operator()
+
+    assert isinstance(evolved, PauliOperator)
+    assert evolved.num_qubits == initial_operator.num_qubits
+    assert evolved.isclose(initial_operator)
+
+
+def test_update_initial_operator(serial_comm):
+    """Make sure the initial operator update works correctly with PauliOperator input."""
+    operator = PauliOperator({"Z": 1.0}, num_qubits=1)
+    mp = PauliPropagator(operator, initial_state=[], cutoff=1, comm=serial_comm)
+
+    updated_operator = PauliOperator({"Z": 2.75}, num_qubits=1)
+    mp.update_initial_operator(updated_operator)
+    assert mp.evolved_operator() == updated_operator
+
+
 class TestPauli:
     def test_default_qubits_are_range(self):
         p = Pauli("XYZ")

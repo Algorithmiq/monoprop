@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from .quantum_data import IQuantumOperator
 
 
-class MajoranaPropagator(MonomialPropagator):
+class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
     """Classical simulator for Majorana operators.
 
     Accepts a [MajoranaOperator][monoprop.majorana.MajoranaOperator] (or any object implementing
@@ -99,6 +99,45 @@ class MajoranaPropagator(MonomialPropagator):
                 "Use PauliPropagator for qubit circuits."
             )
         return circuit.gates
+
+    def evolved_operator(
+        self, parameters: ParameterValues = None, *, atol: float = 1e-12
+    ) -> MajoranaOperator:
+        """Return the evolved operator as a [MajoranaOperator][monoprop.majorana.MajoranaOperator].
+
+        Equivalent to
+        [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially]
+        with ``inplace=False``, without touching the simulator state. Unlike the base method, which
+        hands back the engine's raw index tuples, this wraps them into a Majorana operator carrying
+        the propagator's mode count.
+
+        Args:
+            parameters: Variational parameter values (see
+                [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]).
+            atol: Terms with ``|coeff| < atol`` are dropped; ``0.0`` keeps all of them.
+
+        Returns:
+            The evolved operator (Heisenberg picture) or evolved state (Schrodinger picture).
+        """
+        terms = self._simulator.evolved_operator(self._bind(parameters), atol)
+        return MajoranaOperator(terms, self.num_modes)
+
+    def update_initial_operator(self, new_operator: MajoranaOperator) -> None:
+        """Replace coefficients of the *initial operator* (existing terms only).
+
+        Re-weights the initial operator the graph is evaluated against, without touching
+        the evolution graph or rebuilding the simulator. Only the initial operator is
+        affected -- the gates and their generator coefficients are unchanged.
+
+        Args:
+            new_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] whose terms
+                replace the matching initial-operator coefficients.
+
+        Raises:
+            RuntimeError: In the Heisenberg picture, if a term in ``new_operator`` is not
+                present in the current initial operator.
+        """
+        self._simulator.update_initial_operator(new_operator.terms)
 
     @MonomialPropagator.cutoff_type.setter
     def cutoff_type(self, new_cutoff_type: str) -> None:
@@ -188,53 +227,6 @@ class MajoranaPropagator(MonomialPropagator):
             seed_parameters=seed_parameters,
             only_rotate_len_k=only_rotate_len_k,
         )
-
-    def evolved_operator(
-        self,
-        parameters: ParameterValues = None,
-        *,
-        atol: float = 1e-12,
-    ) -> dict[tuple[int, ...], complex]:
-        """Return the evolved operator/state as a dict, without modifying state.
-
-        Equivalent to
-        [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially]
-        with ``inplace=False``, returned as a mapping keyed by Majorana indices and without
-        touching the simulator state.
-
-        Args:
-            parameters: Variational parameter values (see
-                [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]).
-            atol: Absolute tolerance for filtering small coefficients; terms with
-                ``|coeff| < atol`` are dropped. Defaults to ``1e-12``; set to ``0.0`` to
-                keep all terms.
-
-        Returns:
-            The evolved operator (Heisenberg picture) or the evolved state (Schrodinger
-            picture) as a dict mapping Majorana-index tuples to complex coefficients.
-        """
-        return super().evolved_operator(parameters, atol=atol)
-
-    def update_initial_operator(
-        self, new_operator: dict[tuple[int, ...], complex]
-    ) -> None:
-        """Replace coefficients of the *initial operator* (existing terms only).
-
-        Re-weights the initial operator the graph is evaluated against, without touching
-        the evolution graph or rebuilding the simulator. Only the initial operator is
-        affected -- the gates and their generator coefficients are unchanged -- and only
-        Majorana terms already present in the initial operator can be updated (no new
-        terms are introduced).
-
-        Args:
-            new_operator: Mapping from Majorana-index tuples to their new complex
-                coefficients.
-
-        Raises:
-            RuntimeError: If a term in ``new_operator`` is not present in the current
-                initial operator.
-        """
-        super().update_initial_operator(new_operator)
 
     def size(self) -> int:
         """Number of Majorana terms currently tracked.

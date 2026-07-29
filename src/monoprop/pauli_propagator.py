@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from .monomial_propagator import ParameterValues
 
 
-class PauliPropagator(MonomialPropagator):
+class PauliPropagator(MonomialPropagator[PauliOperator]):
     """Classical simulator for qubit (Pauli) operators.
 
     Accepts a [PauliOperator][monoprop.pauli.PauliOperator] and a [Circuit][monoprop.circuit.Circuit] of
@@ -213,25 +213,27 @@ class PauliPropagator(MonomialPropagator):
             only_rotate_len_k=only_rotate_len_k,
         )
 
-    def update_initial_operator(
-        self, new_operator: dict[tuple[int, ...], complex]
-    ) -> None:
+    def update_initial_operator(self, new_operator: PauliOperator) -> None:
         """Replace coefficients of the *initial operator* (existing terms only).
 
         Re-weights the initial operator the graph is evaluated against, without touching
         the evolution graph or rebuilding the simulator. Only the initial operator is
-        affected -- the gates and their generator coefficients are unchanged.
+        affected -- the gates and their generator coefficients are unchanged. Unlike the
+        base method, which takes the engine's raw gamma-slot keys, this accepts qubit Pauli
+        terms and encodes them via
+        [get_local_operator][monoprop.pauli.PauliOperator.get_local_operator].
 
         Args:
-            new_operator: Mapping from gamma-slot tuples -- the engine's native Pauli keys, where
-                qubit ``q`` contributes ``{2q}`` for ``X``, ``{2q+1}`` for ``Y`` and both for
-                ``Z`` -- to their new complex coefficients.
+            new_operator: A [PauliOperator][monoprop.pauli.PauliOperator] whose terms replace the
+                matching initial-operator coefficients.
 
         Raises:
             RuntimeError: In the Heisenberg picture, if a term in ``new_operator`` is not
                 present in the current initial operator.
         """
-        super().update_initial_operator(new_operator)
+        self._simulator.update_initial_operator(  # type: ignore[union-attr]
+            new_operator.get_local_operator().terms
+        )
 
     def size(self) -> int:
         """Number of Pauli operators currently tracked.
