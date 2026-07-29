@@ -29,7 +29,7 @@ jobs:
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
-    name: Check project for ${{ matrix.python-version }} on ${{ matrix.runner }} (${{ matrix.compiler}})
+    name: Check project ${{ matrix.runner }}/Python ${{ matrix.python-version }}/Compiler ${{ matrix.compiler}}/Wide term index ${{ matrix.wide}}
 
     strategy:
       fail-fast: false
