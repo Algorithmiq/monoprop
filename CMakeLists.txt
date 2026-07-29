@@ -54,9 +54,6 @@ option(
   "Use 64-bit term indices (support > 2^32 terms per partition)"
   OFF
 )
-if(monoprop_WIDE_TERM_INDEX)
-  add_compile_definitions(monoprop_WIDE_TERM_INDEX)
-endif()
 
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" OFF)
 
