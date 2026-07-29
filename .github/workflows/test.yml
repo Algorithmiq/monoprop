@@ -101,7 +101,7 @@ jobs:
           auto main() -> int { return 0; }
           EOF
 
-          cmake -S find-package-smoke -B find-package-smoke/build -Dmonoprop_DIR="$UV_PROJECT_ENVIRONMENT/lib/python${{ matrix.python-version }}/site-packages/monoprop/cmake"
+          cmake -S find-package-smoke -B find-package-smoke/build -Dmonoprop_DIR="$(uv run --no-sync python -c "import sysconfig; print(sysconfig.get_path('purelib'))")"/monoprop/cmake
 
           cmake --build find-package-smoke/build
 
