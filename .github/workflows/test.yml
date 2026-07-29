@@ -36,15 +36,15 @@ jobs:
       matrix:
         python-version: ["3.11", "3.14"]
         runner: [ubuntu-26.04, ubuntu-26.04-arm, macos-15]
-        compiler: [default, gcc-14, clang-18]
+        compiler: [default, g++-14, clang++-18]
         exclude:
-          - compiler: gcc-14
+          - compiler: g++-14
             python-version: "3.14"
-          - compiler: clang-18
+          - compiler: clang++-18
             python-version: "3.14"
-          - compiler: gcc-14
+          - compiler: g++-14
             runner: macos-15
-          - compiler: clang-18
+          - compiler: clang++-18
             runner: macos-15
 
     runs-on: ${{ matrix.runner}}
@@ -61,7 +61,7 @@ jobs:
           else
             sudo apt-get update
             packages="libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev"
-            if [[ "${{ matrix.compiler }}" == "clang-18" ]]; then
+            if [[ "${{ matrix.compiler }}" == "clang++-18" ]]; then
               packages="$packages clang-18"
             fi
             sudo apt-get install -y $packages
