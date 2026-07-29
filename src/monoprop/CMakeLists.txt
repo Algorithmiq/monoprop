@@ -61,12 +61,6 @@ add_subdirectory(algebra)
 add_subdirectory(core)
 add_subdirectory(detail)
 
-target_include_directories(
-  monoprop
-  PUBLIC
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-)
-
 target_link_libraries(
   monoprop
   PUBLIC
