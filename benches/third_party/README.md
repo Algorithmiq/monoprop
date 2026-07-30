@@ -20,3 +20,91 @@ The end-to-end workflow is:
 
 
 For more details, check the documentation at [benchmark guide](https://docs.algorithmiq.fi/monoprop/benchmarks.html)
+
+## Layout of the Pauli benchmarks
+
+`pauli_prop/` is split so the model is defined once and the backends stay independent:
+
+| file | role |
+| ---- | ---- |
+| `model.py` | the TFIM model — lattice, Trotter step, observable. Imports no propagation library. |
+| `backends.py` | one function per backend, each importing its own dependencies *inside* the function, so a missing GPU or extension only affects that backend. |
+| `run_model.py` | fixed size, all Python backends in one process, per-step curves → `results.json`. |
+| `run_model.jl` | adds the `PauliPropagation.jl` column to an existing `results.json`. |
+| `plot_results.py` | per-step runtime and memory curves → `pauli_results.png`. |
+| `run_scaling.py` | sweeps the lattice size, one subprocess per (size, backend) → a JSONL of totals. |
+| `run_one.py` | one backend at one size; the unit of work `run_scaling.py` spawns. |
+| `run_scaling.jl` | the `PauliPropagation.jl` counterpart of `run_one.py`, same record schema. |
+| `plot_scaling.py` | total runtime and final memory vs qubit count → `pauli_scaling.png`. |
+| `plot_speedup.py` | monoprop's speed-up over each other backend, per size → `pauli_speedup.png`. |
+| `scaling_results.jsonl` | the committed 36→324-qubit ladder, so both figures can be redrawn without re-measuring. |
+
+Any lattice size works: `--nx/--ny` override `settings.json`, and the observable follows the
+lattice (the central horizontally-adjacent bond, which is the committed `[20, 21]` at 6x6)
+rather than staying pinned to indices that a resize would invalidate.
+
+### Scaling with lattice size
+
+```bash
+# Redraw both committed figures from the committed ladder — seconds, no propagation
+uv run python plot_scaling.py scaling_results.jsonl
+uv run python plot_speedup.py scaling_results.jsonl
+
+# Or measure your own: square grids 6x6 ... 18x18 (36 -> 324 qubits), 5 minutes per point
+uv run python run_scaling.py --output results/scaling.jsonl --timeout 300
+uv run python plot_scaling.py results/scaling.jsonl --output-dir results
+```
+
+Both plotting scripts also write a markdown sidecar (`pauli_scaling.md`, `pauli_speedup.md`)
+holding the same numbers as a table, followed by a provenance table: the host, thread cap and
+library version behind each backend's points. That is deliberately *not* in the figure titles —
+a title says what was computed, and the machine it ran on qualifies the numbers, so it sits
+with them.
+
+Each point runs as its own process, so a backend that exceeds its budget or gets
+OOM-killed costs only that point: it is recorded with a non-`ok` status, skipped at every
+larger size (`--no-skip-after-fail` to keep trying), and drawn as a curve that simply ends at
+the last size it completed — the status itself is in the table and the JSONL, not on the axes.
+Select a subset with `--backends`, and sweep a strip
+instead of squares with `--ny`.
+
+Two things to know when reading the output:
+
+- **The memory column is not one quantity.** Each backend reports what it exposes —
+  monoprop and cuPauliProp their own operator footprint, `PauliPropagation.jl`
+  `Base.summarysize`, and ppvm and Qiskit only a process-RSS proxy. `MEMORY_METRICS` in
+  `backends.py` records which is which, and every record also carries `peak_rss_MB`.
+- **`PauliPropagation.jl` runs in its fastest documented configuration**, which is not its
+  default: the `VectorPauliSum` container driven by `Performance.propagate!`, with
+  coefficient truncation on. That combination won at every thread count measured, and needs
+  the **dev branch (0.8.0)** — earlier releases have no `Performance` submodule, and 0.4.1
+  has no parallel propagation path at all. Install it with
+  `Pkg.add(url="https://github.com/SparqleSim/PauliPropagation.jl", rev="dev")`.
+
+  The caveat to carry into any comparison: `Performance.propagate!` is documented to "yield
+  slightly different results" and does — it leaves duplicate Pauli strings unmerged, so it
+  reports ~38% more terms than the exact `propagate` path and its expectation value differs
+  by ~1e-4. Its term count is a storage count, not an operator size.
+- **Give this backend its measured best thread count**, via `--threads juliapp=N`, rather than
+  the node's core count: it parallelises far less efficiently than the others (~30% per thread
+  doubling vs monoprop's ~70%), so past a point more threads cost time. Throughput is not
+  monotone in thread count for every backend, so the fair comparison runs each at its own
+  measured optimum — `--threads monoprop=56 juliapp=28` is what the committed ladder used on a
+  112-core node. Measure the curve by repeating a small sweep at a few values of `N`.
+- **ppvm and Qiskit `pauli-prop` propagate on one core**, so this is two threaded libraries
+  against two serial ones and a wall-clock ratio against them is not purely algorithmic.
+  Measured mid-propagation at 144 qubits, both sit at 0.99 busy cores. Neither is
+  misconfigured, and no environment variable changes it: ppvm's rayon-parallel `PauliSum`
+  lives in its `config::dashmap` variant, but its Python bindings expose only
+  `PauliSumIndexMapFxHash*` (`interface.rs` pins them to `config::indexmap`), so
+  `RAYON_NUM_THREADS` sizes a pool that never gets work; Qiskit's `_accelerate` extension
+  contains no rayon or `par_iter` at all, and its Python layer's only numpy work is an
+  elementwise reduction, so the BLAS knobs have nothing to act on. Divide by the thread count
+  for a per-core comparison, or say plainly that only two of the four use the node.
+- **Qiskit's `pauli-prop` truncates on a term budget**, not a weight, so it needs one.
+  `run_model.py` feeds it monoprop's per-step term count; `run_scaling.py` feeds it
+  monoprop's *final* term count for that size (recorded as `max_terms_budget`), which is
+  more generous in the early steps.
+
+Building monoprop for the large sizes needs a mode tier at least as big as the qubit
+count — 324 qubits means `-Dmonoprop_MAX_NUM_MODES=352`, as tiers come in 32-mode blocks.

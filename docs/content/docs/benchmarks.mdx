@@ -187,6 +187,11 @@ This installs `monoprop`, `qiskit`, `ppvm`, `pauli-prop`, and `cuquantum-python-
 `cuPauliProp (GPU)` engine requires an NVIDIA GPU with a working CUDA setup; the other three Python
 engines (`monoprop`, `QuEra ppvm`, `Qiskit pauli-prop`) run on CPU only.
 
+`ppvm` compiles a Rust extension whose hasher needs specific CPU features. Its own
+`.cargo/config.toml` already selects them per architecture, so leave `RUSTFLAGS` unset: an
+environment override replaces that file's choice, and a value valid on one architecture (say
+`+neon`) fails the build on another.
+
 #### 3. (Optional) install Julia and `PauliPropagation.jl`
 
 Skip this step if you only want to compare the Python engines — `run_model.py` and
@@ -255,6 +260,86 @@ Runtime and memory footprint per Trotter step for the 2D TFIM problem above, com
 `monoprop` against `cuPauliProp (GPU)`, `PauliPropagation.jl`, `QuEra ppvm`, and `Qiskit
 pauli-prop`. `monoprop` tracks the GPU-accelerated `cuPauliProp` closely while running on CPU,
 and outperforms all other CPU-only engines in both time and memory as the operator grows.
+
+
+### Scaling with lattice size
+
+The benchmark above fixes the lattice at 6x6 and walks the Trotter steps. The second Pauli
+benchmark does the opposite: it holds the circuit depth and the truncation fixed and grows the
+lattice, from 6x6 (36 qubits) to 18x18 (324 qubits). Every engine runs the identical model at
+each size, in its own subprocess, and contributes one totals record per size.
+
+![Total runtime and final operator memory versus lattice size, for five Pauli-propagation engines](/benchmarks/pauli_scaling.png)
+
+At a fixed coefficient truncation the operator saturates: past ~100 qubits every engine carries
+the same ~5.8M terms whatever the lattice, so this measures *cost per term kept* rather than a
+growing problem. `monoprop`'s total runtime stays nearly flat in that regime, which is what makes
+the gap widen with size.
+
+![Bar chart of monoprop's speed-up over each other engine, grouped by qubit count](/benchmarks/pauli_speedup.png)
+
+| qubits | PauliPropagation.jl | QuEra ppvm | Qiskit pauli-prop | cuPauliProp (GPU) |
+| -----: | -----: | -----: | -----: | -----: |
+| 36 | 16× | 107× | 165× | 4.4× |
+| 64 | 21× | 209× | 213× | 5.7× |
+| 100 | 33× | 190× | 287× | 8.5× |
+| 144 | 40× | 182× | – | 10× |
+| 196 | 55× | 184× | – | 11× |
+| 256 | 81× | – | – | 11× |
+| 324 | 105× | – | – | 15× |
+
+A dash means the engine did not finish that size within the 300 s per-point budget. Three
+caveats belong with these ratios:
+
+- **Only two of the four CPU engines use more than one core.** `QuEra ppvm` and Qiskit's
+  `pauli-prop` propagate on a single core — measured at 0.99 busy cores mid-propagation — and no
+  environment variable changes it: ppvm's rayon-parallel `PauliSum` lives in its
+  `config::dashmap` variant while its Python bindings expose only the `indexmap` one, and
+  Qiskit's `_accelerate` extension contains no parallel path at all. The ratios above are
+  therefore wall-clock, not per-core.
+- **`PauliPropagation.jl` runs in its fastest documented configuration**, the `VectorPauliSum`
+  container driven by `Performance.propagate!`, which needs the **dev branch (0.8.0+)** for the
+  `Performance` submodule. That path leaves duplicate Pauli strings unmerged, so it reports ~38%
+  more terms than the exact `propagate` path and its expectation value differs by ~1e-4 — its
+  term count is a storage count, not an operator size.
+- **The memory panel is not one quantity.** `monoprop` and `cuPauliProp` report their own
+  operator accounting, `PauliPropagation.jl` its `Base.summarysize`, and ppvm and Qiskit only a
+  process-RSS proxy, because they expose nothing else.
+
+#### SPECS
+
+- CPU: 2× Intel Xeon Platinum 8480+ (112 cores total) — `monoprop` at 56 threads,
+  `PauliPropagation.jl` at its measured 28-thread optimum.
+- GPU: 1× NVIDIA A100 with 64 GB HBM2e, for `cuPauliProp`.
+
+Each record in the committed data carries its own `host`, `threads` and `library_version`, and
+both plotting scripts print that provenance beside the numbers, so a redrawn figure never
+misreports what produced it.
+
+#### Running it
+
+```bash
+cd benches/third_party/pauli_prop
+
+# Redraw both figures from the committed ladder — seconds, no propagation
+uv run python plot_scaling.py scaling_results.jsonl
+uv run python plot_speedup.py scaling_results.jsonl
+
+# Or measure it: one subprocess per (size, engine), 5 minutes per point
+uv run python run_scaling.py --output results/scaling.jsonl --timeout 300 \
+  --threads monoprop=56 juliapp=28
+```
+
+Isolating each point is what makes a long sweep survivable: an engine that exceeds its budget or
+gets OOM-killed costs only that point, is recorded with a non-`ok` status, and is skipped at
+every larger size (`--no-skip-after-fail` to keep trying). Its curve simply ends at the last
+size it completed. Restrict the engines with `--backends`, the sizes with `--sizes`, and sweep a
+strip rather than squares with `--ny`.
+
+Two build notes: 324 qubits needs a `monoprop` mode tier at least that large
+(`-Dmonoprop_MAX_NUM_MODES=352`, since tiers come in 32-mode blocks), and the Julia engine here
+needs the dev branch — `Pkg.add(url="https://github.com/SparqleSim/PauliPropagation.jl",
+rev="dev")` — while the fixed-size `run_model.jl` above is fine on the pinned v0.7.3.
 
 
 ## Internal benchmarks
