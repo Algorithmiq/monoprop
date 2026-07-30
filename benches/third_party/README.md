@@ -76,21 +76,18 @@ Two things to know when reading the output:
   `backends.py` records which is which, and every record also carries `peak_rss_MB`.
 - **`PauliPropagation.jl` runs in its fastest documented configuration**, which is not its
   default: the `VectorPauliSum` container driven by `Performance.propagate!`, with
-  coefficient truncation on. That combination won at every thread count measured, and needs
-  the **dev branch (0.8.0)** — earlier releases have no `Performance` submodule, and 0.4.1
-  has no parallel propagation path at all. Install it with
-  `Pkg.add(url="https://github.com/SparqleSim/PauliPropagation.jl", rev="dev")`.
+  coefficient truncation on. That combination needs the **dev branch (0.8.0)** — earlier
+  releases have no `Performance` submodule, and 0.4.1 has no parallel propagation path at all.
+  Install it with `Pkg.add(url="https://github.com/SparqleSim/PauliPropagation.jl", rev="dev")`.
 
   The caveat to carry into any comparison: `Performance.propagate!` is documented to "yield
   slightly different results" and does — it leaves duplicate Pauli strings unmerged, so it
   reports ~38% more terms than the exact `propagate` path and its expectation value differs
   by ~1e-4. Its term count is a storage count, not an operator size.
-- **Give this backend its measured best thread count**, via `--threads juliapp=N`, rather than
-  the node's core count: it parallelises far less efficiently than the others (~30% per thread
-  doubling vs monoprop's ~70%), so past a point more threads cost time. Throughput is not
-  monotone in thread count for every backend, so the fair comparison runs each at its own
-  measured optimum — `--threads monoprop=56 juliapp=28` is what the committed ladder used on a
-  112-core node. Measure the curve by repeating a small sweep at a few values of `N`.
+- **Give this backend its own thread count**, via `--threads juliapp=N`, rather than the node's
+  core count: throughput is not monotone in thread count for every backend, so the fair
+  comparison runs each at the count it is fastest at — `--threads monoprop=56 juliapp=28` is
+  what the committed ladder used on a 112-core node.
 - **ppvm and Qiskit `pauli-prop` propagate on one core**, so this is two threaded libraries
   against two serial ones and a wall-clock ratio against them is not purely algorithmic.
   Measured mid-propagation at 144 qubits, both sit at 0.99 busy cores. Neither is

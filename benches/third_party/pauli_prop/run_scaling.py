@@ -155,9 +155,8 @@ def main() -> None:
         default=[],
         metavar="BACKEND=N",
         help="Per-backend thread cap, e.g. --threads monoprop=56 juliapp=28. Throughput is "
-        "not monotone in thread count for every backend, so the fair comparison runs each "
-        "at its own measured optimum rather than at the node's core count; repeat a small "
-        "sweep at a few values to find it.",
+        "not monotone in thread count for every backend, so give each the count it is "
+        "fastest at rather than the node's core count.",
     )
     args = parser.parse_args()
 

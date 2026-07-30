@@ -43,12 +43,10 @@ The benchmark is run on Leonardo (CINECA), one exclusive DCGP node per engine:
 - CPU: 2× Intel Xeon Platinum 8480+ (112 cores total, Sapphire Rapids)
 - RAM: ~480 GB
 
-Each engine runs at its own measured thread optimum — `monoprop` at 56 threads,
-`MajoranaPropagation.jl` at 28 — because they do not peak at the same count: across the sweep
-`monoprop` holds 95-97% parallel efficiency out to 56 threads (11.9× over serial) while
-`MajoranaPropagation.jl` plateaus near 71% and stops gaining past 28 (4.1× over serial). Both
-regress beyond their optimum. Every record carries its own `num_threads`, `busy_cores`, `host`
-and `library_version`, so a redrawn figure never misreports what produced it.
+Each engine runs at the thread count it is fastest at — `monoprop` at 56 threads,
+`MajoranaPropagation.jl` at 28 — since they do not peak at the same count. Every record carries
+its own `num_threads`, `busy_cores`, `host` and `library_version`, so a redrawn figure never
+misreports what produced it.
 
 The end-to-end workflow is:
 
@@ -348,7 +346,7 @@ caveats belong with these ratios:
 #### SPECS
 
 - CPU: 2× Intel Xeon Platinum 8480+ (112 cores total) — `monoprop` at 56 threads,
-  `PauliPropagation.jl` at its measured 28-thread optimum.
+  `PauliPropagation.jl` at 28 threads.
 - GPU: 1× NVIDIA A100 with 64 GB HBM2e, for `cuPauliProp`.
 
 Each record in the committed data carries its own `host`, `threads` and `library_version`, and
