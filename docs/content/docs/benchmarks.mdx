@@ -28,6 +28,13 @@ Number of terms, final overlap, runtime, and memory vs. circuit layers for the 1
 model, comparing `monoprop` against `MajoranaPropagation.jl`. See the
 section below for details on the setup and how to reproduce these results.
 
+![Runtime for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: seconds vs circuit layers, log scale](/benchmarks/majorana_runtime.png)
+
+Runtime on its own, log scale. Solid lines are `monoprop`, dashed are
+`MajoranaPropagation.jl`, and colour is the system size. The two engines separate into distinct
+bands: on the shared linear axis of the combined figure above, `monoprop`'s curves are pressed
+flat against the axis.
+
 
 #### SPECS
 
@@ -48,7 +55,7 @@ The end-to-end workflow is:
 1. [Set up the Python environment](#1-set-up-the-python-environment).
 2. [Install Julia and `MajoranaPropagation.jl`](#2-install-julia-and-majoranapropagationjl).
 3. [Run the benchmarks](#3-run-the-benchmarks) to produce the JSONL result files.
-4. [Plot the results](#4-plot-the-results) to produce `majorana_results.png`.
+4. [Plot the results](#4-plot-the-results) to produce `majorana_results.png` and `majorana_runtime.png`.
 
 #### 1. Set up the Python environment
 
@@ -122,8 +129,10 @@ restores the inert chemical-potential gates that the Julia circuit does not have
 uv run python plot_results.py
 ```
 
-This reads the json file results for each simulation and produces a single image, `majorana_results.png`,
-combining four linear scale panels (number of terms, final overlap, runtime, and memory) in a 2x2 grid.
+This reads the json file results for each simulation and produces two images: `majorana_results.png`,
+combining four linear scale panels (number of terms, final overlap, runtime, and memory) in a 2x2
+grid, and `majorana_runtime.png`, the runtime alone on a log scale. Runtime gets its own file
+because it is the quantity cited on its own, and the one the shared linear axis serves worst.
 
 
 #### Results

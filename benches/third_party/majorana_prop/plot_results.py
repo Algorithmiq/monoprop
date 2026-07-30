@@ -62,6 +62,24 @@ def plot_metric(ax, data: pd.DataFrame, metric: str, ylabel: str) -> None:
     ax.grid(True, alpha=0.3)
 
 
+def plot_runtime_figure(df: pd.DataFrame, out: Path) -> None:
+    """Save the runtime panel on its own canvas.
+
+    Runtime is the quantity that gets cited on its own, and it is the one panel the combined
+    figure serves worst: on a shared linear axis monoprop's 0.1-4 s curves collapse onto the
+    axis line beneath the Julia engine's 3-600 s. Log y here separates the two bands.
+    """
+    fig, ax = plt.subplots(figsize=(7.4, 5.4))
+    plot_metric(ax, df, "seconds", "time (seconds)")
+    ax.set_yscale("log")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.set_title("1D Hubbard runtime vs circuit depth", fontsize="medium")
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"wrote {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -110,6 +128,8 @@ def main() -> None:
 
     fig.tight_layout()
     fig.savefig(args.output_dir / "majorana_results.png")
+
+    plot_runtime_figure(df, args.output_dir / "majorana_runtime.png")
 
     if args.show:
         plt.show()
