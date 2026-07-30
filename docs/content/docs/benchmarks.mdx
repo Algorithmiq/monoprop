@@ -31,10 +31,17 @@ section below for details on the setup and how to reproduce these results.
 
 #### SPECS
 
-The benchmark is run on Leonardo (CINECA), in a single node with the following specifications:
+The benchmark is run on Leonardo (CINECA), one exclusive DCGP node per engine:
 
-- Cores: 8 Intel Xeon Platinum 8358 CPU, 2.60GHz (Ice Lake)
-- RAM: 100 GB
+- CPU: 2× Intel Xeon Platinum 8480+ (112 cores total, Sapphire Rapids)
+- RAM: ~480 GB
+
+Each engine runs at its own measured thread optimum — `monoprop` at 56 threads,
+`MajoranaPropagation.jl` at 28 — because they do not peak at the same count: across the sweep
+`monoprop` holds 95-97% parallel efficiency out to 56 threads (11.9× over serial) while
+`MajoranaPropagation.jl` plateaus near 71% and stops gaining past 28 (4.1× over serial). Both
+regress beyond their optimum. Every record carries its own `num_threads`, `busy_cores`, `host`
+and `library_version`, so a redrawn figure never misreports what produced it.
 
 The end-to-end workflow is:
 
@@ -123,9 +130,15 @@ combining four linear scale panels (number of terms, final overlap, runtime, and
 
 Number of terms, final-state overlap, runtime, and memory footprint versus circuit depth for the
 1D Hubbard model, comparing `monoprop` against `MajoranaPropagation.jl` across system sizes
-`n=20`, `40`, and `60`. Both engines produce matching term counts and overlaps, confirming
-correctness, while `monoprop` runs faster and uses less memory than the Julia engine as depth and
-system size grow.
+`n=20`, `40`, and `60`. Final overlaps agree to within 1.8e-6, confirming both engines simulate
+the same physics, and `monoprop` keeps 1.44-1.50× more terms at equal `atol` and cutoff.
+
+`monoprop` is 22-142× faster over the grid, and the gap widens with both depth and system size:
+21.9× at 20 sites / 10 layers, 141.6× at 60 sites / 18 layers (4.2 s versus 592 s). Its runtime
+is nearly flat in site count while the Julia engine's grows roughly linearly. Dividing out the
+cores each engine actually kept busy leaves 8.5-52×, so the majority of the gap is algorithmic
+rather than a thread-count artifact. Memory is comparable at low depth and diverges in
+`monoprop`'s favour as the operator grows (2834 MB versus 3390 MB at 60 sites / 18 layers).
 
 
 ### Pauli Propagation
