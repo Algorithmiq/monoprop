@@ -58,13 +58,17 @@ test-wide:
     uv run --no-sync python -m pytest -m "not mpi"
     ctest --test-dir build/editable/Release --output-on-failure
 
-# Run the C++ suite under coverage and report with gcovr.
+# Report code coverage.
 
 code-coverage:
     uv sync --no-progress --group test --all-extras --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.build-type=Coverage" -v
 
     # run python tests
-    uv run --no-sync python -m pytest --cov=src/monoprop --cov-report=xml:python-coverage.xml
+    uv run --no-sync python -m pytest --cov=src/monoprop --cov-report=lcov:python-coverage.info
+
+    # coverage.py emits repo-relative SF: paths while gcovr emits absolute ones;
+    # genhtml's common-prefix stripping would abort with "duplicate merge record" without this step
+    sed -i 's|^SF:\([^/]\)|SF:{{ project_source_dir }}/\1|' python-coverage.info
 
     # collect coverage (C++ through Python bindings)
     uvx gcovr \
@@ -72,12 +76,11 @@ code-coverage:
       --gcov-ignore-parse-errors \
       --exclude-throw-branches \
       --exclude-unreachable-branches \
-      --root . \
       --filter '^(src|include)/' \
       --exclude '^tests/' \
       --merge-lines \
       "build/editable/Coverage" \
-      --cobertura cpp-coverage-through-python-bindings.xml
+      --lcov cpp-coverage-through-python-bindings.info
 
     # run C++ unit tests
     ctest --test-dir build/editable/Coverage --output-on-failure
@@ -88,16 +91,25 @@ code-coverage:
       --gcov-ignore-parse-errors \
       --exclude-throw-branches \
       --exclude-unreachable-branches \
-      --root . \
       --filter '^(src|include)/' \
       --exclude '^tests/' \
       --merge-lines \
       "build/editable/Coverage" \
-      --cobertura cpp-coverage.xml
+      --lcov cpp-coverage.info
 
-    # generate HTML coverage report from XML files.
-    uvx coverage combine python-coverage.xml cpp-coverage-through-python-bindings.xml cpp-coverage.xml
-    uvx coverage html
+    # merge
+    lcov \
+      --ignore-errors inconsistent,corrupt \
+      -a python-coverage.info \
+      -a cpp-coverage-through-python-bindings.info \
+      -a cpp-coverage.info \
+      -o merged.info
+
+    # output to HTML
+    genhtml merged.info -o monoprop-coverage --legend --title "monoprop coverage" \
+      --prefix {{ project_source_dir }} \
+      --ignore-errors inconsistent \
+      --verbose
 
 # Install the documentation site's JavaScript dependencies.
 
