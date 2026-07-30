@@ -172,16 +172,12 @@ jobs:
         uses: codecov/codecov-action@v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-<<<<<<< New base: ci: collapse cpp-wide job into package-tests
           files: pytest-${{ steps.test-group-label.outputs.label }}.xml, ctest-${{ steps.test-group-label.outputs.label }}.xml
           report_type: test_results
           disable_search: true
           fail_ci_if_error: true
+<<<<<<< New base: ci: merge gcovr steps
 ||||||| Common ancestor
-          files: pytest-${{ steps.test-group-label.outputs.label }}.xml, ctest-"${{ steps.test-group-label.outputs.label }}".xml
-          report_type: test_results
-          disable_search: true
-          fail_ci_if_error: true
 
   code-coverage:
     # in combination with the PR types selection, this top-level if statement
@@ -314,52 +310,7 @@ jobs:
         with:
           args: >
             -Dsonar.cfamily.compile-commands=build/editable/Release/compile_commands.json
-
-  cpp-wide:
-    # in combination with the PR types selection, this top-level if statement
-    # skips running the workflow for Draft PRs
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
-
-    name: Check C++ on ubuntu-26.04 (wide TermIndex)
-    runs-on: ubuntu-26.04
-
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
-
-      # Builds with a 64-bit TermIndex so the monoprop_WIDE_TERM_INDEX #if branches are actually
-      # compiled and run; serial coverage is enough to exercise them. No C++ test job here enables
-      # monoprop_ENABLE_MPI, so the mpi-labelled variants only run locally (`just test-cpp-mpi`);
-      # CI's MPI coverage comes from the Python suite under mpiexec in python-checks.
-      - name: Configure (wide TermIndex)
-        run: cmake --preset release-gcc-wide
-
-      - name: Build
-        run: cmake --build --preset release-gcc-wide
-
-      # --output-junit resolves relative to the test directory (build/release-gcc-wide).
-      - name: Test (serial)
-        run: ctest --preset release-gcc-wide -L serial --output-junit ../../ctest-ubuntu_26_04-wide.xml
-
-      - name: Upload test results to Codecov
-        uses: codecov/codecov-action@v7.0.0
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ctest-ubuntu_26_04-wide.xml
-          report_type: test_results
-          disable_search: true
-          fail_ci_if_error: true
 =======
-          files: pytest-${{ steps.test-group-label.outputs.label }}.xml, ctest-"${{ steps.test-group-label.outputs.label }}".xml
-          report_type: test_results
-          disable_search: true
-          fail_ci_if_error: true
 
   code-coverage:
     # in combination with the PR types selection, this top-level if statement
@@ -400,7 +351,7 @@ jobs:
           --durations=50 \
           --durations-min=5.0
 
-      - name: Collect coverage into a gcovr tracefile (C++ through Python bindings)
+      - name: Collect coverage (C++ through Python bindings)
         run: |
           uvx gcovr \
             --gcov-executable gcov \
@@ -410,22 +361,15 @@ jobs:
             --root . \
             --filter '^(src|include)/' \
             --exclude '^tests/' \
-            "build/editable/Coverage" \
-            --json cpp-coverage-through-python-bindings.json
-
-      - name: Convert C++ tracefile to Cobertura XML for Codecov (C++ through Python bindings)
-        run: |
-          uvx gcovr \
-            --root . \
             --merge-lines \
-            --add-tracefile cpp-coverage-through-python-bindings.json \
+            "build/editable/Coverage" \
             --cobertura cpp-coverage-through-python-bindings.xml
 
       - name: Run C++ unit tests
         run: |
           ctest --test-dir build/editable/Coverage --output-on-failure
 
-      - name: Collect coverage into a gcovr tracefile (C++ unit tests)
+      - name: Collect coverage (C++ unit tests)
         run: |
           uvx gcovr \
             --gcov-executable gcov \
@@ -435,15 +379,8 @@ jobs:
             --root . \
             --filter '^(src|include)/' \
             --exclude '^tests/' \
-            "build/editable/Coverage" \
-            --json cpp-coverage.json
-
-      - name: Convert C++ tracefile to Cobertura XML for Codecov (C++ unit tests)
-        run: |
-          uvx gcovr \
-            --root . \
             --merge-lines \
-            --add-tracefile cpp-coverage.json \
+            "build/editable/Coverage" \
             --cobertura cpp-coverage.xml
 
       - name: Upload C++ coverage to Codecov
@@ -492,4 +429,4 @@ jobs:
         with:
           args: >
             -Dsonar.cfamily.compile-commands=build/editable/Release/compile_commands.json
->>>>>>> Current commit: ci: collapse cpp-wide job into package-tests
+>>>>>>> Current commit: ci: merge gcovr steps
