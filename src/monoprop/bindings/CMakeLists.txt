@@ -144,7 +144,7 @@ else()
 endif()
 set(
   _RPATH
-  "${_plat_token}/${PROJECT_NAME}/${CMAKE_INSTALL_LIBDIR}/lib;${_plat_token}/${CMAKE_INSTALL_LIBDIR}"
+  "${_plat_token}/${PROJECT_NAME}/${CMAKE_INSTALL_LIBDIR};${_plat_token}/${CMAKE_INSTALL_LIBDIR}"
 )
 
 set_target_properties(
