@@ -216,7 +216,7 @@ jobs:
           --durations=50 \
           --durations-min=5.0
 
-      - name: Collect coverage into a gcovr tracefile (C++ through Python bindings)
+      - name: Collect coverage (C++ through Python bindings)
         run: |
           uvx gcovr \
             --gcov-executable gcov \
@@ -226,22 +226,15 @@ jobs:
             --root . \
             --filter '^(src|include)/' \
             --exclude '^tests/' \
-            "build/editable/Coverage" \
-            --json cpp-coverage-through-python-bindings.json
-
-      - name: Convert C++ tracefile to Cobertura XML for Codecov (C++ through Python bindings)
-        run: |
-          uvx gcovr \
-            --root . \
             --merge-lines \
-            --add-tracefile cpp-coverage-through-python-bindings.json \
+            "build/editable/Coverage" \
             --cobertura cpp-coverage-through-python-bindings.xml
 
       - name: Run C++ unit tests
         run: |
           ctest --test-dir build/editable/Coverage --output-on-failure
 
-      - name: Collect coverage into a gcovr tracefile (C++ unit tests)
+      - name: Collect coverage (C++ unit tests)
         run: |
           uvx gcovr \
             --gcov-executable gcov \
@@ -251,15 +244,8 @@ jobs:
             --root . \
             --filter '^(src|include)/' \
             --exclude '^tests/' \
-            "build/editable/Coverage" \
-            --json cpp-coverage.json
-
-      - name: Convert C++ tracefile to Cobertura XML for Codecov (C++ unit tests)
-        run: |
-          uvx gcovr \
-            --root . \
             --merge-lines \
-            --add-tracefile cpp-coverage.json \
+            "build/editable/Coverage" \
             --cobertura cpp-coverage.xml
 
       - name: Upload C++ coverage to Codecov
