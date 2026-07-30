@@ -223,7 +223,6 @@ jobs:
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
             --exclude-unreachable-branches \
-            --root . \
             --filter '^(src|include)/' \
             --exclude '^tests/' \
             --merge-lines \
@@ -241,7 +240,6 @@ jobs:
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
             --exclude-unreachable-branches \
-            --root . \
             --filter '^(src|include)/' \
             --exclude '^tests/' \
             --merge-lines \
