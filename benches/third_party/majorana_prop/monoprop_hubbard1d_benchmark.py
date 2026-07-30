@@ -180,8 +180,9 @@ def main():
             "n_layers": n_layers,
             "num_threads": os.environ.get("monoprop_NUM_THREADS", "not set"),
             "runtime_seconds": t_total,
-            "final_overlap": values[-1],
-            "num_terms": term_counts[-1],
+            "final_overlap": float(values[-1]),
+            # np.int64 is not a subclass of int, so json.dumps rejects it as-is.
+            "num_terms": int(term_counts[-1]),
             "memory_MB": memory_size,
         },
     )

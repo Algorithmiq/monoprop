@@ -18,9 +18,6 @@ dependencies = [
 [tool.uv]
 python-preference = "only-managed"
 
-[tool.uv.extra-build-variables.ppvm]
-RUSTFLAGS = "-C target-feature=+aes,+neon"
-
 [tool.ruff.lint.per-file-ignores]
 "**/*.py" = ["INP001"]
 
