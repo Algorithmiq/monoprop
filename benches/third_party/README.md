@@ -35,7 +35,7 @@ For more details, check the documentation at [benchmark guide](https://docs.algo
 | `run_scaling.py` | sweeps the lattice size, one subprocess per (size, backend) → a JSONL of totals. |
 | `run_one.py` | one backend at one size; the unit of work `run_scaling.py` spawns. |
 | `run_scaling.jl` | the `PauliPropagation.jl` counterpart of `run_one.py`, same record schema. |
-| `plot_scaling.py` | total runtime and final memory vs qubit count → `pauli_scaling.png`. |
+| `plot_scaling.py` | total runtime and final memory vs lattice size, one figure each → `pauli_scaling_runtime.png`, `pauli_scaling_memory.png`. |
 | `plot_speedup.py` | monoprop's speed-up over each other backend, per size → `pauli_speedup.png`. |
 | `scaling_results.jsonl` | the committed 36→324-qubit ladder, so both figures can be redrawn without re-measuring. |
 

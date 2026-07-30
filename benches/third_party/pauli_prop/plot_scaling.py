@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Plot total runtime and final operator memory against qubit count.
+"""Plot total runtime and final operator memory against lattice size.
 
 Reads the JSONL written by run_scaling.py (one or more files) and draws one curve per
-backend. A backend's curve ends where it stopped completing points; the size it failed
-at is marked with a hollow 'x' so a truncated curve cannot be mistaken for a finished one.
+backend, as two standalone figures — `pauli_scaling_runtime.png` and
+`pauli_scaling_memory.png` — plus a `pauli_scaling.md` sidecar holding the same numbers
+as a table and the provenance of each backend's points. A backend's curve simply ends at
+the last size it completed; why it stopped is in the table, not on the axes.
 """
 
 from __future__ import annotations
@@ -31,7 +33,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-# Fixed per backend so runtime and memory panels, and successive runs, stay comparable.
+# Fixed per backend so the runtime and memory figures, successive runs, and the speed-up
+# chart in plot_speedup.py all keep the same colour->backend mapping.
 COLORS = {
     "monoprop": "#0072B2",
     "QuEra ppvm": "#D55E00",
@@ -109,7 +112,7 @@ def _series(records: list[dict], label: str, key: str) -> tuple[list[int], list[
 def _grid_ticks(records: list[dict]) -> tuple[list[int], list[str]]:
     """Tick positions (lattice side) and `nx x ny` labels, taken from the data itself.
 
-    Built from every record, failed ones included, so all panels carry the same ticks
+    Built from every record, failed ones included, so both figures carry the same ticks
     whichever backends happen to reach which size.
     """
     grids = {
@@ -202,7 +205,28 @@ def provenance(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _plot_panel(ax, records, key, ylabel, title) -> None:
+def _figure(
+    records: list[dict], key: str, ylabel: str, headline: str, out: Path
+) -> None:
+    """One standalone figure for one measured quantity.
+
+    Runtime and memory are separate files rather than two panels of one image: they are read
+    and cited separately, and a shared canvas forces a shared size and one title for two
+    different claims. Each figure therefore repeats the model line under its own headline.
+    """
+    fig, ax = plt.subplots(figsize=(7.4, 5.4))
+    _plot_axes(ax, records, key, ylabel)
+    # Title = what was computed, and nothing about where: the machine goes in provenance().
+    ax.set_title(
+        f"{headline}\n{layers(records)}, {truncation(records)}", fontsize="medium"
+    )
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"wrote {out}")
+
+
+def _plot_axes(ax, records, key, ylabel) -> None:
     for label in ORDER:
         sides, values = _series(records, label, key)
         if not sides:
@@ -215,7 +239,6 @@ def _plot_panel(ax, records, key, ylabel, title) -> None:
     ax.set_xticklabels(tick_labels)
     ax.set_xlabel("lattice size")
     ax.set_ylabel(ylabel)
-    ax.set_title(title)
     ax.set_yscale("log")
     ax.grid(True, which="both", alpha=0.3)
     # Outside the axes: the fastest backend's curve runs along the bottom-right, exactly where
@@ -268,23 +291,20 @@ def main() -> None:
     for warning in warn_mixed_hosts(records):
         print(warning)
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 6.2))
-    _plot_panel(
-        ax1, records, "total_runtime_s", "total runtime [s]", "Total runtime vs size"
+    _figure(
+        records,
+        "total_runtime_s",
+        "total runtime [s]",
+        "2D TFIM Trotter evolution: total runtime vs lattice size",
+        args.output_dir / "pauli_scaling_runtime.png",
     )
-    _plot_panel(
-        ax2, records, args.memory_key, "final memory [MB]", "Final memory vs size"
+    _figure(
+        records,
+        args.memory_key,
+        "final memory [MB]",
+        "2D TFIM Trotter evolution: final memory vs lattice size",
+        args.output_dir / "pauli_scaling_memory.png",
     )
-    # Title = what was computed, and nothing about where: the machine goes in provenance().
-    fig.suptitle(
-        f"2D TFIM Trotter evolution: scaling with lattice size, {layers(records)}, "
-        f"{truncation(records)}",
-        fontsize="medium",
-    )
-    fig.tight_layout()
-    out = args.output_dir / "pauli_scaling.png"
-    fig.savefig(out, dpi=150)
-    print(f"wrote {out}")
 
     sidecar = f"{_table(records)}\n\nMeasured on:\n\n{provenance(records)}\n"
     (args.output_dir / "pauli_scaling.md").write_text(sidecar)

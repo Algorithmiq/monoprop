@@ -269,12 +269,18 @@ benchmark does the opposite: it holds the circuit depth and the truncation fixed
 lattice, from 6x6 (36 qubits) to 18x18 (324 qubits). Every engine runs the identical model at
 each size, in its own subprocess, and contributes one totals record per size.
 
-![Total runtime and final operator memory versus lattice size, for five Pauli-propagation engines](/benchmarks/pauli_scaling.png)
+![Total runtime versus lattice size, for five Pauli-propagation engines](/benchmarks/pauli_scaling_runtime.png)
 
 At a fixed coefficient truncation the operator saturates: past ~100 qubits every engine carries
 the same ~5.8M terms whatever the lattice, so this measures *cost per term kept* rather than a
 growing problem. `monoprop`'s total runtime stays nearly flat in that regime, which is what makes
 the gap widen with size.
+
+![Final operator memory versus lattice size, for five Pauli-propagation engines](/benchmarks/pauli_scaling_memory.png)
+
+The same saturation shows up in memory: `monoprop`'s footprint flattens near 690 MB from 12x12
+on, while `PauliPropagation.jl`'s keeps climbing to ~1.8 GB at 324 qubits. Compare across engines
+only with the third caveat below in mind — these are not all the same measurement.
 
 ![Bar chart of monoprop's speed-up over each other engine, grouped by qubit count](/benchmarks/pauli_speedup.png)
 
@@ -302,7 +308,7 @@ caveats belong with these ratios:
   `Performance` submodule. That path leaves duplicate Pauli strings unmerged, so it reports ~38%
   more terms than the exact `propagate` path and its expectation value differs by ~1e-4 — its
   term count is a storage count, not an operator size.
-- **The memory panel is not one quantity.** `monoprop` and `cuPauliProp` report their own
+- **The memory figure is not one quantity.** `monoprop` and `cuPauliProp` report their own
   operator accounting, `PauliPropagation.jl` its `Base.summarysize`, and ppvm and Qiskit only a
   process-RSS proxy, because they expose nothing else.
 
