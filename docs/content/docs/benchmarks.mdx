@@ -94,9 +94,20 @@ Each line of both JSONL files is one benchmark run (one system size / circuit de
 - `final_overlap`: expectation value at the final layer.
 - `runtime_seconds`: wall-clock time to run all `n_layers` layers.
 - `memory_MB`: operator memory footprint at the final layer, in megabytes.
+- `num_threads`: thread count the run was given (`monoprop_NUM_THREADS` / `JULIA_NUM_THREADS`).
+- `cpu_seconds`: CPU time consumed over the timed loop, summed over all threads.
+- `busy_cores`: `cpu_seconds / runtime_seconds` — how many cores the run actually kept busy.
+  A value near 1 means the run was serial whatever `num_threads` claimed, so this is what makes
+  a cross-library comparison interpretable rather than a core-count artifact.
+- `peak_rss_MB`, `library_version`, `host`: provenance for the row.
 
-The Python results additionally record `num_threads`, the value of the `monoprop_NUM_THREADS`
-environment variable used for the run.
+Both engines are multithreaded, but they do not peak at the same thread count, so
+`run_benchmarks.sh` reads `monoprop_NUM_THREADS` and `JULIA_NUM_THREADS` from the environment
+(default 8 each) rather than fixing them. The Julia results additionally record `container` and
+`gc_seconds`: only `VectorMajoranaSum` dispatches into `MajoranaPropagation.jl`'s
+AcceleratedKernels path, while the dict-backed `MajoranaSum` is serial regardless of thread count.
+The Python results additionally record `affinity_cores` and `mu_gates` (see `--mu-gates`, which
+restores the inert chemical-potential gates that the Julia circuit does not have).
 
 #### 4. Plot the results
 
