@@ -28,12 +28,14 @@ Number of terms, final overlap, runtime, and memory vs. circuit layers for the 1
 model, comparing `monoprop` against `MajoranaPropagation.jl`. See the
 section below for details on the setup and how to reproduce these results.
 
-![Runtime for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: seconds vs circuit layers, log scale](/benchmarks/majorana_runtime.png)
+![Runtime for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: seconds vs circuit layers, linear axes](/benchmarks/majorana_runtime.png)
 
-Runtime on its own, log scale. Solid lines are `monoprop`, dashed are
-`MajoranaPropagation.jl`, and colour is the system size. The two engines separate into distinct
-bands: on the shared linear axis of the combined figure above, `monoprop`'s curves are pressed
-flat against the axis.
+Runtime on its own, both axes linear. Solid lines are `monoprop`, dashed are
+`MajoranaPropagation.jl`, and colour is the system size. Read it as seconds: the Julia engine's
+591 s at 60 sites / 18 layers is drawn 140× the height of `monoprop`'s 4.2 s, and all three
+`monoprop` curves consequently lie along the bottom of the axis — annotated with the top of that
+band, since flat here means small, not zero. For `monoprop`'s own growth with depth, read the
+term-count and memory panels of the combined figure, or the numbers below.
 
 
 #### SPECS
@@ -129,8 +131,8 @@ uv run python plot_results.py
 
 This reads the json file results for each simulation and produces two images: `majorana_results.png`,
 combining four linear scale panels (number of terms, final overlap, runtime, and memory) in a 2x2
-grid, and `majorana_runtime.png`, the runtime alone on a log scale. Runtime gets its own file
-because it is the quantity cited on its own, and the one the shared linear axis serves worst.
+grid, and `majorana_runtime.png`, the runtime alone on linear axes. Runtime gets its own file
+because it is the quantity cited on its own.
 
 
 #### Results

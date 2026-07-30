@@ -63,17 +63,32 @@ def plot_metric(ax, data: pd.DataFrame, metric: str, ylabel: str) -> None:
 
 
 def plot_runtime_figure(df: pd.DataFrame, out: Path) -> None:
-    """Save the runtime panel on its own canvas.
+    """Save the runtime on its own canvas, both axes linear.
 
-    Runtime is the quantity that gets cited on its own, and it is the one panel the combined
-    figure serves worst: on a shared linear axis monoprop's 0.1-4 s curves collapse onto the
-    axis line beneath the Julia engine's 3-600 s. Log y here separates the two bands.
+    Runtime is the quantity that gets cited on its own, so it gets its own file rather than a
+    quarter of the combined grid. Both axes are linear: seconds are read as seconds, so the
+    600 s the Julia engine spends at the largest point is drawn 140x the height of monoprop's
+    4 s instead of being compressed into a decade's width. That flattens monoprop's own curve
+    against the axis, which is the finding, not a defect of the axis.
     """
     fig, ax = plt.subplots(figsize=(7.4, 5.4))
     plot_metric(ax, df, "seconds", "time (seconds)")
-    ax.set_yscale("log")
-    ax.grid(True, which="both", alpha=0.3)
+    ax.set_ylim(bottom=0)
     ax.set_title("1D Hubbard runtime vs circuit depth", fontsize="medium")
+    # On this axis monoprop's three curves lie on top of each other along the bottom, where a
+    # reader cannot tell 4 s from 0 s. State the band's top so the flat lines read as small
+    # rather than as absent.
+    monoprop = df[df["source"] == "monoprop"]["seconds"]
+    if not monoprop.empty:
+        ax.annotate(
+            f"monoprop: all points ≤ {monoprop.max():.1f} s",
+            xy=(df["layers"].max(), monoprop.max()),
+            xytext=(-6, 14),
+            textcoords="offset points",
+            ha="right",
+            fontsize=8,
+            color="#333333",
+        )
     fig.tight_layout()
     fig.savefig(out, dpi=150)
     plt.close(fig)
