@@ -25,7 +25,6 @@ import numpy as np
 from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.fermi import FermiOperator
 
-os.environ["YAQS_LOG_LEVEL"] = "INFO"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from bench_common import RssPeakSampler  # noqa: E402
