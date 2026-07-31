@@ -69,8 +69,9 @@ find_package(
 )
 
 find_package(Threads REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(HWLOC REQUIRED IMPORTED_TARGET hwloc>=2.9)
+find_package(PkgConfig REQUIRED QUIET)
+pkg_check_modules(HWLOC REQUIRED QUIET IMPORTED_TARGET hwloc>=2.9)
+message(STATUS "Using hwloc: ${HWLOC_LINK_LIBRARIES} (version ${HWLOC_VERSION})")
 
 if(monoprop_ENABLE_MPI)
   find_package(MPI REQUIRED COMPONENTS CXX)
