@@ -4,18 +4,19 @@
 set -euo pipefail
 
 
-export JULIA_NUM_THREADS=8
-export monoprop_NUM_THREADS=8 # noqa: SIM112
+export JULIA_NUM_THREADS=24
+export monoprop_NUM_THREADS=24
+
+
+echo "Running monoprop benchmark (monoprop_NUM_THREADS=${monoprop_NUM_THREADS})"
+uv run python monoprop_hubbard1d_benchmark.py
 
 julia --project=@. -e 'using Pkg; Pkg.instantiate()'
 julia --project=@. -e 'using Pkg; Pkg.precompile()'
 
-echo "Running Julia benchmark (cases 1-15, JULIA_NUM_THREADS=${JULIA_NUM_THREADS})"
-for case in $(seq 1 15); do
-    julia --project=@. julia_hubbard1d_benchmark.jl --case "$case"
-done
+echo "Running Julia benchmark (JULIA_NUM_THREADS=${JULIA_NUM_THREADS})"
+julia --project=@. julia_hubbard1d_benchmark.jl
 
-echo "Running monoprop benchmark (cases 0-14, monoprop_NUM_THREADS=${monoprop_NUM_THREADS})"
-for case in $(seq 0 14); do
-    uv run python monoprop_hubbard1d_benchmark.py --case "$case"
-done
+
+
+uv python plot_results.py
