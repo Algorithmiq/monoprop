@@ -381,7 +381,16 @@ struct LayerBuildEngine {
         auto resp = resolve_incoming<NumModes>(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
         std::vector<int> resp_recv = response_recv_counts();
         std::vector<std::vector<typename Sink::Response>> inc_r;
-        mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_r);
+        // The answers travel the query exchange's legs backwards, one per query, so the hybrid transport
+        // reuses that exchange's offset tables; nothing may collectively intervene between the two calls.
+        // Sink::kStride is the query leg's words per query, the ratio between the two legs' counts.
+        mpi::begin_alltoallv(resp,
+                             comm,
+                             /*skip_self=*/false,
+                             &resp_recv,
+                             /*reverse_of_previous=*/true,
+                             /*forward_stride=*/static_cast<int>(Sink::kStride))
+            .wait_into(inc_r);
         process_responses<NumModes>(inc_r, src_idx_r, queries_r, R, my_rank, sink);
     }
 
