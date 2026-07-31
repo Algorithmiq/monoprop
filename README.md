@@ -90,6 +90,8 @@ cmake --build --preset release-gcc
 
 Full instructions — prerequisites, MPI options, and running the example
 executable — are in the [building guide](https://docs.algorithmiq.fi/monoprop/docs/building).
+Source builds require the hwloc development library for CPU-topology discovery and
+partition-thread affinity; the DevContainer includes it.
 
 ## Running the tests
 

@@ -43,6 +43,8 @@ target_link_libraries(
     Boost::boost
     Threads::Threads
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
+  PRIVATE
+    PkgConfig::HWLOC
 )
 
 set_target_properties(
@@ -80,6 +82,8 @@ target_compile_definitions(
 
 target_link_libraries(
   monoprop
+  PRIVATE
+    PkgConfig::HWLOC
   INTERFACE
     Boost::boost
     Threads::Threads
