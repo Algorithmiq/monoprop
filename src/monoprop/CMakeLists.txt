@@ -2,18 +2,62 @@ find_package(Boost 1.85 CONFIG REQUIRED)
 message(STATUS "Using Boost: ${Boost_DIR} (version ${Boost_VERSION})")
 
 add_library(
-  monoprop
-  SHARED
+  monoprop-objs
+  OBJECT
   Evolution.cpp
   MPFunctions.cpp
   MPGraph.cpp
   Validation.cpp
 )
 
+target_compile_definitions(
+  monoprop-objs
+  PUBLIC
+    $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
+    $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
+)
+
+# flags to prepend
+target_compile_options(
+  monoprop-objs
+  BEFORE
+  PUBLIC
+    "${monoprop_CXX_FLAGS}"
+    "${ARCH_FLAG}"
+)
+
+# flags to append
+target_compile_options(monoprop-objs PUBLIC "${EXTRA_CXXFLAGS}")
+
+target_include_directories(
+  monoprop-objs
+  PUBLIC
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
+)
+
+target_link_libraries(
+  monoprop-objs
+  PUBLIC
+    Boost::boost
+    Threads::Threads
+    $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
+)
+
+set_target_properties(
+  monoprop-objs
+  PROPERTIES
+    CXX_VISIBILITY_PRESET
+      hidden
+    VISIBILITY_INLINES_HIDDEN
+      YES
+)
+
 include(GenerateExportHeader)
 
 generate_export_header(
-  monoprop
+  monoprop-objs
   BASE_NAME "${PROJECT_NAME}"
   EXPORT_FILE_NAME
     "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h"
@@ -24,6 +68,8 @@ generate_export_header(
   NO_DEPRECATED_MACRO_NAME "${PROJECT_NAME}_NO_DEPRECATED"
   DEFINE_NO_DEPRECATED
 )
+
+add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
 
 target_sources(
   monoprop
@@ -48,45 +94,9 @@ target_sources(
         "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/Info.h"
 )
 
-set_target_properties(
-  monoprop
-  PROPERTIES
-    CXX_VISIBILITY_PRESET
-      hidden
-    VISIBILITY_INLINES_HIDDEN
-      YES
-)
-
 add_subdirectory(algebra)
 add_subdirectory(core)
 add_subdirectory(detail)
-
-target_link_libraries(
-  monoprop
-  PUBLIC
-    Boost::boost
-    Threads::Threads
-    $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
-)
-
-target_compile_definitions(
-  monoprop
-  PUBLIC
-    $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
-    $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
-)
-
-# flags to prepend
-target_compile_options(
-  monoprop
-  BEFORE
-  PRIVATE
-    "${monoprop_CXX_FLAGS}"
-    "${ARCH_FLAG}"
-)
-
-# flags to append
-target_compile_options(monoprop PRIVATE "${EXTRA_CXXFLAGS}")
 
 install(
   TARGETS
