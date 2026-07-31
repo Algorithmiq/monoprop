@@ -30,7 +30,7 @@ target_compile_definitions(
 target_link_libraries(
   monoprop_unit_tests.x
   PRIVATE
-    monoprop
+    monoprop-objs
     Boost::unit_test_framework
     msgpack-cxx
 )
