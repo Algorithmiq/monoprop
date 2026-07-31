@@ -71,6 +71,21 @@ generate_export_header(
 
 add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
 
+target_compile_definitions(
+  monoprop
+  INTERFACE
+    $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
+    $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
+)
+
+target_link_libraries(
+  monoprop
+  INTERFACE
+    Boost::boost
+    Threads::Threads
+    $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
+)
+
 target_sources(
   monoprop
   PUBLIC
