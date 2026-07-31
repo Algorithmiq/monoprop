@@ -187,7 +187,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@v1.14.1
 
   upload_release_assets:
-    name: Upload wheels and sdist to GitHub release
+    name: Attach wheels and sdist to GitHub release
     needs:
       - build-sdist
       - build-wheels
