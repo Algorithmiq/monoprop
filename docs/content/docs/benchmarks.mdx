@@ -8,7 +8,7 @@ description: External and internal benchmarks for `monoprop`.
 
 
 We provide standalone benchmark scripts comparing `monoprop` against other open-source
-Majorana Propagation and Pauli propagation engines. The benchmark suite includes memory and time
+Majorana and Pauli propagation engines. The benchmark suite includes memory and time
 performance metrics, providing insights into the efficiency of different
 propagation engines.
 
@@ -40,15 +40,13 @@ term-count and memory panels of the combined figure, or the numbers below.
 
 #### SPECS
 
-The benchmark is run on Leonardo (CINECA), one exclusive DCGP node per engine:
+The benchmark is run on [Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html), one exclusive DCGP node per engine:
 
 - CPU: 2× Intel Xeon Platinum 8480+ (112 cores total, Sapphire Rapids)
 - RAM: ~480 GB
 
 Each engine runs at the thread count it is fastest at — `monoprop` at 56 threads,
-`MajoranaPropagation.jl` at 28 — since they do not peak at the same count. Every record carries
-its own `num_threads`, `busy_cores`, `host` and `library_version`, so a redrawn figure never
-misreports what produced it.
+`MajoranaPropagation.jl` at 28 — since they do not peak at the same count.
 
 The end-to-end workflow is:
 
@@ -111,8 +109,7 @@ Each line of both JSONL files is one benchmark run (one system size / circuit de
 - `num_threads`: thread count the run was given (`monoprop_NUM_THREADS` / `JULIA_NUM_THREADS`).
 - `cpu_seconds`: CPU time consumed over the timed loop, summed over all threads.
 - `busy_cores`: `cpu_seconds / runtime_seconds` — how many cores the run actually kept busy.
-  A value near 1 means the run was serial whatever `num_threads` claimed, so this is what makes
-  a cross-library comparison interpretable rather than a core-count artifact.
+  A value near 1 means the run was serial, irrespective of `num_threads`.
 - `peak_rss_MB`, `library_version`, `host`: provenance for the row.
 
 Both engines are multithreaded, but they do not peak at the same thread count, so
@@ -219,11 +216,6 @@ uv sync
 This installs `monoprop`, `qiskit`, `ppvm`, `pauli-prop`, and `cuquantum-python-cu12`. Running the
 `cuPauliProp (GPU)` engine requires an NVIDIA GPU with a working CUDA setup; the other three Python
 engines (`monoprop`, `QuEra ppvm`, `Qiskit pauli-prop`) run on CPU only.
-
-`ppvm` compiles a Rust extension whose hasher needs specific CPU features. Its own
-`.cargo/config.toml` already selects them per architecture, so leave `RUSTFLAGS` unset: an
-environment override replaces that file's choice, and a value valid on one architecture (say
-`+neon`) fails the build on another.
 
 #### 3. (Optional) install Julia and `PauliPropagation.jl`
 
@@ -346,14 +338,14 @@ caveats belong with these ratios:
   process-RSS proxy, because they expose nothing else.
 
 #### SPECS
+The benchmark is run on [Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html):
 
 - CPU: 2× Intel Xeon Platinum 8480+ (112 cores total) — `monoprop` at 56 threads,
   `PauliPropagation.jl` at 28 threads.
 - GPU: 1× NVIDIA A100 with 64 GB HBM2e, for `cuPauliProp`.
 
 Each record in the committed data carries its own `host`, `threads` and `library_version`, and
-both plotting scripts print that provenance beside the numbers, so a redrawn figure never
-misreports what produced it.
+both plotting scripts print that provenance beside the numbers.
 
 #### Running it
 
@@ -368,12 +360,6 @@ uv run python plot_speedup.py scaling_results.jsonl
 uv run python run_scaling.py --output results/scaling.jsonl --timeout 300 \
   --threads monoprop=56 juliapp=28
 ```
-
-Isolating each point is what makes a long sweep survivable: an engine that exceeds its budget or
-gets OOM-killed costs only that point, is recorded with a non-`ok` status, and is skipped at
-every larger size (`--no-skip-after-fail` to keep trying). Its curve simply ends at the last
-size it completed. Restrict the engines with `--backends`, the sizes with `--sizes`, and sweep a
-strip rather than squares with `--ny`.
 
 Two build notes: 324 qubits needs a `monoprop` mode tier at least that large
 (`-Dmonoprop_MAX_NUM_MODES=352`, since tiers come in 32-mode blocks), and the Julia engine here
