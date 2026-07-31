@@ -20,7 +20,8 @@ the operator across cores and across nodes with MPI.
 
 Check out the comparison of `monoprop` against other open-source Pauli propagation engines:
 
-![PP Benchmark](docs/public/benchmarks/pauli_results.png)
+![PP Runtime Benchmark](docs/public/benchmarks/pauli_scaling_runtime.png)
+![PP Memory Benchmark](docs/public/benchmarks/pauli_scaling_memory.png)
 
 and against [`MajoranaPropagation.jl`](https://github.com/SparqleSim/MajoranaPropagation.jl):
 
