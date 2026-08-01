@@ -346,7 +346,7 @@ build = ["cp311-*", "cp312-*", "cp313-*", "cp314-*"]
 skip = ["*-musllinux_*"]
 test-command = "python -m pytest {package}/tests"
 test-groups = ["test"]
-test-extras = ["qiskit", "openfermion", "pyscf"]
+test-extras = ["qiskit"]
 
 [tool.cibuildwheel.linux]
 before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
