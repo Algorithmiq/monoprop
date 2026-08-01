@@ -361,3 +361,8 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonop
 select = "*_x86_64"
 inherit.environment = "prepend"
 environment = { LD_LIBRARY_PATH = "/opt/rh/gcc-toolset-14/root/usr/lib64:/opt/rh/gcc-toolset-14/root/usr/lib:/opt/rh/gcc-toolset-14/root/usr/lib64/dyninst:/opt/rh/gcc-toolset-14/root/usr/lib/dyninst", PKG_CONFIG_PATH = "/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig" }
+
+[[tool.cibuildwheel.overrides]]
+select = "*linux*"
+inherit.environment = "append"
+environment = { LD_LIBRARY_PATH = "/usr/local/lib:/usr/local/lib64" }
