@@ -349,9 +349,9 @@ test-groups = ["test"]
 test-extras = ["qiskit", "openfermion", "pyscf"]
 
 [tool.cibuildwheel.linux]
-before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
+before-build = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
 environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
 
 [tool.cibuildwheel.macos]
-before-all = "brew install boost hwloc"
+before-build = "brew install boost hwloc"
 environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
