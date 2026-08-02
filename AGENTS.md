@@ -14,9 +14,9 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - Python docstrings use Google style, and are rendered into the docs site by `just gen-api` — keep
   them accurate.
 - In prose docs (`docs/content/docs/**.mdx`) and Python docstrings, link to API symbols with the mkdocstrings-style `[Symbol][]` reference (or `[Display][fully.qualified.path]`) — never hard-code `/api/...` URLs. Do not backtick the name in the `[Symbol][]` form. See `docs/content/docs/documenting.mdx`.
-- C++ comments: bare `///` one-liners on declarations in `include/monoprop/` (the installed public
-  API); plain `//` everywhere else. No Doxygen `@` tags (`@brief`, `@param`, `@return`, …) and no
-  `/* */` block comments — there is no Doxygen build, so those tags produce nothing.
+- C++ comments: bare `//` for one-line comments, `/* */` for block comments.
+- Add Doxygen Qt-style documentation on all declarations in header files.
+  Put documentation after members in enums, structs, classes.
 - Comments state what the code cannot: invariants, ordering and lifetime contracts, sign and bit
   conventions, and why an obvious alternative was rejected. Do not restate the code, narrate history
   (git has it), or repeat a fact that already has a home elsewhere.
@@ -39,9 +39,6 @@ Key files:
   per-mode-width `bindings.cpp` and `_dispatch.py` from it (do not hand-edit the generated files).
   Both generators take the 32-mode storage-block rule from `tools/_binding_layout.py` — they must
   agree, or dispatch routes at a template the bindings never instantiated.
-- `CMakePresets.json`: the single source of truth for build configurations. CI, the `justfile`, and
-  the docs all configure through presets; add a preset rather than a new set of `-D` flags. Each
-  preset builds into `build/<preset>/`.
 
 ### Core abstractions (the propagation backbone)
 
@@ -101,9 +98,9 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - **nanobind**: Modern Python-C++ binding (prefer over pybind11)
 - **scikit-build-core**: Modern build system replacing setuptools
 - **uv**: Package management
-- **fmt**: C++ formatting library
 - **Boost**: Used for various utilities (unordered_map, unit tests)
 - **msgpack**: Serialization of the test-data fixtures only (`tests/data/*.msgpack`); consumed by the Python test loaders and the C++ test suite, not by the shipped library
+- **MPI**: For distributed parallelization
 
 ## Common Tasks
 
