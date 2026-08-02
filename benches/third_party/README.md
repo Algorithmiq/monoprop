@@ -43,6 +43,26 @@ Any lattice size works: `--nx/--ny` override `settings.json`, and the observable
 lattice (the central horizontally-adjacent bond, which is the committed `[20, 21]` at 6x6)
 rather than staying pinned to indices that a resize would invalidate.
 
+### Optional: exact statevector baseline (Apple silicon)
+
+`--backends ... mlxq` adds [mlxQ](https://github.com/BoltzmannEntropy/Qupertino), an
+MLX-based statevector simulator, as an exact non-propagation baseline. Wherever the
+2^n statevector fits in memory, its per-step cost does not depend on the operator, so
+it locates the lattice size below which propagation is not worth running — on an
+M1 Max (32 GB) the crossover against monoprop sits at roughly 25–28 qubits, and a
+36-qubit statevector (~0.5 TB) is out of reach entirely. It is not part of this uv
+project's dependencies because its MLX dependency only exists on Apple silicon;
+install it there with
+
+```bash
+uv pip install "mlxq @ git+https://github.com/BoltzmannEntropy/Qupertino"
+```
+
+`MLXQ_METAL_KERNELS=1` selects its hand-written Metal kernels (its fastest tier; the
+first step of a process then carries one-off kernel compilation, which the fixed-size
+benchmark's step-0 drop already absorbs). Its memory column reports the exact
+statevector footprint, and its expectation values are exact up to complex64 (~1e-6).
+
 ### Scaling with lattice size
 
 ```bash

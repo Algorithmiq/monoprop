@@ -45,7 +45,11 @@ def main() -> None:
         "--backends",
         nargs="+",
         default=["monoprop", "ppvm", "qiskit", "cupauliprop"],
-        choices=[*backend_mod.CPU_BACKENDS, *backend_mod.GPU_BACKENDS],
+        choices=[
+            *backend_mod.CPU_BACKENDS,
+            *backend_mod.GPU_BACKENDS,
+            *backend_mod.APPLE_BACKENDS,
+        ],
     )
     args = parser.parse_args()
 
@@ -75,6 +79,8 @@ def main() -> None:
             )
         elif backend == "cupauliprop":
             results[backend] = backend_mod.run_cupauliprop(settings)
+        elif backend == "mlxq":
+            results[backend] = backend_mod.run_mlxq(settings)
 
     # Step 0's runtime is dropped: it carries one-off warm-up, and plot_results.py
     # expects the runtime series to be one shorter than the step range.

@@ -41,6 +41,7 @@ MEMORY_METRICS = {
     "Qiskit pauli-prop": "process RSS growth (no memory accounting exposed)",
     "cuPauliProp (GPU)": "GPU memory pool in use",
     "PauliPropagation.jl": "Base.summarysize of the Pauli sum",
+    "mlxQ statevector": "statevector size (2^n complex64 amplitudes)",
 }
 
 
@@ -247,12 +248,84 @@ def _pack_pauli_string(
     return out
 
 
+def run_mlxq(settings: Settings) -> BackendResult:
+    """mlxQ: an exact statevector baseline on the Apple-silicon GPU (via MLX).
+
+    Not a Pauli-propagation engine — it bounds them from below: wherever the
+    2^n statevector fits, its per-step cost is size-independent of the operator,
+    so it locates the size under which propagation is not worth running (about
+    25-28 qubits against monoprop on an M1 Max). Install on Apple silicon with
+    `pip install "mlxq @ git+https://github.com/BoltzmannEntropy/Qupertino"`;
+    MLXQ_METAL_KERNELS=1 selects its hand-written Metal kernels. Expectation
+    values are exact up to complex64 (~1e-6); the memory column is the exact
+    statevector footprint.
+    """
+    import mlx.core as mx
+    from mlxq import shaders
+    from mlxq.gates import RX
+    from mlxq.sim import StateVectorSimulator
+
+    nq = settings.num_qubits
+    sim = StateVectorSimulator(nq)
+    edges = grid_edges(settings.nx, settings.ny)
+    a, b = settings.observable_qubits
+    metal = shaders.metal_enabled()
+    rx_gate = RX(settings.theta_x)
+
+    # The all-qubit RZ layer as one cached diagonal (the same construction the
+    # simulator uses internally for its fused ZZ layer): the phase per basis
+    # state is exp(-i*(theta_z/2)*sum_q s_q) with s_q = +-1 per bit.
+    idx = mx.arange(1 << nq, dtype=mx.uint32)
+    acc = mx.zeros((1 << nq,), dtype=mx.int32)
+    for q in range(nq):
+        acc = acc + (1 - 2 * ((idx >> (nq - 1 - q)) & 1).astype(mx.int32))
+    ang = (-settings.theta_z / 2.0) * acc.astype(mx.float32)
+    z_phase = mx.cos(ang).astype(mx.complex64) + 1j * mx.sin(ang).astype(mx.complex64)
+    mx.eval(z_phase)
+
+    q0, q1 = sorted((a, b))
+    state_mb = (1 << nq) * 8 / 1024**2
+
+    def step(_step_idx: int) -> tuple[float, int, float]:
+        # apply_zz_layer(theta) applies exp(-i*theta*sum Z_a Z_b): Qiskit's
+        # RZZ(theta_zz) is theta_zz/2 in that convention.
+        sim.apply_zz_layer(settings.theta_zz / 2.0, edges)
+        sim.state = sim.state * z_phase
+        if metal:
+            sim.state = shaders.rx_layer_all(sim.state, nq, settings.theta_x)
+        else:
+            for q in range(nq):
+                sim.apply_single(rx_gate, q)
+        # <Z_a Z_b> = P(bits agree) - P(bits disagree). MLX is lazy; float()
+        # forces the whole step's evaluation, so the timer sees the real work.
+        t = mx.reshape(sim.state, (1 << q0, 2, 1 << (q1 - q0 - 1), 2, -1))
+        p = mx.abs(t) ** 2
+        expval = float(
+            mx.sum(p[:, 0, :, 0, :])
+            + mx.sum(p[:, 1, :, 1, :])
+            - mx.sum(p[:, 0, :, 1, :])
+            - mx.sum(p[:, 1, :, 0, :])
+        )
+        if nq >= 26:
+            # State-sized temporaries otherwise accumulate in MLX's buffer pool
+            # and push a 32 GB machine into unified-memory thrashing.
+            mx.clear_cache()
+        return expval, 1 << nq, state_mb
+
+    result = _run_steps(settings, LABELS["mlxq"], step)
+    result.operator_memory_mb = state_mb
+    return result
+
+
 # Backend name (as passed on a command line) -> runner. The Julia backend is not
 # here: it is a separate process driven by run_scaling.jl.
 CPU_BACKENDS = ("monoprop", "ppvm", "qiskit")
 GPU_BACKENDS = ("cupauliprop",)
+# Apple-silicon GPU via MLX. Not a Pauli-propagation engine: an exact statevector
+# baseline that locates the size below which propagation is not worth running.
+APPLE_BACKENDS = ("mlxq",)
 JULIA_BACKEND = "juliapp"
-ALL_BACKENDS = (*CPU_BACKENDS, *GPU_BACKENDS, JULIA_BACKEND)
+ALL_BACKENDS = (*CPU_BACKENDS, *GPU_BACKENDS, *APPLE_BACKENDS, JULIA_BACKEND)
 
 # The environment variable each backend takes its thread count from. Read both ways: the
 # sweep driver sets these to apply a per-backend cap, and the worker reads its own to record
@@ -268,6 +341,7 @@ THREAD_VARS = {
     "ppvm": ("RAYON_NUM_THREADS",),
     "qiskit": ("OMP_NUM_THREADS", "MKL_NUM_THREADS"),
     "cupauliprop": ("OMP_NUM_THREADS",),
+    "mlxq": (),  # Apple GPU: no CPU thread knob
     JULIA_BACKEND: ("JULIA_NUM_THREADS",),
 }
 
@@ -276,5 +350,6 @@ LABELS = {
     "ppvm": "QuEra ppvm",
     "qiskit": "Qiskit pauli-prop",
     "cupauliprop": "cuPauliProp (GPU)",
+    "mlxq": "mlxQ statevector",
     JULIA_BACKEND: "PauliPropagation.jl",
 }

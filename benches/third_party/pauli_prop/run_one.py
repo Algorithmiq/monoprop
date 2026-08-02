@@ -48,7 +48,10 @@ def _num_threads(backend: str) -> int:
     slurm = os.environ.get("SLURM_CPUS_PER_TASK")
     if slurm:
         return int(slurm)
-    return len(os.sched_getaffinity(0))
+    # sched_getaffinity does not exist on macOS, which the mlxq backend needs.
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
 
 
 def main() -> None:
@@ -56,7 +59,11 @@ def main() -> None:
     parser.add_argument(
         "--backend",
         required=True,
-        choices=[*backend_mod.CPU_BACKENDS, *backend_mod.GPU_BACKENDS],
+        choices=[
+            *backend_mod.CPU_BACKENDS,
+            *backend_mod.GPU_BACKENDS,
+            *backend_mod.APPLE_BACKENDS,
+        ],
     )
     parser.add_argument("--nx", type=int, default=None)
     parser.add_argument("--ny", type=int, default=None)
@@ -100,6 +107,8 @@ def main() -> None:
         result = backend_mod.run_qiskit(settings, args.max_terms)
     elif args.backend == "cupauliprop":
         result = backend_mod.run_cupauliprop(settings)
+    elif args.backend == "mlxq":
+        result = backend_mod.run_mlxq(settings)
     else:  # unreachable: argparse constrains the choices
         raise SystemExit(f"unknown backend {args.backend}")
 
