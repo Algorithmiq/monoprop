@@ -39,6 +39,9 @@ Key files:
   per-mode-width `bindings.cpp` and `_dispatch.py` from it (do not hand-edit the generated files).
   Both generators take the 32-mode storage-block rule from `tools/_binding_layout.py` — they must
   agree, or dispatch routes at a template the bindings never instantiated.
+- `CMakePresets.json`: the single source of truth for build configurations. CI, the `justfile`, and
+  the docs all configure through presets; add a preset rather than a new set of `-D` flags. Each
+  preset builds into `build/<preset>/`.
 
 ### Core abstractions (the propagation backbone)
 
