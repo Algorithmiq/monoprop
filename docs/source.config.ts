@@ -5,6 +5,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeCitation from 'rehype-citation';
 import rehypeRaw from 'rehype-raw';
+import remarkXref from './scripts/remark-xref.mjs';
 
 // The tutorial pages are generated as `.md` (not `.mdx`) and embed their
 // figures as raw `<img src="data:image/png;base64,…">` tags. In md-format
@@ -54,7 +55,7 @@ export default defineConfig({
     // Tutorial pages inline figures as base64 `data:` URIs; keep them as plain
     // `<img src>` instead of turning images into static imports.
     remarkImageOptions: { useImport: false },
-    remarkPlugins: [remarkMath],
+    remarkPlugins: [remarkMath, remarkXref],
     // `rehypeCitation` resolves `[@key]` references against bibliography.bib
     // (replacing sphinxcontrib-bibtex); `rehypeKatex` renders the math nodes
     // produced by `remarkMath`. Both run before the default fumadocs plugins.

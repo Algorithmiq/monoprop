@@ -24,20 +24,24 @@ from monoprop.fermi import MajoranaOperator
 @pytest.mark.parametrize(
     ("initial_op", "cutoff", "schrodinger_cutoff", "expected"),
     [
-        (MajoranaOperator({(0, 1, 2, 4): 1}, 8), 16, None, {(0, 1, 2, 4): 1}),
-        (MajoranaOperator({(): 1}, 8), 16, None, {(): 1}),
+        (
+            MajoranaOperator({(0, 1, 2, 4): 1}, 8),
+            16,
+            None,
+            MajoranaOperator({(0, 1, 2, 4): 1}, 8),
+        ),
+        (MajoranaOperator({(): 1}, 8), 16, None, MajoranaOperator({(): 1}, 8)),
         (
             MajoranaOperator({}, 1),
             2,
             2,
-            {(): 1.0, (0, 1): -1.0j},
+            MajoranaOperator({(): 1.0, (0, 1): -1.0j}, 2),
         ),  # Schrodinger picture
     ],
 )
 def test_trivial_evolved_operator_cases(
     initial_op, cutoff, schrodinger_cutoff, expected, serial_comm
 ):
-    """Test trivial evolved operator dict for various initial conditions."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
     quantum_circuit = Circuit(initial_state=[], gates=[])
     mp = MajoranaPropagator(
@@ -48,7 +52,7 @@ def test_trivial_evolved_operator_cases(
         **kwargs,
     )
     result = mp.evolved_operator()
-    assert result == expected
+    assert result.terms == expected.terms
 
 
 def test_trivial_evolved_operator(serial_comm):
@@ -74,7 +78,7 @@ def test_trivial_evolved_operator(serial_comm):
         # Regular picture: checks contract_partially (rank-local) → serial_comm
         (
             MajoranaOperator({(0, 1, 2, 4): 1}, 8),
-            {(0, 1, 2, 4): 2.0 + 0j},
+            MajoranaOperator({(0, 1, 2, 4): 2.0 + 0j}, 8),
             16,
             None,
             np.array([-2.0]),
@@ -83,7 +87,7 @@ def test_trivial_evolved_operator(serial_comm):
         # Schrodinger picture: checks expectation value (allreduced) → but kept here for simplicity
         (
             MajoranaOperator({(0, 3): 1.0j}, 4),
-            {(0, 1): 2.0j},
+            MajoranaOperator({(0, 1): 2.0j}, 4),
             8,
             8,
             None,
@@ -100,7 +104,6 @@ def test_update_initial_operator(
     expval_check,
     serial_comm,
 ):
-    """Test updating coefficients in both regular and Schrodinger pictures."""
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
     quantum_circuit = Circuit(initial_state=[], gates=[])
     mp = MajoranaPropagator(
@@ -112,10 +115,10 @@ def test_update_initial_operator(
     )
 
     if expval_check:
-        expval_init = mp.expectation_value()
+        expval_init = mp.expval()
         assert expval_init == expval_check[0]
         mp.update_initial_operator(new_op)
-        expval_new = mp.expectation_value()
+        expval_new = mp.expval()
         assert np.isclose(expval_new, expval_check[1])
     else:
         op_init = mp.contract_partially(inplace=False)

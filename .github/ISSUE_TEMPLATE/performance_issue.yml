@@ -108,11 +108,10 @@ body:
       description: |
         If you built from source, provide:
         - Compiler name and version
-        - Versions of oneTBB, Boost, fmt, nanobind
+        - Versions of Boost, nanobind
         - How dependencies were installed
       placeholder: |
         Compiler: g++ 13.2
-        oneTBB: 2021.11
         Boost: 1.84
 
   - type: input

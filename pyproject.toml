@@ -49,11 +49,9 @@ Changelog = "https://github.com/Algorithmiq/monoprop/releases"
 [project.optional-dependencies]
 mpi = ["mpi4py>=4.1.0"]
 qiskit = ["qiskit>=2.0.0"]
-openfermion = ["openfermion"]
-pyscf = ["pyscf"]
 
 [dependency-groups]
-dev = ["coverage", "prek>=0.4", "ruff==0.15.20", "gcovr"]
+dev = ["prek>=0.4", "ruff==0.15.20"]
 # The documentation site is built with Fumadocs (Next.js); see `docs/`.
 # Python's only roles are converting the tutorial notebooks to Markdown
 # (`nbconvert`) and generating the API reference from docstrings (`griffe`,
@@ -63,11 +61,13 @@ interactive = [
   "ipykernel",
   "matplotlib",
   "pylatexenc",
-  "monoprop[qiskit,openfermion,pyscf]",
+  "qiskit>=2.0.0",
+  "pyscf",
 ]
 test = [
   "psutil>=7.2",
   "pytest-cases>=3.8.6,<4",
+  "pytest-cov>=7.1.0",
   "pytest-datadir",
   "pytest-mpi>=0.6",
   "pytest>=8.2.2,<8.3",
@@ -79,9 +79,6 @@ bench = [{ include-group = "test" }, "pytest-benchmark>=5"]
 [tool.uv]
 python-preference = "only-managed"
 keyring-provider = "subprocess"
-# Full dev environment by default. `docs` is intentionally excluded since it
-# is only needed when building the documentation site (see `just build-docs`).
-default-groups = ["dev", "test", "interactive"]
 cache-keys = [
   { file = "pyproject.toml" },
   { file = "include/**/*.h" },
@@ -349,18 +346,18 @@ build = ["cp311-*", "cp312-*", "cp313-*", "cp314-*"]
 skip = ["*-musllinux_*"]
 test-command = "python -m pytest {package}/tests"
 test-groups = ["test"]
-test-extras = ["qiskit", "openfermion", "pyscf"]
+test-extras = ["qiskit"]
 
 [tool.cibuildwheel.linux]
 before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
-environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
+environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
 
 [tool.cibuildwheel.macos]
-before-all = "brew install boost tbb"
-environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
+before-all = "brew install boost"
+environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
 
 [[tool.cibuildwheel.overrides]]
-# override on x86_64 to set TBB environment variables
+# override on x86_64 to keep the gcc-toolset runtime and /usr/local pkg-config paths visible
 select = "*_x86_64"
 inherit.environment = "prepend"
-environment = { ONEAPI_ROOT = "/opt/intel/oneapi", TBBROOT = "$ONEAPI_ROOT/tbb/latest", LD_LIBRARY_PATH = "$TBBROOT/lib/intel64/gcc4.8:/opt/rh/gcc-toolset-14/root/usr/lib64:/opt/rh/gcc-toolset-14/root/usr/lib:/opt/rh/gcc-toolset-14/root/usr/lib64/dyninst:/opt/rh/gcc-toolset-14/root/usr/lib/dyninst", C_INCLUDE_PATH = "$TBBROOT/include", CMAKE_PREFIX_PATH = "$TBBROOT", LIBRARY_PATH = "$TBBROOT/lib/intel64/gcc4.8", CPLUS_INCLUDE_PATH = "$TBBROOT/include", PKG_CONFIG_PATH = "$TBBROOT/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig" }
+environment = { LD_LIBRARY_PATH = "/opt/rh/gcc-toolset-14/root/usr/lib64:/opt/rh/gcc-toolset-14/root/usr/lib:/opt/rh/gcc-toolset-14/root/usr/lib64/dyninst:/opt/rh/gcc-toolset-14/root/usr/lib/dyninst", PKG_CONFIG_PATH = "/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig" }

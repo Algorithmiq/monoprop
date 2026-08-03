@@ -14,6 +14,5 @@
 
 #pragma once
 
-#include "monoprop/detail/graph_encoding/MPGraphEncodingCompression.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"

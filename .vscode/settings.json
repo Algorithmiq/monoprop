@@ -181,9 +181,16 @@
   ],
   "cmake.cmakePath": "cmake",
   "cmake.allowCommentsInPresetsFile": true,
-  "cmake.configurePreset": "release-gcc-mpi",
-  "cmake.buildPreset": "release-gcc-mpi",
-  "cmake.testPreset": "release-gcc-mpi",
+  // This project only configures correctly through scikit-build-core (invoked
+  // by `uv sync`), which injects the SKBUILD / Python / nanobind cache
+  // variables from an ephemeral build-isolation environment. Never let CMake
+  // Tools reconfigure the adopted build tree: the cached Python interpreter
+  // path is deleted after the build and a reconfigure would fail.
+  "cmake.configureOnEdit": false,
+  "cmake.configureOnOpen": false,
+  "cmake.automaticReconfigure": false,
+  "cmake.ctest.testExplorerIntegrationEnabled": true,
+  "cmake.buildBeforeRun": false,
   "cmake.options.statusBarVisibility": "hidden",
   "cmake.options.advanced": {
     "build": {

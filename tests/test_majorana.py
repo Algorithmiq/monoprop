@@ -21,10 +21,12 @@ from monoprop.majorana import Majorana, MajoranaOperator
 
 
 class TestMajorana:
-    """The Majorana monomial value object: sorting, validation, equality, hashing."""
+    """The Majorana monomial value object: validation, equality, hashing."""
 
-    def test_indices_are_sorted(self):
-        assert Majorana(5, 4, 1).indices == (1, 4, 5)
+    def test_indices_must_already_be_sorted(self):
+        assert Majorana(1, 4, 5).indices == (1, 4, 5)
+        with pytest.raises(ValueError, match="sorted"):
+            Majorana(5, 4, 1)
 
     def test_empty_is_identity_monomial(self):
         assert Majorana().indices == ()
@@ -37,10 +39,28 @@ class TestMajorana:
         with pytest.raises(ValueError, match="distinct"):
             Majorana(2, 2)
 
+    def test_from_unsorted_returns_sorted_term_and_sign(self):
+        term, sign = Majorana.from_unsorted(5, 4, 1)
+        assert term == Majorana(1, 4, 5)
+        assert sign == -1.0
+
+        term_even, sign_even = Majorana.from_unsorted(2, 0, 1)
+        assert term_even == Majorana(0, 1, 2)
+        assert sign_even == 1.0
+
+    def test_from_unsorted_cancels_repeated_indices(self):
+        term, sign = Majorana.from_unsorted(3, 1, 1, 3)
+        assert term == Majorana()
+        assert sign == 1.0
+
+        term_mixed, sign_mixed = Majorana.from_unsorted(1, 2, 1)
+        assert term_mixed == Majorana(2)
+        assert sign_mixed == -1.0
+
     def test_equal_terms_compare_and_hash_alike(self):
-        assert Majorana(4, 5) == Majorana(5, 4)
-        assert hash(Majorana(4, 5)) == hash(Majorana(5, 4))
-        assert {Majorana(4, 5), Majorana(5, 4)} == {Majorana(4, 5)}
+        assert Majorana(4, 5) == Majorana(4, 5)
+        assert hash(Majorana(4, 5)) == hash(Majorana(4, 5))
+        assert {Majorana(4, 5), Majorana(4, 5)} == {Majorana(4, 5)}
 
     def test_eq_with_non_majorana_is_false(self):
         assert (Majorana(0, 1) == (0, 1)) is False
@@ -51,9 +71,9 @@ class TestMajorana:
 
 
 def test_majorana_operator_validates_raw_tuple_keys():
-    """A raw index-tuple key is routed through Majorana, so it gets the same validation."""
-    with pytest.raises(ValueError, match="distinct"):
-        MajoranaOperator({(0, 0): 1.0}, num_modes=2)
+    """A raw index-tuple key is canonicalized via from_unsorted and checked for non-negativity."""
+    op = MajoranaOperator({(0, 0): 1.0}, num_modes=2)
+    assert op.terms == {(): 1.0}
     with pytest.raises(ValueError, match="non-negative"):
         MajoranaOperator({(-1, 0): 1.0}, num_modes=2)
 
@@ -77,12 +97,13 @@ def test_from_dense_arrays_groups_by_param_ind():
 
 
 def test_majorana_operator_normalizes_terms():
-    """Indices are sorted and duplicate monomials summed."""
+    """Unsorted terms are canonicalized with sign and duplicate monomials summed."""
     op = MajoranaOperator(
         {(1, 0): 1.0, (0, 1): 2.0, (2, 3): 1e-15},
         num_modes=4,
     )
-    assert op.terms == {(0, 1): 3.0, (2, 3): 1e-15}  # (1,0) and (0,1) merge
+    # The (1, 0) term is reordered to (0, 1) with a sign flip, and the duplicate (0, 1) terms are summed.
+    assert op.terms == {(0, 1): 1.0, (2, 3): 1e-15}
     assert len(op) == 2
     assert op.num_modes == 4
 
@@ -91,6 +112,24 @@ def test_majorana_operator_from_dict_round_trips():
     op = MajoranaOperator({(0, 1): 1.0j, (2, 3): -0.5}, num_modes=4)
     assert op.terms == {(0, 1): 1.0j, (2, 3): -0.5}
     assert op.get_majorana_operator() is op
+
+
+@pytest.mark.parametrize(
+    ("terms", "expected"),
+    [
+        pytest.param({}, True, id="empty"),
+        pytest.param({(0,): 1.0}, True, id="single_term"),
+        pytest.param({(0, 1): 1.0j, (2, 3): 1.0j}, True, id="disjoint_even_even"),
+        pytest.param(
+            {(0, 2, 3, 5): 1.0, (0, 2, 4, 6): 1.0}, True, id="overlap_even_parity"
+        ),
+        pytest.param({(0,): 1.0, (1,): 1.0}, False, id="disjoint_odd_odd"),
+        pytest.param({(0,): 1.0, (0, 1): 1.0}, False, id="overlap_odd_parity"),
+    ],
+)
+def test_majorana_operator_all_pairwise_commute(terms, expected):
+    """Pairwise commutation follows the parity of ``|S_1||S_2| - |S_1 ∩ S_2|``."""
+    assert MajoranaOperator(terms, num_modes=10).all_pairwise_commute() is expected
 
 
 @pytest.mark.parametrize(

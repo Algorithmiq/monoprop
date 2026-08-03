@@ -68,13 +68,17 @@ def test_basic_orbital_rotation(serial_comm):
     mp_orb.propagate(circuit, only_rotate_len_k=4)
     orb_rotated_state = mp_orb.evolved_operator()
 
-    for key in initial_state:
+    for key in initial_state.terms:
         if len(key) > 4:
-            assert np.isclose(initial_state[key], orb_rotated_state[key], atol=1e-12)
+            assert np.isclose(
+                initial_state.terms[key], orb_rotated_state.terms[key], atol=1e-12
+            )
 
-    for key in rotated_state:
+    for key in rotated_state.terms:
         if len(key) <= 4:
-            assert np.isclose(rotated_state[key], orb_rotated_state[key], atol=1e-12)
+            assert np.isclose(
+                rotated_state.terms[key], orb_rotated_state.terms[key], atol=1e-12
+            )
 
 
 @parametrize_with_cases(
@@ -89,10 +93,8 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     non_orbital_gates, orbital_gates = _split_orbital_gates(gates)
     # Consecutive prefix/suffix split, so the (identity) parameter values split the same way.
     split = len(non_orbital_gates)
-    # Drop each sliced gate's original (non-zero-based) param so each sub-circuit gets the
-    # identity mapping (gate i -> angle i), rebasing the orbital tail's angles to start at 0.
-    # _with_index preserves each gate's _structural flag (these come from a from_dense_arrays
-    # circuit, so a plain ExpGate(gate.generator) would re-normalize their structural coefficients).
+    # _with_index rather than ExpGate(gate.generator) so _structural is preserved -- see
+    # tests/test_circuit.py::_rebase.
     non_orbital = Circuit(
         tuple(ExpGate._with_index(gate, None) for gate in non_orbital_gates),
         parameters=tuple(parameters[:split]),
@@ -106,7 +108,7 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
         problem.operator, problem.monomial_circuit.initial_state, **serial_mp_kwargs
     )
     mp_act.build_graph(circuit)
-    act_ener = mp_act.expectation_value_functional()(parameters)
+    act_ener = mp_act.expval_functional()(parameters)
 
     mp = MajoranaPropagator(
         problem.operator, problem.monomial_circuit.initial_state, **serial_mp_kwargs
@@ -115,11 +117,11 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     if inplace:
         mp.propagate(non_orbital)
         mp.propagate(orbital, only_rotate_len_k=4)
-        test_expval = mp.expectation_value()
+        test_expval = mp.expval()
     else:
         mp.build_graph(non_orbital)
         mp.build_graph(orbital, only_rotate_len_k=4)
-        test_expval = mp.expectation_value_functional()(parameters)
+        test_expval = mp.expval_functional()(parameters)
         assert sum(mp.graph_size()) < sum(mp_act.graph_size())
 
     assert mp.size() < mp_act.size()
@@ -149,7 +151,7 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
 )
 @pytest.mark.parametrize("method_name", ["build_graph", "propagate"])
 def test_only_rotate_len_k_errors_majorana(only_rotate_len_k, err, method_name):
-    """Test that invalid only_rotate_len_k raises ValueError."""
+    # MajoranaPropagator has no qubit count, so only the k > 0 half of the check applies.
     mp = MajoranaPropagator(MajoranaOperator({}, 4), [], cutoff=6, schrodinger_cutoff=8)
     with err:
         getattr(mp, method_name)(Circuit(), only_rotate_len_k=only_rotate_len_k)
@@ -184,7 +186,6 @@ def test_only_rotate_len_k_errors_majorana(only_rotate_len_k, err, method_name):
 )
 @pytest.mark.parametrize("method_name", ["build_graph", "propagate"])
 def test_only_rotate_len_k_errors_pauli(only_rotate_len_k, err, method_name):
-    """Test that invalid only_rotate_len_k raises ValueError."""
     mp = PauliPropagator(PauliOperator({}, 4), [], cutoff=6, schrodinger_cutoff=8)
     with err:
         getattr(mp, method_name)(Circuit(), only_rotate_len_k=only_rotate_len_k)

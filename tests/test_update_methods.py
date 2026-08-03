@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for update methods in MajoranaPropagator."""
-
 import pytest
 from pytest_cases import parametrize_with_cases
 
@@ -27,8 +25,6 @@ from tests.cases import CasesFermionicProblem
 
 
 class TestUpdateMethods:
-    """Test class for update methods in MajoranaPropagator."""
-
     @pytest.fixture
     def mp(self, serial_comm):
         return MajoranaPropagator(
@@ -163,7 +159,7 @@ class TestUpdateMethods:
 
         circuit = sequence
         mp.propagate(circuit)
-        expval = mp.expectation_value()
+        expval = mp.expval()
         assert isinstance(expval, (int, float))
 
     @pytest.mark.parametrize("order", ["lower_first", "upper_first"])
@@ -203,14 +199,15 @@ class TestUpdateMethods:
 @parametrize_with_cases("problem", cases=CasesFermionicProblem, has_tag="molecule")
 @pytest.mark.parametrize("test_type", ["cutoff", "lower_atol", "upper_atol"])
 def test_evolutions_after_updates(problem, test_type, serial_comm):
-    """Test that evolutions work correctly after parameter updates."""
-
     circuit = problem.monomial_circuit.to_circuit()
+
+    # upper_atol only rescues over-cutoff partners, of which cutoff 6 produces none here.
+    cutoff = 2 if test_type == "upper_atol" else 6
 
     mp = MajoranaPropagator(
         problem.operator,
         problem.monomial_circuit.initial_state,
-        cutoff=6,
+        cutoff=cutoff,
         comm=serial_comm,
     )
     mp.propagate(circuit)
@@ -219,7 +216,7 @@ def test_evolutions_after_updates(problem, test_type, serial_comm):
     mp_tes = MajoranaPropagator(
         problem.operator,
         problem.monomial_circuit.initial_state,
-        cutoff=6,
+        cutoff=cutoff,
         comm=serial_comm,
     )
     if test_type == "lower_atol":

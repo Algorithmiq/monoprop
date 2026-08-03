@@ -2,20 +2,62 @@ find_package(Boost 1.85 CONFIG REQUIRED)
 message(STATUS "Using Boost: ${Boost_DIR} (version ${Boost_VERSION})")
 
 add_library(
-  monoprop
-  SHARED
+  monoprop-objs
+  OBJECT
   Evolution.cpp
   MPFunctions.cpp
   MPGraph.cpp
-  Threading.cpp
-  Utilities.cpp
   Validation.cpp
+)
+
+target_compile_definitions(
+  monoprop-objs
+  PUBLIC
+    $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
+    $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
+)
+
+# flags to prepend
+target_compile_options(
+  monoprop-objs
+  BEFORE
+  PUBLIC
+    "${monoprop_CXX_FLAGS}"
+    "${ARCH_FLAG}"
+)
+
+# flags to append
+target_compile_options(monoprop-objs PUBLIC "${EXTRA_CXXFLAGS}")
+
+target_include_directories(
+  monoprop-objs
+  PUBLIC
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
+)
+
+target_link_libraries(
+  monoprop-objs
+  PUBLIC
+    Boost::boost
+    Threads::Threads
+    $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
+)
+
+set_target_properties(
+  monoprop-objs
+  PROPERTIES
+    CXX_VISIBILITY_PRESET
+      hidden
+    VISIBILITY_INLINES_HIDDEN
+      YES
 )
 
 include(GenerateExportHeader)
 
 generate_export_header(
-  monoprop
+  monoprop-objs
   BASE_NAME "${PROJECT_NAME}"
   EXPORT_FILE_NAME
     "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h"
@@ -27,111 +69,60 @@ generate_export_header(
   DEFINE_NO_DEPRECATED
 )
 
-file(
-  GLOB_RECURSE monoprop_PUBLIC_HEADERS
-  CONFIGURE_DEPENDS
-  "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/*.h"
-  "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/*.h"
-  "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/detail/*.h"
-  "${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/detail/**/*.h"
-)
+add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
 
-list(
-  APPEND monoprop_PUBLIC_HEADERS
-  ${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/Info.h
-  ${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h
-)
-
-set(
-  monoprop_PRIVATE_HEADERS
-  ${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/masked_execution_plan/BuildExecutionPlan.h
-  ${PROJECT_SOURCE_DIR}/src/${PROJECT_NAME}/masked_execution_plan/LayerFiltering.h
-)
-
-set_target_properties(
+target_compile_definitions(
   monoprop
-  PROPERTIES
-    CXX_VISIBILITY_PRESET
-      hidden
-    VISIBILITY_INLINES_HIDDEN
-      YES
-    INTERPROCEDURAL_OPTIMIZATION
-      ON
-    PUBLIC_HEADER
-      "${monoprop_PUBLIC_HEADERS}"
-    PRIVATE_HEADER
-      "${monoprop_PRIVATE_HEADERS}"
-)
-
-add_subdirectory(masked_execution_plan)
-
-target_include_directories(
-  monoprop
-  PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  INTERFACE
+    $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
+    $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
 )
 
 target_link_libraries(
   monoprop
-  PUBLIC
+  INTERFACE
     Boost::boost
-    TBB::tbb
+    Threads::Threads
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
 )
 
-target_compile_definitions(
+target_sources(
   monoprop
   PUBLIC
-    $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
+    FILE_SET headers
+      TYPE HEADERS
+      BASE_DIRS
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_BINARY_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
+      FILES
+        "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/Evolution.h"
+        "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/MPFunctions.h"
+        "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/MPGraph.h"
+        "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/MonomialPropagator.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Bitset.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MPGraphEncoding.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/TypeAliases.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Utilities.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Validation.h"
+        "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h"
+        "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/Info.h"
 )
 
-# flags to prepend
-target_compile_options(
-  monoprop
-  BEFORE
-  PRIVATE
-    "${monoprop_CXX_FLAGS}"
-    "${ARCH_FLAG}"
-)
-
-# flags to append
-target_compile_options(monoprop PRIVATE "${EXTRA_CXXFLAGS}")
+add_subdirectory(algebra)
+add_subdirectory(core)
+add_subdirectory(detail)
 
 install(
   TARGETS
     monoprop
   EXPORT monopropTargets
   LIBRARY
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  ARCHIVE
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  RUNTIME
-    DESTINATION ${CMAKE_INSTALL_BINDIR}
-  PUBLIC_HEADER
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-  PRIVATE_HEADER
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/monoprop/private
+    DESTINATION ${PROJECT_NAME}/${CMAKE_INSTALL_LIBDIR}
+    COMPONENT lib
+  FILE_SET headers
+    DESTINATION ${PROJECT_NAME}/${CMAKE_INSTALL_INCLUDEDIR}
+    COMPONENT dev
 )
 
-install(
-  DIRECTORY
-    ${PROJECT_SOURCE_DIR}/include/monoprop
-    ${PROJECT_SOURCE_DIR}/src/monoprop
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-  FILES_MATCHING
-  PATTERN "*.h"
-)
-
-install(
-  FILES
-    ${PROJECT_BINARY_DIR}/include/monoprop/Info.h
-    ${PROJECT_BINARY_DIR}/include/monoprop/monopropExport.h
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/monoprop
-)
-
-if(DEFINED SKBUILD)
-  add_subdirectory(bindings)
-endif()
+add_subdirectory(bindings)

@@ -2,18 +2,17 @@
 // `fumapy-generate monoprop` (see the `gen-api` recipe in the justfile).
 //
 // fumadocs-python's `convert`/`write` do the heavy lifting; this script only
-//  1. prunes the griffe dump to the public surface (the modules that the old
-//     docs reference documented, minus private `_`-prefixed members),
+//  1. prunes the griffe dump to the public surface (minus private `_`-prefixed members),
 //  2. fixes the package-name segment that `convert` puts in cross-links but
 //     `write` strips from file paths, and
 //  3. emits a `meta.json` so the API section is ordered like the old reference.
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { convert, write } from 'fumadocs-python';
+import { convert, write, frontmatter } from 'fumadocs-python';
+import { API_BASE_URL, buildXrefMap, pageUrl, resolve } from './xref.mjs';
 
 const JSON_PATH = path.resolve('monoprop.json');
 const OUT_DIR = path.resolve('content/docs/api');
-const BASE_URL = '/api';
 
 // Public modules, in the order they should appear in the sidebar
 const MODULES = [
@@ -49,25 +48,42 @@ function pruneModule(mod) {
 }
 
 /**
- * Convert Sphinx-style cross-reference markup (e.g., `:meth:`name``) to markdown.
- * Patterns include `:meth:`, `:class:`, `:func:`, `:attr:` with optional ~ prefix
- * for module paths (e.g., `:meth:`~full.path.method_name``).
- *
- * The converted format wraps the name in backticks, which fumadocs will try to
- * resolve as a cross-reference. Explicit links are preserved.
+ * Derive the fully-qualified scope a rendered page documents, from its file
+ * path (before `write` strips the leading package segment):
+ *   `monoprop/circuit/index.mdx`   -> `monoprop.circuit`            (module)
+ *   `monoprop/circuit/ExpGate.mdx` -> `monoprop.circuit.ExpGate`    (class)
+ *   `monoprop/index.mdx`           -> `monoprop`                    (package)
  */
-function convertSphinxMarkup(content) {
-  // Match `:role:`~?name`` or `:role:`~?path.name``
-  // Captures: role (meth/class/func/attr), optional ~, name/path
-  return content.replaceAll(/:\w+:`([^`]+)`/g, (match, inner) => {
-    // Remove leading ~ if present (used in Sphinx for full qualified paths)
-    const cleanName = inner.replace(/^~/, '');
-    // Wrap in backticks for cross-reference resolution
-    return `\`${cleanName}\``;
+function scopeFromPath(filePath) {
+  return filePath
+    .replace(/\/index\.mdx$/, '')
+    .replace(/\.mdx$/, '')
+    .split('/')
+    .join('.');
+}
+
+/**
+ * Resolve cross-references in a rendered MDX page into real links. Targets are
+ * Python paths, resolved fully-qualified or relative to `scope`, the page's own
+ * fully-qualified scope (see `scopeFromPath`):
+ *   `[Circuit][monoprop.circuit.Circuit]`  ->  `[Circuit](/api/circuit/Circuit)`
+ *   `[ExpGate][]`  (on a page scoped to `monoprop.circuit`)  ->  `[ExpGate](/api/circuit/ExpGate)`
+ * Unresolved targets are collected in `unresolved` (surfaced by the caller) and
+ * left untouched.
+ */
+function resolveXrefs(content, xref, unresolved, scope) {
+  // Avoid double-wrapping a display text the docstring already backticked.
+  const code = (text) => (/^`.*`$/.test(text) ? text : `\`${text}\``);
+
+  return content.replaceAll(/\[([^\]]+)\]\[([^\]]*)\]/g, (match, display, target) => {
+    const name = (target || display).trim().replace(/^`|`$/g, '');
+    const url = resolve(name, scope, xref);
+    if (url) return `[${code(display)}](${url})`;
+    unresolved.add(name);
+    return match;
   });
 }
 
-/** Collapse internal whitespace/newlines to a single line. */
 function foldToOneLine(text) {
   return String(text).replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -78,12 +94,7 @@ function foldToOneLine(text) {
  * Upstream markdown serialization escapes braces (`\{` and `\}`), but KaTeX
  * requires unescaped braces for proper grouping (subscripts, superscripts, and
  * command arguments). This function selectively unescapes braces only inside
- * `$...$` (inline) and `$$...$$` (display) math spans.
- *
- * Examples:
- * - `$r_\{12\}$` -> `$r_{12}$`
- * - `$$^\{-1\}$$` -> `$$^{-1}$$`
- * - `$\mathrm\{d\}$` -> `$\mathrm{d}$`
+ * `$...$` (inline) and `$$...$$` (display) math spans, e.g. `$r_\{12\}$` -> `$r_{12}$`.
  */
 function normalizeMathGroupingEscapes(content) {
   const normalizeMathSegment = (math) =>
@@ -149,7 +160,6 @@ function normalizeFunctionReturnsSection(funcNode) {
   }
 }
 
-/** Recursively visit modules/classes and normalize function Returns text. */
 function normalizeFunctionReturns(mod) {
   if (!mod || typeof mod !== 'object') return;
 
@@ -179,15 +189,17 @@ async function main() {
   pruneModule(pkg);
   normalizeFunctionReturns(pkg);
 
-  const files = convert(pkg, { baseUrl: BASE_URL });
+  const xref = buildXrefMap(pkg);
+  const unresolved = new Set();
+
+  const files = convert(pkg, { baseUrl: API_BASE_URL });
 
   for (const file of files) {
-    // Convert Sphinx-style markup to markdown before other processing
-    file.content = convertSphinxMarkup(file.content);
+    file.content = resolveXrefs(file.content, xref, unresolved, scopeFromPath(file.path));
 
     // `convert` keeps the package name ("monoprop") in hrefs, but `write`
     // strips that leading segment from file paths. Realign the links.
-    file.content = file.content.replaceAll(`${BASE_URL}/monoprop`, BASE_URL);
+    file.content = file.content.replaceAll(`${API_BASE_URL}/monoprop`, API_BASE_URL);
 
     // Attach source paths to frontmatter so docs can build GitHub links
     // without duplicating the module list in app code.
@@ -197,8 +209,6 @@ async function main() {
     if (githubPath) {
       file.frontmatter.githubPath = githubPath;
     }
-    // Fumadocs parameter rendering can escape braces in math arguments
-    // (e.g. `\mathrm\{d\}`), which breaks KaTeX grouping.
     file.content = normalizeMathGroupingEscapes(file.content);
 
     // Add titles to the frontmatter for the modules we documented. The title
@@ -213,6 +223,13 @@ async function main() {
       file.frontmatter.description = 'Generated reference for the public monoprop Python package.';
       file.frontmatter.githubPath = 'src/monoprop/__init__.py';
     }
+  }
+
+  if (unresolved.size > 0) {
+    console.warn(
+      `Warning: ${unresolved.size} cross-reference target(s) did not resolve and were left as-is:\n  ` +
+        [...unresolved].sort().join('\n  '),
+    );
   }
 
   await fs.rm(OUT_DIR, { recursive: true, force: true });

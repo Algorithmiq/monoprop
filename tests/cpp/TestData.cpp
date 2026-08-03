@@ -80,12 +80,13 @@ auto load_case(const std::filesystem::path& filename) -> CaseData {
                                              imag.size()));
     }
 
-    FermiOperatorMap hamiltonian;
+    OperatorDict hamiltonian;
     for (size_t i = 0; i < keys.size(); ++i) {
         hamiltonian[keys[i]] = std::complex{real[i], imag[i]};
     }
 
     return {data.at("actual_energy").as<double>(),
+            // `hartree_fock` is the legacy on-disk key for the initial state (tests/data/README.md).
             data.at("hartree_fock").as<VecZ>(),
             data.at("param_inds").as<VecZ>(),
             data.at("gen_coeffs").as<VecD>(),

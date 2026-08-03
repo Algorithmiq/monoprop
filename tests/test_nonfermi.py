@@ -19,9 +19,7 @@ from monoprop.majorana import MajoranaOperator
 
 
 def test_nonfermi(serial_comm):
-    # NOTE: this test checks against a faithful hand-computed result
-    # for a non-fermionic operator evolution.
-
+    # Oracle: a hand-computed evolution of a non-fermionic operator.
     num_modes = 2
     majoranas = [(0,), (0, 1), (0, 1, 3), (2, 3)]
     gen_coeffs = np.array([-1.0, 1.0, -1.0, 1.0])
@@ -37,14 +35,17 @@ def test_nonfermi(serial_comm):
         initial_state=[],
     )
 
-    exact_evolved_op = {
-        (1, 2, 3): -0.8314427691150754j,
-        (0, 1, 2, 3): (-0.16854179325074592 + 0j),
-        (0, 2, 3): 0.35867804544976145j,
-        (0, 2): 0.35152836455073294j,
-        (2,): (0.07125832726038464 + 0j),
-        (1, 2): 0.1516466453264173j,
-    }
+    exact_evolved_op = MajoranaOperator(
+        {
+            (1, 2, 3): -0.8314427691150754j,
+            (0, 1, 2, 3): (-0.16854179325074592 + 0j),
+            (0, 2, 3): 0.35867804544976145j,
+            (0, 2): 0.35152836455073294j,
+            (2,): (0.07125832726038464 + 0j),
+            (1, 2): 0.1516466453264173j,
+        },
+        2,
+    )
 
     mp = MajoranaPropagator(
         fermionic_operator,
@@ -56,6 +57,4 @@ def test_nonfermi(serial_comm):
     test_evolved_op = mp.evolved_operator()
 
     assert len(test_evolved_op) == len(exact_evolved_op)
-
-    for key, value in exact_evolved_op.items():
-        assert np.isclose(test_evolved_op.get(key, 0.0), value, atol=1e-12)
+    assert test_evolved_op.isclose(exact_evolved_op, atol=1e-12)

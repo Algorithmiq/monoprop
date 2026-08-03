@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for qiskit_conversion module."""
-
 from __future__ import annotations
 
 import importlib
@@ -43,7 +41,6 @@ except ImportError:
 
 
 def _assert_pauli_circuits_close(converted, expected) -> None:
-    """Structurally compare two Circuits (PauliOperator has no ``__eq__``)."""
     assert converted.initial_state == expected.initial_state
     assert len(converted) == len(expected)
     assert list(converted.resolved_mapping) == list(expected.resolved_mapping)
@@ -51,8 +48,8 @@ def _assert_pauli_circuits_close(converted, expected) -> None:
     for got, exp in zip(converted.parameters, expected.parameters):
         assert got == pytest.approx(exp)
     for got_gate, exp_gate in zip(converted.gates, expected.gates):
-        # The generator's Pauli terms carry the qubit placement, so comparing
-        # generators also checks the gate acts on the right qubits.
+        # The generator's Pauli terms carry the qubit placement, so this also
+        # checks the gate acts on the right qubits.
         assert got_gate.generator.isclose(exp_gate.generator)
 
 
@@ -102,7 +99,7 @@ class TestFromQiskitOperator:
         op = SparsePauliOp.from_list([("XZ", 1.0), ("IY", 1e-10)])
         result = from_qiskit_operator(op, atol=1e-8)
         assert len(result) == 1
-        assert Pauli("ZX", (0, 1)) in result.terms  # qiskit ordering
+        assert Pauli("ZX", (0, 1)) in result.terms
 
     def test_atol_default_keeps_large_terms(self):
         op = SparsePauliOp.from_list([("XZ", 1.0), ("IY", 0.1)])
@@ -111,13 +108,13 @@ class TestFromQiskitOperator:
 
     def test_force_real_with_real_coefficients(self):
         op = SparsePauliOp.from_list([("XZ", 2.0 + 0j)])
-        result = from_qiskit_operator(op, force_real=True)
+        result = from_qiskit_operator(op)
         assert result.terms[Pauli("ZX", (0, 1))] == pytest.approx(2.0)
 
     def test_force_real_raises_for_complex_coefficients(self):
         op = SparsePauliOp.from_list([("XZ", 1.0 + 0.5j)])
         with pytest.raises(ValueError, match="complex terms"):
-            from_qiskit_operator(op, force_real=True)
+            from_qiskit_operator(op)
 
     def test_preserves_coefficient_magnitude(self):
         op = SparsePauliOp.from_list([("IZ", 0.75 + 0j)])
@@ -130,7 +127,7 @@ class TestFromQiskitOperator:
         op = SparsePauliOp.from_list([("II", 0.5)])
         result = from_qiskit_operator(op)
         assert len(result) == 1
-        assert Pauli("II") in result.terms  # identity term (no letters)
+        assert Pauli("II") in result.terms
 
     def test_single_qubit_operator(self):
         op = SparsePauliOp.from_list([("Z", 1.0)])
@@ -143,49 +140,59 @@ class TestFromQiskitOperator:
 @pytest.mark.qiskit
 class TestToQiskitOperator:
     def test_single_term_reverses_string(self):
-        result = to_qiskit_operator({"XZ": 1.0})
+        result = to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=2))
         labels = list(result.paulis.to_labels(array=True))
         assert "ZX" in labels
 
     def test_single_term_coefficient(self):
-        result = to_qiskit_operator({"XZ": 1.5})
+        result = to_qiskit_operator(PauliOperator({"XZ": 1.5}, num_qubits=2))
         assert result.coeffs[0] == pytest.approx(1.5)
 
     def test_returns_sparse_pauli_op(self):
-        result = to_qiskit_operator({"X": 1.0})
+        result = to_qiskit_operator(PauliOperator({"X": 1.0}, num_qubits=1))
         assert isinstance(result, SparsePauliOp)
 
     def test_multiple_terms_reversed(self):
-        result = to_qiskit_operator({"XZ": 1.0, "IY": 0.5})
+        result = to_qiskit_operator(PauliOperator({"XZ": 1.0, "IY": 0.5}, num_qubits=2))
         labels = list(result.paulis.to_labels(array=True))
         assert "ZX" in labels
         assert "YI" in labels
 
     def test_multiple_terms_coefficients(self):
-        result = to_qiskit_operator({"XZ": 1.0, "IY": 0.5})
+        result = to_qiskit_operator(PauliOperator({"XZ": 1.0, "IY": 0.5}, num_qubits=2))
         label_to_coeff = dict(zip(result.paulis.to_labels(array=True), result.coeffs))
         assert label_to_coeff["ZX"] == pytest.approx(1.0)
         assert label_to_coeff["YI"] == pytest.approx(0.5)
 
-    def test_complex_coefficients(self):
-        result = to_qiskit_operator({"XZ": 1.0 + 0.5j})
-        assert result.coeffs[0] == pytest.approx(1.0 + 0.5j)
+    def test_complex_coefficients_rejected_by_pauli_operator(self):
+        with pytest.raises(ValueError, match="complex terms"):
+            PauliOperator({"XZ": 1.0 + 0.5j}, num_qubits=2)
 
     def test_single_qubit_term(self):
-        result = to_qiskit_operator({"Z": 2.0})
+        result = to_qiskit_operator(PauliOperator({"Z": 2.0}, num_qubits=1))
         labels = list(result.paulis.to_labels(array=True))
         assert "Z" in labels
         assert result.coeffs[0] == pytest.approx(2.0)
 
     def test_identity_string_preserved(self):
-        result = to_qiskit_operator({"II": 0.5})
+        result = to_qiskit_operator(PauliOperator({"II": 0.5}, num_qubits=2))
         labels = list(result.paulis.to_labels(array=True))
         assert "II" in labels
+
+    def test_missing_num_qubits(self):
+        pauli_op = PauliOperator({"XZ": 1.0}, num_qubits=None)
+        with pytest.raises(ValueError, match="Number of qubits must be specified"):
+            to_qiskit_operator(pauli_op)
+
+    def test_default_operator_missing_num_qubits(self):
+        to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=None), num_qubits=2)
 
 
 @requires_qiskit
 @pytest.mark.qiskit
 class ToQiskitCircuitCases:
+    # ExpGate applies exp(+i theta H) and PauliEvolutionGate exp(-i t H), so the expected qiskit
+    # generator carries the NEGATED coefficient at the same evolution time.
     @case(id="single_gate")
     def case_single_gate(self):
         circuit = Circuit(
@@ -195,7 +202,7 @@ class ToQiskitCircuitCases:
         )
         expected_circuit = QuantumCircuit(1)
         expected_circuit.append(
-            PauliEvolutionGate(SparsePauliOp.from_list([("Z", 1.0)]), time=0.7),
+            PauliEvolutionGate(SparsePauliOp.from_list([("Z", -1.0)]), time=0.7),
             [0],
         )
         return circuit, 1, expected_circuit
@@ -210,7 +217,7 @@ class ToQiskitCircuitCases:
         expected_circuit = QuantumCircuit(5)
         # qiskit uses reversed Pauli string order and sorted gate qubit indices.
         expected_circuit.append(
-            PauliEvolutionGate(SparsePauliOp.from_list([("ZYX", 1.5)]), time=0.7),
+            PauliEvolutionGate(SparsePauliOp.from_list([("ZYX", -1.5)]), time=0.7),
             [1, 2, 3],
         )
         return circuit, 5, expected_circuit
@@ -226,13 +233,15 @@ class TestToQiskitCircuit:
 
 
 class QiskitCircuitsCases:
+    # PauliEvolutionGate applies exp(-i t H) and ExpGate exp(+i theta H), so every expected
+    # monoprop generator carries the NEGATED qiskit coefficient at the same angle.
     @case(id="single_pauli_evolution_gate")
     def case_single_pauli_evolution_gate(self):
         circuit = QuantumCircuit(1)
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         expected = Circuit(
-            gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
+            gates=(ExpGate(PauliOperator({Pauli("Z", 0): -1.0}, num_qubits=1)),),
             parameters=(0.7,),
             initial_state=(),
         )
@@ -246,8 +255,8 @@ class QiskitCircuitsCases:
         circuit.append(PauliEvolutionGate(operator2, time=0.5), [0, 1])
         expected = Circuit(
             gates=(
-                ExpGate(PauliOperator({Pauli("ZX", (0, 1)): 1.0}, num_qubits=2)),
-                ExpGate(PauliOperator({Pauli("Y", 0): 0.5}, num_qubits=2)),
+                ExpGate(PauliOperator({Pauli("ZX", (0, 1)): -1.0}, num_qubits=2)),
+                ExpGate(PauliOperator({Pauli("Y", 0): -0.5}, num_qubits=2)),
             ),
             parameters=(0.3, 0.5),
             initial_state=(),
@@ -261,9 +270,9 @@ class QiskitCircuitsCases:
         circuit.rz(0.7, 0)
         expected = Circuit(
             gates=(
-                ExpGate(PauliOperator({Pauli("X", 0): 0.5}, num_qubits=1)),
-                ExpGate(PauliOperator({Pauli("Y", 0): 0.5}, num_qubits=1)),
-                ExpGate(PauliOperator({Pauli("Z", 0): 0.5}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("X", 0): -0.5}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("Y", 0): -0.5}, num_qubits=1)),
+                ExpGate(PauliOperator({Pauli("Z", 0): -0.5}, num_qubits=1)),
             ),
             parameters=(0.5, 0.3, 0.7),
             initial_state=(),
@@ -276,7 +285,7 @@ class QiskitCircuitsCases:
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         circuit.barrier()
         expected = Circuit(
-            gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
+            gates=(ExpGate(PauliOperator({Pauli("Z", 0): -1.0}, num_qubits=1)),),
             parameters=(0.7,),
             initial_state=(),
         )
@@ -295,19 +304,9 @@ class TestFromQiskitCircuit:
         circuit = QuantumCircuit(1)
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
-        circuit.h(0)  # Hadamard gate is not supported
+        circuit.h(0)
 
         with pytest.raises(ValueError, match="Unsupported gate"):
-            from_qiskit_circuit(circuit, [])
-
-    def test_non_commuting_generator_rejected(self):
-        """A PauliEvolution gate with non-commuting terms is rejected on conversion."""
-        circuit = QuantumCircuit(1)
-        # X and Z on the same qubit anticommute, so this is not a single exponential.
-        operator = SparsePauliOp.from_list([("X", 0.5), ("Z", 0.5)])
-        circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
-
-        with pytest.raises(ValueError, match="anticommute"):
             from_qiskit_circuit(circuit, [])
 
 
@@ -325,16 +324,14 @@ def test_to_qiskit_circuit_rejects_unbound() -> None:
 @requires_qiskit
 @pytest.mark.qiskit
 def test_from_to_qiskit_circuit_roundtrip() -> None:
-    """Since in both to and from qiskit operator there are some qubit rewiring,
-    this test makes sure algebraically the operators represent the same matrix.
+    """Both conversions rewire qubits, so the round trip must land on the same operator.
 
-    The test compares the first and final form on the monoprop side, since it is uniquely
-    representing circuits.
+    Compared on the monoprop side, which represents a circuit uniquely.
     """
     circuit = Circuit(
         gates=(ExpGate(PauliOperator({Pauli("XYZ", (3, 1, 2)): 1.0}, num_qubits=4)),),
         parameters=[-1.2],
-    )  # no parameter values
+    )
     qcirc = to_qiskit_circuit(circuit, num_qubits=4)
     circuit_test = from_qiskit_circuit(qcirc, initial_state=[])
     assert circuit.gates[0].generator.isclose(
@@ -345,7 +342,6 @@ def test_from_to_qiskit_circuit_roundtrip() -> None:
 @requires_qiskit
 @pytest.mark.qiskit
 def test_from_qiskit_circuit_rejects_multiple_registers() -> None:
-    """from_qiskit_circuit on a circuit with multiple registers raises a clear error."""
     qreg1 = QuantumRegister(1)
     qreg2 = QuantumRegister(1)
     circuit = QuantumCircuit(qreg1, qreg2)

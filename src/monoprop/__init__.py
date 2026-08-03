@@ -12,14 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Copyright (c) 2025 Algorithmiq. All rights reserved.
-
-monoprop: A great package.
-"""
+"""monoprop: classical Majorana and Pauli monomial propagation."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import importlib.util
 
 from ._core import (
     MAX_NUM_MODES,
@@ -65,27 +62,14 @@ __all__ = [
     "__version__",
     "antihermitian_generator_correction",
     "expand_monomials",
-    "from_qiskit_circuit",
-    "from_qiskit_operator",
     "has_mpi",
     "integrals_to_fermion",
     "is_antihermitian",
     "jordan_wigner_basis_change",
-    "to_qiskit_circuit",
-    "to_qiskit_operator",
     "validate_parameter_mapping",
 ]
 
-_QISKIT_EXPORTS = frozenset(
-    {
-        "from_qiskit_circuit",
-        "from_qiskit_operator",
-        "to_qiskit_circuit",
-        "to_qiskit_operator",
-    }
-)
-
-if TYPE_CHECKING:
+if importlib.util.find_spec("qiskit") is not None:
     from .qiskit_conversion import (
         from_qiskit_circuit,
         from_qiskit_operator,
@@ -93,16 +77,9 @@ if TYPE_CHECKING:
         to_qiskit_operator,
     )
 
-
-def __getattr__(name: str) -> object:
-    """Lazily resolve the optional qiskit conversion helpers (PEP 562)."""
-    if name in _QISKIT_EXPORTS:
-        from . import qiskit_conversion  # noqa: PLC0415  (lazy: optional dependency)
-
-        return getattr(qiskit_conversion, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def __dir__() -> list[str]:
-    """Include the lazily-exposed qiskit helpers in ``dir(monoprop)``."""
-    return sorted({*__all__, *_QISKIT_EXPORTS})
+    __all__ += [
+        "from_qiskit_circuit",
+        "from_qiskit_operator",
+        "to_qiskit_circuit",
+        "to_qiskit_operator",
+    ]

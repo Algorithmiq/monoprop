@@ -49,23 +49,19 @@ def test_infinite_cutoff(
     match evolution_mode:
         case "deferred":
             mp.build_graph(circuit)
-            test_expval = mp.expectation_value_functional(
-                pare_threshold=pare_threshold
-            )(parameters)
+            test_expval = mp.expval_functional(pare_threshold=pare_threshold)(
+                parameters
+            )
 
         case "with_coeffs":
-            # Coefficient-informed build: the seed is regenerated internally from the
-            # circuit's parameters (replacing the old operator_coeffs round-trip).
             mp.build_graph(circuit)
-            test_expval = mp.expectation_value_functional(
-                pare_threshold=pare_threshold
-            )(parameters)
+            test_expval = mp.expval_functional(pare_threshold=pare_threshold)(
+                parameters
+            )
 
         case "inplace":
             mp.propagate(circuit)
-            test_expval = mp.expectation_value_functional(
-                pare_threshold=pare_threshold
-            )()
+            test_expval = mp.expval_functional(pare_threshold=pare_threshold)()
 
     assert np.isclose(test_expval, problem.exact_expval, atol=1e-12)
 
@@ -74,7 +70,7 @@ def test_infinite_cutoff(
 @pytest.mark.parametrize("pare_threshold", [None, 1e-10])
 @pytest.mark.parametrize("schrodinger", [False, True])
 def test_gradient(problem, schrodinger, pare_threshold, comm):
-    """Test expectation_value_and_gradient_functional against finite differences."""
+    """Check the analytic gradient against central finite differences."""
     prng = np.random.default_rng(0)
 
     cutoff = 4
@@ -87,7 +83,7 @@ def test_gradient(problem, schrodinger, pare_threshold, comm):
     )
     circuit = problem.monomial_circuit.to_circuit()
     mp.build_graph(circuit)
-    ener_fn = mp.expectation_value_functional(pare_threshold=pare_threshold)
+    ener_fn = mp.expval_functional(pare_threshold=pare_threshold)
 
     xk = prng.random(size=len(problem.monomial_circuit.parameters))
     true_expval = ener_fn(xk)
@@ -103,18 +99,17 @@ def test_gradient(problem, schrodinger, pare_threshold, comm):
         fd_gradient[i] = (e_plus - e_minus) / (2 * eps)
         xk[i] = xk_old
 
-    fn = mp.expectation_value_and_gradient_functional(pare_threshold=pare_threshold)
+    fn = mp.expval_and_grad_functional(pare_threshold=pare_threshold)
     test_expval, test_gradient = fn(xk)
     assert np.isclose(test_expval, true_expval, atol=1e-6)
     assert np.allclose(test_gradient, fd_gradient, atol=1e-6)
-    test_gradient2 = mp.gradient(xk)
+    test_gradient2 = mp.grad(xk)
     assert np.allclose(test_gradient2, fd_gradient, atol=1e-6)
 
 
 @parametrize_with_cases("problem", cases=CasesFermionicProblem)
 @pytest.mark.parametrize("schrodinger", [True, False])
 def test_immediate_contraction(problem, schrodinger, comm):
-    """Test propagate with immediate contraction returns correct expectation value."""
     n_modes = problem.n_modes
 
     mp = MajoranaPropagator(
@@ -127,10 +122,10 @@ def test_immediate_contraction(problem, schrodinger, comm):
     )
     circuit = problem.monomial_circuit.to_circuit()
     mp.propagate(circuit)
-    test_expval, gradient = mp.expectation_value_and_gradient()
+    test_expval, gradient = mp.expval_and_grad()
 
     assert np.isclose(test_expval, problem.exact_expval, atol=1e-12)
     assert len(gradient) == 0
 
-    test_expval = mp.expectation_value_functional()()
+    test_expval = mp.expval_functional()()
     assert np.isclose(test_expval, problem.exact_expval, atol=1e-12)

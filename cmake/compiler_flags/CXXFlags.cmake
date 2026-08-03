@@ -42,6 +42,11 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # do not use compiler extensions to the C++ standard
 set(CMAKE_CXX_EXTENSIONS FALSE)
+# CMP0155 has CMake scan every C++20-or-later source for `import`s. There are no modules here, so
+# the scan is pure build overhead, and it is not portable: Clang needs the separate clang-scan-deps
+# binary (packaged apart from the compiler), whose absence surfaces as a build failure rather than a
+# configure error. Must be set before any target is created.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 # generate a JSON database of compiler commands (useful for LSP IDEs)
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 # position-independent code
