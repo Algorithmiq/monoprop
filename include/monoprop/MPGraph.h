@@ -98,7 +98,7 @@ public:
     auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
 
     /// Non-owning replay view over the active layers, in build order.
-    auto replay_view() const -> MPGraphView { return MPGraphView(layers_, active_begin_index(), layers(), false); }
+    auto replay_view() const -> MPGraphView { return {layers_, active_begin_index(), layers(), false}; }
 
     auto is_schrodinger() const -> bool { return schrodinger_; }
 
