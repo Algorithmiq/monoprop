@@ -1,17 +1,33 @@
 cmake_minimum_required(VERSION 3.28...4.0)
 
-include(cmake/CPM.cmake)
+project(monoprop LANGUAGES CXX)
 
-if(SKBUILD)
-  # this value doesn't really matter, as it will be set by scikit-build-core
-  set(PROJECT_VERSION "0.1.0")
-else()
-  cpmaddpackage("gh:LecrisUT/CMakeExtraUtils@0.4.1")
-  include(${CMakeExtraUtils_BINARY_DIR}/DynamicVersion.cmake)
-  dynamic_version(PROJECT_PREFIX monoprop_)
+# warn if the user invokes CMake directly
+if(NOT SKBUILD)
+  message(
+    WARNING
+    "\
+  This CMake file is meant to be executed using 'scikit-build-core'.
+  Running it directly will almost certainly not produce the desired
+  result. If you are a user trying to install this package, use the
+  command below, which will install all necessary build dependencies,
+  compile the package in an isolated environment, and then install it.
+  =====================================================================
+   $ pip install .
+  =====================================================================
+  If you are a software developer, and this is your own package, then
+  it is usually much more efficient to install the build dependencies
+  in your environment once and use the following command that avoids
+  a costly creation of a new virtual environment at every compilation:
+  =====================================================================
+   $ pip install nanobind scikit-build-core
+   $ pip install --no-build-isolation -ve .
+  =====================================================================
+  You may optionally add -Ceditable.rebuild=true to auto-rebuild when
+  the package is imported. Otherwise, you need to rerun the above
+  after editing C++ files."
+  )
 endif()
-
-project(monoprop LANGUAGES CXX VERSION ${PROJECT_VERSION})
 
 if(APPLE)
   set(THREADS_FOUND TRUE CACHE BOOL "")
@@ -38,9 +54,19 @@ option(
   "Use 64-bit term indices (support > 2^32 terms per partition)"
   OFF
 )
-if(monoprop_WIDE_TERM_INDEX)
-  add_compile_definitions(monoprop_WIDE_TERM_INDEX)
-endif()
+
+option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
+
+set(Python_FIND_VIRTUALENV FIRST)
+find_package(
+  Python
+  3.11
+  REQUIRED
+  COMPONENTS
+    Interpreter
+    Development.Module
+    ${SKBUILD_SABI_COMPONENT}
+)
 
 find_package(Threads REQUIRED)
 
@@ -49,11 +75,6 @@ if(monoprop_ENABLE_MPI)
 endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
-
-# PROJECT_VERSION_FULL comes from dynamic_version(), which is skipped under scikit-build-core.
-if(NOT DEFINED SKBUILD)
-  message(STATUS "${PROJECT_NAME} version: ${PROJECT_VERSION_FULL}")
-endif()
 
 # report on compiler flags in use
 message(STATUS "Configuring a ${CMAKE_BUILD_TYPE} build")
@@ -75,9 +96,11 @@ message(
   "   Project defaults       : ${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION} ${monoprop_CXX_FLAGS}"
 )
 message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
+
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
 message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
 message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
+message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 
 include(GNUInstallDirs)
 
@@ -91,7 +114,7 @@ configure_file(
 
 add_subdirectory(src)
 
-if(NOT DEFINED SKBUILD)
+if(monoprop_ENABLE_CXX_UNIT_TESTS)
   enable_testing()
   include(CTest)
 
