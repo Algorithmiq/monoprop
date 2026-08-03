@@ -100,6 +100,62 @@ jobs:
           fail_ci_if_error: true
 
 
+  clang-tidy:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: clang-tidy analysis
+    runs-on: ubuntu-26.04
+    # Informational only — clang-tidy findings never fail a PR.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Build (generates compile_commands.json)
+        run: |
+          uv sync --no-progress --all-extras -v
+
+      - name: Run clang-tidy via run-clang-tidy
+        run: |
+          run-clang-tidy \
+            -p build/editable/Release \
+            -source-filter '^.*/((src|include)/monoprop/.*)$' \
+            -j "$(nproc)" \
+            2>&1 | tee /tmp/clang-tidy-output.txt
+        # run-clang-tidy exits 0 even when issues are found; capturing all
+        # output here so reviewdog can post inline PR comments.
+
+      - name: Set up reviewdog
+        uses: reviewdog/action-setup@v1.3.0
+
+      - name: Post clang-tidy comments via reviewdog
+        if: github.event_name == 'pull_request'
+        run: |
+          cat /tmp/clang-tidy-output.txt \
+            | reviewdog \
+                -f=clang-tidy \
+                -reporter=github-pr-review \
+                -filter-mode=nofilter \
+                -level=warning
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
   sonarqube-analysis:
     # in combination with the PR types selection, this top-level if statement
     # skips running the workflow for Draft PRs
