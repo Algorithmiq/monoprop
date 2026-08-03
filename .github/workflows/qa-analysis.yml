@@ -100,10 +100,36 @@ jobs:
           fail_ci_if_error: true
 
 
-  clang-tidy:
+  cpp-changes:
     # in combination with the PR types selection, this top-level if statement
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Detect C++ file changes
+    runs-on: ubuntu-26.04
+    outputs:
+      any: ${{ steps.detect.outputs.any }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect C++ file changes
+        id: detect
+        run: |
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          else
+            count=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -cE '\.(cpp|h|hpp)$' || echo 0)
+            echo "any=$([ "${count}" -gt 0 ] && echo 'true' || echo 'false')" >> "$GITHUB_OUTPUT"
+          fi
+
+
+  clang-tidy:
+    needs: [cpp-changes]
+    # Skip when no C++ files changed in the PR diff.
+    if: ${{ needs.cpp-changes.outputs.any == 'true' }}
 
     name: clang-tidy analysis
     runs-on: ubuntu-26.04
@@ -150,7 +176,7 @@ jobs:
             | reviewdog \
                 -f=clang-tidy \
                 -reporter=github-pr-review \
-                -filter-mode=nofilter \
+                -filter-mode=diff_context \
                 -level=warning
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
