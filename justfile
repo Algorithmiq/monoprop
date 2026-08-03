@@ -45,7 +45,7 @@ test-mpi RANKS='':
     do echo "Running full Python test suite with ${r} MPI rank(s)"; \
     mpiexec -n "$r" uv run --no-sync python -m pytest tests --with-mpi -v; \
     echo "Running C++ unit tests with ${r} MPI rank(s)"; \
-    ctest --test-dir build/editable/Release --output-on-failure \
+    ctest --test-dir build/editable/Release --output-on-failure; \
     done
 
 # Build and run the C++ suite with a 64-bit TermIndex (monoprop_WIDE_TERM_INDEX=ON).
