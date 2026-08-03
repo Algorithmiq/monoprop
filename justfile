@@ -29,54 +29,90 @@ fumapy := "--with " + site + "/node_modules/fumadocs-python --with 'griffe<2' --
 
 default: build-docs
 
-test-py:
+test:
     uv run python -m pytest -m "not mpi"
+    ctest --test-dir build/editable/Release --output-on-failure
 
 # MPI is off by default in source builds, so build an MPI-enabled editable install
-
 # first, then run the suite under mpiexec with --no-sync (avoids a per-rank resync).
-test-py-mpi:
-    uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v; \
-    ranks="${monoprop_MPI_TEST_PROCS:-2}"; \
+# Pass RANKS as either a single integer or a semicolon-separated list (e.g. "1;2;4").
+
+test-mpi RANKS='':
+    export OMPI_MCA_rmaps_base_oversubscribe="1"
+    uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v
+    ranks="${1:-${monoprop_MPI_TEST_PROCS:-2}}"
     for r in ${ranks//;/ }; \
     do echo "Running full Python test suite with ${r} MPI rank(s)"; \
-    mpiexec --allow-run-as-root -n "$r" uv run --no-sync python -m pytest tests --with-mpi -v; \
+    mpiexec -n "$r" uv run --no-sync python -m pytest tests --with-mpi -v; \
+    echo "Running C++ unit tests with ${r} MPI rank(s)"; \
+    ctest --test-dir build/editable/Release --output-on-failure; \
     done
-
-test-py-mpi-matrix:
-    uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v; \
-    ranks="${monoprop_MPI_TEST_PROCS:-1;2;4}"; for r in ${ranks//;/ }; do echo "Running MPI-marked Python tests with ${r} rank(s)"; mpiexec --allow-run-as-root -n "$r" uv run --no-sync python -m pytest tests --with-mpi -m mpi -v; done
 
 # Build and run the C++ suite with a 64-bit TermIndex (monoprop_WIDE_TERM_INDEX=ON).
 # This is the only configuration that compiles the wide `#if defined(monoprop_WIDE_TERM_INDEX)`
 # branches (operator_index_tests, large_cosine_storage_tests, graph_encoding_tests), so it
-
 # guards them from bit-rotting. Serial is enough to exercise those branches.
-test-cpp-wide:
-    cmake --preset release-gcc-wide
-    cmake --build --preset release-gcc-wide
-    ctest --preset release-gcc-wide -L serial
 
-# Build and run the C++ suite with MPI enabled. `monoprop_MPI_TEST_PROCS` (default 2, a
+test-wide:
+    uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_WIDE_TERM_INDEX=ON"
+    uv run --no-sync python -m pytest -m "not mpi"
+    ctest --test-dir build/editable/Release --output-on-failure
 
-# semicolon list) picks the rank counts the mpi-labelled tests are registered for.
-test-cpp-mpi:
-    cmake --preset release-gcc-mpi
-    cmake --build --preset release-gcc-mpi
-    ctest --preset release-gcc-mpi
+# Report code coverage.
 
-# Run the C++ suite under coverage and report with gcovr.
+code-coverage:
+    uv sync --no-progress --group test --all-extras --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.build-type=Coverage" -v
 
-# Approximates the CI cpp-checks gcovr invocation; set $GCOV to pick another gcov binary.
-coverage-cpp:
-    cmake --preset coverage-gcc
-    cmake --build --preset coverage-gcc
-    ctest --preset coverage-gcc
-    uvx gcovr --gcov-executable "${GCOV:-gcov}" --gcov-ignore-parse-errors \
-        --exclude-throw-branches --exclude-unreachable-branches \
-        --root . --filter '^(src|include)/' --exclude '^tests/' build/coverage-gcc --txt
+    # run python tests
+    uv run --no-sync python -m pytest --cov=src/monoprop --cov-report=lcov:python-coverage.info
+
+    # coverage.py emits repo-relative SF: paths while gcovr emits absolute ones;
+    # genhtml's common-prefix stripping would abort with "duplicate merge record" without this step
+    sed -i 's|^SF:\([^/]\)|SF:{{ project_source_dir }}/\1|' python-coverage.info
+
+    # collect coverage (C++ through Python bindings)
+    uvx gcovr \
+      --gcov-executable gcov \
+      --gcov-ignore-parse-errors \
+      --exclude-throw-branches \
+      --exclude-unreachable-branches \
+      --filter '^(src|include)/' \
+      --exclude '^tests/' \
+      --merge-lines \
+      "build/editable/Coverage" \
+      --lcov cpp-coverage-through-python-bindings.info
+
+    # run C++ unit tests
+    ctest --test-dir build/editable/Coverage --output-on-failure
+
+    # collect coverage (C++ unit tests)
+    uvx gcovr \
+      --gcov-executable gcov \
+      --gcov-ignore-parse-errors \
+      --exclude-throw-branches \
+      --exclude-unreachable-branches \
+      --filter '^(src|include)/' \
+      --exclude '^tests/' \
+      --merge-lines \
+      "build/editable/Coverage" \
+      --lcov cpp-coverage.info
+
+    # merge
+    lcov \
+      --ignore-errors inconsistent,corrupt \
+      -a python-coverage.info \
+      -a cpp-coverage-through-python-bindings.info \
+      -a cpp-coverage.info \
+      -o merged.info
+
+    # output to HTML
+    genhtml merged.info -o monoprop-coverage --legend --title "monoprop coverage" \
+      --prefix {{ project_source_dir }} \
+      --ignore-errors inconsistent \
+      --verbose
 
 # Install the documentation site's JavaScript dependencies.
+
 docs-install:
     cd {{ site }} && npm ci
 
