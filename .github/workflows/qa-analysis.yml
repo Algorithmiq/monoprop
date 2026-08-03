@@ -169,8 +169,9 @@ jobs:
 
           run-clang-tidy \
             -p build/editable/Release \
-            -source-filter '^.*/((src|include)/monoprop/.*)$' \
+            -source-filter='^${{ github.workspace }}/src/monoprop/.*$' \
             -header-filter='^(.*/)?(src|include)/monoprop/.*$' \
+            -exclude-header-filter='^.*/src/monoprop/bindings/.*$' \
             -extra-arg=-fno-color-diagnostics \
             -j "$(nproc)" \
             2>&1 | tee /tmp/clang-tidy-output.txt
