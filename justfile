@@ -58,12 +58,6 @@ test-wide:
     uv run --no-sync python -m pytest -m "not mpi"
     ctest --test-dir build/editable/Release --output-on-failure
 
-# Run clang-tidy on all project C++ sources via cmake's CMAKE_CXX_CLANG_TIDY integration.
-# Rebuilds the package with clang-tidy invoked on every translation unit.
-
-clang-tidy:
-    uv sync --no-progress --all-extras --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.CMAKE_CXX_CLANG_TIDY=clang-tidy" -v
-
 # Report code coverage.
 
 code-coverage:
