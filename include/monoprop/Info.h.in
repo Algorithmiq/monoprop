@@ -19,14 +19,6 @@
 #include <string_view>
 
 namespace monoprop {
-static constexpr auto version() noexcept -> std::string_view {
-    return "@PROJECT_VERSION_FULL@";
-}
-
-static constexpr auto git_commit() noexcept -> std::string_view {
-    return "@GIT_COMMIT@";
-}
-
 static constexpr auto build_type() noexcept -> std::string_view {
     return "@CMAKE_BUILD_TYPE@";
 }

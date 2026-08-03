@@ -8,4 +8,4 @@ echo "Set up development environment in $WORKSPACE"
 uv sync --all-groups --all-extras -v
 
 # install prek hooks
-uv run prek install --install-hooks
+uv run prek install --install-hooks --overwrite
