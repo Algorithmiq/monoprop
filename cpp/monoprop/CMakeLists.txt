@@ -1,13 +1,13 @@
 find_package(Boost 1.85 CONFIG REQUIRED)
 message(STATUS "Using Boost: ${Boost_DIR} (version ${Boost_VERSION})")
 
-add_library(
+target_sources(
   monoprop-objs
-  OBJECT
-  Evolution.cpp
-  MPFunctions.cpp
-  MPGraph.cpp
-  Validation.cpp
+  PRIVATE
+    Evolution.cpp
+    MPFunctions.cpp
+    MPGraph.cpp
+    Validation.cpp
 )
 
 target_compile_definitions(
@@ -32,9 +32,9 @@ target_compile_options(monoprop-objs PUBLIC "${EXTRA_CXXFLAGS}")
 target_include_directories(
   monoprop-objs
   PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp/include>
     $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp>
 )
 
 target_link_libraries(
@@ -69,7 +69,20 @@ generate_export_header(
   DEFINE_NO_DEPRECATED
 )
 
-add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
+target_sources(
+  monoprop
+  PUBLIC
+    FILE_SET headers
+      BASE_DIRS
+        ${PROJECT_SOURCE_DIR}/cpp
+      TYPE HEADERS
+      FILES
+        "${PROJECT_SOURCE_DIR}/cpp/monoprop/Bitset.h"
+        "${PROJECT_SOURCE_DIR}/cpp/monoprop/MPGraphEncoding.h"
+        "${PROJECT_SOURCE_DIR}/cpp/monoprop/TypeAliases.h"
+        "${PROJECT_SOURCE_DIR}/cpp/monoprop/Utilities.h"
+        "${PROJECT_SOURCE_DIR}/cpp/monoprop/Validation.h"
+)
 
 target_compile_definitions(
   monoprop
@@ -86,29 +99,6 @@ target_link_libraries(
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
 )
 
-target_sources(
-  monoprop
-  PUBLIC
-    FILE_SET headers
-      TYPE HEADERS
-      BASE_DIRS
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_BINARY_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src
-      FILES
-        "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/Evolution.h"
-        "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/MPFunctions.h"
-        "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/MPGraph.h"
-        "${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/MonomialPropagator.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Bitset.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/MPGraphEncoding.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/TypeAliases.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Utilities.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Validation.h"
-        "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h"
-        "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/Info.h"
-)
-
 add_subdirectory(algebra)
 add_subdirectory(core)
 add_subdirectory(detail)
@@ -120,9 +110,10 @@ install(
   LIBRARY
     DESTINATION ${PROJECT_NAME}/${CMAKE_INSTALL_LIBDIR}
     COMPONENT lib
+  FILE_SET api_headers
+    DESTINATION ${PROJECT_NAME}/${CMAKE_INSTALL_INCLUDEDIR}
+    COMPONENT dev
   FILE_SET headers
     DESTINATION ${PROJECT_NAME}/${CMAKE_INSTALL_INCLUDEDIR}
     COMPONENT dev
 )
-
-add_subdirectory(bindings)

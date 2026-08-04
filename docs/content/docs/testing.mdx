@@ -163,21 +163,17 @@ class CasesFermionicProblem:
 
 ### C++ tests
 
-C++ tests live in `tests/cpp/` and use [Boost.Test](https://www.boost.org/doc/libs/release/libs/test/). They are registered automatically via CMake — add the new `.cpp` file to the `SOURCES` list in `tests/cpp/CMakeLists.txt`.
+C++ tests live in `cpp/tests/` and use [Boost.Test](https://www.boost.org/doc/libs/release/libs/test/). They are registered automatically via CMake: new `*.cpp` files in `cpp/tests/` are picked up on the next configure, so no source-list edit is needed.
 
 #### Simple unit test
 
 ```cpp
 #include <boost/test/unit_test.hpp>
 
-BOOST_AUTO_TEST_SUITE(MyFeatureSuite)
-
 BOOST_AUTO_TEST_CASE(my_basic_check) {
     int result = 2 + 2;
     BOOST_TEST(result == 4);
 }
-
-BOOST_AUTO_TEST_SUITE_END()
 ```
 
 #### Data-driven test using reference fixtures
@@ -212,9 +208,6 @@ BOOST_DATA_TEST_CASE_F(ExampleDataFix,
     test_evolve_build_graph<n_modes>(data, cfg, pare, data.actual_expval);
 }
 ```
-
-The `ExampleDataFix` fixture automatically resolves the test data path via the `monoprop_REF_DATA_PATH` environment variable or by walking up from the working directory to `tests/data/`.
-
 
 
 ## See also

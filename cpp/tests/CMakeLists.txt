@@ -11,6 +11,12 @@ cpmaddpackage(
   EXCLUDE_FROM_ALL YES
 )
 
+configure_file(
+  ${CMAKE_CURRENT_LIST_DIR}/TestUtilities.h.in
+  ${CMAKE_CURRENT_BINARY_DIR}/TestUtilities.h
+  @ONLY
+)
+
 file(
   GLOB _tests_cpps
   LIST_DIRECTORIES false
@@ -25,6 +31,13 @@ target_compile_definitions(
   PUBLIC
     BOOST_TEST_DYN_LINK
     BOOST_TEST_NO_MAIN
+)
+
+target_include_directories(
+  monoprop_unit_tests.x
+  PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
 )
 
 target_link_libraries(

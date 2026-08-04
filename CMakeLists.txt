@@ -107,17 +107,8 @@ include(GNUInstallDirs)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 
-configure_file(
-  ${PROJECT_SOURCE_DIR}/include/monoprop/Info.h.in
-  ${PROJECT_BINARY_DIR}/include/monoprop/Info.h
-)
+add_library(monoprop-objs OBJECT "")
+add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
 
-add_subdirectory(src)
-
-if(monoprop_ENABLE_CXX_UNIT_TESTS)
-  enable_testing()
-  include(CTest)
-
-  # This must come last!!
-  add_subdirectory(tests/cpp)
-endif()
+add_subdirectory(cpp)
+add_subdirectory(src/monoprop/bindings)
