@@ -63,39 +63,16 @@ auto boost_test_print_type(std::ostream& os, const std::pair<K, V>& aPair) -> st
 } // namespace std
 
 namespace test_utils {
-
 namespace fs = std::filesystem;
 using namespace monoprop;
 
-inline auto resolve_test_data_path(int max_depth = 8) -> fs::path {
-    if (const char* env_p = std::getenv("monoprop_REF_DATA_PATH")) {
-        return fs::path(env_p);
-    }
-
-    fs::path cwd = fs::current_path();
-    for (int i = 0; i < max_depth && !cwd.empty(); ++i) {
-        fs::path cpath = cwd / "tests" / "data";
-        if (fs::exists(cpath)) {
-            return cpath;
-        }
-        if (!cwd.has_parent_path()) {
-            break;
-        }
-        cwd = cwd.parent_path();
-    }
-
-    const fs::path source_dir = fs::path(__FILE__).parent_path().parent_path();
-    const fs::path fallback = source_dir / "data";
-    if (fs::exists(fallback)) {
-        return fallback;
-    }
-
-    return fs::path("tests/data");
+static inline auto test_data_path() -> fs::path {
+    return fs::path("@PROJECT_SOURCE_DIR@/tests/data");
 }
 
 template <size_t NumModes>
 inline auto load_case_data(const std::string& filename) -> CaseData {
-    const fs::path data_path = resolve_test_data_path() / filename;
+    const fs::path data_path = test_data_path() / filename;
     BOOST_REQUIRE_MESSAGE(fs::exists(data_path), "Missing msgpack data file: " << data_path);
     return load_case(data_path);
 }
@@ -232,8 +209,7 @@ struct ExampleDataFix {
     CaseData data;
 
     ExampleDataFix() {
-        auto data_path = resolve_test_data_path();
-        auto msgpack_file = data_path / "random_exact.msgpack";
+        auto msgpack_file = test_utils::test_data_path() / "random_exact.msgpack";
         data = load_case(msgpack_file);
     }
 };
@@ -253,7 +229,4 @@ inline auto make_schrodinger_cutoff(bool enabled, int cutoff, int offset = 2) ->
     }
     return cutoff + offset;
 }
-
 } // namespace test_utils
-
-using test_utils::resolve_test_data_path;

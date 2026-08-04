@@ -1,3 +1,5 @@
+add_subdirectory(include/monoprop)
+
 # transform monoprop_CXX_FLAGS and EXTRA_CXXFLAGS to ;-separated lists
 if(DEFINED monoprop_CXX_FLAGS)
   string(
@@ -47,3 +49,9 @@ install(
     ${PROJECT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake
   DESTINATION ${monoprop_INSTALL_CMAKEDIR}
 )
+
+if(monoprop_ENABLE_CXX_UNIT_TESTS)
+  enable_testing()
+  include(CTest)
+  add_subdirectory(tests)
+endif()
