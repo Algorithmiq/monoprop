@@ -84,9 +84,9 @@ for fermionic operators and more.
 
 ## Building from source
 
-A from-source build gives you the editable Python bindings and the standalone C++
-library and executables. **MPI is off by default** in every build path; enable it
-explicitly.
+A from-source build gives you the editable Python bindings and the C++ build tree
+used for the library and unit tests. **MPI is off by default** in every build
+path; enable it explicitly.
 
 Python bindings (via [uv](https://github.com/astral-sh/uv)):
 
@@ -96,11 +96,11 @@ uv sync --all-extras -v
 uv sync --all-extras -v --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
 ```
 
-C++ library and executables (via CMake presets — the same ones CI configures with):
+C++ unit-test build:
 
 ```bash
-cmake --preset release-gcc        # release-gcc-mpi to enable MPI
-cmake --build --preset release-gcc
+uv sync --all-extras -v
+ctest --test-dir build/editable/Release
 ```
 
 Full instructions — prerequisites, MPI options, and running the example
@@ -110,12 +110,11 @@ executable — are in the [building guide](https://docs.algorithmiq.fi/monoprop/
 
 ```bash
 uv run python -m pytest -m "not mpi"   # Python tests (serial)
-just test-py-mpi                       # Python tests under MPI
-ctest --preset release-gcc             # C++ unit tests (release-gcc-mpi for MPI)
-just test-cpp-wide                     # C++ unit tests with a 64-bit TermIndex
+just test-mpi                          # Python + C++ tests under MPI
+just test-wide                         # Python + C++ unit tests with a 64-bit TermIndex
 ```
 
-See the [building guide](https://docs.algorithmiq.fi/monoprop/docs/building#running-the-tests)
+See the [testing guide](https://docs.algorithmiq.fi/monoprop/docs/testing)
 for the with/without-MPI details and the rank matrix.
 
 ## Development environment

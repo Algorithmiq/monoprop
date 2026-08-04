@@ -23,34 +23,30 @@ A test that needs the partition runtime must pass an explicit `partitions=` argu
 
 ## Building Tests
 
-Built automatically with CMake (skipped under scikit-build wheels):
+The supported workflow builds the C++ suite when running `uv sync`:
 
 ```bash
-cmake --preset release-gcc-mpi && cmake --build --preset release-gcc-mpi
+uv sync --all-extras -v
+ctest --test-dir build/editable/Release
 ```
 
-or the plain form:
-
-```bash
-cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release -Dmonoprop_ENABLE_MPI=ON
-cmake --build build/release
-```
-
+For an MPI-enabled tree, rerun `uv sync` with
+`--config-settings=cmake.define.monoprop_ENABLE_MPI=ON`.
 ## Running Tests
 
 ```bash
-ctest --preset release-gcc-mpi              # everything
-ctest --test-dir build/... -L serial        # serial variants only
-ctest --test-dir build/... -L mpi           # MPI variants
-ctest --test-dir build/... -L mpi-2         # only the 2-rank run
+ctest --test-dir build/editable/Release           # everything
+ctest --test-dir build/editable/Release -L serial # serial variants only
+ctest --test-dir build/editable/Release -L mpi    # MPI variants
+ctest --test-dir build/editable/Release -L mpi-2  # only the 2-rank run
 ```
 
 Or drive the binary directly:
 
 ```bash
-./tests/cpp/monoprop_unit_tests.x --list_content
-./tests/cpp/monoprop_unit_tests.x --run_test=pauli_algebra_*
-mpirun -n 2 ./tests/cpp/monoprop_unit_tests.x
+build/editable/Release/bin/monoprop_unit_tests.x --list_content
+build/editable/Release/bin/monoprop_unit_tests.x --run_test=pauli_algebra_*
+mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x
 ```
 
 Because CTest discovery treats each `--list_content` line as a top-level test
@@ -122,7 +118,7 @@ CMake wraps the whole suite in `mpiexec -n <rank>` for each rank in
 per case, because the ranks have to reach the same collectives. For exhaustive
 rank coverage: `-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under
 MPI while debugging, invoke the binary directly:
-`mpirun -n 2 ./tests/cpp/monoprop_unit_tests.x --run_test=<case>`.
+`mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x --run_test=<case>`.
 
 ## Adding New Tests
 

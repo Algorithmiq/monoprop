@@ -1,22 +1,20 @@
 ---
 title: Building from Source
-description: Build the Python bindings and the C++ library and executables, with or without MPI.
+description: Build the Python bindings and the C++ unit-test tree, with or without MPI.
 ---
 
-monoprop has two build products, each with its own build system:
+monoprop has one supported from-source build workflow:
 
 - the **Python bindings** — the nanobind extension behind `import monoprop`,
   built with scikit-build-core and driven by `uv` (or `pip`);
-- the **standalone C++ library and executables** — built directly with CMake
-  presets.
+- the **C++ unit tests** — built within the same `uv` (or `pip`) invocation.
 
 MPI is **off by default** in every build path; you enable it explicitly. The
 mechanism differs by build:
 
 | Build | Enable MPI with |
 | --- | --- |
-| Python bindings (scikit-build / `uv` / `pip`) | `--config-settings=cmake.define.monoprop_ENABLE_MPI=ON` (or export `SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON"`) |
-| C++ (CMake presets) | use the `*-mpi` preset |
+| Python bindings and C++ tests (scikit-build / `uv` / `pip`) | `--config-settings=cmake.define.monoprop_ENABLE_MPI=ON` (or export `SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON"`) |
 
 The prebuilt wheels published to PyPI (`pip install monoprop`) are also built
 without MPI, so a from-source build is required for multi-rank runs.
@@ -86,50 +84,42 @@ mpiexec -n 8 uv run python your_script.py
 See [Parallelism and distribution](/features/parallelism) for the communicator options and the
 operator-partitioning controls.
 
-## Building the C++ library and executables
+## Building the C++ unit tests
 
-The standalone build uses CMake presets (Ninja generator). It produces the
-`monoprop` library plus the test executable under `build/<preset>/bin/`.
+The supported C++ workflow reuses the build tree produced by `uv sync`. Do not
+run `cmake --preset ...` to configure this project directly: the top-level CMake
+configuration expects scikit-build-core to provide Python, nanobind, and related
+cache variables. Instead, first create the tree with `uv sync`, then invoke `ctest`
+directly to run the C++ unit tests.
 
-### Default preset (no MPI)
-
-```bash
-cmake --preset release-gcc
-cmake --build --preset release-gcc
-```
-
-### MPI preset
-
-Use the `-mpi` preset, which sets `monoprop_ENABLE_MPI=ON`:
+### Release tree
 
 ```bash
-cmake --preset release-gcc-mpi
-cmake --build --preset release-gcc-mpi
+uv sync --all-extras -v
+ctest --test-dir build/editable/Release
 ```
 
-### Other presets
+This uses the scikit-build-core Release tree at `build/editable/Release` and
+runs `bin/monoprop_unit_tests.x` there.
 
-| Preset | What it changes |
-| --- | --- |
-| `release-clang` | Same as `release-gcc`, built with `clang++`. |
-| `release-gcc-wide` | Sets `monoprop_WIDE_TERM_INDEX=ON` (64-bit term indices, for more than 2^32 terms per partition). |
-| `debug-gcc` / `debug-gcc-mpi` | Debug builds, without and with MPI. |
-| `coverage-gcc` | Coverage build type, for `gcovr` (see `just coverage-cpp`). |
-
-Every preset writes to `build/<preset>/` and has a matching build and test
-preset of the same name. These presets are the single source of truth for the
-project's build configurations: CI configures through them too, so a
-locally-reproduced preset build matches what CI ran.
-
-To build a single target, pass `--target`:
+### Debug tree
 
 ```bash
-cmake --build --preset release-gcc --target monoprop_unit_tests.x
+uv sync --all-extras -v --config-settings=cmake.build-type=Debug
+ctest --test-dir build/editable/Debug
 ```
+
+### Related workflows
+
+- Use `just test-wide` for the 64-bit `monoprop_WIDE_TERM_INDEX` configuration.
+- Use `just code-coverage` for the coverage build.
+- Use `ctest --test-dir build/editable/Release -L serial` or `-L mpi-2` to
+  filter the discovered C++ test set.
 
 
 ## See also
 
 - [Getting Started](/getting-started) — installing a prebuilt release from PyPI.
 - [Parallelism and distribution](/features/parallelism) — running across MPI ranks and shared-memory threads.
-- [How to Contribute](/how-to-contribute) — the full test and documentation workflow.
+- [Testing](/testing) — the full Python and C++ test workflow.
+- [How to Contribute](/how-to-contribute) — contributor workflow and documentation checks.
