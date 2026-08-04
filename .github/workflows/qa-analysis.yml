@@ -46,11 +46,11 @@ jobs:
         with:
           matrix: true
           files: |
-            src/monoprop/**/*.cpp
-            src/monoprop/**/*.h
-            src/monoprop/**/*.inl
-            include/monoprop/**/*.h
-            include/monoprop/**/*.inl
+            cpp/monoprop/**/*.cpp
+            cpp/monoprop/**/*.h
+            cpp/monoprop/**/*.inl
+            cpp/include/monoprop/**/*.h
+            cpp/include/monoprop/**/*.inl
 
   code-coverage:
     # in combination with the PR types selection, this top-level if statement
