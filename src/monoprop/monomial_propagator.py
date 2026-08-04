@@ -116,8 +116,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
         # Qubit count for expanding Pauli gates; PauliPropagator overwrites it after this call.
         self._num_qubits = None
         self._initial_state = list(initial_state)
-        # dispatch() is typed as the base `type[_SimulatorAdapter]`, whose __init__ takes extra
-        # positional args; the kwargs below match the per-mode subclass actually returned.
+        # dispatch() returns a functools.partial bound to the right core type and num_modes;
+        # call it with keyword args matching _SimulatorAdapter.__init__.
         self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,

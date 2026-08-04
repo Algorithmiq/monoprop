@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 from datetime import date
 from pathlib import Path
-from textwrap import indent
 
 # Run as a script, so sys.path[0] is tools/ regardless of the working directory CMake picks.
 from _binding_layout import binding_block, binding_blocks
@@ -87,61 +86,18 @@ def _simulator_adapter_source() -> str:
 """
 
 
-def _class_defs(
-    exact_modes: list[int], class_prefix: str, core_alias_prefix: str
-) -> str:
-    class_defs = []
-    for mode in exact_modes:
-        block = binding_block(mode)
-        class_defs.append(
-            f"""class {class_prefix}{mode:03d}(_SimulatorAdapter):
-    def __init__(
-        self,
-        initial_operator: dict[tuple[int, ...], complex],
-        cutoff: int,
-        initial_state: list[int],
-        comm=None,
-        schrodinger_cutoff: int | None = None,
-        lower_atol: float | None = None,
-        upper_atol: float | None = None,
-        cutoff_type: str = "length",
-        basis_change: list[list[int]] | None = None,
-        basis: str = "majorana",
-    ) -> None:
-        super().__init__(
-            {core_alias_prefix}{block:03d}Core,
-            {mode},
-            initial_operator,
-            cutoff,
-            initial_state,
-            comm,
-            schrodinger_cutoff,
-            lower_atol,
-            upper_atol,
-            cutoff_type,
-            basis_change,
-            basis,
-        )
-"""
-        )
-    return "\n\n".join(class_defs)
-
-
-def _dispatch_cases(exact_modes: list[int], class_prefix: str) -> str:
-    return indent(
-        "\n".join(
-            f"case {mode:d}:\n    cls = {class_prefix}{mode:03d}"
-            for mode in exact_modes
-        ),
-        " " * 8,
+def _cores_table(blocks: list[int], class_name: str) -> str:
+    """Emit a dict literal mapping each storage-block width to its core type alias."""
+    entries = ",\n".join(
+        f"    {block}: _{class_name}{block:03d}Core" for block in blocks
     )
+    return f"_CORES: dict[int, type] = {{\n{entries},\n}}"
 
 
 def _core_dispatch_source(
     *,
     max_logical_num_modes: int,
     blocks: list[int],
-    exact_modes: list[int],
     license_header: str,
     class_name: str,
     module_name: str,
@@ -154,8 +110,8 @@ def _core_dispatch_source(
         )
         + "\n)"
     )
-    classes = _class_defs(exact_modes, class_name, f"_{class_name}")
-    cases = _dispatch_cases(exact_modes, class_name)
+    modes_per_block = binding_block(1)  # == MODES_PER_STORAGE_BLOCK
+    cores_table = _cores_table(blocks, class_name)
 
     return f'''{license_header}
 
@@ -165,35 +121,44 @@ def _core_dispatch_source(
 This file was automatically generated on {date.today()}. Do *NOT EDIT*. Do *NOT COMMIT*.
 """
 
-# ruff: noqa: I001, ANN001, ANN204, C901, PLR0912
+# ruff: noqa: I001, ANN001, ANN204
 
 from __future__ import annotations
 
+from functools import partial
+
 from {module_name}._core import {import_line}
 from monoprop.exceptions import NumberOfModesInvalidError
+
+_MAX_LOGICAL_NUM_MODES: int = {max_logical_num_modes}
+_MODES_PER_STORAGE_BLOCK: int = {modes_per_block}
 
 
 {_simulator_adapter_source()}
 
 
-{classes}
+{cores_table}
 
 
-def dispatch(num_modes: int) -> type[_SimulatorAdapter]:
-    """Dispatches the appropriate {class_name} class based on number of Fermionic modes."""
-    match num_modes:
-        case n if n <= 0:
-            errmsg = f"Number of Fermionic modes {{n}} invalid. num_modes must be > 0."
-            raise NumberOfModesInvalidError(errmsg)
-{cases}
-        case n if n > {max_logical_num_modes}:
-            errmsg = (
-                f"Number of Fermionic modes {{n}} invalid. num_modes must be <= {max_logical_num_modes}."
-                " Contact monoprop developers if more than {max_logical_num_modes} Fermionic modes are required."
-            )
-            raise NumberOfModesInvalidError(errmsg)
+def _binding_block(n: int) -> int:
+    blocks = (n + _MODES_PER_STORAGE_BLOCK - 1) // _MODES_PER_STORAGE_BLOCK
+    return max(_MODES_PER_STORAGE_BLOCK, blocks * _MODES_PER_STORAGE_BLOCK)
 
-    return cls
+
+def dispatch(num_modes: int) -> partial[_SimulatorAdapter]:
+    """Return a factory for a {class_name} adapter bound to *num_modes*."""
+    if not isinstance(num_modes, int) or num_modes <= 0:
+        errmsg = f"Number of Fermionic modes {{num_modes}} invalid. num_modes must be > 0."
+        raise NumberOfModesInvalidError(errmsg)
+    if num_modes > _MAX_LOGICAL_NUM_MODES:
+        errmsg = (
+            f"Number of Fermionic modes {{num_modes}} invalid."
+            f" num_modes must be <= {{_MAX_LOGICAL_NUM_MODES}}."
+            f" Contact monoprop developers if more than {{_MAX_LOGICAL_NUM_MODES}}"
+            " Fermionic modes are required."
+        )
+        raise NumberOfModesInvalidError(errmsg)
+    return partial(_SimulatorAdapter, _CORES[_binding_block(num_modes)], num_modes)
 '''
 
 
@@ -204,7 +169,6 @@ def main(
 ) -> None:
     """Generate dispatch modules for core Python bindings."""
     blocks = binding_blocks(max_logical_num_modes)
-    exact_modes = list(range(1, max_logical_num_modes + 1))
 
     project_root = Path(__file__).resolve().parents[1]
     license_header_path = project_root / ".github" / "license-header.txt"
@@ -214,7 +178,6 @@ def main(
         _core_dispatch_source(
             max_logical_num_modes=max_logical_num_modes,
             blocks=blocks,
-            exact_modes=exact_modes,
             license_header=license_header,
             class_name=class_name,
             module_name=module_name,
