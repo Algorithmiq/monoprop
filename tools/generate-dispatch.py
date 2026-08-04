@@ -117,7 +117,6 @@ def _core_dispatch_source(
 
 """Typing dispatch for the {class_name}.
 
-
 This file was automatically generated on {date.today()}. Do *NOT EDIT*. Do *NOT COMMIT*.
 """
 
