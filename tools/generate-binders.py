@@ -40,11 +40,9 @@ HEADER = """/* This file was automatically generated on {date}. Do *NOT EDIT*. D
 #include <nanobind/nanobind.h>
 
 
-namespace monoprop {{
-namespace bindings {{
+namespace monoprop::bindings {{
 {body}
-}} // namespace bindings
-}} // namespace monoprop
+}} // namespace monoprop::bindings
 """
 
 CPP = """/* This file was automatically generated on {date}. Do *NOT EDIT*. Do *NOT COMMIT*. */
