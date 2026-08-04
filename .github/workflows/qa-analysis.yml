@@ -24,6 +24,34 @@ env:
   CPM_USE_LOCAL_PACKAGES: "TRUE"
 
 jobs:
+  cpp-changes:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Detect C++ file changes
+    runs-on: ubuntu-slim
+    outputs:
+      any: ${{ steps.detect.outputs.any_changed }}
+      files: ${{ steps.detect.outputs.all_changed_files }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect C++ file changes
+        id: detect
+        uses: tj-actions/changed-files@v47.0.6
+        with:
+          matrix: true
+          files: |
+            src/monoprop/**/*.cpp
+            src/monoprop/**/*.h
+            src/monoprop/**/*.inl
+            include/monoprop/**/*.h
+            include/monoprop/**/*.inl
+
   code-coverage:
     # in combination with the PR types selection, this top-level if statement
     # skips running the workflow for Draft PRs
@@ -99,87 +127,6 @@ jobs:
           disable_search: true
           fail_ci_if_error: true
 
-  #cpp-changes:
-  #  # in combination with the PR types selection, this top-level if statement
-  #  # skips running the workflow for Draft PRs
-  #  if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
-
-  #  name: Detect C++ file changes
-  #  runs-on: ubuntu-slim
-  #  outputs:
-  #      any: ${{ steps.detect.outputs.any_changed }}
-
-  #  steps:
-  #    - uses: actions/checkout@v7.0.1
-  #      with:
-  #        fetch-depth: 0
-
-  #    - name: Detect C++ file changes
-  #      id: detect
-  #      uses: tj-actions/changed-files@v47.0.6
-  #      with:
-  #        files: |
-  #          **/*.cpp
-  #          **/*.h
-  #          **/*.inl
-
-  clang-tidy:
-    #needs: [cpp-changes]
-    ## Skip when no C++ files changed in the PR diff.
-    #if: ${{ needs.cpp-changes.outputs.any == 'true' }}
-
-    permissions:
-      contents: read
-
-    name: clang-tidy analysis
-    runs-on: ubuntu-26.04
-    continue-on-error: true
-
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev
-
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v9.0.0
-        with:
-          enable-cache: true
-          python-version: "3.11"
-
-      - name: Build (generates compile_commands.json)
-        env:
-          SKBUILD_CMAKE_DEFINE: "CMAKE_CXX_COMPILER=clang++;monoprop_ENABLE_CXX_UNIT_TESTS=OFF;monoprop_ENABLE_MPI=ON"
-        run: |
-          uv sync --no-progress --all-extras -v
-
-      - name: Register clang-tidy problem matcher
-        run: echo "::add-matcher::.github/problem-matchers/clang-tidy.json"
-
-      - name: Run clang-tidy via run-clang-tidy
-        env:
-          FORCE_COLOR: "0"
-        run: |
-          set -o pipefail
-
-          run-clang-tidy \
-            -p build/editable/Release \
-            -source-filter='^${{ github.workspace }}/src/monoprop/.*$' \
-            -header-filter='^(.*/)?(src|include)/monoprop/.*$' \
-            -exclude-header-filter='^.*/src/monoprop/bindings/.*$' \
-            -extra-arg=-fno-color-diagnostics \
-            -j "$(nproc)" \
-            2>&1 | tee /tmp/clang-tidy-output.txt
-
-      - name: Remove clang-tidy problem matcher
-        if: always()
-        run: echo "::remove-matcher owner=clang-tidy::"
-
   sonarqube-analysis:
     # in combination with the PR types selection, this top-level if statement
     # skips running the workflow for Draft PRs
@@ -217,3 +164,83 @@ jobs:
         with:
           args: >
             -Dsonar.cfamily.compile-commands=build/editable/Release/compile_commands.json
+
+  clang-tidy:
+    needs: [cpp-changes]
+    # Skip when no production C++ sources or headers changed.
+    if: ${{ needs.cpp-changes.outputs.any == 'true' }}
+
+    permissions:
+      contents: read
+
+    name: clang-tidy analysis
+    runs-on: ubuntu-26.04
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Build (generates compile_commands.json)
+        env:
+          SKBUILD_CMAKE_DEFINE: "CMAKE_CXX_COMPILER=clang++;monoprop_ENABLE_CXX_UNIT_TESTS=OFF;monoprop_ENABLE_MPI=ON"
+        run: |
+          uv sync --no-progress --all-extras -v
+
+      - name: Register clang-tidy problem matcher
+        run: echo "::add-matcher::.github/problem-matchers/clang-tidy.json"
+
+      - name: Run clang-tidy via run-clang-tidy
+        env:
+          CHANGED_CXX_FILES: ${{ needs.cpp-changes.outputs.files }}
+          FORCE_COLOR: "0"
+        run: |
+          set -o pipefail
+
+          mapfile -t changed_cpp_files < <(
+            jq -r --arg workspace "$GITHUB_WORKSPACE/" \
+              '.[] | select(endswith(".cpp")) | $workspace + .' <<< "$CHANGED_CXX_FILES"
+          )
+
+          if jq -e 'any(.[]; test("\\.(h|inl)$"))' <<< "$CHANGED_CXX_FILES" > /dev/null; then
+            mapfile -t clang_tidy_inputs < <(
+              jq -r --arg source_root "$GITHUB_WORKSPACE/src/monoprop/" \
+                '.[].file | select(startswith($source_root)) | select(endswith(".cpp"))' \
+                build/editable/Release/compile_commands.json
+            )
+          else
+            clang_tidy_inputs=("${changed_cpp_files[@]}")
+          fi
+
+          line_filter=$(jq -cn \
+            --arg workspace "$GITHUB_WORKSPACE/" \
+            --argjson files "$CHANGED_CXX_FILES" \
+            '$files | map({name: ($workspace + .), lines: [[1, 2147483647]]})')
+
+          run-clang-tidy \
+            -p build/editable/Release \
+            -source-filter='^${{ github.workspace }}/src/monoprop/.*$' \
+            -header-filter='^(.*/)?(src|include)/monoprop/.*$' \
+            -exclude-header-filter='^.*/src/monoprop/bindings/.*$' \
+            -line-filter="$line_filter" \
+            -extra-arg=-fno-color-diagnostics \
+            -j "$(nproc)" \
+            "${clang_tidy_inputs[@]}" \
+            2>&1 | tee /tmp/clang-tidy-output.txt
+
+      - name: Remove clang-tidy problem matcher
+        if: always()
+        run: echo "::remove-matcher owner=clang-tidy::"
