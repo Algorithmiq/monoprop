@@ -7,7 +7,17 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - **C++23**: All C++ code must use C++23 features and idioms.
 - **Auto style**: Use `clang-format` with the provided `.clang-format` file
 - Python code must pass lints as defined in pre-commit hooks.
-- We use conventional commits with syntax: `<type>(<optional scope>): <gitmoji> <description>`. See `CONTRIBUTING.md` for details. Breaking changes should have `!` in the commit message.
+- We use conventional commits with syntax: `<type>(<optional scope>): <gitmoji> <description>`:
+  - Commit body and footers are optional.
+  - Breaking changes should have `!` in the commit message.
+  - `<type>` can only be one of:
+    - `feat`: new feature, preserving the API. This corresponds to a *minor version bump*.
+    - `fix`: bug fix. This corresponds to a *patch version bump*.
+    - `docs`: changes to the documentation. **No** functional changes.
+    - `style`: formatting, *i.e.* running `black`. **No** functional changes.
+    - `refactor`: refactoring production code, *i.e.* improving class structure. **No** functional changes.
+    - `test`: adding/refactoring tests, *i.e.* improving code coverage. **No** functional changes.
+    - `chore`: "boring" tasks, *i.e.* updating dependency pins in `pyproject.toml`. **No** functional changes.
 - If you make a commit, add a trailer: `Assisted-by: <harness>:<model>`, where `<harness>` is the current agent harness (like ClaudeCode), and `<model>` is the AI model (like claude-opus-4.8). You don't need to add a coauthored-by when you have this.
 - PR titles must adhere to the same conventional commits format.
 - Prefix PR descriptions and comments on PRs with the line ":robot: _AI text below_ :robot:" to indicate you are an agent speaking on a user's behalf.
