@@ -108,7 +108,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 
 add_library(monoprop-objs OBJECT "")
-add_library(monoprop SHARED "")
+add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
 
 add_subdirectory(cpp)
 add_subdirectory(src/monoprop/bindings)
