@@ -41,7 +41,6 @@
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
-#include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 
@@ -287,12 +286,6 @@ protected:
         return ev_and_grad(request, comm, cos);
     };
 
-    static auto expected_num_params(const VecZ &parameter_mapping) -> size_t;
-
-    template <typename Fn, typename R = std::invoke_result_t<Fn, const VecD &>>
-    static auto make_parameter_validated_functional(size_t expected_num_params, Fn func)
-        -> std::function<R(const VecD &)>;
-
     /// Distribute op_dict across ranks and apply this rank's share; returns its new (terms, coeffs)
     /// so caches can refresh.
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
@@ -469,6 +462,5 @@ private:
 
 } // namespace monoprop
 
-// These includes are here on purpose and should not be moved to the top
-#include "monoprop/detail/monomial_propagator/MonomialPropagatorHelpers.h"
-#include "monoprop/detail/monomial_propagator/MonomialPropagatorImpl.h"
+// inline implementation
+#include "monoprop/detail/monomial_propagator/MonomialPropagator.inl"

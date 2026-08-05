@@ -4,7 +4,6 @@ target_sources(
     FILE_SET headers
       TYPE HEADERS
       FILES
-        "MonomialPropagatorHelpers.h"
         "MonomialPropagatorCommon.h"
-        "MonomialPropagatorImpl.h"
+        "MonomialPropagator.inl"
 )
