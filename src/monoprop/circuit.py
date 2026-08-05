@@ -225,8 +225,8 @@ class Circuit:
         gates = tuple(gates)
         parameters = tuple(float(v) for v in parameters)
 
-        initial_state = tuple(int(i) for i in initial_state)
         self._state_given = initial_state is not None
+        initial_state = tuple(int(i) for i in initial_state or ())
         system_size = _validate_system_size(system_size, argument_name="system_size")
         if len(set(initial_state)) != len(initial_state):
             raise ValueError("Duplicate indices in initial state")
@@ -461,7 +461,7 @@ class Circuit:
         return cls(
             gates=tuple(gates),
             parameters=tuple(float(p) for p in parameters),
-            initial_state=tuple(int(i) for i in initial_state),
+            initial_state=tuple(int(i) for i in initial_state or ()),
             system_size=system_size,
         )
 
