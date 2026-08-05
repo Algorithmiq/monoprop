@@ -14,14 +14,24 @@
 
 """Unit tests for the benchmark memory primitives (``benches/_memory.py``).
 
-The per-test peak under MPI is the *peak-of-sum* (the largest footprint that actually coexisted
-across ranks), not the sum of per-rank lifetime peaks, which overcounts disjoint transients.
+Two behaviours are pinned. The per-test peak under MPI is the *peak-of-sum* (the largest
+footprint that actually coexisted across ranks), not the sum of per-rank lifetime peaks,
+which overcounts disjoint transients. And :class:`HighWaterMark` sees transients that the
+sampler cannot, which is the whole reason it exists.
 """
 
 from __future__ import annotations
 
 import pytest
-from _memory import RssSampler, merge_peak_of_sum, rss_bytes
+from _memory import (
+    HighWaterMark,
+    PssSampler,
+    merge_peak_of_sum,
+    peak_rss_bytes,
+    pss_bytes,
+    reset_peak_rss,
+    rss_bytes,
+)
 
 MIB = 2**20
 
@@ -58,20 +68,66 @@ def test_merge_handles_empty_series() -> None:
     assert merge_peak_of_sum([[(0.0, 100)], []]) == 100
 
 
-def test_sampler_records_timeline_and_sees_a_transient() -> None:
-    if rss_bytes() == 0:
-        pytest.skip("/proc/self/status VmRSS unavailable (non-Linux)")
-    with RssSampler(interval=0.002) as sampler:
-        baseline = sampler.samples[0][1]
+def test_sampler_records_an_ordered_timeline() -> None:
+    if pss_bytes() == 0:
+        pytest.skip("/proc/self/smaps_rollup Pss unavailable (non-Linux)")
+    with PssSampler(interval=0.002) as sampler:
         blob = bytearray(80 * MIB)
         for i in range(0, len(blob), 4096):  # touch pages so they become resident
             blob[i] = 1
-        # Hold across several sampling intervals so the transient is observed.
-        for _ in range(2_000_000):
-            pass
         del blob
 
     samples = sampler.samples
+    # Only the timeline shape is contractual. Whether any given transient lands in it is
+    # not: the thread advances solely when the timed thread drops the GIL, which a C
+    # extension call need never do. test_high_water_mark_catches_a_freed_transient covers
+    # the peak itself, which is why that measurement does not go through this class.
     assert len(samples) >= 2  # baseline on enter, final on exit
     assert all(isinstance(t, float) and isinstance(p, int) for t, p in samples)
-    assert max(p for _t, p in samples) > baseline
+    assert all(p > 0 for _t, p in samples)
+    assert [t for t, _p in samples] == sorted(t for t, _p in samples)
+
+
+def test_pss_is_at_most_rss() -> None:
+    if pss_bytes() == 0:
+        pytest.skip("/proc/self/smaps_rollup Pss unavailable (non-Linux)")
+    # PSS splits each shared page across its mappers, so it can only be <= RSS. This is the
+    # property that makes summing PSS across ranks on a node meaningful.
+    assert 0 < pss_bytes() <= rss_bytes()
+
+
+def test_high_water_mark_catches_a_freed_transient() -> None:
+    if not reset_peak_rss():
+        pytest.skip("/proc/self/clear_refs unavailable (non-Linux or kernel < 4.0)")
+    with HighWaterMark() as window:
+        blob = bytearray(80 * MIB)
+        for i in range(0, len(blob), 4096):
+            blob[i] = 1
+        del blob  # gone before the window closes: only VmHWM still knows it existed
+
+    assert window.exact
+    assert window.delta_bytes >= 70 * MIB
+    assert window.peak_bytes >= window.baseline_bytes
+
+
+def test_high_water_mark_window_is_reset_per_block() -> None:
+    if not reset_peak_rss():
+        pytest.skip("/proc/self/clear_refs unavailable (non-Linux or kernel < 4.0)")
+    with HighWaterMark() as first:
+        blob = bytearray(80 * MIB)
+        for i in range(0, len(blob), 4096):
+            blob[i] = 1
+        del blob
+    with HighWaterMark() as second:
+        pass
+
+    # The second window must not inherit the first's spike; that carry-over is exactly what
+    # an unresettable high-water mark (Sys.maxrss/ru_maxrss) gets wrong.
+    assert first.delta_bytes >= 70 * MIB
+    assert second.delta_bytes < 10 * MIB
+
+
+def test_peak_rss_never_below_current_rss() -> None:
+    if peak_rss_bytes() == 0:
+        pytest.skip("/proc/self/status VmHWM unavailable (non-Linux)")
+    assert peak_rss_bytes() >= rss_bytes()

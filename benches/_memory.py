@@ -12,12 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""RSS-based memory-measurement primitives for the benchmark suite.
+"""Memory-measurement primitives for the benchmark suite.
 
-What the per-test peak means: **peak-of-sum, not sum-of-peaks.** The peak is
-``max over time`` of the summed RSS. Summing each rank's independently-timed peak
-counts transients that never coexisted. Comparable wall-clock timestamps let
-:func:`merge_peak_of_sum` recover the true peak-of-sum.
+Two metrics, deliberately kept apart:
+
+:class:`HighWaterMark`
+    The kernel's own peak RSS over a resettable window. Exact -- there is no sampling, so
+    no transient can be missed -- and it needs no background thread, so the GIL cannot
+    hide anything from it. This is the metric to quote, and the only one that is
+    like-for-like against a non-Python library.
+
+:class:`PssSampler`
+    A sampled ``(wall_clock, pss)`` timeline. Needed only under MPI, where the job's
+    footprint is the **peak-of-sum, not the sum-of-peaks**: summing each rank's
+    independently-timed peak counts transients that never coexisted, so
+    :func:`merge_peak_of_sum` replays the timelines instead. A scalar per-rank peak
+    cannot reconstruct that, which is the one thing sampling still buys.
+
+Why sampling is *not* used for the scalar peak: a background thread only runs when the
+timed thread drops the GIL, and monoprop's ``propagate()`` holds it for the whole call.
+Measured on a 12.8 s propagation, the sampler collected 3 samples instead of ~2555 and
+reported 3388 MiB against the kernel's 3808 MiB -- a 12% undercount that grows with
+problem size, because glibc unmaps the transient scratch before the call returns.
 """
 
 from __future__ import annotations
@@ -35,9 +51,15 @@ if TYPE_CHECKING:
     from types import TracebackType
     from typing import Self
 
-# RSS sampling cadence. monoprop's heavy work runs in C++ with the GIL released, so
-# the background sampler costs an idle core, not the timed thread.
+# Sampling cadence for the MPI timeline. Each sample reads /proc/self/smaps_rollup, whose
+# cost grows with the number of mappings, so this is a floor on the achievable period
+# rather than a guarantee -- merge_peak_of_sum step-holds, so an irregular period is fine.
 SAMPLE_INTERVAL_S = 0.005
+
+# `echo 5 > /proc/self/clear_refs` is CLEAR_REFS_MM_HIWATER_RSS: it resets VmHWM to the
+# current RSS and nothing else. Unlike modes 1-3 it walks no page tables, so it is cheap
+# enough to call between every step. Linux >= 4.0.
+_CLEAR_REFS_MM_HIWATER_RSS = "5\n"
 
 
 def proc_field(path: str, key: str) -> int:
@@ -60,6 +82,42 @@ def rss_bytes() -> int:
     return proc_field("/proc/self/status", "VmRSS:")
 
 
+def pss_bytes() -> int:
+    """Return this process's proportional set size (PSS) in bytes.
+
+    PSS divides each shared page among the processes mapping it, so PSS summed over the
+    ranks on a node counts every page exactly once. RSS charges a shared page (the Python
+    interpreter, libstdc++, a shared graph) in full to every rank, which inflates an
+    MPI sum by roughly the shared footprint times the rank count.
+    """
+    return proc_field("/proc/self/smaps_rollup", "Pss:")
+
+
+def peak_rss_bytes() -> int:
+    """Return the kernel's high-water mark of this process's RSS, in bytes.
+
+    ``VmHWM`` is maintained by the kernel on every RSS increase, so it is exact: it cannot
+    miss a spike the way a sampler can. It is monotonic since process start unless
+    :func:`reset_peak_rss` is used to start a new window.
+    """
+    return proc_field("/proc/self/status", "VmHWM:")
+
+
+def reset_peak_rss() -> bool:
+    """Reset ``VmHWM`` to the current RSS, starting a new measurement window.
+
+    Returns:
+        ``True`` if the reset took effect, ``False`` where ``/proc/self/clear_refs`` is
+        unavailable (non-Linux, kernel < 4.0, or a restricted sandbox), in which case
+        ``VmHWM`` keeps counting from process start and callers must fall back.
+    """
+    try:
+        Path("/proc/self/clear_refs").write_text(_CLEAR_REFS_MM_HIWATER_RSS)
+    except OSError:  # pragma: no cover - platform dependent
+        return False
+    return True
+
+
 def heap_trim() -> None:
     """Ask the C allocator to return unused heap pages to the OS."""
     with contextlib.suppress(Exception):  # unsupported platform / allocator
@@ -73,15 +131,75 @@ def resting_rss_bytes() -> int:
     return rss_bytes()
 
 
-class RssSampler:
-    """Background thread sampling this process's live RSS over time.
+class HighWaterMark:
+    """Exact peak RSS over the enclosed block, straight from the kernel.
 
-    Records ``(wall_clock, rss_bytes)`` pairs while active. Uses ``time.time``
-    (not ``time.monotonic``) so timestamps are comparable across ranks sharing a
-    node's clock, which :func:`merge_peak_of_sum` needs to correlate readings.
+    Settles the process on entry (``gc.collect()`` + ``malloc_trim``) and resets ``VmHWM``
+    to that floor, so the peak reported is this block's own and not an earlier block's
+    retained garbage. The settling is what makes the number comparable across languages:
+    without it the figure tracks the allocator's or GC's willingness to return pages more
+    than it tracks what the code needed.
 
-    Use as a context manager around the operation; it samples on entry and exit,
-    so even a sub-interval operation yields a usable timeline.
+    Use ``peak_bytes`` for the footprint (peak including everything already resident) and
+    ``delta_bytes`` for what this block added on top of its floor. Report the floor too --
+    an interpreter plus its imports is a 100+ MiB constant that has nothing to do with the
+    code under test.
+
+    ``exact`` is ``False`` when the kernel would not reset the window (see
+    :func:`reset_peak_rss`); the peak then degrades to the RSS observed on exit, which is
+    a lower bound. Callers that publish numbers should check it.
+    """
+
+    def __init__(self, *, settle: bool = True) -> None:
+        self._settle = settle
+        self.baseline_bytes = 0
+        self.peak_bytes = 0
+        self.exact = False
+
+    def __enter__(self) -> Self:
+        self.baseline_bytes = resting_rss_bytes() if self._settle else rss_bytes()
+        self.exact = reset_peak_rss()
+        self.peak_bytes = self.baseline_bytes
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        observed = peak_rss_bytes() if self.exact else rss_bytes()
+        self.peak_bytes = max(self.baseline_bytes, observed)
+
+    @property
+    def delta_bytes(self) -> int:
+        """Return the peak measured above the block's own starting floor."""
+        return self.peak_bytes - self.baseline_bytes
+
+    @property
+    def peak_mb(self) -> float:
+        """Return :attr:`peak_bytes` in MiB."""
+        return self.peak_bytes / 1024**2
+
+    @property
+    def baseline_mb(self) -> float:
+        """Return :attr:`baseline_bytes` in MiB."""
+        return self.baseline_bytes / 1024**2
+
+
+class PssSampler:
+    """Background thread sampling this process's live PSS over time.
+
+    Records ``(wall_clock, pss_bytes)`` pairs while active. Uses ``time.time`` (not
+    ``time.monotonic``) so timestamps are comparable across ranks sharing a node's clock,
+    which :func:`merge_peak_of_sum` needs to correlate readings.
+
+    Use as a context manager around the operation; it samples on entry and exit, so even a
+    sub-interval operation yields a usable timeline.
+
+    The timeline is only as dense as the timed thread's GIL releases allow, so treat it as
+    a lower bound on the true peak-of-sum and :class:`HighWaterMark` as the exact per-rank
+    figure. It is kept because no per-rank scalar can recover which peaks coexisted.
     """
 
     def __init__(self, interval: float = SAMPLE_INTERVAL_S) -> None:
@@ -92,11 +210,11 @@ class RssSampler:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            self._samples.append((time.time(), rss_bytes()))
+            self._samples.append((time.time(), pss_bytes()))
             self._stop.wait(self._interval)
 
     def __enter__(self) -> Self:
-        self._samples.append((time.time(), rss_bytes()))
+        self._samples.append((time.time(), pss_bytes()))
         self._thread.start()
         return self
 
@@ -108,16 +226,16 @@ class RssSampler:
     ) -> None:
         self._stop.set()
         self._thread.join()
-        self._samples.append((time.time(), rss_bytes()))
+        self._samples.append((time.time(), pss_bytes()))
 
     @property
     def samples(self) -> list[tuple[float, int]]:
-        """Return the recorded ``(wall_clock, rss_bytes)`` samples."""
+        """Return the recorded ``(wall_clock, pss_bytes)`` samples."""
         return self._samples
 
 
 def merge_peak_of_sum(per_rank: list[list[tuple[float, int]]]) -> int:
-    """Return the peak of the summed live RSS across ranks, in bytes.
+    """Return the peak of the summed live PSS across ranks, in bytes.
 
     ``per_rank[i]`` is rank ``i``'s samples. Walks all samples in time order,
     step-holding each rank's most recent reading, and tracks the maximum of the
