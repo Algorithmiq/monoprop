@@ -18,7 +18,6 @@
 #include "monoprop/algebra/MajoranaAlgebra.h"
 
 namespace monoprop::detail {
-
 inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
 
 struct CutoffContext {
@@ -33,7 +32,7 @@ struct CutoffContext {
         if (!use_coeff_checks) {
             return 0.0;
         }
-        // Out-of-range indices read as zero: callers scan past the end of a shorter coeff vector.
+
         const double coeff = i < coeffs.size() ? coeffs[i] : 0.0;
         return std::abs(coeff);
     }
@@ -44,5 +43,4 @@ struct CutoffContext {
     }
     auto is_below_sin(double abs_coeff) const -> bool { return check_atol && (abs_sin_val * abs_coeff <= atol_value); }
 };
-
 } // namespace monoprop::detail
