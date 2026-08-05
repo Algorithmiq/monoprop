@@ -22,6 +22,7 @@
 
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
 #include "monoprop/detail/mpi/Exchange.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 

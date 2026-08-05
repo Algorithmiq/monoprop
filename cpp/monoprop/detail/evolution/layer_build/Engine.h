@@ -26,7 +26,7 @@
 #include <vector>
 
 #include "monoprop/algebra/Algebra.h"
-#include "monoprop/detail/evolution/EvolutionHelpers.h"
+#include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
