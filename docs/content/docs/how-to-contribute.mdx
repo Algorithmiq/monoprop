@@ -23,7 +23,7 @@ The repository's [DevContainer](https://containers.dev/) provides a ready-made d
 
 Alternatively, set up a local development build — prerequisites,
 the editable `uv` build of the Python bindings (with or without MPI),
-the standalone C++ build, and verifying the install — as described
+the C++ unit-test build, and verifying the install — as described
 in [Building from source](/building).
 
 The sections below cover the parts specific to contributing: running the tests and
@@ -32,7 +32,7 @@ building the documentation.
 ## Running the tests
 
 Running the Python and C++ test suites — with and without MPI — is documented in
-[Building from source](/building).
+[Testing](/testing).
 
 ## Code quality checks
 
@@ -70,7 +70,7 @@ cd monoprop
 - Set up a development environment as described in [Development setup](#development-setup).
 - Create a branch for the feature you are working on.
 - Commit locally and push your changes to your forked repository.
-Make sure to follow the coding style and conventions used in the project.
+Make sure to follow the coding style and conventions used in the project. In particular, commit messages must be structured  according to the [conventional commits standard](https://www.conventionalcommits.org/en/v1.0.0/):
 - Write tests for your changes and ensure that all tests pass before submitting
 your pull request.
 - Finally, submit a pull request to the main repository.

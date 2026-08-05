@@ -25,13 +25,7 @@ In plain language: by signing the CLA, you confirm that you have the right to
 submit your contribution and you allow the project maintainers to use and
 redistribute it under the project license.
 
-This repository uses the CLA Assistant GitHub app to automate signing. On your
-first pull request, CLA Assistant will comment with a link to sign.
-You can also view the repository CLA page directly at
-[cla-assistant.io/Algorithmiq/monoprop](https://cla-assistant.io/Algorithmiq/monoprop).
-
-The Individual CLA text is hosted in the configured CLA Assistant Gist and is
-presented during the signing flow.
+The Individual CLA text is in the [CLA.md file](https://github.com/Algorithmiq/monoprop/blob/ed30341adbb0a8aea3aabac02ce329be61b2d92e/CLA.md).
 
 If you're contributing on behalf of your employer, contact
 [cla@algorithmiq.fi](mailto:cla@algorithmiq.fi) to arrange a Corporate CLA.

@@ -17,6 +17,9 @@
 Shared engine for [MajoranaPropagator][monoprop.majorana_propagator.MajoranaPropagator] and
 [PauliPropagator][monoprop.pauli_propagator.PauliPropagator], which pick the Majorana or Pauli
 behavior of one compiled C++ engine through a runtime basis.
+
+Gate information (the monomial generators, their coefficients, and the parameter each drives)
+is owned by the propagation graph, so evaluation methods take only ``parameters``.
 """
 
 from __future__ import annotations
@@ -79,9 +82,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
         cutoff: int,
         schrodinger_cutoff: int | None,
         cutoff_type: str,
-        lower_atol: None | float,
-        upper_atol: None | float,
-        basis_change: None | list[list[int]],
+        lower_atol: float | None,
+        upper_atol: float | None,
+        basis_change: list[list[int]] | None,
         comm: MPI.Comm | None,
         basis: str = "majorana",
     ) -> None:
@@ -113,8 +116,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
         # Qubit count for expanding Pauli gates; PauliPropagator overwrites it after this call.
         self._num_qubits = None
         self._initial_state = list(initial_state)
-        # dispatch() is typed as the base `type[_SimulatorAdapter]`, whose __init__ takes extra
-        # positional args; the kwargs below match the per-mode subclass actually returned.
+        # dispatch() returns the concrete adapter class for this mode count;
+        # call it with keyword args matching the public constructor.
         self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,
@@ -175,6 +178,13 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
         Must be positive, and at most ``2 * num_qubits`` when the propagator knows its qubit count
         (i.e. on a [PauliPropagator][monoprop.pauli_propagator.PauliPropagator]).
+
+        Args:
+            only_rotate_len_k: Optional length cutoff for gate application.
+
+        Returns:
+            The validated cutoff. The engine reads ``0`` as "apply all gates to all monomials",
+            so ``None`` maps onto it and callers need not special-case "no restriction".
         """
         if only_rotate_len_k is None:
             return 0
@@ -203,10 +213,11 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Args:
             circuit: Gates to append, as a [Circuit][monoprop.circuit.Circuit].
             seed_parameters: Full parameter vector for the whole accumulated graph; regenerates the
-                coefficient seed so truncation sees realistic coefficients. Needed only when
-                extending a non-empty graph *with* coefficient-informed truncation. Defaults to the
-                circuit's own parameters on the first call; omitted while extending, the new layers
-                are built structurally.
+                coefficient seed (by contracting the existing graph) so truncation sees realistic
+                coefficients. Needed only when extending a non-empty graph *with*
+                coefficient-informed truncation. Defaults to the circuit's own parameters on the
+                first call; omitted while extending, the new layers are built structurally. The
+                engine validates the length of an explicit seed.
             only_rotate_len_k: If given, apply gates to monomials of length <= k even where they
                 anticommute -- useful ahead of expectation-value estimation in the Schrodinger
                 picture with many free-fermionic (length-2 Majorana) generators.
@@ -295,7 +306,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
         """The parameter mapping owned by the graph, one entry per graph layer.
 
         Entry ``i`` is the parameter index driving graph layer ``i`` (one generated monomial), in
-        parameter-vector order -- finer-grained than the authoring circuit's per-gate mapping.
+        the same order as the parameter vector passed to [expectation_value][]. This is the graph's
+        native per-monomial mapping, finer-grained than the per-gate mapping of the authoring
+        [Circuit][monoprop.circuit.Circuit] when gates bundle several monomials.
         """
         return list(self._simulator.parameter_mapping)
 
@@ -485,6 +498,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
             self._n_params = max(self._simulator.parameter_mapping, default=-1) + 1
         return coeffs
 
+    @abstractmethod
     def evolved_operator(
         self,
         parameters: ParameterValues = None,
@@ -493,30 +507,36 @@ class MonomialPropagator(ABC, Generic[T_op]):
     ) -> T_op:
         """Return the evolved operator/state without modifying simulator state.
 
-        Equivalent to [contract_partially][] with ``inplace=False``, decoded into a term dict.
+        Equivalent to [contract_partially][] with ``inplace=False``, decoded into terms. Each
+        concrete front-end implements this over its own operator type -- the engine yields raw index
+        tuples (Majorana indices, or symplectic slots in the Pauli basis), which the subclass wraps
+        into a [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
+        [PauliOperator][monoprop.pauli.PauliOperator].
 
         Args:
             parameters: Variational parameter values (see [expectation_value][]).
             atol: Terms with ``|coeff| < atol`` are dropped; ``0.0`` keeps all of them.
 
         Returns:
-            The evolved operator (Heisenberg picture) or evolved state (Schrodinger picture), keyed
-            by index tuples -- Majorana indices, or gamma slots in the Pauli basis.
+            The evolved operator (Heisenberg picture) or evolved state (Schrodinger picture).
         """
-        return self._simulator.evolved_operator(self._bind(parameters), atol)
 
+    @abstractmethod
     def update_initial_operator(self, new_operator: T_op) -> None:
-        """Replace coefficients of the *initial operator* (existing terms only).
+        """Replace the *initial operator* (existing terms only).
 
         A re-weight, not a rebuild: the graph, its gates, and their generator coefficients are kept.
+        Each concrete front-end implements this over its own operator type, encoding the terms into
+        the engine's raw index tuples.
 
         Args:
-            new_operator: Monomial index tuples mapped to their new complex coefficients.
+            new_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
+                [PauliOperator][monoprop.pauli.PauliOperator], per the front-end, whose terms replace
+                the matching initial-operator.
 
         Raises:
             RuntimeError: In the Heisenberg picture, if a term is absent from the current operator.
         """
-        self._simulator.update_initial_operator(new_operator)
 
     def size(self) -> int:
         """Number of distinct monomial terms in the simulator's current representation."""
@@ -557,21 +577,21 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._simulator.cutoff = new_cutoff
 
     @property
-    def lower_atol(self) -> None | float:
+    def lower_atol(self) -> float | None:
         """Current lower absolute tolerance for the cutoff function (``None`` if unset)."""
         return self._simulator.lower_atol
 
     @lower_atol.setter
-    def lower_atol(self, new_lower_atol: None | float) -> None:
+    def lower_atol(self, new_lower_atol: float | None) -> None:
         self._simulator.lower_atol = new_lower_atol
 
     @property
-    def upper_atol(self) -> None | float:
+    def upper_atol(self) -> float | None:
         """Current upper absolute tolerance for the cutoff function (``None`` if unset)."""
         return self._simulator.upper_atol
 
     @upper_atol.setter
-    def upper_atol(self, new_upper_atol: None | float) -> None:
+    def upper_atol(self, new_upper_atol: float | None) -> None:
         self._simulator.upper_atol = new_upper_atol
 
     @property

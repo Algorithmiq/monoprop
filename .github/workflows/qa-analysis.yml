@@ -1,0 +1,265 @@
+name: Quality Assurance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  # PRs trigger for the "opened", "reopened", "synchronize" events (default) and
+  # "ready_for_review"
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize # when new commits are pushed to the PR
+      - ready_for_review # when the PR is un-drafted
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: 3
+  COLUMNS: 120
+  CPM_USE_LOCAL_PACKAGES: "TRUE"
+
+jobs:
+  cpp-changes:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Detect C++ file changes
+    runs-on: ubuntu-slim
+    outputs:
+      any: ${{ steps.detect.outputs.any_changed }}
+      files: ${{ steps.detect.outputs.all_changed_files }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect C++ file changes
+        id: detect
+        uses: tj-actions/changed-files@v47.0.6
+        with:
+          matrix: true
+          files: |
+            cpp/monoprop/**/*.cpp
+            cpp/monoprop/**/*.h
+            cpp/monoprop/**/*.inl
+            cpp/include/monoprop/**/*.h
+            cpp/include/monoprop/**/*.inl
+
+  code-coverage:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: Check code coverage
+    runs-on: ubuntu-26.04
+    env:
+      SKBUILD_CMAKE_BUILD_TYPE: "Coverage"
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          uv sync --no-progress --group test --all-extras -v
+
+      - name: Run Python tests
+        run: |
+          uv run pytest \
+          --cov=src/monoprop \
+          --cov-report=xml:python-coverage.xml
+
+      - name: Collect coverage (C++ through Python bindings)
+        run: |
+          uvx gcovr \
+            --gcov-executable gcov \
+            --gcov-ignore-parse-errors \
+            --exclude-throw-branches \
+            --exclude-unreachable-branches \
+            --filter '^(cpp|src)/' \
+            --exclude '^(cpp/)?tests/' \
+            --merge-lines \
+            "build/editable/Coverage" \
+            --cobertura cpp-coverage-through-python-bindings.xml \
+            --sonarqube cpp-coverage-through-python-bindings-sonar.xml
+
+      - name: Run C++ unit tests
+        run: |
+          ctest --test-dir build/editable/Coverage --output-on-failure
+
+      - name: Collect coverage (C++ unit tests)
+        run: |
+          uvx gcovr \
+            --gcov-executable gcov \
+            --gcov-ignore-parse-errors \
+            --exclude-throw-branches \
+            --exclude-unreachable-branches \
+            --filter '^(cpp|src)/' \
+            --exclude '^(cpp/)?tests/' \
+            --merge-lines \
+            "build/editable/Coverage" \
+            --cobertura cpp-coverage.xml \
+            --sonarqube cpp-coverage-sonar.xml
+
+      - name: Upload C++ coverage to Codecov
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: python-coverage.xml, cpp-coverage-through-python-bindings.xml, cpp-coverage.xml
+          flags: cpp
+          disable_search: true
+          fail_ci_if_error: true
+
+      - name: Upload coverage reports for SonarQube
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            python-coverage.xml
+            cpp-coverage-through-python-bindings-sonar.xml
+            cpp-coverage-sonar.xml
+          if-no-files-found: error
+          retention-days: 1
+
+  sonarqube-analysis:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: SonarQube analysis
+    runs-on: ubuntu-26.04
+    needs: [code-coverage]
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        env:
+          SKBUILD_CMAKE_DEFINE: "monoprop_ENABLE_CXX_UNIT_TESTS=OFF;monoprop_ENABLE_MPI=ON"
+        run: |
+          uv sync --no-progress --all-extras -v
+
+      - name: Download coverage reports
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-reports
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v8.2.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.cfamily.compile-commands=build/editable/Release/compile_commands.json
+
+  clang-tidy:
+    needs: [cpp-changes]
+    # Skip when no production C++ sources or headers changed.
+    if: ${{ needs.cpp-changes.outputs.any == 'true' }}
+
+    permissions:
+      contents: read
+
+    name: clang-tidy analysis
+    runs-on: ubuntu-26.04
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Build (generates compile_commands.json)
+        env:
+          SKBUILD_CMAKE_DEFINE: "CMAKE_CXX_COMPILER=clang++;monoprop_ENABLE_CXX_UNIT_TESTS=OFF;monoprop_ENABLE_MPI=ON"
+        run: |
+          uv sync --no-progress --all-extras -v
+
+      - name: Register clang-tidy problem matcher
+        run: echo "::add-matcher::.github/problem-matchers/clang-tidy.json"
+
+      - name: Run clang-tidy via run-clang-tidy
+        env:
+          CHANGED_CXX_FILES: ${{ needs.cpp-changes.outputs.files }}
+          FORCE_COLOR: "0"
+        run: |
+          set -o pipefail
+
+          mapfile -t changed_cpp_files < <(
+            jq -r --arg workspace "$GITHUB_WORKSPACE/" \
+              '.[] | select(endswith(".cpp")) | $workspace + .' <<< "$CHANGED_CXX_FILES"
+          )
+
+          if jq -e 'any(.[]; test("\\.(h|inl)$"))' <<< "$CHANGED_CXX_FILES" > /dev/null; then
+            mapfile -t clang_tidy_inputs < <(
+              jq -r --arg source_root "$GITHUB_WORKSPACE/cpp/monoprop/" \
+                '.[].file | select(startswith($source_root)) | select(endswith(".cpp"))' \
+                build/editable/Release/compile_commands.json
+            )
+          else
+            clang_tidy_inputs=("${changed_cpp_files[@]}")
+          fi
+
+          line_filter=$(jq -cn \
+            --arg workspace "$GITHUB_WORKSPACE/" \
+            --argjson files "$CHANGED_CXX_FILES" \
+            '$files | map({name: ($workspace + .), lines: [[1, 2147483647]]})')
+
+          run-clang-tidy \
+            -p build/editable/Release \
+            -source-filter='^${{ github.workspace }}/cpp/monoprop/.*$' \
+            -header-filter='^(.*/)?cpp/(include/)?monoprop/.*$' \
+            -exclude-header-filter='^.*/src/monoprop/bindings/.*$' \
+            -line-filter="$line_filter" \
+            -extra-arg=-fno-color-diagnostics \
+            -j "$(nproc)" \
+            "${clang_tidy_inputs[@]}" \
+            2>&1 | tee /tmp/clang-tidy-output.txt
+
+      - name: Remove clang-tidy problem matcher
+        if: always()
+        run: echo "::remove-matcher owner=clang-tidy::"
