@@ -28,12 +28,6 @@ Two metrics, deliberately kept apart:
     independently-timed peak counts transients that never coexisted, so
     :func:`merge_peak_of_sum` replays the timelines instead. A scalar per-rank peak
     cannot reconstruct that, which is the one thing sampling still buys.
-
-Why sampling is *not* used for the scalar peak: a background thread only runs when the
-timed thread drops the GIL, and monoprop's ``propagate()`` holds it for the whole call.
-Measured on a 12.8 s propagation, the sampler collected 3 samples instead of ~2555 and
-reported 3388 MiB against the kernel's 3808 MiB -- a 12% undercount that grows with
-problem size, because glibc unmaps the transient scratch before the call returns.
 """
 
 from __future__ import annotations
@@ -51,14 +45,10 @@ if TYPE_CHECKING:
     from types import TracebackType
     from typing import Self
 
-# Sampling cadence for the MPI timeline. Each sample reads /proc/self/smaps_rollup, whose
-# cost grows with the number of mappings, so this is a floor on the achievable period
-# rather than a guarantee -- merge_peak_of_sum step-holds, so an irregular period is fine.
+# Sampling cadence for the MPI timeline.
 SAMPLE_INTERVAL_S = 0.005
 
-# `echo 5 > /proc/self/clear_refs` is CLEAR_REFS_MM_HIWATER_RSS: it resets VmHWM to the
-# current RSS and nothing else. Unlike modes 1-3 it walks no page tables, so it is cheap
-# enough to call between every step. Linux >= 4.0.
+# Reset VmHWM to the current RSS, starting a new measurement window
 _CLEAR_REFS_MM_HIWATER_RSS = "5\n"
 
 
@@ -96,9 +86,7 @@ def pss_bytes() -> int:
 def peak_rss_bytes() -> int:
     """Return the kernel's high-water mark of this process's RSS, in bytes.
 
-    ``VmHWM`` is maintained by the kernel on every RSS increase, so it is exact: it cannot
-    miss a spike the way a sampler can. It is monotonic since process start unless
-    :func:`reset_peak_rss` is used to start a new window.
+    ``VmHWM`` is maintained by the kernel on every RSS increase, so it is exact.
     """
     return proc_field("/proc/self/status", "VmHWM:")
 
