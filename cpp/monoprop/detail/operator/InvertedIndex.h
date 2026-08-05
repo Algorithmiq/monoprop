@@ -40,10 +40,10 @@ struct InvertedIndex {
     static constexpr size_t kPromoteDensityInv = 64;
 
     struct Column {
-        std::vector<uint64_t> words{}; // full-height bit-vector; used iff is_dense
+        std::vector<uint64_t> words; // full-height bit-vector; used iff is_dense
         // Ascending set-row indices (used iff !is_dense). must stay ascending: combine_columns_block
         // lower_bounds these to a word range, and every fill path appends in row order.
-        std::vector<TermIndex> set_rows{};
+        std::vector<TermIndex> set_rows;
         bool is_dense = false;
     };
 
@@ -52,7 +52,7 @@ struct InvertedIndex {
 
     // Parity of |M| per row, packed 1 bit/row: bit r = popcount(row r) & 1. Built on first use and only
     // by odd-|G| generators, so even-parity workloads never allocate it.
-    mutable std::vector<uint64_t> row_parity_{}; // empty == not built
+    mutable std::vector<uint64_t> row_parity_; // empty == not built
 
     auto row_parity_words() const -> const uint64_t * {
         if (row_parity_.empty() && row_count != 0) {

@@ -57,7 +57,7 @@ public:
     static constexpr size_t kMaxInlinePositions = 32;
     static constexpr PosT kOverflowMarker = std::numeric_limits<PosT>::max();
 
-    static_assert(2 * NumModes - 1 <= std::numeric_limits<PosT>::max(),
+    static_assert((2 * NumModes) - 1 <= std::numeric_limits<PosT>::max(),
                   "OperatorIndex PosT too narrow for 2*NumModes positions");
     static_assert(kMaxInlinePositions < std::numeric_limits<PosT>::max(),
                   "kOverflowMarker sentinel must not collide with a valid popcount");
@@ -105,7 +105,7 @@ public:
         const size_t base = size_;
         if (capacity() < base + n) {
             const size_t cap = capacity();
-            reserve_rows(std::max(base + n, cap + cap / 2 + 1));
+            reserve_rows(std::max(base + n, cap + (cap / 2) + 1));
         }
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
@@ -142,7 +142,7 @@ public:
             return overflow_.at(i);
         }
         value_type mono;
-        const PosT *pos = &rows_[i * stride_ + 1];
+        const PosT *pos = &rows_[(i * stride_) + 1];
         for (size_t j = 0; j < c; ++j) {
             mono.set(pos[j]);
         }
@@ -158,7 +158,7 @@ public:
             }
             return;
         }
-        const PosT *pos = &rows_[i * stride_ + 1];
+        const PosT *pos = &rows_[(i * stride_) + 1];
         for (size_t j = 0; j < c; ++j) {
             fn(static_cast<size_t>(pos[j]));
         }
@@ -268,11 +268,11 @@ public:
     }
     // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
     [[nodiscard]] auto slack_bytes() const -> size_t {
-        return rows_.capacity() * sizeof(PosT) - std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT);
+        return (rows_.capacity() * sizeof(PosT)) - (std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT));
     }
 
     auto index_estimated_memory_bytes() const -> size_t {
-        return sizeof(OperatorIndex) + table_.slots.capacity() * sizeof(Slot);
+        return sizeof(OperatorIndex) + (table_.slots.capacity() * sizeof(Slot));
     }
 
 private:
@@ -348,7 +348,7 @@ private:
     };
     static constexpr size_t kMinSlots = 16;
     // Slot count for `n` entries at ≤0.7 load.
-    static auto slots_for_(size_t n) -> size_t { return std::bit_ceil(std::max<size_t>(kMinSlots, n * 10 / 7 + 1)); }
+    static auto slots_for_(size_t n) -> size_t { return std::bit_ceil(std::max<size_t>(kMinSlots, (n * 10 / 7) + 1)); }
 
     [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
     auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
@@ -376,7 +376,7 @@ private:
         if (q.count() != static_cast<size_t>(c)) {
             return false;
         }
-        const PosT *pos = &rows_[i * stride_ + 1];
+        const PosT *pos = &rows_[(i * stride_) + 1];
         for (size_t j = 0; j < c; ++j) {
             if (!q.test(pos[j])) {
                 return false;
