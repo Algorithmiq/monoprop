@@ -115,8 +115,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._n_params = 0
         self._system_size = num_modes
         self._initial_state = list(initial_state)
-        # dispatch() is typed as the base `type[_SimulatorAdapter]`, whose __init__ takes extra
-        # positional args; the kwargs below match the per-mode subclass actually returned.
+        # dispatch() returns the concrete adapter class for this mode count;
+        # call it with keyword args matching the public constructor.
         self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,
