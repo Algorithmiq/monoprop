@@ -260,7 +260,7 @@ def build_report(results_dir: Path) -> str:
         sec("params"),
         sec("opsize"),
         sec("memrest"),
-        sec("mem"),
+        sec("memhwm"),
     )
 
     all_ops = sorted(
@@ -294,7 +294,7 @@ def build_report(results_dir: Path) -> str:
                 level=3,
             ),
             *_section(
-                "Memory (RSS)",
+                "Memory (peak RSS)",
                 "",
                 "Operation",
                 ops,
@@ -308,9 +308,10 @@ def build_report(results_dir: Path) -> str:
         "# monoprop benchmark report",
         "",
         f"Run labels: **{', '.join(labels)}**. Times are the mean over rounds; "
-        "memory is the peak resident footprint (RSS) during each operation. Under "
-        "MPI it is the peak of the RSS summed across ranks (shared pages counted "
-        "per rank, so an upper bound), not the sum of per-rank peaks.",
+        "memory is the kernel's exact peak resident footprint (`VmHWM`) during each "
+        "operation, measured from a window reset and settled per operation. Under MPI "
+        "it is summed across ranks, so ranks peaking at different moments are counted "
+        "together: an upper bound on the job total.",
         "",
         *_config_table(labels, results),
         *_section(
