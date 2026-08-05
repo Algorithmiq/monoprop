@@ -66,10 +66,10 @@ jobs:
       - name: Install dependencies
         run: |
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            brew install boost open-mpi msgpack-cxx
+            brew install boost open-mpi msgpack-cxx hwloc
           else
             sudo apt-get update
-            packages="libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev"
+            packages="libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev"
             if [[ "${{ matrix.compiler }}" == "clang++-18" ]]; then
               packages="$packages clang-18"
             fi
