@@ -588,7 +588,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
                        detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v) {
                            detail::scale_cos_mask(c, *cos, v);
                        };
-                       evolve_step(coeffs, layer, apply_angle, cos_scale, comm_);
+                       evolve_step(coeffs, layer, apply_angle, comm_, cos_scale);
                    });
 }
 
@@ -777,16 +777,16 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
 template <size_t NumModes>
 auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
                          const MPGraphView &graph,
-                         Basis basis = Basis::Majorana) -> std::pair<detail::LayerCosScale, detail::LayerCosAccumulate>;
+                         Basis basis = Basis::Majorana) -> detail::CosCallbacks;
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::evolve_operator_with_recompute_(VecD &&coeffs,
                                                                    const MPGraphView &graph,
                                                                    const VecD &params) -> VecD {
     const auto &inverted_index = mp_op_.inverted_index();
-    // Only the scale side is consumed; build the pair through the shared builder for consistency.
-    auto cos_scale = build_cos_callbacks<NumModes>(inverted_index, graph, basis_).first;
-    return evolve_operator(std::move(coeffs), graph, params, cos_scale, comm_);
+    // Only the scale side is consumed; build both through the shared builder for consistency.
+    auto cos_scale = build_cos_callbacks<NumModes>(inverted_index, graph, basis_).scale;
+    return evolve_operator(std::move(coeffs), graph, params, comm_, cos_scale);
 }
 
 template <size_t NumModes>
@@ -870,7 +870,7 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
 
 template <size_t NumModes>
 auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, const MPGraphView &graph, Basis basis)
-    -> std::pair<detail::LayerCosScale, detail::LayerCosAccumulate> {
+    -> detail::CosCallbacks {
     struct LayerCos {
         bool recomputes_cos = false;
         detail::LazyFold<NumModes> recipe{}; // used iff recomputes_cos
@@ -911,7 +911,7 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
         }
         return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec);
     };
-    return {std::move(cos_scale), std::move(cos_acc)};
+    return {.scale = std::move(cos_scale), .accumulate = std::move(cos_acc)};
 }
 
 template <size_t NumModes>
@@ -965,26 +965,30 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
 
     // The folds keep raw column pointers into this propagator's inverted index, so the returned callable
     // must not outlive the propagator.
-    auto callbacks = build_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), basis_);
-    detail::LayerCosScale cos_scale = std::move(callbacks.first);
-    detail::LayerCosAccumulate cos_acc = std::move(callbacks.second);
+    auto cos = build_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), basis_);
 
-    return make_parameter_validated_functional(
-        num_params,
-        [func = std::move(func),
-         core_term,
-         state = std::move(state),
-         op = std::move(op),
-         graph = std::move(graph),
-         parameter_mapping,
-         gen_coeffs,
-         expected_layers,
-         cos_scale = std::move(cos_scale),
-         cos_acc = std::move(cos_acc),
-         comm](const VecD &params) -> R {
-            validate_expected_graph_layers(graph->layers(), expected_layers);
-            return func(core_term, state, op, parameter_mapping, gen_coeffs, *graph, params, comm, cos_scale, cos_acc);
-        });
+    return make_parameter_validated_functional(num_params,
+                                               [func = std::move(func),
+                                                core_term,
+                                                state = std::move(state),
+                                                op = std::move(op),
+                                                graph = std::move(graph),
+                                                parameter_mapping,
+                                                gen_coeffs,
+                                                expected_layers,
+                                                cos = std::move(cos),
+                                                comm](const VecD &params) -> R {
+                                                   validate_expected_graph_layers(graph->layers(), expected_layers);
+                                                   return func(EvalRequest{.e_core = core_term,
+                                                                           .state = state,
+                                                                           .op = op,
+                                                                           .parameter_mapping = parameter_mapping,
+                                                                           .gen_coeffs = gen_coeffs,
+                                                                           .graph = graph->replay_view(),
+                                                                           .params = params},
+                                                               comm,
+                                                               cos);
+                                               });
 }
 
 template <size_t NumModes>

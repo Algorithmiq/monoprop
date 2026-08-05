@@ -28,4 +28,12 @@ using LayerCosScale = std::function<void(size_t layer, double *coeff, double cos
 using LayerCosAccumulate =
     std::function<double(size_t layer, double *state, double *ham, double cos_val, double sec_val)>;
 
+// The two callbacks travel together from the one builder that makes them to every evaluation entry point,
+// so they are one parameter rather than two adjacent std::functions. Either may be empty; the paths that
+// need one say so (see ev/ev_and_grad).
+struct CosCallbacks {
+    LayerCosScale scale;           ///< forward path; required whenever the parameters are non-empty
+    LayerCosAccumulate accumulate; ///< reverse path; required by the gradient only
+};
+
 } // namespace monoprop::detail

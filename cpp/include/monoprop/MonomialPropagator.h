@@ -281,32 +281,15 @@ public:
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
-    static inline const auto ev_fn = [](double e_core,
-                                        const EvalState &state,
-                                        const VecD &op,
-                                        const VecZ &parameter_mapping,
-                                        const VecD &gen_coeffs,
-                                        const auto &graph,
-                                        const VecD &params,
+    // Both take the same three parameters so make_functional_ has one call to write; the energy path
+    // simply ignores cos.accumulate.
+    static inline const auto ev_fn = [](const EvalRequest &request,
                                         mpi::Comm comm,
-                                        const detail::LayerCosScale &cos_scale = {},
-                                        const detail::LayerCosAccumulate & = {}) -> double {
-        // cos_acc unused for the energy path; accepted so both functionals share one call arity in make_functional_.
-        return ev(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale);
-    };
+                                        const detail::CosCallbacks &cos) -> double { return ev(request, comm, cos); };
 
     static inline const auto ev_and_grad_fn =
-        [](double e_core,
-           const EvalState &state,
-           const VecD &op,
-           const VecZ &parameter_mapping,
-           const VecD &gen_coeffs,
-           const auto &graph,
-           const VecD &params,
-           mpi::Comm comm,
-           const detail::LayerCosScale &cos_scale = {},
-           const detail::LayerCosAccumulate &cos_acc = {}) -> std::pair<double, VecD> {
-        return ev_and_grad(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale, cos_acc);
+        [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> std::pair<double, VecD> {
+        return ev_and_grad(request, comm, cos);
     };
 
     static auto expected_num_params(const VecZ &parameter_mapping) -> size_t;
@@ -478,16 +461,10 @@ private:
                               VecD *fused_scale_coeffs = nullptr,
                               bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
 
+    // The argument list is spelled in full, and make_functional_ passes exactly these: deducing R from a
+    // shorter list than the call site uses is how a default argument silently deduces the wrong R.
     template <typename Fn,
-              typename R = std::invoke_result_t<Fn,
-                                                double,
-                                                const EvalState &,
-                                                const VecD &,
-                                                const VecZ &,
-                                                const VecD &,
-                                                const MPGraph &,
-                                                const VecD &,
-                                                mpi::Comm>>
+              typename R = std::invoke_result_t<Fn, const EvalRequest &, mpi::Comm, const detail::CosCallbacks &>>
     auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
 
     // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the layers' gate info.
