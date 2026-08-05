@@ -84,8 +84,6 @@ monoprop_EXPORT auto map_params(const VecD &parameters,
 /// Everything one expectation-value evaluation reads, in one object: the graph plus the arrays that index
 /// into it. Built at the call site and consumed there -- every member but `graph` is a non-owning
 /// reference, and `graph` is itself a view over layers the caller keeps alive.
-// Named rather than passed positionally because `op`, `gen_coeffs` and `params` are all const VecD & and
-// sit next to each other: a positional swap compiles and silently evaluates a different expression.
 struct EvalRequest {
     double e_core;                 ///< the identity term, added to the summed expectation value
     const EvalState &state;        ///< the contraction partner; see EvalState

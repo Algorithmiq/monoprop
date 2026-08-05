@@ -163,8 +163,8 @@ public:
         return *this;
     }
 
-    [[nodiscard]] friend constexpr auto operator>>(const Bitset &lhs, size_t pos) noexcept -> Bitset {
-        Bitset r = lhs;
+    [[nodiscard]] constexpr auto operator>>(size_t pos) const noexcept -> Bitset {
+        Bitset r = *this;
         r >>= pos;
         return r;
     }

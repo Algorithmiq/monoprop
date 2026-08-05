@@ -129,15 +129,6 @@ jobs:
           disable_search: true
           fail_ci_if_error: true
 
-      # Handed to the sonarqube-analysis job. The C++ side ships the *-sonar.xml pair
-      # (sonar.coverageReportPaths) and not the Cobertura ones: Cobertura carries a per-line
-      # execution count, and Sonar's importer reads it as a signed 32-bit int, so a hot line
-      # crossing 2^31 aborts the entire analysis with
-      #   Expected an integer instead of "2922859194" for the attribute "hits"
-      # which a propagation inner loop in a Coverage build reaches routinely. gcovr's SonarQube
-      # format records covered="true|false" with no counts, so it cannot overflow. Python keeps
-      # Cobertura (sonar.python.coverage.reportPaths) -- coverage.py emits per-line hits that stay
-      # small. Codecov above still reads the Cobertura files, so gcovr emits both.
       - name: Upload coverage reports for SonarQube
         uses: actions/upload-artifact@v4
         with:
@@ -156,7 +147,6 @@ jobs:
 
     name: SonarQube analysis
     runs-on: ubuntu-26.04
-    # Coverage is produced by the code-coverage job; Sonar reports 0% without it.
     needs: [code-coverage]
 
     steps:

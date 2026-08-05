@@ -20,18 +20,14 @@
 
 namespace monoprop {
 
-// Every validate_* precondition on a caller-supplied argument reports through this one type. Derived
-// from std::runtime_error because nanobind's built-in translation table dispatches on the nearest std
-// base: changing the base would change the Python exception these surface as.
+// Every validate_* precondition on a caller-supplied argument reports through this one type.
 class ValidationError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
 // The graph was rebuilt after a functional captured its layer count, so the functional's parameter
-// mapping no longer describes the graph. Kept apart from ValidationError because the arguments are
-// well-formed here -- the object moved under them, and the caller recovers by rebuilding the
-// functional rather than by fixing a call. Same std base, so both surface identically in Python.
+// mapping no longer describes the graph.
 class StaleFunctionalGraph : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;

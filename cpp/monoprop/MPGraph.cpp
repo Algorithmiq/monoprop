@@ -90,9 +90,9 @@ auto MPGraph::slice_graph(size_t key, bool contract) -> MPGraph {
 auto MPGraph::slice_view(size_t key) const -> MPGraphView {
     const auto k = std::min(key, layers());
     if (schrodinger_) {
-        return MPGraphView(layers_, active_end_index() - k, k, true);
+        return {layers_, active_end_index() - k, k, true};
     }
-    return MPGraphView(layers_, active_begin_index(), k, false);
+    return {layers_, active_begin_index(), k, false};
 }
 
 auto MPGraph::total_cycles() const -> size_t {

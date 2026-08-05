@@ -23,9 +23,7 @@
 
 namespace monoprop::detail {
 
-// A CutoffType enumerator neither cutoff factory knows. Reachable only through a value cast into the
-// enum, so it stays a std::runtime_error descendant (Python RuntimeError) rather than becoming an
-// argument error: no in-range enumerator can produce it.
+// A CutoffType enumerator neither cutoff factory knows.
 class UnknownCutoffType : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;

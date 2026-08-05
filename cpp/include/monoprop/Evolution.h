@@ -44,8 +44,6 @@ class MPGraphView;
 struct LayerCore;
 
 /// One layer's rotation angle in factored form: the layer rotates by 2·gen_coeff·param.
-// Named rather than two adjacent doubles because a positional swap compiles, and the two factors are not
-// interchangeable downstream: gen_coeff also scales the returned gradient.
 struct LayerAngle {
     double gen_coeff = 1.0; ///< the generator's coefficient for this layer
     double param = 0.0;     ///< the optimizer parameter driving this layer

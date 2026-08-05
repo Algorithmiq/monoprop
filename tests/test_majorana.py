@@ -58,8 +58,6 @@ class TestMajorana:
         assert sign_mixed == -1.0
 
     def test_equal_terms_compare_and_hash_alike(self):
-        # Bound to distinct instances rather than repeating the constructor call: equality and
-        # hashing must be by value, and separate objects are what makes that assertion meaningful.
         left, right = Majorana(4, 5), Majorana(4, 5)
         assert left == right
         assert hash(left) == hash(right)

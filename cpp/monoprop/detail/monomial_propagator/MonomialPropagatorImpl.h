@@ -40,8 +40,7 @@
 
 namespace monoprop {
 
-// The ranks disagree on S. Kept out of PropagatorConfigError (declared in MonomialPropagator.h, and
-// used below for the per-propagator settings): the count comes from partitions= or the environment on
+// The ranks disagree on S. The count comes from partitions= or the environment on
 // every rank independently, so the fix is to the launch, and it may belong to a different rank.
 class PartitionCountMismatch : public std::runtime_error {
 public:
@@ -58,16 +57,13 @@ public:
 
 // The (basis, cutoff_type, basis_change) triple is inconsistent: a Pauli basis with a Length cutoff or
 // a basis change, or a basis-change table that is not 2*logical_num_modes rows.
-// std::invalid_argument, not runtime_error: nanobind's built-in translation dispatches on the nearest
-// std base, and these are Python ValueError today.
 class CutoffConfigError : public std::invalid_argument {
 public:
     using std::invalid_argument::invalid_argument;
 };
 
 // A coefficient-informed build_graph() was given fewer parameter values than replaying the stored graph
-// as a seed needs. Same std base as CutoffConfigError for the same Python-visibility reason, but a
-// separate type: this is one short vector, not a misconfigured propagator.
+// as a seed needs.
 class SeedParametersTooShort : public std::invalid_argument {
 public:
     using std::invalid_argument::invalid_argument;

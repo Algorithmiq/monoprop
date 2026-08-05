@@ -90,7 +90,7 @@ struct AlltoallvArgs {
 // Typed view of the same six spans, for callers that hold `T` buffers: `bytes()` type-erases it for the
 // in-process transports, which address payloads as raw bytes, while the MPI path keeps the typed
 // pointers it passes alongside a datatype. Same lifetime and element-offset contract as AlltoallvArgs.
-template <class T>
+template <typename T>
 struct FlatAlltoallvArgs {
     const T *send = nullptr;
     const int *send_counts = nullptr; // [P] elements sent to each destination

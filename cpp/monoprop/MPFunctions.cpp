@@ -22,9 +22,7 @@
 
 namespace monoprop {
 
-// A per-layer cosine callback this evaluation path needs was left empty. Derived from
-// std::invalid_argument because nanobind's built-in translation dispatches on the nearest std base:
-// any other base would change the Python exception type these already surface as.
+// A per-layer cosine callback this evaluation path needs was left empty.
 class MissingLayerCallback : public std::invalid_argument {
 public:
     using std::invalid_argument::invalid_argument;
@@ -32,7 +30,7 @@ public:
 
 // A state's rows and values disagree in length, a sparse row names a slot outside the state, or the
 // operator being contracted is shorter than the state. One type because every case is a caller-supplied
-// length or index that does not fit the rest of the call. Same std base, so both stay ValueError.
+// length or index that does not fit the rest of the call.
 class EvalStateArgumentError : public std::invalid_argument {
 public:
     using std::invalid_argument::invalid_argument;

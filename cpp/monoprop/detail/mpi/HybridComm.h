@@ -41,9 +41,6 @@
 
 namespace monoprop::mpi {
 
-// The launching environment, not a caller's argument, decides the MPI thread level, so this is kept
-// distinct from CollectiveArgumentError; both stay std::runtime_error so the Python-visible type is
-// unchanged either way.
 class MpiThreadLevelUnsupported : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;

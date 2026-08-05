@@ -56,17 +56,13 @@ class PartitionGroup;
 
 /// A propagator setting is out of range, or inconsistent with another setting.
 // Covers a crossed atol pair and a logical width outside [1, NumModes]; also thrown from
-// MonomialPropagatorImpl.h, so it is declared here where both the class body and the impl see it.
-// std::runtime_error is load-bearing, not a default -- nanobind's built-in translation dispatches on
-// the nearest std base, so any other base would change the Python exception type these surface as.
+// MonomialPropagatorImpl.h
 class PropagatorConfigError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
 /// A raw-layout accessor was called on a multi-partition propagator, which owns no operator or graph.
-// Kept apart from PropagatorConfigError because nothing about the configuration is wrong: the caller
-// either uses the partition-transparent accessors or constructs with partitions=1. Same std base.
 class MultiPartitionUnsupported : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -281,8 +277,6 @@ public:
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
-    // Both take the same three parameters so make_functional_ has one call to write; the energy path
-    // simply ignores cos.accumulate.
     static inline const auto ev_fn = [](const EvalRequest &request,
                                         mpi::Comm comm,
                                         const detail::CosCallbacks &cos) -> double { return ev(request, comm, cos); };
@@ -461,8 +455,6 @@ private:
                               VecD *fused_scale_coeffs = nullptr,
                               bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
 
-    // The argument list is spelled in full, and make_functional_ passes exactly these: deducing R from a
-    // shorter list than the call site uses is how a default argument silently deduces the wrong R.
     template <typename Fn,
               typename R = std::invoke_result_t<Fn, const EvalRequest &, mpi::Comm, const detail::CosCallbacks &>>
     auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
