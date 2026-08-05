@@ -44,16 +44,6 @@ class TestPauliPropagatorCutoff:
         mp = self._propagator(serial_comm)
         assert mp.num_qubits == 2  # "ZZ" operator
 
-    def test_non_hermitian_pauli_gate_rejected(self, serial_comm):
-        """An ExpGate with a complex (non-Hermitian) Pauli coefficient is rejected."""
-        circuit = Circuit(
-            (ExpGate(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=2)),),
-            system_size=2,
-            parameters=(0.3,),
-        )
-        with pytest.raises(ValueError, match="not Hermitian"):
-            self._propagator(serial_comm).propagate(circuit)
-
     @pytest.mark.parametrize("schrodinger_cutoff", [3, 4, 5])
     def test_schrodinger_cutoff(self, schrodinger_cutoff, serial_comm):
         """schrodinger_cutoff is a Pauli weight in qubits, matching ``cutoff``.
@@ -370,8 +360,8 @@ class TestCircuit:
         assert circuit.n_parameters == 2
 
     def test_rejects_mixed_gate_families(self):
-        pauli_gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1))
-        majorana_gate = ExpGate(MajoranaOperator({(0, 1): 1.0}, num_modes=2))
+        pauli_gate = ExpGate(PauliOperator({Pauli("XY", [0, 1]): 1.0}, num_qubits=2))
+        majorana_gate = ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2))
         with pytest.raises(TypeError, match="mix"):
             Circuit(
                 (

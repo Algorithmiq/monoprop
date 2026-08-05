@@ -98,13 +98,11 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     # tests/test_circuit.py::_rebase.
     non_orbital = Circuit(
         tuple(ExpGate._with_index(gate, None) for gate in non_orbital_gates),
-        initial_state=(),
         system_size=problem.n_modes,
         parameters=tuple(parameters[:split]),
     )
     orbital = Circuit(
         tuple(ExpGate._with_index(gate, None) for gate in orbital_gates),
-        initial_state=(),
         system_size=problem.n_modes,
         parameters=tuple(parameters[split:]),
     )

@@ -471,7 +471,7 @@ def _multi_term_gate_propagator():
     prop = MajoranaPropagator(op, [0, 1], cutoff=4)
     g0 = ExpGate(MajoranaOperator({(0, 2): 1.0j, (1, 3): 1.0j}, num_modes=2))
     g1 = ExpGate(MajoranaOperator({(2,): 1.0}, num_modes=2))
-    prop.build_graph(Circuit((g0, g1), initial_state=(), system_size=2))
+    prop.build_graph(Circuit((g0, g1), initial_state=[0, 1], system_size=2))
     return prop
 
 
@@ -487,7 +487,7 @@ def test_n_gates_accumulates_across_builds() -> None:
     prop.build_graph(
         Circuit(
             (ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2)),),
-            initial_state=(),
+            initial_state=[0, 1],
             system_size=2,
         )
     )
@@ -495,7 +495,7 @@ def test_n_gates_accumulates_across_builds() -> None:
     prop.build_graph(
         Circuit(
             (ExpGate(MajoranaOperator({(1,): 1.0}, num_modes=2)),),
-            initial_state=(),
+            initial_state=[0, 1],
             system_size=2,
         )
     )
@@ -574,7 +574,11 @@ def test_build_graph_accumulates_layers_and_parameters(fixture: str) -> None:
 
     twice = _propagator(problem)
     twice.build_graph(
-        Circuit(_rebase(gates[:split]), initial_state=(), system_size=problem.n_modes)
+        Circuit(
+            _rebase(gates[:split]),
+            initial_state=problem.monomial_circuit.initial_state,
+            system_size=problem.n_modes,
+        )
     )
     layers_after_first = twice.graph_layers
     twice.build_graph(
@@ -637,13 +641,21 @@ def test_build_graph_in_two_calls_schrodinger(fixture: str) -> None:
 
     single = _schrodinger_propagator(problem)
     single.build_graph(circuit)
-
+    initial_state = problem.monomial_circuit.initial_state
     twice = _schrodinger_propagator(problem)
     twice.build_graph(
-        Circuit(_rebase(gates[:split]), initial_state=(), system_size=problem.n_modes)
+        Circuit(
+            _rebase(gates[:split]),
+            initial_state=initial_state,
+            system_size=problem.n_modes,
+        )
     )
     twice.build_graph(
-        Circuit(_rebase(gates[split:]), initial_state=(), system_size=problem.n_modes)
+        Circuit(
+            _rebase(gates[split:]),
+            initial_state=initial_state,
+            system_size=problem.n_modes,
+        )
     )
 
     np.testing.assert_allclose(twice.expval(params), single.expval(params))
@@ -798,6 +810,7 @@ def test_failed_build_graph_does_not_advance_the_parameter_axis() -> None:
             ExpGate(MajoranaOperator({(2, 3): -1.0j}, num_modes=8)),
         ),
         parameters=(0.5, 0.3),
+        system_size=8,
     )
     prop = _small_propagator(lower_atol=1e-12)
     with pytest.raises(RuntimeError, match="length of parameters"):

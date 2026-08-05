@@ -240,6 +240,7 @@ def test_graph_size_counts_real_cosine_indices(serial_comm):
             ExpGate(MajoranaOperator({(1, 8, 9, 10): 1.0}, n_modes)),
         ],
         parameters=[0.3, 0.4],
+        system_size=n_modes,
     )
 
     def sized(cutoff: int) -> tuple[int, int]:
