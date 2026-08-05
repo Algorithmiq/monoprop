@@ -27,6 +27,19 @@
 
 namespace monoprop {
 
+// A Majorana/Pauli index at or past the width of the system it is being applied to.
+class AlgebraIndexOutOfRange : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+// A coefficient with no real encoding under the algebra model: non-Hermitian for Majorana products,
+// non-real for Pauli strings.
+class NonEncodableCoefficient : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 // Unchecked: `2 * NumModes - 1 - bit_loc` underflows for an out-of-range index and Monomial::set is
 // noexcept, so the result is an out-of-bounds write. Use indices_to_bitset_checked() for user input.
 template <size_t NumModes>
@@ -44,7 +57,7 @@ template <size_t NumModes>
 auto indices_to_bitset_checked(const VecZ &arr, size_t max_index) -> Monomial<NumModes> {
     for (const auto &bit_loc : arr) {
         if (bit_loc >= max_index) {
-            throw std::runtime_error(
+            throw AlgebraIndexOutOfRange(
                 std::format("Majorana/Pauli index {} is out of range; must be less than {}.", bit_loc, max_index));
         }
     }

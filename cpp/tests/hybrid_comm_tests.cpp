@@ -234,13 +234,12 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
                 off += my_len;
             }
             hyb.alltoallv_resolve<int>(u,
-                                       send.data(),
-                                       sc.data(),
-                                       sd.data(),
-                                       recv,
-                                       rc.data(),
-                                       rd.data(),
-                                       sizeof(int),
+                                       {.send = send.data(),
+                                        .send_counts = sc.data(),
+                                        .send_displs = sd.data(),
+                                        .recv = recv,
+                                        .recv_counts = rc.data(),
+                                        .recv_displs = rd.data()},
                                        monoprop::mpi::datatype<int>::get());
             int expected_total = 0;
             for (int src = 0; src < P; ++src) {

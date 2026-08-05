@@ -28,6 +28,12 @@
 
 namespace monoprop::detail {
 
+// The layer exchange layout and the packed cross-rank storage disagree on the rank count.
+class ExchangeLayoutRankMismatch : public std::logic_error {
+public:
+    using std::logic_error::logic_error;
+};
+
 // The ceiling has to track the TermIndex width, not a fixed 32-bit limit.
 inline auto checked_term_index(size_t value, const char *what) -> TermIndex {
     if (value > static_cast<size_t>(std::numeric_limits<TermIndex>::max())) {
@@ -124,8 +130,8 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
     bool uses_binary_phases = true;
     for (const auto &partner : data) {
         bool non_binary_phase = false;
-        for (const auto &entry : partner.sin_recv_entries) {
-            non_binary_phase = non_binary_phase || !is_binary_phase(entry.second);
+        for (const auto &[recv_index, phase] : partner.sin_recv_entries) {
+            non_binary_phase = non_binary_phase || !is_binary_phase(phase);
         }
         uses_binary_phases = uses_binary_phases && !non_binary_phase;
     }
@@ -206,9 +212,10 @@ inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_pa
 
     // Both are indexed by the same rank space.
     if (storage->evolution_exchange_layout.counts.size() != storage->cross_rank.rank_count()) {
-        throw std::logic_error(std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
-                                           storage->evolution_exchange_layout.counts.size(),
-                                           storage->cross_rank.rank_count()));
+        throw ExchangeLayoutRankMismatch(
+            std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
+                        storage->evolution_exchange_layout.counts.size(),
+                        storage->cross_rank.rank_count()));
     }
     return storage;
 }

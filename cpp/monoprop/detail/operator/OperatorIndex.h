@@ -57,7 +57,7 @@ public:
     static constexpr size_t kMaxInlinePositions = 32;
     static constexpr PosT kOverflowMarker = std::numeric_limits<PosT>::max();
 
-    static_assert(2 * NumModes - 1 <= std::numeric_limits<PosT>::max(),
+    static_assert((2 * NumModes) - 1 <= std::numeric_limits<PosT>::max(),
                   "OperatorIndex PosT too narrow for 2*NumModes positions");
     static_assert(kMaxInlinePositions < std::numeric_limits<PosT>::max(),
                   "kOverflowMarker sentinel must not collide with a valid popcount");
@@ -105,7 +105,7 @@ public:
         const size_t base = size_;
         if (capacity() < base + n) {
             const size_t cap = capacity();
-            reserve_rows(std::max(base + n, cap + cap / 2 + 1));
+            reserve_rows(std::max(base + n, cap + (cap / 2) + 1));
         }
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
@@ -142,7 +142,7 @@ public:
             return overflow_.at(i);
         }
         value_type mono;
-        const PosT *pos = &rows_[i * stride_ + 1];
+        const PosT *pos = &rows_[(i * stride_) + 1];
         for (size_t j = 0; j < c; ++j) {
             mono.set(pos[j]);
         }
@@ -158,7 +158,7 @@ public:
             }
             return;
         }
-        const PosT *pos = &rows_[i * stride_ + 1];
+        const PosT *pos = &rows_[(i * stride_) + 1];
         for (size_t j = 0; j < c; ++j) {
             fn(static_cast<size_t>(pos[j]));
         }
@@ -212,17 +212,7 @@ public:
                 if (table_.count == 0) {
                     continue;
                 }
-                size_t s = sp[j] & table_.mask;
-                for (;; s = (s + 1) & table_.mask) {
-                    const Slot &e = table_.slots[s];
-                    if (e.idx == kEmptySlot) {
-                        break;
-                    }
-                    if (e.h == hh[j]) {
-                        cand[j] = e.idx;
-                        break;
-                    }
-                }
+                cand[j] = probe_hash_match_(hh[j], sp[j] & table_.mask);
                 if (cand[j] != kEmptySlot) {
                     __builtin_prefetch(&rows_[static_cast<size_t>(cand[j]) * stride_], 0, 0);
                 }
@@ -278,11 +268,11 @@ public:
     }
     // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
     [[nodiscard]] auto slack_bytes() const -> size_t {
-        return rows_.capacity() * sizeof(PosT) - std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT);
+        return (rows_.capacity() * sizeof(PosT)) - (std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT));
     }
 
     auto index_estimated_memory_bytes() const -> size_t {
-        return sizeof(OperatorIndex) + table_.slots.capacity() * sizeof(Slot);
+        return sizeof(OperatorIndex) + (table_.slots.capacity() * sizeof(Slot));
     }
 
 private:
@@ -290,6 +280,23 @@ private:
         TermIndex idx = kEmptySlot;
         uint32_t h = 0;
     };
+
+    // First slot on h's probe chain whose stored hash matches, or kEmptySlot if the chain ends first.
+    // Matches on h alone and leaves the dense-row comparison to the caller — that deferral is what lets
+    // find_batch prefetch the row between probe and confirm, so do not fold row_eq_key in here (find()
+    // deliberately keeps its own confirming variant). `start` must already be masked; the table must not
+    // be mutated concurrently.
+    [[gnu::always_inline]] auto probe_hash_match_(uint32_t h, size_t start) const -> TermIndex {
+        for (size_t s = start;; s = (s + 1) & table_.mask) {
+            const Slot &e = table_.slots[s];
+            if (e.idx == kEmptySlot) {
+                return kEmptySlot;
+            }
+            if (e.h == h) {
+                return e.idx;
+            }
+        }
+    }
 
     static uint32_t fold_hash(const key_type &q) noexcept {
         const size_t full = MonomialHash<NumModes>{}(q);
@@ -341,7 +348,7 @@ private:
     };
     static constexpr size_t kMinSlots = 16;
     // Slot count for `n` entries at ≤0.7 load.
-    static auto slots_for_(size_t n) -> size_t { return std::bit_ceil(std::max<size_t>(kMinSlots, n * 10 / 7 + 1)); }
+    static auto slots_for_(size_t n) -> size_t { return std::bit_ceil(std::max<size_t>(kMinSlots, (n * 10 / 7) + 1)); }
 
     [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
     auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
@@ -369,7 +376,7 @@ private:
         if (q.count() != static_cast<size_t>(c)) {
             return false;
         }
-        const PosT *pos = &rows_[i * stride_ + 1];
+        const PosT *pos = &rows_[(i * stride_) + 1];
         for (size_t j = 0; j < c; ++j) {
             if (!q.test(pos[j])) {
                 return false;

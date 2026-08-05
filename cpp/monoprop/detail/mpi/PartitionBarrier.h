@@ -31,6 +31,11 @@ public:
 // Sense-reversing generation barrier for a fixed number of in-process partition threads. Each barrier
 // word gets a private cache line: if `gen_` shared `arrived_`'s line, spinners' reloads would miss to
 // L3 on every peer arrival — O(S) coherence bounces (measured top hotspot at S=112).
+//
+// The acquire/release/relaxed orderings below are load-bearing, not an oversight: the release store to
+// `gen_` is what publishes the preceding relaxed reset of `arrived_`. Promoting them to seq_cst would
+// put a full barrier in the spin loop of that same hotspot, so cpp:S8417 is suppressed for this file
+// in sonar-project.properties. Do not "simplify" them to the default ordering.
 class PartitionBarrier {
 public:
     explicit PartitionBarrier(int participants) : participants_(participants) {}

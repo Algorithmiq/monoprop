@@ -35,7 +35,12 @@ struct CutoffContext {
     bool use_coeff_checks = false;
 
     auto abs_coeff_for(size_t i, const VecD &coeffs) const -> double {
-        return use_coeff_checks ? std::abs(i < coeffs.size() ? coeffs[i] : 0.0) : 0.0;
+        if (!use_coeff_checks) {
+            return 0.0;
+        }
+        // Out-of-range indices read as zero: callers scan past the end of a shorter coeff vector.
+        const double coeff = i < coeffs.size() ? coeffs[i] : 0.0;
+        return std::abs(coeff);
     }
     // upper_atol rescue predicate: a sine-partner term dropped by the structural cutoff is kept alive if
     // its magnitude (the partner's sine coefficient |sin(2θ)|·|c|, not the source) is >= upper_atol.

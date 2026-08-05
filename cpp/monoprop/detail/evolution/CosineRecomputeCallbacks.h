@@ -28,4 +28,9 @@ using LayerCosScale = std::function<void(size_t layer, double *coeff, double cos
 using LayerCosAccumulate =
     std::function<double(size_t layer, double *state, double *ham, double cos_val, double sec_val)>;
 
+struct CosCallbacks {
+    LayerCosScale scale;           ///< forward path; required whenever the parameters are non-empty
+    LayerCosAccumulate accumulate; ///< reverse path; required by the gradient only
+};
+
 } // namespace monoprop::detail
