@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Run as a script, so sys.path[0] is tools/ regardless of the working directory CMake picks.
@@ -117,14 +117,12 @@ def _core_dispatch_source(
 
 """Typing dispatch for the {class_name}.
 
-This file was automatically generated on {date.today()}. Do *NOT EDIT*. Do *NOT COMMIT*.
+This file was automatically generated on {datetime.now(tz=UTC).date()}. Do *NOT EDIT*. Do *NOT COMMIT*.
 """
 
-# ruff: noqa: I001, ANN001, ANN204
+# ruff: noqa: I001, ANN001, ANN204, PLR0917
 
 from __future__ import annotations
-
-from functools import partial
 
 from {module_name}._core import {import_line}
 from monoprop.exceptions import NumberOfModesInvalidError
@@ -144,8 +142,8 @@ def _binding_block(n: int) -> int:
     return max(_MODES_PER_STORAGE_BLOCK, blocks * _MODES_PER_STORAGE_BLOCK)
 
 
-def dispatch(num_modes: int) -> partial[_SimulatorAdapter]:
-    """Return a factory for a {class_name} adapter bound to *num_modes*."""
+def dispatch(num_modes: int) -> type[_SimulatorAdapter]:
+    """Return the concrete {class_name} adapter for *num_modes*."""
     if not isinstance(num_modes, int) or num_modes <= 0:
         errmsg = f"Number of Fermionic modes {{num_modes}} invalid. num_modes must be > 0."
         raise NumberOfModesInvalidError(errmsg)
@@ -157,7 +155,39 @@ def dispatch(num_modes: int) -> partial[_SimulatorAdapter]:
             " Fermionic modes are required."
         )
         raise NumberOfModesInvalidError(errmsg)
-    return partial(_SimulatorAdapter, _CORES[_binding_block(num_modes)], num_modes)
+
+    core_type = _CORES[_binding_block(num_modes)]
+
+    class _BoundSimulatorAdapter(_SimulatorAdapter):
+        def __init__(
+            self,
+            initial_operator: dict[tuple[int, ...], complex],
+            cutoff: int,
+            initial_state: list[int],
+            comm=None,
+            schrodinger_cutoff: int | None = None,
+            lower_atol: float | None = None,
+            upper_atol: float | None = None,
+            cutoff_type: str = "length",
+            basis_change: list[list[int]] | None = None,
+            basis: str = "majorana",
+        ) -> None:
+            super().__init__(
+                core_type,
+                num_modes,
+                initial_operator=initial_operator,
+                cutoff=cutoff,
+                initial_state=initial_state,
+                comm=comm,
+                schrodinger_cutoff=schrodinger_cutoff,
+                lower_atol=lower_atol,
+                upper_atol=upper_atol,
+                cutoff_type=cutoff_type,
+                basis_change=basis_change,
+                basis=basis,
+            )
+
+    return _BoundSimulatorAdapter
 '''
 
 

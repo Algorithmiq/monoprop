@@ -82,9 +82,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
         cutoff: int,
         schrodinger_cutoff: int | None,
         cutoff_type: str,
-        lower_atol: None | float,
-        upper_atol: None | float,
-        basis_change: None | list[list[int]],
+        lower_atol: float | None,
+        upper_atol: float | None,
+        basis_change: list[list[int]] | None,
         comm: MPI.Comm | None,
         basis: str = "majorana",
     ) -> None:
@@ -116,8 +116,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
         # Qubit count for expanding Pauli gates; PauliPropagator overwrites it after this call.
         self._num_qubits = None
         self._initial_state = list(initial_state)
-        # dispatch() returns a functools.partial bound to the right core type and num_modes;
-        # call it with keyword args matching _SimulatorAdapter.__init__.
+        # dispatch() returns the concrete adapter class for this mode count;
+        # call it with keyword args matching the public constructor.
         self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,
@@ -577,21 +577,21 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._simulator.cutoff = new_cutoff
 
     @property
-    def lower_atol(self) -> None | float:
+    def lower_atol(self) -> float | None:
         """Current lower absolute tolerance for the cutoff function (``None`` if unset)."""
         return self._simulator.lower_atol
 
     @lower_atol.setter
-    def lower_atol(self, new_lower_atol: None | float) -> None:
+    def lower_atol(self, new_lower_atol: float | None) -> None:
         self._simulator.lower_atol = new_lower_atol
 
     @property
-    def upper_atol(self) -> None | float:
+    def upper_atol(self) -> float | None:
         """Current upper absolute tolerance for the cutoff function (``None`` if unset)."""
         return self._simulator.upper_atol
 
     @upper_atol.setter
-    def upper_atol(self, new_upper_atol: None | float) -> None:
+    def upper_atol(self, new_upper_atol: float | None) -> None:
         self._simulator.upper_atol = new_upper_atol
 
     @property
