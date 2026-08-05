@@ -114,7 +114,7 @@ struct FlatAlltoallvArgs {
 // layout: `recv` is a reference the callee resizes, and the two recv arrays are written, not read. Being
 // typed, it derives element bytes as sizeof(T) instead of carrying `elem`. Send side: same lifetime and
 // element-offset contract as AlltoallvArgs.
-template <class T>
+template <typename T>
 struct AlltoallvResolveArgs {
     const T *send = nullptr;
     const int *send_counts = nullptr; // [P] elements sent to each destination

@@ -67,8 +67,6 @@ auto fill_mapped_params(VecD &result,
     }
 }
 
-// Leaves the evolved operator in eval_scratch().op. Reaches for the scratch itself rather than taking it:
-// every caller wants this exact thread_local, and passing it would only invite a second one.
 auto prepare_evolved_operator(const EvalRequest &request, mpi::Comm comm, const detail::LayerCosScale &cos_scale)
     -> void {
     // Checked once here rather than at each caller: evolve_operator invokes cos_scale per layer, so an

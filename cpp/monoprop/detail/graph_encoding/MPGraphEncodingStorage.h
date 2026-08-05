@@ -29,9 +29,6 @@
 namespace monoprop::detail {
 
 // The layer exchange layout and the packed cross-rank storage disagree on the rank count.
-// Kept a logic_error descendant deliberately: both operands are built inside build_graph, so no input
-// can make them disagree -- a mismatch is a violated internal invariant, which is what logic_error
-// means. It also keeps the Python-visible type RuntimeError rather than flipping it to ValueError.
 class ExchangeLayoutRankMismatch : public std::logic_error {
 public:
     using std::logic_error::logic_error;
