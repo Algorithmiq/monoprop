@@ -332,9 +332,9 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
 
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoallv(comm.shm_rank,
-                            h.send_buffer.data(),
+                            reinterpret_cast<const std::byte *>(h.send_buffer.data()),
                             h.send_displs.data(),
-                            h.recv_buffer.data(),
+                            reinterpret_cast<std::byte *>(h.recv_buffer.data()),
                             h.recv_counts.data(),
                             h.recv_displs.data(),
                             sizeof(T));
@@ -342,10 +342,10 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
 #ifdef monoprop_ENABLE_MPI
     else if (comm.kind == Comm::Kind::Hybrid) {
         comm.hyb->alltoallv(comm.shm_rank,
-                            h.send_buffer.data(),
+                            reinterpret_cast<const std::byte *>(h.send_buffer.data()),
                             h.send_counts.data(),
                             h.send_displs.data(),
-                            h.recv_buffer.data(),
+                            reinterpret_cast<std::byte *>(h.recv_buffer.data()),
                             h.recv_counts.data(),
                             h.recv_displs.data(),
                             sizeof(T),

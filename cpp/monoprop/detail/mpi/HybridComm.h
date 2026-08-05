@@ -100,11 +100,13 @@ public:
         });
     }
 
+    // `send` / `recv` address the caller's flat buffers as raw bytes; counts/displs stay in elements and
+    // `elem` gives the element size, since the pointers carry no element type to scale by.
     auto alltoallv(int local_partition,
-                   const void *send,
+                   const std::byte *send,
                    const int *send_counts /*[P]*/,
                    const int *send_displs /*[P]*/,
-                   void *recv,
+                   std::byte *recv,
                    const int *recv_counts /*[P]*/,
                    const int *recv_displs /*[P]*/,
                    size_t elem,
@@ -188,10 +190,10 @@ public:
     // Flat variable all-to-all over caller-owned buffers (counts/displs in elements, `elem` = element bytes).
     // recv_counts must already hold the transpose — same contract as MPI_Alltoallv.
     auto alltoallv_impl_(int local_partition,
-                         const void *send,
+                         const std::byte *send,
                          const int *send_counts /*[P]*/,
                          const int *send_displs /*[P]*/,
-                         void *recv,
+                         std::byte *recv,
                          const int *recv_counts /*[P]*/,
                          const int *recv_displs /*[P]*/,
                          size_t elem,
@@ -230,7 +232,7 @@ public:
 
         // Scatter each global source's contiguous run from stage_recv_ to recv_displs[g] (all legs, incl.
         // self-rank, go through staging). Block starts come from scatter_off_: no peer slot is read past B4.
-        char *dst = static_cast<char *>(recv);
+        std::byte *dst = recv;
         const int t = local_partition;
         for (int a = 0; a < r_; ++a) {
             for (int su = 0; su < s_; ++su) {
@@ -261,7 +263,9 @@ public:
                                  MPI_Datatype dt) -> void {
         const size_t u = static_cast<size_t>(local_partition);
         Slot &me = slots_[u];
-        me.ptr = send;
+        // Typed here but byte-addressed in the slot: pack_send_ copies by (displ, count) in elements and
+        // never reconstructs T, so the slot stays type-erased for the untyped alltoallv_impl_ above.
+        me.ptr = reinterpret_cast<const std::byte *>(send);
         me.send_counts = send_counts;
         me.send_displs = send_displs;
         // recv_counts is an output here — deliberately not published; the count Alltoall resolves it.
@@ -315,7 +319,7 @@ public:
         }
         sync(); // B4
 
-        char *dst = reinterpret_cast<char *>(recv.data());
+        std::byte *dst = reinterpret_cast<std::byte *>(recv.data()); // after the resize: it may reallocate
         for (int a = 0; a < r_; ++a) {
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
@@ -403,7 +407,7 @@ public:
 
 private:
     struct alignas(64) Slot {
-        const void *ptr = nullptr;
+        const std::byte *ptr = nullptr; // byte view of this partition's send buffer; null until published
         const int *counts = nullptr;
         const int *send_counts = nullptr;
         const int *send_displs = nullptr;
@@ -487,7 +491,9 @@ private:
 
     auto pack_send_(int local_partition, size_t elem) -> void {
         const int u = local_partition;
-        const char *src = static_cast<const char *>(slots_[static_cast<size_t>(u)].ptr);
+        // Own slot only — no peer's published send buffer is read here, which is what lets every
+        // partition pack concurrently in the B2→B3 window.
+        const std::byte *src = slots_[static_cast<size_t>(u)].ptr;
         const int *my_send_counts = slots_[static_cast<size_t>(u)].send_counts;
         const int *my_send_displs = slots_[static_cast<size_t>(u)].send_displs;
         for (int b = 0; b < r_; ++b) {

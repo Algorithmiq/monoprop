@@ -115,18 +115,26 @@ inline auto post_flat_alltoallv(const T *send,
                                 const int *recv_displs,
                                 int num_ranks,
                                 Comm comm) -> Ticket {
+    // The in-process transports address the buffers as raw bytes; MPI_Ialltoallv below still takes the
+    // typed pointers plus a datatype. Offsets stay in elements on both paths.
     if (comm.kind == Comm::Kind::Shm) {
         // Synchronous: the transfer completes here, so the Ticket's wait() is a no-op.
-        comm.shm->alltoallv(comm.shm_rank, send, send_displs, recv, recv_counts, recv_displs, sizeof(T));
+        comm.shm->alltoallv(comm.shm_rank,
+                            reinterpret_cast<const std::byte *>(send),
+                            send_displs,
+                            reinterpret_cast<std::byte *>(recv),
+                            recv_counts,
+                            recv_displs,
+                            sizeof(T));
         return Ticket{};
     }
 #ifdef monoprop_ENABLE_MPI
     if (comm.kind == Comm::Kind::Hybrid) {
         comm.hyb->alltoallv(comm.shm_rank,
-                            send,
+                            reinterpret_cast<const std::byte *>(send),
                             send_counts,
                             send_displs,
-                            recv,
+                            reinterpret_cast<std::byte *>(recv),
                             recv_counts,
                             recv_displs,
                             sizeof(T),
