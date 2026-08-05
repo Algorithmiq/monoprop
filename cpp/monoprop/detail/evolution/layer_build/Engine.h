@@ -521,7 +521,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  std::optional<std::reference_wrapper<const VecD>> local_coeffs,
                  const std::optional<double> &upper_atol,
                  const std::optional<double> &param,
-                 int only_rotate_len_k,
+                 std::optional<int> only_rotate_len_k,
                  MatchedEpochSet &matched_scratch,
                  mpi::Comm comm,
                  CosMask *out_cos = nullptr,
@@ -538,13 +538,13 @@ auto build_layer(MPOperator<NumModes> &local_op,
     const auto &coeffs = local_coeffs ? local_coeffs->get() : empty_coeffs();
     const CutoffEvaluator<NumModes> cut_eval{cutoff_fn};
 
-    // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass. k==0 only (a
+    // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass. No length cap only (a
     // popcount>k hit is outside the per-index cos set, so 1/cos recovery would be wrong) and cos!=0 (else
     // recovery is impossible; two-pass fallback). cos is even, so the sweep's cos(2·build_angle) matches
     // the apply's cos(2·apply_angle) bit-for-bit.
     const double cos_build = (use_fused && param.has_value()) ? std::cos(2.0 * param.value()) : 1.0;
     const bool fused_scale =
-        use_fused && only_rotate_len_k == 0 && fused_scale_coeffs != nullptr && param.has_value() && cos_build != 0.0;
+        use_fused && !only_rotate_len_k && fused_scale_coeffs != nullptr && param.has_value() && cos_build != 0.0;
     // build_layer is the single authority for this decision; the fused caller must drive its apply from it.
     if (fused_scale_out != nullptr) {
         *fused_scale_out = fused_scale;

@@ -535,12 +535,12 @@ auto MonomialPropagator<NumModes>::evolve_mode_build_graph_(const std::vector<Ve
                                                             const VecZ &parameter_mapping,
                                                             const VecD &gen_coeffs,
                                                             const VecZ &gate_indices,
-                                                            int only_rotate_len_k) -> void {
+                                                            std::optional<int> only_rotate_len_k) -> void {
     const auto majoranas_size = majoranas.size();
     run_gate_loop_(majoranas,
                    only_rotate_len_k,
                    [this, &parameter_mapping, &gen_coeffs, &gate_indices, majoranas_size](const VecZ &mono,
-                                                                                          int rot_len,
+                                                                                          std::optional<int> rot_len,
                                                                                           size_t i) {
                        const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
                        propagate_one_(mono,
@@ -560,7 +560,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
                                                                   const VecZ &gate_indices,
                                                                   const VecD &parameters,
                                                                   const VecD &operator_coeffs,
-                                                                  int only_rotate_len_k) -> void {
+                                                                  std::optional<int> only_rotate_len_k) -> void {
     auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0);
     auto coeffs = operator_coeffs;
     const auto majoranas_size = majoranas.size();
@@ -569,7 +569,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
                    only_rotate_len_k,
                    [this, &parameter_mapping, &gen_coeffs, &gate_indices, &mapped_params, &coeffs, majoranas_size](
                        const VecZ &mono,
-                       int rot_len,
+                       std::optional<int> rot_len,
                        size_t i) {
                        const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
                        const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
@@ -593,7 +593,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
                                                                      const VecZ &parameter_mapping,
                                                                      const VecD &gen_coeffs,
                                                                      const VecD &parameters,
-                                                                     int only_rotate_len_k) -> void {
+                                                                     std::optional<int> only_rotate_len_k) -> void {
     auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0);
     // Called for the side effect alone: it returns a reference to the very vector selected below.
     (void)current_picture_coeffs_();
@@ -602,7 +602,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
     run_gate_loop_(
         majoranas,
         only_rotate_len_k,
-        [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &mono, int rot_len, size_t i) {
+        [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &mono, std::optional<int> rot_len, size_t i) {
             const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
             // extend_coeffs must run after build_evolve_result_'s self-rank grow and before the apply.
             CosMask cos;
@@ -620,7 +620,7 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                                const VecD &gen_coeffs,
                                                std::optional<VecZ> gate_indices,
                                                std::optional<VecD> parameters,
-                                               int only_rotate_len_k) -> void {
+                                               std::optional<int> only_rotate_len_k) -> void {
     if (partition_group_) {
         for_each_partition_([&](MonomialPropagator &s) {
             s.build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
@@ -690,7 +690,7 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              const VecZ &parameter_mapping,
                                              const VecD &gen_coeffs,
                                              const VecD &parameters,
-                                             int only_rotate_len_k) -> void {
+                                             std::optional<int> only_rotate_len_k) -> void {
     if (partition_group_) {
         for_each_partition_([&](MonomialPropagator &s) {
             s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
@@ -715,7 +715,7 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
 template <size_t NumModes>
 template <typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
-                                                  int only_rotate_len_k,
+                                                  std::optional<int> only_rotate_len_k,
                                                   EvolutionFunc evolution_func) -> void {
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
@@ -729,7 +729,7 @@ auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &major
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
-                                                        int only_rotate_len_k,
+                                                        std::optional<int> only_rotate_len_k,
                                                         std::optional<std::reference_wrapper<const VecD>> coeffs,
                                                         std::optional<double> param,
                                                         CosMask *out_cos,
@@ -761,7 +761,7 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
-                                                  int only_rotate_len_k,
+                                                  std::optional<int> only_rotate_len_k,
                                                   std::optional<std::reference_wrapper<const VecD>> coeffs,
                                                   std::optional<double> param,
                                                   size_t param_index,

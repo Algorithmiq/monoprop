@@ -173,8 +173,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     def _validate_and_correct_only_rotate_len_k(
         self, only_rotate_len_k: int | None
-    ) -> int:
-        """Validate ``only_rotate_len_k``; ``None`` becomes the ``0`` the engine reads as "all".
+    ) -> int | None:
+        """Validate ``only_rotate_len_k``.
 
         Must be positive, and at most ``2 * num_qubits`` when the propagator knows its qubit count
         (i.e. on a [PauliPropagator][monoprop.pauli_propagator.PauliPropagator]).
@@ -183,11 +183,10 @@ class MonomialPropagator(ABC, Generic[T_op]):
             only_rotate_len_k: Optional length cutoff for gate application.
 
         Returns:
-            The validated cutoff. The engine reads ``0`` as "apply all gates to all monomials",
-            so ``None`` maps onto it and callers need not special-case "no restriction".
+            The validated optional cutoff.
         """
         if only_rotate_len_k is None:
-            return 0
+            return None
         if only_rotate_len_k <= 0 or (
             isinstance(self._num_qubits, int)
             and only_rotate_len_k > 2 * self._num_qubits

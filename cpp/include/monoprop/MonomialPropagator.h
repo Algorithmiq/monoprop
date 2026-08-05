@@ -233,22 +233,23 @@ public:
     /// Build the propagation graph, one layer per generator, recording each layer's gate info
     /// (angle = parameters[mapping[i]] * gen_coeffs[i]). Accumulates across calls. `gate_indices` is
     /// 0-based per call, offset internally by the gate count already in the graph. Pass `parameters` to
-    /// seed atol truncation while extending a non-empty graph. `only_rotate_len_k` > 0 applies gates to
-    /// monomials of length <= k even if they anticommute. Heisenberg consumes each call's sequence in
+    /// seed atol truncation while extending a non-empty graph. `only_rotate_len_k` applies gates to
+    /// monomials of length <= k even if they anticommute; nullopt applies them without a length cap.
+    /// Heisenberg consumes each call's sequence in
     /// reverse, so a forward split across calls is not equivalent; Schrodinger is front-to-back, so it is.
     auto build_graph(const std::vector<VecZ> &majoranas,
                      const VecZ &parameter_mapping,
                      const VecD &gen_coeffs,
                      std::optional<VecZ> gate_indices = std::nullopt,
                      std::optional<VecD> parameters = std::nullopt,
-                     int only_rotate_len_k = 0) -> void;
+                     std::optional<int> only_rotate_len_k = std::nullopt) -> void;
 
     /// Evolve and contract immediately, without storing a graph.
     auto propagate(const std::vector<VecZ> &majoranas,
                    const VecZ &parameter_mapping,
                    const VecD &gen_coeffs,
                    const VecD &parameters,
-                   int only_rotate_len_k = 0) -> void;
+                   std::optional<int> only_rotate_len_k = std::nullopt) -> void;
 
     auto expectation_value(const VecD &parameters) -> double;
 
@@ -409,7 +410,7 @@ private:
                                   const VecZ &parameter_mapping,
                                   const VecD &gen_coeffs,
                                   const VecZ &gate_indices,
-                                  int only_rotate_len_k) -> void;
+                                  std::optional<int> only_rotate_len_k) -> void;
 
     // Returns {build_angle, apply_angle}; apply is the build angle, negated in Schrödinger.
     auto gate_angle_(const VecD &mapped_params, size_t i, size_t majoranas_size) const -> std::pair<double, double> {
@@ -424,30 +425,31 @@ private:
                                         const VecZ &gate_indices,
                                         const VecD &parameters,
                                         const VecD &operator_coeffs,
-                                        int only_rotate_len_k) -> void;
+                                        std::optional<int> only_rotate_len_k) -> void;
 
     auto evolve_mode_contract_immediately_(const std::vector<VecZ> &majoranas,
                                            const VecZ &parameter_mapping,
                                            const VecD &gen_coeffs,
                                            const VecD &parameters,
-                                           int only_rotate_len_k) -> void;
+                                           std::optional<int> only_rotate_len_k) -> void;
 
     template <typename EvolutionFunc>
-    auto run_gate_loop_(const std::vector<VecZ> &majoranas, int only_rotate_len_k, EvolutionFunc evolution_func)
-        -> void;
+    auto run_gate_loop_(const std::vector<VecZ> &majoranas,
+                        std::optional<int> only_rotate_len_k,
+                        EvolutionFunc evolution_func) -> void;
 
     auto propagate_one_(const VecZ &gen_vec,
-                        int only_rotate_len_k,
+                        std::optional<int> only_rotate_len_k,
                         std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
                         std::optional<double> param = std::nullopt,
                         size_t param_index = 0,
                         double gen_coeff = 0.0,
                         size_t gate_index = 0) -> void;
 
-    // fused_scale_coeffs (ContractImmediately only): the picture's mutable coeff vector for the k==0 fused
-    // cos sweep; the taken decision is reported via fused_scale so the apply matches. See build_layer.
+    // fused_scale_coeffs (ContractImmediately only): the picture's mutable coeff vector for the uncapped
+    // fused cos sweep; the taken decision is reported via fused_scale so the apply matches. See build_layer.
     auto build_evolve_result_(const VecZ &gen_vec,
-                              int only_rotate_len_k,
+                              std::optional<int> only_rotate_len_k,
                               std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
                               std::optional<double> param = std::nullopt,
                               CosMask *out_cos = nullptr,
