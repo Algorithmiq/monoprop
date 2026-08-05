@@ -70,7 +70,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -157,7 +157,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libhwloc-dev
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -205,7 +205,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libhwloc-dev
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v9.0.0

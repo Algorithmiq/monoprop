@@ -12,40 +12,61 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Coverage of CpuTopology.h (Linux /sys parsing + affinity pinning; count-only fallback elsewhere).
+// Coverage of CpuTopology (hwloc-based topology discovery + thread affinity pinning).
+//
+// Tests are split into two layers:
+//   1. Live smoke tests — exercise enumerate_physical_cores / partition_cpusets / pin_this_thread
+//      on the actual host topology; these validate end-to-end hwloc integration.
+//   2. Policy unit tests — call topo_detail::placement_order with synthetic PhysicalCore vectors
+//      so the L3-domain interleaving and MPI-rank slicing logic can be checked deterministically
+//      without depending on live hardware or hwloc.
 
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
 #include <cstddef>
 #include <set>
-#include <string>
 #include <vector>
+
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 #include "monoprop/detail/partition/CpuTopology.h"
 
 namespace partition = monoprop::detail::partition;
+using partition::topo_detail::placement_order;
 
-// The enumerate/place/pin surface exists on every platform; exercise it regardless of OS.
+/* RAII helper: save and restore the calling thread's CPU affinity around pin_this_thread() calls
+ * so that CTest is not left pinned to a single PU after the test completes. */
+struct AffinityGuard {
+#if defined(__linux__)
+    cpu_set_t saved_{};
+    AffinityGuard() { sched_getaffinity(0, sizeof(saved_), &saved_); }
+    ~AffinityGuard() { sched_setaffinity(0, sizeof(saved_), &saved_); }
+#endif
+};
+
+/* ── Live smoke tests ─────────────────────────────────────────────────────── */
+
 BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
     const auto cores = partition::enumerate_physical_cores();
 
+    AffinityGuard guard; // save affinity before any potential pin
     const auto one = partition::partition_cpusets(/*n=*/1);
     BOOST_CHECK(one.size() <= 1u);
     if (!one.empty()) {
-        // A placement only comes back where the engine can pin (Linux /sys), which implies cores were
-        // found. Pinning itself is best-effort and no-op-safe; drive it.
+        // A placement only comes back when topology discovery succeeded and pinning is enabled.
         BOOST_CHECK(!cores.empty());
         partition::pin_this_thread(one.front());
+        // guard restores affinity on scope exit
     }
-#if defined(__linux__)
-    // With a readable /sys and pinning enabled, a non-empty core list must yield a placement.
+    // When topology discovery succeeds, a non-empty core list must produce a non-empty placement.
     if (!cores.empty()) {
         BOOST_CHECK_EQUAL(one.size(), 1u);
     }
-#endif
 
-    // Asking for more physical cores than exist disables pinning (empty), never oversubscribes.
+    // Oversubscription must always return empty regardless of topology state.
     const auto too_many = partition::partition_cpusets(/*n=*/1'000'000);
     BOOST_CHECK(too_many.empty());
 }
@@ -53,88 +74,97 @@ BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
 BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
     const auto cores = partition::enumerate_physical_cores();
     if (cores.size() < 2) {
-        return; // need at least two cores to deal one to each of two co-located ranks
+        return; // need at least two cores for the disjoint-placement check
     }
-    // Two co-located ranks, one partition each. Covers both placement arms -- interleave across the
-    // dealt domains (group_count <= #L3), and the flat domain-major slice otherwise.
+
+    // Two co-located ranks each requesting one partition. This exercises both placement arms:
+    //   - interleave (group_count ≤ #L3 domains)
+    //   - domain-major slice (group_count > #L3 domains)
     const auto rank0 = partition::partition_cpusets(/*n=*/1, /*group_index=*/0, /*group_count=*/2);
     const auto rank1 = partition::partition_cpusets(/*n=*/1, /*group_index=*/1, /*group_count=*/2);
-    // Off Linux there is no pinning, so both come back empty (unpinned, still disjoint by the scheduler).
-#if defined(__linux__)
-    BOOST_CHECK_EQUAL(rank0.size(), 1u);
-    BOOST_CHECK_EQUAL(rank1.size(), 1u);
-#else
-    BOOST_CHECK(rank0.empty());
-    BOOST_CHECK(rank1.empty());
-#endif
+    BOOST_REQUIRE_EQUAL(rank0.size(), 1u);
+    BOOST_REQUIRE_EQUAL(rank1.size(), 1u);
+    // The two placements must be on distinct PUs; sharing would violate the MPI no-starvation
+    // invariant (one rank's busy-polling collectives cannot starve the other's barrier spins).
+    BOOST_CHECK(rank0.front().pu != rank1.front().pu);
 
+    // Oversubscription: 2 ranks × cores.size() partitions > total physical cores.
     const auto past_end = partition::partition_cpusets(/*n=*/cores.size(), /*group_index=*/1, /*group_count=*/2);
     BOOST_CHECK(past_end.empty());
 }
 
-#if defined(__linux__)
+/* ── Policy unit tests (deterministic, no hwloc or live hardware) ─────────── */
 
-using partition::topo_detail::parse_cpulist;
-using partition::topo_detail::read_line;
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_interleave_across_l3) {
+    // 4 cores across 2 L3 domains; single rank receives all.
+    // by_domain[0] = {0, 4}, by_domain[1] = {2, 6}
+    // depth-first interleave: 0, 2, 4, 6
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 1}, {4, 0}, {6, 1}};
+    const auto order = placement_order(cores, 4, 0, 1);
+    BOOST_REQUIRE_EQUAL(order.size(), 4u);
+    BOOST_CHECK_EQUAL(order[0], 0);
+    BOOST_CHECK_EQUAL(order[1], 2);
+    BOOST_CHECK_EQUAL(order[2], 4);
+    BOOST_CHECK_EQUAL(order[3], 6);
+}
 
-// Enumeration must span holes in the CPU id space (offline or hot-plugged CPUs leave unreadable ids).
-// Oracle: the sibling groups re-derived straight from /sys over the whole allowed range.
-BOOST_AUTO_TEST_CASE(cpu_topology_enumeration_spans_gaps_in_the_id_space) {
-    const auto allowed = partition::topo_detail::allowed_cpus();
-    if (allowed.empty()) {
-        return; // affinity unreadable; enumeration accepts every CPU and there is nothing to compare
-    }
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_disjoint_mpi_ranks) {
+    // 4 cores across 2 L3 domains; 2 co-located ranks each get 1 partition.
+    // rank0 is dealt domain 0, rank1 is dealt domain 1 ⇒ no shared PU.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 1}, {4, 0}, {6, 1}};
+    const auto r0 = placement_order(cores, 1, 0, 2);
+    const auto r1 = placement_order(cores, 1, 1, 2);
+    BOOST_REQUIRE_EQUAL(r0.size(), 1u);
+    BOOST_REQUIRE_EQUAL(r1.size(), 1u);
+    BOOST_CHECK(r0.front() != r1.front());
+}
 
-    std::set<int> expected_groups; // one key (min sibling) per physical core with an allowed sibling
-    for (int cpu = 0; cpu <= *allowed.rbegin(); ++cpu) {
-        const std::string sib =
-            read_line("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings_list");
-        if (sib.empty()) {
-            continue;
-        }
-        const auto siblings = parse_cpulist(sib);
-        if (siblings.empty()) {
-            continue;
-        }
-        if (std::any_of(siblings.begin(), siblings.end(), [&](int s) { return allowed.contains(s); })) {
-            expected_groups.insert(*std::min_element(siblings.begin(), siblings.end()));
-        }
-    }
-    if (expected_groups.empty()) {
-        return; // /sys unreadable on this host
-    }
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_domain_major_more_ranks_than_l3) {
+    // 4 cores in 1 L3 domain; 2 ranks each get 2 partitions (flat domain-major arm).
+    // order = [0, 2, 4, 6]; rank0 offset=0 → {0,2}, rank1 offset=2 → {4,6}.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 0}, {4, 0}, {6, 0}};
+    const auto r0 = placement_order(cores, 2, 0, 2);
+    const auto r1 = placement_order(cores, 2, 1, 2);
+    BOOST_REQUIRE_EQUAL(r0.size(), 2u);
+    BOOST_REQUIRE_EQUAL(r1.size(), 2u);
 
-    const auto cores = partition::enumerate_physical_cores();
-    BOOST_CHECK_EQUAL(cores.size(), expected_groups.size());
-    for (const auto &core : cores) {
-        BOOST_TEST(allowed.contains(core.cpu));
+    const std::set<int> s0(r0.begin(), r0.end());
+    const std::set<int> s1(r1.begin(), r1.end());
+    for (const auto cpu : s1) {
+        BOOST_CHECK(!s0.contains(cpu));
     }
 }
 
-BOOST_AUTO_TEST_CASE(cpu_topology_parse_cpulist_shapes) {
-    BOOST_TEST(parse_cpulist("5") == (std::vector<int>{5}), boost::test_tools::per_element());
-    BOOST_TEST(parse_cpulist("0-3") == (std::vector<int>{0, 1, 2, 3}), boost::test_tools::per_element());
-    BOOST_TEST(parse_cpulist("0-3,16-17") == (std::vector<int>{0, 1, 2, 3, 16, 17}), boost::test_tools::per_element());
-    BOOST_TEST(parse_cpulist("2,4,6") == (std::vector<int>{2, 4, 6}), boost::test_tools::per_element());
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_insufficient_cores_returns_empty) {
+    // 2 cores total; 2 ranks × 2 partitions = 4 > 2 ⇒ oversubscription.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 0}};
+    BOOST_CHECK(placement_order(cores, 2, 0, 2).empty());
+    BOOST_CHECK(placement_order(cores, 2, 1, 2).empty());
 
-    // Empty input and empty tokens contribute nothing (the !tok.empty() guard).
-    BOOST_CHECK(parse_cpulist("").empty());
-    BOOST_TEST(parse_cpulist("1,,3") == (std::vector<int>{1, 3}), boost::test_tools::per_element());
+    // Single rank requesting more cores than exist.
+    BOOST_CHECK(placement_order(cores, 3, 0, 1).empty());
+
+    // Empty core list.
+    BOOST_CHECK(placement_order({}, 1, 0, 1).empty());
 }
 
-BOOST_AUTO_TEST_CASE(cpu_topology_read_line_present_and_absent) {
-    BOOST_CHECK(read_line("/nonexistent/monoprop/topology/does_not_exist").empty());
-
-    // cpu0 always exists on Linux, and its thread_siblings_list is a non-empty cpulist.
-    const std::string line = read_line("/sys/devices/system/cpu/cpu0/topology/thread_siblings_list");
-    BOOST_CHECK(!line.empty());
-    BOOST_CHECK(!parse_cpulist(line).empty());
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_singleton_l3_domains) {
+    // 2 cores each in its own singleton domain (no shared L3).
+    // by_domain[0] = {0}, by_domain[1] = {4}; interleaved: 0, 4.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {4, 1}};
+    const auto order = placement_order(cores, 2, 0, 1);
+    BOOST_REQUIRE_EQUAL(order.size(), 2u);
+    BOOST_CHECK_EQUAL(order[0], 0);
+    BOOST_CHECK_EQUAL(order[1], 4);
 }
 
-BOOST_AUTO_TEST_CASE(cpu_topology_allowed_cpus_nonempty_on_ci) {
-    // sched_getaffinity succeeds on Linux CI, so the process's allowed set is non-empty.
-    const auto allowed = partition::topo_detail::allowed_cpus();
-    BOOST_CHECK(!allowed.empty());
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_uneven_domains) {
+    // 3 cores: 2 in domain 0, 1 in domain 1; single rank, 3 partitions.
+    // by_domain[0] = {0, 4}, by_domain[1] = {2}; interleaved: 0, 2, 4.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 1}, {4, 0}};
+    const auto order = placement_order(cores, 3, 0, 1);
+    BOOST_REQUIRE_EQUAL(order.size(), 3u);
+    BOOST_CHECK_EQUAL(order[0], 0);
+    BOOST_CHECK_EQUAL(order[1], 2);
+    BOOST_CHECK_EQUAL(order[2], 4);
 }
-
-#endif // __linux__

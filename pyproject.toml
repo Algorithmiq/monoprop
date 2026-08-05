@@ -353,5 +353,5 @@ before-build = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
 environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
 
 [tool.cibuildwheel.macos]
-before-build = "brew install boost"
+before-build = "brew install boost hwloc"
 environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
