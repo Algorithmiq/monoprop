@@ -184,7 +184,7 @@ public:
     [[nodiscard]] constexpr auto find_first() const noexcept -> size_t { // NumBits if none
         for (size_t i = 0; i < kNumWords; ++i) {
             if (words_[i])
-                return i * word_width + static_cast<size_t>(std::countr_zero(words_[i]));
+                return (i * word_width) + static_cast<size_t>(std::countr_zero(words_[i]));
         }
         return NumBits;
     }
@@ -203,7 +203,7 @@ public:
                 return pos + static_cast<size_t>(std::countr_zero(w));
             for (++wi; wi < kNumWords; ++wi) {
                 if (words_[wi])
-                    return wi * word_width + static_cast<size_t>(std::countr_zero(words_[wi]));
+                    return (wi * word_width) + static_cast<size_t>(std::countr_zero(words_[wi]));
             }
             return NumBits;
         }

@@ -81,28 +81,30 @@ monoprop_EXPORT auto map_params(const VecD &parameters,
                                 double phase,
                                 bool reverse = false) -> VecD;
 
-/// Expectation value of the evolved operator against `state` plus `e_core`, summed over all ranks.
-monoprop_EXPORT auto ev(double e_core,
-                        const EvalState &state,
-                        const VecD &op,
-                        const VecZ &parameter_mapping,
-                        const VecD &gen_coeffs,
-                        const MPGraph &graph,
-                        const VecD &params,
-                        mpi::Comm comm = MPI_COMM_WORLD,
-                        const detail::LayerCosScale &cos_scale = {}) -> double;
+/// Everything one expectation-value evaluation reads, in one object: the graph plus the arrays that index
+/// into it. Built at the call site and consumed there -- every member but `graph` is a non-owning
+/// reference, and `graph` is itself a view over layers the caller keeps alive.
+struct EvalRequest {
+    double e_core;                 ///< the identity term, added to the summed expectation value
+    const EvalState &state;        ///< the contraction partner; see EvalState
+    const VecD &op;                ///< un-evolved operator coefficients, one per term on this rank
+    const VecZ &parameter_mapping; ///< optimizer order: which parameter drives graph layer i
+    const VecD &gen_coeffs;        ///< optimizer order, parallel to parameter_mapping
+    MPGraphView graph;             ///< replay window; MPGraph callers pass graph.replay_view()
+    const VecD &params;            ///< the optimizer's parameter vector, indexed by parameter_mapping
+};
 
-/// As ev(), plus the gradient with respect to each parameter; both callbacks are required if `params` is non-empty.
-monoprop_EXPORT auto ev_and_grad(double e_core,
-                                 const EvalState &state,
-                                 const VecD &op,
-                                 const VecZ &parameter_mapping,
-                                 const VecD &gen_coeffs,
-                                 const MPGraph &graph,
-                                 const VecD &params,
+/// Expectation value of the evolved operator against `request.state` plus `request.e_core`, summed over all
+/// ranks. `cos.scale` is required if `request.params` is non-empty; `cos.accumulate` is ignored here.
+monoprop_EXPORT auto ev(const EvalRequest &request,
+                        mpi::Comm comm = MPI_COMM_WORLD,
+                        const detail::CosCallbacks &cos = {}) -> double;
+
+/// As ev(), plus the gradient with respect to each parameter; both callbacks are required if
+/// `request.params` is non-empty.
+monoprop_EXPORT auto ev_and_grad(const EvalRequest &request,
                                  mpi::Comm comm = MPI_COMM_WORLD,
-                                 const detail::LayerCosScale &cos_scale = {},
-                                 const detail::LayerCosAccumulate &cos_acc = {}) -> std::pair<double, VecD>;
+                                 const detail::CosCallbacks &cos = {}) -> std::pair<double, VecD>;
 
 /// Prune `graph` to the subgraph reaching `nonzero_inds`; `full_cos_of_layer(i)` supplies layer i's full cosine set.
 monoprop_EXPORT auto pare_graph(const MPGraph &graph,

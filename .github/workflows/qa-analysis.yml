@@ -99,7 +99,8 @@ jobs:
             --exclude '^(cpp/)?tests/' \
             --merge-lines \
             "build/editable/Coverage" \
-            --cobertura cpp-coverage-through-python-bindings.xml
+            --cobertura cpp-coverage-through-python-bindings.xml \
+            --sonarqube cpp-coverage-through-python-bindings-sonar.xml
 
       - name: Run C++ unit tests
         run: |
@@ -116,7 +117,8 @@ jobs:
             --exclude '^(cpp/)?tests/' \
             --merge-lines \
             "build/editable/Coverage" \
-            --cobertura cpp-coverage.xml
+            --cobertura cpp-coverage.xml \
+            --sonarqube cpp-coverage-sonar.xml
 
       - name: Upload C++ coverage to Codecov
         uses: codecov/codecov-action@v7.0.0
@@ -127,6 +129,17 @@ jobs:
           disable_search: true
           fail_ci_if_error: true
 
+      - name: Upload coverage reports for SonarQube
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            python-coverage.xml
+            cpp-coverage-through-python-bindings-sonar.xml
+            cpp-coverage-sonar.xml
+          if-no-files-found: error
+          retention-days: 1
+
   sonarqube-analysis:
     # in combination with the PR types selection, this top-level if statement
     # skips running the workflow for Draft PRs
@@ -134,6 +147,7 @@ jobs:
 
     name: SonarQube analysis
     runs-on: ubuntu-26.04
+    needs: [code-coverage]
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -156,6 +170,11 @@ jobs:
           SKBUILD_CMAKE_DEFINE: "monoprop_ENABLE_CXX_UNIT_TESTS=OFF;monoprop_ENABLE_MPI=ON"
         run: |
           uv sync --no-progress --all-extras -v
+
+      - name: Download coverage reports
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-reports
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v8.2.1
