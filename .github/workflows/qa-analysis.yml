@@ -95,8 +95,8 @@ jobs:
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
             --exclude-unreachable-branches \
-            --filter '^(src|include)/' \
-            --exclude '^tests/' \
+            --filter '^(cpp|src)/' \
+            --exclude '^(cpp/)?tests/' \
             --merge-lines \
             "build/editable/Coverage" \
             --cobertura cpp-coverage-through-python-bindings.xml
@@ -112,8 +112,8 @@ jobs:
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
             --exclude-unreachable-branches \
-            --filter '^(src|include)/' \
-            --exclude '^tests/' \
+            --filter '^(cpp|src)/' \
+            --exclude '^(cpp/)?tests/' \
             --merge-lines \
             "build/editable/Coverage" \
             --cobertura cpp-coverage.xml
@@ -217,7 +217,7 @@ jobs:
 
           if jq -e 'any(.[]; test("\\.(h|inl)$"))' <<< "$CHANGED_CXX_FILES" > /dev/null; then
             mapfile -t clang_tidy_inputs < <(
-              jq -r --arg source_root "$GITHUB_WORKSPACE/src/monoprop/" \
+              jq -r --arg source_root "$GITHUB_WORKSPACE/cpp/monoprop/" \
                 '.[].file | select(startswith($source_root)) | select(endswith(".cpp"))' \
                 build/editable/Release/compile_commands.json
             )
@@ -232,8 +232,8 @@ jobs:
 
           run-clang-tidy \
             -p build/editable/Release \
-            -source-filter='^${{ github.workspace }}/src/monoprop/.*$' \
-            -header-filter='^(.*/)?(src|include)/monoprop/.*$' \
+            -source-filter='^${{ github.workspace }}/cpp/monoprop/.*$' \
+            -header-filter='^(.*/)?cpp/(include/)?monoprop/.*$' \
             -exclude-header-filter='^.*/src/monoprop/bindings/.*$' \
             -line-filter="$line_filter" \
             -extra-arg=-fno-color-diagnostics \
