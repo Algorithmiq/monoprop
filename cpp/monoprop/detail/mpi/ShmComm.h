@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "monoprop/detail/mpi/CheckedCount.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/PartitionBarrier.h"
 
 // In-process shared-memory SPMD transport: S partition-master threads each call the same collective
@@ -87,38 +88,33 @@ public:
 
     // Fused count-resolve + payload all-to-all in one round (2 syncs vs 4). Same contiguous
     // ascending-source ordering as alltoallv, which the query/response positional pairing depends on.
+    // See AlltoallvResolveArgs for the lifetime and element-offset contract.
     template <class T>
-    auto alltoallv_resolve(int rank,
-                           const T *send,
-                           const int *send_counts,
-                           const int *send_displs,
-                           std::vector<T> &recv,
-                           int *recv_counts,
-                           int *recv_displs) -> void {
+    auto alltoallv_resolve(int rank, const AlltoallvResolveArgs<T> &args) -> void {
         Slot &me = slots_[static_cast<size_t>(rank)];
         // Typed here but byte-addressed in the slot: peers scatter by (displ, count) in elements and
         // never reconstruct T, so the slot stays type-erased for the untyped alltoallv above.
-        me.ptr = reinterpret_cast<const std::byte *>(send);
-        me.displs = send_displs;
-        me.counts = send_counts;
+        me.ptr = reinterpret_cast<const std::byte *>(args.send);
+        me.displs = args.send_displs;
+        me.counts = args.send_counts;
         sync(); // B1: send buffers published
         long long total = 0;
         for (int s = 0; s < n_; ++s) {
             const int c = slots_[static_cast<size_t>(s)].counts[rank]; // what s sends to me
-            recv_counts[s] = c;
-            recv_displs[s] = checked_mpi_count(total, "Recv displacement");
+            args.recv_counts[s] = c;
+            args.recv_displs[s] = checked_mpi_count(total, "Recv displacement");
             total += c;
         }
-        recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
-        auto *dst = reinterpret_cast<std::byte *>(recv.data()); // after the resize: it may reallocate
+        args.recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
+        auto *dst = reinterpret_cast<std::byte *>(args.recv.data()); // after the resize: it may reallocate
         for (int s = 0; s < n_; ++s) {
             const Slot &src = slots_[static_cast<size_t>(s)];
-            const auto count = static_cast<size_t>(recv_counts[s]);
+            const auto count = static_cast<size_t>(args.recv_counts[s]);
             // See alltoallv: an unpublished source must not be offset by its displacement.
             if (count == 0) {
                 continue;
             }
-            std::memcpy(dst + static_cast<size_t>(recv_displs[s]) * sizeof(T),
+            std::memcpy(dst + static_cast<size_t>(args.recv_displs[s]) * sizeof(T),
                         src.ptr + static_cast<size_t>(src.displs[rank]) * sizeof(T),
                         count * sizeof(T));
         }

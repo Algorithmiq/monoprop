@@ -105,12 +105,12 @@ inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeB
     buffers.recv_counts = recv.counts;
     buffers.recv_displs = recv.displs;
     buffers.recv_buffer.resize(recv.total == 0 ? 1 : static_cast<size_t>(recv.total));
-    handle.ticket = mpi::post_flat_alltoallv<double>(buffers.send_buffer.data(),
-                                                     layout.counts.data(),
-                                                     layout.displs.data(),
-                                                     buffers.recv_buffer.data(),
-                                                     buffers.recv_counts.data(),
-                                                     buffers.recv_displs.data(),
+    handle.ticket = mpi::post_flat_alltoallv<double>({.send = buffers.send_buffer.data(),
+                                                      .send_counts = layout.counts.data(),
+                                                      .send_displs = layout.displs.data(),
+                                                      .recv = buffers.recv_buffer.data(),
+                                                      .recv_counts = buffers.recv_counts.data(),
+                                                      .recv_displs = buffers.recv_displs.data()},
                                                      mpi::size(comm),
                                                      comm);
     return handle;

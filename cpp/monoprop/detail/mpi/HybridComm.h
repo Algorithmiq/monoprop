@@ -29,6 +29,8 @@
 
 #include <mpi.h>
 
+#include "monoprop/detail/mpi/CheckedCount.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/PartitionBarrier.h"
 
 // Composes R MPI ranks x S in-process partitions into one flat P=R*S SPMD world. Global id is rank-major
@@ -38,6 +40,14 @@
 // MPI ⇒ bit-identical, repeatable results for fixed (R, S).
 
 namespace monoprop::mpi {
+
+// The launching environment, not a caller's argument, decides the MPI thread level, so this is kept
+// distinct from CollectiveArgumentError; both stay std::runtime_error so the Python-visible type is
+// unchanged either way.
+class MpiThreadLevelUnsupported : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 class HybridComm {
 public:
@@ -52,9 +62,9 @@ public:
         int provided = MPI_THREAD_SINGLE;
         MPI_Query_thread(&provided);
         if (provided < MPI_THREAD_SERIALIZED) {
-            throw std::runtime_error("HybridComm requires MPI_THREAD_SERIALIZED (partition-0 masters call "
-                                     "MPI while peers are parked); provided level is lower. Ensure "
-                                     "mpi::init / mpi4py requests SERIALIZED or MULTIPLE.");
+            throw MpiThreadLevelUnsupported("HybridComm requires MPI_THREAD_SERIALIZED (partition-0 masters call "
+                                            "MPI while peers are parked); provided level is lower. Ensure "
+                                            "mpi::init / mpi4py requests SERIALIZED or MULTIPLE.");
         }
         // Size all (R,S)-fixed scratch once so per-call paths never allocate; staging grows on demand.
         const size_t rss = static_cast<size_t>(r_) * static_cast<size_t>(s_) * static_cast<size_t>(s_);
@@ -74,10 +84,63 @@ public:
     auto size() const -> int { return r_ * s_; }
     auto global_rank(int local_partition) const -> int { return mpi_rank_ * s_ + local_partition; }
 
+    auto alltoall_counts(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
+        guard_partition0_(local_partition, "alltoall_counts", [this, local_partition, send_counts, recv_counts] {
+            alltoall_counts_impl_(local_partition, send_counts, recv_counts);
+        });
+    }
+
+    // See AlltoallvArgs for the send-buffer lifetime and the element-vs-byte convention; `dt` is the MPI
+    // datatype whose extent is args.elem, and it stays a separate argument because the bundle is shared
+    // with the non-MPI-capable transport.
+    auto alltoallv(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt) -> void {
+        guard_partition0_(local_partition, "alltoallv", [this, local_partition, &args, dt] {
+            alltoallv_impl_(local_partition, args, dt);
+        });
+    }
+
+    // See AlltoallvResolveArgs: the recv side is an output, and args.recv is resized here.
+    template <class T>
+    auto alltoallv_resolve(int local_partition, const AlltoallvResolveArgs<T> &args, MPI_Datatype dt) -> void {
+        // `args` by reference, not by value: the impl resizes args.recv and then writes through it.
+        guard_partition0_(local_partition, "alltoallv_resolve", [this, local_partition, &args, dt] {
+            alltoallv_resolve_impl_<T>(local_partition, args, dt);
+        });
+    }
+
+    template <class T>
+    auto allreduce_sum(int local_partition, T local_val) -> T {
+        return guard_partition0_(local_partition, "allreduce_sum", [this, local_partition, local_val] {
+            return allreduce_sum_impl_<T>(local_partition, local_val);
+        });
+    }
+
+    auto allreduce_sum_inplace(int local_partition, double *values, size_t len) -> void {
+        guard_partition0_(local_partition, "allreduce_sum_inplace", [this, local_partition, values, len] {
+            allreduce_sum_inplace_impl_(local_partition, values, len);
+        });
+    }
+
+    auto poison() -> void { barrier_.poison(); }
+    auto reset() -> void { barrier_.reset(); }
+
+private:
+    struct alignas(64) Slot {
+        const std::byte *ptr = nullptr; // byte view of this partition's send buffer; null until published
+        const int *counts = nullptr;
+        const int *send_counts = nullptr;
+        const int *send_displs = nullptr;
+        const int *recv_counts = nullptr;
+        const double *vec = nullptr;
+        double f64 = 0.0;
+        uint64_t u64 = 0;
+    };
+
     // Once partition 0 -- this rank's only participant on parent_ -- is inside a collective, the peer ranks
     // are committed: their partition-0 threads enter theirs and block inside MPI with no timeout. So a
     // rank-local failure here must MPI_Abort with the underlying error rather than throw, which would
     // hang the job. Single-rank partitioned runs use ShmComm, not HybridComm, and keep their exceptions.
+    // `body` is invoked synchronously and never stored, so the callers' lambdas may capture by reference.
     template <class Body>
     auto guard_partition0_(int local_partition, const char *verb, Body &&body) -> decltype(body()) {
         if (local_partition != 0) {
@@ -94,82 +157,13 @@ public:
         }
     }
 
-    auto alltoall_counts(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
-        guard_partition0_(local_partition, "alltoall_counts", [&] {
-            alltoall_counts_impl_(local_partition, send_counts, recv_counts);
-        });
-    }
-
-    // `send` / `recv` address the caller's flat buffers as raw bytes; counts/displs stay in elements and
-    // `elem` gives the element size, since the pointers carry no element type to scale by.
-    auto alltoallv(int local_partition,
-                   const std::byte *send,
-                   const int *send_counts /*[P]*/,
-                   const int *send_displs /*[P]*/,
-                   std::byte *recv,
-                   const int *recv_counts /*[P]*/,
-                   const int *recv_displs /*[P]*/,
-                   size_t elem,
-                   MPI_Datatype dt) -> void {
-        guard_partition0_(local_partition, "alltoallv", [&] {
-            alltoallv_impl_(local_partition, send, send_counts, send_displs, recv, recv_counts, recv_displs, elem, dt);
-        });
-    }
-
-    template <class T>
-    auto alltoallv_resolve(int local_partition,
-                           const T *send,
-                           const int *send_counts /*[P]*/,
-                           const int *send_displs /*[P]*/,
-                           std::vector<T> &recv,
-                           int *recv_counts /*[P]*/,
-                           int *recv_displs /*[P]*/,
-                           size_t elem,
-                           MPI_Datatype dt) -> void {
-        guard_partition0_(local_partition, "alltoallv_resolve", [&] {
-            alltoallv_resolve_impl_<T>(local_partition,
-                                       send,
-                                       send_counts,
-                                       send_displs,
-                                       recv,
-                                       recv_counts,
-                                       recv_displs,
-                                       elem,
-                                       dt);
-        });
-    }
-
-    template <class T>
-    auto allreduce_sum(int local_partition, T local_val) -> T {
-        return guard_partition0_(local_partition, "allreduce_sum", [&] {
-            return allreduce_sum_impl_<T>(local_partition, local_val);
-        });
-    }
-
-    auto allreduce_sum_inplace(int local_partition, double *values, size_t len) -> void {
-        guard_partition0_(local_partition, "allreduce_sum_inplace", [&] {
-            allreduce_sum_inplace_impl_(local_partition, values, len);
-        });
-    }
-
     // recv_counts[g] = amount global partition g sends to this partition. 2 barriers + one S*S-int MPI_Alltoall.
     auto alltoall_counts_impl_(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
         const size_t u = static_cast<size_t>(local_partition);
         slots_[u].counts = send_counts;
         sync();
         if (local_partition == 0) {
-            // Pack the S*S count matrix per dest rank, dest-partition-major (t) then source-partition-minor (su).
-            // Every element is written here and MPI_Alltoall fills counts_recv_ fully, so neither is pre-zeroed.
-            for (int b = 0; b < r_; ++b) {
-                for (int t = 0; t < s_; ++t) {
-                    for (int su = 0; su < s_; ++su) {
-                        const size_t idx = ((static_cast<size_t>(b) * static_cast<size_t>(s_)) + static_cast<size_t>(t))
-                                               * static_cast<size_t>(s_)
-                                           + static_cast<size_t>(su);
-                        counts_send_[idx] = slots_[static_cast<size_t>(su)].counts[b * s_ + t];
-                    }
-                }
-            }
+            pack_count_matrix_(&Slot::counts);
             MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
         }
         sync();
@@ -187,33 +181,24 @@ public:
         // send_counts was consumed before the last sync, so peers may free/reuse it on return.
     }
 
-    // Flat variable all-to-all over caller-owned buffers (counts/displs in elements, `elem` = element bytes).
-    // recv_counts must already hold the transpose — same contract as MPI_Alltoallv.
-    auto alltoallv_impl_(int local_partition,
-                         const std::byte *send,
-                         const int *send_counts /*[P]*/,
-                         const int *send_displs /*[P]*/,
-                         std::byte *recv,
-                         const int *recv_counts /*[P]*/,
-                         const int *recv_displs /*[P]*/,
-                         size_t elem,
-                         MPI_Datatype dt) -> void {
+    // Flat variable all-to-all over caller-owned buffers; see AlltoallvArgs for the conventions.
+    auto alltoallv_impl_(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt) -> void {
         const size_t u = static_cast<size_t>(local_partition);
         Slot &me = slots_[u];
-        me.ptr = send;
-        me.send_counts = send_counts;
-        me.send_displs = send_displs;
-        me.recv_counts = recv_counts;
+        me.ptr = args.send;
+        me.send_counts = args.send_counts;
+        me.send_displs = args.send_displs;
+        me.recv_counts = args.recv_counts;
         sync(); // B1
 
         // B2: partition 0 sizes/reallocates staging; must finish before any partition packs into stage_send_.
         if (local_partition == 0) {
-            size_staging_(elem);
+            size_staging_(args.elem);
         }
         sync(); // B2
 
         // B3: each partition packs its own cross-rank blocks into stage_send_ (disjoint writes).
-        pack_send_(local_partition, elem);
+        pack_send_(local_partition, args.elem);
         sync(); // B3
 
         // B4: partition 0 runs the single MPI_Alltoallv while peers park at the barrier.
@@ -232,16 +217,16 @@ public:
 
         // Scatter each global source's contiguous run from stage_recv_ to recv_displs[g] (all legs, incl.
         // self-rank, go through staging). Block starts come from scatter_off_: no peer slot is read past B4.
-        std::byte *dst = recv;
+        std::byte *dst = args.recv;
         const int t = local_partition;
         for (int a = 0; a < r_; ++a) {
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
-                const int cnt = recv_counts[g];
+                const int cnt = args.recv_counts[g];
                 if (cnt != 0) {
-                    std::memcpy(dst + static_cast<size_t>(recv_displs[g]) * elem,
-                                stage_recv_.data() + scatter_off_[block_idx_(a, t, su)] * elem,
-                                static_cast<size_t>(cnt) * elem);
+                    std::memcpy(dst + static_cast<size_t>(args.recv_displs[g]) * args.elem,
+                                stage_recv_.data() + scatter_off_[block_idx_(a, t, su)] * args.elem,
+                                static_cast<size_t>(cnt) * args.elem);
                 }
             }
         }
@@ -252,33 +237,21 @@ public:
     // B1→B2 window (4 syncs instead of 6). recv_counts / recv_displs and `recv` (resized) are outputs.
     // Bit-identical to alltoall_counts + alltoallv.
     template <class T>
-    auto alltoallv_resolve_impl_(int local_partition,
-                                 const T *send,
-                                 const int *send_counts /*[P]*/,
-                                 const int *send_displs /*[P]*/,
-                                 std::vector<T> &recv,
-                                 int *recv_counts /*[P]*/,
-                                 int *recv_displs /*[P]*/,
-                                 size_t elem,
-                                 MPI_Datatype dt) -> void {
+    auto alltoallv_resolve_impl_(int local_partition, const AlltoallvResolveArgs<T> &args, MPI_Datatype dt) -> void {
+        // Typed verb: element bytes are sizeof(T) by construction, so they are derived rather than passed.
+        constexpr size_t elem = sizeof(T);
         const size_t u = static_cast<size_t>(local_partition);
         Slot &me = slots_[u];
         // Typed here but byte-addressed in the slot: pack_send_ copies by (displ, count) in elements and
         // never reconstructs T, so the slot stays type-erased for the untyped alltoallv_impl_ above.
-        me.ptr = reinterpret_cast<const std::byte *>(send);
-        me.send_counts = send_counts;
-        me.send_displs = send_displs;
+        me.ptr = reinterpret_cast<const std::byte *>(args.send);
+        me.send_counts = args.send_counts;
+        me.send_displs = args.send_displs;
         // recv_counts is an output here — deliberately not published; the count Alltoall resolves it.
         sync(); // B1
 
         if (local_partition == 0) {
-            for (int b = 0; b < r_; ++b) {
-                for (int t = 0; t < s_; ++t) {
-                    for (int su = 0; su < s_; ++su) {
-                        counts_send_[block_idx_(b, t, su)] = slots_[static_cast<size_t>(su)].send_counts[b * s_ + t];
-                    }
-                }
-            }
+            pack_count_matrix_(&Slot::send_counts);
             MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
             // Size staging from counts_recv_: recv of partition t from (rank, su) sits at rank*S*S + t*S + su.
             size_staging_impl_(elem, [this](int t, int rank, int su) {
@@ -296,12 +269,12 @@ public:
                 const int c =
                     counts_recv_[(static_cast<size_t>(a) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
                                  + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
-                recv_counts[g] = c;
-                recv_displs[g] = checked_int_(total);
+                args.recv_counts[g] = c;
+                args.recv_displs[g] = checked_mpi_count(total, "Recv displacement");
                 total += c;
             }
         }
-        recv.resize(static_cast<size_t>(checked_int_(total)));
+        args.recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
 
         pack_send_(local_partition, elem);
         sync(); // B3
@@ -319,13 +292,13 @@ public:
         }
         sync(); // B4
 
-        std::byte *dst = reinterpret_cast<std::byte *>(recv.data()); // after the resize: it may reallocate
+        std::byte *dst = reinterpret_cast<std::byte *>(args.recv.data()); // after the resize: it may reallocate
         for (int a = 0; a < r_; ++a) {
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
-                const int cnt = recv_counts[g];
+                const int cnt = args.recv_counts[g];
                 if (cnt != 0) {
-                    std::memcpy(dst + static_cast<size_t>(recv_displs[g]) * elem,
+                    std::memcpy(dst + static_cast<size_t>(args.recv_displs[g]) * elem,
                                 stage_recv_.data() + scatter_off_[block_idx_(a, t, su)] * elem,
                                 static_cast<size_t>(cnt) * elem);
                 }
@@ -402,25 +375,28 @@ public:
         // No trailing barrier: red_vec_ is rewritten only inside a future verb's barriered phases.
     }
 
-    auto poison() -> void { barrier_.poison(); }
-    auto reset() -> void { barrier_.reset(); }
-
-private:
-    struct alignas(64) Slot {
-        const std::byte *ptr = nullptr; // byte view of this partition's send buffer; null until published
-        const int *counts = nullptr;
-        const int *send_counts = nullptr;
-        const int *send_displs = nullptr;
-        const int *recv_counts = nullptr;
-        const double *vec = nullptr;
-        double f64 = 0.0;
-        uint64_t u64 = 0;
-    };
-
     // Flat index of the (rank, dest partition, source partition) block in the R*S*S offset/count tables.
     auto block_idx_(int b, int t, int u) const -> size_t {
         return (static_cast<size_t>(b) * static_cast<size_t>(s_) + static_cast<size_t>(t)) * static_cast<size_t>(s_)
                + static_cast<size_t>(u);
+    }
+
+    // Pack the S*S count matrix per dest rank into counts_send_, dest-partition-major (t) then
+    // source-partition-minor (su), ready for the one S*S-int MPI_Alltoall. `counts` selects which slot
+    // field to read, the only difference between the standalone count exchange (Slot::counts) and the
+    // fused resolve (Slot::send_counts).
+    //
+    // Partition 0 only, and only inside a barriered window: it reads every peer partition's published
+    // count pointer. Every element of counts_send_ is written here and MPI_Alltoall fills counts_recv_
+    // fully, so neither buffer is pre-zeroed.
+    auto pack_count_matrix_(const int *Slot::*counts) -> void {
+        for (int b = 0; b < r_; ++b) {
+            for (int t = 0; t < s_; ++t) {
+                for (int su = 0; su < s_; ++su) {
+                    counts_send_[block_idx_(b, t, su)] = (slots_[static_cast<size_t>(su)].*counts)[b * s_ + t];
+                }
+            }
+        }
     }
 
     template <class V>
@@ -449,19 +425,19 @@ private:
                     recv_sum += recv_count(t, b, su);
                 }
             }
-            mpi_send_counts_[static_cast<size_t>(b)] = checked_int_(send_sum);
-            mpi_recv_counts_[static_cast<size_t>(b)] = checked_int_(recv_sum);
+            mpi_send_counts_[static_cast<size_t>(b)] = checked_mpi_count(send_sum, "Per-rank send count");
+            mpi_recv_counts_[static_cast<size_t>(b)] = checked_mpi_count(recv_sum, "Per-rank recv count");
         }
         long long send_running = 0;
         long long recv_running = 0;
         for (int b = 0; b < r_; ++b) {
-            mpi_send_displs_[static_cast<size_t>(b)] = checked_int_(send_running);
-            mpi_recv_displs_[static_cast<size_t>(b)] = checked_int_(recv_running);
+            mpi_send_displs_[static_cast<size_t>(b)] = checked_mpi_count(send_running, "Send displacement");
+            mpi_recv_displs_[static_cast<size_t>(b)] = checked_mpi_count(recv_running, "Recv displacement");
             send_running += mpi_send_counts_[static_cast<size_t>(b)];
             recv_running += mpi_recv_counts_[static_cast<size_t>(b)];
         }
-        const size_t total_send = static_cast<size_t>(checked_int_(send_running));
-        const size_t total_recv = static_cast<size_t>(checked_int_(recv_running));
+        const size_t total_send = static_cast<size_t>(checked_mpi_count(send_running, "Total send count"));
+        const size_t total_recv = static_cast<size_t>(checked_mpi_count(recv_running, "Total recv count"));
         // Grow-only, no zero-fill: pack_send_'s blocks tile [0, total_send) exactly and MPI_Alltoallv
         // fills every live byte of stage_recv_, so stale bytes past a prior high-water mark are never read.
         grow_(stage_send_, total_send * elem);
@@ -506,13 +482,6 @@ private:
                 }
             }
         }
-    }
-
-    static auto checked_int_(long long v) -> int {
-        if (v < 0 || v > static_cast<long long>(2147483647)) {
-            throw std::runtime_error("HybridComm: aggregated per-rank count overflows int (message too large)");
-        }
-        return static_cast<int>(v);
     }
 
     [[noreturn]] auto abort_rank_(const char *verb, const char *what) -> void {
