@@ -128,7 +128,8 @@ jobs:
           fail_ci_if_error: true
 
       # Handed to the sonarqube-analysis job, which imports them via
-      # sonar.coverageReportPaths / sonar.python.coverage.reportPaths.
+      # sonar.cfamily.cobertura.reportPaths / sonar.python.coverage.reportPaths. Both expect
+      # Cobertura, so keep gcovr on --cobertura: Codecov above reads the same three files.
       - name: Upload coverage reports for SonarQube
         uses: actions/upload-artifact@v4
         with:
