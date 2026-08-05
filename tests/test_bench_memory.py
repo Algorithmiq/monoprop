@@ -78,10 +78,6 @@ def test_sampler_records_an_ordered_timeline() -> None:
         del blob
 
     samples = sampler.samples
-    # Only the timeline shape is contractual. Whether any given transient lands in it is
-    # not: the thread advances solely when the timed thread drops the GIL, which a C
-    # extension call need never do. test_high_water_mark_catches_a_freed_transient covers
-    # the peak itself, which is why that measurement does not go through this class.
     assert len(samples) >= 2  # baseline on enter, final on exit
     assert all(isinstance(t, float) and isinstance(p, int) for t, p in samples)
     assert all(p > 0 for _t, p in samples)
@@ -121,8 +117,7 @@ def test_high_water_mark_window_is_reset_per_block() -> None:
     with HighWaterMark() as second:
         pass
 
-    # The second window must not inherit the first's spike; that carry-over is exactly what
-    # an unresettable high-water mark (Sys.maxrss/ru_maxrss) gets wrong.
+    # The second window must not inherit the first's spike
     assert first.delta_bytes >= 70 * MIB
     assert second.delta_bytes < 10 * MIB
 
