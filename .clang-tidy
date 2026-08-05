@@ -63,7 +63,7 @@ Checks: >
   -readability-suspicious-call-argument,
   -readability-uppercase-literal-suffix
 # Match all project headers under cpp/ (cpp/include/monoprop and cpp/monoprop)
-HeaderFilterRegex: '^cpp/.*\.(h|hpp)$'
+HeaderFilterRegex: '^cpp/.*\.(h|hpp|inl)$'
 CheckOptions:
   - key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic
     value: '1'
