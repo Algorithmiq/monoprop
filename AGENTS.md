@@ -44,7 +44,8 @@ Key files:
   user-facing front-ends are `src/monoprop/majorana_propagator.py` (`MajoranaPropagator`) and
   `src/monoprop/pauli_propagator.py` (`PauliPropagator`).
 - `cpp/include/monoprop/MonomialPropagator.h`: the single templated C++ engine `MonomialPropagator<NumModes>`
-  (the Majorana/Pauli choice is a runtime `Basis`, not a separate class).
+  (the Majorana/Pauli choice is a runtime `Basis`, not a separate class). Its `only_rotate_len_k`
+  arguments use `std::optional<int>`; `std::nullopt` means no gate-application length cap.
 - `src/monoprop/bindings/binder.h`: hand-written binding template; `tools/generate-*.py` generate the
   per-mode-width `bindings.cpp` and `_dispatch.py` from it (do not hand-edit the generated files).
   Both generators take the 32-mode storage-block rule from `tools/_binding_layout.py` — they must
