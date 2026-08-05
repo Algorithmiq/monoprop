@@ -101,7 +101,7 @@ _RESULTS: dict[str, Any] = {
     "meta": {},  # run configuration (ranks, threads, host, ...)
     "params": {},  # resolved random-problem hyperparameters
     "mem": {},  # node id -> peak-of-sum PSS bytes (per operation; MPI lower bound)
-    "memhwm": {},  # node id -> summed per-rank peak RSS bytes (per operation; may fall back to exit RSS if VmHWM can't be reset)
+    "memhwm": {},  # node id -> summed per-rank peak RSS bytes (per operation; may fall back to exit RSS if VmHWM can't be reset)  # noqa: E501
     "opsize": {},  # picture / model -> {"terms": n}
     "memrest": {},  # picture / model -> resting RSS bytes
     "membase": {},  # fixed model -> resting RSS bytes before the model is built
