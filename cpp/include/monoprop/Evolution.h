@@ -14,34 +14,14 @@
 
 #pragma once
 
-#include <algorithm>
-#include <bit>
-#include <cmath>
-#include <cstdint>
-#include <cstring>
-#include <functional>
-#include <limits>
-#include <memory>
-#include <numeric>
-#include <optional>
-#include <string_view>
-#include <utility>
-#include <vector>
-
-#include "monoprop/MPFunctions.h"
 #include "monoprop/TypeAliases.h"
-#include "monoprop/Utilities.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
 #include "monoprop/detail/mpi/MPICompat.h"
-#include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/monopropExport.h"
 
 namespace monoprop {
 struct Layer;
-class MPGraph;
 class MPGraphView;
-
-struct LayerCore;
 
 /// One layer's rotation angle in factored form: the layer rotates by 2·gen_coeff·param.
 struct LayerAngle {
@@ -72,5 +52,3 @@ monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
                                                      mpi::Comm comm,
                                                      const detail::LayerCosAccumulate &cos_acc) -> double;
 } // namespace monoprop
-
-#include "monoprop/detail/evolution/EvolutionHelpers.h"

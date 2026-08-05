@@ -17,8 +17,6 @@
 #include "monoprop/TypeAliases.h"
 
 namespace monoprop::detail {
-inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
-
 struct CutoffContext {
     bool check_atol = false;
     bool check_upper_atol = false;
