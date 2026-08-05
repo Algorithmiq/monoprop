@@ -512,6 +512,11 @@ private:
     }
 };
 
+static inline auto empty_coeffs() -> const VecD & {
+    static const VecD coeffs;
+    return coeffs;
+}
+
 // Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
 template <size_t NumModes>
 auto build_layer(MPOperator<NumModes> &local_op,
@@ -535,7 +540,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
-    const auto &coeffs = local_coeffs ? local_coeffs->get() : empty_coeffs();
+    const auto &coeffs = local_coeffs.value_or(empty_coeffs()).get();
     const CutoffEvaluator<NumModes> cut_eval{cutoff_fn};
 
     // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass. k==0 only (a
