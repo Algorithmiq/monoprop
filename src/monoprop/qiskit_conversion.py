@@ -99,10 +99,6 @@ def to_qiskit_operator(
         The Qiskit operator.
     """
     num_qubits = num_qubits if num_qubits is not None else pauli_operator.num_qubits
-    if num_qubits is None:
-        raise ValueError(
-            "Number of qubits must be specified either in the PauliOperator or as an argument."
-        )
 
     operator = {
         _extend_pauli_string(p.string, p.qubits, num_qubits): coeff

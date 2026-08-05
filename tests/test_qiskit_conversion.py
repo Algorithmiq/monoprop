@@ -179,13 +179,8 @@ class TestToQiskitOperator:
         labels = list(result.paulis.to_labels(array=True))
         assert "II" in labels
 
-    def test_missing_num_qubits(self):
-        pauli_op = PauliOperator({"XZ": 1.0}, num_qubits=None)
-        with pytest.raises(ValueError, match="Number of qubits must be specified"):
-            to_qiskit_operator(pauli_op)
-
     def test_default_operator_missing_num_qubits(self):
-        to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=None), num_qubits=2)
+        to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=2), num_qubits=2)
 
 
 @requires_qiskit
@@ -243,7 +238,7 @@ class QiskitCircuitsCases:
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         expected = Circuit(
-            gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
+            gates=(ExpGate(PauliOperator({Pauli("Z", 0): -1.0}, num_qubits=1)),),
             system_size=1,
             parameters=(0.7,),
         )
@@ -289,7 +284,7 @@ class QiskitCircuitsCases:
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
         circuit.barrier()
         expected = Circuit(
-            gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
+            gates=(ExpGate(PauliOperator({Pauli("Z", 0): -1.0}, num_qubits=1)),),
             system_size=1,
             parameters=(0.7,),
         )

@@ -582,7 +582,11 @@ def test_build_graph_accumulates_layers_and_parameters(fixture: str) -> None:
     )
     layers_after_first = twice.graph_layers
     twice.build_graph(
-        Circuit(_rebase(gates[split:]), initial_state=(), system_size=problem.n_modes)
+        Circuit(
+            _rebase(gates[split:]),
+            initial_state=problem.monomial_circuit.initial_state,
+            system_size=problem.n_modes,
+        )
     )
 
     assert 0 < layers_after_first < twice.graph_layers
@@ -601,16 +605,17 @@ def test_compose_then_single_build_matches_single_call(fixture: str) -> None:
     circuit = problem.monomial_circuit.to_circuit()
     gates = circuit.gates
     split = len(gates) // 2
+    initial_state = problem.monomial_circuit.initial_state
     params = list(map(float, problem.monomial_circuit.parameters))
     a = Circuit(
         _rebase(gates[:split]),
-        initial_state=(),
+        initial_state=initial_state,
         system_size=problem.n_modes,
         parameters=tuple(params[:split]),
     )
     b = Circuit(
         _rebase(gates[split:]),
-        initial_state=(),
+        initial_state=initial_state,
         system_size=problem.n_modes,
         parameters=tuple(params[split:]),
     )
@@ -838,6 +843,7 @@ def test_inplace_contraction_resets_the_parameter_axis() -> None:
             ExpGate(MajoranaOperator({(2, 3): -1.0j}, num_modes=8)),
         ),
         parameters=(0.5, 0.3),
+        system_size=8,
     )
     prop = _small_propagator(lower_atol=1e-15)
     prop.build_graph(c1)
@@ -850,6 +856,7 @@ def test_inplace_contraction_resets_the_parameter_axis() -> None:
     c2 = Circuit(
         gates=(ExpGate(MajoranaOperator({(0, 1): -1.0j}, num_modes=8)),),
         parameters=(0.4,),
+        system_size=8,
     )
     prop.build_graph(c2)
     assert prop.n_parameters == 1
@@ -926,7 +933,7 @@ def test_with_index_preserves_atol() -> None:
     gate = ExpGate(MajoranaOperator({(0, 1): 1e-10j}, num_modes=2), atol=0.0)
     assert gate.generator.terms
 
-    concatenated = Circuit((gate,)) + Circuit(())
+    concatenated = Circuit((gate,), system_size=2) + Circuit((), system_size=2)
 
     assert concatenated.gates[0].generator.terms.keys() == {(0, 1)}
 
@@ -945,7 +952,11 @@ def test_negligible_gate_expands_to_the_identity() -> None:
     plain = MajoranaPropagator(observable, [], cutoff=6)
     plain.build_graph(
         Circuit.from_dense_arrays(
-            majoranas=[(0, 2)], gen_coeffs=[1.0], param_inds=[0], parameters=[params[1]]
+            majoranas=[(0, 2)],
+            gen_coeffs=[1.0],
+            param_inds=[0],
+            parameters=[params[1]],
+            system_size=3,
         )
     )
 
@@ -956,6 +967,7 @@ def test_negligible_gate_expands_to_the_identity() -> None:
             gen_coeffs=[1e-12, 1.0],  # the first gate is dropped by the default atol
             param_inds=[0, 1],
             parameters=params,
+            system_size=3,
         )
     )
 
@@ -978,6 +990,7 @@ def test_explicit_vacuum_initial_state_is_checked() -> None:
         (ExpGate(MajoranaOperator({(0, 3): 1.0j}, num_modes=2)),),
         parameters=(0.3,),
         initial_state=(),
+        system_size=2,
     )
 
     prop = MajoranaPropagator(observable, [0], cutoff=4)
@@ -988,7 +1001,7 @@ def test_explicit_vacuum_initial_state_is_checked() -> None:
 
     # An unspecified state still defers to the propagator's, and a matching one is accepted.
     MajoranaPropagator(observable, [0], cutoff=4).build_graph(
-        Circuit(circuit.gates, parameters=circuit.parameters)
+        Circuit(circuit.gates, parameters=circuit.parameters, system_size=2)
     )
     MajoranaPropagator(observable, [], cutoff=4).build_graph(circuit)
 
@@ -1002,8 +1015,10 @@ def test_pauli_generator_wider_than_the_system_rejected() -> None:
     """
     propagator = PauliPropagator(PauliOperator({Pauli("Z", 0): 1.0}, 2), [], cutoff=4)
     circuit = Circuit(
-        (ExpGate(PauliOperator({Pauli("Z", 5): 1.0}, num_qubits=8)),), parameters=(0.3,)
+        (ExpGate(PauliOperator({Pauli("Z", 5): 1.0}, num_qubits=8)),),
+        parameters=(0.3,),
+        system_size=8,
     )
 
-    with pytest.raises(ValueError, match="qubit index >= the system's num_qubits"):
+    with pytest.raises(ValueError, match="does not match propagator width"):
         propagator.build_graph(circuit)
