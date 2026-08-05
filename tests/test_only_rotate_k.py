@@ -145,6 +145,7 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
                 match=r"only_rotate_len_k=0 is out of range; must be 0 < k <= 2\*num_qubits",
             ),
         ),
+        (None, does_not_raise()),
         (9, does_not_raise()),
         (8, does_not_raise()),
     ],
@@ -174,6 +175,7 @@ def test_only_rotate_len_k_errors_majorana(only_rotate_len_k, err, method_name):
                 match=r"only_rotate_len_k=0 is out of range; must be 0 < k <= 2\*num_qubits",
             ),
         ),
+        (None, does_not_raise()),
         (
             9,
             pytest.raises(
