@@ -21,11 +21,6 @@ namespace monoprop::detail {
 
 inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
 
-inline auto empty_coeffs() -> const VecD & {
-    static const VecD coeffs;
-    return coeffs;
-}
-
 struct CutoffContext {
     bool check_atol = false;
     bool check_upper_atol = false;

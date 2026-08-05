@@ -14,20 +14,16 @@
 
 #pragma once
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <limits>
 #include <memory>
 #include <stdexcept>
-#include <utility>
 #include <vector>
 
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 
 namespace monoprop::detail {
-
 // The layer exchange layout and the packed cross-rank storage disagree on the rank count.
 class ExchangeLayoutRankMismatch : public std::logic_error {
 public:
@@ -35,24 +31,9 @@ public:
 };
 
 // The ceiling has to track the TermIndex width, not a fixed 32-bit limit.
-inline auto checked_term_index(size_t value, const char *what) -> TermIndex {
-    if (value > static_cast<size_t>(std::numeric_limits<TermIndex>::max())) {
-        throw std::overflow_error(
-            std::format("{} {} exceeds the TermIndex ceiling {}; rebuild with -Dmonoprop_WIDE_TERM_INDEX.",
-                        what,
-                        value,
-                        std::numeric_limits<TermIndex>::max()));
-    }
-    return static_cast<TermIndex>(value);
-}
+auto checked_term_index(size_t value, const char *what) -> TermIndex;
 
-inline auto checked_packed_phase(int value, const char *what) -> int8_t {
-    if (value < static_cast<int>(std::numeric_limits<int8_t>::min())
-        || value > static_cast<int>(std::numeric_limits<int8_t>::max())) {
-        throw std::overflow_error(std::format("{} {} exceeds the 8-bit phase limit.", what, value));
-    }
-    return static_cast<int8_t>(value);
-}
+auto checked_packed_phase(int value, const char *what) -> int8_t;
 
 inline constexpr size_t kPackedPhaseWordBits = std::numeric_limits<uint64_t>::digits;
 
@@ -72,18 +53,9 @@ inline auto is_binary_phase(int value) -> bool {
     return value == -1 || value == 1;
 }
 
-inline auto make_packed_phase_storage(size_t count, bool use_binary_phases) -> PackedPhaseStorage {
-    PackedPhaseStorage storage;
-    storage.uses_binary_phases = use_binary_phases;
-    storage.total_count = count;
-    if (use_binary_phases) {
-        storage.phase_words.assign(packed_phase_word_count(count), 0);
-    }
-    else {
-        storage.phase_values.resize(count);
-    }
-    return storage;
-}
+auto make_packed_phase_storage(size_t count, bool use_binary_phases) -> PackedPhaseStorage; 
+
+auto packed_phase_storage_bytes(const PackedPhaseStorage &storage) -> size_t;
 
 inline auto packed_phase_at(const PackedPhaseStorage &storage, size_t idx) -> int {
     if (storage.uses_binary_phases) {
@@ -103,60 +75,7 @@ inline auto store_packed_phase(PackedPhaseStorage &storage, size_t idx, int phas
     }
 }
 
-inline auto packed_phase_storage_bytes(const PackedPhaseStorage &storage) -> size_t {
-    return storage.uses_binary_phases ? storage.phase_words.capacity() * sizeof(uint64_t)
-                                      : storage.phase_values.capacity() * sizeof(int8_t);
-}
-
-inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> data) -> PackedCrossRankStorage {
-    PackedCrossRankStorage storage;
-    const size_t num_ranks = data.size();
-    storage.ranges.resize(num_ranks);
-
-    size_t total_b = 0;
-    size_t total_d = 0;
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
-        const auto &partner = data[rank];
-        auto &range = storage.ranges[rank];
-        range.sin_send_offset = total_b;
-        range.sin_send_count = static_cast<TermIndex>(partner.sin_send_indices.size());
-        range.sin_recv_offset = total_d;
-        range.sin_recv_count = static_cast<TermIndex>(partner.sin_recv_entries.size());
-        range.in_count = static_cast<TermIndex>(partner.in_count);
-        total_b += partner.sin_send_indices.size();
-        total_d += partner.sin_recv_entries.size();
-    }
-
-    bool uses_binary_phases = true;
-    for (const auto &partner : data) {
-        bool non_binary_phase = false;
-        for (const auto &[recv_index, phase] : partner.sin_recv_entries) {
-            non_binary_phase = non_binary_phase || !is_binary_phase(phase);
-        }
-        uses_binary_phases = uses_binary_phases && !non_binary_phase;
-    }
-
-    storage.sin_send_indices.resize(total_b);
-    storage.sin_recv_phases = make_packed_phase_storage(total_d, uses_binary_phases);
-
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
-        const auto &partner = data[rank];
-        const size_t b_off = storage.ranges[rank].sin_send_offset;
-        const size_t d_off = storage.ranges[rank].sin_recv_offset;
-
-        for (size_t k = 0; k < partner.sin_send_indices.size(); ++k) {
-            storage.sin_send_indices[b_off + k] = checked_term_index(partner.sin_send_indices[k], "Cross-rank B index");
-        }
-
-        for (size_t k = 0; k < partner.sin_recv_entries.size(); ++k) {
-            const auto &[i, phi] = partner.sin_recv_entries[k];
-            (void)i;
-            store_packed_phase(storage.sin_recv_phases, d_off + k, phi, "Cross-rank D phase");
-        }
-    }
-
-    return storage;
-}
+auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &data) -> PackedCrossRankStorage;
 
 inline auto cross_rank_sin_send_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
     const size_t offset = storage.ranges[rank].sin_send_offset + idx;
@@ -177,47 +96,12 @@ inline auto cross_rank_sin_recv_phase(const PackedCrossRankStorage &storage, siz
     return packed_phase_at(storage.sin_recv_phases, storage.ranges[rank].sin_recv_offset + idx);
 }
 
-inline auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t {
-    size_t bytes =
-        storage.ranges.capacity() * sizeof(CrossRankPartnerRange) + packed_phase_storage_bytes(storage.sin_recv_phases);
-    bytes += storage.sin_send_indices.capacity() * sizeof(TermIndex);
-    return bytes;
-}
+auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t;
 
-inline auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t {
-    return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
-}
+auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t;
 
 // Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so
 // MPI_Alltoallv skips it (replay does a local copy).
-inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
-    -> std::shared_ptr<LayerCore> {
-    auto storage = std::make_shared<LayerCore>();
-
-    {
-        std::vector<size_t> send_counts;
-        send_counts.reserve(all_partners.size());
-        for (size_t r = 0; r < all_partners.size(); ++r) {
-            send_counts.push_back((r == my_rank) ? size_t{0} : all_partners[r].sin_send_indices.size());
-        }
-        storage->evolution_exchange_layout = build_layer_exchange_layout(send_counts, 1);
-
-        // The derivative layout (2x) is allocated lazily on first gradient read, but validated here: an
-        // overflow must throw during build_graph, not from inside the gradient collective window, where
-        // peers are already blocked in mpi::resolve_recv's count round -> a distributed hang, not an error.
-        static_cast<void>(build_derivative_exchange_layout(storage->evolution_exchange_layout));
-    }
-
-    storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
-
-    // Both are indexed by the same rank space.
-    if (storage->evolution_exchange_layout.counts.size() != storage->cross_rank.rank_count()) {
-        throw ExchangeLayoutRankMismatch(
-            std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
-                        storage->evolution_exchange_layout.counts.size(),
-                        storage->cross_rank.rank_count()));
-    }
-    return storage;
-}
-
+auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
+    -> std::shared_ptr<LayerCore>;
 } // namespace monoprop::detail

@@ -107,6 +107,10 @@ auto validate_expected_graph_layers(size_t current_layers, size_t expected_layer
     }
 }
 
+auto expected_num_params(const VecZ &parameter_mapping) -> size_t {
+    return parameter_mapping.empty() ? 0 : *std::ranges::max_element(parameter_mapping) + 1;
+}
+
 // NOLINTEND(misc-use-internal-linkage)
 
 } // namespace monoprop
