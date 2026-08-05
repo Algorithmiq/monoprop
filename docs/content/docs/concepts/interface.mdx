@@ -35,7 +35,7 @@ observable = FermiOperator(
 # with the reference state |0, 1> (modes 0 and 1 occupied; the Hartree-Fock
 # determinant in a chemistry setting).
 generator = FermiOperator([[(0, "+"), (0, "-")]], [1.0], num_modes=4)
-circuit = Circuit(initial_state=[0, 1], gates=[ExpGate(generator)], parameters=[0.3])
+circuit = Circuit(initial_state=[0, 1], gates=[ExpGate(generator)], parameters=[0.3], system_size=4)
 
 mp = MajoranaPropagator.from_circuit(circuit, observable, cutoff=4)
 print(mp.evolved_operator())  # MajoranaOperator
@@ -56,7 +56,7 @@ from monoprop.pauli import PauliOperator
 observable = PauliOperator({"ZZ": 1.0, "XX": 0.5}, num_qubits=2)
 # One Pauli rotation exp(-i θ/2 · X_0) acting on qubit 0.
 gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2))
-circuit = Circuit(gates=[gate], parameters=[0.3])
+circuit = Circuit(gates=[gate], parameters=[0.3],system_size=2)
 
 pp = PauliPropagator.from_circuit(circuit, observable, cutoff=4)
 result = pp.evolved_operator()  # a PauliOperator; .terms maps Pauli -> coefficient
@@ -80,7 +80,7 @@ from monoprop import MajoranaPropagator, Circuit, ExpGate, MajoranaOperator
 observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
 # Generator i·m_3 m_4 - a length-2 monomial, so an imaginary coefficient.
 generator = MajoranaOperator({(3, 4): 1j}, 4)
-circuit = Circuit(initial_state=[0, 1], gates=[ExpGate(generator)], parameters=[0.3])
+circuit = Circuit(initial_state=[0, 1], gates=[ExpGate(generator)], parameters=[0.3], system_size=4 )
 
 mp = MajoranaPropagator.from_circuit(circuit, observable, cutoff=4)
 print(mp.evolved_operator())  # MajoranaOperator
