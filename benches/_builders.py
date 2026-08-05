@@ -46,7 +46,6 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 
-# A built model: the propagator and its circuit (gates + parameters + initial state).
 Built = tuple[MajoranaPropagator, Circuit]
 
 

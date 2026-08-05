@@ -1,17 +1,33 @@
 cmake_minimum_required(VERSION 3.28...4.0)
 
-include(cmake/CPM.cmake)
+project(monoprop LANGUAGES CXX)
 
-if(SKBUILD)
-  # this value doesn't really matter, as it will be set by scikit-build-core
-  set(PROJECT_VERSION "0.1.0")
-else()
-  cpmaddpackage("gh:LecrisUT/CMakeExtraUtils@0.4.1")
-  include(${CMakeExtraUtils_BINARY_DIR}/DynamicVersion.cmake)
-  dynamic_version(PROJECT_PREFIX monoprop_)
+# warn if the user invokes CMake directly
+if(NOT SKBUILD)
+  message(
+    WARNING
+    "\
+  This CMake file is meant to be executed using 'scikit-build-core'.
+  Running it directly will almost certainly not produce the desired
+  result. If you are a user trying to install this package, use the
+  command below, which will install all necessary build dependencies,
+  compile the package in an isolated environment, and then install it.
+  =====================================================================
+   $ pip install .
+  =====================================================================
+  If you are a software developer, and this is your own package, then
+  it is usually much more efficient to install the build dependencies
+  in your environment once and use the following command that avoids
+  a costly creation of a new virtual environment at every compilation:
+  =====================================================================
+   $ pip install nanobind scikit-build-core
+   $ pip install --no-build-isolation -ve .
+  =====================================================================
+  You may optionally add -Ceditable.rebuild=true to auto-rebuild when
+  the package is imported. Otherwise, you need to rerun the above
+  after editing C++ files."
+  )
 endif()
-
-project(monoprop LANGUAGES CXX VERSION ${PROJECT_VERSION})
 
 if(APPLE)
   set(THREADS_FOUND TRUE CACHE BOOL "")
@@ -26,64 +42,39 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-# Options handling utilities Macro for printing an option in a consistent manner
-# Written by Lori A. Burns (@loriab) and Ryan M. Richard (@ryanmrichard) Syntax:
-# print_option(<option to print> <was specified>)
-macro(print_option variable default)
-  if(NOT DEFINED ${variable} OR "${${variable}}" STREQUAL "")
-    message(STATUS "Setting (unspecified) option ${variable}: ${default}")
-  else()
-    message(STATUS "Setting option ${variable}: ${${variable}}")
-  endif()
-endmacro()
+set(
+  monoprop_MAX_NUM_MODES
+  "250"
+  CACHE STRING
+  "Maximum number of simulable Fermionic modes with Python bindings"
+)
+option(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
+option(
+  monoprop_WIDE_TERM_INDEX
+  "Use 64-bit term indices (support > 2^32 terms per partition)"
+  OFF
+)
 
-# Wraps an option with default ON/OFF. Adds nice messaging to option() Written
-# by Lori A. Burns (@loriab) and Ryan M. Richard (@ryanmrichard) Syntax:
-# option_with_print(<option name> <description> <default value>)
-macro(option_with_print variable msge default)
-  print_option(${variable} ${default})
-  option(${variable} ${msge} ${default})
-endmacro()
+option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
-# Wraps an option with a default other than ON/OFF and prints it Written by Lori
-# A. Burns (@loriab) and Ryan M. Richard (@ryanmrichard) NOTE: Can't combine
-# with above b/c CMake handles ON/OFF options specially NOTE2: CMake variables
-# are always defined so need to further check for if they are the NULL string.
-# This is also why we need the force Syntax: option_with_default(<option name>
-# <description> <default value>)
-macro(option_with_default variable msge default)
-  print_option(${variable} "${default}")
-  if(NOT DEFINED ${variable} OR "${${variable}}" STREQUAL "")
-    set(${variable} "${default}" CACHE STRING ${msge} FORCE)
-  endif()
-endmacro()
+set(Python_FIND_VIRTUALENV FIRST)
+find_package(
+  Python
+  3.11
+  REQUIRED
+  COMPONENTS
+    Interpreter
+    Development.Module
+    ${SKBUILD_SABI_COMPONENT}
+)
 
-option_with_default(monoprop_MAX_NUM_MODES "Maximum number of simulable Fermionic modes with Python bindings" 250)
-option_with_print(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
-
-find_package(TBB REQUIRED)
-if(TARGET TBB::tbb)
-  get_target_property(TBB_LOCATION TBB::tbb LOCATION)
-  message(
-    STATUS
-    "Found TBB: ${TBB_LOCATION} (found version \"${TBB_VERSION}\")"
-  )
-endif()
+find_package(Threads REQUIRED)
 
 if(monoprop_ENABLE_MPI)
   find_package(MPI REQUIRED COMPONENTS CXX)
 endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
-
-if(DEFINED SKBUILD)
-  message(
-    STATUS
-    "Maximum simulable Fermionic modes with Python bindings: ${monoprop_MAX_NUM_MODES}"
-  )
-else()
-  message(STATUS "${PROJECT_NAME} version: ${PROJECT_VERSION_FULL}")
-endif()
 
 # report on compiler flags in use
 message(STATUS "Configuring a ${CMAKE_BUILD_TYPE} build")
@@ -105,24 +96,19 @@ message(
   "   Project defaults       : ${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION} ${monoprop_CXX_FLAGS}"
 )
 message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
+
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
+message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
+message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
+message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 
 include(GNUInstallDirs)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 
-configure_file(
-  ${PROJECT_SOURCE_DIR}/include/monoprop/Info.h.in
-  ${PROJECT_BINARY_DIR}/include/monoprop/Info.h
-)
+add_library(monoprop-objs OBJECT "")
+add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
 
-add_subdirectory(src)
-
-if(NOT DEFINED SKBUILD)
-  enable_testing()
-  include(CTest)
-
-  # This must come last!!
-  add_subdirectory(tests/cpp)
-endif()
+add_subdirectory(cpp)
+add_subdirectory(src/monoprop/bindings)

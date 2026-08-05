@@ -38,8 +38,6 @@ def _two_gate_graph(serial_comm):
 
 
 class TestConstructorValidation:
-    """Validation performed at construction time."""
-
     def test_invalid_tolerances(self, serial_comm):
         operator = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
         with pytest.raises(
@@ -57,8 +55,6 @@ class TestConstructorValidation:
 
 
 class TestGraphAndParameterValidation:
-    """Validation around the graph-owned gate information and parameters."""
-
     def test_build_graph_accumulates_layers(self, serial_comm):
         mp, _ = _two_gate_graph(serial_comm)
         assert mp.graph_layers == 2
@@ -68,10 +64,9 @@ class TestGraphAndParameterValidation:
     def test_wrong_parameter_length_raises(self, serial_comm, parameters):
         mp, _ = _two_gate_graph(serial_comm)
         with pytest.raises(RuntimeError, match="Parameter length"):
-            mp.expectation_value(parameters)
+            mp.expval(parameters)
 
     def test_non_contiguous_mapping_raises(self):
-        """A param scheme with an index gap is rejected at circuit construction."""
         gates = (
             ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2), index=0),
             ExpGate(MajoranaOperator({(1,): 1.0}, num_modes=2), index=2),
@@ -80,7 +75,6 @@ class TestGraphAndParameterValidation:
             Circuit(gates, 2)
 
     def test_mixed_param_scheme_rejected(self):
-        """Setting `index` on some gates but not others is rejected as ambiguous."""
         gates = (
             ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2), index=0),
             ExpGate(MajoranaOperator({(1,): 1.0}, num_modes=2)),
@@ -89,7 +83,6 @@ class TestGraphAndParameterValidation:
             Circuit(gates, 2)
 
     def test_shared_mapping_index_ties_gates(self, serial_comm):
-        """Repeating an index in the mapping ties gates to one angle (one parameter)."""
         operator = MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2)
         mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
         circuit = Circuit(
@@ -128,12 +121,10 @@ class TestGraphAndParameterValidation:
 
 
 class TestEvolvedOperatorBothPictures:
-    """evolved_operator works in both pictures (no picture guard)."""
-
     def test_schrodinger_returns_state_dict(self, serial_comm):
         operator = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
         mp = MajoranaPropagator(
             operator, [0, 1], cutoff=4, schrodinger_cutoff=2, comm=serial_comm
         )
         result = mp.evolved_operator()
-        assert isinstance(result, dict)
+        assert isinstance(result, MajoranaOperator)

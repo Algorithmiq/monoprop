@@ -1,0 +1,85 @@
+// Copyright 2026 Algorithmiq
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+#include <cmath>
+
+#include "monoprop/TypeAliases.h"
+#include "monoprop/detail/evolution/CosineRecompute.h"
+#include "monoprop/detail/evolution/layer_build/Common.h"
+
+namespace monoprop::detail {
+
+// The drain paired with build_layer's fused emission: complete each rotation by adding its sine term
+// directly to op_coeffs (the ContractImmediately forward path at all rank counts). The gate's cosine
+// scale reaches the coefficients two ways:
+//   • fused_scale (k==0, default): the scan already scaled every anticommuting coeff, so no cos pass runs
+//     here; slots born after that sweep (fresh inserts) fold cos in via their apply arm below.
+//   • two-pass (k>0 / cos==0 fallback): scale_cos_mask runs here, then every arm is a plain add.
+// At R>1 each rank applies only the add to the slot it owns (half rotations in fc.cross_half).
+inline auto apply_fused_contract(FusedContract &fc,
+                                 VecD &op_coeffs,
+                                 const CosMask &cos,
+                                 double param,
+                                 bool schrodinger,
+                                 bool fused_scale) -> void {
+    // (1) insert records: v_tgt is the freshly-inserted term's pre-cos coeff, readable only now op_coeffs
+    // is extended. Needed only in Schrödinger — a Heisenberg fresh insert has coeff 0, so skip the gather.
+    if (schrodinger) {
+        for (size_t k = 0; k < fc.inserts.size(); ++k) {
+            fc.inserts[k].v_tgt = op_coeffs[fc.inserts[k].tgt];
+        }
+    }
+
+    // (2) Two-pass mode only: cos scale over all anticommuting endpoints (inserts included).
+    const double cos_val = std::cos(2 * param);
+    const double sin_val = std::sin(2 * param);
+    double *const c = op_coeffs.data();
+    if (!fused_scale) {
+        scale_cos_mask(c, cos, cos_val);
+    }
+
+    // (3) One pass over hits ++ inserts ++ cross_half. Each op slot is touched by exactly one add (pivot
+    // split + ⊕G-injective targets + drop_matched_cross_rank_followers), which is what makes the plain +=
+    // safe. In fused_scale mode a slot born after the sweep (insert targets, resolver miss halves) folds
+    // the gate's cos in here (c = cos·c + sin).
+    const size_t n_hit = fc.hits.size();
+    const size_t n_full = n_hit + fc.inserts.size();
+    const size_t n_cross = fc.cross_half.size();
+    for (size_t k = 0; k < n_full + n_cross; ++k) {
+        if (k < n_full) {
+            const bool is_insert = k >= n_hit;
+            const RotationRec &r = is_insert ? fc.inserts[k - n_hit] : fc.hits[k];
+            c[r.src] += sin_val * static_cast<double>(-r.phase) * r.v_tgt;
+            if (fused_scale && is_insert) {
+                c[r.tgt] = cos_val * c[r.tgt] + sin_val * static_cast<double>(r.phase) * r.v_src;
+            }
+            else {
+                c[r.tgt] += sin_val * static_cast<double>(r.phase) * r.v_src;
+            }
+        }
+        else {
+            const HalfRotationRec &h = fc.cross_half[k - n_full];
+            if (fused_scale && h.is_insert) {
+                c[h.local_idx] = cos_val * c[h.local_idx] + sin_val * static_cast<double>(h.phase_signed) * h.v_partner;
+            }
+            else {
+                c[h.local_idx] += sin_val * static_cast<double>(h.phase_signed) * h.v_partner;
+            }
+        }
+    }
+}
+
+} // namespace monoprop::detail

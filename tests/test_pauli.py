@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for pauli module."""
-
 from __future__ import annotations
 
 import pytest
@@ -50,7 +48,6 @@ class TestPauliPropagatorCutoff:
         """An ExpGate with a complex (non-Hermitian) Pauli coefficient is rejected."""
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=2)),),
-            initial_state=(),
             system_size=2,
             parameters=(0.3,),
         )
@@ -59,7 +56,10 @@ class TestPauliPropagatorCutoff:
 
     @pytest.mark.parametrize("schrodinger_cutoff", [3, 4, 5])
     def test_schrodinger_cutoff(self, schrodinger_cutoff, serial_comm):
-        """The Schrodinger cutoff is multiplied by 2 to convert from qubits to Majorana operators."""
+        """schrodinger_cutoff is a Pauli weight in qubits, matching ``cutoff``.
+
+        PauliPropagator doubles it internally (qubit weight -> slot popcount).
+        """
         mp = PauliPropagator(
             PauliOperator({"ZZ": 1.0}, num_qubits=10),
             initial_state=[],
@@ -68,9 +68,45 @@ class TestPauliPropagatorCutoff:
             comm=serial_comm,
         )
         op = mp.evolved_operator()
-        assert (
-            max(len(k) for k in op) == 2 * schrodinger_cutoff
-        )  # 3 qubits * 2 Majoranas/qubit
+        assert max(len(p.qubits) for p in op.terms) == schrodinger_cutoff
+
+
+@pytest.mark.parametrize(
+    "initial_operator",
+    [
+        pytest.param(PauliOperator({"II": 1.0}, num_qubits=2), id="identity"),
+        pytest.param(PauliOperator({"X": 2.0}, num_qubits=1), id="single_x"),
+        pytest.param(PauliOperator({"Y": -0.5}, num_qubits=1), id="single_y"),
+        pytest.param(PauliOperator({"Z": 1.25}, num_qubits=1), id="single_z"),
+        pytest.param(PauliOperator({"IXXZI": 0.7}, num_qubits=5), id="ixxzi"),
+        pytest.param(PauliOperator({"XZYYYXX": -0.3}, num_qubits=7), id="xzyyyxx"),
+        pytest.param(PauliOperator({"IZZI": 1.1}, num_qubits=4), id="izzi"),
+    ],
+)
+def test_evolved_operator_returns_pauli_operator(initial_operator, serial_comm) -> None:
+    """Without a graph, evolved_operator returns the Pauli-domain initial operator."""
+    propagator = PauliPropagator(
+        initial_operator,
+        initial_state=[],
+        cutoff=2 * initial_operator.num_qubits,
+        comm=serial_comm,
+    )
+
+    evolved = propagator.evolved_operator()
+
+    assert isinstance(evolved, PauliOperator)
+    assert evolved.num_qubits == initial_operator.num_qubits
+    assert evolved.isclose(initial_operator)
+
+
+def test_update_initial_operator(serial_comm):
+    """Make sure the initial operator update works correctly with PauliOperator input."""
+    operator = PauliOperator({"Z": 1.0}, num_qubits=1)
+    mp = PauliPropagator(operator, initial_state=[], cutoff=1, comm=serial_comm)
+
+    updated_operator = PauliOperator({"Z": 2.75}, num_qubits=1)
+    mp.update_initial_operator(updated_operator)
+    assert mp.evolved_operator() == updated_operator
 
 
 class TestPauli:
@@ -172,7 +208,7 @@ class TestPauliOperator:
         assert len(op) == 3
 
     def test_single_term(self):
-        op = PauliOperator({"XIYZ": 1 + 2j}, num_qubits=4)
+        op = PauliOperator({"XIYZ": 1}, num_qubits=4)
         assert op.num_qubits == 4
         assert len(op) == 1
 
@@ -199,7 +235,6 @@ class TestPauliOperator:
         op = PauliOperator({Pauli("X", i): 1.0 for i in range(10)}, num_qubits=10)
         r = str(op)
         assert "PauliOperator" in r
-        # With >8 terms, individual terms should not appear
         assert "10 terms" in r
 
     def test_dict_construction(self):
@@ -209,7 +244,6 @@ class TestPauliOperator:
         assert op.num_qubits == 2
 
     def test_num_qubits_required(self):
-        # The qubit count is a required constructor argument; omitting it is an error.
         with pytest.raises(TypeError):
             PauliOperator({"IXYZ": 2.0})  # type: ignore[call-arg]
 
@@ -228,6 +262,27 @@ class TestPauliOperator:
 
         assert mon_op.num_modes == 1
         assert mon_op.terms == {(0, 1): pytest.approx(-1.0j)}
+
+    @pytest.mark.parametrize(
+        ("terms", "expected"),
+        [
+            pytest.param({}, True, id="empty"),
+            pytest.param({Pauli("X", 0): 1.0}, True, id="single_term"),
+            pytest.param(
+                {Pauli("XX", (0, 1)): 1.0, Pauli("ZZ", (0, 1)): 1.0},
+                True,
+                id="different_letters_on_two_shared_qubits",
+            ),
+            pytest.param(
+                {Pauli("X", 0): 1.0, Pauli("Z", 0): 1.0},
+                False,
+                id="different_letters_on_one_shared_qubit",
+            ),
+        ],
+    )
+    def test_all_pairwise_commute(self, terms, expected):
+        """Pairwise commutation follows the parity of differing shared Pauli letters."""
+        assert PauliOperator(terms, num_qubits=2).all_pairwise_commute() is expected
 
     @pytest.mark.parametrize(
         ("left", "right", "expected"),
@@ -280,8 +335,15 @@ class TestPauliOperator:
         assert left.isclose(right) is expected
 
     def test_is_closely_equal_type_error(self):
+        op = PauliOperator({"X": 1.0}, num_qubits=1)
         with pytest.raises(TypeError):
-            PauliOperator({"X": 1.0}, num_qubits=1).isclose("not an operator")
+            op.isclose("not an operator")
+
+    def test_non_hermitian_pauli_gate_rejected(self):
+        """PauliOperator with a complex (non-Hermitian) coefficient is rejected."""
+        pauli = Pauli("X", 0)
+        with pytest.raises(ValueError, match="Operator has complex terms"):
+            PauliOperator({pauli: 1.0j}, num_qubits=1)
 
 
 class TestCircuit:
@@ -308,20 +370,35 @@ class TestCircuit:
         assert circuit.n_parameters == 2
 
     def test_rejects_mixed_gate_families(self):
-        # A single circuit cannot mix qubit and Majorana/fermionic gates.
+        pauli_gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1))
+        majorana_gate = ExpGate(MajoranaOperator({(0, 1): 1.0}, num_modes=2))
         with pytest.raises(TypeError, match="mix"):
             Circuit(
                 (
-                    ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)),
-                    ExpGate(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),
+                    pauli_gate,
+                    majorana_gate,
                 ),
-                initial_state=(),
                 system_size=2,
             )
 
     def test_pauli_gate_equality(self):
         gen = PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)
-        assert ExpGate(gen) == ExpGate(gen)
+        first = ExpGate(gen)
+        second = ExpGate(gen)
+        assert first == second
         assert ExpGate(gen) != ExpGate(
             PauliOperator({Pauli("X", 1): 1.0}, num_qubits=2)
         )
+
+
+def test_pauli_rejects_negative_qubit_index() -> None:
+    """A negative qubit index is rejected, mirroring Majorana.
+
+    Unchecked it resolves silently through Python list indexing when the term is widened
+    (``Pauli("Z", -1)`` on four qubits becomes Z on qubit 3) and reaches the engine as a huge
+    unsigned Majorana slot.
+    """
+    with pytest.raises(ValueError, match="must be non-negative"):
+        Pauli("Z", -1)
+    with pytest.raises(ValueError, match="must be non-negative"):
+        Pauli("XY", (0, -2))

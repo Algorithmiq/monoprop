@@ -15,7 +15,7 @@ the tools needed to run the tests.
 The Python tests run with `pytest`. Without MPI:
 
 ```bash
-uv run python -m pytest -m "not mpi"   # or: just test-py
+uv run python -m pytest -m "not mpi"   # or: just test
 ```
 
 The MPI tests need an MPI-enabled build, which the default source build does not
@@ -23,8 +23,8 @@ produce. The `just` recipes build an MPI-enabled extension and launch the suite
 under `mpiexec`:
 
 ```bash
-just test-py-mpi          # full suite under MPI
-just test-py-mpi-matrix   # MPI-marked tests across a rank matrix
+just test-mpi          # full suite under MPI
+just test-mpi-matrix   # MPI-marked tests across a rank matrix
 ```
 
 To do it by hand, build with MPI on, then run under `mpiexec` with `--no-sync`
@@ -39,27 +39,46 @@ mpiexec --allow-run-as-root -n 2 uv run --no-sync python -m pytest tests --with-
 
 ### C++ unit tests
 
-The C++ tests run through CTest, against whichever preset you built. Without MPI:
+The C++ tests run through CTest. The build tree is produced by `uv sync` (via
+scikit-build-core); do not invoke `cmake --preset` to configure directly, as the
+project requires scikit-build-core's build environment to configure correctly.
+Once the tree exists, run the tests with:
 
 ```bash
-cmake --preset release-gcc
-cmake --build --preset release-gcc
-ctest --preset release-gcc
+uv sync --all-extras
+ctest --test-dir build/editable/Release --output-on-failure
 ```
 
-With MPI, use the `-mpi` preset, which also runs the multi-rank tests:
+With MPI, reuse the MPI-enabled `uv sync` from the Python MPI section above,
+then run CTest against the same tree:
 
 ```bash
-cmake --preset release-gcc-mpi
-cmake --build --preset release-gcc-mpi
-ctest --preset release-gcc-mpi
+SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON" \
+    uv sync --all-extras --reinstall-package monoprop --no-cache
+ctest --test-dir build/editable/Release --output-on-failure
 ```
+
+Or simply `just test-mpi`.
 
 The full MPI rank matrix (several rank counts) is driven by a helper script:
 
 ```bash
 ctest -S tools/ctest-mpi-matrix.cmake -VV
 ```
+
+A 64-bit `TermIndex` build is the only configuration that compiles the
+`monoprop_WIDE_TERM_INDEX` branches, so it has its own recipe:
+
+```bash
+just test-wide   # rebuilds via uv sync with monoprop_WIDE_TERM_INDEX=ON, then runs CTest
+```
+
+CTest registers every Boost case individually as a `serial` variant. When the
+build has MPI enabled and a launcher is found, it also registers the whole suite
+once per rank count in `monoprop_MPI_TEST_PROCS`, labelled `mpi` and `mpi-<n>` —
+one entry per rank count rather than per case, because the ranks have to reach
+the same collectives. Select either group with
+`ctest --test-dir build/editable/Release -L serial` (or `-L mpi-2`).
 
 
 ## Adding tests
@@ -144,21 +163,17 @@ class CasesFermionicProblem:
 
 ### C++ tests
 
-C++ tests live in `tests/cpp/` and use [Boost.Test](https://www.boost.org/doc/libs/release/libs/test/). They are registered automatically via CMake — add the new `.cpp` file to the `SOURCES` list in `tests/cpp/CMakeLists.txt`.
+C++ tests live in `cpp/tests/` and use [Boost.Test](https://www.boost.org/doc/libs/release/libs/test/). They are registered automatically via CMake: new `*.cpp` files in `cpp/tests/` are picked up on the next configure, so no source-list edit is needed.
 
 #### Simple unit test
 
 ```cpp
 #include <boost/test/unit_test.hpp>
 
-BOOST_AUTO_TEST_SUITE(MyFeatureSuite)
-
 BOOST_AUTO_TEST_CASE(my_basic_check) {
     int result = 2 + 2;
     BOOST_TEST(result == 4);
 }
-
-BOOST_AUTO_TEST_SUITE_END()
 ```
 
 #### Data-driven test using reference fixtures
@@ -193,9 +208,6 @@ BOOST_DATA_TEST_CASE_F(ExampleDataFix,
     test_evolve_build_graph<n_modes>(data, cfg, pare, data.actual_expval);
 }
 ```
-
-The `ExampleDataFix` fixture automatically resolves the test data path via the `monoprop_REF_DATA_PATH` environment variable or by walking up from the working directory to `tests/data/`.
-
 
 
 ## See also

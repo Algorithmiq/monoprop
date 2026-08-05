@@ -47,6 +47,12 @@ The string $\nu$ records which Majorana operators are present (its set of
 ones is the monomial's **support**), and the **length** $|\nu|$ is the
 number of ones - i.e. how many Majorana operators the monomial contains.
 
+Each of the $2N$ positions of $\nu$ is a **slot**, and API documentation that
+counts something "in slots" means positions of $\nu$ rather than modes or
+qubits. In the Majorana basis slot $j$ is the Majorana operator $m_j$; the Pauli
+basis stores a Pauli string in the same $2N$ slots, two per qubit, so a length
+counted in slots runs up to twice the qubit count.
+
 The phase $i^{\binom{|\nu|}{2}}$ makes $M_\nu$
 Hermitian. Taking the dagger reverses the order of the $n$ Majorana
 operators, and each of the $\binom{n}{2}$ transpositions needed to restore
@@ -84,7 +90,7 @@ The three resulting cases are:
 - two **odd** monomials commute iff the overlap is odd;
 - an **even** and an **odd** monomial commute iff the overlap is even.
 
-Throughout propagation, the generators and the propagated terms are even
+Throughout propagation the generators and the propagated terms are even
 monomials, so the relevant case is the first: two even monomials **anticommute
 if and only if their overlap is odd**. When that happens, their product is again
 a single monomial, on the symmetric difference of the two supports:
@@ -101,23 +107,26 @@ core of the propagation algorithm.
 
 ## Reference states and paired monomials
 
-A Fock state $|n_1 \dots n_N\rangle$ (in particular a Hartree-Fock
-reference, or Slater determinant) has an especially simple Majorana expansion.
-Introducing the **paired** operator for each orbital,
+monoprop's reference state is always a **product state**: a Fock state
+$|n_1 \dots n_N\rangle$ in mode space, or equivalently a computational-basis
+state in qubit space. (In quantum chemistry this is the Hartree-Fock reference,
+or Slater determinant, but nothing in the algorithm assumes that origin.) Such a
+state has an especially simple Majorana expansion. Introducing the **paired**
+operator for each mode,
 
 $$
 \overline{m}_j = -i\,m_{2j-1} m_{2j},
 $$
 
-the corresponding density operator is a product of one factor per orbital,
+the corresponding density operator factorises one mode at a time,
 
 $$
 |n_1 \dots n_N\rangle\!\langle n_1 \dots n_N|
 = \frac{1}{2^N} \prod_{j=1}^{N}\bigl(1 + (-1)^{n_j}\,\overline{m}_j\bigr).
 $$
 
-Expanding the product, this is a sum of **paired monomials** — products of the
-$\overline{m}_j$ — with signs fixed by the occupation numbers.
+Expanding the product, this is a sum of **paired monomials** -- products of the
+$\overline{m}_j$ -- with signs fixed by the occupation numbers.
 
 ## Pauli operators
 
