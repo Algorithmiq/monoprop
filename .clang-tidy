@@ -62,8 +62,8 @@ Checks: >
   -readability-magic-numbers,
   -readability-suspicious-call-argument,
   -readability-uppercase-literal-suffix
-# Match all project headers under include/ and src/
-HeaderFilterRegex: '^(include|src)/.*\.(h|hpp)$'
+# Match all project headers under cpp/ (cpp/include/monoprop and cpp/monoprop)
+HeaderFilterRegex: '^cpp/.*\.(h|hpp)$'
 CheckOptions:
   - key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic
     value: '1'
