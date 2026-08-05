@@ -149,7 +149,7 @@ template <size_t NumModes>
 // Pauli strings are Hermitian, so coefficients are already real -- no phase to normalize away.
 [[nodiscard]] inline auto encode_pauli_coeff(const std::complex<double> &coeff) -> double {
     if (std::abs(coeff.imag()) > 1e-10) {
-        throw std::runtime_error("Non-real Pauli coeffs detected");
+        throw NonEncodableCoefficient("Non-real Pauli coeffs detected");
     }
     return coeff.real();
 }

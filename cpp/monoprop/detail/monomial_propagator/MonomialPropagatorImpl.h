@@ -25,6 +25,7 @@
 #include <cstring>
 #include <functional>
 #include <numeric>
+#include <stdexcept>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -38,6 +39,39 @@
 #include "monoprop/detail/partition/PartitionGroup.h" // needs the complete type
 
 namespace monoprop {
+
+// The ranks disagree on S. Kept out of PropagatorConfigError (declared in MonomialPropagator.h, and
+// used below for the per-propagator settings): the count comes from partitions= or the environment on
+// every rank independently, so the fix is to the launch, and it may belong to a different rank.
+class PartitionCountMismatch : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+// The requested operation does not agree with the graph this propagator currently holds -- either it
+// requires no stored graph, or its parameter_mapping matches neither the stored layer nor gate count.
+// The caller recovers by contracting or rebuilding the graph, not by fixing an isolated argument.
+class GraphStateConflict : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+// The (basis, cutoff_type, basis_change) triple is inconsistent: a Pauli basis with a Length cutoff or
+// a basis change, or a basis-change table that is not 2*logical_num_modes rows.
+// std::invalid_argument, not runtime_error: nanobind's built-in translation dispatches on the nearest
+// std base, and these are Python ValueError today.
+class CutoffConfigError : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
+// A coefficient-informed build_graph() was given fewer parameter values than replaying the stored graph
+// as a seed needs. Same std base as CutoffConfigError for the same Python-visibility reason, but a
+// separate type: this is one short vector, not a misconfigured propagator.
+class SeedParametersTooShort : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
 
 template <size_t NumModes>
 MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_operator,
@@ -64,7 +98,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
       basis_change_{basis_change},
       basis_{basis} {
     if (logical_num_modes_ == 0 || logical_num_modes_ > NumModes) {
-        throw std::runtime_error(
+        throw PropagatorConfigError(
             std::format("logical_num_modes ({}) must be in the range [1, {}].", logical_num_modes_, NumModes));
     }
 
@@ -73,9 +107,9 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     mp_op_.basis = basis_;
 
     if (upper_atol.has_value() && lower_atol.has_value() && (upper_atol.value() < lower_atol.value())) {
-        throw std::runtime_error(std::format("upper_atol ({}) must be greater than or equal to lower_atol ({}).",
-                                             upper_atol.value(),
-                                             lower_atol.value()));
+        throw PropagatorConfigError(std::format("upper_atol ({}) must be greater than or equal to lower_atol ({}).",
+                                                upper_atol.value(),
+                                                lower_atol.value()));
     }
 
     const size_t n_partitions = resolve_partition_count_(partitions, comm);
@@ -83,7 +117,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     // deadlock at the first hybrid collective.
     if (comm.kind == mpi::Comm::Kind::Mpi && mpi::size(comm) > 1
         && mpi::allreduce_sum<size_t>(n_partitions, comm) != n_partitions * static_cast<size_t>(mpi::size(comm))) {
-        throw std::runtime_error(
+        throw PartitionCountMismatch(
             "Partition count differs across MPI ranks — every rank must resolve the same "
             "partitions= / monoprop_PARTITIONS / monoprop_NUM_THREADS so R*S is a consistent world.");
     }
@@ -430,20 +464,20 @@ auto MonomialPropagator<NumModes>::validate_cutoff_config_(CutoffType cutoff_typ
     -> void {
     with_algebra<NumModes>(basis_, [&]<class A>() {
         if (A::requires_support_cutoff && cutoff_type != CutoffType::Support) {
-            throw std::invalid_argument("Pauli basis requires cutoff_type == Support "
-                                        "(Length has no Pauli-weight meaning under the Pauli encoding).");
+            throw CutoffConfigError("Pauli basis requires cutoff_type == Support "
+                                    "(Length has no Pauli-weight meaning under the Pauli encoding).");
         }
         if (!A::allows_basis_change && basis_change.has_value()) {
-            throw std::invalid_argument("Pauli basis does not accept a basis_change "
-                                        "(the encoding is already the Jordan-Wigner image).");
+            throw CutoffConfigError("Pauli basis does not accept a basis_change "
+                                    "(the encoding is already the Jordan-Wigner image).");
         }
     });
     // regenerate_cutoff_fn_ indexes rows [0, 2*logical_num_modes) unconditionally, so a short
     // basis_change is an out-of-bounds read.
     if (basis_change.has_value() && basis_change->size() != 2 * logical_num_modes_) {
-        throw std::invalid_argument(std::format("basis_change must have exactly 2*logical_num_modes ({}) rows; got {}.",
-                                                2 * logical_num_modes_,
-                                                basis_change->size()));
+        throw CutoffConfigError(std::format("basis_change must have exactly 2*logical_num_modes ({}) rows; got {}.",
+                                            2 * logical_num_modes_,
+                                            basis_change->size()));
     }
 }
 
@@ -632,7 +666,7 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
             // prefix the stored graph needs. Truncating instead would replay the existing graph at a silently
             // different point on the axis, and map_params would fail one layer down on the sliced vector.
             if (parameters->size() < m) {
-                throw std::invalid_argument(
+                throw SeedParametersTooShort(
                     std::format("Coefficient-informed build_graph() needs at least {} parameter value(s) to replay the "
                                 "existing {}-layer graph as a seed, but got {}.",
                                 m,
@@ -673,7 +707,7 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
     validate_coefficient_lengths(parameter_mapping, gen_coeffs);
     validate_parameters_length(parameters, parameter_mapping);
     if (graph_layers() > 0) {
-        throw std::runtime_error(std::format("Cannot propagate() on top of a non-empty graph of {} layer(s): "
+        throw GraphStateConflict(std::format("Cannot propagate() on top of a non-empty graph of {} layer(s): "
                                              "propagate() evolves and contracts in place and assumes no stored graph. "
                                              "Call contract_partially() to fold the existing graph first, or use "
                                              "build_graph() to extend it.",
@@ -808,7 +842,7 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
         }
     }
     else {
-        throw std::runtime_error(std::format("parameter_mapping has {} entries; expected {} (per graph "
+        throw GraphStateConflict(std::format("parameter_mapping has {} entries; expected {} (per graph "
                                              "layer) or {} (per gate).",
                                              parameter_mapping.size(),
                                              count,

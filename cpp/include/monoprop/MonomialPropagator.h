@@ -25,6 +25,7 @@
 #include <numeric>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -52,6 +53,24 @@ template <size_t NumModes>
 class PartitionGroup;
 } // namespace partition
 } // namespace detail
+
+/// A propagator setting is out of range, or inconsistent with another setting.
+// Covers a crossed atol pair and a logical width outside [1, NumModes]; also thrown from
+// MonomialPropagatorImpl.h, so it is declared here where both the class body and the impl see it.
+// std::runtime_error is load-bearing, not a default -- nanobind's built-in translation dispatches on
+// the nearest std base, so any other base would change the Python exception type these surface as.
+class PropagatorConfigError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+/// A raw-layout accessor was called on a multi-partition propagator, which owns no operator or graph.
+// Kept apart from PropagatorConfigError because nothing about the configuration is wrong: the caller
+// either uses the partition-transparent accessors or constructs with partitions=1. Same std base.
+class MultiPartitionUnsupported : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 template <size_t NumModes>
 class MonomialPropagator {
@@ -153,7 +172,7 @@ public:
 
     auto update_lower_atol(std::optional<double> new_lower_atol) -> void {
         if (upper_atol_.has_value() && new_lower_atol.has_value() && (new_lower_atol.value() > upper_atol_.value())) {
-            throw std::runtime_error(
+            throw PropagatorConfigError(
                 std::format("New lower_atol ({}) must be less than or equal to current upper_atol ({}).",
                             new_lower_atol.value(),
                             upper_atol_.value()));
@@ -163,7 +182,7 @@ public:
 
     auto update_upper_atol(std::optional<double> new_upper_atol) -> void {
         if (lower_atol_.has_value() && new_upper_atol.has_value() && new_upper_atol.value() < lower_atol_.value()) {
-            throw std::runtime_error(
+            throw PropagatorConfigError(
                 std::format("New upper_atol ({}) must be greater than or equal to current lower_atol ({}).",
                             new_upper_atol.value(),
                             lower_atol_.value()));
@@ -336,11 +355,12 @@ private:
     // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.
     auto require_single_partition_(const char *what) const -> void {
         if (partition_group_) {
-            throw std::runtime_error(std::format("{} is not available on a multi-partition propagator: the facade owns "
-                                                 "no operator or graph of its own. Use the partition-transparent "
-                                                 "accessors (size(), graph_size(), evolved_operator_terms(), ...) or "
-                                                 "construct with partitions=1.",
-                                                 what));
+            throw MultiPartitionUnsupported(
+                std::format("{} is not available on a multi-partition propagator: the facade owns "
+                            "no operator or graph of its own. Use the partition-transparent "
+                            "accessors (size(), graph_size(), evolved_operator_terms(), ...) or "
+                            "construct with partitions=1.",
+                            what));
         }
     }
 

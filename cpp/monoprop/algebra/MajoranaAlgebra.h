@@ -164,7 +164,7 @@ auto encode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &m
     const auto encoded = coeff / hermitian_coefficient<NumModes>(maj);
 
     if (std::abs(encoded.imag()) > 1e-10) {
-        throw std::runtime_error("Non-Hermitian coeffs detected");
+        throw NonEncodableCoefficient("Non-Hermitian coeffs detected");
     }
 
     return encoded.real();

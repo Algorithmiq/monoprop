@@ -22,6 +22,22 @@
 
 namespace monoprop {
 
+// A per-layer cosine callback this evaluation path needs was left empty. Derived from
+// std::invalid_argument because nanobind's built-in translation dispatches on the nearest std base:
+// any other base would change the Python exception type these already surface as.
+class MissingLayerCallback : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
+// A state's rows and values disagree in length, a sparse row names a slot outside the state, or the
+// operator being contracted is shorter than the state. One type because every case is a caller-supplied
+// length or index that does not fit the rest of the call. Same std base, so both stay ValueError.
+class EvalStateArgumentError : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
 namespace {
 
 // Per-thread scratch so repeated ev/grad calls stay allocation-light.
@@ -64,7 +80,7 @@ auto prepare_evolved_operator(EvalScratch &scratch,
     // Checked once here rather than at each caller: evolve_operator invokes cos_scale per layer, so an
     // empty callback would otherwise surface as a std::bad_function_call naming nothing.
     if (!cos_scale) {
-        throw std::invalid_argument("Evaluating at non-empty parameters requires a cos_scale (forward) callback.");
+        throw MissingLayerCallback("Evaluating at non-empty parameters requires a cos_scale (forward) callback.");
     }
     fill_mapped_params(scratch.mapped_params, params, parameter_mapping, gen_coeffs, 1.0, true);
     scratch.op = op;
@@ -107,7 +123,7 @@ auto ev_and_grad_impl(double e_core,
 
     // cos_scale is checked in prepare_evolved_operator, shared by both paths; cos_acc is this path's own.
     if (!cos_acc) {
-        throw std::invalid_argument("ev_and_grad requires a cos_acc (reverse) callback.");
+        throw MissingLayerCallback("ev_and_grad requires a cos_acc (reverse) callback.");
     }
 
     // The reverse pass back-evolves the state in place, which destroys sparsity at the first layer, so
@@ -158,7 +174,7 @@ auto indices_above(const VecD &v, double threshold) -> VecZ {
 
 auto EvalState::sparse(size_t length, std::span<const TermIndex> rows, std::span<const double> values) -> EvalState {
     if (rows.size() != values.size()) {
-        throw std::invalid_argument("EvalState::sparse: rows and values must have the same length.");
+        throw EvalStateArgumentError("EvalState::sparse: rows and values must have the same length.");
     }
 
     EvalState state;
@@ -168,7 +184,7 @@ auto EvalState::sparse(size_t length, std::span<const TermIndex> rows, std::span
     for (const auto row : rows) {
         const auto widened = static_cast<size_t>(row);
         if (widened >= length) {
-            throw std::invalid_argument("EvalState::sparse: row index is out of range for the given length.");
+            throw EvalStateArgumentError("EvalState::sparse: row index is out of range for the given length.");
         }
         state.rows_.push_back(widened);
     }
@@ -186,7 +202,7 @@ auto EvalState::dense(VecD values) -> EvalState {
 
 auto EvalState::dot(const VecD &op) const -> double {
     if (op.size() < length_) {
-        throw std::invalid_argument("EvalState::dot: the operator is shorter than the state.");
+        throw EvalStateArgumentError("EvalState::dot: the operator is shorter than the state.");
     }
     if (is_dense_) {
         return inner_product(values_, op);

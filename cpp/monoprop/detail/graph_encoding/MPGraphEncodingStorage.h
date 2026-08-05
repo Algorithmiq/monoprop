@@ -28,6 +28,15 @@
 
 namespace monoprop::detail {
 
+// The layer exchange layout and the packed cross-rank storage disagree on the rank count.
+// Kept a logic_error descendant deliberately: both operands are built inside build_graph, so no input
+// can make them disagree -- a mismatch is a violated internal invariant, which is what logic_error
+// means. It also keeps the Python-visible type RuntimeError rather than flipping it to ValueError.
+class ExchangeLayoutRankMismatch : public std::logic_error {
+public:
+    using std::logic_error::logic_error;
+};
+
 // The ceiling has to track the TermIndex width, not a fixed 32-bit limit.
 inline auto checked_term_index(size_t value, const char *what) -> TermIndex {
     if (value > static_cast<size_t>(std::numeric_limits<TermIndex>::max())) {
@@ -206,9 +215,10 @@ inline auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_pa
 
     // Both are indexed by the same rank space.
     if (storage->evolution_exchange_layout.counts.size() != storage->cross_rank.rank_count()) {
-        throw std::logic_error(std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
-                                           storage->evolution_exchange_layout.counts.size(),
-                                           storage->cross_rank.rank_count()));
+        throw ExchangeLayoutRankMismatch(
+            std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
+                        storage->evolution_exchange_layout.counts.size(),
+                        storage->cross_rank.rank_count()));
     }
     return storage;
 }

@@ -59,7 +59,7 @@ private:
 
     auto checked_layer_offset(size_t layer_idx) const -> size_t {
         if (layer_idx >= layers()) {
-            throw std::out_of_range(std::format("Layer {} is out of range (layers={})", layer_idx, layers()));
+            throw LayerIndexOutOfRange(std::format("Layer {} is out of range (layers={})", layer_idx, layers()));
         }
         return active_begin_index() + layer_idx;
     }

@@ -26,6 +26,12 @@
 
 namespace monoprop {
 
+// A layer index at or past the end of the graph window being indexed.
+class LayerIndexOutOfRange : public std::out_of_range {
+public:
+    using std::out_of_range::out_of_range;
+};
+
 // One rank's own graph memory only.
 struct GraphMemoryBreakdown final {
     size_t layer_descriptor_bytes = 0;
@@ -69,7 +75,7 @@ public:
 private:
     auto checked_layer_offset(size_t layer_idx) const -> size_t {
         if (layer_idx >= count_) {
-            throw std::out_of_range(std::format("Layer {} is out of range (layers={})", layer_idx, count_));
+            throw LayerIndexOutOfRange(std::format("Layer {} is out of range (layers={})", layer_idx, count_));
         }
 
         return base_ + (reverse_ ? count_ - 1 - layer_idx : layer_idx);

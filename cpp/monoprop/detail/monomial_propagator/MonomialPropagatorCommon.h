@@ -23,6 +23,14 @@
 
 namespace monoprop::detail {
 
+// A CutoffType enumerator neither cutoff factory knows. Reachable only through a value cast into the
+// enum, so it stays a std::runtime_error descendant (Python RuntimeError) rather than becoming an
+// argument error: no in-range enumerator can produce it.
+class UnknownCutoffType : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 template <size_t NumModes>
 auto cutoff_function(CutoffType cutoff_type, unsigned int cutoff, size_t logical_num_modes = NumModes)
     -> CutoffFn<NumModes> {
@@ -32,7 +40,7 @@ auto cutoff_function(CutoffType cutoff_type, unsigned int cutoff, size_t logical
         case CutoffType::Support:
             return detail::SupportCutoff<NumModes>{cutoff, logical_num_modes};
         default:
-            throw std::runtime_error("Unknown cutoff type");
+            throw UnknownCutoffType("Unknown cutoff type");
     }
 }
 
@@ -53,7 +61,7 @@ auto cutoff_function_basis_change(CutoffType cutoff_type,
                 return support_cutoff<NumModes>(mapped_mono, cutoff, logical_num_modes);
             };
         default:
-            throw std::runtime_error("Unknown cutoff type");
+            throw UnknownCutoffType("Unknown cutoff type");
     }
 }
 
