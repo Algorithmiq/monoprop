@@ -336,7 +336,7 @@ def test_non_hermitian_majorana_generator_rejected() -> None:
     prop = MajoranaPropagator(obs, [0, 1], cutoff=4)
     bad = Circuit(
         (ExpGate(MajoranaOperator({(0, 1): 1.0}, num_modes=2)),),
-        initial_state=(),
+        initial_state=[0, 1],
         system_size=2,
         parameters=(0.3,),
     )
