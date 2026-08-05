@@ -15,7 +15,6 @@
 #pragma once
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/algebra/MajoranaAlgebra.h"
 
 namespace monoprop::detail {
 inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
