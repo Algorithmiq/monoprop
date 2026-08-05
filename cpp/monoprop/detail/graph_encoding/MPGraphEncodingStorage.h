@@ -124,8 +124,8 @@ inline auto build_packed_cross_rank_storage(std::vector<CrossRankPartnerData> da
     bool uses_binary_phases = true;
     for (const auto &partner : data) {
         bool non_binary_phase = false;
-        for (const auto &entry : partner.sin_recv_entries) {
-            non_binary_phase = non_binary_phase || !is_binary_phase(entry.second);
+        for (const auto &[recv_index, phase] : partner.sin_recv_entries) {
+            non_binary_phase = non_binary_phase || !is_binary_phase(phase);
         }
         uses_binary_phases = uses_binary_phases && !non_binary_phase;
     }

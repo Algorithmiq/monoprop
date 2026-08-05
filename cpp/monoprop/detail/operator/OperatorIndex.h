@@ -212,17 +212,7 @@ public:
                 if (table_.count == 0) {
                     continue;
                 }
-                size_t s = sp[j] & table_.mask;
-                for (;; s = (s + 1) & table_.mask) {
-                    const Slot &e = table_.slots[s];
-                    if (e.idx == kEmptySlot) {
-                        break;
-                    }
-                    if (e.h == hh[j]) {
-                        cand[j] = e.idx;
-                        break;
-                    }
-                }
+                cand[j] = probe_hash_match_(hh[j], sp[j] & table_.mask);
                 if (cand[j] != kEmptySlot) {
                     __builtin_prefetch(&rows_[static_cast<size_t>(cand[j]) * stride_], 0, 0);
                 }
@@ -290,6 +280,23 @@ private:
         TermIndex idx = kEmptySlot;
         uint32_t h = 0;
     };
+
+    // First slot on h's probe chain whose stored hash matches, or kEmptySlot if the chain ends first.
+    // Matches on h alone and leaves the dense-row comparison to the caller — that deferral is what lets
+    // find_batch prefetch the row between probe and confirm, so do not fold row_eq_key in here (find()
+    // deliberately keeps its own confirming variant). `start` must already be masked; the table must not
+    // be mutated concurrently.
+    [[gnu::always_inline]] auto probe_hash_match_(uint32_t h, size_t start) const -> TermIndex {
+        for (size_t s = start;; s = (s + 1) & table_.mask) {
+            const Slot &e = table_.slots[s];
+            if (e.idx == kEmptySlot) {
+                return kEmptySlot;
+            }
+            if (e.h == h) {
+                return e.idx;
+            }
+        }
+    }
 
     static uint32_t fold_hash(const key_type &q) noexcept {
         const size_t full = MonomialHash<NumModes>{}(q);

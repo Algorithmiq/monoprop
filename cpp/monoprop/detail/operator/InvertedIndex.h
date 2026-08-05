@@ -274,8 +274,8 @@ template <size_t NumModes>
         }
         else {
             const auto &rows = sc.sparse_column_rows(c);
-            auto it = std::lower_bound(rows.begin(), rows.end(), lo, below);
-            const auto en = std::lower_bound(rows.begin(), rows.end(), hi, below);
+            auto it = std::ranges::lower_bound(rows, lo, below);
+            const auto en = std::ranges::lower_bound(rows, hi, below);
             for (; it != en; ++it) {
                 blk[(*it >> 6) - bb] ^= (uint64_t{1} << (*it & 63U));
             }

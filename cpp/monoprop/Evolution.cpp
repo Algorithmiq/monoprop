@@ -176,7 +176,7 @@ void pack_cross_rank_derivative_payload_impl(const std::vector<VecD> &sin_send_s
         if (end == 0) {
             continue;
         }
-        const size_t base = static_cast<size_t>(layout.displs[rank]);
+        const auto base = static_cast<size_t>(layout.displs[rank]);
         const auto &bs = sin_send_state[rank];
         const auto &bh = sin_send_op[rank];
         layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&send_buffer, &base, &bs, &bh](size_t k, size_t /*i*/) {
@@ -244,7 +244,7 @@ inline auto begin_cross_rank_derivative_exchange(const std::vector<VecD> &sin_se
     return begin_layer_exchange(
         layer.derivative_exchange_layout(),
         comm,
-        [&](int my_rank, const LayerExchangeLayout &layout, VecD &send_buffer) {
+        [&sin_send_state, &sin_send_op, &layer](int my_rank, const LayerExchangeLayout &layout, VecD &send_buffer) {
             pack_cross_rank_derivative_payload_impl(sin_send_state, sin_send_op, layer, my_rank, layout, send_buffer);
         });
 }
@@ -259,7 +259,9 @@ inline auto finish_cross_rank_derivative_exchange(VecD &state,
                                                   InFlightExchange &in_flight) -> EndpointContrib {
     return finish_layer_exchange(
         in_flight,
-        [&](const VecD &recv_buffer, const std::vector<int> &recv_displs, int my_rank) -> EndpointContrib {
+        [&state, &op, &layer, &sin_recv_state, &sin_recv_op, &trig](const VecD &recv_buffer,
+                                                                    const std::vector<int> &recv_displs,
+                                                                    int my_rank) {
             return apply_cross_rank_derivative_exchange_impl(state,
                                                              op,
                                                              layer,
@@ -286,7 +288,7 @@ void pack_cross_rank_evolution_payload_impl(VecD &op,
         if (end == 0) {
             continue;
         }
-        const size_t base = static_cast<size_t>(layout.displs[rank]);
+        const auto base = static_cast<size_t>(layout.displs[rank]);
         layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&send_buffer, &base, &op](size_t k, size_t i) {
             send_buffer[base + k] = op[i];
         });
@@ -328,7 +330,7 @@ inline auto begin_cross_rank_evolution_exchange(VecD &op, const LayerTraversal &
     return begin_layer_exchange(
         *layout,
         comm,
-        [&](int my_rank, const LayerExchangeLayout &active_layout, VecD &send_buffer) {
+        [&op, &layer](int my_rank, const LayerExchangeLayout &active_layout, VecD &send_buffer) {
             pack_cross_rank_evolution_payload_impl(op, layer, my_rank, active_layout, send_buffer);
         });
 }
@@ -337,9 +339,11 @@ inline auto finish_cross_rank_evolution_exchange(VecD &op,
                                                  const LayerTraversal &layer,
                                                  double sin_val,
                                                  InFlightExchange &in_flight) -> void {
-    finish_layer_exchange(in_flight, [&](const VecD &recv_buffer, const std::vector<int> &recv_displs, int my_rank) {
-        apply_cross_rank_evolution_exchange_impl(op, layer, sin_val, recv_buffer, recv_displs, my_rank);
-    });
+    finish_layer_exchange(
+        in_flight,
+        [&op, &layer, sin_val](const VecD &recv_buffer, const std::vector<int> &recv_displs, int my_rank) {
+            apply_cross_rank_evolution_exchange_impl(op, layer, sin_val, recv_buffer, recv_displs, my_rank);
+        });
 }
 
 // Snapshot-free self-slot endpoint pass: sin_recv entries k and k+pairs are the two endpoints of one
@@ -354,7 +358,7 @@ auto apply_self_slot_derivative_paired(VecD &state,
     if (self_d_count == 0) {
         return {};
     }
-    const size_t pairs = self_d_count / 2;
+    const auto pairs = self_d_count / 2;
     EndpointContrib local{};
     for (size_t k = 0; k < pairs; ++k) {
         const size_t i1 = layer.cross_rank_sin_recv_index_at(my_rank, k);

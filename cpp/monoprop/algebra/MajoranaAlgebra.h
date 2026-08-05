@@ -59,7 +59,7 @@ auto majorana_state_phase(const Monomial<NumModes> &maj, const Monomial<NumModes
     return POWERS_OF_MINUS_ONE[(num_pairs + maj.count() / 2) % 2];
 }
 
-inline constexpr auto prefix_xor_64(uint64_t x) -> uint64_t {
+constexpr auto prefix_xor_64(uint64_t x) -> uint64_t {
     x ^= x << 1;
     x ^= x << 2;
     x ^= x << 4;
@@ -121,6 +121,21 @@ inline auto hermitian_phase(size_t maj_count, size_t gen_count, size_t overlap) 
     return REAL_PARTS[power];
 };
 
+// Selected slot i of the logical range owns the bit pair 2*(prefix+i), 2*(prefix+i)+1 — a paired
+// Majorana term sets both bits of every selected mode, so the two bits always travel together.
+template <size_t NumModes>
+auto monomial_from_selector(const std::vector<bool> &selector, size_t inactive_mode_prefix) -> Monomial<NumModes> {
+    Monomial<NumModes> current;
+    for (size_t i = 0; i < selector.size(); ++i) {
+        if (selector[i]) {
+            const size_t bit_pair_offset = inactive_mode_prefix + i;
+            current.set(2 * bit_pair_offset);
+            current.set(2 * bit_pair_offset + 1);
+        }
+    }
+    return current;
+}
+
 // All fully paired Majorana monomials with up to max_ones pairs, over the active logical modes only.
 template <size_t NumModes>
 auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialList<NumModes> {
@@ -134,19 +149,11 @@ auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialLi
         std::fill(selector.begin(), selector.begin() + num_ones, true);
 
         do {
-            Monomial<NumModes> current;
-            for (size_t i = 0; i < logical_num_modes; ++i) {
-                if (selector[i]) {
-                    const size_t bit_pair_offset = inactive_mode_prefix + i;
-                    current.set(2 * bit_pair_offset);
-                    current.set(2 * bit_pair_offset + 1);
-                }
-            }
-            combinations.push_back(current);
+            combinations.push_back(monomial_from_selector<NumModes>(selector, inactive_mode_prefix));
         }
-        while (std::prev_permutation(selector.begin(), selector.end()));
+        while (std::ranges::prev_permutation(selector).found);
 
-        std::fill(selector.begin(), selector.end(), false);
+        std::ranges::fill(selector, false);
     }
 
     return combinations;
