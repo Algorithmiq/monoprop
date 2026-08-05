@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "monoprop/detail/mpi/CheckedCount.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/PartitionBarrier.h"
 
 // In-process shared-memory SPMD transport: S partition-master threads each call the same collective
@@ -54,13 +55,14 @@ public:
         sync();
     }
 
-    // Variable all-to-all over caller-owned flat buffers (counts/displs in elements, `elem` = element
-    // bytes). Fills recv per source s ascending at recv_displs[s]; recv_counts must already hold the
-    // transpose — same contract as MPI_Alltoallv.
+    // Variable all-to-all over caller-owned flat buffers, addressed as raw bytes (counts/displs stay in
+    // elements, `elem` = element bytes — the pointers carry no element type to scale by). Fills recv per
+    // source s ascending at recv_displs[s]; recv_counts must already hold the transpose — same contract
+    // as MPI_Alltoallv. `send` must stay alive and unmodified until the second barrier: peers read it.
     auto alltoallv(int rank,
-                   const void *send,
+                   const std::byte *send,
                    const int *send_displs,
-                   void *recv,
+                   std::byte *recv,
                    const int *recv_counts,
                    const int *recv_displs,
                    size_t elem) -> void {
@@ -68,16 +70,17 @@ public:
         me.ptr = send;
         me.displs = send_displs;
         sync();
-        auto *dst = static_cast<char *>(recv);
+        auto *dst = recv;
         for (int s = 0; s < n_; ++s) {
             const Slot &src = slots_[static_cast<size_t>(s)];
-            const auto *sp = static_cast<const char *>(src.ptr);
             const auto count = static_cast<size_t>(recv_counts[s]);
+            // Bail before offsetting src: a source that sends us nothing need not have published a
+            // buffer at all, and its displs[rank] may then point past the end of one.
             if (count == 0) {
                 continue;
             }
             std::memcpy(dst + static_cast<size_t>(recv_displs[s]) * elem,
-                        sp + static_cast<size_t>(src.displs[rank]) * elem,
+                        src.ptr + static_cast<size_t>(src.displs[rank]) * elem,
                         count * elem);
         }
         sync();
@@ -85,36 +88,34 @@ public:
 
     // Fused count-resolve + payload all-to-all in one round (2 syncs vs 4). Same contiguous
     // ascending-source ordering as alltoallv, which the query/response positional pairing depends on.
+    // See AlltoallvResolveArgs for the lifetime and element-offset contract.
     template <class T>
-    auto alltoallv_resolve(int rank,
-                           const T *send,
-                           const int *send_counts,
-                           const int *send_displs,
-                           std::vector<T> &recv,
-                           int *recv_counts,
-                           int *recv_displs) -> void {
+    auto alltoallv_resolve(int rank, const AlltoallvResolveArgs<T> &args) -> void {
         Slot &me = slots_[static_cast<size_t>(rank)];
-        me.ptr = send;
-        me.displs = send_displs;
-        me.counts = send_counts;
+        // Typed here but byte-addressed in the slot: peers scatter by (displ, count) in elements and
+        // never reconstruct T, so the slot stays type-erased for the untyped alltoallv above.
+        me.ptr = reinterpret_cast<const std::byte *>(args.send);
+        me.displs = args.send_displs;
+        me.counts = args.send_counts;
         sync(); // B1: send buffers published
         long long total = 0;
         for (int s = 0; s < n_; ++s) {
             const int c = slots_[static_cast<size_t>(s)].counts[rank]; // what s sends to me
-            recv_counts[s] = c;
-            recv_displs[s] = checked_mpi_count(total, "Recv displacement");
+            args.recv_counts[s] = c;
+            args.recv_displs[s] = checked_mpi_count(total, "Recv displacement");
             total += c;
         }
-        recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
-        auto *dst = reinterpret_cast<char *>(recv.data());
+        args.recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
+        auto *dst = reinterpret_cast<std::byte *>(args.recv.data()); // after the resize: it may reallocate
         for (int s = 0; s < n_; ++s) {
             const Slot &src = slots_[static_cast<size_t>(s)];
-            const auto count = static_cast<size_t>(recv_counts[s]);
+            const auto count = static_cast<size_t>(args.recv_counts[s]);
+            // See alltoallv: an unpublished source must not be offset by its displacement.
             if (count == 0) {
                 continue;
             }
-            std::memcpy(dst + static_cast<size_t>(recv_displs[s]) * sizeof(T),
-                        reinterpret_cast<const char *>(src.ptr) + static_cast<size_t>(src.displs[rank]) * sizeof(T),
+            std::memcpy(dst + static_cast<size_t>(args.recv_displs[s]) * sizeof(T),
+                        src.ptr + static_cast<size_t>(src.displs[rank]) * sizeof(T),
                         count * sizeof(T));
         }
         sync(); // B2: peers finished reading our send buffer before the caller may reuse it
@@ -175,7 +176,7 @@ private:
     // One cache-line-isolated publish slot per rank. A rank writes only its own slot, and reads peers'
     // slots only between the two barriers of a collective.
     struct alignas(64) Slot {
-        const void *ptr = nullptr;
+        const std::byte *ptr = nullptr; // byte view of the publisher's send buffer; null until published
         const int *counts = nullptr;
         const int *displs = nullptr;
         double *vec = nullptr; // mutable: allreduce_sum_inplace writes results back through peers' slots

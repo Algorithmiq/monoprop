@@ -25,6 +25,7 @@
 #include <numeric>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -52,6 +53,20 @@ template <size_t NumModes>
 class PartitionGroup;
 } // namespace partition
 } // namespace detail
+
+/// A propagator setting is out of range, or inconsistent with another setting.
+// Covers a crossed atol pair and a logical width outside [1, NumModes]; also thrown from
+// MonomialPropagatorImpl.h
+class PropagatorConfigError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+/// A raw-layout accessor was called on a multi-partition propagator, which owns no operator or graph.
+class MultiPartitionUnsupported : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 template <size_t NumModes>
 class MonomialPropagator {
@@ -153,7 +168,7 @@ public:
 
     auto update_lower_atol(std::optional<double> new_lower_atol) -> void {
         if (upper_atol_.has_value() && new_lower_atol.has_value() && (new_lower_atol.value() > upper_atol_.value())) {
-            throw std::runtime_error(
+            throw PropagatorConfigError(
                 std::format("New lower_atol ({}) must be less than or equal to current upper_atol ({}).",
                             new_lower_atol.value(),
                             upper_atol_.value()));
@@ -163,7 +178,7 @@ public:
 
     auto update_upper_atol(std::optional<double> new_upper_atol) -> void {
         if (lower_atol_.has_value() && new_upper_atol.has_value() && new_upper_atol.value() < lower_atol_.value()) {
-            throw std::runtime_error(
+            throw PropagatorConfigError(
                 std::format("New upper_atol ({}) must be greater than or equal to current lower_atol ({}).",
                             new_upper_atol.value(),
                             lower_atol_.value()));
@@ -262,32 +277,13 @@ public:
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
-    static inline const auto ev_fn = [](double e_core,
-                                        const EvalState &state,
-                                        const VecD &op,
-                                        const VecZ &parameter_mapping,
-                                        const VecD &gen_coeffs,
-                                        const auto &graph,
-                                        const VecD &params,
+    static inline const auto ev_fn = [](const EvalRequest &request,
                                         mpi::Comm comm,
-                                        const detail::LayerCosScale &cos_scale = {},
-                                        const detail::LayerCosAccumulate & = {}) -> double {
-        // cos_acc unused for the energy path; accepted so both functionals share one call arity in make_functional_.
-        return ev(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale);
-    };
+                                        const detail::CosCallbacks &cos) -> double { return ev(request, comm, cos); };
 
     static inline const auto ev_and_grad_fn =
-        [](double e_core,
-           const EvalState &state,
-           const VecD &op,
-           const VecZ &parameter_mapping,
-           const VecD &gen_coeffs,
-           const auto &graph,
-           const VecD &params,
-           mpi::Comm comm,
-           const detail::LayerCosScale &cos_scale = {},
-           const detail::LayerCosAccumulate &cos_acc = {}) -> std::pair<double, VecD> {
-        return ev_and_grad(e_core, state, op, parameter_mapping, gen_coeffs, graph, params, comm, cos_scale, cos_acc);
+        [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> std::pair<double, VecD> {
+        return ev_and_grad(request, comm, cos);
     };
 
     static auto expected_num_params(const VecZ &parameter_mapping) -> size_t;
@@ -336,11 +332,12 @@ private:
     // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.
     auto require_single_partition_(const char *what) const -> void {
         if (partition_group_) {
-            throw std::runtime_error(std::format("{} is not available on a multi-partition propagator: the facade owns "
-                                                 "no operator or graph of its own. Use the partition-transparent "
-                                                 "accessors (size(), graph_size(), evolved_operator_terms(), ...) or "
-                                                 "construct with partitions=1.",
-                                                 what));
+            throw MultiPartitionUnsupported(
+                std::format("{} is not available on a multi-partition propagator: the facade owns "
+                            "no operator or graph of its own. Use the partition-transparent "
+                            "accessors (size(), graph_size(), evolved_operator_terms(), ...) or "
+                            "construct with partitions=1.",
+                            what));
         }
     }
 
@@ -459,15 +456,7 @@ private:
                               bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
 
     template <typename Fn,
-              typename R = std::invoke_result_t<Fn,
-                                                double,
-                                                const EvalState &,
-                                                const VecD &,
-                                                const VecZ &,
-                                                const VecD &,
-                                                const MPGraph &,
-                                                const VecD &,
-                                                mpi::Comm>>
+              typename R = std::invoke_result_t<Fn, const EvalRequest &, mpi::Comm, const detail::CosCallbacks &>>
     auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
 
     // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the layers' gate info.

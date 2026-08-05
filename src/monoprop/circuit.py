@@ -380,11 +380,12 @@ class Circuit:
             ExpGate._with_index(gate, index + offset)
             for gate, index in zip(other.gates, other.resolved_mapping, strict=True)
         )
-        state = (
-            self.initial_state
-            if self._state_given
-            else (other.initial_state if other._state_given else None)
-        )
+        if self._state_given:
+            state = self.initial_state
+        elif other._state_given:
+            state = other.initial_state
+        else:
+            state = None
         return Circuit(
             gates=left + right,
             parameters=tuple(self.parameters) + tuple(other.parameters),

@@ -36,8 +36,7 @@ constexpr auto make_repeating_bitset(uint64_t pattern) -> Bitset<N> {
     Bitset<N> bits;
     for (size_t i = 0; i < kNumWords; ++i)
         bits.data()[i] = pattern;
-    constexpr size_t kTopBits = N % 64;
-    if constexpr (kTopBits != 0) {
+    if constexpr (constexpr size_t kTopBits = N % 64; kTopBits != 0) {
         constexpr uint64_t kTopMask = (uint64_t(1) << kTopBits) - 1;
         bits.data()[kNumWords - 1] &= kTopMask;
     }

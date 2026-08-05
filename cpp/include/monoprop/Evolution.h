@@ -43,29 +43,34 @@ class MPGraphView;
 
 struct LayerCore;
 
+/// One layer's rotation angle in factored form: the layer rotates by 2·gen_coeff·param.
+struct LayerAngle {
+    double gen_coeff = 1.0; ///< the generator's coefficient for this layer
+    double param = 0.0;     ///< the optimizer parameter driving this layer
+};
+
 /// Forward-evolve `op` through one layer; each rank owns its local coefficients, cross-rank cycles are communicated.
 monoprop_EXPORT auto evolve_step(VecD &op,
                                  const Layer &layer,
                                  double param,
-                                 const detail::LayerCosScale &cos_scale,
-                                 mpi::Comm comm) -> void;
+                                 mpi::Comm comm,
+                                 const detail::LayerCosScale &cos_scale) -> void;
 
 /// Forward-evolve `coeffs` through every layer of `graph`, returning this rank's evolved coefficients.
 monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
                                      const MPGraphView &graph,
                                      const VecD &params,
-                                     const detail::LayerCosScale &cos_scale,
-                                     mpi::Comm comm) -> VecD;
+                                     mpi::Comm comm,
+                                     const detail::LayerCosScale &cos_scale) -> VecD;
 
 /// Reverse-mode derivative of one layer: inverse-rotates (state, op) in place and returns the gradient term.
 monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
                                                      VecD &op,
                                                      const MPGraphView &graph,
                                                      size_t layer_idx,
-                                                     double gen_coeff,
-                                                     double param,
-                                                     const detail::LayerCosAccumulate &cos_acc,
-                                                     mpi::Comm comm) -> double;
+                                                     LayerAngle angle,
+                                                     mpi::Comm comm,
+                                                     const detail::LayerCosAccumulate &cos_acc) -> double;
 } // namespace monoprop
 
 #include "monoprop/detail/evolution/EvolutionHelpers.h"

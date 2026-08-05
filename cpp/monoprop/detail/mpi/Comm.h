@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #if defined(monoprop_ENABLE_MPI)
 #include <mpi.h>
@@ -61,6 +63,66 @@ struct Comm {
         c.shm_rank = local_partition;
         return c;
     }
+};
+
+// Argument bundles for the variable all-to-all verbs, deliberately here rather than in HybridComm.h:
+// ShmComm.h takes the resolve bundle and compiles in non-MPI builds, so neither bundle may name an
+// MPI-only type. MPI_Datatype therefore stays a separate parameter on the HybridComm verbs that need
+// one (MPI-only header, MPI-only argument) instead of becoming a #ifdef-guarded member, which would
+// make this installed header's layout depend on monoprop_ENABLE_MPI.
+//
+// `send`, `send_counts` and `send_displs` are non-owning views into caller memory. The send buffer must
+// stay alive and unmodified until the verb's second barrier: peer partitions read it in place rather
+// than through a copy, so freeing or mutating it earlier corrupts what they scatter.
+//
+// Counts and displacements are in ELEMENTS while `send` / `recv` are raw bytes, so every offset is
+// scaled by `elem`; the pointers carry no element type to scale by.
+struct AlltoallvArgs {
+    const std::byte *send = nullptr;  // read in place by peers until the second barrier
+    const int *send_counts = nullptr; // [P] elements sent to each destination
+    const int *send_displs = nullptr; // [P] element offsets into `send`
+    std::byte *recv = nullptr;        // caller-owned, already sized for recv_counts
+    const int *recv_counts = nullptr; // [P] input: the senders' transpose, same contract as MPI_Alltoallv
+    const int *recv_displs = nullptr; // [P] element offsets into `recv`
+    size_t elem = 0;                  // bytes per element; scales every count/displ above
+};
+
+// Typed view of the same six spans, for callers that hold `T` buffers: `bytes()` type-erases it for the
+// in-process transports, which address payloads as raw bytes, while the MPI path keeps the typed
+// pointers it passes alongside a datatype. Same lifetime and element-offset contract as AlltoallvArgs.
+template <typename T>
+struct FlatAlltoallvArgs {
+    const T *send = nullptr;
+    const int *send_counts = nullptr; // [P] elements sent to each destination
+    const int *send_displs = nullptr; // [P] element offsets into `send`
+    T *recv = nullptr;                // caller-owned, already sized for recv_counts
+    const int *recv_counts = nullptr; // [P] input: the senders' transpose, same contract as MPI_Alltoallv
+    const int *recv_displs = nullptr; // [P] element offsets into `recv`
+
+    auto bytes() const -> AlltoallvArgs {
+        return AlltoallvArgs{.send = reinterpret_cast<const std::byte *>(send),
+                             .send_counts = send_counts,
+                             .send_displs = send_displs,
+                             .recv = reinterpret_cast<std::byte *>(recv),
+                             .recv_counts = recv_counts,
+                             .recv_displs = recv_displs,
+                             .elem = sizeof(T)};
+    }
+};
+
+// The fused resolve verb keeps its own shape because its recv side is an output, not a caller-supplied
+// layout: `recv` is a reference the callee resizes, and the two recv arrays are written, not read. Being
+// typed, it derives element bytes as sizeof(T) instead of carrying `elem`. Send side: same lifetime and
+// element-offset contract as AlltoallvArgs.
+template <typename T>
+struct AlltoallvResolveArgs {
+    const T *send = nullptr;
+    const int *send_counts = nullptr; // [P] elements sent to each destination
+    const int *send_displs = nullptr; // [P] element offsets into `send`
+    std::vector<T> &recv;             // output, resized to the resolved total; a reference, so copying the
+                                      // bundle still resizes the caller's vector
+    int *recv_counts = nullptr;       // [P] output: resolved per-source counts
+    int *recv_displs = nullptr;       // [P] output: resolved element offsets into `recv`
 };
 
 } // namespace monoprop::mpi
