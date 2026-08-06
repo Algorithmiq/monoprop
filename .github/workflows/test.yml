@@ -101,7 +101,7 @@ jobs:
 
       - name: Get monoprop version
         run: |
-          uv run python -c "import monoprop as mp; print(mp.__version__)"
+          uv run python -c "import monoprop as mp; print(mp.__version__); print(mp.__variant__); print(mp.__compiler_flags__)"
 
       - name: Verify that find_package(monoprop) works
         run: |
