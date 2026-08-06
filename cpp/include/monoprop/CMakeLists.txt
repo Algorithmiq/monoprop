@@ -12,10 +12,11 @@ target_sources(
         ${PROJECT_SOURCE_DIR}/cpp/include
         ${PROJECT_BINARY_DIR}/include
       FILES
+        "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h"
+        "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/Info.h"
+        "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/VariantMacros.h"
         "${PROJECT_SOURCE_DIR}/cpp/include/${PROJECT_NAME}/Evolution.h"
         "${PROJECT_SOURCE_DIR}/cpp/include/${PROJECT_NAME}/MPFunctions.h"
         "${PROJECT_SOURCE_DIR}/cpp/include/${PROJECT_NAME}/MPGraph.h"
         "${PROJECT_SOURCE_DIR}/cpp/include/${PROJECT_NAME}/MonomialPropagator.h"
-        "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h"
-        "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/Info.h"
 )
