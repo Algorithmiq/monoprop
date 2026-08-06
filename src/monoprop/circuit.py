@@ -545,8 +545,6 @@ def _gate_layers(gate: ExpGate, num_qubits: int) -> list[tuple[tuple[int, ...], 
     the gate is flagged [ExpGate._structural][] (the wire/dense format), whose coefficients are
     already the structural ``g`` and are used directly.
     """
-    # A Pauli-family gate holds a PauliOperator; every other family a MajoranaOperator (so the
-    # ``isinstance`` narrows the fall-through arm to MajoranaOperator).
     generator = gate.generator
     if isinstance(generator, PauliOperator):
         layers: list[tuple[tuple[int, ...], float]] = []
