@@ -107,6 +107,17 @@ auto validate_expected_graph_layers(size_t current_layers, size_t expected_layer
     }
 }
 
+auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void {
+    if (!only_rotate_len_k.has_value()) {
+        return;
+    }
+
+    const auto k = *only_rotate_len_k;
+    if (k == 0 || static_cast<size_t>(k) > max_k) {
+        throw ValidationError(std::format("only_rotate_len_k={} is out of range; must be 0 < k <= 2*num_qubits", k));
+    }
+}
+
 // NOLINTEND(misc-use-internal-linkage)
 
 } // namespace monoprop

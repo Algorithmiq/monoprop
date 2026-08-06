@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/EvolutionHelpers.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
@@ -142,7 +143,7 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
 
 // The per-term rotation gate splits into a dynamic part (orbital pop cap, lower-atol sine cutoff) and a
 // static part (the structural cutoff on M'=M⊕G, applied in emit).
-inline auto rotation_dynamic_gate(std::optional<int> only_rotate_len_k,
+inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
                                   size_t mono_pop,
                                   const CutoffContext &ctx,
                                   double abs_c) -> bool {
@@ -195,12 +196,13 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const CutoffEvaluator<NumModes> &cutoff_eval,
                             const CutoffContext &cut_st,
                             const VecD &coeffs,
-                            std::optional<int> only_rotate_len_k,
+                            std::optional<size_t> only_rotate_len_k,
                             size_t rank_count,
                             size_t my_rank,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult {
+    validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t gen_pop = gen.count();
     const auto ectx = A::make_gen_context(gen);
 
@@ -336,7 +338,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
             return {0.0, cut_st.abs_coeff_for(i, coeffs)};
         };
-        const bool word_aligned_cos = !only_rotate_len_k;
+        const bool word_aligned_cos = !only_rotate_len_k.has_value();
         CosineWordBuilder cos_b;
         for (const auto &w : nz) {
             if (word_aligned_cos && fused_scale_coeffs != nullptr) {
