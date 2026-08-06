@@ -228,15 +228,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
         """
         self._check_initial_state(circuit)
         self._check_circuit_width(circuit)
-        # Resolve the coefficient seed handed to the engine (the operator coefficients the new
-        # layers are contracted against while the graph is built, informing coefficient
-        # truncation). The engine validates its length against the accumulated parameter axis.
-        #  - An explicit seed_parameters is honored as given.
-        #  - On the first build (empty graph) the circuit's own parameters are the whole axis.
-        #  - When extending a non-empty graph without a seed the circuit's parameters cover only
-        #    its local angles, not the accumulated axis, so there is no seed to give: build the
-        #    new layers structurally (coefficient truncation applies only when a seed is
-        #    supplied; pass seed_parameters to truncate an incremental extension).
         only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
             only_rotate_len_k
         )
@@ -249,7 +240,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
             seed = None
         gates = self._circuit_gates(circuit)
         num_qubits = self._system_size
-        # Shift the circuit's local 0-based angle indices onto the accumulated axis.
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
         majoranas, gen_coeffs, per_monomial, gate_indices = expand_monomials(
             gates, mapping, num_qubits
