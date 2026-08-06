@@ -21,7 +21,9 @@
 
 namespace monoprop {
 
-// Each of these throws std::runtime_error when the stated condition does not hold.
+// Each of these throws when the stated condition does not hold: ValidationError for inconsistent
+// arguments, StaleFunctionalGraph when the propagator was mutated after a functional captured its
+// layer count. Both derive from std::runtime_error, so catching that still catches either.
 
 monoprop_EXPORT auto validate_coefficient_lengths(const VecZ &parameter_mapping, const VecD &gen_coeffs) -> void;
 

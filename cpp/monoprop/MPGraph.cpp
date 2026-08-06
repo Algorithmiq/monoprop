@@ -90,9 +90,9 @@ auto MPGraph::slice_graph(size_t key, bool contract) -> MPGraph {
 auto MPGraph::slice_view(size_t key) const -> MPGraphView {
     const auto k = std::min(key, layers());
     if (schrodinger_) {
-        return MPGraphView(layers_, active_end_index() - k, k, true);
+        return {layers_, active_end_index() - k, k, true};
     }
-    return MPGraphView(layers_, active_begin_index(), k, false);
+    return {layers_, active_begin_index(), k, false};
 }
 
 auto MPGraph::total_cycles() const -> size_t {
@@ -109,8 +109,7 @@ auto MPGraph::storage_memory_usage() const -> GraphMemoryBreakdown {
 
     std::unordered_set<const LayerCore *> seen_storage;
     for (auto it = active_begin_iterator(); it != active_end_iterator(); ++it) {
-        const auto storage = it->shared_core();
-        if (storage != nullptr && seen_storage.insert(storage.get()).second) {
+        if (const auto storage = it->shared_core(); storage != nullptr && seen_storage.insert(storage.get()).second) {
             breakdown += layer_storage_memory_usage(*storage);
         }
         // Pruned cos is owned per-layer, not by the shared core, so it accumulates without the dedup.

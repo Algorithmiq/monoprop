@@ -176,14 +176,14 @@ def test_build_report_includes_memory(tmp_path: Path) -> None:
     _write_timings(tmp_path)
     _write_results(
         tmp_path,
-        mem={
+        memhwm={
             "bench_random.py::test_random_energy[heisenberg]": 52428800,
             "bench_random.py::test_random_energy[schrodinger]": 104857600,
         },
     )
     md = _collapse(report.build_report(tmp_path))
 
-    assert "Memory (RSS)" in md
+    assert "Memory (peak RSS)" in md
     assert "50.00 MiB" in md
     assert "100.00 MiB" in md
 

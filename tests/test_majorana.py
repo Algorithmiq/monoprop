@@ -58,9 +58,10 @@ class TestMajorana:
         assert sign_mixed == -1.0
 
     def test_equal_terms_compare_and_hash_alike(self):
-        assert Majorana(4, 5) == Majorana(4, 5)
-        assert hash(Majorana(4, 5)) == hash(Majorana(4, 5))
-        assert {Majorana(4, 5), Majorana(4, 5)} == {Majorana(4, 5)}
+        left, right = Majorana(4, 5), Majorana(4, 5)
+        assert left == right
+        assert hash(left) == hash(right)
+        assert {left, right} == {left}
 
     def test_eq_with_non_majorana_is_false(self):
         assert (Majorana(0, 1) == (0, 1)) is False
