@@ -47,6 +47,10 @@ GateFamily = Literal["pauli", "majorana"]
 CircuitFamily = Literal["pauli", "majorana", "empty"]
 
 
+def _is_identity_gate(gate: ExpGate) -> bool:
+    return all(coeff == 0 for coeff in gate.generator.terms.values())
+
+
 class ExpGate:
     r"""The exponential of a generator: one variational gate, abstract over the family.
 
@@ -201,7 +205,7 @@ class Circuit:
             construction; the propagators dispatch on it.
     """
 
-    def __init__(  # noqa:C901
+    def __init__(
         self,
         gates: Sequence[ExpGate],
         system_size: int,
@@ -228,28 +232,10 @@ class Circuit:
         self._state_given = initial_state is not None
         initial_state = tuple(int(i) for i in initial_state or ())
         system_size = _validate_system_size(system_size, argument_name="system_size")
-        if len(set(initial_state)) != len(initial_state):
-            raise ValueError("Duplicate indices in initial state")
-        if any(i < 0 or i >= system_size for i in initial_state):
-            raise ValueError(
-                f"initial_state entries must be in 0..{system_size - 1}; got {list(initial_state)}."
-            )
-
+        self._validate_initial_state(initial_state, system_size)
+        self._validate_gate_system_size(gates, system_size)
         # Checked first: the identity-drop below reads gate attributes, so a non-ExpGate must
         # fail here with a clear TypeError rather than an opaque AttributeError.
-        for gate in gates:
-            if not isinstance(gate, ExpGate):
-                raise TypeError(
-                    f"Circuit gates must be ExpGate; got {type(gate).__name__}."
-                )
-            gate_size = gate.system_size
-            if gate_size != system_size:
-                raise ValueError(
-                    f"Gate generator width {gate_size} does not match circuit system_size={system_size}."
-                )
-
-        def _is_identity_gate(gate: ExpGate) -> bool:
-            return all(coeff == 0 for coeff in gate.generator.terms.values())
 
         default_mapping = all(gate.index is None for gate in gates)
         if default_mapping and any(_is_identity_gate(gate) for gate in gates):
@@ -276,6 +262,30 @@ class Circuit:
                 f"parameters has {len(self.parameters)} values but the circuit has "
                 f"{self.n_parameters} parameters."
             )
+
+    @staticmethod
+    def _validate_initial_state(
+        initial_state: tuple[int, ...], system_size: int
+    ) -> None:
+        if len(set(initial_state)) != len(initial_state):
+            raise ValueError("Duplicate indices in initial state")
+        if any(i < 0 or i >= system_size for i in initial_state):
+            raise ValueError(
+                f"initial_state entries must be in 0..{system_size - 1}; got {list(initial_state)}."
+            )
+
+    @staticmethod
+    def _validate_gate_system_size(gates: Sequence[ExpGate], system_size: int) -> None:
+        for gate in gates:
+            if not isinstance(gate, ExpGate):
+                raise TypeError(
+                    f"Circuit gates must be ExpGate; got {type(gate).__name__}."
+                )
+            gate_size = gate.system_size
+            if gate_size != system_size:
+                raise ValueError(
+                    f"Gate generator width {gate_size} does not match circuit system_size={system_size}."
+                )
 
     def __eq__(self, other: object) -> bool:
         """Equal when gates, parameters, and initial state match (``family`` is derived)."""
