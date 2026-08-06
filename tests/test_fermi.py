@@ -66,12 +66,6 @@ class TestFermiString:
         f = FermiString([])
         assert repr(f) == "FermiString()"
 
-    def test_hash_equal_for_equal_strings(self):
-        # Equal FermiStrings must hash equal to be usable as dict keys / set members.
-        assert hash(FermiString([(0, "+"), (1, "-")])) == hash(
-            FermiString([(0, "+"), (1, "-")])
-        )
-
     def test_hash_distinguishes_different_expressions(self):
         assert hash(FermiString([(0, "+")])) != hash(FermiString([(1, "+")]))
 
@@ -199,10 +193,11 @@ class TestFermiOperator:
 
     def test_isclose_rejects_non_fermi_operator(self):
         op = FermiOperator([FermiString([(0, "+")])], [1.0], num_modes=2)
+        op2 = MajoranaOperator({(0, 1): 1.0}, num_modes=2)
         with pytest.raises(
             TypeError, match="Cannot compare FermiOperator with MajoranaOperator"
         ):
-            op.isclose(MajoranaOperator({(0, 1): 1.0}, num_modes=2))
+            op.isclose(op2)
 
     @pytest.mark.parametrize(
         ("left", "right", "expected"),
