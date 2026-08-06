@@ -27,6 +27,7 @@ try:
     from qiskit.quantum_info import SparsePauliOp
 
     from monoprop import Circuit, ExpGate
+    from monoprop.majorana import MajoranaOperator
     from monoprop.pauli import Pauli, PauliOperator
     from monoprop.qiskit_conversion import (
         from_qiskit_circuit,
@@ -319,6 +320,37 @@ def test_to_qiskit_circuit_rejects_unbound() -> None:
         system_size=1,
     )  # no parameter values
     with pytest.raises(ValueError, match="bound circuit"):
+        to_qiskit_circuit(circuit, num_qubits=1)
+
+
+@requires_qiskit
+@pytest.mark.qiskit
+def test_to_qiskit_circuit_rejects_mismatched_num_qubits() -> None:
+    """num_qubits must match circuit.system_size, not silently truncate/pad the circuit."""
+    circuit = Circuit(
+        gates=(ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)),),
+        initial_state=(),
+        system_size=2,
+        parameters=(0.5,),
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"num_qubits=3 does not match circuit.system_size=2",
+    ):
+        to_qiskit_circuit(circuit, num_qubits=3)
+
+
+@requires_qiskit
+@pytest.mark.qiskit
+def test_to_qiskit_circuit_rejects_majorana_family() -> None:
+    """to_qiskit_circuit only understands Pauli circuits; a Majorana-family gate is rejected."""
+    circuit = Circuit(
+        gates=(ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=1)),),
+        initial_state=(),
+        system_size=1,
+        parameters=(0.5,),
+    )
+    with pytest.raises(TypeError, match="majorana-family gate"):
         to_qiskit_circuit(circuit, num_qubits=1)
 
 

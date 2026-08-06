@@ -28,6 +28,7 @@ from monoprop import (
     MajoranaPropagator,
     PauliPropagator,
 )
+from monoprop.circuit import validate_parameter_mapping
 from monoprop.fermi import FermiOperator
 from monoprop.majorana import Majorana, MajoranaOperator
 from monoprop.pauli import Pauli, PauliOperator
@@ -194,6 +195,52 @@ def test_circuit_rejects_non_exp_gate() -> None:
         Circuit(("not a gate",), initial_state=(), system_size=0)  # type: ignore[arg-type]
 
 
+def test_circuit_rejects_duplicate_initial_state_indices() -> None:
+    with pytest.raises(ValueError, match="Duplicate indices"):
+        Circuit((), initial_state=(0, 1, 0), system_size=2)
+
+
+def test_circuit_rejects_out_of_range_initial_state_indices() -> None:
+    with pytest.raises(ValueError, match="initial_state entries must be in"):
+        Circuit((), initial_state=(0, 2), system_size=2)
+
+
+def test_circuit_rejects_gate_width_mismatch() -> None:
+    gate = ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2))
+    with pytest.raises(ValueError, match="does not match circuit system_size"):
+        Circuit((gate,), initial_state=(), system_size=4)
+
+
+def test_circuit_rejects_mixed_family_gates_directly() -> None:
+    gates = (
+        ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),
+        ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)),
+    )
+    with pytest.raises(TypeError, match="cannot mix qubit and Majorana"):
+        Circuit(gates, initial_state=(), system_size=2)
+
+
+def test_circuit_len_counts_gates() -> None:
+    gates = (
+        ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),
+        ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),
+    )
+    circuit = Circuit(gates, initial_state=(), system_size=2)
+    assert len(circuit) == 2
+
+
+def test_unbound_circuit_with_identity_gate_needs_no_parameters() -> None:
+    """Under the default mapping, dropping an identity gate on an unbound circuit is a no-op
+    on ``parameters`` since there are none to realign."""
+    gates = (
+        ExpGate(MajoranaOperator({}, num_modes=2)),  # identity gate (dropped)
+        ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2)),
+    )
+    circuit = Circuit(gates, initial_state=(), system_size=2)
+    assert len(circuit.gates) == 1
+    assert circuit.parameters == ()
+
+
 def test_to_circuit_round_trips_sequence() -> None:
     """Circuit.from_dense_arrays reproduces the dense arrays and mapping."""
     problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
@@ -207,6 +254,28 @@ def test_to_circuit_round_trips_sequence() -> None:
         circuit.parameters, np.asarray(mc.parameters, dtype=float)
     )
     assert circuit.initial_state == tuple(int(i) for i in mc.initial_state)
+
+
+def test_from_dense_arrays_rejects_negative_majorana_index() -> None:
+    with pytest.raises(ValueError, match="must be non-negative"):
+        Circuit.from_dense_arrays(
+            majoranas=[[-1, 0]], gen_coeffs=[1.0], param_inds=[0], system_size=2
+        )
+
+
+def test_from_dense_arrays_rejects_out_of_range_majorana_index() -> None:
+    with pytest.raises(ValueError, match="acts on an index >= 2\\*system_size"):
+        Circuit.from_dense_arrays(
+            majoranas=[[0, 4]], gen_coeffs=[1.0], param_inds=[0], system_size=2
+        )
+
+
+def test_from_dense_arrays_empty_inputs_build_gateless_circuit() -> None:
+    circuit = Circuit.from_dense_arrays(
+        majoranas=[], gen_coeffs=[], param_inds=[], system_size=2
+    )
+    assert circuit.gates == ()
+    assert circuit.family == "empty"
 
 
 def test_default_mapping_is_identity() -> None:
@@ -243,6 +312,22 @@ def test_circuit_rejects_non_contiguous_mapping() -> None:
     )
     with pytest.raises(ValueError, match="contiguous"):
         Circuit(gates, initial_state=(), system_size=2)
+
+
+def test_validate_parameter_mapping_rejects_wrong_length() -> None:
+    with pytest.raises(ValueError, match="3 entries but there are 2 gates"):
+        validate_parameter_mapping((0, 1, 0), expected_len=2, unit="gates")
+
+
+def test_validate_parameter_mapping_rejects_non_contiguous() -> None:
+    with pytest.raises(ValueError, match="contiguous"):
+        validate_parameter_mapping((0, 2), expected_len=2, unit="graph layers")
+
+
+def test_validate_parameter_mapping_accepts_contiguous() -> None:
+    validate_parameter_mapping(
+        (0, 1, 0), expected_len=3, unit="gates"
+    )  # does not raise
 
 
 def test_circuit_rejects_mixed_param_scheme() -> None:
@@ -294,6 +379,19 @@ def test_circuit_add_rejects_mixed_families() -> None:
     )
     with pytest.raises(TypeError, match="gate families differ"):
         _ = majorana + qubit
+
+
+def test_circuit_add_rejects_different_system_size() -> None:
+    a = Circuit(
+        (ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2)),),
+        system_size=2,
+    )
+    b = Circuit(
+        (ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=4)),),
+        system_size=4,
+    )
+    with pytest.raises(ValueError, match="different system_size"):
+        _ = a + b
 
 
 def test_circuit_add_rejects_different_initial_states() -> None:
