@@ -55,6 +55,7 @@ def test_basic_orbital_rotation(serial_comm):
         parameters=[np.pi / 4],
         gen_coeffs=[1.0],
         param_inds=[0],
+        system_size=n_modes,
     )
     circuit = sequence
     kwargs = {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
@@ -97,10 +98,12 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     # tests/test_circuit.py::_rebase.
     non_orbital = Circuit(
         tuple(ExpGate._with_index(gate, None) for gate in non_orbital_gates),
+        system_size=problem.n_modes,
         parameters=tuple(parameters[:split]),
     )
     orbital = Circuit(
         tuple(ExpGate._with_index(gate, None) for gate in orbital_gates),
+        system_size=problem.n_modes,
         parameters=tuple(parameters[split:]),
     )
 
@@ -146,7 +149,13 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
             ),
         ),
         (None, does_not_raise()),
-        (9, does_not_raise()),
+        (
+            9,
+            pytest.raises(
+                ValueError,
+                match=r"only_rotate_len_k=9 is out of range; must be 0 < k <= 2\*num_qubits",
+            ),
+        ),
         (8, does_not_raise()),
     ],
 )
@@ -155,7 +164,10 @@ def test_only_rotate_len_k_errors_majorana(only_rotate_len_k, err, method_name):
     # MajoranaPropagator has no qubit count, so only the k > 0 half of the check applies.
     mp = MajoranaPropagator(MajoranaOperator({}, 4), [], cutoff=6, schrodinger_cutoff=8)
     with err:
-        getattr(mp, method_name)(Circuit(), only_rotate_len_k=only_rotate_len_k)
+        getattr(mp, method_name)(
+            Circuit((), initial_state=(), system_size=4),
+            only_rotate_len_k=only_rotate_len_k,
+        )
 
 
 @pytest.mark.parametrize(
@@ -190,4 +202,7 @@ def test_only_rotate_len_k_errors_majorana(only_rotate_len_k, err, method_name):
 def test_only_rotate_len_k_errors_pauli(only_rotate_len_k, err, method_name):
     mp = PauliPropagator(PauliOperator({}, 4), [], cutoff=6, schrodinger_cutoff=8)
     with err:
-        getattr(mp, method_name)(Circuit(), only_rotate_len_k=only_rotate_len_k)
+        getattr(mp, method_name)(
+            Circuit((), initial_state=(), system_size=4),
+            only_rotate_len_k=only_rotate_len_k,
+        )

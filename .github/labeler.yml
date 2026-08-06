@@ -1,0 +1,40 @@
+cpp:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "cpp/**"
+      - "*.cmake"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+
+python:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "src/**"
+      - "tests/**"
+      - "*.py"
+
+documentation:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "docs/**"
+      - "*.md"
+      - "*.mdx"
+      - "*.rst"
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file:
+      - ".github/**"
+      - "justfile"
+
+dependencies:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/dependabot.yml"
+
+tools:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "tools/**"
