@@ -53,7 +53,7 @@ inline auto is_binary_phase(int value) -> bool {
     return value == -1 || value == 1;
 }
 
-auto make_packed_phase_storage(size_t count, bool use_binary_phases) -> PackedPhaseStorage; 
+auto make_packed_phase_storage(size_t count, bool use_binary_phases) -> PackedPhaseStorage;
 
 auto packed_phase_storage_bytes(const PackedPhaseStorage &storage) -> size_t;
 
