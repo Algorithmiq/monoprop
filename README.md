@@ -82,9 +82,6 @@ print(mp.evolved_operator())  # the gate splits Z ⊗ Z into two terms
 See the [getting-started guide](https://docs.algorithmiq.fi/monoprop/getting-started.html)
 for fermionic operators and more.
 
-`build_graph` and `propagate` also accept an optional `only_rotate_len_k` gate-application
-length cap. Omitting it or passing `None` leaves gate application unrestricted.
-
 ## Building from source
 
 A from-source build gives you the editable Python bindings and the C++ build tree
