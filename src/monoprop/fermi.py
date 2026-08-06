@@ -22,6 +22,7 @@ import numpy as np
 
 from .conversion_utils import _n_product
 from .majorana import MajoranaOperator
+from .utils import _validate_system_size
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -110,29 +111,35 @@ class FermiOperator:
         self,
         terms: Sequence[FermiString] | Sequence[Sequence[tuple[int, str]]],
         coefficients: Sequence[complex],
-        num_modes: int | None = None,
+        num_modes: int,
     ) -> None:
         """Initialize the fermi operator.
 
         Args:
-            terms: The [FermiString][] terms, or ``(index, '+'/'-')`` sequences to build them.
-            coefficients: One coefficient per term, in the same order.
-            num_modes: Inferred as one past the largest index in ``terms`` when ``None``, which
-                needs at least one term -- pass it explicitly to build an empty operator.
+            terms: List of FermiString objects representing the operator.
+            coefficients: List of coefficients corresponding to the terms.
+            num_modes: Number of modes in the system.
+
+        Raises:
+            TypeError: If ``num_modes`` is not an integer.
+            ValueError: If ``num_modes`` is negative or any index is out of bounds.
         """
         self.terms = [
             t if isinstance(t, FermiString) else FermiString(t) for t in terms
         ]
         self.coefficients = list(coefficients)
-        self.num_modes = (
-            num_modes
-            if num_modes is not None
-            else max((idx for f in self.terms for idx, _ in f.expression)) + 1
-        )
+        self.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
+        for term in self.terms:
+            for idx, _ in term.expression:
+                if idx >= self.num_modes:
+                    raise ValueError(
+                        "Fermi term index out of bounds: "
+                        f"{idx} >= num_modes={self.num_modes}."
+                    )
 
     @classmethod
     def from_dict(
-        cls, terms_dict: dict[tuple[tuple[int, str], ...], complex]
+        cls, terms_dict: dict[tuple[tuple[int, str], ...], complex], num_modes: int
     ) -> FermiOperator:
         """Construct a FermiOperator from a dictionary."""
         terms = []
@@ -140,7 +147,7 @@ class FermiOperator:
         for key, value in terms_dict.items():
             terms.append(FermiString(key))
             coefficients.append(value)
-        return cls(terms=terms, coefficients=coefficients)
+        return cls(terms=terms, coefficients=coefficients, num_modes=num_modes)
 
     def __len__(self) -> int:
         """Number of terms in the operator."""

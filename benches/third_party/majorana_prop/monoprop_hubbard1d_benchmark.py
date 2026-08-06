@@ -179,6 +179,7 @@ def main():
         gates=trotter_gates,
         parameters=trotter_parameters,
         initial_state=intial_state,
+        system_size=num_qubits,
     )
 
     simulator = MajoranaPropagator(

@@ -166,6 +166,7 @@ def make_random_problem(
         majoranas=gen_majoranas,
         gen_coeffs=gen_coeffs,
         param_inds=param_inds,
+        system_size=num_modes,
         parameters=parameters,
         initial_state=[],
     )
@@ -292,7 +293,12 @@ def build_hubbard_problem(
     fermi_gates = [ExpGate(term) for term in _hubbard_fermion_terms(config)]
     parameters = [config.trotter_dt] * len(fermi_gates)
     occupied = _neel_occupied_modes(config.num_sites, config.neel_start_spin)
-    circuit = Circuit(gates=fermi_gates, parameters=parameters, initial_state=occupied)
+    circuit = Circuit(
+        gates=fermi_gates,
+        parameters=parameters,
+        initial_state=occupied,
+        system_size=config.num_qubits,
+    )
 
     observable = FermiOperator(
         terms=[
@@ -524,6 +530,7 @@ def build_kicked_ising_problem(
         gates=tuple(gate for gate, _ in gate_angles),
         parameters=tuple(angle for _, angle in gate_angles),
         initial_state=[],
+        system_size=config.num_qubits,
     )
 
     obs_str = (

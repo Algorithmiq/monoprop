@@ -66,6 +66,7 @@ def test_coeff_trunc(serial_comm):
         parameters=[np.pi / 6],
         gen_coeffs=[1.0],
         param_inds=[0],
+        system_size=n_modes,
     )
     circuit = sequence
 
@@ -150,6 +151,7 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
         parameters=[p],
         gen_coeffs=[1.0],
         param_inds=[0],
+        system_size=n_modes,
     )
     circuit = sequence
 
@@ -188,6 +190,7 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
         parameters=[p],
         gen_coeffs=[1.0],
         param_inds=[0],
+        system_size=n_modes,
     )
     circuit = sequence
 
@@ -237,6 +240,7 @@ def test_graph_size_counts_real_cosine_indices(serial_comm):
             ExpGate(MajoranaOperator({(1, 8, 9, 10): 1.0}, n_modes)),
         ],
         parameters=[0.3, 0.4],
+        system_size=n_modes,
     )
 
     def sized(cutoff: int) -> tuple[int, int]:
