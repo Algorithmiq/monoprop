@@ -171,9 +171,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 "propagator with this circuit's initial state (or via from_circuit)."
             )
 
-    def _validate_and_correct_only_rotate_len_k(
-        self, only_rotate_len_k: int | None
-    ) -> int | None:
+    def _validate_only_rotate_len_k(self, only_rotate_len_k: int | None) -> int | None:
         """Validate ``only_rotate_len_k``.
 
         Must be positive, and at most ``2 * num_qubits`` when the propagator knows its qubit count
@@ -185,11 +183,12 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Returns:
             The validated optional cutoff.
         """
-        if only_rotate_len_k is None:
-            return None
-        if only_rotate_len_k <= 0 or (
-            isinstance(self._num_qubits, int)
-            and only_rotate_len_k > 2 * self._num_qubits
+        if only_rotate_len_k is not None and (
+            only_rotate_len_k <= 0
+            or (
+                isinstance(self._num_qubits, int)
+                and only_rotate_len_k > 2 * self._num_qubits
+            )
         ):
             raise ValueError(
                 f"only_rotate_len_k={only_rotate_len_k} is out of range; must be 0 < k <= 2*num_qubits "
@@ -222,9 +221,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 picture with many free-fermionic (length-2 Majorana) generators.
         """
         self._check_initial_state(circuit)
-        only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
-            only_rotate_len_k
-        )
+        only_rotate_len_k = self._validate_only_rotate_len_k(only_rotate_len_k)
 
         if seed_parameters is not None:
             seed = seed_parameters
@@ -265,9 +262,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
             circuit: Gates to apply, and the angle values to apply them at.
             only_rotate_len_k: See [build_graph][].
         """
-        only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
-            only_rotate_len_k
-        )
+        only_rotate_len_k = self._validate_only_rotate_len_k(only_rotate_len_k)
         self._check_initial_state(circuit)
         gates = self._circuit_gates(circuit)
         num_qubits = self._num_qubits
