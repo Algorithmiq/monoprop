@@ -212,12 +212,12 @@ BOOST_AUTO_TEST_CASE(shm_comm_post_flat_alltoallv_flat_buffers) {
             rd[static_cast<size_t>(i)] = i;
         }
         std::vector<int> out(static_cast<size_t>(S), -1);
-        auto ticket = monoprop::mpi::post_flat_alltoallv<int>(send.data(),
-                                                              sc.data(),
-                                                              sd.data(),
-                                                              out.data(),
-                                                              rc.data(),
-                                                              rd.data(),
+        auto ticket = monoprop::mpi::post_flat_alltoallv<int>({.send = send.data(),
+                                                               .send_counts = sc.data(),
+                                                               .send_displs = sd.data(),
+                                                               .recv = out.data(),
+                                                               .recv_counts = rc.data(),
+                                                               .recv_displs = rd.data()},
                                                               S,
                                                               c);
         ticket.wait();
@@ -259,7 +259,13 @@ BOOST_AUTO_TEST_CASE(shm_comm_alltoallv_resolve_fused) {
                     }
                     off += my_len;
                 }
-                sh.alltoallv_resolve<int>(r, send.data(), sc.data(), sd.data(), recv, rc.data(), rd.data());
+                sh.alltoallv_resolve<int>(r,
+                                          {.send = send.data(),
+                                           .send_counts = sc.data(),
+                                           .send_displs = sd.data(),
+                                           .recv = recv,
+                                           .recv_counts = rc.data(),
+                                           .recv_displs = rd.data()});
                 int expected_total = 0;
                 for (int s = 0; s < S; ++s) {
                     const int len = len_of(s); // s sends me exactly len(s) (same block to every target)

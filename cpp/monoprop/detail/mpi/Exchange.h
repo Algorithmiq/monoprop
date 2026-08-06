@@ -107,51 +107,45 @@ private:
 // (MPI_Ialltoallv) in an MPI build (the Ticket completes it); non-MPI build does a per-rank self-copy
 // (recv layout == send layout).
 template <class T>
-inline auto post_flat_alltoallv(const T *send,
-                                const int *send_counts,
-                                const int *send_displs,
-                                T *recv,
-                                const int *recv_counts,
-                                const int *recv_displs,
-                                int num_ranks,
-                                Comm comm) -> Ticket {
+inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks, Comm comm) -> Ticket {
+    // The in-process transports address the buffers as raw bytes; MPI_Ialltoallv below still takes the
+    // typed pointers plus a datatype. Offsets stay in elements on both paths.
     if (comm.kind == Comm::Kind::Shm) {
-        // Synchronous: the transfer completes here, so the Ticket's wait() is a no-op.
-        comm.shm->alltoallv(comm.shm_rank, send, send_displs, recv, recv_counts, recv_displs, sizeof(T));
+        // Synchronous: the transfer completes here, so the Ticket's wait() is a no-op. ShmComm needs no
+        // send counts: its peers pull using the publisher's displacements.
+        const auto bytes = args.bytes();
+        comm.shm->alltoallv(comm.shm_rank,
+                            bytes.send,
+                            bytes.send_displs,
+                            bytes.recv,
+                            bytes.recv_counts,
+                            bytes.recv_displs,
+                            bytes.elem);
         return Ticket{};
     }
 #ifdef monoprop_ENABLE_MPI
     if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv(comm.shm_rank,
-                            send,
-                            send_counts,
-                            send_displs,
-                            recv,
-                            recv_counts,
-                            recv_displs,
-                            sizeof(T),
-                            datatype<T>::get());
+        comm.hyb->alltoallv(comm.shm_rank, args.bytes(), datatype<T>::get());
         return Ticket{};
     }
     (void)num_ranks;
-    MPI_Request request = MPI_REQUEST_NULL;
-    MPI_Ialltoallv(send,
-                   send_counts,
-                   send_displs,
+    auto request = MPI_REQUEST_NULL;
+    MPI_Ialltoallv(args.send,
+                   args.send_counts,
+                   args.send_displs,
                    datatype<T>::get(),
-                   recv,
-                   recv_counts,
-                   recv_displs,
+                   args.recv,
+                   args.recv_counts,
+                   args.recv_displs,
                    datatype<T>::get(),
                    comm.mpi,
                    &request);
     return Ticket(request);
 #else
-    (void)send_counts;
     for (int i = 0; i < num_ranks; ++i) {
-        const int c = recv_counts[i];
+        const int c = args.recv_counts[i];
         for (int j = 0; j < c; ++j) {
-            recv[recv_displs[i] + j] = send[send_displs[i] + j];
+            args.recv[args.recv_displs[i] + j] = args.send[args.send_displs[i] + j];
         }
     }
     return Ticket{};

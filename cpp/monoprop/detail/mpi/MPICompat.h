@@ -120,7 +120,7 @@ inline auto rank(const Comm &comm) -> int {
     }
     int r = 0;
     if (MPI_Comm_rank(comm.mpi, &r) != MPI_SUCCESS) {
-        throw std::runtime_error("MPI_Comm_rank failed");
+        throw CollectiveArgumentError("MPI_Comm_rank failed");
     }
     return r;
 #else
@@ -138,7 +138,7 @@ inline auto size(const Comm &comm) -> int {
     }
     int s = 0;
     if (MPI_Comm_size(comm.mpi, &s) != MPI_SUCCESS) {
-        throw std::runtime_error("MPI_Comm_size failed");
+        throw CollectiveArgumentError("MPI_Comm_size failed");
     }
     return s;
 #else
@@ -281,30 +281,22 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
 
     h.recv_counts.resize(static_cast<size_t>(num_ranks));
 
+    const AlltoallvResolveArgs<T> resolve_args{.send = h.send_buffer.data(),
+                                               .send_counts = h.send_counts.data(),
+                                               .send_displs = h.send_displs.data(),
+                                               .recv = h.recv_buffer,
+                                               .recv_counts = h.recv_counts.data(),
+                                               .recv_displs = h.recv_displs.data()};
     // Fused fast path (query round, recv layout unknown): resolve recv counts AND move payload in one
     // in-process verb, folding away the count exchange's barriers (Shm 4→2, Hybrid 6→4). It fills
     // recv_counts/recv_displs and resizes recv_buffer; known-layout and pure-MPI paths fall through.
     if (known_recv_counts == nullptr && comm.kind == Comm::Kind::Shm) {
-        comm.shm->alltoallv_resolve<T>(comm.shm_rank,
-                                       h.send_buffer.data(),
-                                       h.send_counts.data(),
-                                       h.send_displs.data(),
-                                       h.recv_buffer,
-                                       h.recv_counts.data(),
-                                       h.recv_displs.data());
+        comm.shm->alltoallv_resolve<T>(comm.shm_rank, resolve_args);
         return h;
     }
 #ifdef monoprop_ENABLE_MPI
     if (known_recv_counts == nullptr && comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv_resolve<T>(comm.shm_rank,
-                                       h.send_buffer.data(),
-                                       h.send_counts.data(),
-                                       h.send_displs.data(),
-                                       h.recv_buffer,
-                                       h.recv_counts.data(),
-                                       h.recv_displs.data(),
-                                       sizeof(T),
-                                       datatype<T>::get());
+        comm.hyb->alltoallv_resolve<T>(comm.shm_rank, resolve_args, datatype<T>::get());
         return h;
     }
 #endif
@@ -330,26 +322,27 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     }
     h.recv_buffer.resize(static_cast<size_t>(checked_mpi_count(running, "Total recv count")));
 
+    // Taken after the resize above: recv_buffer may have reallocated.
+    const auto flat = FlatAlltoallvArgs<T>{.send = h.send_buffer.data(),
+                                           .send_counts = h.send_counts.data(),
+                                           .send_displs = h.send_displs.data(),
+                                           .recv = h.recv_buffer.data(),
+                                           .recv_counts = h.recv_counts.data(),
+                                           .recv_displs = h.recv_displs.data()}
+                          .bytes();
     if (comm.kind == Comm::Kind::Shm) {
+        // ShmComm needs no send counts: its peers pull using the publisher's displacements.
         comm.shm->alltoallv(comm.shm_rank,
-                            h.send_buffer.data(),
-                            h.send_displs.data(),
-                            h.recv_buffer.data(),
-                            h.recv_counts.data(),
-                            h.recv_displs.data(),
-                            sizeof(T));
+                            flat.send,
+                            flat.send_displs,
+                            flat.recv,
+                            flat.recv_counts,
+                            flat.recv_displs,
+                            flat.elem);
     }
 #ifdef monoprop_ENABLE_MPI
     else if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv(comm.shm_rank,
-                            h.send_buffer.data(),
-                            h.send_counts.data(),
-                            h.send_displs.data(),
-                            h.recv_buffer.data(),
-                            h.recv_counts.data(),
-                            h.recv_displs.data(),
-                            sizeof(T),
-                            datatype<T>::get());
+        comm.hyb->alltoallv(comm.shm_rank, flat, datatype<T>::get());
     }
 #endif
     else {
