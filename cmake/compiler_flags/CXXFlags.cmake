@@ -101,24 +101,63 @@ function(_monoprop_query_machine_flags)
     set(_march_args "-march=${_arg_MARCH}")
   endif()
 
-  # Report the machine-dependent flags GCC uses for each target variant by
-  # querying `gcc -march=<arch> -Q --help=target` and cleaning the output with
-  # tools/gcc-target-help-clean.py.
-  execute_process(
-    COMMAND
-      ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
-    COMMAND
-      ${Python_EXECUTABLE}
-      "${PROJECT_SOURCE_DIR}/tools/gcc-target-help-clean.py"
-    OUTPUT_VARIABLE _flags
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    RESULT_VARIABLE _result
-  )
-  if(NOT _result EQUAL 0)
-    message(
-      FATAL_ERROR
-      "Failed to query machine-dependent flags for '${_arg_MARCH}' (exit code ${_result})"
+  if(CMAKE_CXX_COMPILER_ID STREQUAL AppleClang)
+    # AppleClang does not support `-Q --help=target`. Query the driver with
+    # `-###` and normalize CPU/march flags from the reported invocation.
+    execute_process(
+      COMMAND
+        # gersemi: off
+        ${CMAKE_CXX_COMPILER} ${_march_args} -### -x c++ -c /dev/null
+      # gersemi: on
+      ERROR_VARIABLE _query_output
+      ERROR_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE _query_result
     )
+    if(NOT _query_result EQUAL 0)
+      message(
+        WARNING
+        "Failed to query machine-dependent flags for '${_arg_MARCH}' with AppleClang (exit code ${_query_result}). Continuing with empty machine flags."
+      )
+      set(_flags "")
+    else()
+      execute_process(
+        COMMAND
+          ${CMAKE_COMMAND} -E echo "${_query_output}"
+        COMMAND
+          ${Python_EXECUTABLE}
+          "${PROJECT_SOURCE_DIR}/tools/clang-target-help-clean.py"
+        OUTPUT_VARIABLE _flags
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _parse_result
+      )
+      if(NOT _parse_result EQUAL 0)
+        message(
+          WARNING
+          "Failed to parse AppleClang machine-dependent flags for '${_arg_MARCH}' (exit code ${_parse_result}). Continuing with empty machine flags."
+        )
+        set(_flags "")
+      endif()
+    endif()
+  else()
+    # Report the machine-dependent flags GCC uses for each target variant by
+    # querying `gcc -march=<arch> -Q --help=target` and cleaning the output
+    # with tools/gcc-target-help-clean.py.
+    execute_process(
+      COMMAND
+        ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
+      COMMAND
+        ${Python_EXECUTABLE}
+        "${PROJECT_SOURCE_DIR}/tools/gcc-target-help-clean.py"
+      OUTPUT_VARIABLE _flags
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE _result
+    )
+    if(NOT _result EQUAL 0)
+      message(
+        FATAL_ERROR
+        "Failed to query machine-dependent flags for '${_arg_MARCH}' (exit code ${_result})"
+      )
+    endif()
   endif()
   set(${_arg_OUTPUT_VARIABLE} "${_flags}" PARENT_SCOPE)
 endfunction()
