@@ -47,11 +47,11 @@
     }
 
 namespace monoprop {
-[[using gnu: target("default")]] consteval auto variant() noexcept -> std::string_view {
+consteval auto variant() noexcept -> std::string_view {
     return "default";
 }
 
-[[using gnu: target("default")]] consteval auto variant_flags() noexcept -> std::string_view {
+consteval auto variant_flags() noexcept -> std::string_view {
     return "@monoprop_DEFAULT_VARIANT_FLAGS@";
 }
 
