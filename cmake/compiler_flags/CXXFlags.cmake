@@ -110,7 +110,6 @@ function(_monoprop_query_machine_flags)
       ERROR_VARIABLE _query_output
       ERROR_STRIP_TRAILING_WHITESPACE
       RESULT_VARIABLE _query_result
-      COMMAND_ECHO STDERR
     )
     if(NOT _query_result EQUAL 0)
       message(
@@ -128,7 +127,6 @@ function(_monoprop_query_machine_flags)
         OUTPUT_VARIABLE _flags
         OUTPUT_STRIP_TRAILING_WHITESPACE
         RESULT_VARIABLE _parse_result
-        COMMAND_ECHO STDERR
       )
       if(NOT _parse_result EQUAL 0)
         message(
@@ -148,7 +146,6 @@ function(_monoprop_query_machine_flags)
       OUTPUT_VARIABLE _flags
       OUTPUT_STRIP_TRAILING_WHITESPACE
       RESULT_VARIABLE _result
-      COMMAND_ECHO STDERR
     )
     if(NOT _result EQUAL 0)
       message(
