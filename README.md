@@ -105,6 +105,8 @@ ctest --test-dir build/editable/Release
 
 Full instructions — prerequisites, MPI options, and running the example
 executable — are in the [building guide](https://docs.algorithmiq.fi/monoprop/docs/building).
+In particular, from-source builds require `hwloc` and `pkg-config` so CMake can
+locate `hwloc`.
 
 ## Running the tests
 
