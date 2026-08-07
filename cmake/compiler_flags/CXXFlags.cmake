@@ -105,11 +105,12 @@ function(_monoprop_query_machine_flags)
     execute_process(
       COMMAND
         # gersemi: off
-        ${CMAKE_CXX_COMPILER} ${_march_args} -### -x c++ -c /dev/null
+        ${CMAKE_CXX_COMPILER} ${_march_args} -\#\#\# -x c++ -c /dev/null
       # gersemi: on
       ERROR_VARIABLE _query_output
       ERROR_STRIP_TRAILING_WHITESPACE
       RESULT_VARIABLE _query_result
+      COMMAND_ECHO STDERR
     )
     message(
       STATUS
@@ -127,10 +128,11 @@ function(_monoprop_query_machine_flags)
           ${CMAKE_COMMAND} -E echo "${_query_output}"
         COMMAND
           ${Python_EXECUTABLE}
-          "${PROJECT_SOURCE_DIR}/tools/clang-target-help-clean.py"
+          "${PROJECT_SOURCE_DIR}/tools/target-help-clean.py" --mode clang
         OUTPUT_VARIABLE _flags
         OUTPUT_STRIP_TRAILING_WHITESPACE
         RESULT_VARIABLE _parse_result
+        COMMAND_ECHO STDERR
       )
       if(NOT _parse_result EQUAL 0)
         message(
@@ -147,17 +149,19 @@ function(_monoprop_query_machine_flags)
       OUTPUT_VARIABLE _foo
       OUTPUT_STRIP_TRAILING_WHITESPACE
       RESULT_VARIABLE _result
+      COMMAND_ECHO STDERR
     )
     message(STATUS "_foo : ${_foo}\n_result : ${_result}")
     execute_process(
       COMMAND
         ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
       COMMAND
-        ${Python_EXECUTABLE}
-        "${PROJECT_SOURCE_DIR}/tools/gcc-target-help-clean.py"
+        ${Python_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tools/target-help-clean.py"
+        --mode gcc
       OUTPUT_VARIABLE _flags
       OUTPUT_STRIP_TRAILING_WHITESPACE
       RESULT_VARIABLE _result
+      COMMAND_ECHO STDERR
     )
     if(NOT _result EQUAL 0)
       message(
