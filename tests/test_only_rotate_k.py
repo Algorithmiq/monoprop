@@ -45,6 +45,58 @@ def _split_orbital_gates(gates):
     return gates, []
 
 
+@pytest.mark.parametrize(
+    ("propagator_cls", "operator", "gate_generator", "system_size"),
+    [
+        (
+            MajoranaPropagator,
+            MajoranaOperator({(0,): 1.0}, num_modes=1),
+            MajoranaOperator({(0, 1): 1.0j}, num_modes=1),
+            1,
+        ),
+        (
+            PauliPropagator,
+            PauliOperator({"Z": 1.0}, num_qubits=1),
+            PauliOperator({"X": 1.0}, num_qubits=1),
+            1,
+        ),
+    ],
+)
+def test_only_rotate_len_k_none_is_uncapped(
+    propagator_cls, operator, gate_generator, system_size, serial_mp_kwargs
+):
+    circuit = Circuit(
+        (ExpGate(gate_generator, index=0),),
+        initial_state=(),
+        system_size=system_size,
+        parameters=(0.321,),
+    )
+    parameters = circuit.parameters
+
+    mp_default = propagator_cls(operator, circuit.initial_state, **serial_mp_kwargs)
+    mp_default.build_graph(circuit)
+    expval_default = mp_default.expval_functional()(parameters)
+
+    mp_none = propagator_cls(operator, circuit.initial_state, **serial_mp_kwargs)
+    mp_none.build_graph(circuit, only_rotate_len_k=None)
+    expval_none = mp_none.expval_functional()(parameters)
+
+    assert mp_none.graph_size() == mp_default.graph_size()
+    assert mp_none.size() == mp_default.size()
+    assert np.isclose(expval_none, expval_default, atol=1e-12)
+
+    mp_default = propagator_cls(operator, circuit.initial_state, **serial_mp_kwargs)
+    mp_default.propagate(circuit)
+    expval_default = mp_default.expval()
+
+    mp_none = propagator_cls(operator, circuit.initial_state, **serial_mp_kwargs)
+    mp_none.propagate(circuit, only_rotate_len_k=None)
+    expval_none = mp_none.expval()
+
+    assert mp_none.size() == mp_default.size()
+    assert np.isclose(expval_none, expval_default, atol=1e-12)
+
+
 def test_basic_orbital_rotation(serial_comm):
     n_modes = 4
 
@@ -148,6 +200,7 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
                 match=r"only_rotate_len_k=0 is out of range; must be 0 < k <= 2\*num_qubits",
             ),
         ),
+        (None, does_not_raise()),
         (
             9,
             pytest.raises(
@@ -186,6 +239,7 @@ def test_only_rotate_len_k_errors_majorana(only_rotate_len_k, err, method_name):
                 match=r"only_rotate_len_k=0 is out of range; must be 0 < k <= 2\*num_qubits",
             ),
         ),
+        (None, does_not_raise()),
         (
             9,
             pytest.raises(
