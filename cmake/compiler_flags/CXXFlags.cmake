@@ -112,10 +112,6 @@ function(_monoprop_query_machine_flags)
       RESULT_VARIABLE _query_result
       COMMAND_ECHO STDERR
     )
-    message(
-      STATUS
-      "_query_output : ${_query_output}\n_query_result : ${_query_result}"
-    )
     if(NOT _query_result EQUAL 0)
       message(
         WARNING
@@ -143,15 +139,6 @@ function(_monoprop_query_machine_flags)
       endif()
     endif()
   else()
-    execute_process(
-      COMMAND
-        ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
-      OUTPUT_VARIABLE _foo
-      OUTPUT_STRIP_TRAILING_WHITESPACE
-      RESULT_VARIABLE _result
-      COMMAND_ECHO STDERR
-    )
-    message(STATUS "_foo : ${_foo}\n_result : ${_result}")
     execute_process(
       COMMAND
         ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
