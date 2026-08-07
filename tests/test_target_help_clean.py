@@ -1,0 +1,241 @@
+# Copyright 2026 Algorithmiq
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for the unified compiler target-help cleaner."""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+_MODULE_PATH = Path(__file__).parents[1] / "tools" / "target-help-clean.py"
+_spec = importlib.util.spec_from_file_location("target_help_clean", _MODULE_PATH)
+assert _spec is not None
+assert _spec.loader is not None
+_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_module)
+
+clean_clang_target_help = _module.clean_clang_target_help
+clean_gcc_target_help = _module.clean_gcc_target_help
+clean_target_help = _module.clean_target_help
+
+
+def _wrap_gcc(
+    body: str,
+    trailer: str = "Known assembler dialects (for use with the -masm= option):",
+) -> str:
+    return (
+        "The following options are target specific:\n"
+        f"{body}\n"
+        "\n"
+        f"  {trailer}\n"
+        "    att intel\n"
+    )
+
+
+def test_dispatches_gcc_mode() -> None:
+    text = _wrap_gcc("  -m64                        \t\t[enabled]")
+    assert clean_target_help(text, mode="gcc") == "-m64"
+
+
+def test_dispatches_clang_mode() -> None:
+    text = (
+        "Apple clang version 16.0.0\n"
+        "Target: arm64-apple-darwin\n"
+        ' "/usr/bin/clang++" "-cc1" "-target-cpu" "apple-m4" '
+        '"-target-feature" "+neon"\n'
+    )
+    assert (
+        clean_target_help(text, mode="clang")
+        == "-target-cpu=apple-m4 -target-feature=+neon"
+    )
+
+
+def test_gcc_enabled_keeps_only_name() -> None:
+    text = _wrap_gcc("  -m64                        \t\t[enabled]")
+    assert clean_gcc_target_help(text) == "-m64"
+
+
+def test_gcc_disabled_is_dropped() -> None:
+    text = _wrap_gcc("  -m16                        \t\t[disabled]")
+    assert clean_gcc_target_help(text) == ""
+
+
+def test_gcc_equals_joins_with_value() -> None:
+    text = _wrap_gcc("  -mabi=                      \t\tsysv")
+    assert clean_gcc_target_help(text) == "-mabi=sysv"
+
+
+def test_gcc_equals_empty_value_is_dropped() -> None:
+    text = _wrap_gcc("  -mcpu=                      \t\t")
+    assert clean_gcc_target_help(text) == ""
+
+
+def test_gcc_equals_default_value_is_dropped() -> None:
+    text = _wrap_gcc("  -mcmodel=                   \t\t[default]")
+    assert clean_gcc_target_help(text) == ""
+
+
+def test_gcc_alias_line_keeps_both_fields() -> None:
+    text = _wrap_gcc("  -msse5                      \t\t-mavx")
+    assert clean_gcc_target_help(text) == "-msse5 -mavx"
+
+
+def test_gcc_range_hint_is_stripped() -> None:
+    text = _wrap_gcc("  -mbranch-cost=<0,5>         \t\t3")
+    assert clean_gcc_target_help(text) == "-mbranch-cost=3"
+
+
+def test_gcc_only_target_section_is_used() -> None:
+    text = (
+        "-mignored-before                \t\t[enabled]\n"
+        "The following options are target specific:\n"
+        "  -m64                        \t\t[enabled]\n"
+        "\n"
+        "  Known assembler dialects (for use with the -masm= option):\n"
+        "  -mignored-after                 \t\t[enabled]\n"
+    )
+    assert clean_gcc_target_help(text) == "-m64"
+
+
+def test_gcc_blank_line_terminates_section_for_aarch64_trailer() -> None:
+    text = _wrap_gcc(
+        "  -mabi=                      \t\tilp32\n"
+        "  -mstrict-align              \t\t[enabled]",
+        trailer="Known AArch64 ABIs (for use with the -mabi= option):",
+    )
+    assert clean_gcc_target_help(text) == "-mabi=ilp32 -mstrict-align"
+
+
+def test_gcc_trailer_content_after_blank_line_is_ignored() -> None:
+    text = (
+        "The following options are target specific:\n"
+        "  -m64                        \t\t[enabled]\n"
+        "\n"
+        "  Known AArch64 ABIs (for use with the -mabi= option):\n"
+        "  -mabi=                      \t\tilp32\n"
+    )
+    assert clean_gcc_target_help(text) == "-m64"
+
+
+def test_gcc_missing_start_marker_returns_empty() -> None:
+    assert clean_gcc_target_help("nothing relevant here") == ""
+
+
+def test_gcc_multiple_entries_joined_by_space() -> None:
+    text = _wrap_gcc(
+        "  -m64                        \t\t[enabled]\n"
+        "  -m16                        \t\t[disabled]\n"
+        "  -mabi=                      \t\tsysv\n"
+        "  -msse5                      \t\t-mavx"
+    )
+    assert clean_gcc_target_help(text) == "-m64 -mabi=sysv -msse5 -mavx"
+
+
+def test_gcc_x86_64_reference_output_shapes() -> None:
+    text = _wrap_gcc(
+        "  -m128bit-long-double        \t\t[enabled]\n"
+        "  -m16                        \t\t[disabled]\n"
+        "  -mabi=                      \t\tsysv\n"
+        "  -mavx10.1-512               \t\t-mavx10.1\n"
+        "  -mbranch-cost=<0,5>         \t\t3\n"
+        "  -mcmodel=                   \t\t[default]\n"
+        "  -mcpu=\n"
+        "  -mlarge-data-threshold=<number> \t65536"
+    )
+    assert clean_gcc_target_help(text) == (
+        "-m128bit-long-double -mabi=sysv -mavx10.1-512 -mavx10.1 "
+        "-mbranch-cost=3 -mlarge-data-threshold=65536"
+    )
+
+
+def test_gcc_aarch64_reference_output_shapes() -> None:
+    text = _wrap_gcc(
+        "  -mabi=                                lp64\n"
+        "  -mbranch-protection=\n"
+        "  -mearly-ldp-fusion                    [enabled]\n"
+        "  -moverride=<string>\n"
+        "  -mstrict-align                        [disabled]\n"
+        "  -msve-vector-bits=<number>            scalable",
+        trailer="Known AArch64 ABIs (for use with the -mabi= option):",
+    )
+    assert clean_gcc_target_help(text) == (
+        "-mabi=lp64 -mearly-ldp-fusion -msve-vector-bits=scalable"
+    )
+
+
+def test_clang_target_cpu_and_feature_are_emitted() -> None:
+    text = (
+        "Apple clang version 16.0.0\n"
+        "Target: arm64-apple-darwin\n"
+        ' "/usr/bin/clang++" "-cc1" "-triple" "arm64-apple-macosx14.0.0" '
+        '"-target-cpu" "apple-m4" "-target-feature" "+neon"\n'
+    )
+    assert clean_clang_target_help(text) == "-target-cpu=apple-m4 -target-feature=+neon"
+
+
+def test_clang_only_selected_m_flags_are_kept() -> None:
+    text = (
+        ' "/usr/bin/clang++" "-cc1" "-mframe-pointer=non-leaf" '
+        '"-march=armv8.6-a" "-mtune=apple-m4" "-mllvm" "-something"\n'
+    )
+    assert clean_clang_target_help(text) == "-march=armv8.6-a -mtune=apple-m4"
+
+
+def test_clang_spaced_flag_forms_are_normalized() -> None:
+    text = "-mcpu apple-m3 -mtune generic -march native -target-feature +crc"
+    assert (
+        clean_clang_target_help(text)
+        == "-mcpu=apple-m3 -mtune=generic -march=native -target-feature=+crc"
+    )
+
+
+def test_clang_duplicates_are_removed_preserving_order() -> None:
+    text = (
+        "-march=native -target-cpu apple-m3 -target-feature +neon "
+        "-target-feature +neon -march=native"
+    )
+    assert (
+        clean_clang_target_help(text)
+        == "-march=native -target-cpu=apple-m3 -target-feature=+neon"
+    )
+
+
+def test_clang_realistic_appleclang_output_shape() -> None:
+    text = (
+        "Apple clang version 21.0.0 (clang-2100.0.123.102)\n"
+        "Target: arm64-apple-darwin25.3.0\n"
+        "Thread model: posix\n"
+        '\N{NO-BREAK SPACE}"/Library/Developer/CommandLineTools/usr/bin/clang" '
+        '"-cc1" "-mframe-pointer=non-leaf" '
+        '"-target-cpu" "apple-m1" '
+        '"-target-feature" "+v8.5a" '
+        '"-target-feature" "+dotprod" '
+        '"-target-feature" "+neon"\n'
+        '"-target-feature" "+sb" "-target-abi" "darwinpcs"\n'
+    )
+    assert (
+        clean_clang_target_help(text) == "-target-cpu=apple-m1 -target-feature=+v8.5a "
+        "-target-feature=+dotprod -target-feature=+neon -target-feature=+sb"
+    )
+
+
+def test_clang_trailing_pair_flag_without_value_is_ignored() -> None:
+    assert clean_clang_target_help("-target-cpu apple-m1 -target-feature") == (
+        "-target-cpu=apple-m1"
+    )
+
+
+def test_clang_empty_input_returns_empty() -> None:
+    assert clean_clang_target_help("") == ""
