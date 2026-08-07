@@ -102,8 +102,6 @@ function(_monoprop_query_machine_flags)
   endif()
 
   if(CMAKE_CXX_COMPILER_ID STREQUAL AppleClang)
-    # AppleClang does not support `-Q --help=target`. Query the driver with
-    # `-###` and normalize CPU/march flags from the reported invocation.
     execute_process(
       COMMAND
         # gersemi: off
@@ -112,6 +110,10 @@ function(_monoprop_query_machine_flags)
       ERROR_VARIABLE _query_output
       ERROR_STRIP_TRAILING_WHITESPACE
       RESULT_VARIABLE _query_result
+    )
+    message(
+      STATUS
+      "_query_output : ${_query_output}\n_query_result : ${_query_result}"
     )
     if(NOT _query_result EQUAL 0)
       message(
@@ -139,9 +141,14 @@ function(_monoprop_query_machine_flags)
       endif()
     endif()
   else()
-    # Report the machine-dependent flags GCC uses for each target variant by
-    # querying `gcc -march=<arch> -Q --help=target` and cleaning the output
-    # with tools/gcc-target-help-clean.py.
+    execute_process(
+      COMMAND
+        ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
+      OUTPUT_VARIABLE _foo
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE _result
+    )
+    message(STATUS "_foo : ${_foo}\n_result : ${_result}")
     execute_process(
       COMMAND
         ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
