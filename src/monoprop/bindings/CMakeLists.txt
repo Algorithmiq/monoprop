@@ -133,6 +133,27 @@ COMMAND_ERROR_IS_FATAL ANY
 )"
 )
 
+if(APPLE)
+  set(_rpath "@loader_path/${CMAKE_INSTALL_LIBDIR}")
+else()
+  set(_rpath "\$ORIGIN/${CMAKE_INSTALL_LIBDIR}")
+endif()
+
+set_target_properties(
+  _core
+  PROPERTIES
+    MACOSX_RPATH
+      ON
+    SKIP_BUILD_RPATH
+      OFF
+    BUILD_WITH_INSTALL_RPATH
+      OFF
+    INSTALL_RPATH
+      "${_rpath}"
+    INSTALL_RPATH_USE_LINK_PATH
+      ON
+)
+
 install(TARGETS _core LIBRARY DESTINATION ${PROJECT_NAME})
 
 # generation of Python typing stubs

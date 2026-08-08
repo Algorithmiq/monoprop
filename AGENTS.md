@@ -113,6 +113,7 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - **uv**: Package management
 - **Boost**: Used for various utilities (unordered_map, unit tests)
 - **msgpack**: Serialization of the test-data fixtures only (`tests/data/*.msgpack`); consumed by the Python test loaders and the C++ test suite, not by the shipped library
+- **hwloc**: CPU topology discovery and thread binding for partition placement (`CpuTopology.cpp`). Required system library (`libhwloc-dev` on Debian/Ubuntu, `hwloc` on Homebrew). Requires `pkg-config` so CMake can locate `hwloc`. Bundled into wheels automatically by auditwheel/delocate.
 - **MPI**: For distributed parallelization
 
 ## Common Tasks
