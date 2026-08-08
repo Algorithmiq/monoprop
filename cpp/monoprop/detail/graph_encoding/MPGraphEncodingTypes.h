@@ -17,11 +17,8 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <limits>
 #include <optional>
-#include <stdexcept>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -43,46 +40,16 @@ struct LayerExchangeLayout final {
 
 namespace monoprop::detail {
 
-inline auto checked_mpi_int(size_t value, const char *what) -> int {
-    if (value > static_cast<size_t>(std::numeric_limits<int>::max())) {
-        throw std::overflow_error(
-            std::format("{} {} exceeds the MPI int limit {}.", what, value, std::numeric_limits<int>::max()));
-    }
-    return static_cast<int>(value);
-}
+auto checked_mpi_int(size_t value, const char *what) -> int;
 
 // Per-rank MPI counts = send_counts[r] * scale, with prefix-sum displacements. send_counts is full-width
 // (size_t) so checked_mpi_int catches the narrowing to MPI's int.
-inline auto build_layer_exchange_layout(const std::vector<size_t> &send_counts,
-                                        int scale,
-                                        const char *what = "Layer exchange") -> LayerExchangeLayout {
-    const std::string count_label = std::format("{} count", what);
-    const std::string displacement_label = std::format("{} displacement", what);
-
-    LayerExchangeLayout layout;
-    layout.counts.resize(send_counts.size());
-    layout.displs.resize(send_counts.size());
-    size_t total = 0;
-    for (size_t r = 0; r < send_counts.size(); ++r) {
-        const size_t count = static_cast<size_t>(scale) * send_counts[r];
-        layout.counts[r] = checked_mpi_int(count, count_label.c_str());
-        layout.displs[r] = checked_mpi_int(total, displacement_label.c_str());
-        total += count;
-    }
-    layout.total_count = total;
-    return layout;
-}
+auto build_layer_exchange_layout(const std::vector<size_t> &send_counts, int scale, const char *what = "Layer exchange")
+    -> LayerExchangeLayout;
 
 // The derivative layout is the evolution layout at 2x (each rotation endpoint carries both the op and
 // state payload).
-inline auto build_derivative_exchange_layout(const LayerExchangeLayout &evolution) -> LayerExchangeLayout {
-    std::vector<size_t> send_counts;
-    send_counts.reserve(evolution.counts.size());
-    for (const int count : evolution.counts) {
-        send_counts.push_back(static_cast<size_t>(count));
-    }
-    return build_layer_exchange_layout(send_counts, 2, "Layer derivative exchange");
-}
+auto build_derivative_exchange_layout(const LayerExchangeLayout &evolution) -> LayerExchangeLayout;
 
 } // namespace monoprop::detail
 
@@ -196,14 +163,5 @@ struct LayerCore final {
 private:
     mutable std::optional<LayerExchangeLayout> derivative_exchange_layout_cache_;
 };
-
-// Derived lazily (gradient path only), but the 2x overflow check is not deferred with it:
-// build_layer_storage_unified validates it eagerly.
-inline auto LayerCore::derivative_exchange_layout() const -> const LayerExchangeLayout & {
-    if (!derivative_exchange_layout_cache_) {
-        derivative_exchange_layout_cache_ = detail::build_derivative_exchange_layout(evolution_exchange_layout);
-    }
-    return *derivative_exchange_layout_cache_;
-}
 
 } // namespace monoprop

@@ -15,3 +15,5 @@ target_sources(
         "RecvLayout.h"
         "ShmComm.h"
 )
+
+target_sources(monoprop-objs PRIVATE MPICompat.cpp)

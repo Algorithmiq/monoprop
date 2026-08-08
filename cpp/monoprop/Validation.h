@@ -39,4 +39,6 @@ monoprop_EXPORT auto validate_functional_call(const VecD &parameters, size_t exp
 // The graph must still have the layer count the functional was built against.
 monoprop_EXPORT auto validate_expected_graph_layers(size_t current_layers, size_t expected_layers) -> void;
 
+monoprop_EXPORT auto expected_num_params(const VecZ &parameter_mapping) -> size_t;
+
 } // namespace monoprop

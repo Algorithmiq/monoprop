@@ -21,6 +21,7 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -35,7 +36,6 @@
 #include <vector>
 
 #include <boost/unordered/unordered_flat_map.hpp>
-#include <format>
 
 #include "monoprop/Bitset.h"
 #include "monoprop/core/Monomial.h"
@@ -47,6 +47,7 @@ class OperatorIndex;
 }
 
 namespace monoprop {
+inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
 
 // materialize_row() returns a const ref (dense backend, zero-copy) or a fresh value (packed backend),
 // so callers must bind with `const auto&` to extend the temporary's lifetime.
