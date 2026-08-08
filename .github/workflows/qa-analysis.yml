@@ -130,7 +130,7 @@ jobs:
           fail_ci_if_error: true
 
       - name: Upload coverage reports for SonarQube
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-reports
           path: |
@@ -172,7 +172,7 @@ jobs:
           uv sync --no-progress --all-extras -v
 
       - name: Download coverage reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: coverage-reports
 
