@@ -99,9 +99,21 @@ jobs:
         run: |
           uv tree
 
-      - name: Get monoprop version
+      - name: Get monoprop information
         run: |
-          uv run python -c "import monoprop as mp; print(mp.__version__)"
+          uv run python <<'EOF'
+          import pprint
+
+          import monoprop as mp
+
+          pprint.pprint(
+            {
+              "version": mp.__version__,
+              "variant": mp.__variant__,
+              "compiler_flags": mp.__compiler_flags__,
+            }
+          )
+          EOF
 
       - name: Verify that find_package(monoprop) works
         run: |
