@@ -42,13 +42,15 @@ struct IncomingProbe {
     size_t nq_total = 0;
 };
 
-// Phases 1-2, read-only w.r.t. operator contents. QW = per-record stride: the plain query width, or
-// kQueryWordsFused for the fused resolver. The caller runs Phase 3, then insert_incoming_misses.
-template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
+// Phases 1-2, read-only w.r.t. operator contents. query_stride is the per-record width: the plain query
+// width, or kQueryWordsFused for the fused resolver. The caller runs Phase 3, then insert_incoming_misses.
+// NumModes deduces from `op`; the stride is an ordinary argument so it does not have to be named.
+template <size_t NumModes>
 auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                             MPOperator<NumModes> &op,
-                            size_t rank_count) -> IncomingProbe<NumModes> {
-    constexpr size_t W = QW;
+                            size_t rank_count,
+                            size_t query_stride) -> IncomingProbe<NumModes> {
+    const size_t W = query_stride;
     IncomingProbe<NumModes> pr;
 
     pr.goff.assign(rank_count + 1, 0);
@@ -77,7 +79,7 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
         const size_t q = g - pr.goff[s];
         Monomial<NumModes> m;
         int ph = 0;
-        query_read<NumModes, QW>(incoming[s], q, m, ph);
+        query_read(incoming[s], q, query_stride, m, ph);
         pr.mono[g] = m;
         pr.phase_of[g] = ph;
     }
@@ -126,9 +128,10 @@ auto insert_incoming_misses(auto &op, const auto &pr) -> void {
 // with its index/value, absent → insert it in the same round (the resolver is the sole inserter of
 // cross-rank absent terms). Matched-follower marks stay here so both sinks mark byte-identically.
 // op is deduced (MPOperator<NumModes>, an argument type); Sink stays named -- it is referenced by name
-// below (typename Sink::Response, Sink::kStride) and was already deduced from `sink` even before this
-// change (call sites gave only NumModes explicitly). num_modes recovers the value probe_incoming_queries
-// still needs explicitly (its QW default depends on it by name -- see Common.h/Stage 2e).
+// below (typename Sink::Response, Sink::kStride). Nothing here needs a NumModes *value* any more: the
+// record stride reaches probe_incoming_queries as an ordinary argument, so this no longer has to
+// recover one as a constant expression from the store's value_type -- which is what let the store stop
+// exposing a compile-time width at all (Stage 2c).
 template <class Sink>
 auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                       auto &op,
@@ -137,9 +140,8 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
                       MatchedEpochSet &matched,
                       size_t combined_size, // pre-layer op size: bounds the matched set
                       Sink &sink) -> std::vector<std::vector<typename Sink::Response>> {
-    constexpr size_t num_modes = std::remove_cvref_t<decltype(*op.store)>::value_type::size() / 2;
     using Resp = typename Sink::Response;
-    const auto pr = probe_incoming_queries<num_modes, Sink::kStride>(incoming, op, rank_count);
+    const auto pr = probe_incoming_queries(incoming, op, rank_count, Sink::kStride);
     std::vector<std::vector<Resp>> responses(rank_count);
     for (size_t s = 0; s < rank_count; ++s) {
         responses[s].assign(pr.goff[s + 1] - pr.goff[s], Sink::init_response());

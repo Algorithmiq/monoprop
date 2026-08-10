@@ -129,10 +129,16 @@ inline auto query_push(VecZ &buf, const Monomial<NumModes> &mono, int phase) -> 
 }
 
 // The mono + phase words occupy the same leading offsets in the plain and fused record, so readers differ
-// only in the per-record stride QW (defaulted to the plain width).
-template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
-inline auto query_read(const VecZ &buf, size_t q, Monomial<NumModes> &mono_out, int &phase_out) -> void {
-    const size_t base = q * QW;
+// only in the per-record stride: kQueryWords for a plain record, kQueryWordsFused for a fused one.
+//
+// `stride` is an ordinary argument rather than a template parameter (Stage 2c of the
+// NumModes-NTTP-removal plan). It was the last reason a caller had to name NumModes explicitly -- you
+// cannot skip a leading template argument to reach a trailing one -- which forced
+// probe_incoming_queries' callers to recover NumModes as a constant expression from the operator's
+// value_type. NumModes still deduces here, from mono_out.
+template <size_t NumModes>
+inline auto query_read(const VecZ &buf, size_t q, size_t stride, Monomial<NumModes> &mono_out, int &phase_out) -> void {
+    const size_t base = q * stride;
     mono_out = mpi_detail::read_monomial_from_words<NumModes>(buf, base);
     phase_out = decode_phase(buf[base + mpi_detail::kWords<NumModes>]);
 }

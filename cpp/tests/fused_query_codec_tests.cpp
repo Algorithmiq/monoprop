@@ -76,7 +76,7 @@ BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
     for (size_t q = 0; q < nq; ++q) {
         Monomial<kModes> m_out;
         int ph_out = 0;
-        query_read<kModes, kQueryWordsFused<kModes>>(fused, q, m_out, ph_out);
+        query_read(fused, q, kQueryWordsFused<kModes>, m_out, ph_out);
         BOOST_CHECK(m_out == monos[q]);
         BOOST_CHECK_EQUAL(ph_out, phases[q]);
         // Compare the raw payload, so -0.0 and denormals stay distinguished from 0.0.

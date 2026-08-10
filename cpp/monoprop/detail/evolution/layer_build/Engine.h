@@ -479,7 +479,7 @@ private:
                 if (!is_leader_pass && matched.is_marked(src)) {
                     continue; // follower already matched by a leader → not an independent rotation
                 }
-                query_read<NumModes>(lq, q, keys[m], phases[m]);
+                query_read(lq, q, kQueryWords<NumModes>, keys[m], phases[m]);
                 srcs[m] = src;
                 if constexpr (Sink::wants_values) {
                     vals[m] = (*lv)[q];
