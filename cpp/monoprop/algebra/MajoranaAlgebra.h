@@ -132,24 +132,31 @@ auto monomial_from_selector(const std::vector<bool> &selector, size_t inactive_m
     return current;
 }
 
-// All fully paired Majorana monomials with up to max_ones pairs, over the active logical modes only.
-template <size_t NumModes>
-auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialList<NumModes> {
-    MonomialList<NumModes> combinations;
-    // Clamp in pairs, not bits: max_ones counts pairs and bounds the fill over `selector`, one slot per mode.
+// How many monomials for_each_paired_op() yields: Sum_{k<=max_ones} C(logical_num_modes, k). Lets a
+// caller size storage without generating anything first. Saturates rather than reports nonsense only
+// at mode counts whose monomial list could not fit in memory anyway.
+[[nodiscard]] inline auto count_paired_op(size_t max_ones, size_t logical_num_modes) -> size_t {
     max_ones = std::min(max_ones, logical_num_modes);
-
-    // Reserve the exact final count, Sum_{k<=max_ones} C(logical_num_modes, k). Growing geometrically
-    // instead holds the old and new buffers simultaneously at the last reallocation, and this list is
-    // the largest by-value monomial allocation in the library -- Schrodinger at 128 modes / cutoff 6 is
-    // ~11.0M entries, so the transient is multiple GiB. An optimization only: push_back still grows if
-    // the product below saturates at an absurd mode count, which cannot fit in memory regardless.
-    size_t reserve_count = 0;
+    size_t total = 0;
     for (size_t k = 0, binomial = 1; k <= max_ones; ++k) {
-        reserve_count += binomial;
+        total += binomial;
         binomial = binomial * (logical_num_modes - k) / (k + 1);
     }
-    combinations.reserve(reserve_count);
+    return total;
+}
+
+// Every fully paired Majorana monomial with up to max_ones pairs over the active logical modes, one
+// at a time, in the same order generate_paired_op() lists them.
+//
+// A caller that keeps only a subset must use this and not generate_paired_op: the full list is
+// count_paired_op() monomials, which in the Schrodinger picture is the entire term count, and a
+// propagator with S partitions constructs S propagators that would each hold a complete copy at the
+// same moment. Insertion order is load-bearing -- it fixes term indices and hence float accumulation
+// order -- so this yields in exactly the list's order.
+template <size_t NumModes>
+auto for_each_paired_op(size_t max_ones, size_t logical_num_modes, auto &&fn) -> void {
+    // Clamp in pairs, not bits: max_ones counts pairs and bounds the fill over `selector`, one slot per mode.
+    max_ones = std::min(max_ones, logical_num_modes);
 
     auto selector = std::vector(logical_num_modes, false);
     const size_t inactive_mode_prefix = NumModes - logical_num_modes;
@@ -158,13 +165,23 @@ auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialLi
         std::fill(selector.begin(), selector.begin() + num_ones, true);
 
         do {
-            combinations.push_back(monomial_from_selector<NumModes>(selector, inactive_mode_prefix));
+            fn(monomial_from_selector<NumModes>(selector, inactive_mode_prefix));
         }
         while (std::ranges::prev_permutation(selector).found);
 
         std::ranges::fill(selector, false);
     }
+}
 
+// All fully paired Majorana monomials with up to max_ones pairs, over the active logical modes only.
+// Prefer for_each_paired_op() unless the whole list is genuinely needed at once.
+template <size_t NumModes>
+auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialList<NumModes> {
+    MonomialList<NumModes> combinations;
+    combinations.reserve(count_paired_op(max_ones, logical_num_modes));
+    for_each_paired_op<NumModes>(max_ones, logical_num_modes, [&combinations](const auto &mono) {
+        combinations.push_back(mono);
+    });
     return combinations;
 }
 

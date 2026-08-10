@@ -161,9 +161,16 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
 
     auto sc = schrodinger_cutoff.value_or(cutoff + 2);
     sc = std::min(sc, static_cast<unsigned int>(2 * logical_num_modes_));
-    auto op = schrodinger_ ? generate_paired_op<NumModes>(sc / 2 + sc % 2, logical_num_modes_) : local_heisenberg_terms;
 
-    const size_t expected_local_terms = std::max<size_t>(1, op.size() / std::max<size_t>(1, num_ranks));
+    // Schrodinger's initial basis is streamed, not listed: it is the whole term count (~11.0M at 128
+    // modes / cutoff 6), only the ~1/num_ranks share this rank owns is kept, and with S partitions
+    // every one of the S propagators would hold its own complete copy at the same moment. Heisenberg's
+    // list is one entry per owned initial-operator term, so it is already small and stays a list.
+    const size_t max_pairs = sc / 2 + sc % 2;
+    const size_t total_terms =
+        schrodinger_ ? count_paired_op(max_pairs, logical_num_modes_) : local_heisenberg_terms.size();
+
+    const size_t expected_local_terms = std::max<size_t>(1, total_terms / std::max<size_t>(1, num_ranks));
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
     mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
@@ -173,11 +180,18 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
 
     size_t i = 0;
     // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here.
-    for (size_t r = 0; r < op.size(); ++r) {
-        const auto &mono = materialize_row(op, r);
+    const auto insert_if_owned = [&](const auto &mono) {
         if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
             mp_op_.append_term(mono);
             mp_op_.store->emplace(mono, i++);
+        }
+    };
+    if (schrodinger_) {
+        for_each_paired_op<NumModes>(max_pairs, logical_num_modes_, insert_if_owned);
+    }
+    else {
+        for (size_t r = 0; r < local_heisenberg_terms.size(); ++r) {
+            insert_if_owned(materialize_row(local_heisenberg_terms, r));
         }
     }
 
