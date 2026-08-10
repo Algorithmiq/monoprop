@@ -6,7 +6,7 @@
         {
             "label": "Install in Release mode",
             "type": "shell",
-            "command": "uv sync --group dev --group test --group interactive --all-extras -v",
+            "command": "uv sync --all-groups --all-extras -v",
             "problemMatcher": [],
             "group": {
                 "kind": "build",
@@ -16,7 +16,17 @@
         {
             "label": "Install in Debug mode",
             "type": "shell",
-            "command": "uv sync --group dev --group test --group interactive --all-extras -v --config-settings=cmake.build-type='Debug'",
+            "command": "uv sync --all-groups --all-extras -v --config-settings-package='monoprop:cmake.build-type=Debug'",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            }
+        },
+        {
+            "label": "Install in Coverage mode",
+            "type": "shell",
+            "command": "uv sync --all-groups --all-extras -v --config-settings-package='monoprop:cmake.build-type=Coverage'",
             "problemMatcher": [],
             "group": {
                 "kind": "build",

@@ -48,8 +48,8 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         *,
         cutoff: int,
         schrodinger_cutoff: int | None = None,
-        lower_atol: None | float = None,
-        upper_atol: None | float = None,
+        lower_atol: float | None = None,
+        upper_atol: float | None = None,
         comm: MPI.Comm | None = None,
     ) -> None:
         """Initialize the qubit propagator.
@@ -68,7 +68,6 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             upper_atol: Monomials with ``|coeff| > upper_atol`` are kept regardless of weight.
             comm: Optional MPI communicator (must outlive the propagator).
         """
-        num_qubits = initial_operator.num_qubits
         # The engine takes the Schrodinger cutoff in slots (two per qubit); this API in qubits.
         schrodinger_cutoff = (
             None if schrodinger_cutoff is None else 2 * schrodinger_cutoff
@@ -85,16 +84,11 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             comm=comm,
             basis="pauli",
         )
-        # Must follow _init_simulator, which resets it to None.
-        self._num_qubits = num_qubits
 
     @property
     def num_qubits(self) -> int:
         """Number of qubits the propagator acts on."""
-        # Always set in __init__; the base declares it Optional for the Majorana propagator.
-        if self._num_qubits is None:
-            raise RuntimeError("PauliPropagator has no qubit count set.")
-        return self._num_qubits
+        return self._system_size
 
     def evolved_operator(
         self,
@@ -124,7 +118,10 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         return PauliOperator(terms, self.num_qubits)
 
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
-        """Accept a qubit circuit and return its gates; reject a Majorana/fermionic one."""
+        """Accept a qubit circuit; its gates are expanded by the shared pipeline.
+
+        A ``PauliPropagator`` rejects a Majorana/fermionic circuit.
+        """
         if circuit.family == "majorana":
             raise TypeError(
                 "PauliPropagator requires a qubit circuit; its gates are Majorana/fermionic. "

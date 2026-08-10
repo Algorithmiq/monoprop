@@ -70,7 +70,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     _comm: MPI.Comm | None
     _n_params: int
-    _num_qubits: int | None
+    _system_size: int
     _initial_state: list[int]
     _simulator: object
 
@@ -82,9 +82,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
         cutoff: int,
         schrodinger_cutoff: int | None,
         cutoff_type: str,
-        lower_atol: None | float,
-        upper_atol: None | float,
-        basis_change: None | list[list[int]],
+        lower_atol: float | None,
+        upper_atol: float | None,
+        basis_change: list[list[int]] | None,
         comm: MPI.Comm | None,
         basis: str = "majorana",
     ) -> None:
@@ -113,11 +113,10 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
         self._comm = comm
         self._n_params = 0
-        # Qubit count for expanding Pauli gates; PauliPropagator overwrites it after this call.
-        self._num_qubits = None
+        self._system_size = num_modes
         self._initial_state = list(initial_state)
-        # dispatch() is typed as the base `type[_SimulatorAdapter]`, whose __init__ takes extra
-        # positional args; the kwargs below match the per-mode subclass actually returned.
+        # dispatch() returns the concrete adapter class for this mode count;
+        # call it with keyword args matching the public constructor.
         self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,
@@ -171,6 +170,14 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 "propagator with this circuit's initial state (or via from_circuit)."
             )
 
+    def _check_circuit_width(self, circuit: Circuit) -> None:
+        """Reject a circuit with a system width that disagrees with the propagator."""
+        if circuit.system_size != self._system_size:
+            raise ValueError(
+                f"Circuit system_size={circuit.system_size} does not match propagator width "
+                f"{self._system_size}."
+            )
+
     def _validate_and_correct_only_rotate_len_k(
         self, only_rotate_len_k: int | None
     ) -> int:
@@ -188,10 +195,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         """
         if only_rotate_len_k is None:
             return 0
-        if only_rotate_len_k <= 0 or (
-            isinstance(self._num_qubits, int)
-            and only_rotate_len_k > 2 * self._num_qubits
-        ):
+        if only_rotate_len_k <= 0 or only_rotate_len_k > 2 * self._system_size:
             raise ValueError(
                 f"only_rotate_len_k={only_rotate_len_k} is out of range; must be 0 < k <= 2*num_qubits "
             )
@@ -223,6 +227,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 picture with many free-fermionic (length-2 Majorana) generators.
         """
         self._check_initial_state(circuit)
+        self._check_circuit_width(circuit)
         only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
             only_rotate_len_k
         )
@@ -234,7 +239,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         else:
             seed = None
         gates = self._circuit_gates(circuit)
-        num_qubits = self._num_qubits
+        num_qubits = self._system_size
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
         majoranas, gen_coeffs, per_monomial, gate_indices = expand_monomials(
             gates, mapping, num_qubits
@@ -270,8 +275,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
             only_rotate_len_k
         )
         self._check_initial_state(circuit)
+        self._check_circuit_width(circuit)
         gates = self._circuit_gates(circuit)
-        num_qubits = self._num_qubits
+        num_qubits = self._system_size
         majoranas, gen_coeffs, mapping, _gate_indices = expand_monomials(
             gates, circuit.resolved_mapping, num_qubits
         )
@@ -554,8 +560,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     @property
     def num_modes(self) -> int:
-        """Number of modes the simulator acts on (qubits, in the Pauli basis)."""
-        return self._simulator.num_modes
+        """Number of fermionic modes for the simulator."""
+        return self._system_size
 
     @property
     def graph_layers(self) -> int:
@@ -577,21 +583,21 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._simulator.cutoff = new_cutoff
 
     @property
-    def lower_atol(self) -> None | float:
+    def lower_atol(self) -> float | None:
         """Current lower absolute tolerance for the cutoff function (``None`` if unset)."""
         return self._simulator.lower_atol
 
     @lower_atol.setter
-    def lower_atol(self, new_lower_atol: None | float) -> None:
+    def lower_atol(self, new_lower_atol: float | None) -> None:
         self._simulator.lower_atol = new_lower_atol
 
     @property
-    def upper_atol(self) -> None | float:
+    def upper_atol(self) -> float | None:
         """Current upper absolute tolerance for the cutoff function (``None`` if unset)."""
         return self._simulator.upper_atol
 
     @upper_atol.setter
-    def upper_atol(self, new_upper_atol: None | float) -> None:
+    def upper_atol(self, new_upper_atol: float | None) -> None:
         self._simulator.upper_atol = new_upper_atol
 
     @property

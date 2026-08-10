@@ -57,6 +57,40 @@ def plot_metric(
     ax.grid(True, alpha=0.3)
 
 
+def plot_runtime_figure(
+    step_range: list[int], runtimes: dict[str, list[float]], out: Path
+) -> None:
+    """Save the runtime on its own canvas, both axes linear.
+
+    Runtime is the quantity that gets cited on its own, so it gets its own file rather than a
+    quarter of the combined grid. Both axes are linear: seconds are read as seconds, so the
+    time the Julia engine spends at the largest depth is drawn at its true multiple of
+    monoprop's instead of being compressed into a decade's width. That flattens monoprop's own
+    curve against the axis, which is the finding, not a defect of the axis.
+    """
+    fig, ax = plt.subplots(figsize=(7.4, 5.4))
+    plot_metric(ax, step_range, runtimes, "time (seconds)")
+    ax.set_ylim(bottom=0)
+    ax.set_title("1D Hubbard runtime vs circuit depth", fontsize="medium")
+    # On this axis monoprop's curve lies along the bottom, where a reader cannot tell 4 s from
+    # 0 s. State the band's top so the flat line reads as small rather than as absent.
+    monoprop = runtimes.get("monoprop")
+    if monoprop:
+        ax.annotate(
+            f"monoprop: all points ≤ {max(monoprop):.1f} s",
+            xy=(step_range[-1], max(monoprop)),
+            xytext=(-6, 14),
+            textcoords="offset points",
+            ha="right",
+            fontsize=8,
+            color="#333333",
+        )
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"wrote {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -115,6 +149,10 @@ def main() -> None:
             color="gray",
         )
     fig.savefig(args.output_dir / "majorana_results.png", bbox_inches="tight")
+
+    plot_runtime_figure(
+        step_range, data["runtime_seconds"], args.output_dir / "majorana_runtime.png"
+    )
 
     if args.show:
         plt.show()

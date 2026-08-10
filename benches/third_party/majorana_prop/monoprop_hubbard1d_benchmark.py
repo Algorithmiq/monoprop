@@ -17,10 +17,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
+import resource
 import sys
 from pathlib import Path
 from time import perf_counter
 
+import monoprop
 import numpy as np
 from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.fermi import FermiOperator
@@ -42,8 +45,21 @@ def bricklayer_topology(num_sites):
     return topology
 
 
-def hubbard_fermion_terms(num_sites, hopping, interaction, chemical_potential):
-    """Return the ordered list of local FermionOperator terms for the first-order Trotter decomposition of the 1D Hubbard model."""
+def hubbard_fermion_terms(
+    num_sites, hopping, interaction, chemical_potential, mu_gates=False
+):
+    """Return the ordered list of local FermionOperator terms for the first-order Trotter decomposition of the 1D Hubbard model.
+
+    Args:
+        num_sites: Number of spinful sites in the chain.
+        hopping: Hopping amplitude t.
+        interaction: On-site interaction U.
+        chemical_potential: Chemical potential mu.
+        mu_gates: Emit the ``2 * num_sites`` on-site number terms even when
+            ``chemical_potential`` is zero. Zero-angle rotations are inert but still cost a
+            pass over the operator, and MajoranaPropagation.jl's circuit has no such gates,
+            so the fair-comparison default omits them.
+    """
     terms = []
     topology = bricklayer_topology(num_sites)
 
@@ -64,23 +80,26 @@ def hubbard_fermion_terms(num_sites, hopping, interaction, chemical_potential):
             )
         )
 
-    for site in range(num_sites):
-        for spin in ("up", "down"):
-            m = mode(site, spin)
-            terms.append(
-                FermiOperator(
-                    terms=[((m, "+"), (m, "-"))],
-                    coefficients=[-chemical_potential],
+    if chemical_potential != 0 or mu_gates:
+        for site in range(num_sites):
+            for spin in ("up", "down"):
+                m = mode(site, spin)
+                terms.append(
+                    FermiOperator(
+                        terms=[((m, "+"), (m, "-"))],
+                        coefficients=[-chemical_potential],
+                    )
                 )
-            )
 
     return terms
 
 
-def build_trotter_gates(num_sites, hopping, interaction, chemical_potential):
+def build_trotter_gates(
+    num_sites, hopping, interaction, chemical_potential, mu_gates=False
+):
     """Convert each local Hubbard term into a Majorana generator gate for the MP simulator."""
     ferm_ops = hubbard_fermion_terms(
-        num_sites, hopping, interaction, chemical_potential
+        num_sites, hopping, interaction, chemical_potential, mu_gates=mu_gates
     )
     return [ExpGate(term) for term in ferm_ops]
 
@@ -104,6 +123,12 @@ def number_operator_majorana(site, spin, num_qubits):
 SOURCE_LABEL = "monoprop"
 
 
+def process_cpu_seconds():
+    """Return CPU seconds (user + system) consumed by this process, summed over all threads."""
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return usage.ru_utime + usage.ru_stime
+
+
 def save_result(
     output_path,
     n_spinful_sites,
@@ -113,6 +138,7 @@ def save_result(
     cumulative_runtimes,
     memory_size,
     native_memory_size,
+    provenance,
 ):
     """Merge this run's per-step data into the shared results JSON file, keyed by source label."""
     output_path = Path(output_path)
@@ -132,14 +158,16 @@ def save_result(
             "memory_MB": {},
             "native_memory_MB": {},
         }
-    data.setdefault("num_threads", {})[SOURCE_LABEL] = os.environ.get(
-        "monoprop_NUM_THREADS", "not set"
+    requested_threads = os.environ.get("monoprop_NUM_THREADS")
+    data.setdefault("num_threads", {})[SOURCE_LABEL] = (
+        int(requested_threads) if requested_threads else None
     )
     data["runtime_seconds"][SOURCE_LABEL] = cumulative_runtimes
     data["expectation_value"][SOURCE_LABEL] = values
     data["num_terms"][SOURCE_LABEL] = term_counts
     data["memory_MB"][SOURCE_LABEL] = memory_size
     data.setdefault("native_memory_MB", {})[SOURCE_LABEL] = native_memory_size
+    data.setdefault("provenance", {})[SOURCE_LABEL] = provenance
     with output_path.open("w") as f:
         json.dump(data, f, indent=4)
 
@@ -157,6 +185,11 @@ def main():
         "-o",
         help="Path to the shared JSON file results are merged into.",
         default=Path(__file__).with_name("results.json"),
+    )
+    parser.add_argument(
+        "--mu-gates",
+        action="store_true",
+        help="Keep the 2N inert chemical-potential gates (mu=0) that the Julia circuit lacks.",
     )
 
     args = parser.parse_args()
@@ -177,13 +210,16 @@ def main():
     obs_spin = "up"
     observable = number_operator_majorana(obs_site, obs_spin, num_qubits)
 
-    trotter_gates = build_trotter_gates(n_spinful_sites, t, u, chemical_potential)
+    trotter_gates = build_trotter_gates(
+        n_spinful_sites, t, u, chemical_potential, mu_gates=args.mu_gates
+    )
     trotter_parameters = [dt for _ in trotter_gates]
 
     fermi_circuit = Circuit(
         gates=trotter_gates,
         parameters=trotter_parameters,
         initial_state=intial_state,
+        system_size=num_qubits,
     )
 
     simulator = MajoranaPropagator(
@@ -202,6 +238,7 @@ def main():
 
     with RssPeakSampler() as sampler:
         sampler.reset()
+        cpu_start = process_cpu_seconds()
         t_start = perf_counter()
         values[0] = simulator.expectation_value()
         cumulative_runtimes[0] = perf_counter() - t_start
@@ -220,8 +257,15 @@ def main():
             native_memory_size[step + 1] = (
                 simulator._simulator.operator_memory_bytes() / 1024**2
             )
+        cpu_total = process_cpu_seconds() - cpu_start
+
+    # The engine picks one partition per core when the env var is unset, so an unset value is
+    # not "1 thread"; busy_cores is the only measurement of what the threads actually did.
+    t_total = cumulative_runtimes[-1]
+    busy_cores = cpu_total / t_total if t_total > 0 else float("nan")
     print(
-        f"{n_spinful_sites} n_spin {n_layers} layers {term_counts[-1]} num_terms {values[-1]} final overlap  runtime {cumulative_runtimes[-1]:.3f} seconds"
+        f"{n_spinful_sites} n_spin {n_layers} layers {term_counts[-1]} num_terms {values[-1]} final overlap  runtime {t_total:.3f} seconds"
+        f"  cpu {cpu_total:.1f} s  busy_cores {busy_cores:.2f}"
     )
     save_result(
         args.output,
@@ -232,6 +276,14 @@ def main():
         cumulative_runtimes.tolist(),
         memory_size.tolist(),
         native_memory_size.tolist(),
+        {
+            "affinity_cores": len(os.sched_getaffinity(0)),
+            "mu_gates": bool(args.mu_gates),
+            "cpu_seconds": cpu_total,
+            "busy_cores": busy_cores,
+            "library_version": monoprop.__version__,
+            "host": platform.node(),
+        },
     )
 
 

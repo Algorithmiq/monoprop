@@ -14,6 +14,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     g++ \
     gdb \
     just \
+    lcov \
     ninja-build \
     python3 \
     openmpi-bin \

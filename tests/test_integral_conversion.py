@@ -28,12 +28,15 @@ def _read_openfermion(path: Path) -> FermiOperator:
         terms = json.load(f)
     coeffs = []
     fermi_strings = []
+    num_modes = 0
     for key, value in terms.items():
         fixed_key = ast.literal_eval(key) if key != "()" else ()
         coeffs.append(value)
         fermi_terms = [(el[0], "-" if el[1] == 0 else "+") for el in fixed_key]
         fermi_strings.append(FermiString(fermi_terms))
-    return FermiOperator(fermi_strings, coeffs)
+        if fermi_terms:
+            num_modes = max(num_modes, max(el[0] for el in fermi_terms) + 1)
+    return FermiOperator(fermi_strings, coeffs, num_modes)
 
 
 @pytest.fixture
