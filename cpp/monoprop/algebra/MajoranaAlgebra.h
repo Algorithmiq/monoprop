@@ -35,8 +35,7 @@ inline constexpr auto POWERS_OF_MINUS_ONE = std::array{1, -1};
 inline constexpr auto REAL_PARTS = std::array{1, 0, -1, 0};
 
 // The i^C(|maj|,2) factor that makes a Majorana product Hermitian.
-template <size_t NumModes>
-auto hermitian_coefficient(const Monomial<NumModes> &maj) -> std::complex<double> {
+auto hermitian_coefficient(const MonomialLike auto &maj) -> std::complex<double> {
     const auto pop = maj.count();
     return POWERS_OF_I[n_choose_2(pop) % 4];
 }
@@ -53,8 +52,7 @@ inline auto antihermitian_generator_correction(const VecZ &indices) -> std::comp
 // Diagonal element <b|M|b> against the initial product state, whose occupation mask is state_mask
 // (initial_state_mask): (-1)^(|maj & state_mask| + |maj|/2) -- the pairing sign folds in on top of the
 // occupation parity. Only meaningful for fully-paired terms.
-template <size_t NumModes>
-auto majorana_state_phase(const Monomial<NumModes> &maj, const Monomial<NumModes> &state_mask) -> double {
+auto majorana_state_phase(const MonomialLike auto &maj, const auto &state_mask) -> double {
     const auto num_pairs = maj.count_and(state_mask);
     return POWERS_OF_MINUS_ONE[(num_pairs + maj.count() / 2) % 2];
 }
@@ -71,9 +69,8 @@ constexpr auto prefix_xor_64(uint64_t x) -> uint64_t {
 
 // Ordering sign (-1)^S of maj·gen, S = #{set bits of maj strictly below each set bit of gen} mod 2.
 // Reference spec: the hot path uses the equivalent per-layer mask form (see interleave_phase_mask).
-template <size_t NumModes>
-auto interleave_phase(const Monomial<NumModes> &maj_bs, const Monomial<NumModes> &gen_bs) -> int {
-    constexpr size_t n_words = Monomial<NumModes>::num_words();
+auto interleave_phase(const MonomialLike auto &maj_bs, const auto &gen_bs) -> int {
+    constexpr size_t n_words = std::remove_cvref_t<decltype(maj_bs)>::num_words();
     size_t parity = 0;
     uint64_t carry = 0;
 
@@ -101,11 +98,10 @@ auto interleave_phase(const Monomial<NumModes> &maj_bs, const Monomial<NumModes>
 // Per-generator mask W collapsing the per-term interleave sign to one masked parity.
 // Identity: interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : #{g∈G : g>c} odd}, fixed for
 // the layer; the per-term sign is then one maj.parity_and(W) instead of the prefix-XOR scan.
-template <size_t NumModes>
-auto interleave_phase_mask(const Monomial<NumModes> &gen) -> Monomial<NumModes> {
-    Monomial<NumModes> w;
+auto interleave_phase_mask(const MonomialLike auto &gen) -> std::remove_cvref_t<decltype(gen)> {
+    std::remove_cvref_t<decltype(gen)> w;
     size_t above = 0; // #{g∈G : g>c}, maintained as c descends
-    for (size_t c = Monomial<NumModes>::size(); c-- > 0;) {
+    for (size_t c = std::remove_cvref_t<decltype(gen)>::size(); c-- > 0;) {
         if ((above & 1U) != 0U) {
             w.set(c);
         }
@@ -159,9 +155,8 @@ auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialLi
     return combinations;
 }
 
-template <size_t NumModes>
-auto encode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &maj) -> double {
-    const auto encoded = coeff / hermitian_coefficient<NumModes>(maj);
+auto encode_coeff(const std::complex<double> &coeff, const MonomialLike auto &maj) -> double {
+    const auto encoded = coeff / hermitian_coefficient(maj);
 
     if (std::abs(encoded.imag()) > 1e-10) {
         throw NonEncodableCoefficient("Non-Hermitian coeffs detected");
@@ -170,18 +165,20 @@ auto encode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &m
     return encoded.real();
 }
 
-template <size_t NumModes>
-auto decode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &maj) -> std::complex<double> {
-    return coeff * hermitian_coefficient<NumModes>(maj);
+auto decode_coeff(const std::complex<double> &coeff, const MonomialLike auto &maj) -> std::complex<double> {
+    return coeff * hermitian_coefficient(maj);
 }
 
-template <size_t NumModes>
-auto change_basis(const Monomial<NumModes> &maj, const MonomialList<NumModes> &basis) -> Monomial<NumModes> {
-    Monomial<NumModes> new_maj;
+// `basis` stays a plain (unconstrained) auto: it is a MonomialList<NumModes>, not itself
+// MonomialLike, and its NumModes always matches maj's at every call site.
+auto change_basis(const MonomialLike auto &maj, const auto &basis) -> std::remove_cvref_t<decltype(maj)> {
+    using Mono = std::remove_cvref_t<decltype(maj)>;
+    constexpr size_t num_modes = Mono::size() / 2;
+    Mono new_maj;
 
     size_t pos = maj.find_first();
     while (pos < maj.size()) {
-        new_maj ^= materialize_row<NumModes>(basis, 2 * NumModes - pos - 1);
+        new_maj ^= materialize_row<num_modes>(basis, 2 * num_modes - pos - 1);
         pos = maj.find_next(pos);
     }
 

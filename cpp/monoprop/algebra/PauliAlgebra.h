@@ -51,11 +51,11 @@ struct PauliUv {
 
 // The pair-swap involution J: swap the two physical bits of every qubit pair (u <-> v). Stays inside
 // each word -- pairs are {2m, 2m+1}, so there is no cross-word carry.
-template <size_t NumModes>
-[[nodiscard]] auto pair_swap(const Monomial<NumModes> &p) -> Monomial<NumModes> {
-    constexpr auto e_mask = pauli_even_mask<NumModes>();
-    Monomial<NumModes> result;
-    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
+[[nodiscard]] auto pair_swap(const MonomialLike auto &p) -> std::remove_cvref_t<decltype(p)> {
+    using Mono = std::remove_cvref_t<decltype(p)>;
+    constexpr auto e_mask = pauli_even_mask<Mono::size() / 2>();
+    Mono result;
+    for (size_t w = 0; w < Mono::num_words(); ++w) {
         const uint64_t word = p.word(w);
         const uint64_t e = e_mask.word(w);
         result.data()[w] = ((word & e) << 1) | ((word >> 1) & e);
@@ -64,11 +64,11 @@ template <size_t NumModes>
 }
 
 // A Y letter has v=1, u=0.
-template <size_t NumModes>
-[[nodiscard]] auto pauli_y_count(const Monomial<NumModes> &p) -> size_t {
-    constexpr auto e_mask = pauli_even_mask<NumModes>();
+[[nodiscard]] auto pauli_y_count(const MonomialLike auto &p) -> size_t {
+    using Mono = std::remove_cvref_t<decltype(p)>;
+    constexpr auto e_mask = pauli_even_mask<Mono::size() / 2>();
     size_t y = 0;
-    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
+    for (size_t w = 0; w < Mono::num_words(); ++w) {
         const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
         y += static_cast<size_t>(std::popcount(v & ~u));
     }
@@ -77,9 +77,8 @@ template <size_t NumModes>
 
 // Whether two Pauli strings anticommute (symplectic inner product is odd):
 // P.parity_and(pair_swap(G)) == (x_P . z_G + z_P . x_G) mod 2.
-template <size_t NumModes>
-[[nodiscard]] auto pauli_anticommutes(const Monomial<NumModes> &p, const Monomial<NumModes> &g) -> bool {
-    return p.parity_and(pair_swap<NumModes>(g));
+[[nodiscard]] auto pauli_anticommutes(const MonomialLike auto &p, const auto &g) -> bool {
+    return p.parity_and(pair_swap(g));
 }
 
 namespace detail {
@@ -99,13 +98,15 @@ struct PauliGenContext final {
     size_t nz_count = 0;
 };
 
-// Call once per layer, not per term.
-template <size_t NumModes>
-[[nodiscard]] auto make_pauli_gen_context(const Monomial<NumModes> &gen) -> PauliGenContext<NumModes> {
-    PauliGenContext<NumModes> ctx;
+// Call once per layer, not per term. The return type still names NumModes explicitly: it sizes
+// PauliGenContext's fixed nz_words array, and that class stays templated until Stage 2c/2d.
+auto make_pauli_gen_context(const MonomialLike auto &gen)
+    -> PauliGenContext<std::remove_cvref_t<decltype(gen)>::size() / 2> {
+    using Mono = std::remove_cvref_t<decltype(gen)>;
+    PauliGenContext<Mono::size() / 2> ctx;
     ctx.gen = gen;
-    ctx.g_y = pauli_y_count<NumModes>(gen);
-    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
+    ctx.g_y = pauli_y_count(gen);
+    for (size_t w = 0; w < Mono::num_words(); ++w) {
         if (gen.word(w) != 0) {
             ctx.nz_words[ctx.nz_count++] = w;
         }
@@ -118,11 +119,10 @@ template <size_t NumModes>
 // raw product sign, so the emit site needs no extra negation (pinned by pauli_algebra_tests.cpp).
 // Loops only over gen's nonzero words (elsewhere mono/new_mono Y counts cancel and x_gen = 0). Exponent
 // e = g_y + Σ_w(yMono - yNew) + 2·Σ_w(v_mono & x_gen); raw sign = (e mod 4 == 1 ? +1 : -1), negated here.
-template <size_t NumModes>
-[[gnu::always_inline]] inline auto pauli_rotation_sign(const PauliGenContext<NumModes> &ctx,
-                                                       const Monomial<NumModes> &mono,
-                                                       const Monomial<NumModes> &new_mono) -> int {
-    constexpr auto e_mask = pauli_even_mask<NumModes>();
+[[gnu::always_inline]] inline auto pauli_rotation_sign(const auto &ctx,
+                                                       const MonomialLike auto &mono,
+                                                       const auto &new_mono) -> int {
+    constexpr auto e_mask = pauli_even_mask<std::remove_cvref_t<decltype(mono)>::size() / 2>();
     long delta = static_cast<long>(ctx.g_y);
     long cross = 0;
     for (size_t k = 0; k < ctx.nz_count; ++k) {
@@ -141,8 +141,7 @@ template <size_t NumModes>
 
 // Diagonal element <b|P|b> = (-1)^{|Z ∩ occupied|} of a Z-only Pauli against the initial product
 // state. Only meaningful where is_paired holds; for a non-diagonal Pauli <b|P|b> = 0.
-template <size_t NumModes>
-[[nodiscard]] auto pauli_state_phase(const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
+[[nodiscard]] auto pauli_state_phase(const MonomialLike auto &mono, const auto &state_mask) -> double {
     return (mono.count_and(state_mask) & 1) ? -1.0 : 1.0;
 }
 

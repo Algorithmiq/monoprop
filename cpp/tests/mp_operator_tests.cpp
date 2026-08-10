@@ -51,8 +51,8 @@ auto expected_state(detail::MPOperator<8> &op, Basis basis, const VecZ &initial_
     VecD expected(op.size(), 0.0);
     for (size_t i = 0; i < op.size(); ++i) {
         const auto row = materialize_row<8>(*op.store, i);
-        if (is_paired<8>(row)) {
-            expected[i] = algebra_state_phase<8>(basis, row, state_mask);
+        if (is_paired(row)) {
+            expected[i] = algebra_state_phase(basis, row, state_mask);
         }
     }
     return expected;
@@ -218,7 +218,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identit
     dict[VecZ{}] = cd(2.75, 0.0);
     op.update_initial_operator(dict, /*schrodinger=*/false);
     BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), 1U);
-    BOOST_CHECK_EQUAL(op.op_coeffs[0], algebra_encode_coeff<8>(Basis::Majorana, cd(2.75, 0.0), identity));
+    BOOST_CHECK_EQUAL(op.op_coeffs[0], algebra_encode_coeff(Basis::Majorana, cd(2.75, 0.0), identity));
     BOOST_CHECK_EQUAL(op.op_coeffs[0], 2.75);
 }
 

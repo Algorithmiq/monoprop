@@ -35,10 +35,10 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_kept_unconditionally) {
     paired.set(1);
     paired.set(4);
     paired.set(5);
-    BOOST_TEST(is_paired<N>(paired));
-    BOOST_TEST(length_cutoff<N>(paired, 0));
-    BOOST_TEST(length_cutoff<N>(paired, 2));
-    BOOST_TEST(support_cutoff<N>(paired, 0));
+    BOOST_TEST(is_paired(paired));
+    BOOST_TEST(length_cutoff(paired, 0));
+    BOOST_TEST(length_cutoff(paired, 2));
+    BOOST_TEST(support_cutoff(paired, 0));
 }
 
 // An unpaired set of length 3 (raw bits {0,2,4}: each even bit lacks its odd partner).
@@ -48,13 +48,13 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_length_and_support_thresholds) {
     unpaired.set(0);
     unpaired.set(2);
     unpaired.set(4);
-    BOOST_TEST(!is_paired<N>(unpaired));
+    BOOST_TEST(!is_paired(unpaired));
 
     // length = popcount = 3; support (distinct orbitals) = 3 here.
-    BOOST_TEST(length_cutoff<N>(unpaired, 3));
-    BOOST_TEST(!length_cutoff<N>(unpaired, 2));
-    BOOST_TEST(support_cutoff<N>(unpaired, 3));
-    BOOST_TEST(!support_cutoff<N>(unpaired, 2));
+    BOOST_TEST(length_cutoff(unpaired, 3));
+    BOOST_TEST(!length_cutoff(unpaired, 2));
+    BOOST_TEST(support_cutoff(unpaired, 3));
+    BOOST_TEST(!support_cutoff(unpaired, 2));
 
     // support <= length always, so passing length implies passing support at the same cutoff.
     std::mt19937_64 rng(0x50FA11ULL);
@@ -65,12 +65,12 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_length_and_support_thresholds) {
             m.set(bit(rng));
         }
         for (unsigned int c : {0U, 1U, 2U, 3U}) {
-            if (length_cutoff<N>(m, c)) {
-                BOOST_TEST(support_cutoff<N>(m, c));
+            if (length_cutoff(m, c)) {
+                BOOST_TEST(support_cutoff(m, c));
             }
         }
-        BOOST_TEST(length_cutoff<N>(m, 2 * N));
-        BOOST_TEST(length_cutoff<N>(m, 0) == is_paired<N>(m));
+        BOOST_TEST(length_cutoff(m, 2 * N));
+        BOOST_TEST(length_cutoff(m, 0) == is_paired(m));
     }
 }
 
@@ -83,19 +83,19 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_logical_num_modes_masks_prefix_single_word)
     prefix_only.set(0); // lone unpaired bit, inside the inactive prefix
 
     // Active window is empty -> treated as fully paired -> kept even at cutoff 0.
-    BOOST_TEST(length_cutoff<N>(prefix_only, 0, logical));
-    BOOST_TEST(support_cutoff<N>(prefix_only, 0, logical));
+    BOOST_TEST(length_cutoff(prefix_only, 0, logical));
+    BOOST_TEST(support_cutoff(prefix_only, 0, logical));
     // Over the whole register the lone bit is unpaired and exceeds cutoff 0 -> dropped.
-    BOOST_TEST(!length_cutoff<N>(prefix_only, 0, N));
-    BOOST_TEST(!length_cutoff<N>(prefix_only, 0)); // whole-register overload
+    BOOST_TEST(!length_cutoff(prefix_only, 0, N));
+    BOOST_TEST(!length_cutoff(prefix_only, 0)); // whole-register overload
 
     Monomial<N> active_bit;
     active_bit.set(52);
-    BOOST_TEST(!length_cutoff<N>(active_bit, 0, logical));
+    BOOST_TEST(!length_cutoff(active_bit, 0, logical));
     Monomial<N> active_pair;
     active_pair.set(52);
     active_pair.set(53);
-    BOOST_TEST(length_cutoff<N>(active_pair, 0, logical));
+    BOOST_TEST(length_cutoff(active_pair, 0, logical));
 }
 
 BOOST_AUTO_TEST_CASE(majorana_cutoff_logical_num_modes_masks_prefix_multi_word) {
@@ -104,8 +104,8 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_logical_num_modes_masks_prefix_multi_word) 
     Monomial<N> prefix_only;
     prefix_only.set(4); // lone unpaired bit in the inactive prefix
 
-    BOOST_TEST(length_cutoff<N>(prefix_only, 0, logical)); // active window empty -> kept
-    BOOST_TEST(!length_cutoff<N>(prefix_only, 0, N));      // whole register -> dropped
+    BOOST_TEST(length_cutoff(prefix_only, 0, logical)); // active window empty -> kept
+    BOOST_TEST(!length_cutoff(prefix_only, 0, N));      // whole register -> dropped
 }
 
 BOOST_AUTO_TEST_CASE(majorana_cutoff_evaluator_dispatch_and_popcount) {
@@ -163,8 +163,8 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_interleave_phase_mask_cross_check) {
                 m.set(bit(rng));
                 g.set(bit(rng));
             }
-            const int reference = interleave_phase<N>(m, g);
-            const auto w = interleave_phase_mask<N>(g);
+            const int reference = interleave_phase(m, g);
+            const auto w = interleave_phase_mask(g);
             const int masked = m.parity_and(w) ? -1 : 1;
             BOOST_TEST(reference == masked);
         }
@@ -181,13 +181,13 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_encode_decode_coeff) {
     mono.set(6);
 
     for (double r : {1.0, -2.5, 0.0, 7.25}) {
-        const cd hermitian = decode_coeff<N>(cd(r, 0.0), mono); // r * hermitian_coefficient(mono)
-        BOOST_TEST(encode_coeff<N>(hermitian, mono) == r);
+        const cd hermitian = decode_coeff(cd(r, 0.0), mono); // r * hermitian_coefficient(mono)
+        BOOST_TEST(encode_coeff(hermitian, mono) == r);
     }
 
     // Multiply by i to break Hermiticity: the encoded value then has a nonzero imaginary part.
-    const cd non_hermitian = decode_coeff<N>(cd(1.0, 0.0), mono) * cd(0.0, 1.0);
-    BOOST_CHECK_THROW(encode_coeff<N>(non_hermitian, mono), std::runtime_error);
+    const cd non_hermitian = decode_coeff(cd(1.0, 0.0), mono) * cd(0.0, 1.0);
+    BOOST_CHECK_THROW(encode_coeff(non_hermitian, mono), std::runtime_error);
 }
 
 // max_ones counts pairs, so it saturates at logical_num_modes, not at the bit count 2*logical_num_modes.

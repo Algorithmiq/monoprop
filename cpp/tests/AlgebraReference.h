@@ -36,7 +36,7 @@ auto get_multiplicative_phase(const Monomial<NumModes> &mono,
                               size_t mono_count,
                               size_t gen_count,
                               size_t overlap) -> int {
-    return interleave_phase<NumModes>(mono, gen_mono) * hermitian_phase(mono_count, gen_count, overlap);
+    return interleave_phase(mono, gen_mono) * hermitian_phase(mono_count, gen_count, overlap);
 }
 
 } // namespace monoprop

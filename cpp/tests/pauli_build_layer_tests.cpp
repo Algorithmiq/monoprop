@@ -407,7 +407,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
         std::set<size_t> expected;
         (void)mp.mp_op().get_operator(); // materialize the store size
         mp.indexing().for_each([&](const Monomial<N> &mono, size_t idx) {
-            if (pauli_anticommutes<N>(mono, Gb)) {
+            if (pauli_anticommutes(mono, Gb)) {
                 expected.insert(idx);
             }
         });

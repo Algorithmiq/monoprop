@@ -69,7 +69,7 @@ inline auto make_fold_mask(const InvertedIndex<NumModes> &sc,
     FoldMask s;
     // Pauli folds J(G) and never needs the odd-|G| parity correction (see Scan.h); Majorana applies it
     // when |G| is odd. Truncation bounds are basis-independent.
-    s.g_odd = algebra_fold_needs_odd_correction<NumModes>(basis, gen);
+    s.g_odd = algebra_fold_needs_odd_correction(basis, gen);
     const size_t full = sc.words();
     s.mask_words = std::min(full, static_cast<size_t>((scaled_count + 63) / 64));
     s.last_word = (s.mask_words == 0) ? 0 : s.mask_words - 1;
@@ -103,7 +103,7 @@ auto make_fold_cache(const InvertedIndex<NumModes> &sc,
     p.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
     p.row_parity = fold_row_parity<NumModes>(sc, p.fold);
     // generator_words stores the real G; re-derive the fold generator (J(G) for Pauli) as the scan did.
-    const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);
+    const auto fold_gen = algebra_fold_generator(basis, gen);
     const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
 
     // One combine over [0, mask_words): words >= mask_words are never read, so dropping them is exact.
@@ -165,7 +165,7 @@ auto make_lazy_fold(const InvertedIndex<NumModes> &sc,
                     Basis basis) -> LazyFold<NumModes> {
     LazyFold<NumModes> r;
     r.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
-    const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);
+    const auto fold_gen = algebra_fold_generator(basis, gen);
     const auto columns = build_even_parity_generator_columns<NumModes>(fold_gen);
     r.columns.assign(columns.indices.begin(), columns.indices.begin() + columns.count);
     return r;

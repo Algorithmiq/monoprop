@@ -65,8 +65,7 @@ auto indices_to_bitset_checked(const VecZ &arr, size_t max_index) -> Monomial<Nu
 }
 
 // O(popcount) via find_first/find_next rather than an O(NumModes) scan.
-template <size_t NumModes>
-auto bitset_to_indices(const Monomial<NumModes> &bs) -> VecZ {
+auto bitset_to_indices(const MonomialLike auto &bs) -> VecZ {
     const auto pop = bs.count();
     VecZ indices(pop);
     size_t idx = pop;
@@ -76,32 +75,34 @@ auto bitset_to_indices(const Monomial<NumModes> &bs) -> VecZ {
     return indices;
 }
 
-template <size_t NumModes>
-auto is_paired(const Monomial<NumModes> &mono, const Monomial<NumModes> &even_mask) -> bool {
+auto is_paired(const MonomialLike auto &mono, const auto &even_mask) -> bool {
     // Paired = each mode's even bit and its odd partner agree (both set or both clear).
     const auto even_bits_masked = mono & even_mask;
     const auto odd_bits_masked = (mono >> 1) & even_mask;
     return (even_bits_masked ^ odd_bits_masked).none();
 }
 
-template <size_t NumModes>
-auto is_paired(const Monomial<NumModes> &mono) -> bool {
-    const auto even_mask = even_bits<2 * NumModes, LSb0>();
-    return is_paired<NumModes>(mono, even_mask);
+auto is_paired(const MonomialLike auto &mono) -> bool {
+    const auto even_mask = even_bits<std::remove_cvref_t<decltype(mono)>::size(), LSb0>();
+    return is_paired(mono, even_mask);
 }
 
+// No monomial argument to deduce a width from -- NumModes stays explicit (it sizes the
+// Monomial<NumModes> this constructs from `mono`, an index list, not a monomial itself).
 template <size_t NumModes>
 auto is_paired(const VecZ &mono) -> bool {
-    return is_paired<NumModes>(indices_to_bitset<NumModes>(mono));
+    return is_paired(indices_to_bitset<NumModes>(mono));
 }
 
+// Rows carries no structural width of its own (unlike a MonomialLike argument), so NumModes stays
+// explicit here too -- it only reaches materialize_row.
 template <size_t NumModes, typename Rows>
 auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     VecZ result;
     const auto mask = even_bits<2 * NumModes, LSb0>();
     for (const auto index : inds) {
         const auto &op_row = materialize_row<NumModes>(op, index);
-        if (is_paired<NumModes>(op_row, mask)) {
+        if (is_paired(op_row, mask)) {
             result.push_back(index);
         }
     }
@@ -128,14 +129,15 @@ struct CutoffSums {
     size_t or_sum;       // modes with either Majorana present -- the support measure (JW Pauli weight)
 };
 
-template <size_t NumModes>
-[[gnu::always_inline]] inline auto cutoff_sums(const Monomial<NumModes> &mono, size_t logical_num_modes) -> CutoffSums {
-    const size_t active_bit_offset = 2 * (NumModes - logical_num_modes);
+[[gnu::always_inline]] inline auto cutoff_sums(const MonomialLike auto &mono, size_t logical_num_modes) -> CutoffSums {
+    using Mono = std::remove_cvref_t<decltype(mono)>;
+    constexpr size_t num_modes = Mono::size() / 2;
+    const size_t active_bit_offset = 2 * (num_modes - logical_num_modes);
 
-    if constexpr (Monomial<NumModes>::num_words() == 1) {
-        constexpr size_t num_bits = Monomial<NumModes>::size();
+    if constexpr (Mono::num_words() == 1) {
+        constexpr size_t num_bits = Mono::size();
         constexpr uint64_t valid_mask = num_bits == 64 ? ~uint64_t{0} : ((uint64_t{1} << num_bits) - 1);
-        constexpr uint64_t even_mask = even_bits<2 * NumModes, LSb0>().word(0);
+        constexpr uint64_t even_mask = even_bits<Mono::size(), LSb0>().word(0);
         const uint64_t active_mask =
             active_bit_offset == 0 ? valid_mask : (valid_mask & ~((uint64_t{1} << active_bit_offset) - 1));
         const uint64_t active_word = mono.word(0) & active_mask;
@@ -147,8 +149,8 @@ template <size_t NumModes>
                 static_cast<size_t>(std::popcount(first_pair | second_pair))};
     }
 
-    const auto active_mono = logical_num_modes == NumModes ? mono : (mono >> active_bit_offset);
-    const auto mask = even_bits<2 * NumModes, LSb0>();
+    const auto active_mono = logical_num_modes == num_modes ? mono : (mono >> active_bit_offset);
+    const auto mask = even_bits<Mono::size(), LSb0>();
     const auto first_pair = active_mono & mask;
     const auto second_pair = (active_mono >> 1) & mask;
     return {(first_pair ^ second_pair).count(), active_mono.count(), (first_pair | second_pair).count()};
@@ -158,26 +160,22 @@ template <size_t NumModes>
 // terms contributing to an expectation value against a product reference state, so bounding them by
 // length or support would discard signal.
 
-template <size_t NumModes>
-auto length_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
-    const auto sums = cutoff_sums<NumModes>(mono, logical_num_modes);
+auto length_cutoff(const MonomialLike auto &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
+    const auto sums = cutoff_sums(mono, logical_num_modes);
     return sums.xor_sum == 0 || sums.popcount_sum <= cutoff;
 }
 
-template <size_t NumModes>
-auto length_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff) -> bool {
-    return length_cutoff<NumModes>(mono, cutoff, NumModes);
+auto length_cutoff(const MonomialLike auto &mono, unsigned int cutoff) -> bool {
+    return length_cutoff(mono, cutoff, std::remove_cvref_t<decltype(mono)>::size() / 2);
 }
 
-template <size_t NumModes>
-auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
-    const auto sums = cutoff_sums<NumModes>(mono, logical_num_modes);
+auto support_cutoff(const MonomialLike auto &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
+    const auto sums = cutoff_sums(mono, logical_num_modes);
     return sums.xor_sum == 0 || sums.or_sum <= cutoff;
 }
 
-template <size_t NumModes>
-auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff) -> bool {
-    return support_cutoff<NumModes>(mono, cutoff, NumModes);
+auto support_cutoff(const MonomialLike auto &mono, unsigned int cutoff) -> bool {
+    return support_cutoff(mono, cutoff, std::remove_cvref_t<decltype(mono)>::size() / 2);
 }
 
 namespace detail {
@@ -188,7 +186,7 @@ struct LengthCutoff {
     size_t logical_num_modes = NumModes;
 
     auto operator()(const Monomial<NumModes> &mono) const -> bool {
-        return length_cutoff<NumModes>(mono, cutoff, logical_num_modes);
+        return length_cutoff(mono, cutoff, logical_num_modes);
     }
 };
 
@@ -198,7 +196,7 @@ struct SupportCutoff {
     size_t logical_num_modes = NumModes;
 
     auto operator()(const Monomial<NumModes> &mono) const -> bool {
-        return support_cutoff<NumModes>(mono, cutoff, logical_num_modes);
+        return support_cutoff(mono, cutoff, logical_num_modes);
     }
 };
 

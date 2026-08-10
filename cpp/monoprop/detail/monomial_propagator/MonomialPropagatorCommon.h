@@ -48,13 +48,13 @@ auto cutoff_function_basis_change(CutoffType cutoff_type,
     switch (cutoff_type) {
         case CutoffType::Length:
             return [cutoff, logical_num_modes, basis_copy = basis](const Monomial<NumModes> &mono) {
-                const auto mapped_mono = change_basis<NumModes>(mono, basis_copy);
-                return length_cutoff<NumModes>(mapped_mono, cutoff, logical_num_modes);
+                const auto mapped_mono = change_basis(mono, basis_copy);
+                return length_cutoff(mapped_mono, cutoff, logical_num_modes);
             };
         case CutoffType::Support:
             return [cutoff, logical_num_modes, basis_copy = basis](const Monomial<NumModes> &mono) {
-                const auto mapped_mono = change_basis<NumModes>(mono, basis_copy);
-                return support_cutoff<NumModes>(mapped_mono, cutoff, logical_num_modes);
+                const auto mapped_mono = change_basis(mono, basis_copy);
+                return support_cutoff(mapped_mono, cutoff, logical_num_modes);
             };
         default:
             throw UnknownCutoffTypeError();

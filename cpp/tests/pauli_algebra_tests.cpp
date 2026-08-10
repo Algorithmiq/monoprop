@@ -53,9 +53,9 @@ template <size_t NumModes>
 [[nodiscard]] auto product_phase_exponent(const Monomial<NumModes> &a, const Monomial<NumModes> &b) -> int {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     const auto r = a ^ b;
-    const long y_a = static_cast<long>(pauli_y_count<NumModes>(a));
-    const long y_b = static_cast<long>(pauli_y_count<NumModes>(b));
-    const long y_r = static_cast<long>(pauli_y_count<NumModes>(r));
+    const long y_a = static_cast<long>(pauli_y_count(a));
+    const long y_b = static_cast<long>(pauli_y_count(b));
+    const long y_r = static_cast<long>(pauli_y_count(r));
     long cross = 0; // zA . xB = popcount(v-plane(A) & x-plane(B))
     for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
         const uint64_t e = e_mask.word(w);
@@ -89,10 +89,10 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_pair_swap_and_anticommutation) {
     for (size_t n : {size_t{1}, size_t{2}}) {
         for (const auto &pa : all_strings(n)) {
             const auto a = native_bitset<N>(pa);
-            BOOST_TEST((pair_swap<N>(pair_swap<N>(a)) == a));
+            BOOST_TEST((pair_swap(pair_swap(a)) == a));
             for (const auto &pb : all_strings(n)) {
                 const auto b = native_bitset<N>(pb);
-                const bool antic = pauli_anticommutes<N>(a, b);
+                const bool antic = pauli_anticommutes(a, b);
                 BOOST_TEST(antic == string_anticommutes(pa, pb));
                 // Independent dense-matrix check: anticommute iff AB == -BA.
                 const auto ma = matrix_from_string(pa);
@@ -113,8 +113,8 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_pair_swap_and_anticommutation) {
         const auto pb = random_string(rng, n);
         const auto a = native_bitset<N>(pa);
         const auto b = native_bitset<N>(pb);
-        BOOST_TEST((pair_swap<N>(pair_swap<N>(a)) == a));
-        BOOST_TEST(pauli_anticommutes<N>(a, b) == string_anticommutes(pa, pb));
+        BOOST_TEST((pair_swap(pair_swap(a)) == a));
+        BOOST_TEST(pauli_anticommutes(a, b) == string_anticommutes(pa, pb));
     }
 
     constexpr size_t NW = 40; // 2N = 80 bits -> 2 words: exercises multiword kernels.
@@ -123,8 +123,8 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_pair_swap_and_anticommutation) {
         const auto pb = random_string(rng, NW);
         const auto a = native_bitset<NW>(pa);
         const auto b = native_bitset<NW>(pb);
-        BOOST_TEST((pair_swap<NW>(pair_swap<NW>(a)) == a));
-        BOOST_TEST(pauli_anticommutes<NW>(a, b) == string_anticommutes(pa, pb));
+        BOOST_TEST((pair_swap(pair_swap(a)) == a));
+        BOOST_TEST(pauli_anticommutes(a, b) == string_anticommutes(pa, pb));
     }
 }
 
@@ -134,7 +134,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_encoding_is_jw_image) {
     for (size_t n : {size_t{1}, size_t{2}}) {
         const auto basis = jw_basis<N>(n);
         for (const auto &p : all_strings(n)) {
-            BOOST_TEST((native_bitset<N>(p) == change_basis<N>(jw_bitset<N>(p), basis)));
+            BOOST_TEST((native_bitset<N>(p) == change_basis(jw_bitset<N>(p), basis)));
         }
     }
     std::mt19937 rng(0x1234ABCDU);
@@ -142,7 +142,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_encoding_is_jw_image) {
         const size_t n = 1 + (rng() % 6);
         const auto basis = jw_basis<N>(n);
         const auto p = random_string(rng, n);
-        BOOST_TEST((native_bitset<N>(p) == change_basis<N>(jw_bitset<N>(p), basis)));
+        BOOST_TEST((native_bitset<N>(p) == change_basis(jw_bitset<N>(p), basis)));
     }
 }
 
@@ -170,14 +170,14 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
                 BOOST_TEST(std::abs(std::abs(phi) - 1.0) < 1e-12);
                 BOOST_TEST(approx_equal(ab, scalar_mul(phi, mr)));
 
-                if (pauli_anticommutes<N>(a, b)) {
+                if (pauli_anticommutes(a, b)) {
                     const int sign = pauli_emit_sign_antic<N>(a, b);
                     BOOST_TEST((sign == 1 || sign == -1));
                     // A*B = sign * i * R for anticommuting Hermitian Paulis.
                     BOOST_TEST(approx_equal(ab, scalar_mul(cd(0, static_cast<double>(sign)), mr)));
                     // Hot kernel returns the rotation sign = negated raw emit sign.
-                    const auto ctx = make_pauli_gen_context<N>(b);
-                    BOOST_TEST(pauli_rotation_sign<N>(ctx, a, r) == -sign);
+                    const auto ctx = make_pauli_gen_context(b);
+                    BOOST_TEST(pauli_rotation_sign(ctx, a, r) == -sign);
                 }
             }
         }
@@ -189,8 +189,8 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
     for (size_t trial = 0; trial < 3000; ++trial) {
         const auto a = native_bitset<NW>(random_string(rng, NW));
         const auto b = native_bitset<NW>(random_string(rng, NW));
-        const auto ctx = make_pauli_gen_context<NW>(b);
-        BOOST_TEST(pauli_rotation_sign<NW>(ctx, a, a ^ b) == -pauli_emit_sign_antic<NW>(a, b));
+        const auto ctx = make_pauli_gen_context(b);
+        BOOST_TEST(pauli_rotation_sign(ctx, a, a ^ b) == -pauli_emit_sign_antic<NW>(a, b));
     }
 }
 
@@ -203,13 +203,13 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_cutoff_and_weight_equivalence) {
     for (size_t trial = 0; trial < 3000; ++trial) {
         const auto p = random_string(rng, logical); // P on the low qubits 0..logical-1
         const auto native = native_bitset<N>(p);
-        const auto via_jw = change_basis<N>(jw_bitset<N>(p), basis);
+        const auto via_jw = change_basis(jw_bitset<N>(p), basis);
         BOOST_TEST((native == via_jw));
 
         for (unsigned int c : {0U, 1U, 2U, 3U, 6U}) {
-            BOOST_TEST(support_cutoff<N>(native, c, logical) == support_cutoff<N>(via_jw, c, logical));
+            BOOST_TEST(support_cutoff(native, c, logical) == support_cutoff(via_jw, c, logical));
             // Also exercise the whole-register (logical == NumModes) code path.
-            BOOST_TEST(support_cutoff<N>(native, c) == support_cutoff<N>(via_jw, c));
+            BOOST_TEST(support_cutoff(native, c) == support_cutoff(via_jw, c));
         }
 
         size_t true_weight = 0;
@@ -219,7 +219,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_cutoff_and_weight_equivalence) {
         BOOST_TEST(pauli_weight<N>(native) == true_weight);
 
         // is_paired (support_cutoff's xor_sum == 0) detects exactly the Z-only strings.
-        BOOST_TEST(is_paired<N>(native) == is_z_only(p));
+        BOOST_TEST(is_paired(native) == is_z_only(p));
     }
 }
 
@@ -254,7 +254,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_state_phase) {
                 expected = -expected;
             }
         }
-        const double phase = pauli_state_phase<N>(z_mono, state_mask);
+        const double phase = pauli_state_phase(z_mono, state_mask);
         BOOST_TEST(phase == static_cast<double>(expected));
 
         const size_t d = size_t{1} << n;

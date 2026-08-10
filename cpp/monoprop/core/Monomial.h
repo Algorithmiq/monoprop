@@ -15,6 +15,7 @@
 #pragma once
 
 #include <complex>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -28,6 +29,20 @@ namespace monoprop {
 
 template <size_t NumModes>
 using Monomial = Bitset<2 * NumModes>;
+
+// Structural stand-in for "some Monomial<N>/Bitset<M>, width unspecified": the free functions in
+// algebra/*.h and elsewhere that only ever use a monomial parameter's width (never a caller-chosen
+// NumModes unrelated to any parameter) deduce it from the argument instead of naming it as a
+// template parameter -- `decltype(mono)::size()` recovers the storage bit width (2 * NumModes for a
+// Monomial), so a NumModes value where one is still needed is `decltype(mono)::size() / 2`. See the
+// NumModes-NTTP-removal plan, Stage 2a.
+template <typename T>
+concept MonomialLike = requires(const T &t) {
+    { std::remove_cvref_t<T>::size() } -> std::convertible_to<size_t>;
+    { std::remove_cvref_t<T>::num_words() } -> std::convertible_to<size_t>;
+    { t.count() } -> std::convertible_to<size_t>;
+    { t.find_first() } -> std::convertible_to<size_t>;
+};
 
 // Not the evolved operator's row storage -- that is detail::OperatorIndex (see TypeAliases.h).
 template <size_t NumModes>

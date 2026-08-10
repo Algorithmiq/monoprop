@@ -146,7 +146,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     double core_term = 0.0;
     for (const auto &[indices, coefficient] : initial_operator) {
         const auto majorana_bitset = indices_to_bitset_checked<NumModes>(indices, 2 * logical_num_modes_);
-        const auto encoded_coeff = algebra_encode_coeff<NumModes>(basis_, coefficient, majorana_bitset);
+        const auto encoded_coeff = algebra_encode_coeff(basis_, coefficient, majorana_bitset);
 
         // Store the core term separately as it is orders of magnitude larger than the other terms
         if (indices.empty()) {
@@ -362,11 +362,11 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
     for (const auto &[ind, coeff] : op_dict) {
         const auto mono = indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
         if (ind.empty()) { // Core term, store in all
-            core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
+            core_term_ = algebra_encode_coeff(basis_, coeff, mono);
             continue;
         }
         if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
-            const auto mono_indices = bitset_to_indices<NumModes>(mono);
+            const auto mono_indices = bitset_to_indices(mono);
             new_op[mono_indices] = coeff;
         }
     }
@@ -1103,10 +1103,10 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
                 return;
             }
             // Round to drop anti-hermitian numerical noise (Majorana un-applies the Hermitian phase).
-            const auto decoded = algebra_decode_coeff<NumModes>(basis_, coeff, mono);
+            const auto decoded = algebra_decode_coeff(basis_, coeff, mono);
             const std::complex<double> rounded(std::round(decoded.real() * 1e12) / 1e12,
                                                std::round(decoded.imag() * 1e12) / 1e12);
-            terms.emplace_back(bitset_to_indices<NumModes>(mono), rounded);
+            terms.emplace_back(bitset_to_indices(mono), rounded);
         });
         return terms;
     };

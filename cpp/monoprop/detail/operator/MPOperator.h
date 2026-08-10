@@ -201,7 +201,7 @@ struct MPOperator {
             const auto mono = indices_to_bitset<NumModes>(k);
             const auto rank_evolved_op = store->find(mono);
             const auto rank_init_op = init_op_map.find(mono);
-            const auto coeff = algebra_encode_coeff<NumModes>(basis, v, mono);
+            const auto coeff = algebra_encode_coeff(basis, v, mono);
 
             if (!schrodinger) {
                 if (rank_init_op != init_op_map.end()) {

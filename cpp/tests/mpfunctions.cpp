@@ -76,7 +76,7 @@ BOOST_DATA_TEST_CASE(length_cutoff_test,
                      input_bitset,
                      cutoff,
                      expected_result) {
-    auto result = length_cutoff<NumQubits>(input_bitset, cutoff);
+    auto result = length_cutoff(input_bitset, cutoff);
     BOOST_CHECK(result == expected_result);
 }
 
