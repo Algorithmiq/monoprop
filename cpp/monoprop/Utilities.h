@@ -97,6 +97,28 @@ auto odd_bits(size_t n) -> Bitset {
     }
 };
 
+// Memoized even-bit mask for per-term code. A mask depends only on the storage width, which is fixed
+// for a propagator's lifetime, so rebuilding one per term is pure waste -- and since Stage 2b made
+// Bitset runtime-width, building one is a full object construction rather than the compile-time
+// constant it used to be (see the NumModes-NTTP-removal plan's Stage 2b: "cached per propagator").
+//
+// thread_local rather than shared: the scan runs concurrently on the partitions' pinned masters, and
+// a shared cache would need synchronisation on the hottest path in the library. The width only ever
+// changes between propagators, so the miss branch is taken once per thread in practice.
+//
+// The reference is valid until the next call *on this thread* with a different width. Callers use it
+// within a single expression or loop; do not store it across a width change.
+template <typename Ordering>
+[[nodiscard]] inline auto cached_even_bits(size_t n) -> const Bitset & {
+    thread_local Bitset cached;
+    thread_local size_t cached_n = static_cast<size_t>(-1);
+    if (cached_n != n) [[unlikely]] {
+        cached = even_bits<Ordering>(n);
+        cached_n = n;
+    }
+    return cached;
+}
+
 inline auto n_choose_2(std::integral auto n) -> size_t {
     return static_cast<size_t>(n * (n - 1) / 2);
 }

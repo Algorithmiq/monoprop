@@ -38,12 +38,6 @@ template <size_t NumModes>
 [[nodiscard]] inline auto pauli_even_mask() -> Monomial<NumModes> {
     return even_bits<2 * NumModes, LSb0>();
 }
-// Runtime-width sibling: for a caller holding only a Bitset (e.g. an operator's result, which is not
-// Monomial<NumModes>-typed and so cannot recover a compile-time NumModes via ::size()) rather than a
-// Monomial<NumModes>. See the NumModes-NTTP-removal plan's Stage 2b note in core/Monomial.h.
-[[nodiscard]] inline auto pauli_even_mask(size_t num_modes) -> Bitset {
-    return even_bits<LSb0>(2 * num_modes);
-}
 
 namespace detail {
 struct PauliUv {
@@ -62,7 +56,7 @@ struct PauliUv {
 // caller may hand this a plain Bitset (e.g. from a ^ b) rather than a Monomial<NumModes>, which has
 // no compile-time-static size() to qualify-call -- see the NumModes-NTTP-removal plan's Stage 2b.
 [[nodiscard]] auto pair_swap(const MonomialLike auto &p) -> std::remove_cvref_t<decltype(p)> {
-    const auto e_mask = pauli_even_mask(p.size() / 2);
+    const auto &e_mask = cached_even_bits<LSb0>(p.size());
     Bitset result(p.size());
     const size_t nw = p.num_words();
     for (size_t w = 0; w < nw; ++w) {
@@ -75,7 +69,7 @@ struct PauliUv {
 
 // A Y letter has v=1, u=0.
 [[nodiscard]] auto pauli_y_count(const MonomialLike auto &p) -> size_t {
-    const auto e_mask = pauli_even_mask(p.size() / 2);
+    const auto &e_mask = cached_even_bits<LSb0>(p.size());
     size_t y = 0;
     const size_t nw = p.num_words();
     for (size_t w = 0; w < nw; ++w) {
@@ -106,6 +100,7 @@ struct PauliGenContext final {
     size_t g_y = 0;
     std::array<size_t, Monomial<NumModes>::num_words()> nz_words{};
     size_t nz_count = 0;
+    Monomial<NumModes> e_mask{}; // held here so the hot sign kernel never rebuilds it per term
 };
 
 // Call once per layer, not per term. The return type still names NumModes explicitly: it sizes
@@ -115,6 +110,7 @@ auto make_pauli_gen_context(const MonomialLike auto &gen)
     using Mono = std::remove_cvref_t<decltype(gen)>;
     PauliGenContext<Mono::size() / 2> ctx;
     ctx.gen = gen;
+    ctx.e_mask = pauli_even_mask<Mono::size() / 2>();
     ctx.g_y = pauli_y_count(gen);
     for (size_t w = 0; w < Mono::num_words(); ++w) {
         if (gen.word(w) != 0) {
@@ -132,7 +128,9 @@ auto make_pauli_gen_context(const MonomialLike auto &gen)
 [[gnu::always_inline]] inline auto pauli_rotation_sign(const auto &ctx,
                                                        const MonomialLike auto &mono,
                                                        const auto &new_mono) -> int {
-    const auto e_mask = pauli_even_mask(mono.size() / 2);
+    // From the context, not rebuilt: this runs once per emitted rotation, and since Stage 2b a mask
+    // is a runtime-width object construction rather than the compile-time constant it used to be.
+    const auto &e_mask = ctx.e_mask;
     long delta = static_cast<long>(ctx.g_y);
     long cross = 0;
     for (size_t k = 0; k < ctx.nz_count; ++k) {

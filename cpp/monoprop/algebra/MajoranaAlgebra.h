@@ -138,6 +138,19 @@ auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialLi
     MonomialList<NumModes> combinations;
     // Clamp in pairs, not bits: max_ones counts pairs and bounds the fill over `selector`, one slot per mode.
     max_ones = std::min(max_ones, logical_num_modes);
+
+    // Reserve the exact final count, Sum_{k<=max_ones} C(logical_num_modes, k). Growing geometrically
+    // instead holds the old and new buffers simultaneously at the last reallocation, and this list is
+    // the largest by-value monomial allocation in the library -- Schrodinger at 128 modes / cutoff 6 is
+    // ~11.0M entries, so the transient is multiple GiB. An optimization only: push_back still grows if
+    // the product below saturates at an absurd mode count, which cannot fit in memory regardless.
+    size_t reserve_count = 0;
+    for (size_t k = 0, binomial = 1; k <= max_ones; ++k) {
+        reserve_count += binomial;
+        binomial = binomial * (logical_num_modes - k) / (k + 1);
+    }
+    combinations.reserve(reserve_count);
+
     auto selector = std::vector(logical_num_modes, false);
     const size_t inactive_mode_prefix = NumModes - logical_num_modes;
 

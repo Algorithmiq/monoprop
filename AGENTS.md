@@ -68,6 +68,13 @@ Key files:
   consumers are migrated. Operators (`^`, `&`, `>>`, …) are inherited and yield plain `Bitset`, so
   do not recover a width from an operator's result via a qualified `decltype(x)::size()` — use
   instance calls (`x.size()`) in anything taking `MonomialLike auto`.
+  Two consequences for per-term code, both measured: a `Bitset` is sized for the widest supported
+  width rather than its own, and constructing one is a real construction rather than a compile-time
+  constant. So in anything on the per-term path, write a word loop (`x.word(w) & m.word(w)`) instead
+  of an `a & b` / `^` / `>>` chain that materializes a temporary per step, and take masks from
+  `cached_even_bits` (`Utilities.h`) or a per-layer context rather than rebuilding them per call.
+  Within-word pair tricks like `(word >> 1) & even_mask` are safe because a mode's two bits are
+  `2m, 2m+1` and never straddle a word.
 - **`Basis` / the `Algebra` policy** (`cpp/monoprop/algebra/`): the two algebras are sibling models
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is

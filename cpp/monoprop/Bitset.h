@@ -21,7 +21,6 @@
 #include <cstring>
 #include <ostream>
 #include <type_traits>
-#include <vector>
 
 namespace monoprop::detail {
 
@@ -64,15 +63,37 @@ namespace monoprop {
 // heap, keeping data()/word(i) a single contiguous view regardless of which storage is active. Every
 // per-word loop routes through detail::with_nwords for n <= kInlineWords (the hot regime) and a plain
 // loop above it -- see the NumModes-NTTP-removal plan's Stage 2b.
+//
+// Unlike the Bitset<NumBits> template this replaces, one object is sized for the *widest* supported
+// bitset rather than exactly for its own width (72 bytes vs the old 8/16/32/64 for 32/64/128/250
+// modes). That is inherent to owning the bits inline at a runtime width, and it is paid per monomial
+// wherever monomials are held by value in bulk. Keep hot paths off by-value temporaries because of
+// it: prefer a word loop over `a & b` chains, and hoist masks out of per-term code. The plan's route
+// out is Stage 6's arena, where a Bitset becomes a non-owning {pointer, width} view over
+// exactly-sized storage and the size question disappears.
 class Bitset {
     using word_type = uint64_t;
     static constexpr auto word_width = sizeof(word_type) * 8;
     static constexpr size_t kInlineWords = 8;
 
-    std::array<word_type, kInlineWords> inline_words_{};
-    std::vector<word_type> spill_{}; // empty iff nwords_ <= kInlineWords; else holds all nwords_ words
+    // The inline words and the heap pointer are never both live -- nwords_ alone selects which -- so
+    // they share storage. A std::vector member instead costs 24 bytes on *every* monomial at *every*
+    // width, and monomials are stored by value in bulk (MonomialList, OperatorIndex::overflow_,
+    // IncomingProbe::mono), so that overhead is multiplied by the term count. Sizing the object for
+    // the widest supported bitset already costs enough; see the Stage 2b follow-up note below.
+    union Storage {
+        std::array<word_type, kInlineWords> inline_;
+        word_type *heap_;
+        constexpr Storage() noexcept : inline_{} {}
+    };
+
+    Storage s_{};
     uint32_t nwords_ = 0;
     uint32_t top_bits_ = 0; // bits used in the last word; 0 means "all word_width bits used"
+
+    // Selects the active union member. Must be consulted *before* nwords_ is overwritten by an
+    // assignment, and *after* it is set by a constructor.
+    [[nodiscard]] auto spilled() const noexcept -> bool { return nwords_ > kInlineWords; }
 
     [[nodiscard]] auto top_mask() const noexcept -> word_type {
         return top_bits_ ? ((word_type{1} << top_bits_) - 1) : ~word_type{0};
@@ -91,8 +112,8 @@ public:
     explicit Bitset(size_t num_bits) noexcept
         : nwords_(static_cast<uint32_t>((num_bits + word_width - 1) / word_width)),
           top_bits_(static_cast<uint32_t>(num_bits % word_width)) {
-        if (nwords_ > kInlineWords) {
-            spill_.assign(nwords_, 0);
+        if (spilled()) {
+            s_.heap_ = new word_type[nwords_]{};
         }
     }
 
@@ -105,10 +126,77 @@ public:
         }
     }
 
-    [[nodiscard]] auto data() const noexcept -> const word_type * {
-        return spill_.empty() ? inline_words_.data() : spill_.data();
+    Bitset(const Bitset &o) noexcept : nwords_(o.nwords_), top_bits_(o.top_bits_) {
+        if (spilled()) {
+            s_.heap_ = new word_type[nwords_];
+            std::memcpy(s_.heap_, o.s_.heap_, nwords_ * sizeof(word_type));
+        }
+        else {
+            s_.inline_ = o.s_.inline_;
+        }
     }
-    [[nodiscard]] auto data() noexcept -> word_type * { return spill_.empty() ? inline_words_.data() : spill_.data(); }
+
+    // Copies the union's object representation, which steals the pointer in the spilled case. Zeroing
+    // the source's nwords_ makes it inline-empty, so its destructor frees nothing.
+    Bitset(Bitset &&o) noexcept : s_(o.s_), nwords_(o.nwords_), top_bits_(o.top_bits_) {
+        o.nwords_ = 0;
+        o.top_bits_ = 0;
+    }
+
+    auto operator=(const Bitset &o) noexcept -> Bitset & {
+        if (this == &o) {
+            return *this;
+        }
+        // Same width is the overwhelmingly common case (a monomial assigned from another monomial of
+        // the same operator), and it needs no reallocation at all.
+        if (nwords_ == o.nwords_) {
+            top_bits_ = o.top_bits_;
+            if (spilled()) {
+                std::memcpy(s_.heap_, o.s_.heap_, nwords_ * sizeof(word_type));
+            }
+            else {
+                s_.inline_ = o.s_.inline_;
+            }
+            return *this;
+        }
+        if (spilled()) {
+            delete[] s_.heap_;
+        }
+        nwords_ = o.nwords_;
+        top_bits_ = o.top_bits_;
+        if (spilled()) {
+            s_.heap_ = new word_type[nwords_];
+            std::memcpy(s_.heap_, o.s_.heap_, nwords_ * sizeof(word_type));
+        }
+        else {
+            s_.inline_ = o.s_.inline_;
+        }
+        return *this;
+    }
+
+    auto operator=(Bitset &&o) noexcept -> Bitset & {
+        if (this == &o) {
+            return *this;
+        }
+        if (spilled()) {
+            delete[] s_.heap_;
+        }
+        s_ = o.s_;
+        nwords_ = o.nwords_;
+        top_bits_ = o.top_bits_;
+        o.nwords_ = 0;
+        o.top_bits_ = 0;
+        return *this;
+    }
+
+    ~Bitset() noexcept {
+        if (spilled()) {
+            delete[] s_.heap_;
+        }
+    }
+
+    [[nodiscard]] auto data() const noexcept -> const word_type * { return spilled() ? s_.heap_ : s_.inline_.data(); }
+    [[nodiscard]] auto data() noexcept -> word_type * { return spilled() ? s_.heap_ : s_.inline_.data(); }
     [[nodiscard]] auto word(size_t i) const noexcept -> uint64_t { return data()[i]; }
 
     [[nodiscard]] auto num_words() const noexcept -> size_t { return nwords_; }

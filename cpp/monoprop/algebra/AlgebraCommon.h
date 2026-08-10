@@ -76,15 +76,22 @@ auto bitset_to_indices(const MonomialLike auto &bs) -> VecZ {
 }
 
 auto is_paired(const MonomialLike auto &mono, const auto &even_mask) -> bool {
-    // Paired = each mode's even bit and its odd partner agree (both set or both clear).
-    const auto even_bits_masked = mono & even_mask;
-    const auto odd_bits_masked = (mono >> 1) & even_mask;
-    return (even_bits_masked ^ odd_bits_masked).none();
+    // Paired = each mode's even bit and its odd partner agree (both set or both clear). Word loop
+    // rather than `(mono & m) ^ ((mono >> 1) & m)`, which built three runtime-width temporaries per
+    // call; (word >> 1) & m is within-word for the same reason as in cutoff_sums().
+    const size_t nw = mono.num_words();
+    for (size_t w = 0; w < nw; ++w) {
+        const uint64_t word = mono.word(w);
+        const uint64_t m = even_mask.word(w);
+        if (((word & m) ^ ((word >> 1) & m)) != 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 auto is_paired(const MonomialLike auto &mono) -> bool {
-    const auto even_mask = even_bits<std::remove_cvref_t<decltype(mono)>::size(), LSb0>();
-    return is_paired(mono, even_mask);
+    return is_paired(mono, cached_even_bits<LSb0>(mono.size()));
 }
 
 // No monomial argument to deduce a width from -- NumModes stays explicit (it sizes the
@@ -137,7 +144,10 @@ struct CutoffSums {
     if constexpr (Mono::num_words() == 1) {
         constexpr size_t num_bits = Mono::size();
         constexpr uint64_t valid_mask = num_bits == 64 ? ~uint64_t{0} : ((uint64_t{1} << num_bits) - 1);
-        const uint64_t even_mask = even_bits<Mono::size(), LSb0>().word(0);
+        // Spelled as the literal pattern rather than even_bits<num_bits, LSb0>().word(0): identical
+        // value, but a constant expression again. A runtime-width Bitset is not a literal type, so
+        // the call itself would be a per-term object construction.
+        constexpr uint64_t even_mask = 0x5555555555555555ULL & valid_mask;
         const uint64_t active_mask =
             active_bit_offset == 0 ? valid_mask : (valid_mask & ~((uint64_t{1} << active_bit_offset) - 1));
         const uint64_t active_word = mono.word(0) & active_mask;
@@ -149,15 +159,37 @@ struct CutoffSums {
                 static_cast<size_t>(std::popcount(first_pair | second_pair))};
     }
 
-    // Both branches must agree on type for the ternary: mono is Mono (a Monomial<NumModes>), but
-    // `mono >> ...` is plain Bitset (operators live on the base -- see the Stage 2b wrapper note in
-    // core/Monomial.h), so mono needs the same explicit upcast to avoid an ambiguous common type.
-    const auto active_mono =
-        logical_num_modes == num_modes ? static_cast<const Bitset &>(mono) : (mono >> active_bit_offset);
-    const auto mask = even_bits<Mono::size(), LSb0>();
-    const auto first_pair = active_mono & mask;
-    const auto second_pair = (active_mono >> 1) & mask;
-    return {(first_pair ^ second_pair).count(), active_mono.count(), (first_pair | second_pair).count()};
+    // One pass over the words, with no Bitset temporaries. The `active & mask` / `(active >> 1) & mask`
+    // / `^` / `|` / `>>` chain this replaces built five of them per term, and since Stage 2b each is a
+    // full runtime-width object construction rather than a trivially copyable value.
+    //
+    // (word >> 1) & even_mask equals ((bits >> 1) & mask).word(w): a full-width shift carries the low
+    // bit of word w+1 into bit 63 of word w, which is an odd position and so masked off regardless.
+    // The same within-word-pairs argument pair_swap() and pauli_uv() already rely on.
+    const auto &mask = cached_even_bits<LSb0>(Mono::size());
+    const auto accumulate = [&mask](const auto &bits) -> CutoffSums {
+        size_t xor_sum = 0;
+        size_t popcount_sum = 0;
+        size_t or_sum = 0;
+        const size_t nw = bits.num_words();
+        for (size_t w = 0; w < nw; ++w) {
+            const uint64_t word = bits.word(w);
+            const uint64_t m = mask.word(w);
+            const uint64_t first_pair = word & m;
+            const uint64_t second_pair = (word >> 1) & m;
+            xor_sum += static_cast<size_t>(std::popcount(first_pair ^ second_pair));
+            popcount_sum += static_cast<size_t>(std::popcount(word));
+            or_sum += static_cast<size_t>(std::popcount(first_pair | second_pair));
+        }
+        return {xor_sum, popcount_sum, or_sum};
+    };
+
+    // The shift is the uncommon case (logical_num_modes < num_modes); keep its temporary out of the
+    // path that does not need one.
+    if (logical_num_modes == num_modes) {
+        return accumulate(mono);
+    }
+    return accumulate(mono >> active_bit_offset);
 }
 
 // Both cutoffs below keep a fully paired monomial (xor_sum == 0) unconditionally: those are the only
