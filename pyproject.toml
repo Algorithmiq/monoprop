@@ -82,6 +82,7 @@ keyring-provider = "subprocess"
 cache-keys = [
   { file = "pyproject.toml" },
   { file = "cpp/include/**/*.h" },
+  { file = "cpp/include/**/*.h.in" },
   { file = "cpp/monoprop/**/*.{h,cpp}" },
   { file = "**/CMakeLists.txt" },
   { file = "cmake/**/*" },
