@@ -60,3 +60,10 @@ BOOST_AUTO_TEST_CASE(validation_expected_graph_layers) {
     BOOST_CHECK_NO_THROW(validate_expected_graph_layers(3, 3));
     BOOST_CHECK_THROW(validate_expected_graph_layers(4, 3), std::runtime_error);
 }
+
+BOOST_AUTO_TEST_CASE(validation_only_rotate_len_k) {
+    BOOST_CHECK_NO_THROW(validate_only_rotate_len_k_(std::nullopt, 8));
+    BOOST_CHECK_NO_THROW(validate_only_rotate_len_k_(8u, 8));
+    BOOST_CHECK_THROW(validate_only_rotate_len_k_(0u, 8), std::runtime_error);
+    BOOST_CHECK_THROW(validate_only_rotate_len_k_(9u, 8), std::runtime_error);
+}

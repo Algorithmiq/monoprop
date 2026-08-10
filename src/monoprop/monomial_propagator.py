@@ -178,10 +178,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 f"{self._system_size}."
             )
 
-    def _validate_and_correct_only_rotate_len_k(
-        self, only_rotate_len_k: int | None
-    ) -> int:
-        """Validate ``only_rotate_len_k``; ``None`` becomes the ``0`` the engine reads as "all".
+    def _validate_only_rotate_len_k(self, only_rotate_len_k: int | None) -> None:
+        """Validate ``only_rotate_len_k``.
 
         Must be positive, and at most ``2 * num_qubits`` when the propagator knows its qubit count
         (i.e. on a [PauliPropagator][monoprop.pauli_propagator.PauliPropagator]).
@@ -190,16 +188,15 @@ class MonomialPropagator(ABC, Generic[T_op]):
             only_rotate_len_k: Optional length cutoff for gate application.
 
         Returns:
-            The validated cutoff. The engine reads ``0`` as "apply all gates to all monomials",
-            so ``None`` maps onto it and callers need not special-case "no restriction".
+            The validated optional cutoff.
         """
-        if only_rotate_len_k is None:
-            return 0
-        if only_rotate_len_k <= 0 or only_rotate_len_k > 2 * self._system_size:
+        if (
+            only_rotate_len_k is not None
+            and not 0 < only_rotate_len_k <= 2 * self._system_size
+        ):
             raise ValueError(
                 f"only_rotate_len_k={only_rotate_len_k} is out of range; must be 0 < k <= 2*num_qubits "
             )
-        return only_rotate_len_k
 
     def build_graph(
         self,
@@ -228,9 +225,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         """
         self._check_initial_state(circuit)
         self._check_circuit_width(circuit)
-        only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
-            only_rotate_len_k
-        )
+        self._validate_only_rotate_len_k(only_rotate_len_k)
 
         if seed_parameters is not None:
             seed = seed_parameters
@@ -271,9 +266,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
             circuit: Gates to apply, and the angle values to apply them at.
             only_rotate_len_k: See [build_graph][].
         """
-        only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
-            only_rotate_len_k
-        )
+        self._validate_only_rotate_len_k(only_rotate_len_k)
         self._check_initial_state(circuit)
         self._check_circuit_width(circuit)
         gates = self._circuit_gates(circuit)
