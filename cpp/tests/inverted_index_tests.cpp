@@ -32,7 +32,8 @@ using namespace monoprop::detail;
 
 namespace {
 constexpr size_t N = 32; // 2N = 64 majorana columns
-using Sc = InvertedIndex<N>;
+using Sc = InvertedIndex;
+constexpr size_t kCols = 2 * N; // InvertedIndex is runtime-sized: one column per bit position
 using MSet = Monomial<N>;
 MSet bs(const VecZ &r) {
     return indices_to_bitset<N>(r);
@@ -69,7 +70,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
         bs({5}),
         bs({4, 5, 6, 7}),
     };
-    Sc sc;
+    Sc sc(kCols);
     sc.rebuild(op);
     BOOST_TEST(sc.rows() == op.size());
 
@@ -104,7 +105,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
         }
         op.push_back(indices_to_bitset<N>(pos));
     }
-    Sc sc;
+    Sc sc(kCols);
     sc.rebuild(op);
     BOOST_TEST(sc.rows() == kR);
     BOOST_TEST(sc.column_is_dense(col_of(0)));  // 10/128 >= 1/64
@@ -117,7 +118,8 @@ BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
 // combine_columns_block's lower_bound relies on.
 BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
     constexpr size_t M = 64; // 2M = 128 columns
-    using ScW = InvertedIndex<M>;
+    using ScW = InvertedIndex;
+    constexpr size_t kColsW = 2 * M;
     constexpr size_t kR = 16'385; // large operator, many sparse columns
     std::vector<Monomial<M>> op;
     op.reserve(kR);
@@ -125,7 +127,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
         // One mode per row over 128 columns: 128 hits each, and 128*64 < 16385, so all stay sparse.
         op.push_back(indices_to_bitset<M>({i % 128}));
     }
-    ScW sc;
+    ScW sc(kColsW);
     sc.rebuild(op);
     BOOST_TEST(sc.rows() == kR);
 
@@ -167,10 +169,10 @@ BOOST_AUTO_TEST_CASE(inverted_index_append_rows_matches_rebuild) {
         op.push_back(bs(pos));
     }
 
-    Sc full;
+    Sc full(kCols);
     full.rebuild(op);
 
-    Sc inc;
+    Sc inc(kCols);
     inc.rebuild(std::vector<MSet>(op.begin(), op.begin() + 64));
     // Force the lazy parity bitmap to exist before the append, which is the branch that extends it.
     static_cast<void>(inc.row_parity_words());
@@ -178,7 +180,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_append_rows_matches_rebuild) {
     inc.append_rows(op, 164, kR - 164);
 
     BOOST_REQUIRE_EQUAL(inc.rows(), full.rows());
-    for (size_t c = 0; c < Sc::kNumColumns; ++c) {
+    for (size_t c = 0; c < full.num_columns(); ++c) {
         BOOST_TEST_CONTEXT("column " << c) {
             BOOST_TEST(rows_of(inc, c) == rows_of(full, c), boost::test_tools::per_element());
         }
@@ -224,7 +226,7 @@ BOOST_AUTO_TEST_CASE(combine_columns_block_folds_dense_and_sparse_identically) {
         }
         op.push_back(bs(pos));
     }
-    Sc sc;
+    Sc sc(kCols);
     sc.rebuild(op);
     BOOST_REQUIRE(sc.column_is_dense(col_of(0)));
     BOOST_REQUIRE(sc.column_is_dense(col_of(1)));

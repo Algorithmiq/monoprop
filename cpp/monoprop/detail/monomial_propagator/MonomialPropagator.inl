@@ -785,7 +785,7 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
 }
 
 template <size_t NumModes>
-auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
+auto build_cos_callbacks(const detail::InvertedIndex &inverted_index,
                          const MPGraphView &graph,
                          Basis basis = Basis::Majorana) -> detail::CosCallbacks;
 
@@ -879,7 +879,7 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
 }
 
 template <size_t NumModes>
-auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, const MPGraphView &graph, Basis basis)
+auto build_cos_callbacks(const detail::InvertedIndex &inverted_index, const MPGraphView &graph, Basis basis)
     -> detail::CosCallbacks {
     struct LayerCos {
         bool recomputes_cos = false;

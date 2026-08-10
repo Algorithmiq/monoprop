@@ -77,8 +77,8 @@ struct EvenParityNzWord {
 // `pivot_col` is read separately from `gen_cols` so a caller can fold a transformed generator while
 // splitting on the untransformed one. `g_odd` XORs the per-row parity(|M|) correction (row_parity_ptr)
 // in before followers are derived.
-// `sc` is deduced (InvertedIndex<NumModes>, an argument type -- see the NumModes-NTTP-removal plan's
-// Stage 2a); nothing below needs NumModes as a value.
+// `sc` stays a deduced `auto`: InvertedIndex is no longer a template, but the fold-cache tests also
+// bind this to a stand-in exposing the same column accessors.
 inline auto even_parity_scan_pass1(const auto &sc,
                                    std::span<const size_t> gen_cols,
                                    size_t pivot_col,

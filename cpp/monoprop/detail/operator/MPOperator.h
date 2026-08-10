@@ -76,7 +76,7 @@ struct MPOperator {
     VecZ initial_state = {};
     // Set once at propagator construction.
     Basis basis = Basis::Majorana;
-    mutable std::optional<InvertedIndex<NumModes>> inverted_index_ = std::nullopt;
+    mutable std::optional<InvertedIndex> inverted_index_ = std::nullopt;
 
     MPOperator() noexcept = default;
     MPOperator(MPOperator &&) noexcept = default;
@@ -107,9 +107,11 @@ struct MPOperator {
         }
     }
 
-    auto inverted_index() const -> const InvertedIndex<NumModes> & {
+    auto inverted_index() const -> const InvertedIndex & {
         if (!inverted_index_.has_value() || inverted_index_->rows() != store->size()) {
-            inverted_index_.emplace();
+            // Column count is the storage bit width, taken off the store so it cannot drift from the
+            // monomials whose positions rebuild() scatters.
+            inverted_index_.emplace(Monomial<NumModes>::size());
             inverted_index_->rebuild(*store);
         }
         return *inverted_index_;
