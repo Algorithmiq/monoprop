@@ -50,6 +50,7 @@ target_link_libraries(
     Boost::boost
     Threads::Threads
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
+  PRIVATE
     PkgConfig::HWLOC
 )
 
