@@ -149,7 +149,7 @@ If you are contributing on behalf of your employer, contact
 ## Documentation
 
 The documentation is built with [Fumadocs](https://fumadocs.dev/) and hosted at
-<https://docs.algorithmiq.fi/monoprop>. The Python API reference is generated from
+<https://docs.monoprop.algorithmiq.tech>. The Python API reference is generated from
 docstrings ([griffe](https://mkdocstrings.github.io/griffe/)) and the tutorials are
 executed from the notebooks in `docs/notebooks/`.  Building the documentation locally requires [npm](https://docs.npmjs.com/), the Node.js package manager. Once that is available, you can run:
 
