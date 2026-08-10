@@ -101,7 +101,7 @@ function(_monoprop_query_machine_flags)
     set(_march_args "-march=${_arg_MARCH}")
   endif()
 
-  if(CMAKE_CXX_COMPILER_ID STREQUAL AppleClang)
+  if(CMAKE_CXX_COMPILER_ID MATCHES Clang)
     execute_process(
       COMMAND
         # gersemi: off
