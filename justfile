@@ -33,6 +33,25 @@ test:
     uv run python -m pytest -m "not mpi"
     ctest --test-dir build/editable/Release --output-on-failure
 
+# Output directory for `capture-baseline` / `diff-baseline` (gitignored).
+baseline_dir := ".baseline-capture"
+
+# Capture a golden baseline snapshot into `.baseline-capture/LABEL` (default "golden") via
+# tools/capture-baseline.py -- the regression instrument for the NumModes-NTTP removal refactor
+# (see the plan's Stage 0). Run once on an unmodified tree to seed the golden baseline, then
+# `just diff-baseline` after every later-stage change.
+capture-baseline LABEL='golden':
+    uv run --no-sync python tools/capture-baseline.py --out "{{ baseline_dir }}/{{ LABEL }}"
+
+# Rebuild monoprop and diff a fresh capture against a stored one (default "golden"). Byte-identical
+# is the bar through the plan's Stages 1-2 and 4-5; Stage 6's sparse-row re-baseline is the one
+# deliberate, documented exception (see the plan's "Verification strategy" section).
+diff-baseline AGAINST='golden':
+    uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v
+    rm -rf "{{ baseline_dir }}/candidate"
+    just capture-baseline candidate
+    diff -rq "{{ baseline_dir }}/{{ AGAINST }}" "{{ baseline_dir }}/candidate"
+
 # MPI is off by default in source builds, so build an MPI-enabled editable install
 # first, then run the suite under mpiexec with --no-sync (avoids a per-rank resync).
 # Pass RANKS as either a single integer or a semicolon-separated list (e.g. "1;2;4").
