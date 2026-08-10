@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <optional>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -38,5 +39,8 @@ monoprop_EXPORT auto validate_functional_call(const VecD &parameters, size_t exp
 
 // The graph must still have the layer count the functional was built against.
 monoprop_EXPORT auto validate_expected_graph_layers(size_t current_layers, size_t expected_layers) -> void;
+
+// only_rotate_len_k is optional; when set it must satisfy 0 < k <= max_k.
+monoprop_EXPORT auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void;
 
 } // namespace monoprop

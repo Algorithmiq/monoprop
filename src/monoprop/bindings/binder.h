@@ -106,7 +106,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "gen_coeffs"_a,
             "gate_indices"_a = std::nullopt,
             "parameters"_a = std::nullopt,
-            "only_rotate_len_k"_a = 0,
+            "only_rotate_len_k"_a = std::nullopt,
             "Build the propagation graph, recording per-layer gate information");
 
     // Deep copy: the operator store is cloned, the immutable graph layer cores are shared.
@@ -121,7 +121,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "parameter_mapping"_a,
             "gen_coeffs"_a,
             "parameters"_a,
-            "only_rotate_len_k"_a = 0,
+            "only_rotate_len_k"_a = std::nullopt,
             "Evolve and contract immediately without storing a graph");
 
     cls.def("expectation_value",

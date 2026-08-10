@@ -25,9 +25,9 @@ namespace monoprop::detail {
 // The drain paired with build_layer's fused emission: complete each rotation by adding its sine term
 // directly to op_coeffs (the ContractImmediately forward path at all rank counts). The gate's cosine
 // scale reaches the coefficients two ways:
-//   • fused_scale (k==0, default): the scan already scaled every anticommuting coeff, so no cos pass runs
+//   • fused_scale (no length cap, default): the scan already scaled every anticommuting coeff, so no cos pass runs
 //     here; slots born after that sweep (fresh inserts) fold cos in via their apply arm below.
-//   • two-pass (k>0 / cos==0 fallback): scale_cos_mask runs here, then every arm is a plain add.
+//   • two-pass (length cap / cos==0 fallback): scale_cos_mask runs here, then every arm is a plain add.
 // At R>1 each rank applies only the add to the slot it owns (half rotations in fc.cross_half).
 inline auto apply_fused_contract(FusedContract &fc,
                                  VecD &op_coeffs,
