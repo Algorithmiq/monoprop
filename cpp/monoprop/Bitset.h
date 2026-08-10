@@ -86,6 +86,33 @@ public:
         return (std::popcount(parity_word) & 1U) != 0;
     }
 
+    // Every quantity a caller building `*this ^ gen` typically also needs alongside it: the XORed
+    // result, popcount(*this & gen) (overlap), and popcount(result). Composing this from operator^
+    // and count_and() costs two full passes over the words; once the width is a runtime value
+    // rather than a compile-time NumBits (see the NumModes-NTTP-removal plan), each pass also pays
+    // its own loop prologue/tail, so the separate-ops cost keeps growing where this stays one pass.
+    // Kept alongside the existing composable ops -- a cold path that only needs one of the three
+    // should keep using them. result needs no sanitize_top(): XOR of two already-sanitized operands
+    // never sets a bit above NumBits.
+    struct FusedXor {
+        Bitset result;
+        size_t overlap;
+        size_t result_count;
+    };
+
+    [[nodiscard]] constexpr auto fused_xor(const Bitset &gen) const noexcept -> FusedXor {
+        Bitset result;
+        size_t overlap = 0;
+        size_t result_count = 0;
+        for (size_t i = 0; i < kNumWords; ++i) {
+            const word_type n = words_[i] ^ gen.words_[i];
+            result.words_[i] = n;
+            overlap += static_cast<size_t>(std::popcount(words_[i] & gen.words_[i]));
+            result_count += static_cast<size_t>(std::popcount(n));
+        }
+        return {result, overlap, result_count};
+    }
+
     constexpr auto set(size_t pos) noexcept -> Bitset & {
         words_[pos / word_width] |= uint64_t(1) << (pos % word_width);
         return *this;

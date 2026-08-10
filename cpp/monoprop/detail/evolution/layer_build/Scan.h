@@ -164,8 +164,13 @@ template <size_t NumModes, Algebra A>
     Monomial<NumModes> mono;
     ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
     const Monomial<NumModes> &gen = A::generator(ctx);
-    new_mono = mono ^ gen;
-    overlap = mono.count_and(gen);
+    // One pass instead of two: mono ^ gen and popcount(mono & gen) are both always needed here, so
+    // fused_xor() computes them together (see Bitset::fused_xor). Its result_count (popcount of the
+    // XOR) goes unused -- the caller already has new_pop for free via mono_pop + gen_pop - 2*overlap
+    // -- so it is not threaded through here.
+    const auto fused = mono.fused_xor(gen);
+    new_mono = fused.result;
+    overlap = fused.overlap;
     phase_factor = A::rotation_sign(ctx, mono, new_mono);
 }
 

@@ -80,6 +80,25 @@ BOOST_AUTO_TEST_CASE(bitset_count_and_parity_and_cross_word) {
     BOOST_TEST(!c.parity_and(d));
 }
 
+// fused_xor must agree with the composed operator^ / count_and it replaces in the hot path
+// (Scan.h's emit_term_products) -- same operands, same three quantities, one pass instead of two.
+BOOST_AUTO_TEST_CASE(bitset_fused_xor_matches_composed_ops) {
+    auto [a, ra] = make_pair<192>({1, 63, 64, 130, 191});
+    auto [b, rb] = make_pair<192>({63, 64, 65, 130});
+    const auto fused = a.fused_xor(b);
+    expect_equal<192>(fused.result, ra ^ rb);
+    BOOST_TEST(fused.overlap == a.count_and(b));
+    BOOST_TEST(fused.result_count == (ra ^ rb).count());
+
+    // Single-word path (kNumWords == 1) takes the same loop body, just one iteration.
+    auto [c, rc] = make_pair<64>({0, 7, 31, 63});
+    auto [d, rd] = make_pair<64>({7, 8, 31});
+    const auto fused_sw = c.fused_xor(d);
+    expect_equal<64>(fused_sw.result, rc ^ rd);
+    BOOST_TEST(fused_sw.overlap == c.count_and(d));
+    BOOST_TEST(fused_sw.result_count == (rc ^ rd).count());
+}
+
 BOOST_AUTO_TEST_CASE(bitset_not_respects_top_mask) {
     BOOST_TEST((~Bitset<100>{}).count() == 100U);
     BOOST_TEST((~Bitset<64>{}).count() == 64U);
@@ -165,5 +184,9 @@ BOOST_AUTO_TEST_CASE(bitset_random_differential) {
         expect_equal<N>(a >> s, ra >> s);
         BOOST_TEST(a.count_and(b) == (ra & rb).count());
         BOOST_TEST((a == b) == (ra == rb));
+        const auto fused = a.fused_xor(b);
+        expect_equal<N>(fused.result, ra ^ rb);
+        BOOST_TEST(fused.overlap == a.count_and(b));
+        BOOST_TEST(fused.result_count == (ra ^ rb).count());
     }
 }
