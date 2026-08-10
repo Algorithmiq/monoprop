@@ -52,10 +52,10 @@ memory = Float64[]
 native_memory = Float64[]
 expvals = Float64[]
 
-sampler = start_sampler()
+window = HighWaterMark()
 
 @showprogress for (step_idx, num_steps) in enumerate(step_range)
-    reset!(sampler)
+    start!(window)
     t1 = time_ns()
     global pauli_sum = propagate(
         step_circuit, pauli_sum, step_parameters;
@@ -63,17 +63,16 @@ sampler = start_sampler()
     )
     expval = overlapwithzero(pauli_sum)
     t2 = time_ns()
+    stop!(window)
 
     if step_idx > 1
         push!(runtime, (t2 - t1) / 1e9)
     end
     push!(num_terms, length(pauli_sum))
-    push!(memory, peak_mb(sampler))
+    push!(memory, peak_mb(window))
     push!(native_memory, Base.summarysize(pauli_sum) / 1024^2)
     push!(expvals, expval)
 end
-
-stop!(sampler)
 
 results_file = joinpath(@__DIR__, "results.json")
 data = JSON.parsefile(results_file)

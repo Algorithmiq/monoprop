@@ -32,17 +32,6 @@ function process_cpu_seconds()
 end
 
 
-"""Peak resident set size in MB, from VmHWM in /proc/self/status."""
-function peak_rss_mb()
-    for line in eachline("/proc/self/status")
-        if startswith(line, "VmHWM:")
-            return parse(Int, split(line)[2]) / 1024
-        end
-    end
-    return NaN
-end
-
-
 function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
     site_index = N_spinful_sites ÷ 2
 
@@ -57,19 +46,30 @@ function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_l
     memory_size = zeros(n_layers + 1)
     native_memory_size = zeros(n_layers + 1)
 
-    sampler = start_sampler()
+    sampler = HighWaterMark()
 
-    cpu_start = process_cpu_seconds()
-    gc_start = Base.gc_time_ns()
+    # Accumulated across the timed regions only: opening a memory window forces a full GC,
+    # so a counter spanning the whole loop would charge that settling cost to the workload
+    # and inflate both gc_seconds and busy_cores.
+    cpu_seconds = 0.0
+    gc_ns = 0
 
-    reset!(sampler)
+    start!(sampler)
+    cpu_mark, gc_mark = process_cpu_seconds(), Base.gc_time_ns()
     cumulative_runtimes[1] = @elapsed (values[1] = overlapwithfock(obs, fock_state))
+    cpu_seconds += process_cpu_seconds() - cpu_mark
+    gc_ns += Base.gc_time_ns() - gc_mark
+    stop!(sampler)
     term_counts[1] = length(obs)
     memory_size[1] = peak_mb(sampler)
     native_memory_size[1] = Base.summarysize(obs) / 1024^2
     for k = 1:n_layers
-        reset!(sampler)
+        start!(sampler)
+        cpu_mark, gc_mark = process_cpu_seconds(), Base.gc_time_ns()
         step_runtime = @elapsed propagate!(circ_single, obs, thetas_single, min_abs_coeff=min_abs_coeff, max_unpaired=max_unpaired)
+        cpu_seconds += process_cpu_seconds() - cpu_mark
+        gc_ns += Base.gc_time_ns() - gc_mark
+        stop!(sampler)
         values[k+1] = overlapwithfock(obs, fock_state)
         term_counts[k+1] = length(obs)
         cumulative_runtimes[k+1] = cumulative_runtimes[k] + step_runtime
@@ -77,13 +77,10 @@ function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_l
         native_memory_size[k+1] = Base.summarysize(obs) / 1024^2
     end
 
-    stop!(sampler)
-
-    cpu_seconds = process_cpu_seconds() - cpu_start
     total_runtime = cumulative_runtimes[end]
     provenance = Dict(
         "cpu_seconds" => cpu_seconds,
-        "gc_seconds" => (Base.gc_time_ns() - gc_start) / 1e9,
+        "gc_seconds" => gc_ns / 1e9,
         "busy_cores" => total_runtime > 0 ? cpu_seconds / total_runtime : NaN,
         # Recorded, not hardcoded: only the Vector container dispatches into the
         # AcceleratedKernels path, so this is what proves the run was threaded at all.

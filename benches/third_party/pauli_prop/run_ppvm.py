@@ -16,10 +16,9 @@ from __future__ import annotations
 
 import time
 
+from _common import HighWaterMark, ensure_results_file, load_settings, update_results
 from ppvm import PauliSum
 from tqdm import tqdm
-
-from _common import RssPeakSampler, ensure_results_file, load_settings, update_results
 
 LABEL = "QuEra ppvm"
 
@@ -38,9 +37,8 @@ memory: list[float] = []
 expvals: list[float] = []
 num_terms: list[int] = []
 
-with RssPeakSampler() as sampler:
-    for step_idx, _ in enumerate(tqdm(settings.step_range, desc=LABEL)):
-        sampler.reset()
+for step_idx, _ in enumerate(tqdm(settings.step_range, desc=LABEL)):
+    with HighWaterMark() as window:
         t1 = time.perf_counter()
         for i, k in settings.grid_edges:
             ppvm_obs.rzz(i, k, settings.theta_zz)
@@ -51,11 +49,11 @@ with RssPeakSampler() as sampler:
         ppvm_expval = ppvm_obs.overlap_with_zero()
         t2 = time.perf_counter()
 
-        if step_idx > 0:
-            runtime.append(t2 - t1)
-        expvals.append(ppvm_expval)
-        num_terms.append(len(ppvm_obs))
-        memory.append(sampler.peak_mb())
+    if step_idx > 0:
+        runtime.append(t2 - t1)
+    expvals.append(ppvm_expval)
+    num_terms.append(len(ppvm_obs))
+    memory.append(window.peak_mb)
 
 update_results(
     LABEL, runtime=runtime, memory=memory, expvals=expvals, num_terms=num_terms

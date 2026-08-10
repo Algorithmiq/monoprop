@@ -16,13 +16,12 @@ from __future__ import annotations
 
 import time
 
+from _common import HighWaterMark, init_results, load_settings, update_results
 from monoprop import PauliPropagator
 from monoprop.qiskit_conversion import from_qiskit_circuit, from_qiskit_operator
 from qiskit.circuit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 from tqdm import tqdm
-
-from _common import RssPeakSampler, init_results, load_settings, update_results
 
 LABEL = "monoprop"
 
@@ -56,23 +55,22 @@ expvals: list[float] = []
 num_terms: list[int] = []
 native_memory: list[float] = []
 
-with RssPeakSampler() as sampler:
-    for step_idx, _ in enumerate(tqdm(settings.step_range, desc=LABEL)):
-        sampler.reset()
+for step_idx, _ in enumerate(tqdm(settings.step_range, desc=LABEL)):
+    with HighWaterMark() as window:
         t1 = time.perf_counter()
         mp.propagate(mp_circ)
         expval = mp.expectation_value()
         t2 = time.perf_counter()
 
-        if step_idx > 0:
-            runtime.append(t2 - t1)
-        expvals.append(expval)
-        num_terms.append(mp.size())
-        memory.append(sampler.peak_mb())
-        native_memory.append(
-            (mp._simulator.operator_memory_bytes() + mp._simulator.graph_memory_bytes())
-            / 1024**2
-        )
+    if step_idx > 0:
+        runtime.append(t2 - t1)
+    expvals.append(expval)
+    num_terms.append(mp.size())
+    memory.append(window.peak_mb)
+    native_memory.append(
+        (mp._simulator.operator_memory_bytes() + mp._simulator.graph_memory_bytes())
+        / 1024**2
+    )
 
 update_results(
     LABEL,

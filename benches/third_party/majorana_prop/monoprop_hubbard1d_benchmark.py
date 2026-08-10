@@ -28,8 +28,10 @@ import numpy as np
 from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.fermi import FermiOperator
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from bench_common import RssPeakSampler  # noqa: E402
+# The repository's own benchmark suite owns the memory instrumentation; this directory is a
+# separate uv project, so reach it by path rather than by dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from _memory import HighWaterMark  # noqa: E402
 
 
 def mode(site, spin):
@@ -61,13 +63,19 @@ def hubbard_fermion_terms(
     """
     terms = []
     topology = bricklayer_topology(num_sites)
+    # Spin-up and spin-down modes are interleaved, so a spinful chain spans 2 * num_sites modes.
+    num_modes = 2 * num_sites
 
     for spin in ("up", "down"):
         for left_site, right_site in topology:
             left, right = mode(left_site, spin), mode(right_site, spin)
             op_terms = [((left, "+"), (right, "-")), ((right, "+"), (left, "-"))]
             terms.append(
-                FermiOperator(terms=op_terms, coefficients=[-hopping, -hopping])
+                FermiOperator(
+                    terms=op_terms,
+                    coefficients=[-hopping, -hopping],
+                    num_modes=num_modes,
+                )
             )
 
     for site in range(num_sites):
@@ -76,6 +84,7 @@ def hubbard_fermion_terms(
             FermiOperator(
                 terms=[((up, "+"), (up, "-"), (down, "+"), (down, "-"))],
                 coefficients=[interaction],
+                num_modes=num_modes,
             )
         )
 
@@ -87,6 +96,7 @@ def hubbard_fermion_terms(
                     FermiOperator(
                         terms=[((m, "+"), (m, "-"))],
                         coefficients=[-chemical_potential],
+                        num_modes=num_modes,
                     )
                 )
 
@@ -235,28 +245,27 @@ def main():
     memory_size = np.empty(trotter_steps + 1)
     native_memory_size = np.empty(trotter_steps + 1)
 
-    with RssPeakSampler() as sampler:
-        sampler.reset()
-        cpu_start = process_cpu_seconds()
+    cpu_start = process_cpu_seconds()
+    with HighWaterMark() as window:
         t_start = perf_counter()
         values[0] = simulator.expectation_value()
         cumulative_runtimes[0] = perf_counter() - t_start
         term_counts[0] = simulator.size()
-        memory_size[0] = sampler.peak_mb()
-        native_memory_size[0] = simulator._simulator.operator_memory_bytes() / 1024**2
-        for step in range(trotter_steps):
-            sampler.reset()
+    memory_size[0] = window.peak_mb
+    native_memory_size[0] = simulator._simulator.operator_memory_bytes() / 1024**2
+    for step in range(trotter_steps):
+        with HighWaterMark() as window:
             step_start = perf_counter()
             simulator.propagate(fermi_circuit)
             step_runtime = perf_counter() - step_start
             values[step + 1] = simulator.expectation_value()
             term_counts[step + 1] = simulator.size()
-            cumulative_runtimes[step + 1] = cumulative_runtimes[step] + step_runtime
-            memory_size[step + 1] = sampler.peak_mb()
-            native_memory_size[step + 1] = (
-                simulator._simulator.operator_memory_bytes() / 1024**2
-            )
-        cpu_total = process_cpu_seconds() - cpu_start
+        cumulative_runtimes[step + 1] = cumulative_runtimes[step] + step_runtime
+        memory_size[step + 1] = window.peak_mb
+        native_memory_size[step + 1] = (
+            simulator._simulator.operator_memory_bytes() / 1024**2
+        )
+    cpu_total = process_cpu_seconds() - cpu_start
 
     # The engine picks one partition per core when the env var is unset, so an unset value is
     # not "1 thread"; busy_cores is the only measurement of what the threads actually did.

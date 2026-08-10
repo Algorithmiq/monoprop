@@ -17,18 +17,18 @@ from __future__ import annotations
 import json
 import time
 
-from pauli_prop import propagate_through_circuit
-from qiskit.circuit import QuantumCircuit
-from qiskit.quantum_info import SparsePauliOp
-from tqdm import tqdm
-
 from _common import (
     RESULTS_FILE,
-    RssPeakSampler,
+    HighWaterMark,
     ensure_results_file,
     load_settings,
     update_results,
 )
+from qiskit.circuit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from tqdm import tqdm
+
+from pauli_prop import propagate_through_circuit
 
 LABEL = "Qiskit pauli-prop"
 
@@ -63,10 +63,9 @@ memory: list[float] = []
 expvals: list[float] = []
 num_terms: list[int] = []
 
-with RssPeakSampler() as sampler:
-    for step_idx, _ in enumerate(tqdm(settings.step_range, desc=LABEL)):
-        max_terms = monoprop_num_terms[step_idx]
-        sampler.reset()
+for step_idx, _ in enumerate(tqdm(settings.step_range, desc=LABEL)):
+    max_terms = monoprop_num_terms[step_idx]
+    with HighWaterMark() as window:
         t1 = time.perf_counter()
         qiskit_obs, _ = propagate_through_circuit(
             qiskit_obs,
@@ -78,11 +77,11 @@ with RssPeakSampler() as sampler:
         qiskit_expval = float(qiskit_obs.coeffs[~qiskit_obs.paulis.x.any(axis=1)].sum())
         t2 = time.perf_counter()
 
-        if step_idx > 0:
-            runtime.append(t2 - t1)
-        expvals.append(qiskit_expval)
-        num_terms.append(len(qiskit_obs))
-        memory.append(sampler.peak_mb())
+    if step_idx > 0:
+        runtime.append(t2 - t1)
+    expvals.append(qiskit_expval)
+    num_terms.append(len(qiskit_obs))
+    memory.append(window.peak_mb)
 
 update_results(
     LABEL, runtime=runtime, memory=memory, expvals=expvals, num_terms=num_terms

@@ -23,8 +23,10 @@ BENCH_DIR = Path(__file__).parent
 SETTINGS_FILE = BENCH_DIR / "settings.json"
 RESULTS_FILE = BENCH_DIR / "results.json"
 
-sys.path.insert(0, str(BENCH_DIR.parent))
-from bench_common import RssPeakSampler  # noqa: E402, F401
+# The repository's own benchmark suite owns the memory instrumentation; this directory is a
+# separate uv project, so reach it by path rather than by dependency.
+sys.path.insert(0, str(BENCH_DIR.parents[1]))
+from _memory import HighWaterMark  # noqa: E402, F401
 
 
 @dataclass(frozen=True)

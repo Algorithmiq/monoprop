@@ -3,7 +3,7 @@
 # cuPauliProp) back to back, each in its own process, writing results.json.
 #
 # Each engine runs to completion before the next starts: this keeps the peak-memory measurements
-# (see _common.RssPeakSampler / run_cupauliprop.py's GpuMemPeakSampler) uncontaminated by another
+# (see _common.HighWaterMark / run_cupauliprop.py's GpuMemPeakSampler) uncontaminated by another
 # engine's allocations, and stops the engines from contending for the same CPU/GPU at the same
 # time, which would otherwise skew both the runtime and memory numbers.
 #

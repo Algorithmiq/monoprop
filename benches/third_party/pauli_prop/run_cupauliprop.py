@@ -19,6 +19,7 @@ import time
 
 import cupy as cp
 import numpy as np
+from _common import ensure_results_file, load_settings, update_results
 from cuquantum.pauliprop.experimental import (
     LibraryHandle,
     PauliExpansion,
@@ -28,8 +29,6 @@ from cuquantum.pauliprop.experimental import (
     get_num_packed_integers,
 )
 from tqdm import tqdm
-
-from _common import ensure_results_file, load_settings, update_results
 
 LABEL = "cuPauliProp (GPU)"
 
@@ -56,11 +55,11 @@ class GpuMemPeakSampler:
     """Tracks the GPU's peak used device memory (driver-level, via cudaMemGetInfo) within a
     resettable window.
 
-    This is the GPU analogue of RssPeakSampler: rather than trusting one library's own pool
-    accounting (which can miss allocations that bypass that pool, e.g. CUDA context or
-    library-handle overhead), it polls the CUDA driver's own free/total memory report from a
-    background thread, so it reflects everything actually resident on the device. Caveat: if
-    another process shares this GPU concurrently, its usage is included too.
+    This is the GPU analogue of the host-side memory window: rather than trusting one
+    library's own pool accounting (which can miss allocations that bypass that pool, e.g. CUDA
+    context or library-handle overhead), it polls the CUDA driver's own free/total memory report
+    from a background thread, so it reflects everything actually resident on the device. Caveat:
+    if another process shares this GPU concurrently, its usage is included too.
     """
 
     def __init__(self, interval_s: float = 1e-3) -> None:
