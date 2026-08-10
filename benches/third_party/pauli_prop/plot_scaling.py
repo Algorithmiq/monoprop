@@ -280,9 +280,10 @@ def main() -> None:
         "--memory-key",
         default="final_memory_MB",
         choices=["final_memory_MB", "operator_memory_MB", "peak_rss_MB"],
-        help="Which memory column to plot. The default is each library's own final "
-        "operator accounting, which is not the same quantity for every backend "
-        "(see MEMORY_METRICS in backends.py).",
+        help="Which memory column to plot. The default is the peak process RSS over the "
+        "final step, the same quantity for every backend. `operator_memory_MB` is each "
+        "library's own accounting and is not comparable across backends "
+        "(see OPERATOR_MEMORY_METRICS in backends.py).",
     )
     args = parser.parse_args()
 

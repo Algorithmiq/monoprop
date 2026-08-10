@@ -94,6 +94,11 @@ def peak_rss_bytes() -> int:
 def reset_peak_rss() -> bool:
     """Reset ``VmHWM`` to the current RSS, starting a new measurement window.
 
+    This also resets ``getrusage(...).ru_maxrss`` (and so Julia's ``Sys.maxrss()``): both
+    report the same kernel field, ``mm->hiwater_rss``. Any process that opens a window
+    therefore loses ``ru_maxrss`` as a whole-run ceiling, and must take the maximum over
+    its windows instead.
+
     Returns:
         ``True`` if the reset took effect, ``False`` where ``/proc/self/clear_refs`` is
         unavailable (non-Linux, kernel < 4.0, or a restricted sandbox), in which case

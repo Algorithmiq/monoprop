@@ -24,22 +24,30 @@ that: `run_model.py` plots the series, `run_one.py` reduces it to totals.
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
-import psutil
-
 from model import Settings, grid_edges, observable, pauli_rotations, step_circuit
 
-# What each backend's `memory` series actually measures. They are not the same
-# quantity — say so wherever these numbers are plotted or tabulated.
-MEMORY_METRICS = {
+# The repository's own benchmark suite owns the memory instrumentation; this directory is a
+# separate uv project, so reach it by path rather than by dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from _memory import HighWaterMark  # noqa: E402
+
+# Every backend's `memory` series is this one quantity, measured the same way, so the
+# curves may share an axis.
+HOST_MEMORY_METRIC = "peak process RSS over the step (kernel VmHWM)"
+
+# What a backend reports about its *own* footprint, where it reports anything. Reference
+# only: these are not commensurable with each other (one counts an operator, another an
+# object graph, another a device pool), so they must never be compared across backends.
+OPERATOR_MEMORY_METRICS = {
     "monoprop": "operator memory (reported by the library)",
-    "QuEra ppvm": "process RSS growth (no memory accounting exposed)",
-    "Qiskit pauli-prop": "process RSS growth (no memory accounting exposed)",
-    "cuPauliProp (GPU)": "GPU memory pool in use",
+    "cuPauliProp (GPU)": "GPU memory pool in use at end of step",
     "PauliPropagation.jl": "Base.summarysize of the Pauli sum",
 }
 
@@ -52,36 +60,52 @@ class BackendResult:
     runtime: list[float] = field(default_factory=list)
     expvals: list[float] = field(default_factory=list)
     num_terms: list[int] = field(default_factory=list)
+    # Peak host RSS over each step; see HOST_MEMORY_METRIC.
     memory: list[float] = field(default_factory=list)
-    # Set when the library reports its own operator footprint, so the scaling
-    # summary can prefer it over a whole-process RSS proxy.
-    operator_memory_mb: float | None = None
+    # Empty for backends that expose no accounting of their own.
+    operator_memory: list[float] = field(default_factory=list)
 
     @property
     def memory_metric(self) -> str:
-        return MEMORY_METRICS.get(self.label, "unknown")
+        return HOST_MEMORY_METRIC
+
+    @property
+    def operator_memory_metric(self) -> str:
+        return OPERATOR_MEMORY_METRICS.get(self.label, "none reported")
+
+    @property
+    def operator_memory_mb(self) -> float | None:
+        """Return the library's own final footprint, where it reports one."""
+        return self.operator_memory[-1] if self.operator_memory else None
 
 
 def _run_steps(
     settings: Settings,
     label: str,
-    step: Callable[[int], tuple[float, int, float]],
+    step: Callable[[int], tuple[float, int, float | None]],
 ) -> BackendResult:
     """Drive `step` once per Trotter point, timing it and recording what it returns.
 
-    `step(step_idx)` advances the backend by one benchmark step and returns
-    (expectation value, term count, memory MB). The timer brackets the propagation
-    *and* the expectation value, matching what every backend reports.
+    `step(step_idx)` advances the backend by one benchmark step and returns (expectation
+    value, term count, the library's own footprint in MB or None). The timer brackets the
+    propagation *and* the expectation value, matching what every backend reports.
+
+    Peak memory is taken here rather than inside each backend so that every engine is
+    measured by the same instrument over exactly the timed region. Opening the window
+    settles the process, which is why it wraps the timer instead of the reverse.
     """
     result = BackendResult(label=label)
     for step_idx, _ in enumerate(settings.step_range):
-        t1 = time.perf_counter()
-        expval, num_terms, memory_mb = step(step_idx)
-        t2 = time.perf_counter()
+        with HighWaterMark() as window:
+            t1 = time.perf_counter()
+            expval, num_terms, operator_mb = step(step_idx)
+            t2 = time.perf_counter()
         result.runtime.append(t2 - t1)
         result.expvals.append(expval)
         result.num_terms.append(num_terms)
-        result.memory.append(memory_mb)
+        result.memory.append(window.peak_mb)
+        if operator_mb is not None:
+            result.operator_memory.append(operator_mb)
     return result
 
 
@@ -97,15 +121,13 @@ def run_monoprop(settings: Settings) -> BackendResult:
         lower_atol=settings.lower_atol,
     )
 
-    def step(_step_idx: int) -> tuple[float, int, float]:
+    def step(_step_idx: int) -> tuple[float, int, float | None]:
         propagator.propagate(circ)
         expval = propagator.expectation_value()
         mem = propagator._simulator.operator_memory_bytes() / 1024**2
         return expval, propagator.size(), mem
 
-    result = _run_steps(settings, "monoprop", step)
-    result.operator_memory_mb = result.memory[-1]
-    return result
+    return _run_steps(settings, "monoprop", step)
 
 
 def run_ppvm(settings: Settings) -> BackendResult:
@@ -120,14 +142,9 @@ def run_ppvm(settings: Settings) -> BackendResult:
         max_pauli_weight=settings.max_pauli_weight,
     )
     edges = grid_edges(settings.nx, settings.ny)
-    process = psutil.Process()
-    accumulated_bytes = 0
 
-    def step(_step_idx: int) -> tuple[float, int, float]:
-        # ppvm exposes no memory accounting: approximate it via RSS growth over its
-        # own step. The timer is already running, so keep this to two cheap reads.
-        nonlocal accumulated_bytes
-        before = process.memory_info().rss
+    # ppvm exposes no memory accounting of its own; _run_steps measures it from outside.
+    def step(_step_idx: int) -> tuple[float, int, float | None]:
         for i, k in edges:
             pauli_sum.rzz(i, k, settings.theta_zz)
         for i in range(nq):
@@ -135,8 +152,7 @@ def run_ppvm(settings: Settings) -> BackendResult:
         for i in range(nq):
             pauli_sum.rx(i, settings.theta_x)
         expval = pauli_sum.overlap_with_zero()
-        accumulated_bytes += max(0, process.memory_info().rss - before)
-        return expval, len(pauli_sum), accumulated_bytes / 1024**2
+        return expval, len(pauli_sum), None
 
     return _run_steps(settings, "QuEra ppvm", step)
 
@@ -153,13 +169,11 @@ def run_qiskit(settings: Settings, max_terms: int | Sequence[int]) -> BackendRes
 
     operator = observable(settings)
     circ = step_circuit(settings)
-    process = psutil.Process()
-    accumulated_bytes = 0
 
-    def step(step_idx: int) -> tuple[float, int, float]:
-        nonlocal operator, accumulated_bytes
+    # pauli-prop exposes no memory accounting of its own; _run_steps measures it from outside.
+    def step(step_idx: int) -> tuple[float, int, float | None]:
+        nonlocal operator
         budget = max_terms if isinstance(max_terms, int) else max_terms[step_idx]
-        before = process.memory_info().rss
         operator, _ = propagate_through_circuit(
             operator,
             circ,
@@ -168,8 +182,7 @@ def run_qiskit(settings: Settings, max_terms: int | Sequence[int]) -> BackendRes
             frame="h",
         )
         expval = float(operator.coeffs[~operator.paulis.x.any(axis=1)].sum())
-        accumulated_bytes += max(0, process.memory_info().rss - before)
-        return expval, len(operator), accumulated_bytes / 1024**2
+        return expval, len(operator), None
 
     return _run_steps(settings, "Qiskit pauli-prop", step)
 
@@ -209,7 +222,7 @@ def run_cupauliprop(settings: Settings) -> BackendResult:
         for theta, paulis, qubits in pauli_rotations(settings)
     ]
 
-    def step(_step_idx: int) -> tuple[float, int, float]:
+    def step(_step_idx: int) -> tuple[float, int, float | None]:
         nonlocal expansion
         for gate in reversed(gates):
             expansion = expansion.apply_gate(
@@ -221,12 +234,13 @@ def run_cupauliprop(settings: Settings) -> BackendResult:
             )
         significand, exponent = expansion.trace_with_zero_state()
         expval = float(significand * np.exp2(exponent))
+        # End-of-step pool occupancy, not a peak: a transient freed before the step
+        # returns is invisible here. The device-side analogue of VmHWM is the pool's
+        # cudaMemPoolAttrUsedMemHigh, which is resettable; wiring it up needs a GPU.
         mem = cp.get_default_memory_pool().used_bytes() / 1024**2
         return expval, expansion.num_terms, mem
 
-    result = _run_steps(settings, "cuPauliProp (GPU)", step)
-    result.operator_memory_mb = result.memory[-1]
-    return result
+    return _run_steps(settings, "cuPauliProp (GPU)", step)
 
 
 def _pack_pauli_string(

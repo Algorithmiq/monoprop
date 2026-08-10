@@ -70,10 +70,14 @@ instead of squares with `--ny`.
 
 Two things to know when reading the output:
 
-- **The memory column is not one quantity.** Each backend reports what it exposes —
-  monoprop and cuPauliProp their own operator footprint, `PauliPropagation.jl`
-  `Base.summarysize`, and ppvm and Qiskit only a process-RSS proxy. `MEMORY_METRICS` in
-  `backends.py` records which is which, and every record also carries `peak_rss_MB`.
+- **The memory column is one quantity for every backend**: the peak resident set size over
+  each step, read from the kernel's `VmHWM` high-water mark and reset per step, so the
+  curves may be compared directly. Where a library also accounts for itself, that figure is
+  kept separately as `operator_memory_MB` / the `native_memory` series — those are *not*
+  commensurable across backends (one counts an operator, another an object graph, another a
+  device pool), so never plot them against each other. `HOST_MEMORY_METRIC` and
+  `OPERATOR_MEMORY_METRICS` in `backends.py` record which is which, and every record also
+  carries `peak_rss_MB` for the process lifetime.
 - **`PauliPropagation.jl` runs in its fastest documented configuration**, which is not its
   default: the `VectorPauliSum` container driven by `Performance.propagate!`, with
   coefficient truncation on. That combination needs the **dev branch (0.8.0)** — earlier

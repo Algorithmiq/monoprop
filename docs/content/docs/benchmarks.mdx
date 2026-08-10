@@ -105,7 +105,8 @@ Each line of both JSONL files is one benchmark run (one system size / circuit de
 - `num_terms`: number of Majorana terms kept in the operator at the final layer.
 - `final_overlap`: expectation value at the final layer.
 - `runtime_seconds`: wall-clock time to run all `n_layers` layers.
-- `memory_MB`: operator memory footprint at the final layer, in megabytes.
+- `memory_MB`: peak resident set size over the layer, in megabytes, read from the kernel's
+  `VmHWM` high-water mark and reset per layer.
 - `num_threads`: thread count the run was given (`monoprop_NUM_THREADS` / `JULIA_NUM_THREADS`).
 - `cpu_seconds`: CPU time consumed over the timed loop, summed over all threads.
 - `busy_cores`: `cpu_seconds / runtime_seconds` — how many cores the run actually kept busy.
@@ -261,11 +262,15 @@ For every engine, `results.json` collects, indexed by Trotter step:
 - `runtime`: wall-clock time per step, in seconds. The first step is excluded: it carries each
   engine's warm-up (JIT compilation, first-touch allocation), which is not what the per-step
   comparison is measuring.
-- `memory`: the memory footprint of the evolving operator, in megabytes, for every step. Where an
-  engine exposes its own accounting this is exact (monoprop's C++ operator-memory accounting,
-  cuPauliProp's cupy device memory pool, `PauliPropagation.jl`'s `Base.summarysize` of the Pauli
-  sum); `QuEra ppvm` and `Qiskit pauli-prop` expose no such accounting, so their footprint is
-  reconstructed by accumulating this process's host-memory growth across each of their own steps.
+- `memory`: peak resident set size over each step, in megabytes. Every engine is measured the
+  same way, by the kernel's `VmHWM` high-water mark reset at the start of each step, so these
+  curves are directly comparable. It is a whole-process figure, so it includes the interpreter
+  and the loaded libraries; read the growth across steps rather than the absolute value.
+- `native_memory`: where an engine accounts for itself, its own figure (monoprop's C++
+  operator-memory accounting, cuPauliProp's cupy device memory pool, `PauliPropagation.jl`'s
+  `Base.summarysize` of the Pauli sum). These are reference values only: they measure
+  different things and must not be compared across engines. `QuEra ppvm` and `Qiskit
+  pauli-prop` expose no such accounting and so report none.
 - `expvals`: the `ZZ` expectation value on `obs_qubits`, for every step.
 
 ### 5. Plot the results
@@ -333,9 +338,9 @@ caveats belong with these ratios:
   `Performance` submodule. That path leaves duplicate Pauli strings unmerged, so it reports ~38%
   more terms than the exact `propagate` path and its expectation value differs by ~1e-4 — its
   term count is a storage count, not an operator size.
-- **The memory figure is not one quantity.** `monoprop` and `cuPauliProp` report their own
-  operator accounting, `PauliPropagation.jl` its `Base.summarysize`, and ppvm and Qiskit only a
-  process-RSS proxy, because they expose nothing else.
+- **The memory figure is the peak resident set size over each step**, taken from the kernel for
+  every engine alike, so the curves are comparable. Each engine's own accounting, where it has
+  one, is reported separately as `native_memory` and is *not* comparable across engines.
 
 #### SPECS
 The benchmark is run on [Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html):

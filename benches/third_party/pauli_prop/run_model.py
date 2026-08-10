@@ -83,6 +83,9 @@ def main() -> None:
         "num_terms": {r.label: r.num_terms for r in results.values()},
         "runtime": {r.label: r.runtime[1:] for r in results.values()},
         "memory": {r.label: r.memory for r in results.values()},
+        "native_memory": {
+            r.label: r.operator_memory for r in results.values() if r.operator_memory
+        },
         "expvals": {r.label: r.expvals for r in results.values()},
     }
     # Preserve any backend already in the file (e.g. PauliPropagation.jl from an earlier
