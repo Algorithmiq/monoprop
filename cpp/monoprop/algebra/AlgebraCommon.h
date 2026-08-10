@@ -137,7 +137,7 @@ struct CutoffSums {
     if constexpr (Mono::num_words() == 1) {
         constexpr size_t num_bits = Mono::size();
         constexpr uint64_t valid_mask = num_bits == 64 ? ~uint64_t{0} : ((uint64_t{1} << num_bits) - 1);
-        constexpr uint64_t even_mask = even_bits<Mono::size(), LSb0>().word(0);
+        const uint64_t even_mask = even_bits<Mono::size(), LSb0>().word(0);
         const uint64_t active_mask =
             active_bit_offset == 0 ? valid_mask : (valid_mask & ~((uint64_t{1} << active_bit_offset) - 1));
         const uint64_t active_word = mono.word(0) & active_mask;
@@ -149,7 +149,11 @@ struct CutoffSums {
                 static_cast<size_t>(std::popcount(first_pair | second_pair))};
     }
 
-    const auto active_mono = logical_num_modes == num_modes ? mono : (mono >> active_bit_offset);
+    // Both branches must agree on type for the ternary: mono is Mono (a Monomial<NumModes>), but
+    // `mono >> ...` is plain Bitset (operators live on the base -- see the Stage 2b wrapper note in
+    // core/Monomial.h), so mono needs the same explicit upcast to avoid an ambiguous common type.
+    const auto active_mono =
+        logical_num_modes == num_modes ? static_cast<const Bitset &>(mono) : (mono >> active_bit_offset);
     const auto mask = even_bits<Mono::size(), LSb0>();
     const auto first_pair = active_mono & mask;
     const auto second_pair = (active_mono >> 1) & mask;

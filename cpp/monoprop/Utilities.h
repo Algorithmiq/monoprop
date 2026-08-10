@@ -30,48 +30,70 @@ struct MSb0 : BitOrdering {};
 struct LSb0 : BitOrdering {};
 
 namespace detail {
-template <size_t N>
-constexpr auto make_repeating_bitset(uint64_t pattern) -> Bitset<N> {
-    constexpr size_t kNumWords = Bitset<N>::num_words();
-    Bitset<N> bits;
-    for (size_t i = 0; i < kNumWords; ++i)
+// n is an ordinary runtime argument -- the return type is the runtime-width Bitset (see the
+// NumModes-NTTP-removal plan's Stage 2b) -- so this needs no template parameter of its own.
+inline auto make_repeating_bitset(size_t n, uint64_t pattern) -> Bitset {
+    Bitset bits(n);
+    const size_t num_words = bits.num_words();
+    for (size_t i = 0; i < num_words; ++i)
         bits.data()[i] = pattern;
-    if constexpr (constexpr size_t kTopBits = N % 64; kTopBits != 0) {
-        constexpr uint64_t kTopMask = (uint64_t(1) << kTopBits) - 1;
-        bits.data()[kNumWords - 1] &= kTopMask;
+    if (const size_t top_bits = n % 64; top_bits != 0) {
+        const uint64_t top_mask = (uint64_t(1) << top_bits) - 1;
+        bits.data()[num_words - 1] &= top_mask;
     }
     return bits;
 }
 
-template <size_t N>
-constexpr auto even_bits() -> Bitset<N> {
-    return make_repeating_bitset<N>(0x5555555555555555ULL);
+inline auto even_bits(size_t n) -> Bitset {
+    return make_repeating_bitset(n, 0x5555555555555555ULL);
 }
-
-template <size_t N>
-constexpr auto odd_bits() -> Bitset<N> {
-    return make_repeating_bitset<N>(0xAAAAAAAAAAAAAAAAULL);
+inline auto odd_bits(size_t n) -> Bitset {
+    return make_repeating_bitset(n, 0xAAAAAAAAAAAAAAAAULL);
 }
 } // namespace detail
 
 // Under MSb0 the logical even positions are physically odd, so the pattern is swapped vs LSb0.
+//
+// Two overloads: most call sites have a compile-time N (even_bits<Mono::size(), LSb0>(),
+// even_bits<2 * NumModes, LSb0>()) and keep spelling it that way unchanged. Some -- anything that
+// only has a Bitset in hand, e.g. an operator's result (a ^ b), which is not Monomial<NumModes>-typed
+// and so cannot recover a compile-time N via ::size() -- have only a *runtime* width, so N moves from
+// the template-argument list to an ordinary function argument instead: even_bits<LSb0>(some_bitset.size()).
 template <size_t N, typename Ordering>
-constexpr auto even_bits() -> Bitset<N> {
+auto even_bits() -> Bitset {
     if constexpr (std::is_same_v<Ordering, MSb0>) {
-        return detail::odd_bits<N>();
+        return detail::odd_bits(N);
     }
     else {
-        return detail::even_bits<N>();
+        return detail::even_bits(N);
+    }
+};
+template <typename Ordering>
+auto even_bits(size_t n) -> Bitset {
+    if constexpr (std::is_same_v<Ordering, MSb0>) {
+        return detail::odd_bits(n);
+    }
+    else {
+        return detail::even_bits(n);
     }
 };
 // Same MSb0/LSb0 swap as even_bits().
 template <size_t N, typename Ordering>
-constexpr auto odd_bits() -> Bitset<N> {
+auto odd_bits() -> Bitset {
     if constexpr (std::is_same_v<Ordering, MSb0>) {
-        return detail::even_bits<N>();
+        return detail::even_bits(N);
     }
     else {
-        return detail::odd_bits<N>();
+        return detail::odd_bits(N);
+    }
+};
+template <typename Ordering>
+auto odd_bits(size_t n) -> Bitset {
+    if constexpr (std::is_same_v<Ordering, MSb0>) {
+        return detail::even_bits(n);
+    }
+    else {
+        return detail::odd_bits(n);
     }
 };
 

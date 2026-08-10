@@ -20,69 +20,178 @@
 #include <cstdint>
 #include <cstring>
 #include <ostream>
+#include <type_traits>
+#include <vector>
+
+namespace monoprop::detail {
+
+// Dispatches a runtime word count in [0, 8] to a fully-unrolled arm (W known at compile time inside
+// `f`, so a per-word loop written against it has no back-edge and no trip-count prologue/tail -- see
+// the NumModes-NTTP-removal plan's Stage 2b). Callers gate on `n <= Bitset::kInlineWords` themselves and
+// fall back to a plain runtime loop above that; `default` is an unreachable safety net, not a ninth arm.
+template <typename F>
+[[gnu::always_inline]] inline auto with_nwords(size_t n, F &&f) -> decltype(auto) {
+    switch (n) {
+        case 0:
+            return f(std::integral_constant<size_t, 0>{});
+        case 1:
+            return f(std::integral_constant<size_t, 1>{});
+        case 2:
+            return f(std::integral_constant<size_t, 2>{});
+        case 3:
+            return f(std::integral_constant<size_t, 3>{});
+        case 4:
+            return f(std::integral_constant<size_t, 4>{});
+        case 5:
+            return f(std::integral_constant<size_t, 5>{});
+        case 6:
+            return f(std::integral_constant<size_t, 6>{});
+        case 7:
+            return f(std::integral_constant<size_t, 7>{});
+        default:
+            return f(std::integral_constant<size_t, 8>{});
+    }
+}
+
+} // namespace monoprop::detail
 
 namespace monoprop {
 
-// std::bitset replacement over contiguous uint64_t words: zero-copy MPI, word-wise hashing,
-// portable std::countr_zero scanning, memcpy-safe.
-template <size_t NumBits>
+// std::bitset replacement over contiguous uint64_t words, with a *runtime* width: zero-copy MPI (via
+// data()/word()), word-wise hashing, portable std::countr_zero scanning. The first kInlineWords words
+// live inline (covers the shipped default ceiling, monoprop_MAX_NUM_MODES=250 -> 500 bits -> 8 words,
+// so the whole shipped range never allocates); a wider bitset spills the *entire* word array to the
+// heap, keeping data()/word(i) a single contiguous view regardless of which storage is active. Every
+// per-word loop routes through detail::with_nwords for n <= kInlineWords (the hot regime) and a plain
+// loop above it -- see the NumModes-NTTP-removal plan's Stage 2b.
 class Bitset {
-    static_assert(NumBits > 0, "Bitset requires at least 1 bit");
-
     using word_type = uint64_t;
     static constexpr auto word_width = sizeof(word_type) * 8;
+    static constexpr size_t kInlineWords = 8;
 
-    static constexpr auto kNumWords = (NumBits + word_width - 1) / word_width;
-    static constexpr auto kTopBits = NumBits % word_width;
-    static constexpr auto kTopMask = kTopBits ? ((word_type{1} << kTopBits) - 1) : ~word_type{0};
+    std::array<word_type, kInlineWords> inline_words_{};
+    std::vector<word_type> spill_{}; // empty iff nwords_ <= kInlineWords; else holds all nwords_ words
+    uint32_t nwords_ = 0;
+    uint32_t top_bits_ = 0; // bits used in the last word; 0 means "all word_width bits used"
 
-    std::array<word_type, kNumWords> words_{};
+    [[nodiscard]] auto top_mask() const noexcept -> word_type {
+        return top_bits_ ? ((word_type{1} << top_bits_) - 1) : ~word_type{0};
+    }
 
-    constexpr auto sanitize_top() noexcept -> void {
-        if constexpr (kTopBits != 0) {
-            words_[kNumWords - 1] &= kTopMask;
+    auto sanitize_top() noexcept -> void {
+        if (nwords_ != 0) {
+            data()[nwords_ - 1] &= top_mask();
         }
     }
 
 public:
-    constexpr Bitset() noexcept = default;
+    Bitset() noexcept = default;
 
-    constexpr explicit(false) Bitset(uint64_t val) noexcept : words_{val} { sanitize_top(); }
+    // num_bits: the logical width. Zero-initialized.
+    explicit Bitset(size_t num_bits) noexcept
+        : nwords_(static_cast<uint32_t>((num_bits + word_width - 1) / word_width)),
+          top_bits_(static_cast<uint32_t>(num_bits % word_width)) {
+        if (nwords_ > kInlineWords) {
+            spill_.assign(nwords_, 0);
+        }
+    }
 
-    [[nodiscard]] constexpr auto count() const noexcept -> size_t {
+    // num_bits plus a value packed into word 0. Width can no longer be implied by the type (unlike the
+    // old Bitset<NumBits>(uint64_t) implicit conversion), so this stays explicit and two-argument.
+    explicit Bitset(size_t num_bits, uint64_t val) noexcept : Bitset(num_bits) {
+        if (nwords_ != 0) {
+            data()[0] = val;
+            sanitize_top();
+        }
+    }
+
+    [[nodiscard]] auto data() const noexcept -> const word_type * {
+        return spill_.empty() ? inline_words_.data() : spill_.data();
+    }
+    [[nodiscard]] auto data() noexcept -> word_type * { return spill_.empty() ? inline_words_.data() : spill_.data(); }
+    [[nodiscard]] auto word(size_t i) const noexcept -> uint64_t { return data()[i]; }
+
+    [[nodiscard]] auto num_words() const noexcept -> size_t { return nwords_; }
+    [[nodiscard]] auto size() const noexcept -> size_t {
+        if (nwords_ == 0) {
+            return 0;
+        }
+        return top_bits_ != 0 ? (static_cast<size_t>(nwords_ - 1) * word_width + top_bits_)
+                              : static_cast<size_t>(nwords_) * word_width;
+    }
+
+    [[nodiscard]] auto count() const noexcept -> size_t {
+        const word_type *w = data();
+        if (nwords_ <= kInlineWords) {
+            return detail::with_nwords(nwords_, [w]<size_t W>(std::integral_constant<size_t, W>) {
+                size_t c = 0;
+                for (size_t i = 0; i < W; ++i)
+                    c += static_cast<size_t>(std::popcount(w[i]));
+                return c;
+            });
+        }
         size_t c = 0;
-        for (size_t i = 0; i < kNumWords; ++i)
-            c += static_cast<size_t>(std::popcount(words_[i]));
+        for (size_t i = 0; i < nwords_; ++i)
+            c += static_cast<size_t>(std::popcount(w[i]));
         return c;
     }
 
-    [[nodiscard]] constexpr auto test(size_t pos) const noexcept -> bool {
-        return (words_[pos / word_width] >> (pos % word_width)) & 1;
+    [[nodiscard]] auto test(size_t pos) const noexcept -> bool {
+        return (data()[pos / word_width] >> (pos % word_width)) & 1;
     }
 
-    [[nodiscard]] constexpr auto any() const noexcept -> bool {
-        for (size_t i = 0; i < kNumWords; ++i)
-            if (words_[i])
+    [[nodiscard]] auto any() const noexcept -> bool {
+        const word_type *w = data();
+        if (nwords_ <= kInlineWords) {
+            return detail::with_nwords(nwords_, [w]<size_t W>(std::integral_constant<size_t, W>) {
+                for (size_t i = 0; i < W; ++i)
+                    if (w[i])
+                        return true;
+                return false;
+            });
+        }
+        for (size_t i = 0; i < nwords_; ++i)
+            if (w[i])
                 return true;
         return false;
     }
 
-    [[nodiscard]] constexpr auto none() const noexcept -> bool { return !any(); }
-
-    [[nodiscard]] static constexpr auto size() noexcept -> size_t { return NumBits; }
+    [[nodiscard]] auto none() const noexcept -> bool { return !any(); }
 
     // popcount(*this & other) without materializing the temporary.
-    [[nodiscard]] constexpr auto count_and(const Bitset &o) const noexcept -> size_t {
+    [[nodiscard]] auto count_and(const Bitset &o) const noexcept -> size_t {
+        const word_type *a = data();
+        const word_type *b = o.data();
+        if (nwords_ <= kInlineWords) {
+            return detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
+                size_t c = 0;
+                for (size_t i = 0; i < W; ++i)
+                    c += static_cast<size_t>(std::popcount(a[i] & b[i]));
+                return c;
+            });
+        }
         size_t c = 0;
-        for (size_t i = 0; i < kNumWords; ++i)
-            c += static_cast<size_t>(std::popcount(words_[i] & o.words_[i]));
+        for (size_t i = 0; i < nwords_; ++i)
+            c += static_cast<size_t>(std::popcount(a[i] & b[i]));
         return c;
     }
 
-    [[nodiscard]] constexpr auto parity_and(const Bitset &o) const noexcept -> bool {
+    [[nodiscard]] auto parity_and(const Bitset &o) const noexcept -> bool {
+        const word_type *a = data();
+        const word_type *b = o.data();
         word_type parity_word = 0;
-        for (size_t i = 0; i < kNumWords; ++i)
-            parity_word ^= words_[i] & o.words_[i];
+        if (nwords_ <= kInlineWords) {
+            parity_word = detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
+                word_type p = 0;
+                for (size_t i = 0; i < W; ++i)
+                    p ^= a[i] & b[i];
+                return p;
+            });
+        }
+        else {
+            for (size_t i = 0; i < nwords_; ++i)
+                parity_word ^= a[i] & b[i];
+        }
         return (std::popcount(parity_word) & 1U) != 0;
     }
 
@@ -94,162 +203,243 @@ public:
     // Kept alongside the existing composable ops -- a cold path that only needs one of the three
     // should keep using them. result needs no sanitize_top(): XOR of two already-sanitized operands
     // never sets a bit above NumBits.
-    struct FusedXor {
-        Bitset result;
-        size_t overlap;
-        size_t result_count;
-    };
+    //
+    // Forward-declared here, defined below: a member holding Bitset by value can't be nested inside
+    // Bitset's own (still-incomplete) definition -- unlike the old Bitset<NumBits>, a template, this
+    // is no longer a template instantiated as one unit, so the usual incomplete-type rule applies.
+    struct FusedXor;
 
-    [[nodiscard]] constexpr auto fused_xor(const Bitset &gen) const noexcept -> FusedXor {
-        Bitset result;
-        size_t overlap = 0;
-        size_t result_count = 0;
-        for (size_t i = 0; i < kNumWords; ++i) {
-            const word_type n = words_[i] ^ gen.words_[i];
-            result.words_[i] = n;
-            overlap += static_cast<size_t>(std::popcount(words_[i] & gen.words_[i]));
-            result_count += static_cast<size_t>(std::popcount(n));
+    [[nodiscard]] auto fused_xor(const Bitset &gen) const noexcept -> FusedXor;
+
+    auto set(size_t pos) noexcept -> Bitset & {
+        data()[pos / word_width] |= uint64_t(1) << (pos % word_width);
+        return *this;
+    }
+
+    auto operator&=(const Bitset &rhs) noexcept -> Bitset & {
+        word_type *a = data();
+        const word_type *b = rhs.data();
+        if (nwords_ <= kInlineWords) {
+            detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
+                for (size_t i = 0; i < W; ++i)
+                    a[i] &= b[i];
+            });
         }
-        return {result, overlap, result_count};
-    }
-
-    constexpr auto set(size_t pos) noexcept -> Bitset & {
-        words_[pos / word_width] |= uint64_t(1) << (pos % word_width);
+        else {
+            for (size_t i = 0; i < nwords_; ++i)
+                a[i] &= b[i];
+        }
         return *this;
     }
 
-    constexpr auto operator&=(const Bitset &rhs) noexcept -> Bitset & {
-        for (auto i = 0uz; i < kNumWords; ++i)
-            words_[i] &= rhs.words_[i];
+    auto operator|=(const Bitset &rhs) noexcept -> Bitset & {
+        word_type *a = data();
+        const word_type *b = rhs.data();
+        if (nwords_ <= kInlineWords) {
+            detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
+                for (size_t i = 0; i < W; ++i)
+                    a[i] |= b[i];
+            });
+        }
+        else {
+            for (size_t i = 0; i < nwords_; ++i)
+                a[i] |= b[i];
+        }
         return *this;
     }
 
-    constexpr auto operator|=(const Bitset &rhs) noexcept -> Bitset & {
-        for (auto i = 0uz; i < kNumWords; ++i)
-            words_[i] |= rhs.words_[i];
+    auto operator^=(const Bitset &rhs) noexcept -> Bitset & {
+        word_type *a = data();
+        const word_type *b = rhs.data();
+        if (nwords_ <= kInlineWords) {
+            detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
+                for (size_t i = 0; i < W; ++i)
+                    a[i] ^= b[i];
+            });
+        }
+        else {
+            for (size_t i = 0; i < nwords_; ++i)
+                a[i] ^= b[i];
+        }
         return *this;
     }
 
-    constexpr auto operator^=(const Bitset &rhs) noexcept -> Bitset & {
-        for (auto i = 0uz; i < kNumWords; ++i)
-            words_[i] ^= rhs.words_[i];
-        return *this;
-    }
-
-    [[nodiscard]] constexpr auto operator~() const noexcept -> Bitset {
+    [[nodiscard]] auto operator~() const noexcept -> Bitset {
         Bitset r = *this;
-        for (auto i = 0uz; i < kNumWords; ++i)
-            r.words_[i] = ~r.words_[i];
+        word_type *w = r.data();
+        if (nwords_ <= kInlineWords) {
+            detail::with_nwords(nwords_, [w]<size_t W>(std::integral_constant<size_t, W>) {
+                for (size_t i = 0; i < W; ++i)
+                    w[i] = ~w[i];
+            });
+        }
+        else {
+            for (size_t i = 0; i < nwords_; ++i)
+                w[i] = ~w[i];
+        }
         r.sanitize_top();
         return r;
     }
 
-    [[nodiscard]] friend constexpr auto operator&(const Bitset &lhs, const Bitset &rhs) noexcept -> Bitset {
+    [[nodiscard]] friend auto operator&(const Bitset &lhs, const Bitset &rhs) noexcept -> Bitset {
         Bitset r = lhs;
         r &= rhs;
         return r;
     }
 
-    [[nodiscard]] friend constexpr auto operator|(const Bitset &lhs, const Bitset &rhs) noexcept -> Bitset {
+    [[nodiscard]] friend auto operator|(const Bitset &lhs, const Bitset &rhs) noexcept -> Bitset {
         Bitset r = lhs;
         r |= rhs;
         return r;
     }
 
-    [[nodiscard]] friend constexpr auto operator^(const Bitset &lhs, const Bitset &rhs) noexcept -> Bitset {
+    [[nodiscard]] friend auto operator^(const Bitset &lhs, const Bitset &rhs) noexcept -> Bitset {
         Bitset r = lhs;
         r ^= rhs;
         return r;
     }
 
-    constexpr auto operator>>=(size_t pos) noexcept -> Bitset & {
-        if (pos >= NumBits) {
-            words_.fill(0);
+    auto operator>>=(size_t pos) noexcept -> Bitset & {
+        const size_t num_bits = size();
+        word_type *w = data();
+        if (pos >= num_bits) {
+            for (size_t i = 0; i < nwords_; ++i)
+                w[i] = 0;
             return *this;
         }
-        if constexpr (kNumWords == 1) {
-            words_[0] >>= pos;
+        if (nwords_ <= 1) {
+            if (nwords_ == 1) {
+                w[0] >>= pos;
+            }
+            return *this;
+        }
+        const size_t word_shift = pos / word_width;
+        const size_t limit = nwords_ - word_shift;
+        if (const size_t bit_shift = pos % word_width; bit_shift == 0) {
+            for (size_t i = 0; i < limit; ++i)
+                w[i] = w[i + word_shift];
         }
         else {
-            const size_t word_shift = pos / word_width;
-            const size_t limit = kNumWords - word_shift;
-            if (const size_t bit_shift = pos % word_width; bit_shift == 0) {
-                for (size_t i = 0; i < limit; ++i)
-                    words_[i] = words_[i + word_shift];
+            const size_t inv_shift = word_width - bit_shift;
+            for (size_t i = 0; i + 1 < limit; ++i) {
+                w[i] = (w[i + word_shift] >> bit_shift) | (w[i + word_shift + 1] << inv_shift);
             }
-            else {
-                const size_t inv_shift = word_width - bit_shift;
-                for (size_t i = 0; i + 1 < limit; ++i) {
-                    words_[i] = (words_[i + word_shift] >> bit_shift) | (words_[i + word_shift + 1] << inv_shift);
-                }
-                words_[limit - 1] = words_[kNumWords - 1] >> bit_shift;
-            }
-            for (size_t i = limit; i < kNumWords; ++i)
-                words_[i] = 0;
+            w[limit - 1] = w[nwords_ - 1] >> bit_shift;
         }
+        for (size_t i = limit; i < nwords_; ++i)
+            w[i] = 0;
         return *this;
     }
 
-    [[nodiscard]] constexpr auto operator>>(size_t pos) const noexcept -> Bitset {
+    [[nodiscard]] auto operator>>(size_t pos) const noexcept -> Bitset {
         Bitset r = *this;
         r >>= pos;
         return r;
     }
 
-    [[nodiscard]] constexpr auto operator==(const Bitset &o) const noexcept -> bool {
-        for (size_t i = 0; i < kNumWords; ++i)
-            if (words_[i] != o.words_[i])
+    [[nodiscard]] auto operator==(const Bitset &o) const noexcept -> bool {
+        const word_type *a = data();
+        const word_type *b = o.data();
+        if (nwords_ <= kInlineWords) {
+            return detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
+                for (size_t i = 0; i < W; ++i)
+                    if (a[i] != b[i])
+                        return false;
+                return true;
+            });
+        }
+        for (size_t i = 0; i < nwords_; ++i)
+            if (a[i] != b[i])
                 return false;
         return true;
     }
 
-    [[nodiscard]] static constexpr auto num_words() noexcept -> size_t { return kNumWords; }
-    [[nodiscard]] constexpr auto data() const noexcept -> const uint64_t * { return words_.data(); }
-    [[nodiscard]] constexpr auto data() noexcept -> uint64_t * { return words_.data(); }
-    [[nodiscard]] constexpr auto word(size_t i) const noexcept -> uint64_t { return words_[i]; }
-
-    [[nodiscard]] constexpr auto find_first() const noexcept -> size_t { // NumBits if none
-        for (size_t i = 0; i < kNumWords; ++i) {
-            if (words_[i])
-                return (i * word_width) + static_cast<size_t>(std::countr_zero(words_[i]));
+    [[nodiscard]] auto find_first() const noexcept -> size_t { // size() if none
+        const word_type *w = data();
+        if (nwords_ <= kInlineWords) {
+            const size_t hit = detail::with_nwords(nwords_, [w]<size_t W>(std::integral_constant<size_t, W>) {
+                for (size_t i = 0; i < W; ++i) {
+                    if (w[i])
+                        return (i * word_width) + static_cast<size_t>(std::countr_zero(w[i]));
+                }
+                return static_cast<size_t>(-1);
+            });
+            return hit == static_cast<size_t>(-1) ? size() : hit;
         }
-        return NumBits;
+        for (size_t i = 0; i < nwords_; ++i) {
+            if (w[i])
+                return (i * word_width) + static_cast<size_t>(std::countr_zero(w[i]));
+        }
+        return size();
     }
 
-    [[nodiscard]] constexpr auto find_next(size_t pos) const noexcept -> size_t { // NumBits if none
-        if (++pos >= NumBits)
-            return NumBits;
-        if constexpr (kNumWords == 1) {
-            if (const uint64_t w = words_[0] >> pos; w)
-                return pos + static_cast<size_t>(std::countr_zero(w));
-            return NumBits;
+    [[nodiscard]] auto find_next(size_t pos) const noexcept -> size_t { // size() if none
+        const size_t num_bits = size();
+        if (++pos >= num_bits) {
+            return num_bits;
         }
-        else {
-            size_t wi = pos / word_width;
-            if (const uint64_t w = words_[wi] >> (pos % word_width); w)
-                return pos + static_cast<size_t>(std::countr_zero(w));
-            for (++wi; wi < kNumWords; ++wi) {
-                if (words_[wi])
-                    return (wi * word_width) + static_cast<size_t>(std::countr_zero(words_[wi]));
-            }
-            return NumBits;
+        const word_type *w = data();
+        if (nwords_ <= 1) {
+            if (const uint64_t x = w[0] >> pos; x)
+                return pos + static_cast<size_t>(std::countr_zero(x));
+            return num_bits;
         }
+        size_t wi = pos / word_width;
+        if (const uint64_t x = w[wi] >> (pos % word_width); x)
+            return pos + static_cast<size_t>(std::countr_zero(x));
+        for (++wi; wi < nwords_; ++wi) {
+            if (w[wi])
+                return (wi * word_width) + static_cast<size_t>(std::countr_zero(w[wi]));
+        }
+        return num_bits;
     }
 
     // Stream output MSB→LSB (std::bitset convention).
     friend auto operator<<(std::ostream &os, const Bitset &bs) -> std::ostream & {
-        for (size_t i = NumBits; i-- > 0;)
+        for (size_t i = bs.size(); i-- > 0;)
             os << (bs.test(i) ? '1' : '0');
         return os;
     }
 };
-} // namespace monoprop
 
-template <typename T>
-struct SplitmixHash;
+struct Bitset::FusedXor {
+    Bitset result;
+    size_t overlap;
+    size_t result_count;
+};
 
-template <size_t NumBits>
-struct SplitmixHash<monoprop::Bitset<NumBits>> {
+inline auto Bitset::fused_xor(const Bitset &gen) const noexcept -> FusedXor {
+    Bitset result(size());
+    const word_type *a = data();
+    const word_type *b = gen.data();
+    word_type *out = result.data();
+    size_t overlap = 0;
+    size_t result_count = 0;
+    if (nwords_ <= kInlineWords) {
+        detail::with_nwords(nwords_, [&]<size_t W>(std::integral_constant<size_t, W>) {
+            for (size_t i = 0; i < W; ++i) {
+                const word_type n = a[i] ^ b[i];
+                out[i] = n;
+                overlap += static_cast<size_t>(std::popcount(a[i] & b[i]));
+                result_count += static_cast<size_t>(std::popcount(n));
+            }
+        });
+    }
+    else {
+        for (size_t i = 0; i < nwords_; ++i) {
+            const word_type n = a[i] ^ b[i];
+            out[i] = n;
+            overlap += static_cast<size_t>(std::popcount(a[i] & b[i]));
+            result_count += static_cast<size_t>(std::popcount(n));
+        }
+    }
+    return {result, overlap, result_count};
+}
+
+// Bit-identical to the old per-width SplitmixHash<Bitset<NumBits>>: same mix(), same per-word fold
+// order, same "+i" per-word offset -- only the num_words()==1 dispatch moved from `if constexpr` to a
+// runtime check (see the NumModes-NTTP-removal plan's invariant on SplitmixHash not changing).
+struct SplitmixHash {
     static constexpr auto mix(uint64_t x) noexcept -> uint64_t {
         x ^= x >> 30;
         x *= 0xbf58476d1ce4e5b9ULL;
@@ -259,26 +449,24 @@ struct SplitmixHash<monoprop::Bitset<NumBits>> {
         return x;
     }
 
-    auto operator()(const monoprop::Bitset<NumBits> &bs) const noexcept -> size_t {
-        constexpr size_t W = monoprop::Bitset<NumBits>::num_words();
-        if constexpr (W == 1) {
+    auto operator()(const Bitset &bs) const noexcept -> size_t {
+        const size_t w = bs.num_words();
+        if (w == 1) {
             return static_cast<size_t>(mix(bs.word(0)));
         }
-        else {
-            uint64_t h = 0;
-            for (size_t i = 0; i < W; ++i) {
-                h ^= mix(bs.word(i) + static_cast<uint64_t>(i));
-            }
-            return static_cast<size_t>(h);
+        uint64_t h = 0;
+        for (size_t i = 0; i < w; ++i) {
+            h ^= mix(bs.word(i) + static_cast<uint64_t>(i));
         }
+        return static_cast<size_t>(h);
     }
 };
 
+} // namespace monoprop
+
 namespace std {
-template <size_t NumBits>
-struct hash<monoprop::Bitset<NumBits>> {
-    auto operator()(const monoprop::Bitset<NumBits> &bs) const noexcept -> size_t {
-        return SplitmixHash<monoprop::Bitset<NumBits>>{}(bs);
-    }
+template <>
+struct hash<monoprop::Bitset> {
+    auto operator()(const monoprop::Bitset &bs) const noexcept -> size_t { return monoprop::SplitmixHash{}(bs); }
 };
 } // namespace std

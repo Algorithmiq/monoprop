@@ -35,8 +35,14 @@
 namespace monoprop {
 
 template <size_t NumModes>
-[[nodiscard]] inline constexpr auto pauli_even_mask() -> Monomial<NumModes> {
+[[nodiscard]] inline auto pauli_even_mask() -> Monomial<NumModes> {
     return even_bits<2 * NumModes, LSb0>();
+}
+// Runtime-width sibling: for a caller holding only a Bitset (e.g. an operator's result, which is not
+// Monomial<NumModes>-typed and so cannot recover a compile-time NumModes via ::size()) rather than a
+// Monomial<NumModes>. See the NumModes-NTTP-removal plan's Stage 2b note in core/Monomial.h.
+[[nodiscard]] inline auto pauli_even_mask(size_t num_modes) -> Bitset {
+    return even_bits<LSb0>(2 * num_modes);
 }
 
 namespace detail {
@@ -51,11 +57,15 @@ struct PauliUv {
 
 // The pair-swap involution J: swap the two physical bits of every qubit pair (u <-> v). Stays inside
 // each word -- pairs are {2m, 2m+1}, so there is no cross-word carry.
+// e_mask/result build from p.size()/p.num_words() (instance calls), not the qualified
+// decltype(p)::size() other functions in this file use: p is only constrained MonomialLike, and a
+// caller may hand this a plain Bitset (e.g. from a ^ b) rather than a Monomial<NumModes>, which has
+// no compile-time-static size() to qualify-call -- see the NumModes-NTTP-removal plan's Stage 2b.
 [[nodiscard]] auto pair_swap(const MonomialLike auto &p) -> std::remove_cvref_t<decltype(p)> {
-    using Mono = std::remove_cvref_t<decltype(p)>;
-    constexpr auto e_mask = pauli_even_mask<Mono::size() / 2>();
-    Mono result;
-    for (size_t w = 0; w < Mono::num_words(); ++w) {
+    const auto e_mask = pauli_even_mask(p.size() / 2);
+    Bitset result(p.size());
+    const size_t nw = p.num_words();
+    for (size_t w = 0; w < nw; ++w) {
         const uint64_t word = p.word(w);
         const uint64_t e = e_mask.word(w);
         result.data()[w] = ((word & e) << 1) | ((word >> 1) & e);
@@ -65,10 +75,10 @@ struct PauliUv {
 
 // A Y letter has v=1, u=0.
 [[nodiscard]] auto pauli_y_count(const MonomialLike auto &p) -> size_t {
-    using Mono = std::remove_cvref_t<decltype(p)>;
-    constexpr auto e_mask = pauli_even_mask<Mono::size() / 2>();
+    const auto e_mask = pauli_even_mask(p.size() / 2);
     size_t y = 0;
-    for (size_t w = 0; w < Mono::num_words(); ++w) {
+    const size_t nw = p.num_words();
+    for (size_t w = 0; w < nw; ++w) {
         const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
         y += static_cast<size_t>(std::popcount(v & ~u));
     }
@@ -122,7 +132,7 @@ auto make_pauli_gen_context(const MonomialLike auto &gen)
 [[gnu::always_inline]] inline auto pauli_rotation_sign(const auto &ctx,
                                                        const MonomialLike auto &mono,
                                                        const auto &new_mono) -> int {
-    constexpr auto e_mask = pauli_even_mask<std::remove_cvref_t<decltype(mono)>::size() / 2>();
+    const auto e_mask = pauli_even_mask(mono.size() / 2);
     long delta = static_cast<long>(ctx.g_y);
     long cross = 0;
     for (size_t k = 0; k < ctx.nz_count; ++k) {

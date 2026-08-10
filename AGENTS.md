@@ -55,9 +55,19 @@ Key files:
 
 ### Core abstractions (the propagation backbone)
 
-- **`Monomial<N>`** (`cpp/monoprop/core/Monomial.h`) = `Bitset<2*N>`: ONE basis operator, two bits per
-  mode/qubit. Basis-agnostic — read as a Majorana product, or as a Pauli string (JW image).
-  Collections: `MonomialList<N>` (no coeffs) and `MonomialMap<N>` (monomial → real coeff).
+- **`Monomial<N>`** (`cpp/monoprop/core/Monomial.h`): ONE basis operator, two bits per mode/qubit.
+  Basis-agnostic — read as a Majorana product, or as a Pauli string (JW image). Collections:
+  `MonomialList<N>` (no coeffs) and `MonomialMap<N>` (monomial → real coeff).
+  `Bitset` (`cpp/monoprop/Bitset.h`) is its runtime-width storage: width is data, not a template
+  parameter, with the first 8 words inline and wider bitsets spilling the whole word array to the
+  heap. Per-word loops go through `detail::with_nwords`, which dispatches a runtime word count to a
+  compile-time-unrolled arm, in place of the `if constexpr` branches a compile-time width allowed.
+  `Monomial<N>` is currently a thin subclass that pins the width to `2*N` and re-exposes
+  `size()`/`num_words()` as `static constexpr`, so code still needing a compile-time width (fixed
+  array members, template arguments) keeps working; it is transitional and goes away once those
+  consumers are migrated. Operators (`^`, `&`, `>>`, …) are inherited and yield plain `Bitset`, so
+  do not recover a width from an operator's result via a qualified `decltype(x)::size()` — use
+  instance calls (`x.size()`) in anything taking `MonomialLike auto`.
 - **`Basis` / the `Algebra` policy** (`cpp/monoprop/algebra/`): the two algebras are sibling models
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is

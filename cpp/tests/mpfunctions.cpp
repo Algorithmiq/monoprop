@@ -143,10 +143,10 @@ BOOST_AUTO_TEST_CASE(bit_flipping_utilities) {
     auto val2 = odd_bits<10, LSb0>();
     auto val3 = even_bits<10, MSb0>();
     auto val4 = odd_bits<10, MSb0>();
-    BOOST_TEST(val1 == 0b0101010101);
-    BOOST_TEST(val2 == 0b1010101010);
-    BOOST_TEST(val3 == 0b1010101010);
-    BOOST_TEST(val4 == 0b0101010101);
+    BOOST_TEST((val1 == Bitset(10, 0b0101010101ULL)));
+    BOOST_TEST((val2 == Bitset(10, 0b1010101010ULL)));
+    BOOST_TEST((val3 == Bitset(10, 0b1010101010ULL)));
+    BOOST_TEST((val4 == Bitset(10, 0b0101010101ULL)));
 }
 
 // The evaluation functional carries the reference state sparsely, so every EvalState operation has to
