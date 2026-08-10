@@ -62,8 +62,15 @@ def _split_orbital_gates(gates):
         ),
     ],
 )
+@pytest.mark.parametrize(
+    ("builder_method", "result_method")
+    [
+        ("build_graph", "expval_functional"),
+        ("propagate", "expval"),
+    ]
+)
 def test_only_rotate_len_k_none_is_uncapped(
-    propagator_cls, operator, gate_generator, system_size, serial_mp_kwargs
+    propagator_cls, operator, gate_generator, system_size, serial_mp_kwargs, builder_method, result_method
 ):
     circuit = Circuit(
         (ExpGate(gate_generator, index=0),),
@@ -74,25 +81,14 @@ def test_only_rotate_len_k_none_is_uncapped(
     parameters = circuit.parameters
 
     mp_default = propagator_cls(operator, circuit.initial_state, **serial_mp_kwargs)
-    mp_default.build_graph(circuit)
-    expval_default = mp_default.expval_functional()(parameters)
+    getattr(mp_default, builder_method)(circuit)
+    expval_default = getattr(mp_default, result_method)(parameters)
 
     mp_none = propagator_cls(operator, circuit.initial_state, **serial_mp_kwargs)
-    mp_none.build_graph(circuit, only_rotate_len_k=None)
-    expval_none = mp_none.expval_functional()(parameters)
+    getattr(mp_none, builder_method)(circuit, only_rotate_len_k=None)
+    expval_default = getattr(mp_none, result_method)(parameters)
 
     assert mp_none.graph_size() == mp_default.graph_size()
-    assert mp_none.size() == mp_default.size()
-    assert np.isclose(expval_none, expval_default, atol=1e-12)
-
-    mp_default = propagator_cls(operator, circuit.initial_state, **serial_mp_kwargs)
-    mp_default.propagate(circuit)
-    expval_default = mp_default.expval()
-
-    mp_none = propagator_cls(operator, circuit.initial_state, **serial_mp_kwargs)
-    mp_none.propagate(circuit, only_rotate_len_k=None)
-    expval_none = mp_none.expval()
-
     assert mp_none.size() == mp_default.size()
     assert np.isclose(expval_none, expval_default, atol=1e-12)
 
