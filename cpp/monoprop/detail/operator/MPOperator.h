@@ -47,8 +47,7 @@ auto algebra_score_state(Basis basis,
                          const Rows &store,
                          Sink &&sink) -> void;
 
-template <size_t NumModes>
-auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const Monomial<NumModes> &mono) -> double;
+auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const MonomialLike auto &mono) -> double;
 } // namespace monoprop
 
 namespace monoprop::detail {
@@ -265,14 +264,14 @@ struct MPOperator {
 
 // Callers must pass pairwise-distinct, currently-absent keys: bulk_insert then skips duplicate probes and
 // slot k deterministically lands at base+k. Call after any pass that reads pre-insert op state
-// (op.size() must equal the returned base).
-template <size_t NumModes, typename KeyAt, typename PerSlot>
-inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
+// (op.size() must equal the returned base). Fully deduced -- unlike estimate_memory_usage below, nothing
+// here needs NumModes as a value, so even op (an MPOperator<NumModes>) needs no constraint.
+inline auto insert_absent_terms(auto &op, size_t n, auto &&key_at, auto &&per_slot) -> size_t {
     const size_t base = op.store->grow_rows_geometric(n);
     for (size_t k = 0; k < n; ++k) {
         per_slot(k, base);
     }
-    op.store->bulk_insert(n, base, std::forward<KeyAt>(key_at));
+    op.store->bulk_insert(n, base, std::forward<decltype(key_at)>(key_at));
     op.reindex_after_growth(base, n);
     return base;
 }

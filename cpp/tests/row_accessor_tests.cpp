@@ -28,7 +28,7 @@ namespace {
 template <size_t N>
 auto positions_of(const auto &backend, size_t i) -> std::vector<size_t> {
     std::vector<size_t> out;
-    for_each_row_position<N>(backend, i, [&](size_t b) { out.push_back(b); });
+    for_each_row_position(backend, i, [&](size_t b) { out.push_back(b); });
     return out;
 }
 
@@ -47,9 +47,9 @@ auto check_backends_agree(const std::vector<std::vector<size_t>> &raw_rows) -> v
 
     BOOST_REQUIRE(packed.size() == dense.size());
     for (size_t i = 0; i < dense.size(); ++i) {
-        BOOST_TEST((materialize_row<N>(dense, i) == materialize_row<N>(packed, i)));
-        BOOST_TEST(row_popcount<N>(dense, i) == row_popcount<N>(packed, i));
-        BOOST_TEST(row_popcount<N>(dense, i) == materialize_row<N>(dense, i).count());
+        BOOST_TEST((materialize_row(dense, i) == materialize_row(packed, i)));
+        BOOST_TEST(row_popcount(dense, i) == row_popcount(packed, i));
+        BOOST_TEST(row_popcount(dense, i) == materialize_row(dense, i).count());
         BOOST_TEST(positions_of<N>(dense, i) == positions_of<N>(packed, i));
     }
 }
@@ -78,11 +78,11 @@ BOOST_AUTO_TEST_CASE(row_accessor_assign_row_overwrites) {
     replacement.set(10);
     replacement.set(20);
     replacement.set(30);
-    assign_row<N>(dense, 0, replacement);
-    assign_row<N>(packed, 0, replacement);
+    assign_row(dense, 0, replacement);
+    assign_row(packed, 0, replacement);
 
-    BOOST_TEST((materialize_row<N>(dense, 0) == replacement));
-    BOOST_TEST((materialize_row<N>(packed, 0) == replacement));
-    BOOST_TEST(row_popcount<N>(packed, 0) == 3U);
+    BOOST_TEST((materialize_row(dense, 0) == replacement));
+    BOOST_TEST((materialize_row(packed, 0) == replacement));
+    BOOST_TEST(row_popcount(packed, 0) == 3U);
     BOOST_TEST(positions_of<N>(dense, 0) == positions_of<N>(packed, 0));
 }

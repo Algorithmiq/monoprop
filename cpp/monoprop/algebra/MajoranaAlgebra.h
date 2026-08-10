@@ -178,7 +178,7 @@ auto change_basis(const MonomialLike auto &maj, const auto &basis) -> std::remov
 
     size_t pos = maj.find_first();
     while (pos < maj.size()) {
-        new_maj ^= materialize_row<num_modes>(basis, 2 * num_modes - pos - 1);
+        new_maj ^= materialize_row(basis, 2 * num_modes - pos - 1);
         pos = maj.find_next(pos);
     }
 

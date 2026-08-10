@@ -101,7 +101,7 @@ auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     VecZ result;
     const auto mask = even_bits<2 * NumModes, LSb0>();
     for (const auto index : inds) {
-        const auto &op_row = materialize_row<NumModes>(op, index);
+        const auto &op_row = materialize_row(op, index);
         if (is_paired(op_row, mask)) {
             result.push_back(index);
         }

@@ -41,11 +41,9 @@ auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_ind
     Monomial<NumModes> gen{};
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
-    const auto combined = monoprop::detail::make_fold_cache<NumModes>(inverted_index,
-                                                                      gen,
-                                                                      layer.scaled_count(),
-                                                                      monoprop::Basis::Majorana);
-    return monoprop::detail::fold_to_cos_mask<NumModes>(combined);
+    const auto combined =
+        monoprop::detail::make_fold_cache(inverted_index, gen, layer.scaled_count(), monoprop::Basis::Majorana);
+    return monoprop::detail::fold_to_cos_mask(combined);
 }
 
 } // namespace

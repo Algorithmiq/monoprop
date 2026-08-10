@@ -114,7 +114,7 @@ struct InvertedIndex {
         for (size_t row_idx = base; row_idx < new_total_rows; ++row_idx) {
             const size_t w = row_idx >> 6U;
             const uint64_t row_bit = uint64_t{1} << (row_idx & 63U);
-            for_each_row_position<NumModes>(op, row_idx, [this, w, row_bit, row_idx](size_t bit) {
+            for_each_row_position(op, row_idx, [this, w, row_bit, row_idx](size_t bit) {
                 Column &col = cols[bit];
                 if (col.is_dense) {
                     col.words[w] |= row_bit;
@@ -155,7 +155,7 @@ struct InvertedIndex {
         using Counts = std::array<size_t, kNumColumns>;
         Counts counts{};
         for (size_t row_idx = 0; row_idx < size; ++row_idx) {
-            for_each_row_position<NumModes>(op, row_idx, [&counts](size_t bit) { ++counts[bit]; });
+            for_each_row_position(op, row_idx, [&counts](size_t bit) { ++counts[bit]; });
         }
         for (size_t c = 0; c < kNumColumns; ++c) {
             const size_t count = counts[c];
@@ -185,7 +185,7 @@ struct InvertedIndex {
             row_parity_.resize((row_count + 63) / 64, 0);
             for (size_t j = 0; j < n; ++j) {
                 const size_t r = base + j;
-                if (row_popcount<NumModes>(op, r) & 1U) {
+                if (row_popcount(op, r) & 1U) {
                     row_parity_[r >> 6] |= (uint64_t{1} << (r & 63));
                 }
             }
@@ -236,8 +236,10 @@ inline auto pivot_column_block_scratch() -> std::vector<uint64_t> & {
 // XOR a generator's inverted-index columns for fold words [bb, be) into blk[0 .. be-bb): dense columns
 // XOR their words directly, sparse columns lower_bound to the block's row range. XOR associativity means
 // any block decomposition reproduces the full-width fold bit-for-bit.
-template <size_t NumModes>
-[[gnu::always_inline]] inline auto combine_columns_block(const InvertedIndex<NumModes> &sc,
+// `sc` is deduced (InvertedIndex<NumModes>, an argument type -- see the NumModes-NTTP-removal plan's
+// Stage 2a): nothing below needs NumModes as a value, so unlike the MonomialLike overloads elsewhere
+// this needs no constraint at all.
+[[gnu::always_inline]] inline auto combine_columns_block(const auto &sc,
                                                          std::span<const size_t> cols,
                                                          uint64_t *blk,
                                                          size_t bb,

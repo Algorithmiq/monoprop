@@ -40,8 +40,7 @@ namespace monoprop::detail {
 // scaling; only freshly inserted half-terms can be absent (see tests/test_infinite_cutoff.py), and those
 // sit in [combined_size, op.size()). Scan cos bits and inserted endpoint bits are disjoint, so only the
 // seam word can carry both — bitwise-or that one, append the rest, keeping blocks ascending/disjoint.
-template <size_t NumModes>
-inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, const MPOperator<NumModes> &op) -> void {
+inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, const auto &op) -> void {
     const size_t cos_lo = combined_size;
     const size_t cos_hi = op.store->size();
     CosineWordBuilder end_b;
@@ -171,7 +170,7 @@ struct GraphSink {
             }
         }
         if (out_cos != nullptr) {
-            append_inserted_endpoints<NumModes>(cos_all, combined_size, op);
+            append_inserted_endpoints(cos_all, combined_size, op);
             *out_cos = std::move(cos_all);
         }
         return build_layer_storage_unified(std::move(partners), my_rank);
@@ -284,7 +283,7 @@ struct ContractSink {
     auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator<NumModes> &op)
         -> std::shared_ptr<LayerCore> {
         if (out_cos != nullptr && !fused_scale) {
-            append_inserted_endpoints<NumModes>(cos_all, combined_size, op);
+            append_inserted_endpoints(cos_all, combined_size, op);
             *out_cos = std::move(cos_all);
         }
         return nullptr;
@@ -377,11 +376,11 @@ struct LayerBuildEngine {
         std::vector<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
         std::vector<std::vector<size_t>> inc_q;
         mpi::begin_alltoallv(send, comm).wait_into(inc_q);
-        auto resp = resolve_incoming<NumModes>(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
+        auto resp = resolve_incoming(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
         std::vector<int> resp_recv = response_recv_counts();
         std::vector<std::vector<typename Sink::Response>> inc_r;
         mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_r);
-        process_responses<NumModes>(inc_r, src_idx_r, queries_r, R, my_rank, sink);
+        process_responses(inc_r, src_idx_r, queries_r, R, my_rank, sink);
     }
 
     // Followers a leader already matched must not be re-resolved over the wire, so compact them out.
@@ -434,9 +433,9 @@ struct LayerBuildEngine {
         }
         auto key_at = [&](size_t k) -> const Monomial<NumModes> & { return deferred_self_misses[k].mono; };
         sink.prepare_deferred(n_miss);
-        insert_absent_terms<NumModes>(local_op, n_miss, key_at, [&](size_t k, size_t base) {
+        insert_absent_terms(local_op, n_miss, key_at, [&](size_t k, size_t base) {
             const auto &m = deferred_self_misses[k];
-            assign_row<NumModes>(*local_op.store, base + k, m.mono);
+            assign_row(*local_op.store, base + k, m.mono);
             sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
         });
     }
@@ -517,10 +516,14 @@ static inline auto empty_coeffs() -> const VecD & {
 }
 
 // Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
-template <size_t NumModes>
-auto build_layer(MPOperator<NumModes> &local_op,
-                 const Monomial<NumModes> &gen,
-                 const CutoffFn<NumModes> &cutoff_fn,
+// local_op and gen are deduced (MPOperator<NumModes>/Monomial<NumModes>, argument types); cutoff_fn is
+// left a plain auto (a std::function, not itself MonomialLike or otherwise NumModes-deducible) since
+// gen already recovers NumModes. num_modes below feeds every callee still explicit on it -- the class
+// templates (LayerBuildEngine, ContractSink, GraphSink) and the Stage-2e wire-format cluster
+// (kQueryWords, kWords) this function reaches into.
+auto build_layer(auto &local_op,
+                 const MonomialLike auto &gen,
+                 const auto &cutoff_fn,
                  const std::optional<double> &atol,
                  std::optional<std::reference_wrapper<const VecD>> local_coeffs,
                  const std::optional<double> &upper_atol,
@@ -534,13 +537,14 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  VecD *fused_scale_coeffs = nullptr,
                  bool *fused_scale_out = nullptr,
                  Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
+    constexpr size_t num_modes = std::remove_cvref_t<decltype(gen)>::size() / 2;
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
     const auto &coeffs = local_coeffs.value_or(empty_coeffs()).get();
-    const CutoffEvaluator<NumModes> cut_eval{cutoff_fn};
+    const CutoffEvaluator<num_modes> cut_eval{cutoff_fn};
 
     // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass. k==0 only (a
     // popcount>k hit is outside the per-index cos set, so 1/cos recovery would be wrong) and cos!=0 (else
@@ -557,18 +561,18 @@ auto build_layer(MPOperator<NumModes> &local_op,
 
     FusedScanResult fused = [&] {
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
-        return with_algebra<NumModes>(basis, [&]<class A>() {
-            return fused_find_and_collect<NumModes, A>(local_op,
-                                                       gen,
-                                                       cut_eval,
-                                                       cut_st,
-                                                       coeffs,
-                                                       only_rotate_len_k,
-                                                       R,
-                                                       my_rank,
-                                                       /*capture_values=*/use_fused,
-                                                       sweep_ptr,
-                                                       cos_build);
+        return with_algebra<num_modes>(basis, [&]<class A>() {
+            return fused_find_and_collect<A>(local_op,
+                                             gen,
+                                             cut_eval,
+                                             cut_st,
+                                             coeffs,
+                                             only_rotate_len_k,
+                                             R,
+                                             my_rank,
+                                             /*capture_values=*/use_fused,
+                                             sweep_ptr,
+                                             cos_build);
         });
     }();
 
@@ -587,13 +591,13 @@ auto build_layer(MPOperator<NumModes> &local_op,
     fused.cos_blocks = std::vector<CosMask>{};
 
     auto run = [&]<class Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
-        LayerBuildEngine<NumModes, Sink> eng(local_op,
-                                             comm,
-                                             R,
-                                             my_rank,
-                                             matched_scratch,
-                                             /*combined_size=*/local_op.store->size(),
-                                             std::move(sink));
+        LayerBuildEngine<num_modes, Sink> eng(local_op,
+                                              comm,
+                                              R,
+                                              my_rank,
+                                              matched_scratch,
+                                              /*combined_size=*/local_op.store->size(),
+                                              std::move(sink));
         eng.run_exchange(/*is_leader_pass=*/true,
                          std::move(fused.leader_queries),
                          std::move(fused.leader_src),
@@ -609,24 +613,24 @@ auto build_layer(MPOperator<NumModes> &local_op,
     std::shared_ptr<LayerCore> storage;
     if (use_fused) {
         const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
-        storage = run(ContractSink<NumModes>{.R = R,
-                                             .my_rank = my_rank,
-                                             .fc = *fused_contract,
-                                             .op_coeffs = coeffs,
-                                             .fused_scale = fused_scale,
-                                             .inv_cos = inv_cos,
-                                             .schrodinger = schrodinger,
-                                             .basis = basis});
+        storage = run(ContractSink<num_modes>{.R = R,
+                                              .my_rank = my_rank,
+                                              .fc = *fused_contract,
+                                              .op_coeffs = coeffs,
+                                              .fused_scale = fused_scale,
+                                              .inv_cos = inv_cos,
+                                              .schrodinger = schrodinger,
+                                              .basis = basis});
     }
     else {
-        storage = run(GraphSink<NumModes>{R, my_rank});
+        storage = run(GraphSink<num_modes>{R, my_rank});
     }
 
     // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the
     // post-insert operator size: the fold truncated to it reproduces the "all anticommuting" cos
     // bit-for-bit with no stored bitmap. Fused mode has no LayerCore to stamp.
     if (storage != nullptr) {
-        storage->generator_words.assign(gen.data(), gen.data() + mpi_detail::kWords<NumModes>);
+        storage->generator_words.assign(gen.data(), gen.data() + mpi_detail::kWords<num_modes>);
         storage->scaled_count = static_cast<uint64_t>(local_op.store->size());
     }
 

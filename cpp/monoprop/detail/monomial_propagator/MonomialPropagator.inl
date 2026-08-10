@@ -174,7 +174,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     size_t i = 0;
     // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here.
     for (size_t r = 0; r < op.size(); ++r) {
-        const auto &mono = materialize_row<NumModes>(op, r);
+        const auto &mono = materialize_row(op, r);
         if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
             mp_op_.append_term(mono);
             mp_op_.store->emplace(mono, i++);
@@ -423,8 +423,8 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
         }
         else if (const auto &gw = traversal.generator_words(); !gw.empty()) {
             const auto gen = detail::generator_from_words<NumModes>(gw);
-            auto p = detail::make_fold_cache<NumModes>(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
-            cos_inds = detail::fold_to_indices<NumModes>(p);
+            auto p = detail::make_fold_cache(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
+            cos_inds = detail::fold_to_indices(p);
         }
         layers.emplace_back(std::move(cos_inds), std::move(local_cyc_data), std::move(b_data), std::move(d_data));
     }
@@ -445,9 +445,8 @@ auto MonomialPropagator<NumModes>::cos_index_count_() const -> size_t {
         }
         else if (const auto &gw = traversal.generator_words(); !gw.empty()) {
             const auto gen = detail::generator_from_words<NumModes>(gw);
-            const auto fold =
-                detail::make_fold_cache<NumModes>(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
-            cos_total = detail::fold_popcount<NumModes>(fold);
+            const auto fold = detail::make_fold_cache(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
+            cos_total = detail::fold_popcount(fold);
         }
         const size_t endpoints = traversal.total_rotation_endpoints();
         total += (cos_total > endpoints) ? (cos_total - endpoints) : 0;
@@ -742,22 +741,22 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
     const auto gen_mono = indices_to_bitset_checked<NumModes>(gen_vec, 2 * logical_num_modes_);
 
     // The cos-recompute metadata is written onto the returned LayerCore.
-    return detail::build_layer<NumModes>(mp_op_,
-                                         gen_mono,
-                                         cutoff_fn_,
-                                         lower_atol_,
-                                         coeffs,
-                                         upper_atol_,
-                                         param,
-                                         only_rotate_len_k,
-                                         matched_scratch_,
-                                         comm_,
-                                         out_cos,
-                                         fused_contract,
-                                         schrodinger_,
-                                         fused_scale_coeffs,
-                                         fused_scale,
-                                         basis_);
+    return detail::build_layer(mp_op_,
+                               gen_mono,
+                               cutoff_fn_,
+                               lower_atol_,
+                               coeffs,
+                               upper_atol_,
+                               param,
+                               only_rotate_len_k,
+                               matched_scratch_,
+                               comm_,
+                               out_cos,
+                               fused_contract,
+                               schrodinger_,
+                               fused_scale_coeffs,
+                               fused_scale,
+                               basis_);
 }
 
 template <size_t NumModes>
@@ -886,7 +885,7 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
             entry.recomputes_cos = true;
             const auto t = layer.traversal();
             const auto gen = detail::generator_from_words<NumModes>(t.generator_words());
-            entry.recipe = detail::make_lazy_fold<NumModes>(inverted_index, gen, t.scaled_count(), basis);
+            entry.recipe = detail::make_lazy_fold(inverted_index, gen, t.scaled_count(), basis);
         }
         cache->push_back(std::move(entry));
     }
@@ -898,7 +897,7 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
             detail::scale_cos_mask(c, *e.filtered, v);
         }
         else {
-            detail::scale_cos_lazy<NumModes>(*sc, e.recipe, c, v);
+            detail::scale_cos_lazy(*sc, e.recipe, c, v);
         }
     };
     detail::LayerCosAccumulate cos_acc = [cache, sc](size_t i, double *s, double *h, double v, double sec) {
@@ -906,7 +905,7 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
         if (!e.recomputes_cos) {
             return detail::accumulate_cos_mask(s, h, *e.filtered, v, sec);
         }
-        return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec);
+        return detail::accumulate_cos_lazy(*sc, e.recipe, s, h, v, sec);
     };
     return {.scale = std::move(cos_scale), .accumulate = std::move(cos_acc)};
 }
@@ -947,8 +946,8 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
         auto full_cos_of_layer = [this, &inverted_index](size_t i) -> CosMask {
             const auto layer = graph_.get_layer_traversal(i);
             const auto gen = detail::generator_from_words<NumModes>(layer.generator_words());
-            const auto combined = detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count(), basis_);
-            return detail::fold_to_cos_mask<NumModes>(combined);
+            const auto combined = detail::make_fold_cache(inverted_index, gen, layer.scaled_count(), basis_);
+            return detail::fold_to_cos_mask(combined);
         };
         // Threshold the picture's driving vector: the Hamiltonian in Schrödinger, the state otherwise.
         const auto keep = schrodinger_ ? indices_above(op, *pare_threshold) : state.indices_above(*pare_threshold);

@@ -172,7 +172,7 @@ auto algebra_score_state(Basis basis,
     with_algebra<NumModes>(basis, [&]<class A>() {
         const auto state_mask = initial_state_mask<NumModes>(initial_state);
         for (size_t i = 0; i < paired_inds.size(); ++i) {
-            const auto &row = materialize_row<NumModes>(store, paired_inds[i]);
+            const auto &row = materialize_row(store, paired_inds[i]);
             sink(paired_inds[i], A::state_phase(row, state_mask));
         }
     });

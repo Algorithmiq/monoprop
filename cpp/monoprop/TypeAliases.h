@@ -51,24 +51,20 @@ inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
 
 // materialize_row() returns a const ref (dense backend, zero-copy) or a fresh value (packed backend),
 // so callers must bind with `const auto&` to extend the temporary's lifetime.
-template <size_t NumModes>
-[[nodiscard]] inline auto materialize_row(const std::vector<Monomial<NumModes>> &op, size_t i)
-    -> const Monomial<NumModes> & {
+[[nodiscard]] inline auto materialize_row(const std::vector<MonomialLike auto> &op, size_t i) -> decltype(auto) {
     return op[i];
 }
-template <size_t NumModes>
-inline auto assign_row(std::vector<Monomial<NumModes>> &op, size_t i, const Monomial<NumModes> &mono) -> void {
+inline auto assign_row(std::vector<MonomialLike auto> &op, size_t i, const auto &mono) -> void {
     op[i] = mono;
 }
-template <size_t NumModes>
-[[nodiscard]] inline auto row_popcount(const std::vector<Monomial<NumModes>> &op, size_t i) -> size_t {
+[[nodiscard]] inline auto row_popcount(const std::vector<MonomialLike auto> &op, size_t i) -> size_t {
     return op[i].count();
 }
 
 // Visits row i's set-bit positions ascending, without materializing a dense bitset when the backend can
 // avoid it. Hot: the even-parity inverted index is the heaviest per-row op reader.
-template <size_t NumModes, typename Fn>
-inline auto for_each_row_position(const std::vector<Monomial<NumModes>> &op, size_t i, Fn &&fn) -> void {
+template <typename Fn>
+inline auto for_each_row_position(const std::vector<MonomialLike auto> &op, size_t i, Fn &&fn) -> void {
     const auto &m = op[i];
     for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
         fn(b);
@@ -130,20 +126,32 @@ using OperatorDict = std::map<VecZ, std::complex<double>>;
 // Must be declared before InvertedIndex.h/MPOperator.h: those templates reach these overloads via
 // ordinary lookup, not ADL (which searches only monoprop::detail).
 namespace monoprop {
-template <size_t NumModes>
-[[nodiscard]] inline auto materialize_row(const detail::OperatorIndex<NumModes> &op, size_t i) -> Monomial<NumModes> {
+
+// Structural stand-in for "a row store shaped like detail::OperatorIndex": exposes value_type and a
+// row(i) accessor returning it, so the overloads below deduce NumModes from op's value_type instead
+// of naming it -- the same idea as the MonomialLike overloads above, one level up (op itself is not
+// MonomialLike; its rows are). A std::vector has no row(), so this never collides with the overloads
+// above.
+template <typename T>
+concept RowStoreLike = requires(const T &t, size_t i) {
+    typename T::value_type;
+    { t.row(i) } -> std::same_as<typename T::value_type>;
+};
+
+template <RowStoreLike Op>
+[[nodiscard]] inline auto materialize_row(const Op &op, size_t i) -> typename Op::value_type {
     return op.row(i);
 }
-template <size_t NumModes>
-inline auto assign_row(detail::OperatorIndex<NumModes> &op, size_t i, const Monomial<NumModes> &mono) -> void {
+template <RowStoreLike Op>
+inline auto assign_row(Op &op, size_t i, const typename Op::value_type &mono) -> void {
     op.set(i, mono);
 }
-template <size_t NumModes>
-[[nodiscard]] inline auto row_popcount(const detail::OperatorIndex<NumModes> &op, size_t i) -> size_t {
+template <RowStoreLike Op>
+[[nodiscard]] inline auto row_popcount(const Op &op, size_t i) -> size_t {
     return op.popcount(i);
 }
-template <size_t NumModes, typename Fn>
-inline auto for_each_row_position(const detail::OperatorIndex<NumModes> &op, size_t i, Fn &&fn) -> void {
+template <RowStoreLike Op, typename Fn>
+inline auto for_each_row_position(const Op &op, size_t i, Fn &&fn) -> void {
     op.for_each_position(i, std::forward<Fn>(fn));
 }
 } // namespace monoprop

@@ -242,19 +242,19 @@ BOOST_AUTO_TEST_CASE(combine_columns_block_folds_dense_and_sparse_identically) {
     }
 
     std::vector<uint64_t> whole(words, 0xdeadbeefULL); // pre-dirtied: the kernel seeds, never accumulates
-    combine_columns_block<N>(sc, cols, whole.data(), 0, words);
+    combine_columns_block(sc, cols, whole.data(), 0, words);
     BOOST_TEST(whole == expected, boost::test_tools::per_element());
 
     std::vector<uint64_t> pieced(words, 0xdeadbeefULL);
     for (size_t w = 0; w < words; ++w) {
-        combine_columns_block<N>(sc, cols, pieced.data() + w, w, w + 1);
+        combine_columns_block(sc, cols, pieced.data() + w, w, w + 1);
     }
     BOOST_TEST(pieced == expected, boost::test_tools::per_element());
 
     // Sparse-only column list: no dense column to memcpy from, so this is the memset seed path.
     const size_t sparse_col = col_of(2);
     std::vector<uint64_t> sparse_fold(words, 0xdeadbeefULL);
-    combine_columns_block<N>(sc, std::span<const size_t>(&sparse_col, 1), sparse_fold.data(), 0, words);
+    combine_columns_block(sc, std::span<const size_t>(&sparse_col, 1), sparse_fold.data(), 0, words);
     std::vector<uint64_t> sparse_expected(words, 0);
     sparse_expected[5 >> 6] |= uint64_t{1} << (5 & 63U);
     sparse_expected[200 >> 6] |= uint64_t{1} << (200 & 63U);

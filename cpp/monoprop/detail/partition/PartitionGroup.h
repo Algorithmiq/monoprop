@@ -272,15 +272,18 @@ private:
 };
 
 // One result per partition, indexed by partition rank. The slots are written from the owning master, so
-// `body` must not touch the vector itself.
-template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, int>>
-auto collect_on_all(PartitionGroup<NumModes> &group, Body body) -> std::vector<R> {
+// `body` must not touch the vector itself. group is deduced (PartitionGroup<NumModes>, an argument
+// type); nothing below needs NumModes as a value.
+template <typename Body, typename R = std::invoke_result_t<Body &, int>>
+auto collect_on_all(auto &group, Body body) -> std::vector<R> {
     std::vector<R> results(static_cast<size_t>(group.partition_count()));
     group.run_on_all([&](int r) { results[static_cast<size_t>(r)] = body(r); });
     return results;
 }
 
 // collect_on_all over the partition propagators themselves: `body(partition)` on each partition's master.
+// NumModes stays named here: R's default depends on it by name (MonomialPropagator<NumModes>&), the
+// same obstacle as Common.h's query_read/QW (see the NumModes-NTTP-removal plan's Stage 2a/2e notes).
 template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, MonomialPropagator<NumModes> &>>
 auto map_partitions(PartitionGroup<NumModes> &group, Body body) -> std::vector<R> {
     return collect_on_all(group, [&](int r) -> R { return body(group.partition(r)); });

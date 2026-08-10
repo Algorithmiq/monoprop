@@ -104,17 +104,18 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
 
 // Phase 4 (bulk insert of the distinct absent terms) into op slots [base, base+n_miss). Call after the
 // caller's Phase-3 scatter, which reads pre-insert op_coeffs for hits and needs base == op.size().
-template <size_t NumModes>
-auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumModes> &pr) -> void {
+// op/pr are deduced (MPOperator<NumModes>/IncomingProbe<NumModes>, argument types); nothing below
+// needs NumModes as a value.
+auto insert_incoming_misses(auto &op, const auto &pr) -> void {
     const size_t n_miss = pr.miss_g.size();
     if (n_miss == 0) {
         return;
     }
-    insert_absent_terms<NumModes>(
+    insert_absent_terms(
         op,
         n_miss,
-        [&](size_t j) -> const Monomial<NumModes> & { return pr.mono[pr.miss_g[j]]; },
-        [&](size_t j, size_t base) { assign_row<NumModes>(*op.store, base + j, pr.mono[pr.miss_g[j]]); });
+        [&](size_t j) -> decltype(auto) { return pr.mono[pr.miss_g[j]]; },
+        [&](size_t j, size_t base) { assign_row(*op.store, base + j, pr.mono[pr.miss_g[j]]); });
 }
 
 // resolve_incoming / process_responses are the picture-independent cross-rank exchange skeletons; what
@@ -124,16 +125,21 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
 // Resolver rank (any cross-rank sink): for each query from sender s, look up M' locally; found → answer
 // with its index/value, absent → insert it in the same round (the resolver is the sole inserter of
 // cross-rank absent terms). Matched-follower marks stay here so both sinks mark byte-identically.
-template <size_t NumModes, class Sink>
+// op is deduced (MPOperator<NumModes>, an argument type); Sink stays named -- it is referenced by name
+// below (typename Sink::Response, Sink::kStride) and was already deduced from `sink` even before this
+// change (call sites gave only NumModes explicitly). num_modes recovers the value probe_incoming_queries
+// still needs explicitly (its QW default depends on it by name -- see Common.h/Stage 2e).
+template <class Sink>
 auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
-                      MPOperator<NumModes> &op,
+                      auto &op,
                       size_t rank_count,
                       bool is_leader_pass,
                       MatchedEpochSet &matched,
                       size_t combined_size, // pre-layer op size: bounds the matched set
                       Sink &sink) -> std::vector<std::vector<typename Sink::Response>> {
+    constexpr size_t num_modes = std::remove_cvref_t<decltype(*op.store)>::value_type::size() / 2;
     using Resp = typename Sink::Response;
-    const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes, Sink::kStride>(incoming, op, rank_count);
+    const auto pr = probe_incoming_queries<num_modes, Sink::kStride>(incoming, op, rank_count);
     std::vector<std::vector<Resp>> responses(rank_count);
     for (size_t s = 0; s < rank_count; ++s) {
         responses[s].assign(pr.goff[s + 1] - pr.goff[s], Sink::init_response());
@@ -155,13 +161,15 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
         }
     }
 
-    insert_incoming_misses<NumModes>(op, pr);
+    insert_incoming_misses(op, pr);
     return responses;
 }
 
 // Querier rank (any cross-rank sink): fold each resolver response into a querier-side record. The self/
 // local rank was already resolved inline, so it is skipped here. inc_r[r][q] answers query q from rank r.
-template <size_t NumModes, class Sink>
+// Unlike resolve_incoming, nothing here needs NumModes as a value, so no op/pr-shaped argument needs
+// deducing at all -- Sink stays named for the same reason as above.
+template <class Sink>
 auto process_responses(const std::vector<std::vector<typename Sink::Response>> &inc_r,
                        const std::vector<std::vector<size_t>> &src_idx,
                        const std::vector<VecZ> &queries, // serialized query buffers (for phase recovery)

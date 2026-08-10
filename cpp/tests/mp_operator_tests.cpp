@@ -37,11 +37,11 @@ namespace {
 auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis::Majorana) -> detail::MPOperator<8> {
     detail::MPOperator<8> op;
     op.basis = basis;
-    detail::insert_absent_terms<8>(
+    detail::insert_absent_terms(
         op,
         terms.size(),
         [&](size_t k) -> const Monomial<8> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<8>(*op.store, base + k, terms[k]); });
+        [&](size_t k, size_t base) { assign_row(*op.store, base + k, terms[k]); });
     return op;
 }
 
@@ -50,7 +50,7 @@ auto expected_state(detail::MPOperator<8> &op, Basis basis, const VecZ &initial_
     const auto state_mask = initial_state_mask<8>(initial_state);
     VecD expected(op.size(), 0.0);
     for (size_t i = 0; i < op.size(); ++i) {
-        const auto row = materialize_row<8>(*op.store, i);
+        const auto row = materialize_row(*op.store, i);
         if (is_paired(row)) {
             expected[i] = algebra_state_phase(basis, row, state_mask);
         }
@@ -231,11 +231,11 @@ BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {
                                             indices_to_bitset<8>({6, 7}),
                                             indices_to_bitset<8>({0, 3})};
 
-    const size_t base = detail::insert_absent_terms<8>(
+    const size_t base = detail::insert_absent_terms(
         op,
         fresh.size(),
         [&](size_t k) -> const Monomial<8> & { return fresh[k]; },
-        [&](size_t k, size_t b) { assign_row<8>(*op.store, b + k, fresh[k]); });
+        [&](size_t k, size_t b) { assign_row(*op.store, b + k, fresh[k]); });
 
     BOOST_CHECK_EQUAL(base, 2U);
     BOOST_CHECK_EQUAL(op.size(), 5U);
