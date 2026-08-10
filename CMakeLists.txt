@@ -81,26 +81,26 @@ message(STATUS "Configuring a ${CMAKE_BUILD_TYPE} build")
 string(TOUPPER ${CMAKE_BUILD_TYPE} _cmake_build_type_upper)
 
 message(STATUS "Compiler flags for ${CMAKE_CXX_COMPILER_ID}")
-message(STATUS "   From environment       : ${CMAKE_CXX_FLAGS}")
+message(STATUS "   From environment         : ${CMAKE_CXX_FLAGS}")
 set(
   _cmake_build_type_specific_flags
   "${CMAKE_CXX_FLAGS_${_cmake_build_type_upper}}"
 )
 message(
   STATUS
-  "   Build-type-specific    : ${_cmake_build_type_specific_flags}"
+  "   Build-type-specific      : ${_cmake_build_type_specific_flags}"
 )
-message(STATUS "   Vectorization flag     : ${ARCH_FLAG}")
 message(
   STATUS
-  "   Project defaults       : ${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION} ${monoprop_CXX_FLAGS}"
+  "   Project defaults         : ${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION} ${monoprop_CXX_FLAGS}"
 )
-message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
+message(STATUS "   User-appended            : ${EXTRA_CXXFLAGS}")
 
-message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
-message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
-message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
-message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
+message(STATUS "   Max simulable modes      : ${monoprop_MAX_NUM_MODES}")
+message(STATUS "   Wide term index          : ${monoprop_WIDE_TERM_INDEX}")
+message(STATUS "   Function multiversioning : ${monoprop_ENABLE_FMV}")
+message(STATUS "   MPI parallelization      : ${monoprop_ENABLE_MPI}")
+message(STATUS "   C++ unit tests           : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 
 include(GNUInstallDirs)
 
