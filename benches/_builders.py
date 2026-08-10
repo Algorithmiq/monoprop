@@ -242,6 +242,7 @@ def _hubbard_fermion_terms(config: HubbardConfig) -> list[FermiOperator]:
                 FermiOperator(
                     terms=op_terms,
                     coefficients=[-config.hopping, -config.hopping],
+                    num_modes=config.num_qubits,
                 )
             )
 
@@ -251,6 +252,7 @@ def _hubbard_fermion_terms(config: HubbardConfig) -> list[FermiOperator]:
             FermiOperator(
                 terms=[((up, "+"), (up, "-"), (down, "+"), (down, "-"))],
                 coefficients=[config.interaction],
+                num_modes=config.num_qubits,
             )
         )
 
@@ -261,6 +263,7 @@ def _hubbard_fermion_terms(config: HubbardConfig) -> list[FermiOperator]:
                 FermiOperator(
                     terms=[((m, "+"), (m, "-"))],
                     coefficients=[-config.chemical_potential],
+                    num_modes=config.num_qubits,
                 )
             )
 
