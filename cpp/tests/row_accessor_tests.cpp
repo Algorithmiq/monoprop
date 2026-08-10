@@ -35,7 +35,7 @@ auto positions_of(const auto &backend, size_t i) -> std::vector<size_t> {
 template <size_t N>
 auto check_backends_agree(const std::vector<std::vector<size_t>> &raw_rows) -> void {
     std::vector<Monomial<N>> dense;
-    detail::OperatorIndex<N> packed;
+    detail::OperatorIndex packed(2 * N);
     for (const auto &bits : raw_rows) {
         Monomial<N> m;
         for (size_t b : bits) {
@@ -67,7 +67,7 @@ BOOST_AUTO_TEST_CASE(row_accessor_backends_agree_multi_word) {
 BOOST_AUTO_TEST_CASE(row_accessor_assign_row_overwrites) {
     constexpr size_t N = 32;
     std::vector<Monomial<N>> dense;
-    detail::OperatorIndex<N> packed;
+    detail::OperatorIndex packed(2 * N);
     Monomial<N> original;
     original.set(1);
     original.set(2);

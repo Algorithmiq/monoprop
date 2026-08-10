@@ -87,7 +87,7 @@ auto dense_operator(MonomialPropagator<N> &mp) -> std::vector<cd> {
     const size_t d = size_t{1} << N;
     std::vector<cd> m(d * d, cd(0, 0));
     const auto &coeffs = mp.mp_op().get_operator();
-    mp.indexing().for_each([&](const Monomial<N> &mono, size_t idx) {
+    mp.indexing().for_each([&](const auto &mono, size_t idx) {
         if (idx >= coeffs.size()) {
             return;
         }
@@ -406,7 +406,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
         const auto Gb = indices_to_bitset<N>(slots_of_string("XII"));
         std::set<size_t> expected;
         (void)mp.mp_op().get_operator(); // materialize the store size
-        mp.indexing().for_each([&](const Monomial<N> &mono, size_t idx) {
+        mp.indexing().for_each([&](const auto &mono, size_t idx) {
             if (pauli_anticommutes(mono, Gb)) {
                 expected.insert(idx);
             }

@@ -42,7 +42,6 @@
 
 // Forward-declare (not include) OperatorIndex: it includes this header, so a full include would cycle.
 namespace monoprop::detail {
-template <size_t NumModes>
 class OperatorIndex;
 }
 

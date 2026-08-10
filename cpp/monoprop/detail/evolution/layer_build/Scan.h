@@ -155,8 +155,8 @@ inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t mono_pop, const 
 
 // phase_factor is the basis-specific sign only: Majorana interleave_phase, still to be folded with
 // hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready.
-// ham and new_mono are deduced (OperatorIndex<NumModes>/Monomial<NumModes>, argument types); A stays
-// the sole explicit template argument at call sites, same as before.
+// ham and new_mono are deduced from their argument types; A stays the sole explicit template argument
+// at call sites, same as before.
 template <Algebra A>
 [[gnu::always_inline]] inline auto emit_term_products(const auto &ham,
                                                       size_t i,

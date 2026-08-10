@@ -173,7 +173,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     const size_t expected_local_terms = std::max<size_t>(1, total_terms / std::max<size_t>(1, num_ranks));
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
-    mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
+    mp_op_.store = std::make_unique<detail::OperatorIndex>(Monomial<NumModes>::size(), packed_inline_width_());
     mp_op_.store->reserve(expected_local_terms);
     // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
     mp_op_.inverted_index_.reset();
@@ -336,8 +336,7 @@ auto MonomialPropagator<NumModes>::partitioned_core_term_() const -> double {
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::partitioned_operator_memory_usage_() const
-    -> detail::MPOperatorMemoryBreakdown<NumModes> {
+auto MonomialPropagator<NumModes>::partitioned_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown {
     return sum_partitions_([](const MonomialPropagator &s) { return s.operator_memory_usage(); });
 }
 
@@ -348,8 +347,8 @@ auto MonomialPropagator<NumModes>::partitioned_graph_memory_usage_() const -> Gr
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
-    constexpr size_t kMax = detail::OperatorIndex<NumModes>::kMaxInlinePositions;
-    constexpr size_t kDefault = detail::OperatorIndex<NumModes>::kDefaultInlinePositions;
+    constexpr size_t kMax = detail::OperatorIndex::kMaxInlinePositions;
+    constexpr size_t kDefault = detail::OperatorIndex::kDefaultInlinePositions;
     if (schrodinger_) {
         return kDefault;
     }

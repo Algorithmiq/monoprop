@@ -19,6 +19,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -36,16 +37,25 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// The requested monomial width needs bit positions wider than PosT can hold. Thrown rather than
+// asserted: with the compile-time mode ceiling gone, the width is user data.
+class OperatorIndexWidthUnsupported : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 // Operator-term store: entropy-packed position-list rows plus a keyless open-addressing hash index over
 // those rows. Row layout: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c =
 // ascending set-bit positions; stride_ is fixed for the container's life so row offsets stay stable.
 // inline_width_ is a free parameter -- any width is correct, over-long rows spill losslessly to overflow.
 // Single-writer: one partition, one thread; parallelism is cross-partition.
-template <size_t NumModes>
 class OperatorIndex {
 public:
-    using value_type = Monomial<NumModes>;
-    using key_type = Monomial<NumModes>;
+    // Bitset, not Monomial<NumModes>: the store carries its width as data (num_bits_) rather than in
+    // its type (Stage 2c of the NumModes-NTTP-removal plan). A Monomial<N> still binds to these by
+    // reference wherever callers hold one -- see find_batch for the one place that is not enough.
+    using value_type = Bitset;
+    using key_type = Bitset;
     using mapped_type = size_t;
 
     // One fixed width rather than the narrowest that fits 2*NumModes: a runtime width has no compile-time
@@ -63,8 +73,6 @@ public:
     static constexpr size_t kMaxInlinePositions = 32;
     static constexpr PosT kOverflowMarker = std::numeric_limits<PosT>::max();
 
-    static_assert((2 * NumModes) - 1 <= std::numeric_limits<PosT>::max(),
-                  "OperatorIndex PosT too narrow for 2*NumModes positions");
     static_assert(kMaxInlinePositions < std::numeric_limits<PosT>::max(),
                   "kOverflowMarker sentinel must not collide with a valid popcount");
 
@@ -76,9 +84,26 @@ public:
     // operator store must not depend on evolution headers).
     static constexpr size_t kNotFound = std::numeric_limits<size_t>::max();
 
-    explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
-        : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
-          stride_(1 + inline_width_) {}
+    // num_bits is the storage bit width of every monomial this store will hold; row() reconstructs at
+    // exactly that width, and a wrong one would change num_words() and therefore the hash, the probe
+    // order and MPI owner routing. The check replaces the static_assert that used to guard set()'s
+    // narrowing cast to PosT, which can no longer be a compile-time assertion.
+    explicit OperatorIndex(size_t num_bits, size_t inline_width = kDefaultInlinePositions)
+        : num_bits_(num_bits),
+          inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
+          stride_(1 + inline_width_) {
+        constexpr size_t max_positions = static_cast<size_t>(std::numeric_limits<PosT>::max()) + 1;
+        if (num_bits > max_positions) {
+            throw OperatorIndexWidthUnsupported(
+                std::format("OperatorIndex supports at most {} bit positions ({} modes); got {} bits ({} modes).",
+                            max_positions,
+                            max_positions / 2,
+                            num_bits,
+                            num_bits / 2));
+        }
+    }
+
+    [[nodiscard]] auto num_bits() const noexcept -> size_t { return num_bits_; }
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
     OperatorIndex(OperatorIndex &&) = delete;
@@ -86,7 +111,7 @@ public:
 
     // Called only on an idle store, so it needs no synchronization.
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
-        auto out = std::make_unique<OperatorIndex>(inline_width_);
+        auto out = std::make_unique<OperatorIndex>(num_bits_, inline_width_);
         out->rows_ = rows_;
         out->size_ = size_;
         out->overflow_ = overflow_;
@@ -147,7 +172,7 @@ public:
         if (c == kOverflowMarker) {
             return overflow_.at(i);
         }
-        value_type mono;
+        value_type mono(num_bits_);
         const PosT *pos = &rows_[(i * stride_) + 1];
         for (size_t j = 0; j < c; ++j) {
             mono.set(pos[j]);
@@ -201,7 +226,12 @@ public:
     // Group-prefetch batch find: out[i] = row index of keys[i], or kNotFound. Same result as n
     // find() calls, but overlaps dram misses via a per-group hash/probe/confirm pipeline. An h
     // collision falls back to an exact find. must not run concurrently with inserts.
-    auto find_batch(const key_type *keys, size_t n, size_t *out) const -> void {
+    // Templated on the key type rather than taking `const key_type *`: callers hold arrays of
+    // Monomial<N>, and converting that to a Bitset* would make keys[i] index with the base's stride
+    // over a derived array -- which happens to have the same size today, but is undefined behaviour.
+    // Any Key that binds to const key_type& works, since that is all fold_hash/row_eq_key need.
+    template <typename Key>
+    auto find_batch(const Key *keys, size_t n, size_t *out) const -> void {
         static constexpr size_t G = 16; // keys prefetched together per pipeline pass
         std::array<uint32_t, G> hh;
         std::array<size_t, G> sp;
@@ -304,8 +334,11 @@ private:
         }
     }
 
+    // SplitmixHash directly, which is exactly what MonomialHash<NumModes> forwarded to -- the hash is
+    // unchanged, and must stay so: it drives probe order and monomial_hash % rank_count owner routing
+    // (plan invariant 2).
     static uint32_t fold_hash(const key_type &q) noexcept {
-        const size_t full = MonomialHash<NumModes>{}(q);
+        const size_t full = SplitmixHash{}(q);
         return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
     }
     // Avalanche the cached 32-bit fold into a full-width hash (splitmix64 finalizer): the stored h
@@ -399,6 +432,7 @@ private:
     }
 
     DefaultInitVector<PosT> rows_ = {};
+    size_t num_bits_ = 0;
     size_t size_ = 0;
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;

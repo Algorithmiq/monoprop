@@ -262,13 +262,13 @@ BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_pre
     op.append_term(indices_to_bitset<8>({0, 1}));
     op.append_term(indices_to_bitset<8>({2, 3}));
 
-    const auto before = detail::estimate_memory_usage<8>(op);
+    const auto before = detail::estimate_memory_usage(op);
     BOOST_CHECK_GT(before.total_bytes(), 0U);
     BOOST_CHECK_GT(before.operator_terms_bytes, 0U);
     BOOST_CHECK_EQUAL(before.inverted_index_bytes, 0U); // absent arm
 
     (void)op.inverted_index();
-    const auto after = detail::estimate_memory_usage<8>(op);
+    const auto after = detail::estimate_memory_usage(op);
     BOOST_CHECK_GT(after.inverted_index_bytes, 0U); // present arm
 }
 

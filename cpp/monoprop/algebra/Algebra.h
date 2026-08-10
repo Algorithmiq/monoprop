@@ -146,18 +146,20 @@ auto algebra_fold_needs_odd_correction(Basis basis, const MonomialLike auto &gen
     constexpr size_t num_modes = std::remove_cvref_t<decltype(gen)>::size() / 2;
     return with_algebra<num_modes>(basis, [&]<class A>() { return A::fold_needs_odd_correction(gen); });
 }
+// These three branch on Basis directly instead of going through with_algebra<NumModes>. Both algebras'
+// encode_coeff/decode_coeff/state_phase are width-agnostic passthroughs to the free functions called
+// here, so selecting an algebra *class* bought nothing and cost a compile-time width the caller may not
+// have: since Stage 2c the operator store hands out plain Bitsets, whose size() is a runtime member, so
+// the `decltype(mono)::size()` these used to compute is ill-formed for that caller.
 auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const MonomialLike auto &mono) -> double {
-    constexpr size_t num_modes = std::remove_cvref_t<decltype(mono)>::size() / 2;
-    return with_algebra<num_modes>(basis, [&]<class A>() { return A::encode_coeff(coeff, mono); });
+    return basis == Basis::Pauli ? encode_pauli_coeff(coeff) : monoprop::encode_coeff(coeff, mono);
 }
 auto algebra_decode_coeff(Basis basis, const std::complex<double> &coeff, const MonomialLike auto &mono)
     -> std::complex<double> {
-    constexpr size_t num_modes = std::remove_cvref_t<decltype(mono)>::size() / 2;
-    return with_algebra<num_modes>(basis, [&]<class A>() { return A::decode_coeff(coeff, mono); });
+    return basis == Basis::Pauli ? decode_pauli_coeff(coeff.real()) : monoprop::decode_coeff(coeff, mono);
 }
 auto algebra_state_phase(Basis basis, const MonomialLike auto &mono, const auto &state_mask) -> double {
-    constexpr size_t num_modes = std::remove_cvref_t<decltype(mono)>::size() / 2;
-    return with_algebra<num_modes>(basis, [&]<class A>() { return A::state_phase(mono, state_mask); });
+    return basis == Basis::Pauli ? pauli_state_phase(mono, state_mask) : majorana_state_phase(mono, state_mask);
 }
 
 // Score each fully-paired term's diagonal element against the initial product state, emitting

@@ -61,7 +61,7 @@ template <size_t NumModes>
 struct MPOperator {
     // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
     // itself cheaply movable). Always non-null.
-    std::unique_ptr<OperatorIndex<NumModes>> store = std::make_unique<OperatorIndex<NumModes>>();
+    std::unique_ptr<OperatorIndex> store = std::make_unique<OperatorIndex>(Monomial<NumModes>::size());
     VecD op_coeffs = {};
     // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
     // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are
@@ -283,7 +283,8 @@ inline auto unordered_flat_map_storage_bytes(const FlatMap &map) -> size_t {
     return sizeof(FlatMap) + map.bucket_count() * (sizeof(typename FlatMap::value_type) + sizeof(unsigned char));
 }
 
-template <size_t NumModes>
+// No width parameter: nothing in here is width-dependent, and it never was -- every field is a byte
+// count. It was templated only because its producer was (Stage 2c of the NumModes-NTTP-removal plan).
 struct MPOperatorMemoryBreakdown final {
     size_t operator_terms_bytes = 0;
     size_t op_coeffs_bytes = 0;
@@ -325,8 +326,8 @@ struct MPOperatorMemoryBreakdown final {
 };
 
 template <size_t NumModes>
-inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorMemoryBreakdown<NumModes> {
-    MPOperatorMemoryBreakdown<NumModes> breakdown;
+inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorMemoryBreakdown {
+    MPOperatorMemoryBreakdown breakdown;
     breakdown.operator_terms_bytes = op.store->memory_bytes();
     breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
     // Every representation of the state at once: the sparse scored set plus the dense vector.

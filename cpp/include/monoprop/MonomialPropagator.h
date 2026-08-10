@@ -128,7 +128,7 @@ public:
         return graph_.storage_memory_usage();
     }
 
-    auto operator_memory_usage() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
+    auto operator_memory_usage() const -> detail::MPOperatorMemoryBreakdown {
         if (partition_group_) {
             return partitioned_operator_memory_usage_();
         }
@@ -148,11 +148,11 @@ public:
     auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
     /// This rank's monomial → coefficient index. Single-partition only — see require_single_partition_.
-    auto indexing() -> detail::OperatorIndex<NumModes> & {
+    auto indexing() -> detail::OperatorIndex & {
         require_single_partition_("indexing()");
         return *mp_op_.store;
     }
-    auto indexing() const -> const detail::OperatorIndex<NumModes> & {
+    auto indexing() const -> const detail::OperatorIndex & {
         require_single_partition_("indexing()");
         return *mp_op_.store;
     }
@@ -340,7 +340,7 @@ private:
     auto partitioned_graph_size_() const -> std::pair<size_t, size_t>;
     auto partitioned_graph_layers_() const -> size_t;
     auto partitioned_core_term_() const -> double;
-    auto partitioned_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes>;
+    auto partitioned_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown;
     auto partitioned_graph_memory_usage_() const -> GraphMemoryBreakdown;
 
     // Partition fan-out vocabulary. Every one of these is facade-only: partition_group_ != nullptr is a precondition.

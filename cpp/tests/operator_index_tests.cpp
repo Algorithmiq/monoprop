@@ -39,7 +39,8 @@ BOOST_AUTO_TEST_CASE(operator_index_term_index_width_matches_build) {
 
 namespace {
 constexpr size_t N = 32;
-using Store = OperatorIndex<N>;
+using Store = OperatorIndex;
+constexpr size_t kBits = 2 * N; // the store is runtime-width now
 using MSet = Monomial<N>;
 
 // Owners hold the store by unique_ptr and share stable pointers into it, so it must stay
@@ -53,7 +54,7 @@ MSet bs(const VecZ &r) {
 } // namespace
 
 BOOST_AUTO_TEST_CASE(rows_roundtrip_dense_popcount_positions) {
-    Store s;
+    Store s(kBits);
     s.push_back(bs({0, 3, 5}));
     s.push_back(bs({1, 2}));
     BOOST_TEST(s.size() == 2u);
@@ -70,7 +71,7 @@ BOOST_AUTO_TEST_CASE(rows_roundtrip_dense_popcount_positions) {
 }
 
 BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
-    Store s;
+    Store s(kBits);
     s.push_back(bs({0, 3, 5}));
     s.emplace(bs({0, 3, 5}), 0);
     s.push_back(bs({1, 2}));
@@ -82,7 +83,7 @@ BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
 }
 
 BOOST_AUTO_TEST_CASE(width_is_a_construction_invariant) {
-    Store s(4);                    // stride = 1 + 4, fixed at construction
+    Store s(kBits, 4);             // stride = 1 + 4, fixed at construction
     s.push_back(bs({0, 2, 4, 6})); // a 4-position row fits inline at width 4
     s.reserve(20);                 // capacity only -- width/stride are never touched by reserve
     BOOST_TEST(s.popcount(0) == 4u);
@@ -90,14 +91,14 @@ BOOST_AUTO_TEST_CASE(width_is_a_construction_invariant) {
 }
 
 BOOST_AUTO_TEST_CASE(overflow_is_lossless_above_width) {
-    Store s(2); // width 2; a 3-position row must overflow
+    Store s(kBits, 2); // width 2; a 3-position row must overflow
     s.push_back(bs({0, 1, 2}));
     BOOST_TEST(s.popcount(0) == 3u); // popcount recovered from the overflow map
     BOOST_TEST((s.row(0) == bs({0, 1, 2})));
 }
 
 BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
-    Store a;
+    Store a(kBits);
     // 64 distinct rows (positions i and (i+7)%62) force at least one rehash of the in-place index.
     for (int i = 0; i < 64; ++i) {
         a.push_back(bs({static_cast<size_t>(i % 62), static_cast<size_t>((i + 7) % 62)}));
@@ -109,7 +110,7 @@ BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
 }
 
 BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
-    Store a(4); // non-default width must carry over
+    Store a(kBits, 4); // non-default width must carry over
     a.push_back(bs({0, 3, 5}));
     a.emplace(bs({0, 3, 5}), 0);
     a.push_back(bs({1, 2}));
@@ -136,7 +137,7 @@ BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
 }
 
 BOOST_AUTO_TEST_CASE(clone_preserves_overflow_rows) {
-    Store a(2); // width 2; a 3-position row overflows losslessly
+    Store a(kBits, 2); // width 2; a 3-position row overflows losslessly
     a.push_back(bs({0, 1, 2}));
     a.emplace(bs({0, 1, 2}), 0);
 
@@ -151,7 +152,7 @@ BOOST_AUTO_TEST_CASE(clone_preserves_overflow_rows) {
 // present and absent keys, so every branch but the h32-collision fallback runs; that one needs a
 // real 32-bit hash collision, but the equivalence assertion pins it whichever path a key takes.
 BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
-    Store s;
+    Store s(kBits);
     constexpr size_t kRows = 200; // > 12 groups of G=16
     // (i/60, 4 + i%60) is a bijection for i < 240 over the disjoint ranges {0..3} and {4..63}.
     for (size_t i = 0; i < kRows; ++i) {
@@ -186,7 +187,7 @@ BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
 
 // Pins find_batch's partition.count == 0 early-out.
 BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
-    Store s;
+    Store s(kBits);
     const std::array<MSet, 3> keys{bs({0, 3}), bs({1, 2}), bs({4, 5, 6})};
     std::array<size_t, 3> out{0, 0, 0};
     s.find_batch(keys.data(), keys.size(), out.data());
