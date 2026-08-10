@@ -48,8 +48,14 @@ public:
     using key_type = Monomial<NumModes>;
     using mapped_type = size_t;
 
-    using PosT = std::
-        conditional_t<(2 * NumModes <= 256), uint8_t, std::conditional_t<(2 * NumModes <= 65536), uint16_t, uint32_t>>;
+    // One fixed width rather than the narrowest that fits 2*NumModes: a runtime width has no compile-time
+    // value to select on. Row payload only -- never a hash input and never serialized -- so this cannot
+    // affect results (see the NumModes-NTTP-removal plan's invariant 3). It does cost a byte per position
+    // for widths that used to fit uint8_t, i.e. up to 256 bit positions.
+    //
+    // The static_assert below is what keeps set()'s narrowing cast honest; it becomes a runtime check
+    // once num_bits arrives as a constructor argument and NumModes is gone.
+    using PosT = uint16_t;
 
     static constexpr size_t kDefaultInlinePositions = 11;
     // A weight-w Pauli needs 2w positions; 32 covers the common case inline at the supported Pauli
