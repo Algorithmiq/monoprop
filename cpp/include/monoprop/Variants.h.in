@@ -17,7 +17,7 @@
 #include <string_view>
 
 /**
- * @brief Declares a compile-time function that reports the active FMV variant.
+ * @brief Declares a compile-time function that reports the active variant.
  *
  * Expands to a `consteval` function named `variant()` with a GNU
  * `target("arch=...")` attribute bound to the provided architecture string.
@@ -31,7 +31,7 @@
 
 /**
  * @brief Declares a compile-time function that reports the machine-dependent
- * flags GCC applies for the given FMV variant.
+ * flags GCC applies for the given variant.
  *
  * Expands to a `consteval` function named `machine_flags()` with a GNU
  * `target("arch=...")` attribute bound to the provided architecture string. The
@@ -47,10 +47,16 @@
     }
 
 namespace monoprop {
+#if defined(__x86_64__) || defined(_M_X64)
+[[using gnu: target("default")]]
+#endif
 consteval auto variant() noexcept -> std::string_view {
     return "default";
 }
 
+#if defined(__x86_64__) || defined(_M_X64)
+[[using gnu: target("default")]]
+#endif
 consteval auto variant_flags() noexcept -> std::string_view {
     return "@monoprop_DEFAULT_VARIANT_FLAGS@";
 }
