@@ -158,28 +158,32 @@ inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t mono_pop, const 
 
 // phase_factor is the basis-specific sign only: Majorana interleave_phase, still to be folded with
 // hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready.
-// ham and new_mono are deduced from their argument types; A stays the sole explicit template argument
-// at call sites, same as before.
+// ham and the two monomials are deduced from their argument types; A stays the sole explicit template
+// argument at call sites, same as before.
+//
+// `mono` and `new_mono` are scratch owned by the caller for the whole gate, not locals: both are
+// overwritten whole here, and a term must not pay for constructing them. Constructing a Bitset means
+// deriving the word count from a runtime width, testing it against the inline capacity and -- above
+// that capacity -- allocating, all of which the compile-time-width Monomial<NumModes> this used to
+// build folded away to nothing.
 template <Algebra A>
 [[gnu::always_inline]] inline auto emit_term_products(const auto &ham,
                                                       size_t i,
                                                       const typename A::GenContext &ctx,
+                                                      MonomialLike auto &mono,
                                                       MonomialLike auto &new_mono,
                                                       size_t &overlap,
                                                       int &phase_factor) -> void {
     const auto &gen = A::generator(ctx);
-    // Sized from the generator, not default-constructed: a default-constructed Bitset is width 0, and
-    // set() on it writes out of bounds. The generator is the right source because mono is XORed with it
-    // two lines down, where Bitset's binary ops require the widths to match anyway.
-    Bitset mono(gen.size());
+    // for_each_position only sets bits, so the scratch has to start clear; reset() keeps the width,
+    // unlike assigning a default-constructed Bitset.
+    mono.reset();
     ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
     // One pass instead of two: mono ^ gen and popcount(mono & gen) are both always needed here, so
-    // fused_xor() computes them together (see Bitset::fused_xor). Its result_count (popcount of the
-    // XOR) goes unused -- the caller already has new_pop for free via mono_pop + gen_pop - 2*overlap
-    // -- so it is not threaded through here.
-    const auto fused = mono.fused_xor(gen);
-    new_mono = fused.result;
-    overlap = fused.overlap;
+    // fused_xor_into() computes them together, straight into new_mono (see Bitset::fused_xor_into).
+    // Its result_count (popcount of the XOR) goes unused -- the caller already has new_pop for free
+    // via mono_pop + gen_pop - 2*overlap -- so it is not threaded through here.
+    overlap = mono.fused_xor_into(gen, new_mono).overlap;
     phase_factor = A::rotation_sign(ctx, mono, new_mono);
 }
 
@@ -278,9 +282,11 @@ auto fused_find_and_collect(const auto &op,
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
 
-        // Reused across terms rather than declared inside `emit`: emit_term_products overwrites it whole,
-        // and above the inline-word threshold a fresh one per term would be a heap allocation per term.
-        // Every partner is the generator's width, so the assignment always takes Bitset's same-width path.
+        // Per-gate scratch, not per-term: emit_term_products overwrites both whole, so constructing them
+        // per term would buy nothing and cost a width derivation, an inline-capacity test and -- above
+        // that capacity -- a heap allocation, every term. Both take the generator's width, which is the
+        // operator's storage width, so every word op below stays on Bitset's matched-width path.
+        Bitset mono(gen.size());
         Bitset new_mono(gen.size());
 
         // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
@@ -291,7 +297,7 @@ auto fused_find_and_collect(const auto &op,
             }
             size_t overlap = 0;
             int phase_factor = 0;
-            emit_term_products<A>(*op.store, i, ectx, new_mono, overlap, phase_factor);
+            emit_term_products<A>(*op.store, i, ectx, mono, new_mono, overlap, phase_factor);
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
             const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);

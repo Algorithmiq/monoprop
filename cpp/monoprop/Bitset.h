@@ -307,6 +307,19 @@ public:
     // is no longer a template instantiated as one unit, so the usual incomplete-type rule applies.
     struct FusedXor;
 
+    // The two popcounts fused_xor reports, without its result. Returned by value so the pass that
+    // computes them can write the XOR straight into a caller-owned destination.
+    struct FusedCounts {
+        size_t overlap;      // popcount(*this & gen)
+        size_t result_count; // popcount(*this ^ gen)
+    };
+
+    // fused_xor's one word pass, writing the XOR into `out` instead of into a fresh Bitset. The hot
+    // path wants this form: `out` is a scratch monomial that lives for the whole gate, so a term
+    // costs the word pass alone -- no width recomputation, no spill test, no allocation, and none of
+    // the copies a by-value result goes through on its way to the caller's variable.
+    auto fused_xor_into(const Bitset &gen, Bitset &out) const noexcept -> FusedCounts;
+
     [[nodiscard]] auto fused_xor(const Bitset &gen) const noexcept -> FusedXor;
 
     auto set(size_t pos) noexcept -> Bitset & {
@@ -526,12 +539,12 @@ struct Bitset::FusedXor {
     size_t result_count;
 };
 
-inline auto Bitset::fused_xor(const Bitset &gen) const noexcept -> FusedXor {
-    assert(num_words() == gen.num_words() && "Bitset::fused_xor width mismatch");
-    Bitset result(size());
+inline auto Bitset::fused_xor_into(const Bitset &gen, Bitset &dst) const noexcept -> FusedCounts {
+    assert(num_words() == gen.num_words() && "Bitset::fused_xor_into width mismatch");
+    assert(num_words() == dst.num_words() && "Bitset::fused_xor_into destination width mismatch");
     const word_type *a = data();
     const word_type *b = gen.data();
-    word_type *out = result.data();
+    word_type *out = dst.data();
     size_t overlap = 0;
     size_t result_count = 0;
     if (nwords_ <= kInlineWords) {
@@ -552,7 +565,13 @@ inline auto Bitset::fused_xor(const Bitset &gen) const noexcept -> FusedXor {
             result_count += static_cast<size_t>(std::popcount(n));
         }
     }
-    return {result, overlap, result_count};
+    return {overlap, result_count};
+}
+
+inline auto Bitset::fused_xor(const Bitset &gen) const noexcept -> FusedXor {
+    Bitset result(size());
+    const auto counts = fused_xor_into(gen, result);
+    return {result, counts.overlap, counts.result_count};
 }
 
 // Bit-identical to the old per-width SplitmixHash<Bitset<NumBits>>: same mix(), same per-word fold
