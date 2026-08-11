@@ -235,11 +235,18 @@ struct PendingAlltoallv {
 // skip_self: do not send the self slot (the caller handles self inline) — self send/recv = 0.
 // known_recv_counts: recv counts already known (e.g. the transpose of the query counts), so skip the
 // count exchange. The self slot is also zeroed when skip_self is set.
+// reverse_of_previous: this exchange is the answer leg of the immediately preceding begin_alltoallv on
+// the same comm, and forward_stride is that leg's elements per record (a query is several words, its
+// answer one value). Only the hybrid transport acts on it, reusing that round's offset tables instead of
+// rebuilding them (see HybridComm::alltoallv_reverse); it requires known_recv_counts, and no other
+// collective may intervene on that comm.
 template <class T>
 inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                             Comm comm,
                             bool skip_self = false,
-                            const std::vector<int> *known_recv_counts = nullptr) -> PendingAlltoallv<T> {
+                            const std::vector<int> *known_recv_counts = nullptr,
+                            bool reverse_of_previous = false,
+                            int forward_stride = 1) -> PendingAlltoallv<T> {
     const int num_ranks = size(comm);
     if (static_cast<int>(send_data.size()) != num_ranks) {
         throw CollectiveArgumentError(
@@ -342,7 +349,24 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     }
 #ifdef monoprop_ENABLE_MPI
     else if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv(comm.shm_rank, flat, datatype<T>::get());
+        // Both arms read the same bundle, taken after the recv_buffer resize above. The reverse verb
+        // keeps its per-argument signature: it needs forward_stride, which is not part of the shared
+        // bundle because only the hybrid transport's reverse leg has a notion of it.
+        if (reverse_of_previous) {
+            comm.hyb->alltoallv_reverse(comm.shm_rank,
+                                        flat.send,
+                                        flat.send_counts,
+                                        flat.send_displs,
+                                        flat.recv,
+                                        flat.recv_counts,
+                                        flat.recv_displs,
+                                        flat.elem,
+                                        datatype<T>::get(),
+                                        forward_stride);
+        }
+        else {
+            comm.hyb->alltoallv(comm.shm_rank, flat, datatype<T>::get());
+        }
     }
 #endif
     else {

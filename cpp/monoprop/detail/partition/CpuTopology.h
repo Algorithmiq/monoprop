@@ -229,6 +229,32 @@ inline auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_cou
     return sets;
 }
 
+// The L3 domain each partition cpuset lands in, in partition_cpusets order -- what a two-level
+// PartitionBarrier groups by. Derived from the sets, not from the placement logic, so the two cannot
+// drift apart. Empty (⇒ flat barrier) if the sets are empty or one names no core the scan knows.
+inline auto cpuset_l3_domains(const std::vector<CpuSet> &sets) -> std::vector<int> {
+    if (sets.empty()) {
+        return {};
+    }
+    const auto cores = enumerate_physical_cores();
+    std::vector<int> domains;
+    domains.reserve(sets.size());
+    for (const CpuSet &set : sets) {
+        int found = -1;
+        for (const auto &core : cores) {
+            if (CPU_ISSET(core.cpu, &set)) {
+                found = core.l3_domain;
+                break;
+            }
+        }
+        if (found < 0) {
+            return {};
+        }
+        domains.push_back(found);
+    }
+    return domains;
+}
+
 // A failing pthread call is ignored: only performance depends on it.
 inline auto pin_this_thread(const CpuSet &set) -> void {
     pthread_setaffinity_np(pthread_self(), sizeof(CpuSet), &set);
@@ -254,6 +280,9 @@ inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
 
 inline auto partition_cpusets(size_t /*n*/, size_t /*group_index*/ = 0, size_t /*group_count*/ = 1)
     -> std::vector<CpuSet> {
+    return {};
+}
+inline auto cpuset_l3_domains(const std::vector<CpuSet> & /*sets*/) -> std::vector<int> {
     return {};
 }
 inline auto pin_this_thread(const CpuSet & /*set*/) -> void {}

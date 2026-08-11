@@ -57,9 +57,11 @@ public:
           parent_(parent),
           partitions_(static_cast<size_t>(n_partitions)),
           errs_(static_cast<size_t>(n_partitions)) {
-        make_transport_();
+        // Placement is decided before the transport, because the transport's barrier is grouped by the
+        // L3 domain each partition will be pinned to.
         discover_node_peers_();
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_);
+        make_transport_();
         start_masters_();
         // The masters are already running, so a ctor throw must not escape: ~PartitionGroup would never run,
         // and destroying joinable threads during unwinding calls std::terminate.
@@ -81,8 +83,8 @@ public:
           node_size_(src.node_size_),
           partitions_(static_cast<size_t>(src.n_)),
           errs_(static_cast<size_t>(src.n_)) {
-        make_transport_();
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_);
+        make_transport_(); // after cpusets_, as in the primary ctor
         start_masters_();
         try { // see the primary ctor: a throw past live masters would std::terminate
             run_on_all([&](int r) {
@@ -168,13 +170,16 @@ private:
     }
 
     auto make_transport_() -> void {
+        // Empty unless the partitions are pinned and /sys was readable ⇒ flat barrier (see
+        // PartitionBarrier); cpusets_ must already be set.
+        const std::vector<int> domains = monoprop::detail::partition::cpuset_l3_domains(cpusets_);
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
-            hyb_ = std::make_unique<mpi::HybridComm>(parent_.mpi, n_);
+            hyb_ = std::make_unique<mpi::HybridComm>(parent_.mpi, n_, domains);
             return;
         }
 #endif
-        shm_ = std::make_unique<mpi::ShmComm>(n_);
+        shm_ = std::make_unique<mpi::ShmComm>(n_, domains);
     }
     auto comm_for_(int r) -> mpi::Comm {
 #ifdef monoprop_ENABLE_MPI
