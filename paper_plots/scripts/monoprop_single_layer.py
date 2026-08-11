@@ -95,13 +95,20 @@ def _neel_occupied(num_sites: int, start_spin: str = "up") -> list[int]:
     ]
 
 
-def build_majorana(num_qubits: int, cutoff: int, lower_atol: float, observable: str):
+def build_majorana(
+    num_qubits: int, cutoff: int, lower_atol: float, observable: str, comm=None
+):
     """Return (propagator_factory, circuit) for a one-layer Hubbard problem.
 
     ``num_qubits`` must be even; ``num_sites = num_qubits // 2``. ``observable``
     is ``"extensive"`` (total spin-up number, sum over all sites -> O(N) terms
     after one layer, the scaling-relevant choice) or ``"local"`` (single
     mid-site number operator).
+
+    ``comm`` is forwarded to the propagator. In an MPI-enabled build ``None``
+    means ``MPI_COMM_WORLD``, not "serial", so a caller wanting one independent
+    replica per rank must pass ``MPI.COMM_SELF`` explicitly. The default is left
+    at ``None`` so the serial, non-MPI build is unaffected.
     """
     if num_qubits % 2:
         raise ValueError("majorana num_qubits must be even (2 per site)")
@@ -146,6 +153,7 @@ def build_majorana(num_qubits: int, cutoff: int, lower_atol: float, observable: 
             cutoff=cutoff,
             cutoff_type="support",  # matches Julia max_unpaired
             lower_atol=lower_atol,
+            comm=comm,
         )
 
     return factory, circuit
@@ -156,11 +164,16 @@ def build_majorana(num_qubits: int, cutoff: int, lower_atol: float, observable: 
 # --------------------------------------------------------------------------- #
 
 
-def build_pauli(num_qubits: int, cutoff: int, lower_atol: float, observable: str):
+def build_pauli(
+    num_qubits: int, cutoff: int, lower_atol: float, observable: str, comm=None
+):
     """Return (propagator_factory, circuit) for a one-layer kicked-Ising chain.
 
     ``observable`` is ``"extensive"`` (sum_i Z_i -> O(N) terms after one layer)
     or ``"local"`` (single mid-chain Z).
+
+    See :func:`build_majorana` for the ``comm`` semantics -- in particular that
+    ``None`` means ``MPI_COMM_WORLD`` in an MPI build.
     """
     import numpy as np
 
@@ -203,6 +216,7 @@ def build_pauli(num_qubits: int, cutoff: int, lower_atol: float, observable: str
             circuit.initial_state,
             cutoff=cutoff,  # support/weight cutoff == Julia truncateweight
             lower_atol=lower_atol,
+            comm=comm,
         )
 
     return factory, circuit
