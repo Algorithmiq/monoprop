@@ -425,7 +425,16 @@ public:
         return r;
     }
 
+    // Width first, or equality is asymmetric: the loops below run this->nwords_, so without it a
+    // default-constructed (width-0) bitset compares equal to everything while nothing compares equal
+    // to it. Unreachable while every bitset is built at a real width, but Monomial keys live in a
+    // boost::unordered_flat_map, and an asymmetric operator== there is a silent corruption rather
+    // than a crash -- and de-templating the wire readers introduces exactly the
+    // default-construct-then-assign pattern that produces a width-0 operand.
     [[nodiscard]] auto operator==(const Bitset &o) const noexcept -> bool {
+        if (nwords_ != o.nwords_) {
+            return false;
+        }
         const word_type *a = data();
         const word_type *b = o.data();
         if (nwords_ <= kInlineWords) {

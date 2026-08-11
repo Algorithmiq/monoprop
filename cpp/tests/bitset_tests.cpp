@@ -273,3 +273,20 @@ BOOST_AUTO_TEST_CASE(bitset_spilled_find_chain) {
     BOOST_TEST(bs.find_next(1000) == 2047U);
     BOOST_TEST(bs.find_next(2047) == 2048U);
 }
+
+// Equality must be symmetric even across widths. A width-0 bitset used to compare equal to everything
+// while nothing compared equal to it, which in a hash map is silent corruption rather than a crash.
+BOOST_AUTO_TEST_CASE(bitset_equality_is_symmetric_across_widths) {
+    const Bitset zero;
+    const Bitset narrow(64, 0xdeadbeefULL);
+    const Bitset wide(256, 0xdeadbeefULL);
+
+    BOOST_TEST(!(zero == narrow));
+    BOOST_TEST(!(narrow == zero));
+    // Same words, different widths: still distinct.
+    BOOST_TEST(!(narrow == wide));
+    BOOST_TEST(!(wide == narrow));
+    // Same width, same words: equal both ways.
+    BOOST_TEST((wide == Bitset(256, 0xdeadbeefULL)));
+    BOOST_TEST((Bitset(256, 0xdeadbeefULL) == wide));
+}
