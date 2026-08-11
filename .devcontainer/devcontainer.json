@@ -50,7 +50,6 @@
     "UV_LINK_MODE": "copy",
     "UV_PYTHON_PREFERENCE": "only-managed",
     "UV_PROJECT_ENVIRONMENT": "/home/vscode/.venv",
-    "monoprop_REF_DATA_PATH": "${containerWorkspaceFolder}/tests/data",
     "CPM_SOURCE_CACHE": "/home/vscode/.cache/cpm",
     "CPM_USE_LOCAL_PACKAGES": "TRUE"
   },

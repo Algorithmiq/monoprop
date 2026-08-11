@@ -44,20 +44,11 @@ class TestPauliPropagatorCutoff:
         mp = self._propagator(serial_comm)
         assert mp.num_qubits == 2  # "ZZ" operator
 
-    def test_non_hermitian_pauli_gate_rejected(self, serial_comm):
-        circuit = Circuit(
-            (ExpGate(PauliOperator({Pauli("X", 0): 1.0j}, num_qubits=1)),),
-            parameters=(0.3,),
-        )
-        mp = self._propagator(serial_comm)
-        with pytest.raises(ValueError, match="not Hermitian"):
-            mp.propagate(circuit)
-
     @pytest.mark.parametrize("schrodinger_cutoff", [3, 4, 5])
     def test_schrodinger_cutoff(self, schrodinger_cutoff, serial_comm):
         """schrodinger_cutoff is a Pauli weight in qubits, matching ``cutoff``.
 
-        PauliPropagator doubles it internally (qubit weight -> gamma-slot popcount).
+        PauliPropagator doubles it internally (qubit weight -> slot popcount).
         """
         mp = PauliPropagator(
             PauliOperator({"ZZ": 1.0}, num_qubits=10),
@@ -207,7 +198,7 @@ class TestPauliOperator:
         assert len(op) == 3
 
     def test_single_term(self):
-        op = PauliOperator({"XIYZ": 1 + 2j}, num_qubits=4)
+        op = PauliOperator({"XIYZ": 1}, num_qubits=4)
         assert op.num_qubits == 4
         assert len(op) == 1
 
@@ -220,9 +211,9 @@ class TestPauliOperator:
         assert set(op.terms) == {Pauli("XYIZ")}
 
     def test_get_majorana_operator_requires_num_qubits(self):
-        op = PauliOperator._from_terms(["X"], [1.0], num_qubits=None)
-        with pytest.raises(ValueError, match="needs num_qubits"):
-            op.get_majorana_operator()
+        """Constructing with no qubit count raises a clear TypeError."""
+        with pytest.raises(TypeError, match="num_qubits must be an integer"):
+            PauliOperator._from_terms(["X"], [1.0], num_qubits=None)
 
     def test_str_few_terms(self):
         op = PauliOperator({"XY": 1.0}, num_qubits=2)
@@ -338,6 +329,12 @@ class TestPauliOperator:
         with pytest.raises(TypeError):
             op.isclose("not an operator")
 
+    def test_non_hermitian_pauli_gate_rejected(self):
+        """PauliOperator with a complex (non-Hermitian) coefficient is rejected."""
+        pauli = Pauli("X", 0)
+        with pytest.raises(ValueError, match="Operator has complex terms"):
+            PauliOperator({pauli: 1.0j}, num_qubits=1)
+
 
 class TestCircuit:
     def _make_gate(self):
@@ -345,24 +342,34 @@ class TestCircuit:
 
     def test_basic_construction(self):
         gates = (self._make_gate(), self._make_gate())
-        circuit = Circuit(gates, parameters=(0.5, 0.5), initial_state=(0,))
+        circuit = Circuit(
+            gates, initial_state=(0,), system_size=1, parameters=(0.5, 0.5)
+        )
         assert len(circuit) == 2
         assert circuit.initial_state == (0,)
 
     def test_empty_gates(self):
-        circuit = Circuit((), initial_state=(0,))
+        circuit = Circuit((), initial_state=(0,), system_size=1)
         assert len(circuit) == 0
 
     def test_default_mapping_is_identity(self):
-        circuit = Circuit((self._make_gate(), self._make_gate()))
+        circuit = Circuit(
+            (self._make_gate(), self._make_gate()), initial_state=(), system_size=1
+        )
         assert list(circuit.resolved_mapping) == [0, 1]
         assert circuit.n_parameters == 2
 
     def test_rejects_mixed_gate_families(self):
-        pauli_gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1))
-        majorana_gate = ExpGate(MajoranaOperator({(0, 1): 1.0}, num_modes=2))
+        pauli_gate = ExpGate(PauliOperator({Pauli("XY", [0, 1]): 1.0}, num_qubits=2))
+        majorana_gate = ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=2))
         with pytest.raises(TypeError, match="mix"):
-            Circuit((pauli_gate, majorana_gate))
+            Circuit(
+                (
+                    pauli_gate,
+                    majorana_gate,
+                ),
+                system_size=2,
+            )
 
     def test_pauli_gate_equality(self):
         gen = PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)

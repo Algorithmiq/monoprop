@@ -25,6 +25,8 @@ import numpy as np
 
 from monoprop.conversion_utils import _parity, _remove_repeated_pairs
 
+from .utils import _validate_system_size
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
@@ -111,8 +113,9 @@ class MajoranaOperator:
     """A weighted sum of Majorana monomials.
 
     Constructed from a ``{term: coefficient}`` mapping whose keys are [Majorana][] terms or
-    raw index tuples. Terms are normalized: indices are sorted within each monomial and duplicate
-    monomials are summed. The resulting [terms][] mapping (index tuple to complex coefficient)
+    raw index tuples. Terms are normalized: indices are sorted within each monomial -- which
+    anticommutes them, so the coefficient carries the sign of the reordering -- and duplicate
+    monomials are simplified. The resulting [terms][] mapping (index tuple to complex coefficient)
     is what the propagator hands to the C++ engine.
     """
 
@@ -126,11 +129,31 @@ class MajoranaOperator:
         ``num_modes`` is required, not inferred: the operator carries its own mode count, which is
         why a propagator and [ExpGate][monoprop.circuit.ExpGate] both take an operator rather than a
         bare [Majorana][] term.
+
+        Args:
+            terms: Mapping from [Majorana][] terms (or raw index tuples) to coefficients.
+            num_modes: Number of modes in the system. Required: an operator carries its own
+                mode count so a propagator can be built from it directly. A gate generator is
+                also authored as a [MajoranaOperator][] (wrapped in
+                [ExpGate][monoprop.circuit.ExpGate]) -- bare [Majorana][] terms are not accepted
+                by ``ExpGate``, since the operator is what carries the mode count.
+
+        Raises:
+            TypeError: If ``num_modes`` is not an integer.
+            ValueError: If ``num_modes`` is negative or a term index is out of range.
         """
+        # Route raw index tuples through Majorana so they get the same non-negative/distinct
+        # validation a Majorana key already carries (a bare tuple would otherwise slip past it).
         majoranas = [
             key.indices if isinstance(key, Majorana) else tuple(key) for key in terms
         ]
-        self.num_modes = num_modes
+        self.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
+        for majorana in majoranas:
+            # majoranas are sorted in here
+            if majorana and majorana[-1] >= 2 * self.num_modes:
+                raise ValueError(
+                    f"Majorana term {majorana} acts on an index >= num_modes={self.num_modes}."
+                )
         self.terms = self._accumulate(majoranas, list(terms.values()))
 
     @classmethod
@@ -138,7 +161,7 @@ class MajoranaOperator:
         cls,
         majoranas: Sequence[Sequence[int]],
         coefficients: Sequence[complex],
-        num_modes: int | None = None,
+        num_modes: int,
     ) -> MajoranaOperator:
         """Build from parallel ``majoranas``/``coefficients`` lists (internal).
 
@@ -146,7 +169,9 @@ class MajoranaOperator:
         ([get_majorana_operator][]) rely on (a mapping cannot carry the same monomial twice).
         """
         obj = cls.__new__(cls)
-        obj.num_modes = num_modes
+        obj.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
+        # _accumulate is taking care of the sorting/removing repeating terms
+        # so no need to check in here
         obj.terms = cls._accumulate(majoranas, coefficients)
         return obj
 

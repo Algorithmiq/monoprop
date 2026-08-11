@@ -28,6 +28,7 @@ from .conversion_utils import (
     _pauli_to_majorana,
 )
 from .majorana import MajoranaOperator
+from .utils import _validate_system_size
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -118,43 +119,45 @@ class PauliOperator:
     PauliOperator is always interpreted in the Jordan-Wigner basis.
     """
 
-    def __init__(
-        self,
-        terms: Mapping[Pauli | str, complex],
-        num_qubits: int | None,
-    ) -> None:
+    def __init__(self, terms: Mapping[Pauli | str, float], num_qubits: int) -> None:
         """Initialize the Pauli operator from a term mapping.
 
-        Every term must act within ``0..num_qubits-1``. ``num_qubits=None`` defers the qubit count
-        (useful while building a generator whose width is not yet known), but then
-        [get_majorana_operator][] and [get_local_operator][] raise.
+        Args:
+            terms: Mapping from [Pauli][] terms (or raw full-width strings) to their
+                coefficients.
+            num_qubits: Total number of qubits the operator acts on. An operator carries its
+                own qubit count so a propagator can be built from it directly; every term must
+                act within ``0..num_qubits-1``.
 
         Raises:
+            TypeError: If ``num_qubits`` is not an integer.
             ValueError: If a term acts on a qubit index ``>= num_qubits``.
         """
-        accumulated: dict[Pauli, complex] = defaultdict(complex)
+        accumulated: dict[Pauli, float] = defaultdict(float)
         for key, coeff in terms.items():
             pauli = key if isinstance(key, Pauli) else Pauli(key)
-            accumulated[pauli] += coeff
-        self.terms: dict[Pauli, complex] = dict(accumulated)
-        self.num_qubits = num_qubits
-        if num_qubits is not None:
-            for pauli in self.terms:
-                if pauli.qubits and pauli.qubits[-1] >= num_qubits:
-                    raise ValueError(
-                        f"Pauli term {pauli} acts on a qubit index >= num_qubits="
-                        f"{num_qubits}."
-                    )
+            float_coeff = np.real_if_close(coeff)
+            if np.iscomplexobj(float_coeff):
+                raise ValueError("Operator has complex terms")
+            accumulated[pauli] += float(float_coeff)
+        self.terms: dict[Pauli, float] = dict(accumulated)
+        self.num_qubits = _validate_system_size(num_qubits, argument_name="num_qubits")
+        for pauli in self.terms:
+            if pauli.qubits and pauli.qubits[-1] >= self.num_qubits:
+                raise ValueError(
+                    f"Pauli term {pauli} acts on a qubit index >= num_qubits="
+                    f"{self.num_qubits}."
+                )
 
     @classmethod
     def _from_terms(
         cls,
         strings: Sequence[Pauli | str],
-        coefficients: Sequence[complex],
+        coefficients: Sequence[float],
         num_qubits: int | None = None,
     ) -> PauliOperator:
         """Build from parallel ``strings``/``coefficients`` lists (internal)."""
-        accumulated: dict[Pauli, complex] = defaultdict(complex)
+        accumulated: dict[Pauli, float] = defaultdict(float)
         for string, coeff in zip(strings, coefficients, strict=True):
             pauli = string if isinstance(string, Pauli) else Pauli(string)
             accumulated[pauli] += coeff
@@ -212,15 +215,7 @@ class PauliOperator:
 
         Each local term is extended to the full ``num_qubits`` width (identities filled in)
         before the Jordan-Wigner map, so the resulting Majorana indices are global.
-
-        Raises:
-            ValueError: If ``num_qubits`` is unset.
         """
-        if self.num_qubits is None:
-            raise ValueError(
-                "PauliOperator.get_majorana_operator() needs num_qubits; construct the "
-                "operator with an explicit num_qubits."
-            )
         majoranas: list[Sequence[int]] = []
         coefficients: list[complex] = []
         for pauli, coeff in self.terms.items():
@@ -233,7 +228,7 @@ class PauliOperator:
     def get_local_operator(self) -> MajoranaOperator:
         """Pack the operator into the engine's native Pauli basis, as a MajoranaOperator.
 
-        Each term maps to its per-qubit gamma-slots -- ``X_q -> {2q}``, ``Y_q -> {2q+1}``,
+        Each term maps to its per-qubit slots -- ``X_q -> {2q}``, ``Y_q -> {2q+1}``,
         ``Z_q -> {2q, 2q+1}`` (see ``_pauli_to_local_slots``) -- carrying its coefficient
         unchanged; a Hermitian Pauli operator's coefficients are real, but that is not checked
         here. The result is a [MajoranaOperator][monoprop.majorana.MajoranaOperator] only as a
