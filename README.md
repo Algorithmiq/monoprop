@@ -33,7 +33,7 @@ and against [`MajoranaPropagation.jl`](https://github.com/SparqleSim/MajoranaPro
 
 Head to our [benchmarks page](https://docs.monoprop.algorithmiq.tech/benchmarks) for more details.
 
-📖 **Full documentation:** <https://docs.algorithmiq.fi/monoprop>
+📖 **Full documentation:** <https://docs.monoprop.algorithmiq.tech>
 
 ## Installation
 
@@ -79,7 +79,7 @@ mp = PauliPropagator.from_circuit(circuit, observable, cutoff=16)  # construct +
 print(mp.evolved_operator())  # the gate splits Z ⊗ Z into two terms
 ```
 
-See the [getting-started guide](https://docs.algorithmiq.fi/monoprop/getting-started.html)
+See the [getting-started guide](https://docs.monoprop.algorithmiq.tech/getting-started)
 for fermionic operators and more.
 
 ## Building from source
@@ -104,7 +104,7 @@ ctest --test-dir build/editable/Release
 ```
 
 Full instructions — prerequisites, MPI options, and running the example
-executable — are in the [building guide](https://docs.algorithmiq.fi/monoprop/docs/building).
+executable — are in the [building guide](https://docs.monoprop.algorithmiq.tech/building).
 
 ## Running the tests
 
@@ -114,7 +114,7 @@ just test-mpi                          # Python + C++ tests under MPI
 just test-wide                         # Python + C++ unit tests with a 64-bit TermIndex
 ```
 
-See the [testing guide](https://docs.algorithmiq.fi/monoprop/docs/testing)
+See the [testing guide](https://docs.monoprop.algorithmiq.tech/testing)
 for the with/without-MPI details and the rank matrix.
 
 ## Development environment
@@ -136,7 +136,7 @@ git clone https://github.com/Algorithmiq/monoprop.git
 ```
 
 Without a DevContainer, install the prerequisites from the
-[building guide](https://docs.algorithmiq.fi/monoprop/docs/building#prerequisites)
+[building guide](https://docs.monoprop.algorithmiq.tech/building#prerequisites)
 by hand.
 
 ## Contributing
