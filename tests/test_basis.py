@@ -51,14 +51,18 @@ def test_basis_change(serial_comm) -> None:
     propagator._simulator.basis_change = jordan_wigner_basis_change(N_MODES)
     propagator.propagate(
         Circuit.from_dense_arrays(
-            majoranas=[(5,)], gen_coeffs=[-1.0], param_inds=[0], parameters=[1.0]
+            majoranas=[(5,)],
+            gen_coeffs=[-1.0],
+            param_inds=[0],
+            parameters=[1.0],
+            system_size=N_MODES,
         )
     )
 
     evolved = propagator.evolved_operator()
 
-    assert list(evolved) == [(0,)]
-    assert np.isclose(evolved[(0,)].real, np.cos(2 * 1.0))
+    assert list(evolved.terms) == [(0,)]
+    assert np.isclose(evolved.terms[(0,)].real, np.cos(2 * 1.0))
 
 
 @pytest.mark.parametrize(

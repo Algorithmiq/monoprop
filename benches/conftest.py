@@ -45,7 +45,12 @@ from _builders import (
     build_random_propagator,
     make_random_problem,
 )
-from _memory import RssSampler, merge_peak_of_sum, resting_rss_bytes
+from _memory import (
+    HighWaterMark,
+    PssSampler,
+    merge_peak_of_sum,
+    resting_rss_bytes,
+)
 
 import monoprop
 
@@ -95,7 +100,8 @@ _RANDOM_OPTIONS = (
 _RESULTS: dict[str, Any] = {
     "meta": {},  # run configuration (ranks, threads, host, ...)
     "params": {},  # resolved random-problem hyperparameters
-    "mem": {},  # node id -> peak RSS bytes (per operation)
+    "mem": {},  # node id -> peak-of-sum PSS bytes (per operation; MPI lower bound)
+    "memhwm": {},  # node id -> summed per-rank peak RSS bytes (per operation; may fall back to exit RSS if VmHWM can't be reset)  # noqa: E501
     "opsize": {},  # picture / model -> {"terms": n}
     "memrest": {},  # picture / model -> resting RSS bytes
     "membase": {},  # fixed model -> resting RSS bytes before the model is built
@@ -120,9 +126,9 @@ def _results_path() -> Path | None:
 
 
 def _peak_of_sum(comm: Any, samples: list[tuple[float, int]]) -> int:
-    """Reduce per-rank RSS timelines to the job's peak summed RSS (bytes).
+    """Reduce per-rank PSS timelines to the job's peak summed footprint (bytes).
 
-    Gathers every rank's ``(wall_clock, rss)`` samples to rank 0 and merges them
+    Gathers every rank's ``(wall_clock, pss)`` samples to rank 0 and merges them
     via :func:`_memory.merge_peak_of_sum`. Collective; returns ``0`` off root.
     """
     if comm is None or comm.Get_size() == 1:
@@ -285,19 +291,32 @@ def record_model_stats(bench_comm: Any) -> Callable[..., None]:
 
 @pytest.fixture(autouse=True)
 def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[None]:
-    """Record each benchmark's peak physical-memory footprint (RSS) for the report.
+    """Record each benchmark's peak physical-memory footprint for the report.
 
-    A background :class:`RssSampler` samples this rank's live RSS while the test
-    runs. It is a footprint: it includes structures already resident when the
-    operation starts (e.g. the shared :func:`built_graph`). Under MPI the per-rank
-    timelines are merged into the peak-of-sum (see :func:`_peak_of_sum`); the
-    gather is collective, but only rank 0 records.
+    Two numbers, because neither alone is both exact and MPI-aware:
+
+    ``memhwm``
+        The kernel's exact peak RSS (:class:`HighWaterMark`) summed over ranks. Exact per
+        rank, and an upper bound on the job total, since ranks that peak at different
+        moments are added as though they had peaked together.
+    ``mem``
+        The peak-of-sum of the sampled per-rank PSS timelines, which is the quantity that
+        actually bounds a node's RAM. A lower bound: the sampler only advances when a rank
+        drops the GIL, and monoprop's ``propagate()`` holds it for the whole call.
+
+    Both are footprints, not deltas: they include structures already resident when the
+    operation starts (e.g. the shared :func:`built_graph`). The gather is collective, but
+    only rank 0 records.
     """
-    with RssSampler() as sampler:
+    with HighWaterMark() as window, PssSampler() as sampler:
         yield
+    key = request.node.nodeid.split("/")[-1]
     mem = _peak_of_sum(bench_comm, sampler.samples)
     if mem:  # 0 => non-root rank or /proc unavailable: nothing to record
-        _record("mem", request.node.nodeid.split("/")[-1], mem)
+        _record("mem", key, mem)
+    hwm = _reduce_sum(bench_comm, window.peak_bytes)
+    if hwm:
+        _record("memhwm", key, hwm)
 
 
 @pytest.fixture(scope="session", params=["heisenberg", "schrodinger"])

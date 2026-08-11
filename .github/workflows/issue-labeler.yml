@@ -1,0 +1,39 @@
+name: Label Issues
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  label:
+    runs-on: ubuntu-26.04
+    permissions:
+      issues: write
+    steps:
+      - name: Add labels based on issue content
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = context.payload.issue.title.toLowerCase();
+            const body  = (context.payload.issue.body ?? '').toLowerCase();
+            const text  = `${title} ${body}`;
+
+            const rules = [
+              { pattern: /\b(bug|error|exception|crash|broken|fail)\b/, label: 'bug' },
+              { pattern: /\b(feat(ure)?|enhance|improvement|request|add support)\b/, label: 'enhancement' },
+              { pattern: /\b(perf(ormance)?|slow|speed|latency|throughput)\b/, label: 'performance' },
+              { pattern: /\b(doc(s|umentation)?|readme|example|tutorial)\b/, label: 'documentation' },
+            ];
+
+            const toAdd = rules
+              .filter(r => r.pattern.test(text))
+              .map(r => r.label);
+
+            if (toAdd.length > 0) {
+              await github.rest.issues.addLabels({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: context.issue.number,
+                labels:       toAdd,
+              });
+            }

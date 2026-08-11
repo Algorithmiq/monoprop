@@ -30,7 +30,8 @@ def _two_gate_graph(serial_comm):
         (
             ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2)),
             ExpGate(MajoranaOperator({(1,): 1.0}, num_modes=2)),
-        )
+        ),
+        2,
     )
     mp.build_graph(circuit)  # identity mapping -> two distinct angles
     return mp, circuit
@@ -71,7 +72,7 @@ class TestGraphAndParameterValidation:
             ExpGate(MajoranaOperator({(1,): 1.0}, num_modes=2), index=2),
         )
         with pytest.raises(ValueError, match="contiguous"):
-            Circuit(gates)
+            Circuit(gates, 2)
 
     def test_mixed_param_scheme_rejected(self):
         gates = (
@@ -79,7 +80,7 @@ class TestGraphAndParameterValidation:
             ExpGate(MajoranaOperator({(1,): 1.0}, num_modes=2)),
         )
         with pytest.raises(ValueError, match="every gate must set"):
-            Circuit(gates)
+            Circuit(gates, 2)
 
     def test_shared_mapping_index_ties_gates(self, serial_comm):
         operator = MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2)
@@ -89,6 +90,7 @@ class TestGraphAndParameterValidation:
                 ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2), index=0),
                 ExpGate(MajoranaOperator({(1,): 1.0}, num_modes=2), index=0),
             ),
+            2,
         )
         mp.build_graph(circuit)
         assert mp.graph_layers == 2
@@ -102,12 +104,18 @@ class TestGraphAndParameterValidation:
                 (
                     ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2)),
                     ExpGate(MajoranaOperator({(1,): 1.0}, num_modes=2)),
-                )
-            )
+                ),
+                2,
+            ),
         )
-        functional = mp.expval_functional()
-        mp.build_graph(Circuit((ExpGate(MajoranaOperator({(2,): 1.0}, num_modes=2)),)))
-        # Two parameters, so the stale-graph guard fires rather than the length check.
+        functional = mp.expectation_value_functional()
+        # Appending another layer mutates the graph, so the previously-built functional
+        # must reject being called against the stale plan.
+        mp.build_graph(
+            Circuit((ExpGate(MajoranaOperator({(2,): 1.0}, num_modes=2)),), 2)
+        )
+        # Call with the parameter count the functional was built with (2), so the
+        # stale-graph guard fires rather than the parameter-length check.
         with pytest.raises(RuntimeError, match=r"MP object has been modified"):
             functional([1.0, 2.0])
 
@@ -119,4 +127,4 @@ class TestEvolvedOperatorBothPictures:
             operator, [0, 1], cutoff=4, schrodinger_cutoff=2, comm=serial_comm
         )
         result = mp.evolved_operator()
-        assert isinstance(result, dict)
+        assert isinstance(result, MajoranaOperator)

@@ -39,6 +39,9 @@ jobs:
   build:
     runs-on: ubuntu-26.04
 
+    env:
+      SKBUILD_CMAKE_DEFINE: monoprop_ENABLE_CXX_UNIT_TESTS=OFF
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -64,10 +67,6 @@ jobs:
           cache: npm
           cache-dependency-path: docs/package-lock.json
 
-      - name: Install package
-        run: |
-          uv sync --group docs --all-extras
-
       # `just build-docs` runs, in order: docs-install (npm ci), gen-api
       # (docstrings -> API reference MDX), doctest-py (runnable docstring
       # examples), doctest-docs (runnable examples in the prose docs),
@@ -91,7 +90,7 @@ jobs:
       # main): the Cloudflare deploy job below needs `docs/out` for PR builds
       # too, to publish a preview.
       - name: Upload docs site artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: docs-site
           path: docs/out
@@ -117,7 +116,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Download docs site artifact
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@v8
         with:
           name: docs-site
           path: docs/out

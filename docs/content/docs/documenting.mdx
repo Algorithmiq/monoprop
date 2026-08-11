@@ -77,12 +77,25 @@ The top-level classes are [MajoranaPropagator][] and [PauliPropagator][].
   the code-span styling for you (backticks would split the reference and stop it
   resolving).
 - **Bare names must be unambiguous.** `[MajoranaPropagator][]` works because the
-  name is unique across the public API. If a name is defined in more than one
-  module, give the fully-qualified path as an explicit target — and this is also
-  how you set custom display text:
+  name is unique across the public API. A name defined in more than one place —
+  a second module, or a member that several classes each document — is dropped
+  from the bare-name index and will not resolve. Give it a fully-qualified path
+  as an explicit target, which is also how you set custom display text:
 
   ```mdx
   See [the operator class][monoprop.majorana.MajoranaOperator] for details.
+  ```
+
+  Member names are the common case. The propagators document their shared
+  surface on each front-end, so `build_graph`, `evolved_operator`,
+  `parameter_mapping`, `update_initial_operator`, `n_gates`, `graph_layers` and
+  `size` each name three symbols; `terms`, `isclose` and `get_majorana_operator`
+  are likewise shared across the operator classes, and `num_modes` across both
+  families. Always qualify these:
+
+  ```mdx
+  Extend the graph with
+  [build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph].
   ```
 
 - **Unresolved references** are left as literal text and print a
@@ -147,6 +160,13 @@ Docstrings may cross-reference other symbols with the same `[Symbol][]` /
 [Cross-references to the API](#cross-references-to-the-api); griffe resolves
 them into links when the reference is regenerated.
 
+Inside a class docstring a bare `[name][]` only reaches that class's *own*
+members. Inherited members are rendered on the subclass page but are not in the
+cross-reference index, so a subclass docstring pointing at a base-class method
+must spell out the full path —
+`[expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]`,
+not `[expectation_value][]`.
+
 ## Tutorial notebooks
 
 Tutorials live as Jupyter notebooks in `docs/notebooks/`. They are executed and
@@ -162,6 +182,15 @@ just gen-notebooks
 ## Building locally
 
 ### Development server (recommended)
+
+Building it locally requires [npm](https://docs.npmjs.com/), the Node.js package manager.
+Please follow the instructions provided on the website to install it.
+In the DevContainer, you can install it using `apt` command:
+
+```bash
+sudo apt update
+sudo apt install -y npm
+```
 
 The fastest way to preview changes is the live-reloading dev server. It
 regenerates the API reference and notebooks once, then watches for file changes:

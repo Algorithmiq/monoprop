@@ -58,9 +58,10 @@ class TestMajorana:
         assert sign_mixed == -1.0
 
     def test_equal_terms_compare_and_hash_alike(self):
-        assert Majorana(4, 5) == Majorana(4, 5)
-        assert hash(Majorana(4, 5)) == hash(Majorana(4, 5))
-        assert {Majorana(4, 5), Majorana(4, 5)} == {Majorana(4, 5)}
+        left, right = Majorana(4, 5), Majorana(4, 5)
+        assert left == right
+        assert hash(left) == hash(right)
+        assert {left, right} == {left}
 
     def test_eq_with_non_majorana_is_false(self):
         assert (Majorana(0, 1) == (0, 1)) is False
@@ -78,12 +79,23 @@ def test_majorana_operator_validates_raw_tuple_keys():
         MajoranaOperator({(-1, 0): 1.0}, num_modes=2)
 
 
+def test_majorana_operator_rejects_index_out_of_range():
+    """A term whose highest index is >= 2 * num_modes is out of range and rejected."""
+    # num_modes=2 allows Majorana indices 0..3; index 4 is one past the last valid index.
+    with pytest.raises(ValueError, match="acts on an index >= num_modes=2"):
+        MajoranaOperator({(0, 4): 1.0}, num_modes=2)
+    # The boundary index 3 is still valid (2 * num_modes - 1).
+    op = MajoranaOperator({(0, 3): 1.0}, num_modes=2)
+    assert op.terms == {(0, 3): 1.0}
+
+
 def test_from_dense_arrays_groups_by_param_ind():
     """Consecutive monomials sharing a param_ind group into one gate."""
     circuit = Circuit.from_dense_arrays(
         majoranas=[(0, 1), (2, 3), (0, 3)],
         gen_coeffs=[0.5, -0.5, 1.0],
         param_inds=[0, 0, 1],
+        system_size=2,
         parameters=[1.0, 2.0],
         initial_state=[0, 1],
     )
@@ -163,6 +175,38 @@ def test_majorana_operator_all_pairwise_commute(terms, expected):
 )
 def test_majorana_operator_eq_working_and_non_working_examples(left, right, expected):
     assert (left == right) is expected
+
+
+class TestMajoranaOperatorIsclose:
+    """isclose: approximate equality that tolerates float drift but not structural mismatch."""
+
+    def test_close_coefficients_within_tolerance(self):
+        left = MajoranaOperator({(0, 1): 1.0}, num_modes=2)
+        right = MajoranaOperator({(0, 1): 1.0 + 1e-9}, num_modes=2)
+        assert left.isclose(right) is True
+
+    def test_coefficients_outside_tolerance_are_not_close(self):
+        left = MajoranaOperator({(0, 1): 1.0}, num_modes=2)
+        right = MajoranaOperator({(0, 1): 1.1}, num_modes=2)
+        assert left.isclose(right) is False
+
+    def test_missing_term_compares_against_implicit_zero(self):
+        """A term absent from one operand is treated as coefficient 0, not a structural mismatch."""
+        left = MajoranaOperator({(0, 1): 1.0, (2, 3): 1e-12}, num_modes=4)
+        right = MajoranaOperator({(0, 1): 1.0}, num_modes=4)
+        assert left.isclose(right) is True
+
+    def test_different_num_modes_is_false_not_error(self):
+        left = MajoranaOperator({(0, 1): 1.0}, num_modes=2)
+        right = MajoranaOperator({(0, 1): 1.0}, num_modes=3)
+        assert left.isclose(right) is False
+
+    def test_non_majorana_operator_raises_type_error(self):
+        left = MajoranaOperator({(0, 1): 1.0}, num_modes=2)
+        with pytest.raises(
+            TypeError, match="Cannot compare MajoranaOperator with dict"
+        ):
+            left.isclose({(0, 1): 1.0})
 
 
 @pytest.mark.parametrize(

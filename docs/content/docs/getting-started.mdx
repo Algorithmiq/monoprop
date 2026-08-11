@@ -57,12 +57,12 @@ observable = MajoranaOperator({(0, 1, 2, 4): 1.0}, num_modes=8)
 # M_γ = i·m_4 m_5 is a length-2 monomial, so its coefficient is imaginary. monoprop
 # divides out the Hermitian phase i for you when the circuit is ingested.
 gate = ExpGate(MajoranaOperator({(4, 5): 1j}, num_modes=8))  # exp(+i θ · M_γ), M_γ = i·m_4 m_5
-circuit = Circuit(gates=[gate], parameters=[0.5])
+circuit = Circuit(gates=[gate], parameters=[0.5], system_size=8)
 mbs = MajoranaPropagator.from_circuit(circuit, observable, cutoff=16)
 result = mbs.evolved_operator()
 
-assert sorted(result) == [(0, 1, 2, 4), (0, 1, 2, 5)]  # original (cosine) term plus the new (sine) term
-assert np.isclose(result[(0, 1, 2, 4)].real, np.cos(2 * 0.5))  # cosine branch
+assert sorted(result.terms) == [(0, 1, 2, 4), (0, 1, 2, 5)]  # original (cosine) term plus the new (sine) term
+assert np.isclose(result.terms[(0, 1, 2, 4)].real, np.cos(2 * 0.5))  # cosine branch
 ```
 
 For qubit problems there is a dedicated simulator, `PauliPropagator`, which takes
@@ -78,7 +78,7 @@ from monoprop import PauliPropagator, ExpGate, Circuit, PauliOperator, Pauli
 
 observable = PauliOperator({"ZZ": 1.0}, num_qubits=2)
 gate = ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2))  # exp(+i θ · X_0)
-circuit = Circuit(gates=[gate], parameters=[0.5])
+circuit = Circuit(gates=[gate], parameters=[0.5], system_size=2)
 pp = PauliPropagator.from_circuit(circuit, observable, cutoff=16)
 result = pp.evolved_operator()  # a PauliOperator; .terms maps Pauli -> coefficient
 
