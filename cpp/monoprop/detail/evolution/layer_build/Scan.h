@@ -194,7 +194,7 @@ struct FusedScanResult {
 // deterministic. `fused_scale_coeffs` (k==0 only; must alias coeffs.data()) scales every anticommuting
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
-// op, gen, cutoff_eval are deduced (MPOperator/Monomial<NumModes>/CutoffEvaluator<NumModes>,
+// op, gen, cutoff_eval are deduced (MPOperator/Monomial<NumModes>/CutoffEvaluator,
 // argument types); NumModes is recovered as a value below only where a still-explicit callee needs it
 // (kQueryWords, query_push, monomial_hash -- the wire-format cluster Stage 2e converts, and
 // monomial_hash, left untouched here since this file's scope is the algebra/operator layer, not

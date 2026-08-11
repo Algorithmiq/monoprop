@@ -204,8 +204,13 @@ auto decode_coeff(const std::complex<double> &coeff, const MonomialLike auto &ma
 // every call site -- required, since the XOR below asserts matching widths.
 auto change_basis(const MonomialLike auto &maj, const auto &basis) -> std::remove_cvref_t<decltype(maj)> {
     using Mono = std::remove_cvref_t<decltype(maj)>;
-    constexpr size_t num_modes = Mono::size() / 2;
-    Mono new_maj;
+    const size_t num_modes = maj.size() / 2;
+    // Copy-then-reset, rather than `Mono new_maj;` (width 0 when Mono is Bitset) or a width-argument
+    // constructor: Bitset's one-argument constructor takes a width and Monomial's takes a *value*, so
+    // no single spelling zero-constructs both at maj's width. The copied words are immediately
+    // overwritten; this path only runs when a basis change is configured.
+    Mono new_maj = maj;
+    new_maj.reset();
 
     size_t pos = maj.find_first();
     while (pos < maj.size()) {

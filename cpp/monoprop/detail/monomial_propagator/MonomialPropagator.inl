@@ -352,7 +352,7 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
         return kDefault;
     }
     // The bound is already in physical slots (CutoffEvaluator::max_slot_bound), so nothing to scale.
-    const auto bound = detail::CutoffEvaluator<NumModes>(cutoff_fn_).max_slot_bound();
+    const auto bound = detail::CutoffEvaluator(cutoff_fn_).max_slot_bound();
     if (!bound) {
         return kDefault;
     }
@@ -497,10 +497,10 @@ auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
         for (size_t i = 0; i < 2 * logical_num_modes_; ++i) {
             basis.push_back(indices_to_bitset_checked<NumModes>(basis_change_.value()[i], 2 * logical_num_modes_));
         }
-        cutoff_fn_ = detail::cutoff_function_basis_change<NumModes>(cutoff_type_, cutoff_, basis, logical_num_modes_);
+        cutoff_fn_ = detail::cutoff_function_basis_change(cutoff_type_, cutoff_, basis, logical_num_modes_);
     }
     else {
-        cutoff_fn_ = detail::cutoff_function<NumModes>(cutoff_type_, cutoff_, logical_num_modes_);
+        cutoff_fn_ = detail::cutoff_function(cutoff_type_, cutoff_, logical_num_modes_, mp_op_.num_bits());
     }
 }
 

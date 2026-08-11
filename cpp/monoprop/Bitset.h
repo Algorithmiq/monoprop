@@ -313,6 +313,14 @@ public:
         return *this;
     }
 
+    // Clear every bit, keeping the width. Not the same as assigning a default-constructed Bitset,
+    // which drops the width to 0 -- the distinction matters wherever code needs "a zero monomial the
+    // same shape as this one" and used to get it from `Monomial<NumModes> m;` (see change_basis).
+    auto reset() noexcept -> Bitset & {
+        std::memset(data(), 0, nwords_ * sizeof(word_type));
+        return *this;
+    }
+
     auto operator&=(const Bitset &rhs) noexcept -> Bitset & {
         assert(nwords_ == rhs.nwords_ && "Bitset::operator&= width mismatch");
         word_type *a = data();

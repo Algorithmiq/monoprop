@@ -126,8 +126,7 @@ inline auto monomial_hash(const Monomial<NumModes> &mono) noexcept -> size_t {
 }
 
 // Structural keep/drop predicate applied to a monomial after each gate.
-template <size_t NumModes>
-using CutoffFn = std::function<bool(const Monomial<NumModes> &)>;
+using CutoffFn = std::function<bool(const Bitset &)>;
 
 enum class CutoffType {
     Length, // Keep if the monomial length (number of Majorana operators) <= cutoff (or fully paired)

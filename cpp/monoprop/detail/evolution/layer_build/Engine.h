@@ -548,7 +548,7 @@ auto build_layer(auto &local_op,
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
     const auto &coeffs = local_coeffs.value_or(empty_coeffs()).get();
-    const CutoffEvaluator<num_modes> cut_eval{cutoff_fn};
+    const CutoffEvaluator cut_eval{cutoff_fn};
 
     // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass. k==0 only (a
     // popcount>k hit is outside the per-index cos set, so 1/cos recovery would be wrong) and cos!=0 (else

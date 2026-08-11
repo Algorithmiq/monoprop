@@ -111,23 +111,27 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_logical_num_modes_masks_prefix_multi_word) 
 BOOST_AUTO_TEST_CASE(majorana_cutoff_evaluator_dispatch_and_popcount) {
     constexpr size_t N = 32;
 
-    CutoffFn<N> length_fn = detail::LengthCutoff<N>{.cutoff = 3};
-    detail::CutoffEvaluator<N> length_ev(length_fn);
+    // Both the logical width and the storage width must be stated now that neither comes from a
+    // NumModes: the functor precomputes its masks from them.
+    CutoffFn length_fn = detail::LengthCutoff{3, N, 2 * N};
+    detail::CutoffEvaluator length_ev(length_fn);
     BOOST_TEST((length_ev.length_cutoff() != nullptr));
     BOOST_TEST((length_ev.support_cutoff() == nullptr));
     BOOST_REQUIRE(length_ev.max_slot_bound().has_value());
     // A length cutoff counts set bits directly, so the slot bound IS the cutoff.
     BOOST_TEST(length_ev.max_slot_bound().value() == 3U);
 
-    CutoffFn<N> support_fn = detail::SupportCutoff<N>{.cutoff = 2};
-    detail::CutoffEvaluator<N> support_ev(support_fn);
+    CutoffFn support_fn = detail::SupportCutoff{2, N, 2 * N};
+    detail::CutoffEvaluator support_ev(support_fn);
     BOOST_TEST((support_ev.length_cutoff() == nullptr));
     BOOST_TEST((support_ev.support_cutoff() != nullptr));
     // A support cutoff counts modes/qubits and each spans two slots, so the slot bound doubles.
     BOOST_TEST(support_ev.max_slot_bound().value() == 4U);
 
-    CutoffFn<N> opaque_fn = [](const Monomial<N> &) { return true; };
-    detail::CutoffEvaluator<N> opaque_ev(opaque_fn);
+    // A lambda, so neither target<>() probe matches and the evaluator falls back to calling through
+    // the std::function -- the same path cutoff_function_basis_change deliberately takes.
+    CutoffFn opaque_fn = [](const Bitset &) { return true; };
+    detail::CutoffEvaluator opaque_ev(opaque_fn);
     BOOST_TEST((opaque_ev.length_cutoff() == nullptr));
     BOOST_TEST((opaque_ev.support_cutoff() == nullptr));
     BOOST_TEST(!opaque_ev.max_slot_bound().has_value());
