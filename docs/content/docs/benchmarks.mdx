@@ -430,6 +430,15 @@ aborts if MPI is missing; extra args are forwarded to `mpiexec` (as root, add
 - `test_model[hubbard]` — 120-qubit Fermi-Hubbard, 29-step Trotter.
 - `test_model[pauli]` — 127-qubit Pauli-basis kicked-Ising, 20 layers.
 
+| Option | Meaning | Default |
+|---|---|---|
+| `--model-rounds` | rounds per model; each rebuilds the model first | 1 |
+
+The default of one round records the memory and term-count statistics, which are deterministic, but
+gives no spread for the timing. Pass `--model-rounds 5` or more whenever a timing *difference* is the
+point of the run — a single sample on these models can sit well off the median, and comparing two
+one-sample runs will read noise as signal.
+
 Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`);
 `just bench --help` lists all.
 

@@ -34,6 +34,7 @@ def test_model(
     benchmark,
     bench_comm,
     model_configs,
+    model_rounds,
     model,
     record_model_config,
     record_model_stats,
@@ -57,8 +58,12 @@ def test_model(
             propagator.propagate(circuit)
         return propagator.expectation_value()
 
+    # setup() runs before every round, so each round rebuilds the model and evolves a fresh
+    # propagator -- these simulations are in place, and replaying a mutated one would time the wrong
+    # thing. record_model_stats below then describes the last round, which is what any round would
+    # produce: the term counts and memory are deterministic.
     result = benchmark.pedantic(
-        barriered(run, bench_comm), setup=setup, rounds=1, iterations=1
+        barriered(run, bench_comm), setup=setup, rounds=model_rounds, iterations=1
     )
     assert isinstance(result, float)
 
