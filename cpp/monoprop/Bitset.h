@@ -16,6 +16,7 @@
 
 #include <array>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -246,8 +247,15 @@ public:
 
     [[nodiscard]] auto none() const noexcept -> bool { return !any(); }
 
+    // Every binary op below loops *this*'s word count and indexes the other operand unchecked, so a
+    // narrower operand is read past its own width. That is not merely wrong-but-harmless: it only
+    // reads zeros from the inline array while the *result* fits inline, and once *this* is spilled
+    // (> kInlineWords) it reads off the end of the narrower operand's array. Widths must match at
+    // every call site, so this is asserted rather than handled -- Release keeps the loops bare.
+    //
     // popcount(*this & other) without materializing the temporary.
     [[nodiscard]] auto count_and(const Bitset &o) const noexcept -> size_t {
+        assert(nwords_ == o.nwords_ && "Bitset::count_and width mismatch");
         const word_type *a = data();
         const word_type *b = o.data();
         if (nwords_ <= kInlineWords) {
@@ -265,6 +273,7 @@ public:
     }
 
     [[nodiscard]] auto parity_and(const Bitset &o) const noexcept -> bool {
+        assert(nwords_ == o.nwords_ && "Bitset::parity_and width mismatch");
         const word_type *a = data();
         const word_type *b = o.data();
         word_type parity_word = 0;
@@ -305,6 +314,7 @@ public:
     }
 
     auto operator&=(const Bitset &rhs) noexcept -> Bitset & {
+        assert(nwords_ == rhs.nwords_ && "Bitset::operator&= width mismatch");
         word_type *a = data();
         const word_type *b = rhs.data();
         if (nwords_ <= kInlineWords) {
@@ -321,6 +331,7 @@ public:
     }
 
     auto operator|=(const Bitset &rhs) noexcept -> Bitset & {
+        assert(nwords_ == rhs.nwords_ && "Bitset::operator|= width mismatch");
         word_type *a = data();
         const word_type *b = rhs.data();
         if (nwords_ <= kInlineWords) {
@@ -337,6 +348,7 @@ public:
     }
 
     auto operator^=(const Bitset &rhs) noexcept -> Bitset & {
+        assert(nwords_ == rhs.nwords_ && "Bitset::operator^= width mismatch");
         word_type *a = data();
         const word_type *b = rhs.data();
         if (nwords_ <= kInlineWords) {
@@ -506,6 +518,7 @@ struct Bitset::FusedXor {
 };
 
 inline auto Bitset::fused_xor(const Bitset &gen) const noexcept -> FusedXor {
+    assert(num_words() == gen.num_words() && "Bitset::fused_xor width mismatch");
     Bitset result(size());
     const word_type *a = data();
     const word_type *b = gen.data();
