@@ -44,6 +44,24 @@ COLORS = {
 }
 ORDER = list(COLORS)
 
+# Per memory column: axis label and headline fragment. The label has to follow the column
+# actually plotted -- a figure titled "final memory" whichever key was passed is how an
+# operator-memory curve gets read as a host-RSS one.
+MEMORY_COLUMNS = {
+    "final_memory_MB": (
+        "final-step peak host RSS [MB]",
+        "final-step peak host RSS",
+    ),
+    "peak_rss_MB": (
+        "whole-run peak host RSS [MB]",
+        "whole-run peak host RSS",
+    ),
+    "operator_memory_MB": (
+        "library's own accounting [MB]",
+        "each library's own memory accounting",
+    ),
+}
+
 
 def load(paths: list[Path]) -> list[dict]:
     """Read the JSONL files, keeping one record per (backend, size).
@@ -206,7 +224,11 @@ def provenance(records: list[dict]) -> str:
 
 
 def _figure(
-    records: list[dict], key: str, ylabel: str, headline: str, out: Path
+    records: list[dict],
+    key: str,
+    ylabel: str,
+    headline: str,
+    out: Path,
 ) -> None:
     """One standalone figure for one measured quantity.
 
@@ -221,7 +243,7 @@ def _figure(
         f"{headline}\n{layers(records)}, {truncation(records)}", fontsize="medium"
     )
     fig.tight_layout()
-    fig.savefig(out, dpi=150)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"wrote {out}")
 
@@ -246,9 +268,12 @@ def _plot_axes(ax, records, key, ylabel) -> None:
     ax.legend(fontsize="small", loc="upper left", bbox_to_anchor=(0.0, -0.13), ncols=3)
 
 
-def _table(records: list[dict]) -> str:
+def _table(records: list[dict], memory_key: str = "final_memory_MB") -> str:
+    # The memory column must be the one the figure plots, or the sidecar silently
+    # contradicts it -- host RSS next to a curve of device bytes, for instance.
+    heading = MEMORY_COLUMNS[memory_key][0]
     lines = [
-        "| backend | qubits | grid | total s | final MB | final terms | status |",
+        f"| backend | qubits | grid | total s | {heading} | final terms | status |",
         "| ------- | -----: | ---- | ------: | -------: | ----------: | ------ |",
     ]
     for r in sorted(
@@ -259,9 +284,11 @@ def _table(records: list[dict]) -> str:
         ),
     ):
         if r.get("status") == "ok":
+            value = r.get(memory_key)
+            shown = "-" if value is None else f"{value:.1f}"
             lines.append(
                 f"| {r['label']} | {r['num_qubits']} | {r['nx']}x{r['ny']} | "
-                f"{r['total_runtime_s']:.3f} | {r['final_memory_MB']:.1f} | "
+                f"{r['total_runtime_s']:.3f} | {shown} | "
                 f"{r['final_num_terms']:,} | ok |"
             )
         else:
@@ -299,15 +326,25 @@ def main() -> None:
         "2D TFIM Trotter evolution: total runtime vs lattice size",
         args.output_dir / "pauli_scaling_runtime.png",
     )
+    ylabel, headline = MEMORY_COLUMNS[args.memory_key]
+    # The default column keeps the published filename; any other key gets its own, so a
+    # second run cannot quietly replace the default figure with a different quantity.
+    memory_out = (
+        "pauli_scaling_memory.png"
+        if args.memory_key == "final_memory_MB"
+        else f"pauli_scaling_memory_{args.memory_key.removesuffix('_MB')}.png"
+    )
     _figure(
         records,
         args.memory_key,
-        "final memory [MB]",
-        "2D TFIM Trotter evolution: final memory vs lattice size",
-        args.output_dir / "pauli_scaling_memory.png",
+        ylabel,
+        f"2D TFIM Trotter evolution: {headline} vs lattice size",
+        args.output_dir / memory_out,
     )
 
-    sidecar = f"{_table(records)}\n\nMeasured on:\n\n{provenance(records)}\n"
+    sidecar = (
+        f"{_table(records, args.memory_key)}\n\nMeasured on:\n\n{provenance(records)}\n"
+    )
     (args.output_dir / "pauli_scaling.md").write_text(sidecar)
     print(sidecar)
 
