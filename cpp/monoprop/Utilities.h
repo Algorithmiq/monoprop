@@ -30,8 +30,8 @@ struct MSb0 : BitOrdering {};
 struct LSb0 : BitOrdering {};
 
 namespace detail {
-// n is an ordinary runtime argument -- the return type is the runtime-width Bitset (see the
-// NumModes-NTTP-removal plan's Stage 2b) -- so this needs no template parameter of its own.
+// n is an ordinary runtime argument: Bitset carries its width as data, so there is nothing for a
+// template parameter of its own to supply.
 inline auto make_repeating_bitset(size_t n, uint64_t pattern) -> Bitset {
     Bitset bits(n);
     const size_t num_words = bits.num_words();
@@ -54,11 +54,10 @@ inline auto odd_bits(size_t n) -> Bitset {
 
 // Under MSb0 the logical even positions are physically odd, so the pattern is swapped vs LSb0.
 //
-// Two overloads: most call sites have a compile-time N (even_bits<Mono::size(), LSb0>(),
-// even_bits<2 * NumModes, LSb0>()) and keep spelling it that way unchanged. Some -- anything that
-// only has a Bitset in hand, e.g. an operator's result (a ^ b), which is not Monomial<NumModes>-typed
-// and so cannot recover a compile-time N via ::size() -- have only a *runtime* width, so N moves from
-// the template-argument list to an ordinary function argument instead: even_bits<LSb0>(some_bitset.size()).
+// Two overloads, because a caller's width may be either. Call sites with a compile-time N spell it as
+// a template argument (even_bits<Mono::size(), LSb0>()); anything holding only a Bitset -- an
+// operator's result (a ^ b), say, whose width is data and not recoverable via a static ::size() --
+// passes it as an ordinary argument instead: even_bits<LSb0>(some_bitset.size()).
 template <size_t N, typename Ordering>
 auto even_bits() -> Bitset {
     if constexpr (std::is_same_v<Ordering, MSb0>) {
@@ -98,9 +97,8 @@ auto odd_bits(size_t n) -> Bitset {
 };
 
 // Memoized even-bit mask for per-term code. A mask depends only on the storage width, which is fixed
-// for a propagator's lifetime, so rebuilding one per term is pure waste -- and since Stage 2b made
-// Bitset runtime-width, building one is a full object construction rather than the compile-time
-// constant it used to be (see the NumModes-NTTP-removal plan's Stage 2b: "cached per propagator").
+// for a propagator's lifetime, so rebuilding one per term is pure waste -- and with Bitset
+// runtime-width, building one is a full object construction, not a compile-time constant.
 //
 // thread_local rather than shared: the scan runs concurrently on the partitions' pinned masters, and
 // a shared cache would need synchronisation on the hottest path in the library. The width only ever

@@ -48,14 +48,13 @@ namespace monoprop {
 namespace detail {
 struct FusedContract;
 namespace partition {
-template <size_t NumModes>
 class PartitionGroup;
 } // namespace partition
 } // namespace detail
 
 /// A propagator setting is out of range, or inconsistent with another setting.
-// Covers a crossed atol pair and a logical width outside [1, NumModes]; also thrown from
-// MonomialPropagatorImpl.h
+// Covers a crossed atol pair and a logical width outside [1, storage_num_modes]; also thrown from
+// MonomialPropagator.cpp
 class PropagatorConfigError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -67,21 +66,58 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-template <size_t NumModes>
+/// The MPI ranks resolved different partition counts.
+// The count comes from partitions= or the environment on every rank independently, so the fix is to the
+// launch, and it may belong to a different rank.
+class PartitionCountMismatch : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+/// The requested operation does not agree with the graph this propagator currently holds.
+// Either it requires no stored graph, or its parameter_mapping matches neither the stored layer nor gate
+// count. The caller recovers by contracting or rebuilding the graph, not by fixing an isolated argument.
+class GraphStateConflict : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+/// The (basis, cutoff_type, basis_change) triple is inconsistent.
+// A Pauli basis with a Length cutoff or a basis change, or a basis-change table that is not
+// 2*logical_num_modes rows.
+class CutoffConfigError : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
+/// A coefficient-informed build_graph() was given fewer parameter values than replaying the stored graph
+/// as a seed needs.
+class SeedParametersTooShort : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
 class MonomialPropagator {
 public:
+    /// logical_num_modes moved ahead of the defaulted parameters and lost its default: it used to fall
+    /// back to the NumModes this class was instantiated at, and there is no such width any more.
+    ///
+    /// storage_num_modes is the width monomials are actually stored at, and defaults to rounding
+    /// logical_num_modes up per storage_modes_for(). Pass it explicitly to store at exactly a given
+    /// width -- what the C++ tests do, since their oracles predate the rounding.
     MonomialPropagator(const OperatorDict &initial_operator,
                        unsigned int cutoff,
                        const VecZ &initial_state,
+                       size_t logical_num_modes,
                        std::optional<unsigned int> schrodinger_cutoff,
                        mpi::Comm comm,
                        std::optional<double> lower_atol = std::nullopt,
                        std::optional<double> upper_atol = std::nullopt,
                        CutoffType cutoff_type = CutoffType::Length,
                        std::optional<std::vector<VecZ>> basis_change = std::nullopt,
-                       size_t logical_num_modes = NumModes,
                        Basis basis = Basis::Majorana,
-                       size_t partitions = 0);
+                       size_t partitions = 0,
+                       std::optional<size_t> storage_num_modes = std::nullopt);
 
     /// Out-of-line because partition_group_ is a unique_ptr to an incomplete type here.
     virtual ~MonomialPropagator();
@@ -91,10 +127,17 @@ public:
     MonomialPropagator(const MonomialPropagator &other);
     auto operator=(const MonomialPropagator &) -> MonomialPropagator & = delete;
 
-    static constexpr auto num_modes{NumModes};
-    static constexpr auto storage_num_modes{NumModes};
+    /// Storage width for a logical width: rounded up to a whole 32-mode block, and never below one
+    /// block. Rounding keeps the hash index's probe layout aligned across nearby system sizes; the
+    /// floor keeps a small system from paying a partially-populated word.
+    [[nodiscard]] static auto storage_modes_for(size_t logical_num_modes) -> size_t {
+        constexpr size_t kModesPerBlock = 32;
+        return std::max(kModesPerBlock, ((logical_num_modes + kModesPerBlock - 1) / kModesPerBlock) * kModesPerBlock);
+    }
 
     auto logical_num_modes() const -> size_t { return logical_num_modes_; }
+    /// Monomials are stored at this width; >= logical_num_modes(). See storage_modes_for.
+    auto storage_num_modes() const -> size_t { return storage_num_modes_; }
 
     /// Term count on this rank (allreduce for global).
     auto size() const -> size_t { return partition_group_ ? partitioned_size_() : mp_op_.size(); }
@@ -292,11 +335,10 @@ protected:
     bool schrodinger_;
     mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions
     CutoffFn cutoff_fn_;
-    // Transitional: MPOperator has no default constructor now that its width is data, and this class
-    // still has a NumModes to supply. Becomes a constructor initializer from the storage width once
-    // this class is de-templated too -- watch the declaration order then, mp_op_ is initialized before
-    // the members below it.
-    detail::MPOperator mp_op_{2 * NumModes};
+    // Declared before mp_op_ on purpose: members initialize in declaration order, and mp_op_'s
+    // initializer reads this. Moving it below would leave the operator sized from an uninitialized value.
+    size_t storage_num_modes_;
+    detail::MPOperator mp_op_;
     MPGraph graph_;
     // Per-gate layer-build scratch, reused across gates; carries no state between them.
     detail::MatchedEpochSet matched_scratch_;
@@ -311,7 +353,7 @@ private:
     std::optional<double> lower_atol_, upper_atol_;
     double core_term_{0.0};
 
-    size_t logical_num_modes_{NumModes};
+    size_t logical_num_modes_;
 
     CutoffType cutoff_type_;
     std::optional<std::vector<VecZ>> basis_change_;
@@ -321,9 +363,9 @@ private:
 
     // Intra-process partition runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a partition facade
     // whose own mp_op_/graph_ are unused and every method fans out to the S partition propagators.
-    std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
+    std::unique_ptr<detail::partition::PartitionGroup> partition_group_;
     // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
-    friend class detail::partition::PartitionGroup<NumModes>;
+    friend class detail::partition::PartitionGroup;
 
     // A facade's own graph_/mp_op_ are never populated, so handing them out would return plausible-looking
     // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.
@@ -463,6 +505,3 @@ private:
 };
 
 } // namespace monoprop
-
-// inline implementation
-#include "monoprop/detail/monomial_propagator/MonomialPropagator.inl"

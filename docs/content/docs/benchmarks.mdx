@@ -361,8 +361,7 @@ uv run python run_scaling.py --output results/scaling.jsonl --timeout 300 \
   --threads monoprop=56 juliapp=28
 ```
 
-Two build notes: 324 qubits needs a `monoprop` mode tier at least that large
-(`-Dmonoprop_MAX_NUM_MODES=352`, since tiers come in 32-mode blocks), and the Julia engine here
+One build note: the Julia engine here
 needs the dev branch — `Pkg.add(url="https://github.com/SparqleSim/PauliPropagation.jl",
 rev="dev")` — while the fixed-size `run_model.jl` above is fine on the pinned v0.7.3.
 

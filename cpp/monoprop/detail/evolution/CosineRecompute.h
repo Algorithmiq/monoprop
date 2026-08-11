@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -39,10 +40,16 @@
 
 namespace monoprop::detail {
 
-// Reconstruct a layer's generator Monomial from the raw words stored on its LayerCore.
-template <size_t NumModes>
-inline auto generator_from_words(const std::vector<uint64_t> &gw) -> Monomial<NumModes> {
-    Monomial<NumModes> gen{};
+// Reconstruct a layer's generator from the raw words stored on its LayerCore.
+//
+// num_bits is passed rather than recovered as gw.size() * 64: the stored words are the generator's word
+// count, which does not pin down its bit width -- a width that is not a whole multiple of 64 rounds up
+// to the same word count, and the round trip would silently widen it (Bitset carries the used bits of
+// the last word, so `size()` and the top-bit mask would both come back wrong). The caller has the real
+// width in hand; the operator the generator is applied against is the one that defines it.
+inline auto generator_from_words(const std::vector<uint64_t> &gw, size_t num_bits) -> Bitset {
+    Bitset gen(num_bits);
+    assert(gw.size() == gen.num_words() && "generator words must match the operator's storage width");
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
     return gen;
 }

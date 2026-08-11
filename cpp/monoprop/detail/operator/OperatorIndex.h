@@ -52,7 +52,7 @@ public:
 class OperatorIndex {
 public:
     // Bitset, not Monomial<NumModes>: the store carries its width as data (num_bits_) rather than in
-    // its type (Stage 2c of the NumModes-NTTP-removal plan). A Monomial<N> still binds to these by
+    // its type (num_bits_). A Monomial<N> still binds to these by
     // reference wherever callers hold one -- see find_batch for the one place that is not enough.
     using value_type = Bitset;
     using key_type = Bitset;
@@ -60,7 +60,7 @@ public:
 
     // One fixed width rather than the narrowest that fits 2*NumModes: a runtime width has no compile-time
     // value to select on. Row payload only -- never a hash input and never serialized -- so this cannot
-    // affect results (see the NumModes-NTTP-removal plan's invariant 3). It does cost a byte per position
+    // affect results. It does cost a byte per position
     // for widths that used to fit uint8_t, i.e. up to 256 bit positions.
     //
     // The static_assert below is what keeps set()'s narrowing cast honest; it becomes a runtime check

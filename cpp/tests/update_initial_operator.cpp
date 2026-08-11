@@ -19,6 +19,7 @@
 #include <optional>
 #include <stdexcept>
 
+#include "TestPropagator.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
@@ -32,15 +33,15 @@ BOOST_AUTO_TEST_CASE(update_initial_operator_updates_core_expval) {
     initial_ham[VecZ{}] = std::complex<double>{1.0, 0.0};
 
     VecZ initial_state{0, 1};
-    MonomialPropagator<n_modes> simulator(initial_ham,
-                                          2 * n_modes,
-                                          initial_state,
-                                          std::nullopt,
-                                          MPI_COMM_SELF,
-                                          std::nullopt,
-                                          std::nullopt,
-                                          CutoffType::Support,
-                                          std::nullopt);
+    auto simulator = test_utils::make_propagator<n_modes>(initial_ham,
+                                                          2 * n_modes,
+                                                          initial_state,
+                                                          std::nullopt,
+                                                          MPI_COMM_SELF,
+                                                          std::nullopt,
+                                                          std::nullopt,
+                                                          CutoffType::Support,
+                                                          std::nullopt);
 
     const VecD empty_params;
     auto expval_fn = simulator.expectation_value_functional(std::nullopt);
@@ -60,15 +61,15 @@ BOOST_AUTO_TEST_CASE(update_initial_operator_throws_for_unknown_term_in_heisenbe
     initial_ham[VecZ{0, 1}] = std::complex<double>{0, 1.0};
 
     VecZ initial_state{0, 1};
-    MonomialPropagator<n_modes> simulator(initial_ham,
-                                          2 * n_modes,
-                                          initial_state,
-                                          std::nullopt,
-                                          MPI_COMM_SELF,
-                                          std::nullopt,
-                                          std::nullopt,
-                                          CutoffType::Support,
-                                          std::nullopt);
+    auto simulator = test_utils::make_propagator<n_modes>(initial_ham,
+                                                          2 * n_modes,
+                                                          initial_state,
+                                                          std::nullopt,
+                                                          MPI_COMM_SELF,
+                                                          std::nullopt,
+                                                          std::nullopt,
+                                                          CutoffType::Support,
+                                                          std::nullopt);
 
     const VecZ invalid_term{2, 3};
     OperatorDict missing_term;
@@ -85,15 +86,15 @@ BOOST_AUTO_TEST_CASE(update_initial_operator_accepts_new_terms_in_schrodinger) {
 
     VecZ initial_state{0, 1};
     const unsigned int cutoff = static_cast<unsigned int>(2 * n_modes);
-    MonomialPropagator<n_modes> simulator(initial_ham,
-                                          cutoff,
-                                          initial_state,
-                                          cutoff,
-                                          MPI_COMM_SELF,
-                                          std::nullopt,
-                                          std::nullopt,
-                                          CutoffType::Support,
-                                          std::nullopt);
+    auto simulator = test_utils::make_propagator<n_modes>(initial_ham,
+                                                          cutoff,
+                                                          initial_state,
+                                                          cutoff,
+                                                          MPI_COMM_SELF,
+                                                          std::nullopt,
+                                                          std::nullopt,
+                                                          CutoffType::Support,
+                                                          std::nullopt);
 
     OperatorDict new_term;
     new_term[VecZ{2, 3}] = std::complex<double>{0.0, 0.25};

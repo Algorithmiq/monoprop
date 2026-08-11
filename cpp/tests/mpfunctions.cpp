@@ -298,8 +298,11 @@ BOOST_AUTO_TEST_CASE(interleaved_gradients_do_not_share_scratch_state) {
     const auto data = test_utils::load_case_data<kNumModes>("random_exact.msgpack");
 
     auto build = [&data](unsigned int cutoff) {
-        auto sim =
-            MonomialPropagator<kNumModes>(data.hamiltonian, cutoff, data.initial_state, std::nullopt, MPI_COMM_SELF);
+        auto sim = test_utils::make_propagator<kNumModes>(data.hamiltonian,
+                                                          cutoff,
+                                                          data.initial_state,
+                                                          std::nullopt,
+                                                          MPI_COMM_SELF);
         sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
         return sim;
     };

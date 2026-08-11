@@ -122,9 +122,10 @@ inline auto hermitian_phase(size_t maj_count, size_t gen_count, size_t overlap) 
 
 // Selected slot i of the logical range owns the bit pair 2*(prefix+i), 2*(prefix+i)+1 — a paired
 // Majorana term sets both bits of every selected mode, so the two bits always travel together.
-template <size_t NumModes>
-auto monomial_from_selector(const std::vector<bool> &selector, size_t inactive_mode_prefix) -> Monomial<NumModes> {
-    Monomial<NumModes> current;
+// inline: a plain function in a header, where being a template used to supply the linkage.
+inline auto monomial_from_selector(const std::vector<bool> &selector, size_t inactive_mode_prefix, size_t num_bits)
+    -> Bitset {
+    Bitset current(num_bits);
     for (size_t i = 0; i < selector.size(); ++i) {
         if (selector[i]) {
             const size_t bit_pair_offset = inactive_mode_prefix + i;
@@ -156,19 +157,21 @@ auto monomial_from_selector(const std::vector<bool> &selector, size_t inactive_m
 // propagator with S partitions constructs S propagators that would each hold a complete copy at the
 // same moment. Insertion order is load-bearing -- it fixes term indices and hence float accumulation
 // order -- so this yields in exactly the list's order.
-template <size_t NumModes>
-auto for_each_paired_op(size_t max_ones, size_t logical_num_modes, auto &&fn) -> void {
+// num_bits is the storage width the monomials are built at; the logical modes occupy its *top* slots,
+// so the inactive prefix is the difference between the two widths and not something logical_num_modes
+// can supply on its own.
+auto for_each_paired_op(size_t max_ones, size_t logical_num_modes, size_t num_bits, auto &&fn) -> void {
     // Clamp in pairs, not bits: max_ones counts pairs and bounds the fill over `selector`, one slot per mode.
     max_ones = std::min(max_ones, logical_num_modes);
 
     auto selector = std::vector(logical_num_modes, false);
-    const size_t inactive_mode_prefix = NumModes - logical_num_modes;
+    const size_t inactive_mode_prefix = num_bits / 2 - logical_num_modes;
 
     for (size_t num_ones = 0; num_ones <= max_ones; ++num_ones) {
         std::fill(selector.begin(), selector.begin() + num_ones, true);
 
         do {
-            fn(monomial_from_selector<NumModes>(selector, inactive_mode_prefix));
+            fn(monomial_from_selector(selector, inactive_mode_prefix, num_bits));
         }
         while (std::ranges::prev_permutation(selector).found);
 
@@ -178,11 +181,10 @@ auto for_each_paired_op(size_t max_ones, size_t logical_num_modes, auto &&fn) ->
 
 // All fully paired Majorana monomials with up to max_ones pairs, over the active logical modes only.
 // Prefer for_each_paired_op() unless the whole list is genuinely needed at once.
-template <size_t NumModes>
-auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialList {
+inline auto generate_paired_op(size_t max_ones, size_t logical_num_modes, size_t num_bits) -> MonomialList {
     MonomialList combinations;
     combinations.reserve(count_paired_op(max_ones, logical_num_modes));
-    for_each_paired_op<NumModes>(max_ones, logical_num_modes, [&combinations](const auto &mono) {
+    for_each_paired_op(max_ones, logical_num_modes, num_bits, [&combinations](const auto &mono) {
         combinations.push_back(mono);
     });
     return combinations;

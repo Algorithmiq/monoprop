@@ -28,9 +28,9 @@ using namespace test_utils;
 using namespace monoprop;
 
 // Copy assignment is deliberately deleted: the unique_ptr-owned store needs no assignment.
-static_assert(std::is_copy_constructible_v<MonomialPropagator<8>>, "simulator must be copyable");
-static_assert(std::is_move_constructible_v<MonomialPropagator<8>>, "simulator must stay movable");
-static_assert(!std::is_copy_assignable_v<MonomialPropagator<8>>, "copy assignment stays deleted");
+static_assert(std::is_copy_constructible_v<MonomialPropagator>, "simulator must be copyable");
+static_assert(std::is_move_constructible_v<MonomialPropagator>, "simulator must stay movable");
+static_assert(!std::is_copy_assignable_v<MonomialPropagator>, "copy assignment stays deleted");
 
 BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_matches_energy, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};

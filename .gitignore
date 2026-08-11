@@ -160,7 +160,6 @@ Thumbs.db
 
 external/upstream/_srcs/
 tests/cpp/_srcs/
-_dispatch*.py
 _constants.py
 build*/
 Testing/

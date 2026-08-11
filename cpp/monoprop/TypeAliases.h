@@ -127,10 +127,9 @@ using OperatorDict = std::map<VecZ, std::complex<double>>;
 namespace monoprop {
 
 // Structural stand-in for "a row store shaped like detail::OperatorIndex": exposes value_type and a
-// row(i) accessor returning it, so the overloads below deduce NumModes from op's value_type instead
-// of naming it -- the same idea as the MonomialLike overloads above, one level up (op itself is not
-// MonomialLike; its rows are). A std::vector has no row(), so this never collides with the overloads
-// above.
+// row(i) accessor returning it, so the overloads below take a store without naming its row type -- the
+// same idea as the MonomialLike overloads above, one level up (op itself is not MonomialLike; its rows
+// are). A std::vector has no row(), so this never collides with the overloads above.
 template <typename T>
 concept RowStoreLike = requires(const T &t, size_t i) {
     typename T::value_type;

@@ -19,7 +19,6 @@
 #include <mpi4py/mpi4py.h>
 #endif
 
-#include "generated/bind.h"
 #include "monoprop/Info.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -54,8 +53,7 @@ auto cutoff_type_str_2_enum(const std::string &cutoff_type) -> CutoffType {
     }
     else {
         throw std::invalid_argument(
-            std::format("Unknown CutoffType string: '{}'. Valid options are: 'length', 'support'.",
-                        cutoff_type));
+            std::format("Unknown CutoffType string: '{}'. Valid options are: 'length', 'support'.", cutoff_type));
     }
 }
 
@@ -107,9 +105,6 @@ NB_MODULE(_core, m) {
     }
 #endif
 
-    // clang-format off
-    m.attr("MAX_NUM_MODES") = static_cast<size_t>(@monoprop_MAX_NUM_MODES@);
-    // clang-format on
     m.attr("__build_type__") = std::string(build_type());
     m.attr("__compiler_flags__") = compiler_flags();
     m.attr("__variant__") = std::string(variant());
@@ -128,7 +123,5 @@ NB_MODULE(_core, m) {
           &monoprop::antihermitian_generator_correction,
           "indices"_a,
           "Get the generator correction for a Majorana operator (represented by indices).");
-    // clang-format off
-    @_BINDINGS_BODY_@
-    // clang-format on
+    monoprop::bindings::detail::bind_monomial_propagator(m);
 }

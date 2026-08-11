@@ -67,7 +67,7 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 struct GraphSink {
     static constexpr bool wants_values = false;
     using Response = TermIndex;
-    // The record stride was a static constexpr off kQueryWords<NumModes>; it is derived from the
+    // The record stride is not a constant: it is derived from the
     // monomial word count now, which the sink is handed at construction.
     size_t num_words = 0;
     [[nodiscard]] auto stride() const -> size_t { return query_words(num_words); }
@@ -530,11 +530,9 @@ static inline auto empty_coeffs() -> const VecD & {
 }
 
 // Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
-// local_op and gen are deduced (MPOperator/Monomial<NumModes>, argument types); cutoff_fn is
-// left a plain auto (a std::function, not itself MonomialLike or otherwise NumModes-deducible) since
-// gen already recovers NumModes. num_modes below feeds every callee still explicit on it -- the class
-// templates (LayerBuildEngine, ContractSink, GraphSink) and the Stage-2e wire-format cluster
-// (kQueryWords, kWords) this function reaches into.
+// local_op and gen are deduced from their argument types; cutoff_fn is left a plain auto (a
+// std::function, so neither MonomialLike nor otherwise width-bearing). Nothing below names a width: the
+// sinks and the engine take theirs from the operator, and every monomial built here takes it from gen.
 auto build_layer(auto &local_op,
                  const MonomialLike auto &gen,
                  const auto &cutoff_fn,
@@ -551,7 +549,6 @@ auto build_layer(auto &local_op,
                  VecD *fused_scale_coeffs = nullptr,
                  bool *fused_scale_out = nullptr,
                  Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
-    constexpr size_t num_modes = std::remove_cvref_t<decltype(gen)>::size() / 2;
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).

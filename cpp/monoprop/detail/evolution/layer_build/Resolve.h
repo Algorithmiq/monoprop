@@ -46,10 +46,10 @@ struct IncomingProbe {
 // Phases 1-2, read-only w.r.t. operator contents. query_stride is the per-record width: the plain query
 // width, or the fused one for the fused resolver. The caller runs Phase 3, then insert_incoming_misses.
 // No width parameter: the monomials are built at `op.num_bits()`, which is the width of the rows they are
-// probed against -- so this takes it from the operator as a value, where it briefly had to be named as
-// Sink::kNumModes. The stride stays an ordinary argument.
-// inline, which being a template used to supply: this is a plain function defined in a header now, so
-// without it every TU that includes this emits its own definition and the link fails.
+// probed against, so the probe monomials and those rows provably share a width. The stride stays an
+// ordinary argument.
+// inline is load-bearing: this is a plain function defined in a header, so without it every TU that
+// includes this emits its own definition and the link fails.
 inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                                    MPOperator &op,
                                    size_t rank_count,
@@ -110,8 +110,7 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
 
 // Phase 4 (bulk insert of the distinct absent terms) into op slots [base, base+n_miss). Call after the
 // caller's Phase-3 scatter, which reads pre-insert op_coeffs for hits and needs base == op.size().
-// op/pr are deduced (MPOperator/IncomingProbe<NumModes>, argument types); nothing below
-// needs NumModes as a value.
+// op/pr are deduced from their argument types (MPOperator/IncomingProbe).
 auto insert_incoming_misses(auto &op, const auto &pr) -> void {
     const size_t n_miss = pr.miss_g.size();
     if (n_miss == 0) {
@@ -171,8 +170,8 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
 
 // Querier rank (any cross-rank sink): fold each resolver response into a querier-side record. The self/
 // local rank was already resolved inline, so it is skipped here. inc_r[r][q] answers query q from rank r.
-// Unlike resolve_incoming, nothing here needs NumModes as a value, so no op/pr-shaped argument needs
-// deducing at all -- Sink stays named for the same reason as above.
+// Unlike resolve_incoming, nothing here touches the operator, so no argument needs deducing at all --
+// Sink stays named for the same reason as above.
 template <class Sink>
 auto process_responses(const std::vector<std::vector<typename Sink::Response>> &inc_r,
                        const std::vector<std::vector<size_t>> &src_idx,

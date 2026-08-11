@@ -200,12 +200,12 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_op_saturates_at_one_pair_per_mode) {
     constexpr size_t N = 32;
     constexpr size_t kLogical = 4;
 
-    const auto full = generate_paired_op<N>(kLogical, kLogical);
+    const auto full = generate_paired_op(kLogical, kLogical, 2 * N);
     // Every subset of the kLogical pairs, so 2^kLogical monomials.
     BOOST_TEST(full.size() == (size_t{1} << kLogical));
 
     for (const size_t over : {kLogical + 1, 2 * kLogical, 2 * kLogical + 3}) {
-        const auto clamped = generate_paired_op<N>(over, kLogical);
+        const auto clamped = generate_paired_op(over, kLogical, 2 * N);
         BOOST_TEST(clamped.size() == full.size());
         for (size_t i = 0; i < full.size(); ++i) {
             BOOST_TEST(clamped[i] == full[i]);

@@ -295,7 +295,7 @@ inline auto unordered_flat_map_storage_bytes(const FlatMap &map) -> size_t {
 }
 
 // No width parameter: nothing in here is width-dependent, and it never was -- every field is a byte
-// count. It was templated only because its producer was (Stage 2c of the NumModes-NTTP-removal plan).
+// count.
 struct MPOperatorMemoryBreakdown final {
     size_t operator_terms_bytes = 0;
     size_t op_coeffs_bytes = 0;

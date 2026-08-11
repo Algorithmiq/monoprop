@@ -28,8 +28,8 @@ namespace monoprop::mpi_detail {
 
 static_assert(sizeof(size_t) == sizeof(uint64_t), "MPI serialization assumes 64-bit size_t");
 
-// The per-monomial wire width is the monomial's own word count -- there is no kWords<NumModes>
-// constant any more, so a caller that has no monomial in hand carries the count as a value.
+// The per-monomial wire width is the monomial's own word count, so a caller with no monomial in hand
+// carries the count as a value.
 inline auto append_monomial_words(const Bitset &mono, VecZ &buffer) -> void {
     const auto *src = mono.data();
     const size_t nw = mono.num_words();
@@ -55,12 +55,14 @@ inline auto read_monomial_from_words(const VecZ &buffer, size_t start, size_t nu
 namespace monoprop {
 
 // Stateless and identical on every rank, so all ranks agree on a term's owner without communication.
-template <size_t NumModes>
-auto find_rank(const Monomial<NumModes> &mono, const size_t n_ranks) -> size_t {
+// The ranks must also agree on the *width* they hash at: a monomial's storage width is part of its
+// hash (SplitmixHash folds every word), so two ranks disagreeing about it would disagree about owners.
+// Every rank derives it from the same propagator settings, so they do.
+inline auto find_rank(const Bitset &mono, const size_t n_ranks) -> size_t {
     if (n_ranks == 0) {
         return 0;
     }
-    return monomial_hash<NumModes>(mono) % n_ranks;
+    return monomial_hash(mono) % n_ranks;
 }
 
 } // namespace monoprop

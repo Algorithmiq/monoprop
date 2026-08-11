@@ -25,10 +25,10 @@
 
 namespace monoprop::detail {
 
-// Dispatches a runtime word count in [0, 8] to a fully-unrolled arm (W known at compile time inside
-// `f`, so a per-word loop written against it has no back-edge and no trip-count prologue/tail -- see
-// the NumModes-NTTP-removal plan's Stage 2b). Callers gate on `n <= Bitset::kInlineWords` themselves and
-// fall back to a plain runtime loop above that; `default` is an unreachable safety net, not a ninth arm.
+// Dispatches a runtime word count in [0, 8] to a fully-unrolled arm: W is known at compile time inside
+// `f`, so a per-word loop written against it has no back-edge and no trip-count prologue/tail. Callers
+// gate on `n <= Bitset::kInlineWords` themselves and fall back to a plain runtime loop above that;
+// `default` is an unreachable safety net, not a ninth arm.
 template <typename F>
 [[gnu::always_inline]] inline auto with_nwords(size_t n, F &&f) -> decltype(auto) {
     switch (n) {
@@ -59,11 +59,12 @@ namespace monoprop {
 
 // std::bitset replacement over contiguous uint64_t words, with a *runtime* width: zero-copy MPI (via
 // data()/word()), word-wise hashing, portable std::countr_zero scanning. The first kInlineWords words
-// live inline (covers the shipped default ceiling, monoprop_MAX_NUM_MODES=250 -> 500 bits -> 8 words,
-// so the whole shipped range never allocates); a wider bitset spills the *entire* word array to the
-// heap, keeping data()/word(i) a single contiguous view regardless of which storage is active. Every
+// live inline (250 modes -> 500 bits -> 8 words, which was the compile-time ceiling before it was
+// removed and is still where the interesting models sit); above that a bitset spills the *entire* word
+// array to the heap, keeping data()/word(i) a single contiguous view regardless of which storage is
+// active -- so wider systems are correct, but pay an allocation per by-value monomial. Every
 // per-word loop routes through detail::with_nwords for n <= kInlineWords (the hot regime) and a plain
-// loop above it -- see the NumModes-NTTP-removal plan's Stage 2b.
+// loop above it.
 //
 // Unlike the Bitset<NumBits> template this replaces, one object is sized for the *widest* supported
 // bitset rather than exactly for its own width (72 bytes vs the old 8/16/32/64 for 32/64/128/250
@@ -81,7 +82,7 @@ class Bitset {
     // they share storage. A std::vector member instead costs 24 bytes on *every* monomial at *every*
     // width, and monomials are stored by value in bulk (MonomialList, OperatorIndex::overflow_,
     // IncomingProbe::mono), so that overhead is multiplied by the term count. Sizing the object for
-    // the widest supported bitset already costs enough; see the Stage 2b follow-up note below.
+    // the widest inline width already costs enough; see the class comment above.
     union Storage {
         std::array<word_type, kInlineWords> inline_;
         word_type *heap_;
@@ -295,7 +296,7 @@ public:
     // Every quantity a caller building `*this ^ gen` typically also needs alongside it: the XORed
     // result, popcount(*this & gen) (overlap), and popcount(result). Composing this from operator^
     // and count_and() costs two full passes over the words; once the width is a runtime value
-    // rather than a compile-time NumBits (see the NumModes-NTTP-removal plan), each pass also pays
+    // rather than a compile-time width, each pass also pays
     // its own loop prologue/tail, so the separate-ops cost keeps growing where this stays one pass.
     // Kept alongside the existing composable ops -- a cold path that only needs one of the three
     // should keep using them. result needs no sanitize_top(): XOR of two already-sanitized operands
@@ -556,7 +557,7 @@ inline auto Bitset::fused_xor(const Bitset &gen) const noexcept -> FusedXor {
 
 // Bit-identical to the old per-width SplitmixHash<Bitset<NumBits>>: same mix(), same per-word fold
 // order, same "+i" per-word offset -- only the num_words()==1 dispatch moved from `if constexpr` to a
-// runtime check (see the NumModes-NTTP-removal plan's invariant on SplitmixHash not changing).
+// runtime check. The values must not change: they drive MPI owner routing (see monomial_hash).
 struct SplitmixHash {
     static constexpr auto mix(uint64_t x) noexcept -> uint64_t {
         x ^= x >> 30;

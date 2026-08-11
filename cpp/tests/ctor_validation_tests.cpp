@@ -32,7 +32,7 @@ using test_utils::SimulatorConfig;
 
 namespace {
 constexpr size_t N = 8;
-using MP = MonomialPropagator<N>;
+using MP = MonomialPropagator;
 
 // Construct with the full argument list; individual cases vary just the field(s) under test.
 auto make(const OperatorDict &op,
@@ -43,17 +43,17 @@ auto make(const OperatorDict &op,
           std::optional<std::vector<VecZ>> basis_change = std::nullopt,
           size_t logical_num_modes = N,
           Basis basis = Basis::Majorana) -> MP {
-    return MP(op,
-              cutoff,
-              VecZ{},
-              std::nullopt,
-              MPI_COMM_SELF,
-              lower_atol,
-              upper_atol,
-              cutoff_type,
-              basis_change,
-              logical_num_modes,
-              basis);
+    return test_utils::make_propagator<N>(op,
+                                          cutoff,
+                                          VecZ{},
+                                          std::nullopt,
+                                          MPI_COMM_SELF,
+                                          lower_atol,
+                                          upper_atol,
+                                          cutoff_type,
+                                          basis_change,
+                                          logical_num_modes,
+                                          basis);
 }
 } // namespace
 
@@ -77,6 +77,54 @@ BOOST_AUTO_TEST_CASE(ctor_logical_num_modes_out_of_range_throws) {
                            CutoffType::Length,
                            std::nullopt,
                            /*logical=*/N + 1),
+                      std::runtime_error);
+}
+
+// The storage-width rule that replaced the compile-time NumModes. Rounding keeps the hash index's probe
+// layout aligned across nearby system sizes; the one-block floor keeps a small system off a partly
+// populated word. Both are observable, since the width is part of every monomial's hash.
+BOOST_AUTO_TEST_CASE(storage_modes_for_rounds_up_to_a_whole_block_with_a_floor) {
+    BOOST_TEST(MP::storage_modes_for(1) == 32U);
+    BOOST_TEST(MP::storage_modes_for(31) == 32U);
+    BOOST_TEST(MP::storage_modes_for(32) == 32U);
+    BOOST_TEST(MP::storage_modes_for(33) == 64U);
+    BOOST_TEST(MP::storage_modes_for(250) == 256U);
+    // No ceiling: this used to be a compile-time template argument bounded by monoprop_MAX_NUM_MODES.
+    BOOST_TEST(MP::storage_modes_for(4096) == 4096U);
+    BOOST_TEST(MP::storage_modes_for(4097) == 4128U);
+}
+
+BOOST_AUTO_TEST_CASE(ctor_storage_width_defaults_to_the_rounding_and_honours_an_override) {
+    // Default: the propagator rounds its own logical width up. N == 8 rounds to one 32-mode block.
+    const MonomialPropagator rounded(OperatorDict{},
+                                     2 * N,
+                                     VecZ{},
+                                     /*logical_num_modes=*/N,
+                                     std::nullopt,
+                                     MPI_COMM_SELF);
+    BOOST_TEST(rounded.logical_num_modes() == N);
+    BOOST_TEST(rounded.storage_num_modes() == 32U);
+
+    // Override: what this suite's oracles need (see TestPropagator.h).
+    auto pinned = make(OperatorDict{});
+    BOOST_TEST(pinned.logical_num_modes() == N);
+    BOOST_TEST(pinned.storage_num_modes() == N);
+}
+
+BOOST_AUTO_TEST_CASE(ctor_storage_width_narrower_than_the_system_throws) {
+    BOOST_CHECK_THROW(MonomialPropagator(OperatorDict{},
+                                         2 * N,
+                                         VecZ{},
+                                         /*logical_num_modes=*/N,
+                                         std::nullopt,
+                                         MPI_COMM_SELF,
+                                         std::nullopt,
+                                         std::nullopt,
+                                         CutoffType::Length,
+                                         std::nullopt,
+                                         Basis::Majorana,
+                                         /*partitions=*/0,
+                                         /*storage_num_modes=*/N - 1),
                       std::runtime_error);
 }
 

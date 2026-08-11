@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Capture golden baselines for the NumModes-NTTP removal refactor (see Stage 0 of the plan).
+"""Capture golden baselines for bit-identity checks across a refactor.
 
 For every fixture in ``tests/data/*.msgpack``, propagates through
 :class:`~monoprop.MajoranaPropagator` (``Basis::Majorana``) at a handful of cutoffs and cutoff

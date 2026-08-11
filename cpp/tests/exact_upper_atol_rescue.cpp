@@ -36,20 +36,20 @@ enum class CommMode { Self, World };
 
 // build_simulator cannot express this: it hardcodes cutoff = 2*NumModes.
 template <size_t NumModes>
-auto build_zero_cutoff_full_rescue(const CaseData& data, MPI_Comm comm) -> MonomialPropagator<NumModes> {
-    return MonomialPropagator<NumModes>(data.hamiltonian,
-                                        /*cutoff=*/0U,
-                                        data.initial_state,
-                                        /*schrodinger_cutoff=*/std::nullopt,
-                                        comm,
-                                        /*atol=*/std::nullopt,
-                                        /*upper_atol=*/std::optional<double>{0.0},
-                                        CutoffType::Length,
-                                        /*basis_change=*/std::nullopt);
+auto build_zero_cutoff_full_rescue(const CaseData& data, MPI_Comm comm) -> MonomialPropagator {
+    return test_utils::make_propagator<NumModes>(data.hamiltonian,
+                                                 /*cutoff=*/0U,
+                                                 data.initial_state,
+                                                 /*schrodinger_cutoff=*/std::nullopt,
+                                                 comm,
+                                                 /*atol=*/std::nullopt,
+                                                 /*upper_atol=*/std::optional<double>{0.0},
+                                                 CutoffType::Length,
+                                                 /*basis_change=*/std::nullopt);
 }
 
 template <size_t NumModes>
-auto evaluate_zero_cutoff_full_rescue_energy(MonomialPropagator<NumModes>& simulator, const CaseData& data) -> double {
+auto evaluate_zero_cutoff_full_rescue_energy(MonomialPropagator& simulator, const CaseData& data) -> double {
     simulator.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
     auto energy_fn = simulator.expectation_value_functional(std::nullopt);
     return energy_fn(VecD{});

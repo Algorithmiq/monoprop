@@ -167,9 +167,12 @@ template <Algebra A>
                                                       MonomialLike auto &new_mono,
                                                       size_t &overlap,
                                                       int &phase_factor) -> void {
-    std::remove_cvref_t<decltype(new_mono)> mono;
-    ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
     const auto &gen = A::generator(ctx);
+    // Sized from the generator, not default-constructed: a default-constructed Bitset is width 0, and
+    // set() on it writes out of bounds. The generator is the right source because mono is XORed with it
+    // two lines down, where Bitset's binary ops require the widths to match anyway.
+    Bitset mono(gen.size());
+    ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
     // One pass instead of two: mono ^ gen and popcount(mono & gen) are both always needed here, so
     // fused_xor() computes them together (see Bitset::fused_xor). Its result_count (popcount of the
     // XOR) goes unused -- the caller already has new_pop for free via mono_pop + gen_pop - 2*overlap
@@ -197,11 +200,8 @@ struct FusedScanResult {
 // deterministic. `fused_scale_coeffs` (k==0 only; must alias coeffs.data()) scales every anticommuting
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
-// op, gen, cutoff_eval are deduced (MPOperator/Monomial<NumModes>/CutoffEvaluator,
-// argument types); NumModes is recovered as a value below only where a still-explicit callee needs it
-// (kQueryWords, query_push, monomial_hash -- the wire-format cluster Stage 2e converts, and
-// monomial_hash, left untouched here since this file's scope is the algebra/operator layer, not
-// core/Monomial.h).
+// op, gen and cutoff_eval are deduced from their argument types; no width is named anywhere below any
+// more -- the monomials this builds take theirs from `gen`, which is the operator's storage width.
 template <Algebra A>
 auto fused_find_and_collect(const auto &op,
                             const MonomialLike auto &gen,
@@ -214,7 +214,6 @@ auto fused_find_and_collect(const auto &op,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult {
-    constexpr size_t num_modes = std::remove_cvref_t<decltype(gen)>::size() / 2;
     const size_t gen_pop = gen.count();
     const auto ectx = A::make_gen_context(gen);
 
@@ -279,13 +278,17 @@ auto fused_find_and_collect(const auto &op,
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
 
+        // Reused across terms rather than declared inside `emit`: emit_term_products overwrites it whole,
+        // and above the inline-word threshold a fresh one per term would be a heap allocation per term.
+        // Every partner is the generator's width, so the assignment always takes Bitset's same-width path.
+        Bitset new_mono(gen.size());
+
         // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
         // abs_c/v_src come from the caller's coeff read, not re-read.
         auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
             if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
                 return;
             }
-            std::remove_cvref_t<decltype(gen)> new_mono;
             size_t overlap = 0;
             int phase_factor = 0;
             emit_term_products<A>(*op.store, i, ectx, new_mono, overlap, phase_factor);
@@ -297,7 +300,7 @@ auto fused_find_and_collect(const auto &op,
             }
             const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
             // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<num_modes>(new_mono) % rank_count);
+            const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash(new_mono) % rank_count);
             const size_t source = i;
             if (is_follower) {
                 query_push(fq[r_prime], new_mono, phase);

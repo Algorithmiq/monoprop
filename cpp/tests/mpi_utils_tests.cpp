@@ -35,10 +35,10 @@ BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
         }
         const auto mono = indices_to_bitset<N>(inds);
         for (size_t n_ranks : {size_t{1}, size_t{2}, size_t{3}, size_t{7}}) {
-            const size_t r = find_rank<N>(mono, n_ranks);
+            const size_t r = find_rank(mono, n_ranks);
             BOOST_TEST(r < n_ranks);
-            BOOST_TEST(r == monomial_hash<N>(mono) % n_ranks);
-            BOOST_TEST(r == find_rank<N>(mono, n_ranks)); // deterministic
+            BOOST_TEST(r == monomial_hash(mono) % n_ranks);
+            BOOST_TEST(r == find_rank(mono, n_ranks)); // deterministic
         }
     }
 }
@@ -47,7 +47,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
 BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_zero_ranks) {
     constexpr size_t N = 32;
     const auto mono = indices_to_bitset<N>(VecZ{0, 3, 5});
-    BOOST_TEST(find_rank<N>(mono, 0) == 0U);
+    BOOST_TEST(find_rank(mono, 0) == 0U);
 }
 
 BOOST_AUTO_TEST_CASE(mpi_utils_monomial_words_roundtrip) {

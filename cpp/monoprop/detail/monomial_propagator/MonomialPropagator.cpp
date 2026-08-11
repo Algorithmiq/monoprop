@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#pragma once
+#include "monoprop/MonomialPropagator.h"
 
 #include <algorithm>
 #include <bit>
@@ -41,50 +41,23 @@
 
 namespace monoprop {
 
-// The ranks disagree on S. The count comes from partitions= or the environment on
-// every rank independently, so the fix is to the launch, and it may belong to a different rank.
-class PartitionCountMismatch : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
-
-// The requested operation does not agree with the graph this propagator currently holds -- either it
-// requires no stored graph, or its parameter_mapping matches neither the stored layer nor gate count.
-// The caller recovers by contracting or rebuilding the graph, not by fixing an isolated argument.
-class GraphStateConflict : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
-
-// The (basis, cutoff_type, basis_change) triple is inconsistent: a Pauli basis with a Length cutoff or
-// a basis change, or a basis-change table that is not 2*logical_num_modes rows.
-class CutoffConfigError : public std::invalid_argument {
-public:
-    using std::invalid_argument::invalid_argument;
-};
-
-// A coefficient-informed build_graph() was given fewer parameter values than replaying the stored graph
-// as a seed needs.
-class SeedParametersTooShort : public std::invalid_argument {
-public:
-    using std::invalid_argument::invalid_argument;
-};
-
-template <size_t NumModes>
-MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_operator,
-                                                 unsigned int cutoff,
-                                                 const VecZ &initial_state,
-                                                 std::optional<unsigned int> schrodinger_cutoff,
-                                                 mpi::Comm comm,
-                                                 std::optional<double> lower_atol,
-                                                 std::optional<double> upper_atol,
-                                                 CutoffType cutoff_type,
-                                                 std::optional<std::vector<VecZ>> basis_change,
-                                                 size_t logical_num_modes,
-                                                 Basis basis,
-                                                 size_t partitions)
+MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
+                                       unsigned int cutoff,
+                                       const VecZ &initial_state,
+                                       size_t logical_num_modes,
+                                       std::optional<unsigned int> schrodinger_cutoff,
+                                       mpi::Comm comm,
+                                       std::optional<double> lower_atol,
+                                       std::optional<double> upper_atol,
+                                       CutoffType cutoff_type,
+                                       std::optional<std::vector<VecZ>> basis_change,
+                                       Basis basis,
+                                       size_t partitions,
+                                       std::optional<size_t> storage_num_modes)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
+      storage_num_modes_{storage_num_modes.value_or(storage_modes_for(logical_num_modes))},
+      mp_op_(2 * storage_num_modes_),
       graph_(schrodinger_cutoff.has_value()),
       cutoff_{cutoff},
       lower_atol_{lower_atol},
@@ -93,9 +66,12 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
       cutoff_type_{cutoff_type},
       basis_change_{basis_change},
       basis_{basis} {
-    if (logical_num_modes_ == 0 || logical_num_modes_ > NumModes) {
-        throw PropagatorConfigError(
-            std::format("logical_num_modes ({}) must be in the range [1, {}].", logical_num_modes_, NumModes));
+    // The storage width is the ceiling now, and it is derived from logical_num_modes rather than fixed by
+    // the type, so the only way to fail this is an explicit storage_num_modes narrower than the system.
+    if (logical_num_modes_ == 0 || logical_num_modes_ > storage_num_modes_) {
+        throw PropagatorConfigError(std::format("logical_num_modes ({}) must be in the range [1, {}].",
+                                                logical_num_modes_,
+                                                storage_num_modes_));
     }
 
     validate_cutoff_config_(cutoff_type_, basis_change_);
@@ -118,23 +94,26 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             "partitions= / monoprop_PARTITIONS / monoprop_NUM_THREADS so R*S is a consistent world.");
     }
     if (n_partitions > 1) {
-        auto factory = [=](mpi::Comm partition_comm) {
-            return std::make_unique<MonomialPropagator<NumModes>>(initial_operator,
-                                                                  cutoff,
-                                                                  initial_state,
-                                                                  schrodinger_cutoff,
-                                                                  partition_comm,
-                                                                  lower_atol,
-                                                                  upper_atol,
-                                                                  cutoff_type,
-                                                                  basis_change,
-                                                                  logical_num_modes,
-                                                                  basis,
-                                                                  /*partitions=*/1);
+        // The partitions get this propagator's *resolved* storage width, not the default rounding: they
+        // hash-partition one operator between them, so a partition storing at a different width would
+        // hash the same monomial to a different value than the facade's settings imply.
+        auto factory = [=, storage = storage_num_modes_](mpi::Comm partition_comm) {
+            return std::make_unique<MonomialPropagator>(initial_operator,
+                                                        cutoff,
+                                                        initial_state,
+                                                        logical_num_modes,
+                                                        schrodinger_cutoff,
+                                                        partition_comm,
+                                                        lower_atol,
+                                                        upper_atol,
+                                                        cutoff_type,
+                                                        basis_change,
+                                                        basis,
+                                                        /*partitions=*/1,
+                                                        storage);
         };
-        partition_group_ = std::make_unique<detail::partition::PartitionGroup<NumModes>>(static_cast<int>(n_partitions),
-                                                                                         factory,
-                                                                                         comm);
+        partition_group_ =
+            std::make_unique<detail::partition::PartitionGroup>(static_cast<int>(n_partitions), factory, comm);
         return;
     }
 
@@ -144,7 +123,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
 
     double core_term = 0.0;
     for (const auto &[indices, coefficient] : initial_operator) {
-        const auto majorana_bitset = indices_to_bitset_checked<NumModes>(indices, 2 * logical_num_modes_);
+        const auto majorana_bitset = indices_to_bitset_checked(indices, 2 * logical_num_modes_, mp_op_.num_bits());
         const auto encoded_coeff = algebra_encode_coeff(basis_, coefficient, majorana_bitset);
 
         // Store the core term separately as it is orders of magnitude larger than the other terms
@@ -152,7 +131,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             core_term = encoded_coeff;
             continue;
         }
-        if (my_rank == find_rank<NumModes>(majorana_bitset, num_ranks)) {
+        if (my_rank == find_rank(majorana_bitset, num_ranks)) {
             mp_op_.init_op_map[majorana_bitset] = encoded_coeff;
             local_heisenberg_terms.push_back(majorana_bitset);
         }
@@ -172,7 +151,9 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     const size_t expected_local_terms = std::max<size_t>(1, total_terms / std::max<size_t>(1, num_ranks));
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
-    mp_op_.store = std::make_unique<detail::OperatorIndex>(Monomial<NumModes>::size(), packed_inline_width_());
+    // Replaces the store MPOperator's constructor made: same width, but now with the cutoff-derived
+    // packed-row width, which is only knowable after regenerate_cutoff_fn_() above.
+    mp_op_.store = std::make_unique<detail::OperatorIndex>(2 * storage_num_modes_, packed_inline_width_());
     mp_op_.store->reserve(expected_local_terms);
     // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
     mp_op_.inverted_index_.reset();
@@ -180,13 +161,13 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     size_t i = 0;
     // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here.
     const auto insert_if_owned = [&](const auto &mono) {
-        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+        if (my_rank == find_rank(mono, num_ranks)) {
             mp_op_.append_term(mono);
             mp_op_.store->emplace(mono, i++);
         }
     };
     if (schrodinger_) {
-        for_each_paired_op<NumModes>(max_pairs, logical_num_modes_, insert_if_owned);
+        for_each_paired_op(max_pairs, logical_num_modes_, mp_op_.num_bits(), insert_if_owned);
     }
     else {
         for (size_t r = 0; r < local_heisenberg_terms.size(); ++r) {
@@ -200,14 +181,13 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     initialize_operator_caches_();
 }
 
-template <size_t NumModes>
-MonomialPropagator<NumModes>::~MonomialPropagator() = default;
+MonomialPropagator::~MonomialPropagator() = default;
 
-template <size_t NumModes>
-MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other)
+MonomialPropagator::MonomialPropagator(const MonomialPropagator &other)
     : schrodinger_(other.schrodinger_),
       comm_(other.comm_),
       cutoff_fn_(other.cutoff_fn_),
+      storage_num_modes_(other.storage_num_modes_),
       mp_op_(other.mp_op_),
       graph_(other.graph_),
       matched_scratch_(other.matched_scratch_),
@@ -220,11 +200,10 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       basis_change_(other.basis_change_),
       basis_(other.basis_),
       partition_group_(other.partition_group_
-                           ? std::make_unique<detail::partition::PartitionGroup<NumModes>>(*other.partition_group_)
+                           ? std::make_unique<detail::partition::PartitionGroup>(*other.partition_group_)
                            : nullptr) {}
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t {
+auto MonomialPropagator::resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t {
     if (requested >= 1) {
         return requested;
     }
@@ -261,20 +240,17 @@ auto MonomialPropagator<NumModes>::resolve_partition_count_(size_t requested, mp
 
 // Partition fan-out vocabulary; the declarations record which helper is legal where.
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void {
+auto MonomialPropagator::for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void {
     partition_group_->run_on_all([&](int r) { fn(partition_group_->partition(r)); });
 }
 
-template <size_t NumModes>
 template <typename Fn, typename R>
-auto MonomialPropagator<NumModes>::map_partitions_(Fn fn) -> std::vector<R> {
+auto MonomialPropagator::map_partitions_(Fn fn) -> std::vector<R> {
     return detail::partition::map_partitions(*partition_group_, fn);
 }
 
-template <size_t NumModes>
 template <typename Fn, typename R>
-auto MonomialPropagator<NumModes>::concat_partitions_(Fn fn) -> R {
+auto MonomialPropagator::concat_partitions_(Fn fn) -> R {
     const auto per_partition = map_partitions_(fn);
     size_t total = 0;
     for (const auto &v : per_partition) {
@@ -288,9 +264,8 @@ auto MonomialPropagator<NumModes>::concat_partitions_(Fn fn) -> R {
     return merged;
 }
 
-template <size_t NumModes>
 template <typename Proj, typename Accumulate, typename R>
-auto MonomialPropagator<NumModes>::fold_partitions_(Proj proj, Accumulate accumulate) const -> R {
+auto MonomialPropagator::fold_partitions_(Proj proj, Accumulate accumulate) const -> R {
     R total{};
     for (int r = 0; r < partition_group_->partition_count(); ++r) {
         accumulate(total, proj(partition_group_->partition(r)));
@@ -298,24 +273,20 @@ auto MonomialPropagator<NumModes>::fold_partitions_(Proj proj, Accumulate accumu
     return total;
 }
 
-template <size_t NumModes>
 template <typename Proj, typename R>
-auto MonomialPropagator<NumModes>::sum_partitions_(Proj proj) const -> R {
+auto MonomialPropagator::sum_partitions_(Proj proj) const -> R {
     return fold_partitions_(proj, [](R &total, const R &value) { total += value; });
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::first_partition_() const -> const MonomialPropagator & {
+auto MonomialPropagator::first_partition_() const -> const MonomialPropagator & {
     return partition_group_->partition(0);
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::partitioned_size_() const -> size_t {
+auto MonomialPropagator::partitioned_size_() const -> size_t {
     return sum_partitions_([](const MonomialPropagator &s) { return s.size(); });
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::partitioned_graph_size_() const -> std::pair<size_t, size_t> {
+auto MonomialPropagator::partitioned_graph_size_() const -> std::pair<size_t, size_t> {
     // One pass: graph_size() recomputes the cosine-only count, so it must not be projected twice.
     return fold_partitions_([](const MonomialPropagator &s) { return s.graph_size(); },
                             [](std::pair<size_t, size_t> &total, const std::pair<size_t, size_t> &value) {
@@ -324,28 +295,23 @@ auto MonomialPropagator<NumModes>::partitioned_graph_size_() const -> std::pair<
                             });
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::partitioned_graph_layers_() const -> size_t {
+auto MonomialPropagator::partitioned_graph_layers_() const -> size_t {
     return first_partition_().graph_layers();
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::partitioned_core_term_() const -> double {
+auto MonomialPropagator::partitioned_core_term_() const -> double {
     return first_partition_().core_term();
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::partitioned_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown {
+auto MonomialPropagator::partitioned_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown {
     return sum_partitions_([](const MonomialPropagator &s) { return s.operator_memory_usage(); });
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::partitioned_graph_memory_usage_() const -> GraphMemoryBreakdown {
+auto MonomialPropagator::partitioned_graph_memory_usage_() const -> GraphMemoryBreakdown {
     return sum_partitions_([](const MonomialPropagator &s) { return s.graph_memory_usage(); });
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
+auto MonomialPropagator::packed_inline_width_() const -> size_t {
     constexpr size_t kMax = detail::OperatorIndex::kMaxInlinePositions;
     constexpr size_t kDefault = detail::OperatorIndex::kDefaultInlinePositions;
     if (schrodinger_) {
@@ -359,9 +325,7 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
     return std::min<size_t>(*bound, kMax);
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &op_dict)
-    -> std::pair<MonomialList, VecD> {
+auto MonomialPropagator::apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList, VecD> {
     if (partition_group_) {
         // The facade holds no local terms of its own, so the return is empty.
         for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
@@ -372,12 +336,12 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
 
     OperatorDict new_op;
     for (const auto &[ind, coeff] : op_dict) {
-        const auto mono = indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
+        const auto mono = indices_to_bitset_checked(ind, 2 * logical_num_modes_, mp_op_.num_bits());
         if (ind.empty()) { // Core term, store in all
             core_term_ = algebra_encode_coeff(basis_, coeff, mono);
             continue;
         }
-        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+        if (my_rank == find_rank(mono, num_ranks)) {
             const auto mono_indices = bitset_to_indices(mono);
             new_op[mono_indices] = coeff;
         }
@@ -386,8 +350,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
     return mp_op_.update_initial_operator(new_op, schrodinger_);
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> {
+auto MonomialPropagator::graph_data() const -> std::vector<LayerData> {
     require_single_partition_("graph_data()");
     std::vector<LayerData> layers;
     const auto num_layers = graph_.layers();
@@ -434,7 +397,7 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
             }
         }
         else if (const auto &gw = traversal.generator_words(); !gw.empty()) {
-            const auto gen = detail::generator_from_words<NumModes>(gw);
+            const auto gen = detail::generator_from_words(gw, mp_op_.num_bits());
             auto p = detail::make_fold_cache(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
             cos_inds = detail::fold_to_indices(p);
         }
@@ -443,8 +406,7 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
     return layers;
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::cos_index_count_() const -> size_t {
+auto MonomialPropagator::cos_index_count_() const -> size_t {
     // Only a pared layer stores a cosine set; otherwise recompute the fold here. Cosine-only = cos-scaled
     // minus the rotation endpoints, saturating at 0.
     size_t total = 0;
@@ -456,7 +418,7 @@ auto MonomialPropagator<NumModes>::cos_index_count_() const -> size_t {
             cos_total = traversal.num_cos_inds();
         }
         else if (const auto &gw = traversal.generator_words(); !gw.empty()) {
-            const auto gen = detail::generator_from_words<NumModes>(gw);
+            const auto gen = detail::generator_from_words(gw, mp_op_.num_bits());
             const auto fold = detail::make_fold_cache(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
             cos_total = detail::fold_popcount(fold);
         }
@@ -466,10 +428,8 @@ auto MonomialPropagator<NumModes>::cos_index_count_() const -> size_t {
     return total;
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::validate_cutoff_config_(CutoffType cutoff_type,
-                                                           const std::optional<std::vector<VecZ>> &basis_change) const
-    -> void {
+auto MonomialPropagator::validate_cutoff_config_(CutoffType cutoff_type,
+                                                 const std::optional<std::vector<VecZ>> &basis_change) const -> void {
     with_algebra(basis_, [&]<class A>() {
         if (A::requires_support_cutoff && cutoff_type != CutoffType::Support) {
             throw CutoffConfigError("Pauli basis requires cutoff_type == Support "
@@ -489,13 +449,13 @@ auto MonomialPropagator<NumModes>::validate_cutoff_config_(CutoffType cutoff_typ
     }
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
+auto MonomialPropagator::regenerate_cutoff_fn_() -> void {
     if (basis_change_.has_value()) {
         MonomialList basis;
         basis.reserve(2 * logical_num_modes_);
         for (size_t i = 0; i < 2 * logical_num_modes_; ++i) {
-            basis.push_back(indices_to_bitset_checked<NumModes>(basis_change_.value()[i], 2 * logical_num_modes_));
+            basis.push_back(
+                indices_to_bitset_checked(basis_change_.value()[i], 2 * logical_num_modes_, mp_op_.num_bits()));
         }
         cutoff_fn_ = detail::cutoff_function_basis_change(cutoff_type_, cutoff_, basis, logical_num_modes_);
     }
@@ -504,8 +464,7 @@ auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
     }
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
+auto MonomialPropagator::initialize_operator_caches_() -> void {
     (void)mp_op_.get_operator();
     // Heisenberg warms the sparse state only; densifying here would defeat it. Schrödinger's dense vector
     // IS the live evolved vector.
@@ -520,13 +479,11 @@ auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
     mp_op_.shrink_state_to_fit();
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::current_picture_coeffs_() -> const VecD & {
+auto MonomialPropagator::current_picture_coeffs_() -> const VecD & {
     return schrodinger_ ? mp_op_.dense_state() : mp_op_.get_operator();
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::extend_coeffs_from_current_picture_if_needed_(VecD &coeffs) -> void {
+auto MonomialPropagator::extend_coeffs_from_current_picture_if_needed_(VecD &coeffs) -> void {
     if (coeffs.size() >= mp_op_.size()) {
         return;
     }
@@ -542,12 +499,11 @@ auto MonomialPropagator<NumModes>::extend_coeffs_from_current_picture_if_needed_
     coeffs.resize(mp_op_.size(), 0.0);
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::evolve_mode_build_graph_(const std::vector<VecZ> &majoranas,
-                                                            const VecZ &parameter_mapping,
-                                                            const VecD &gen_coeffs,
-                                                            const VecZ &gate_indices,
-                                                            int only_rotate_len_k) -> void {
+auto MonomialPropagator::evolve_mode_build_graph_(const std::vector<VecZ> &majoranas,
+                                                  const VecZ &parameter_mapping,
+                                                  const VecD &gen_coeffs,
+                                                  const VecZ &gate_indices,
+                                                  int only_rotate_len_k) -> void {
     const auto majoranas_size = majoranas.size();
     run_gate_loop_(majoranas,
                    only_rotate_len_k,
@@ -565,14 +521,13 @@ auto MonomialPropagator<NumModes>::evolve_mode_build_graph_(const std::vector<Ve
                    });
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vector<VecZ> &majoranas,
-                                                                  const VecZ &parameter_mapping,
-                                                                  const VecD &gen_coeffs,
-                                                                  const VecZ &gate_indices,
-                                                                  const VecD &parameters,
-                                                                  const VecD &operator_coeffs,
-                                                                  int only_rotate_len_k) -> void {
+auto MonomialPropagator::evolve_mode_graph_with_coeffs_(const std::vector<VecZ> &majoranas,
+                                                        const VecZ &parameter_mapping,
+                                                        const VecD &gen_coeffs,
+                                                        const VecZ &gate_indices,
+                                                        const VecD &parameters,
+                                                        const VecD &operator_coeffs,
+                                                        int only_rotate_len_k) -> void {
     auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0);
     auto coeffs = operator_coeffs;
     const auto majoranas_size = majoranas.size();
@@ -600,12 +555,11 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
                    });
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::vector<VecZ> &majoranas,
-                                                                     const VecZ &parameter_mapping,
-                                                                     const VecD &gen_coeffs,
-                                                                     const VecD &parameters,
-                                                                     int only_rotate_len_k) -> void {
+auto MonomialPropagator::evolve_mode_contract_immediately_(const std::vector<VecZ> &majoranas,
+                                                           const VecZ &parameter_mapping,
+                                                           const VecD &gen_coeffs,
+                                                           const VecD &parameters,
+                                                           int only_rotate_len_k) -> void {
     auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0);
     // Called for the side effect alone: it returns a reference to the very vector selected below.
     (void)current_picture_coeffs_();
@@ -626,13 +580,12 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
         });
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majoranas,
-                                               const VecZ &parameter_mapping,
-                                               const VecD &gen_coeffs,
-                                               std::optional<VecZ> gate_indices,
-                                               std::optional<VecD> parameters,
-                                               int only_rotate_len_k) -> void {
+auto MonomialPropagator::build_graph(const std::vector<VecZ> &majoranas,
+                                     const VecZ &parameter_mapping,
+                                     const VecD &gen_coeffs,
+                                     std::optional<VecZ> gate_indices,
+                                     std::optional<VecD> parameters,
+                                     int only_rotate_len_k) -> void {
     if (partition_group_) {
         for_each_partition_([&](MonomialPropagator &s) {
             s.build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
@@ -697,12 +650,11 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
     }
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
-                                             const VecZ &parameter_mapping,
-                                             const VecD &gen_coeffs,
-                                             const VecD &parameters,
-                                             int only_rotate_len_k) -> void {
+auto MonomialPropagator::propagate(const std::vector<VecZ> &majoranas,
+                                   const VecZ &parameter_mapping,
+                                   const VecD &gen_coeffs,
+                                   const VecD &parameters,
+                                   int only_rotate_len_k) -> void {
     if (partition_group_) {
         for_each_partition_([&](MonomialPropagator &s) {
             s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
@@ -724,11 +676,10 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
     evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
 }
 
-template <size_t NumModes>
 template <typename EvolutionFunc>
-auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
-                                                  int only_rotate_len_k,
-                                                  EvolutionFunc evolution_func) -> void {
+auto MonomialPropagator::run_gate_loop_(const std::vector<VecZ> &majoranas,
+                                        int only_rotate_len_k,
+                                        EvolutionFunc evolution_func) -> void {
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
@@ -739,18 +690,17 @@ auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &major
     initialize_operator_caches_();
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
-                                                        int only_rotate_len_k,
-                                                        std::optional<std::reference_wrapper<const VecD>> coeffs,
-                                                        std::optional<double> param,
-                                                        CosMask *out_cos,
-                                                        detail::FusedContract *fused_contract,
-                                                        VecD *fused_scale_coeffs,
-                                                        bool *fused_scale) -> std::shared_ptr<LayerCore> {
+auto MonomialPropagator::build_evolve_result_(const VecZ &gen_vec,
+                                              int only_rotate_len_k,
+                                              std::optional<std::reference_wrapper<const VecD>> coeffs,
+                                              std::optional<double> param,
+                                              CosMask *out_cos,
+                                              detail::FusedContract *fused_contract,
+                                              VecD *fused_scale_coeffs,
+                                              bool *fused_scale) -> std::shared_ptr<LayerCore> {
     // The only place a gate generator's indices are bounds-checked: nothing between the public entry
     // points and here constrains them.
-    const auto gen_mono = indices_to_bitset_checked<NumModes>(gen_vec, 2 * logical_num_modes_);
+    const auto gen_mono = indices_to_bitset_checked(gen_vec, 2 * logical_num_modes_, mp_op_.num_bits());
 
     // The cos-recompute metadata is written onto the returned LayerCore.
     return detail::build_layer(mp_op_,
@@ -771,34 +721,36 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                basis_);
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
-                                                  int only_rotate_len_k,
-                                                  std::optional<std::reference_wrapper<const VecD>> coeffs,
-                                                  std::optional<double> param,
-                                                  size_t param_index,
-                                                  double gen_coeff,
-                                                  size_t gate_index) -> void {
+auto MonomialPropagator::propagate_one_(const VecZ &gen_vec,
+                                        int only_rotate_len_k,
+                                        std::optional<std::reference_wrapper<const VecD>> coeffs,
+                                        std::optional<double> param,
+                                        size_t param_index,
+                                        double gen_coeff,
+                                        size_t gate_index) -> void {
     graph_.append(build_evolve_result_(gen_vec, only_rotate_len_k, coeffs, param), param_index, gen_coeff, gate_index);
 }
 
-template <size_t NumModes>
+namespace {
+// Forward-declared because evolve_operator_with_recompute_ below is defined before it. Internal
+// linkage: nothing outside this file builds cosine callbacks.
+// num_bits is the operator's monomial storage width; the layers' stored generator words are replayed
+// back into monomials at it (see generator_from_words).
 auto build_cos_callbacks(const detail::InvertedIndex &inverted_index,
                          const MPGraphView &graph,
+                         size_t num_bits,
                          Basis basis = Basis::Majorana) -> detail::CosCallbacks;
+} // namespace
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::evolve_operator_with_recompute_(VecD &&coeffs,
-                                                                   const MPGraphView &graph,
-                                                                   const VecD &params) -> VecD {
+auto MonomialPropagator::evolve_operator_with_recompute_(VecD &&coeffs, const MPGraphView &graph, const VecD &params)
+    -> VecD {
     const auto &inverted_index = mp_op_.inverted_index();
     // Only the scale side is consumed; build both through the shared builder for consistency.
-    auto cos_scale = build_cos_callbacks<NumModes>(inverted_index, graph, basis_).scale;
+    auto cos_scale = build_cos_callbacks(inverted_index, graph, mp_op_.num_bits(), basis_).scale;
     return evolve_operator(std::move(coeffs), graph, params, comm_, cos_scale);
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::n_gates() const -> size_t {
+auto MonomialPropagator::n_gates() const -> size_t {
     if (partition_group_) {
         return first_partition_().n_gates();
     }
@@ -813,8 +765,7 @@ auto MonomialPropagator<NumModes>::n_gates() const -> size_t {
     return any ? max_gate + 1 : 0;
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_mapping) -> void {
+auto MonomialPropagator::set_parameter_mapping(const VecZ &parameter_mapping) -> void {
     if (partition_group_) {
         for_each_partition_([&](MonomialPropagator &s) { s.set_parameter_mapping(parameter_mapping); });
         return;
@@ -858,8 +809,7 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
     }
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ, VecD> {
+auto MonomialPropagator::graph_gate_arrays_() const -> std::pair<VecZ, VecD> {
     if (partition_group_) {
         return first_partition_().graph_gate_arrays_();
     }
@@ -876,9 +826,11 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
     return {std::move(parameter_mapping), std::move(gen_coeffs)};
 }
 
-template <size_t NumModes>
-auto build_cos_callbacks(const detail::InvertedIndex &inverted_index, const MPGraphView &graph, Basis basis)
-    -> detail::CosCallbacks {
+namespace {
+auto build_cos_callbacks(const detail::InvertedIndex &inverted_index,
+                         const MPGraphView &graph,
+                         size_t num_bits,
+                         Basis basis) -> detail::CosCallbacks {
     struct LayerCos {
         bool recomputes_cos = false;
         detail::LazyFold recipe{};         // used iff recomputes_cos
@@ -896,7 +848,7 @@ auto build_cos_callbacks(const detail::InvertedIndex &inverted_index, const MPGr
         else {
             entry.recomputes_cos = true;
             const auto t = layer.traversal();
-            const auto gen = detail::generator_from_words<NumModes>(t.generator_words());
+            const auto gen = detail::generator_from_words(t.generator_words(), num_bits);
             entry.recipe = detail::make_lazy_fold(inverted_index, gen, t.scaled_count(), basis);
         }
         cache->push_back(std::move(entry));
@@ -921,10 +873,10 @@ auto build_cos_callbacks(const detail::InvertedIndex &inverted_index, const MPGr
     };
     return {.scale = std::move(cos_scale), .accumulate = std::move(cos_acc)};
 }
+} // namespace
 
-template <size_t NumModes>
 template <typename Fn, typename R>
-auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<double> pare_threshold)
+auto MonomialPropagator::make_functional_(Fn &&func, std::optional<double> pare_threshold)
     -> std::function<R(const VecD &)> {
     auto gate_arrays = graph_gate_arrays_();
     auto parameter_mapping = std::move(gate_arrays.first);
@@ -957,7 +909,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     if (pare_threshold.has_value()) {
         auto full_cos_of_layer = [this, &inverted_index](size_t i) -> CosMask {
             const auto layer = graph_.get_layer_traversal(i);
-            const auto gen = detail::generator_from_words<NumModes>(layer.generator_words());
+            const auto gen = detail::generator_from_words(layer.generator_words(), mp_op_.num_bits());
             const auto combined = detail::make_fold_cache(inverted_index, gen, layer.scaled_count(), basis_);
             return detail::fold_to_cos_mask(combined);
         };
@@ -973,7 +925,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
 
     // The folds keep raw column pointers into this propagator's inverted index, so the returned callable
     // must not outlive the propagator.
-    auto cos = build_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), basis_);
+    auto cos = build_cos_callbacks(inverted_index, graph->replay_view(), mp_op_.num_bits(), basis_);
 
     return [func = std::move(func),
             core_term,
@@ -1000,8 +952,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     };
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<double> pare_threshold)
+auto MonomialPropagator::expectation_value_functional(std::optional<double> pare_threshold)
     -> std::function<double(const VecD &)> {
     if (partition_group_) {
         // Each partition allreduces internally, so partition 0 is the global value. The group is captured by
@@ -1017,8 +968,7 @@ auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<do
     return make_functional_(ev_fn, pare_threshold);
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional(std::optional<double> pare_threshold)
+auto MonomialPropagator::expectation_value_and_gradient_functional(std::optional<double> pare_threshold)
     -> std::function<std::pair<double, VecD>(const VecD &)> {
     if (partition_group_) {
         auto fns = std::make_shared<std::vector<std::function<std::pair<double, VecD>(const VecD &)>>>(map_partitions_(
@@ -1032,8 +982,7 @@ auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional(std
     return make_functional_(ev_and_grad_fn, pare_threshold);
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::expectation_value(const VecD &parameters) -> double {
+auto MonomialPropagator::expectation_value(const VecD &parameters) -> double {
     if (partition_group_) {
         // Each partition allreduces internally, so every partition returns the global value; take partition 0.
         return map_partitions_([&](MonomialPropagator &s) { return s.expectation_value(parameters); })[0];
@@ -1041,8 +990,7 @@ auto MonomialPropagator<NumModes>::expectation_value(const VecD &parameters) -> 
     return expectation_value_functional(std::nullopt)(parameters);
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD> {
+auto MonomialPropagator::expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD> {
     if (partition_group_) {
         // As in expectation_value(): the gradient is allreduced inside each partition.
         return map_partitions_([&](MonomialPropagator &s) { return s.expectation_value_and_gradient(parameters); })[0];
@@ -1050,8 +998,7 @@ auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &pa
     return expectation_value_and_gradient_functional(std::nullopt)(parameters);
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bool inplace) -> VecD {
+auto MonomialPropagator::contract_partially(const VecD &parameters, bool inplace) -> VecD {
     if (partition_group_) {
         return concat_partitions_([&](MonomialPropagator &s) { return s.contract_partially(parameters, inplace); });
     }
@@ -1097,8 +1044,7 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
     return evolved_op;
 }
 
-template <size_t NumModes>
-auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters, double atol)
+auto MonomialPropagator::evolved_operator_terms(const VecD &parameters, double atol)
     -> std::vector<std::pair<VecZ, std::complex<double>>> {
     using Term = std::pair<VecZ, std::complex<double>>;
     // `p` is always unpartitioned here (a partition, or *this), so indexing() is available.

@@ -98,8 +98,8 @@ struct FusedContract {
 // word), where nw is the monomial word count.
 // The source index is not in the payload — the resolver answers by position; the querier holds src_idx_r[r][q].
 //
-// Functions of the word count rather than kQueryWords<NumModes> constants: the width is data now. Every
-// caller either has a monomial to ask (`mono.num_words()`) or the operator (`op.num_bits()`).
+// Functions of the word count rather than width-derived constants: every caller either has a monomial
+// to ask (`mono.num_words()`) or the operator (`op.num_bits()`).
 inline constexpr auto query_words(size_t num_words) -> size_t {
     return num_words + 1;
 }
@@ -136,9 +136,7 @@ inline auto query_push(VecZ &buf, const Bitset &mono, int phase) -> void {
 // The mono + phase words occupy the same leading offsets in the plain and fused record, so readers differ
 // only in the per-record stride: query_words for a plain record, query_words_fused for a fused one.
 //
-// `stride` is an ordinary argument rather than a template parameter (Stage 2c of the
-// NumModes-NTTP-removal plan), and the word count now comes from mono_out, which as the destination
-// already carries the record's width.
+// The word count comes from mono_out, which as the destination already carries the record's width.
 inline auto query_read(const VecZ &buf, size_t q, size_t stride, Bitset &mono_out, int &phase_out) -> void {
     const size_t base = q * stride;
     mpi_detail::read_monomial_from_words(buf, base, mono_out);

@@ -27,22 +27,21 @@
 
 namespace monoprop {
 
-// Bitset (Stage 2b of the NumModes-NTTP-removal plan) is now runtime-width, so Monomial<NumModes>
-// can no longer be a bare alias -- there would be nothing left to tell a default-constructed
-// `Monomial<NumModes> m;` its width. It is instead a thin, empty (no extra data members) subclass
-// that supplies 2*NumModes to Bitset's runtime constructor and shadows size()/num_words() with
-// compile-time versions, so every existing call site that spells Monomial<NumModes> -- default
-// construction, and array-sizing/template-argument uses like
-// `std::array<size_t, Monomial<NumModes>::size()>` -- keeps compiling unchanged. This wrapper is a
-// transitional shim: once Stages 2c/2d/2f de-template the classes that still need a compile-time
-// NumModes, it can be deleted and callers can use Bitset directly, per the plan's original
-// "Monomial stops being an alias" wording.
+// Bitset is runtime-width, so Monomial<NumModes> cannot be a bare alias -- there would be nothing left
+// to tell a default-constructed `Monomial<NumModes> m;` its width. It is instead a thin, empty (no
+// extra data members) subclass that supplies 2*NumModes to Bitset's runtime constructor and shadows
+// size()/num_words() with compile-time versions, so a call site that spells Monomial<NumModes> --
+// default construction, or an array-sizing/template-argument use like
+// `std::array<size_t, Monomial<NumModes>::size()>` -- keeps compiling.
+//
+// Nothing in the library needs this any more: it survives only for the C++ tests, which pick a width
+// per test case and use std::bitset<2*N> oracles. It goes away with them.
 //
 // An operator (^, &, fused_xor's result, ...) still returns plain Bitset by value -- rewrapping
 // would mean redefining every operator on the subclass instead of inheriting them. This is safe:
-// nothing that recovers NumModes from a value (`decltype(x)::size()`, always a *qualified* call)
+// nothing that recovers a width from a value (`decltype(x)::size()`, always a *qualified* call)
 // does so on an operator's result, only on a parameter or an explicitly Monomial<NumModes>-typed
-// local (see Stage 2a's conversions) -- so the type used there is always the wrapper. Assigning an
+// local -- so the type used there is always the wrapper. Assigning an
 // operator's plain-Bitset result back into a Monomial<NumModes>-typed variable is unaffected: that
 // variable's static type, and hence which size()/num_words() it resolves to, never changes.
 template <size_t NumModes>
@@ -83,7 +82,7 @@ public:
 // template parameter -- `decltype(mono)::size()` recovers the storage bit width (2 * NumModes for a
 // Monomial), so a NumModes value where one is still needed is `decltype(mono)::size() / 2`. Instance
 // (not qualified) calls here so a plain Bitset satisfies this too, not just the Monomial<NumModes>
-// wrapper. See the NumModes-NTTP-removal plan, Stage 2a/2b.
+// wrapper.
 template <typename T>
 concept MonomialLike = requires(const T &t) {
     { t.size() } -> std::convertible_to<size_t>;
@@ -115,14 +114,14 @@ struct MonomialEqual final {
 
 using MonomialMap = boost::unordered_flat_map<Bitset, double, MonomialHash, MonomialEqual>;
 
-template <size_t NumModes>
-inline auto monomial_hash(const Monomial<NumModes> &mono) noexcept -> size_t {
-    if constexpr (Monomial<NumModes>::num_words() == 1) {
-        return static_cast<size_t>(SplitmixHash::mix(mono.word(0)));
-    }
-    else {
-        return MonomialHash{}(mono);
-    }
+// MPI owner routing (find_rank) hashes through here, so the value must not change: it decides which
+// rank owns a term and, with it, probe order. It does not. The single-word fast path this used to
+// select with `if constexpr` is the same one SplitmixHash::operator() now takes at runtime, and the
+// wide arm was already a call to SplitmixHash via MonomialHash -- so both arms collapse into the one
+// call below. Kept as a named function rather than inlined at the call sites: the name is what marks a
+// hash as owner-routing (pinned) rather than an ordinary container hash.
+inline auto monomial_hash(const Bitset &mono) noexcept -> size_t {
+    return SplitmixHash{}(mono);
 }
 
 // Structural keep/drop predicate applied to a monomial after each gate.

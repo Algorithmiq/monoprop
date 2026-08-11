@@ -46,7 +46,7 @@ struct InvertedIndex {
     };
 
     // One column per bit position of a monomial, so the count is the storage bit width. Runtime-sized
-    // (Stage 2c of the NumModes-NTTP-removal plan): it was std::array<Column, Monomial<N>::size()>.
+    // -- the column count is the operator's bit width, which is data.
     std::vector<Column> cols;
     size_t row_count = 0;
 

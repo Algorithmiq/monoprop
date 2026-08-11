@@ -53,8 +53,8 @@ struct PauliUv {
 // each word -- pairs are {2m, 2m+1}, so there is no cross-word carry.
 // e_mask/result build from p.size()/p.num_words() (instance calls), not the qualified
 // decltype(p)::size() other functions in this file use: p is only constrained MonomialLike, and a
-// caller may hand this a plain Bitset (e.g. from a ^ b) rather than a Monomial<NumModes>, which has
-// no compile-time-static size() to qualify-call -- see the NumModes-NTTP-removal plan's Stage 2b.
+// caller may hand this a plain Bitset (e.g. from a ^ b), whose width is data and so has no static
+// size() to qualify-call.
 [[nodiscard]] auto pair_swap(const MonomialLike auto &p) -> std::remove_cvref_t<decltype(p)> {
     const auto &e_mask = cached_even_bits<LSb0>(p.size());
     Bitset result(p.size());

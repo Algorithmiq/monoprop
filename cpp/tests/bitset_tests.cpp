@@ -15,8 +15,7 @@
 // Bitset.h in isolation (inline and heap-spilled widths) against a std::bitset oracle, so a
 // regression in the hand-rolled shift / scan / mask / trampoline surfaces here rather than as a
 // distant energy drift. N stays a *template* parameter of the test helpers purely so std::bitset<N>
-// (the oracle) can be spelled; the Bitset under test is always constructed with a runtime width (see
-// the NumModes-NTTP-removal plan's Stage 2b).
+// (the oracle) can be spelled; the Bitset under test is always constructed with a runtime width.
 
 #include <boost/test/unit_test.hpp>
 
