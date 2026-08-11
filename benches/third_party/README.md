@@ -81,9 +81,12 @@ Two things to know when reading the output:
 - **The GPU backend's own figure is a device high-water mark, not an end-of-step reading**,
   so a transient freed inside a step still counts. `benches/_memory_gpu.py` picks the strongest
   counter the allocator allows and names it in `operator_memory_metric`: CUDA's resettable
-  `cudaMemPoolAttrUsedMemHigh` when CuPy runs on `malloc_async` (exact), otherwise the
-  CuPy pool's monotone `total_bytes` (an upper bound). Run `python ../_memory_gpu.py` on the
-  GPU host to see which one is active and confirm it catches a freed transient.
+  `cudaMemPoolAttrUsedMemHigh` when CuPy runs on `malloc_async`, otherwise a `MemoryHook`
+  that tracks the default pool's `used_bytes()` synchronously on every allocation event —
+  both are exact. (An earlier version read `total_bytes()` once at the end of the block;
+  that missed transients because CuPy can return freed blocks to the driver before the
+  block closes, so it was replaced.) Run `python ../_memory_gpu.py` on the GPU host to see
+  which strategy is active and confirm it catches a freed transient.
 - **`PauliPropagation.jl` runs in its fastest documented configuration**, which is not its
   default: the `VectorPauliSum` container driven by `Performance.propagate!`, with
   coefficient truncation on. That combination needs the **dev branch (0.8.0)** — earlier

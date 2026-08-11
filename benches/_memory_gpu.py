@@ -26,23 +26,24 @@ Which strategy applies depends on the allocator CuPy is using, so
     CuPy on ``malloc_async``. CUDA's stream-ordered pool keeps
     ``cudaMemPoolAttrUsedMemHigh``, a true high-water mark of bytes in use, and writing 0
     to it resets it to the current value -- a resettable window, exactly like
-    ``clear_refs`` on the host. This is the only *exact* strategy.
+    ``clear_refs`` on the host. Exact, and it needs no Python-side bookkeeping at all.
 
-``caching-pool``
-    CuPy's default allocator. Its pool has no high-water counter, but ``total_bytes()``
-    (bytes reserved from the driver) is monotone: freeing an array returns the block to
-    the pool's free list without returning it to CUDA. So it never falls back down over a
-    transient, which is what a sampler could not manage. It is an *upper bound* on peak
-    bytes in use -- it carries the pool's fragmentation and cached slack with it -- and it
-    is cumulative over the process rather than per-window, since nothing resets it.
+``hook``
+    CuPy's default (caching) allocator, tracked via a :class:`cupy.cuda.MemoryHook`.
+    The hook's callbacks fire synchronously, in-process, on every malloc/free CuPy makes
+    -- not on a timer, so nothing can happen between polls the way it could with a
+    background sampler. Each callback takes ``max(peak, pool.used_bytes())``, which is
+    exact for the same reason ``VmHWM`` is: it is updated at the moment of the event, not
+    read back later.
 
 ``unavailable``
-    No CuPy, or the driver refused the query. Everything reads zero.
+    No CuPy, or the hook API is missing (very old CuPy) and the async pool is also absent.
+    Everything reads zero.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -50,14 +51,13 @@ if TYPE_CHECKING:
 
 # `method` values; see the module docstring.
 ASYNC_POOL = "async-pool"
-CACHING_POOL = "caching-pool"
+HOOK = "hook"
 UNAVAILABLE = "unavailable"
 
 # How each strategy's number should be described wherever it is published.
 DEVICE_MEMORY_METRICS = {
     ASYNC_POOL: "peak GPU bytes in use over the step (cudaMemPoolAttrUsedMemHigh)",
-    CACHING_POOL: "GPU pool reservation high-water since process start "
-    "(CuPy MemoryPool.total_bytes; upper bound on bytes in use)",
+    HOOK: "peak GPU bytes in use over the step (CuPy MemoryHook on the default pool)",
     UNAVAILABLE: "no GPU memory reading available",
 }
 
@@ -121,16 +121,6 @@ def device_synchronize() -> None:
         pass
 
 
-def _caching_pool_reserved_bytes() -> int:
-    """Return bytes CuPy's default pool holds from the driver, 0 if unavailable."""
-    try:
-        import cupy as cp
-
-        return int(cp.get_default_memory_pool().total_bytes())
-    except (ImportError, AttributeError, RuntimeError):
-        return 0
-
-
 def _caching_pool_used_bytes() -> int:
     """Return bytes live in CuPy's default pool right now, 0 if unavailable."""
     try:
@@ -141,24 +131,64 @@ def _caching_pool_used_bytes() -> int:
         return 0
 
 
+_hook_class: type[Any] | None = None
+
+
+def _peak_hook_class() -> type[Any] | None:
+    """Build (once) and return a ``MemoryHook`` subclass that tracks a running peak.
+
+    Built lazily and cached at module level: the base class only exists once CuPy is
+    importable, so it cannot be defined at import time. The callbacks accept ``**kwargs``
+    rather than CuPy's documented parameter names, so a signature change in some CuPy
+    version does not silently stop the tracking -- it would raise loudly instead of the
+    hook simply never firing.
+    """
+    if _peak_hook_class.cached is not None:
+        return _peak_hook_class.cached
+    try:
+        from cupy.cuda import memory_hook
+    except ImportError:
+        return None
+
+    class _PeakUsedBytesHook(memory_hook.MemoryHook):
+        name = "monoprop_peak_used_bytes_hook"
+
+        def __init__(self, pool: Any) -> None:
+            self._pool = pool
+            self.peak_bytes = int(pool.used_bytes())
+
+        def _update(self, **_kwargs: object) -> None:
+            self.peak_bytes = max(self.peak_bytes, int(self._pool.used_bytes()))
+
+        def malloc_postprocess(self, **kwargs: object) -> None:
+            self._update(**kwargs)
+
+        def free_postprocess(self, **kwargs: object) -> None:
+            self._update(**kwargs)
+
+    _peak_hook_class.cached = _PeakUsedBytesHook
+    return _PeakUsedBytesHook
+
+
+_peak_hook_class.cached = None
+
+
 class DeviceHighWaterMark:
     """Peak device memory over the enclosed block.
 
     Mirrors :class:`_memory_cpu.HighWaterMark`: synchronizes on entry and exit so the reading
     covers completed work, and exposes the same ``peak``/``baseline``/``delta`` vocabulary.
 
-    ``exact`` is ``True`` only under the ``async-pool`` strategy, where the driver keeps a
-    real high-water mark. Otherwise the figure is an upper bound (``caching-pool``) or
-    absent (``unavailable``), and :attr:`method` says which -- check it before publishing,
-    because the three are not the same quantity.
-
-    Entry is deliberately cheap under both strategies: a counter reset, or nothing at all.
-    Releasing cached blocks would give the caching pool a per-window floor, but it calls
-    ``cudaFree``, which synchronizes the device and would land in the caller's timing.
+    ``exact`` is ``True`` under both the ``async-pool`` and ``hook`` strategies: the first
+    reads a driver-maintained high-water counter, the second updates its own peak
+    synchronously on every allocation event CuPy makes, so neither can miss a transient
+    that lived and died inside the block. Only ``unavailable`` degrades the figure (to
+    zero); :attr:`method` says which applies -- check it before publishing.
     """
 
     def __init__(self) -> None:
         self._pool = _async_pool()
+        self._hook: Any = None
         self.method = UNAVAILABLE
         self.baseline_bytes = 0
         self.peak_bytes = 0
@@ -172,12 +202,34 @@ class DeviceHighWaterMark:
             self.baseline_bytes = _pool_attr(
                 self._pool, "cudaMemPoolAttrUsedMemCurrent"
             )
-        else:
-            # A pool we cannot reset is a pool we cannot window; fall back rather than
-            # report an all-time high-water mark as if it belonged to this step.
-            self._pool = None
-            self.baseline_bytes = _caching_pool_reserved_bytes()
-            self.method = CACHING_POOL if self.baseline_bytes else UNAVAILABLE
+            self.peak_bytes = self.baseline_bytes
+            return self
+
+        # Not on the async pool (or too old a CuPy to reset it): fall back to tracking
+        # the default pool's `used_bytes()` synchronously, via a hook, rather than the
+        # driver-native counter.
+        self._pool = None
+        hook_cls = _peak_hook_class()
+        if hook_cls is None:
+            self.baseline_bytes = _caching_pool_used_bytes()
+            self.peak_bytes = self.baseline_bytes
+            return self
+
+        try:
+            import cupy as cp
+
+            pool = cp.get_default_memory_pool()
+            self._hook = hook_cls(pool)
+            self._hook.__enter__()
+        except (ImportError, AttributeError, RuntimeError):
+            self._hook = None
+            self.baseline_bytes = _caching_pool_used_bytes()
+            self.peak_bytes = self.baseline_bytes
+            return self
+
+        self.exact = True
+        self.method = HOOK
+        self.baseline_bytes = self._hook.peak_bytes
         self.peak_bytes = self.baseline_bytes
         return self
 
@@ -190,11 +242,14 @@ class DeviceHighWaterMark:
         device_synchronize()
         if self.method == ASYNC_POOL and self._pool is not None:
             observed = _pool_attr(self._pool, "cudaMemPoolAttrUsedMemHigh")
-        elif self.method == CACHING_POOL:
-            observed = _caching_pool_reserved_bytes()
+        elif self.method == HOOK and self._hook is not None:
+            self._hook.__exit__(None, None, None)
+            observed = self._hook.peak_bytes
         else:
+            # Nothing tracked the block: this is the same single end-of-block sample that
+            # proved unreliable for the caching pool. Report it, but the method stays
+            # `unavailable` so callers do not mistake it for an exact reading.
             observed = _caching_pool_used_bytes()
-            self.method = CACHING_POOL if observed else UNAVAILABLE
         self.peak_bytes = max(self.baseline_bytes, observed)
 
     @property

@@ -272,8 +272,9 @@ For every engine, `results.json` collects, indexed by Trotter step:
   only: they measure different things and must not be compared across engines. `QuEra ppvm`
   and `Qiskit pauli-prop` expose no such accounting and so report none. Each record's
   `operator_memory_metric` names the quantity, which for the GPU depends on the allocator in
-  use — CUDA's resettable `cudaMemPoolAttrUsedMemHigh` where available, the CuPy pool's
-  monotone reservation otherwise.
+  use — CUDA's resettable `cudaMemPoolAttrUsedMemHigh` where available, otherwise a
+  `MemoryHook` tracking the CuPy pool's `used_bytes()` synchronously on every allocation;
+  both are exact peaks, not samples.
 - `expvals`: the `ZZ` expectation value on `obs_qubits`, for every step.
 
 ### 5. Plot the results
