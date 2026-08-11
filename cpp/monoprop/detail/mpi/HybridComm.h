@@ -65,8 +65,8 @@ public:
         MPI_Query_thread(&provided);
         if (provided < MPI_THREAD_SERIALIZED) {
             throw MpiThreadLevelUnsupported("HybridComm requires MPI_THREAD_SERIALIZED (partition-0 masters call "
-                                     "MPI while peers are parked); provided level is lower. Ensure "
-                                     "mpi::init / mpi4py requests SERIALIZED or MULTIPLE.");
+                                            "MPI while peers are parked); provided level is lower. Ensure "
+                                            "mpi::init / mpi4py requests SERIALIZED or MULTIPLE.");
         }
         // Size all (R,S)-fixed scratch once so per-call paths never allocate; staging grows on demand.
         const size_t rss = static_cast<size_t>(r_) * static_cast<size_t>(s_) * static_cast<size_t>(s_);
