@@ -363,13 +363,12 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_asymmetric_counts) {
                 off += len;
             }
             hyb.alltoallv_resolve<int>(u,
-                                       send.data(),
-                                       sc.data(),
-                                       sd.data(),
-                                       recv,
-                                       rc.data(),
-                                       rd.data(),
-                                       sizeof(int),
+                                       {.send = send.data(),
+                                        .send_counts = sc.data(),
+                                        .send_displs = sd.data(),
+                                        .recv = recv,
+                                        .recv_counts = rc.data(),
+                                        .recv_displs = rd.data()},
                                        monoprop::mpi::datatype<int>::get());
             int expected_total = 0;
             for (int src = 0; src < P; ++src) {
@@ -433,13 +432,13 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoall_counts_then_alltoallv_asymmetric) {
         }
         std::vector<int> recv(static_cast<size_t>(total));
         hyb.alltoallv(u,
-                      send.data(),
-                      sc.data(),
-                      sd.data(),
-                      recv.data(),
-                      rc.data(),
-                      rd.data(),
-                      sizeof(int),
+                      monoprop::mpi::FlatAlltoallvArgs<int>{.send = send.data(),
+                                                            .send_counts = sc.data(),
+                                                            .send_displs = sd.data(),
+                                                            .recv = recv.data(),
+                                                            .recv_counts = rc.data(),
+                                                            .recv_displs = rd.data()}
+                          .bytes(),
                       monoprop::mpi::datatype<int>::get());
         for (int src = 0; src < P; ++src) {
             for (int j = 0; j < rc[static_cast<size_t>(src)]; ++j) {
