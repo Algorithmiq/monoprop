@@ -37,7 +37,7 @@ namespace {
 // Qubit Pauli weight = number of non-identity single-qubit letters = or_sum = |x | z|.
 template <size_t NumModes>
 [[nodiscard]] auto pauli_weight(const Monomial<NumModes> &p) -> size_t {
-    const auto e_mask = pauli_even_mask<NumModes>();
+    const auto e_mask = pauli_even_mask(2 * NumModes);
     size_t weight = 0;
     for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
         const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
@@ -51,7 +51,7 @@ template <size_t NumModes>
 // e is odd iff A,B anticommute (phase = +/- i); even iff they commute (phase = +/- 1).
 template <size_t NumModes>
 [[nodiscard]] auto product_phase_exponent(const Monomial<NumModes> &a, const Monomial<NumModes> &b) -> int {
-    const auto e_mask = pauli_even_mask<NumModes>();
+    const auto e_mask = pauli_even_mask(2 * NumModes);
     const auto r = a ^ b;
     const long y_a = static_cast<long>(pauli_y_count(a));
     const long y_b = static_cast<long>(pauli_y_count(b));

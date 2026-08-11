@@ -70,7 +70,7 @@ constexpr auto prefix_xor_64(uint64_t x) -> uint64_t {
 // Ordering sign (-1)^S of maj·gen, S = #{set bits of maj strictly below each set bit of gen} mod 2.
 // Reference spec: the hot path uses the equivalent per-layer mask form (see interleave_phase_mask).
 auto interleave_phase(const MonomialLike auto &maj_bs, const auto &gen_bs) -> int {
-    constexpr size_t n_words = std::remove_cvref_t<decltype(maj_bs)>::num_words();
+    const size_t n_words = maj_bs.num_words();
     size_t parity = 0;
     uint64_t carry = 0;
 
@@ -99,9 +99,12 @@ auto interleave_phase(const MonomialLike auto &maj_bs, const auto &gen_bs) -> in
 // Identity: interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : #{g∈G : g>c} odd}, fixed for
 // the layer; the per-term sign is then one maj.parity_and(W) instead of the prefix-XOR scan.
 auto interleave_phase_mask(const MonomialLike auto &gen) -> std::remove_cvref_t<decltype(gen)> {
-    std::remove_cvref_t<decltype(gen)> w;
+    // Copy-then-reset for the same reason as change_basis: this needs a zero bitset at gen's width, and
+    // no single spelling constructs one for both Monomial<N> and a plain Bitset.
+    std::remove_cvref_t<decltype(gen)> w = gen;
+    w.reset();
     size_t above = 0; // #{g∈G : g>c}, maintained as c descends
-    for (size_t c = std::remove_cvref_t<decltype(gen)>::size(); c-- > 0;) {
+    for (size_t c = gen.size(); c-- > 0;) {
         if ((above & 1U) != 0U) {
             w.set(c);
         }

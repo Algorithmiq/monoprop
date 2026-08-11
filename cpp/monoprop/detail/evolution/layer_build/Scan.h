@@ -49,16 +49,19 @@ inline auto build_majorana_evolution_cutoff_state(const std::optional<double> &a
                          .use_coeff_checks = check_atol || check_upper_atol};
 }
 
-template <size_t NumModes>
+// indices is a vector, not the std::array<size_t, 2*NumModes> it was: with no compile-time width there is
+// no bound to size an array by, and the array was sized for the whole register while only |G| entries
+// (typically 2-4) are ever used. `count` stays alongside it so the existing
+// {indices.data(), count} spans keep working unchanged.
 struct EvenParityGeneratorColumns {
-    std::array<size_t, Monomial<NumModes>::size()> indices{};
+    std::vector<size_t> indices{};
     size_t count = 0;
 };
 
-// Set columns in ascending bit order.
-auto build_even_parity_generator_columns(const MonomialLike auto &gen_mono)
-    -> EvenParityGeneratorColumns<std::remove_cvref_t<decltype(gen_mono)>::size() / 2> {
-    EvenParityGeneratorColumns<std::remove_cvref_t<decltype(gen_mono)>::size() / 2> columns;
+// Set columns in ascending bit order. Called once per layer, not per term.
+auto build_even_parity_generator_columns(const MonomialLike auto &gen_mono) -> EvenParityGeneratorColumns {
+    EvenParityGeneratorColumns columns;
+    columns.indices.resize(gen_mono.count());
     for (size_t bit_idx = gen_mono.find_first(); bit_idx < gen_mono.size(); bit_idx = gen_mono.find_next(bit_idx)) {
         columns.indices[columns.count++] = bit_idx;
     }

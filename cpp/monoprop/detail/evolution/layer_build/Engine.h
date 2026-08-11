@@ -565,7 +565,7 @@ auto build_layer(auto &local_op,
 
     FusedScanResult fused = [&] {
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
-        return with_algebra<num_modes>(basis, [&]<class A>() {
+        return with_algebra(basis, [&]<class A>() {
             return fused_find_and_collect<A>(local_op,
                                              gen,
                                              cut_eval,

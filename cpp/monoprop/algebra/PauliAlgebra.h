@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <vector>
 
 #include "monoprop/Bitset.h"
 #include "monoprop/TypeAliases.h"
@@ -34,9 +35,8 @@
 
 namespace monoprop {
 
-template <size_t NumModes>
-[[nodiscard]] inline auto pauli_even_mask() -> Monomial<NumModes> {
-    return even_bits<2 * NumModes, LSb0>();
+[[nodiscard]] inline auto pauli_even_mask(size_t num_bits) -> Bitset {
+    return even_bits<LSb0>(num_bits);
 }
 
 namespace detail {
@@ -94,25 +94,28 @@ namespace detail {
 
 // Per-generator context for the hot emit-sign kernel: nz_words lets pauli_rotation_sign() skip words
 // outside G's support.
-template <size_t NumModes>
+//
+// nz_words is a vector, not the std::array<size_t, num_words()> it was: with no compile-time width there
+// is no bound to size an array by. It holds at most num_words() entries and is built once per layer,
+// so the allocation is per layer while the reads are per term -- the same trade the retained LazyFold
+// already makes for its columns.
 struct PauliGenContext final {
-    Monomial<NumModes> gen{};
+    Bitset gen{};
     size_t g_y = 0;
-    std::array<size_t, Monomial<NumModes>::num_words()> nz_words{};
+    std::vector<size_t> nz_words{};
     size_t nz_count = 0;
-    Monomial<NumModes> e_mask{}; // held here so the hot sign kernel never rebuilds it per term
+    Bitset e_mask{}; // held here so the hot sign kernel never rebuilds it per term
 };
 
-// Call once per layer, not per term. The return type still names NumModes explicitly: it sizes
-// PauliGenContext's fixed nz_words array, and that class stays templated until Stage 2c/2d.
-auto make_pauli_gen_context(const MonomialLike auto &gen)
-    -> PauliGenContext<std::remove_cvref_t<decltype(gen)>::size() / 2> {
-    using Mono = std::remove_cvref_t<decltype(gen)>;
-    PauliGenContext<Mono::size() / 2> ctx;
+// Call once per layer, not per term.
+auto make_pauli_gen_context(const MonomialLike auto &gen) -> PauliGenContext {
+    PauliGenContext ctx;
+    const size_t nw = gen.num_words();
     ctx.gen = gen;
-    ctx.e_mask = pauli_even_mask<Mono::size() / 2>();
+    ctx.e_mask = pauli_even_mask(gen.size());
     ctx.g_y = pauli_y_count(gen);
-    for (size_t w = 0; w < Mono::num_words(); ++w) {
+    ctx.nz_words.resize(nw);
+    for (size_t w = 0; w < nw; ++w) {
         if (gen.word(w) != 0) {
             ctx.nz_words[ctx.nz_count++] = w;
         }

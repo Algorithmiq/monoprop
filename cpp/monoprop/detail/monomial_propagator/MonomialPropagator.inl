@@ -470,7 +470,7 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::validate_cutoff_config_(CutoffType cutoff_type,
                                                            const std::optional<std::vector<VecZ>> &basis_change) const
     -> void {
-    with_algebra<NumModes>(basis_, [&]<class A>() {
+    with_algebra(basis_, [&]<class A>() {
         if (A::requires_support_cutoff && cutoff_type != CutoffType::Support) {
             throw CutoffConfigError("Pauli basis requires cutoff_type == Support "
                                     "(Length has no Pauli-weight meaning under the Pauli encoding).");
@@ -881,8 +881,8 @@ auto build_cos_callbacks(const detail::InvertedIndex &inverted_index, const MPGr
     -> detail::CosCallbacks {
     struct LayerCos {
         bool recomputes_cos = false;
-        detail::LazyFold<NumModes> recipe{}; // used iff recomputes_cos
-        const CosMask *filtered = nullptr;   // points into a pruned layer's stored cos
+        detail::LazyFold recipe{};         // used iff recomputes_cos
+        const CosMask *filtered = nullptr; // points into a pruned layer's stored cos
     };
     auto cache = std::make_shared<std::vector<LayerCos>>();
     cache->reserve(graph.layers());

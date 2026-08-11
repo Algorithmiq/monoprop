@@ -78,7 +78,8 @@ inline auto make_fold_mask(const auto &sc,
 
 // A layer's cosine fold materialised into one buffer. Backs the pare materializer and the
 // recompute-equivalence test oracle.
-template <size_t NumModes>
+// No width parameter: every member is a byte/word count or a heap buffer, and none was ever sized by
+// one. It was templated only because its producer was.
 struct FoldCache {
     std::vector<uint64_t> combined; // the generator's columns XOR-combined over [0, fold.mask_words)
     FoldMask fold;
@@ -92,9 +93,8 @@ inline auto fold_row_parity(const auto &sc, const FoldMask &f) -> const uint64_t
     return f.g_odd ? sc.row_parity_words() : nullptr;
 }
 
-auto make_fold_cache(const auto &sc, const MonomialLike auto &gen, uint64_t scaled_count, Basis basis)
-    -> FoldCache<std::remove_cvref_t<decltype(gen)>::size() / 2> {
-    FoldCache<std::remove_cvref_t<decltype(gen)>::size() / 2> p;
+auto make_fold_cache(const auto &sc, const MonomialLike auto &gen, uint64_t scaled_count, Basis basis) -> FoldCache {
+    FoldCache p;
     p.fold = make_fold_mask(sc, gen, scaled_count, basis);
     p.row_parity = fold_row_parity(sc, p.fold);
     // generator_words stores the real G; re-derive the fold generator (J(G) for Pauli) as the scan did.
@@ -144,17 +144,16 @@ template <typename BitOp>
 
 // Metadata to recompute a layer's cosine fold on the fly, with no per-layer cos buffer.
 //
-// `columns` is heap-sized to |G| (typically 2-4) rather than reusing EvenParityGeneratorColumns' fixed
-// std::array<size_t, 2*NumModes>: a LazyFold is retained per graph layer, 4 KB each at NumModes=256.
-template <size_t NumModes>
+// `columns` is heap-sized to |G| (typically 2-4): a LazyFold is retained per graph layer, and sizing it
+// by the register width instead would have cost 4 KB each at 256 modes. Carries no width parameter, for
+// the same reason as FoldCache.
 struct LazyFold {
     std::vector<size_t> columns;
     FoldMask fold;
 };
 
-auto make_lazy_fold(const auto &sc, const MonomialLike auto &gen, uint64_t scaled_count, Basis basis)
-    -> LazyFold<std::remove_cvref_t<decltype(gen)>::size() / 2> {
-    LazyFold<std::remove_cvref_t<decltype(gen)>::size() / 2> r;
+auto make_lazy_fold(const auto &sc, const MonomialLike auto &gen, uint64_t scaled_count, Basis basis) -> LazyFold {
+    LazyFold r;
     r.fold = make_fold_mask(sc, gen, scaled_count, basis);
     const auto fold_gen = algebra_fold_generator(basis, gen);
     const auto columns = build_even_parity_generator_columns(fold_gen);
