@@ -70,7 +70,7 @@ test = [
   "pytest-cov>=7.1.0",
   "pytest-datadir",
   "pytest-mpi>=0.6",
-  "pytest>=8.2.2,<8.3",
+  "pytest>=8.2.2,<9.1",
   "tabulate>=0.9",
 ]
 bench = [{ include-group = "test" }, "pytest-benchmark>=5"]
