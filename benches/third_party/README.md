@@ -74,10 +74,16 @@ Two things to know when reading the output:
   each step, read from the kernel's `VmHWM` high-water mark and reset per step, so the
   curves may be compared directly. Where a library also accounts for itself, that figure is
   kept separately as `operator_memory_MB` / the `native_memory` series — those are *not*
-  commensurable across backends (one counts an operator, another an object graph, another a
-  device pool), so never plot them against each other. `HOST_MEMORY_METRIC` and
+  commensurable across backends (one counts an operator, another an object graph, another
+  device memory), so never plot them against each other. `HOST_MEMORY_METRIC` and
   `OPERATOR_MEMORY_METRICS` in `backends.py` record which is which, and every record also
   carries `peak_rss_MB` for the process lifetime.
+- **The GPU backend's own figure is a device high-water mark, not an end-of-step reading**,
+  so a transient freed inside a step still counts. `benches/_memory_gpu.py` picks the strongest
+  counter the allocator allows and names it in `operator_memory_metric`: CUDA's resettable
+  `cudaMemPoolAttrUsedMemHigh` when CuPy runs on `malloc_async` (exact), otherwise the
+  CuPy pool's monotone `total_bytes` (an upper bound). Run `python ../_memory_gpu.py` on the
+  GPU host to see which one is active and confirm it catches a freed transient.
 - **`PauliPropagation.jl` runs in its fastest documented configuration**, which is not its
   default: the `VectorPauliSum` container driven by `Performance.propagate!`, with
   coefficient truncation on. That combination needs the **dev branch (0.8.0)** — earlier

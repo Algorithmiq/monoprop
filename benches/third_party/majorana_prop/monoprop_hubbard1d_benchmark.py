@@ -31,7 +31,7 @@ from monoprop.fermi import FermiOperator
 # The repository's own benchmark suite owns the memory instrumentation; this directory is a
 # separate uv project, so reach it by path rather than by dependency.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from _memory import HighWaterMark  # noqa: E402
+from _memory_cpu import HighWaterMark  # noqa: E402
 
 
 def mode(site, spin):

@@ -15,7 +15,7 @@
 # Shared across the third-party Julia benchmark scripts in this project (pauli_prop,
 # majorana_prop). Included via `include(joinpath(@__DIR__, "..", "bench_common.jl"))`.
 #
-# Line-for-line mirror of `benches/_memory.py`. The two must stay in step: a cross-language
+# Line-for-line mirror of `benches/_memory_cpu.py`. The two must stay in step: a cross-language
 # memory comparison is only meaningful if both sides measure the same quantity the same way,
 # down to how the process is settled before the window opens.
 

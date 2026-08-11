@@ -36,7 +36,13 @@ from model import Settings, grid_edges, observable, pauli_rotations, step_circui
 # The repository's own benchmark suite owns the memory instrumentation; this directory is a
 # separate uv project, so reach it by path rather than by dependency.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from _memory import HighWaterMark  # noqa: E402
+from _memory_cpu import HighWaterMark  # noqa: E402
+from _memory_gpu import DeviceHighWaterMark  # noqa: E402
+
+# cuPauliProp sizes its workspace as a fraction of the card, so this is a confounder for
+# any device-memory figure: raise it and the library may hold more without needing more.
+# Kept at the upstream default so the runtime is the configuration users would hit.
+CUPAULIPROP_MEMORY_LIMIT = "80%"
 
 # Every backend's `memory` series is this one quantity, measured the same way, so the
 # curves may share an axis.
@@ -44,10 +50,11 @@ HOST_MEMORY_METRIC = "peak process RSS over the step (kernel VmHWM)"
 
 # What a backend reports about its *own* footprint, where it reports anything. Reference
 # only: these are not commensurable with each other (one counts an operator, another an
-# object graph, another a device pool), so they must never be compared across backends.
+# object graph, another device memory), so they must never be compared across backends.
+# The GPU backend sets its own string at run time -- see `_memory_gpu.DEVICE_MEMORY_METRICS`,
+# which depends on the allocator actually in use.
 OPERATOR_MEMORY_METRICS = {
     "monoprop": "operator memory (reported by the library)",
-    "cuPauliProp (GPU)": "GPU memory pool in use at end of step",
     "PauliPropagation.jl": "Base.summarysize of the Pauli sum",
 }
 
@@ -64,6 +71,8 @@ class BackendResult:
     memory: list[float] = field(default_factory=list)
     # Empty for backends that expose no accounting of their own.
     operator_memory: list[float] = field(default_factory=list)
+    # Set by backends whose own metric is only known at run time; see the property below.
+    operator_metric: str = ""
 
     @property
     def memory_metric(self) -> str:
@@ -71,6 +80,8 @@ class BackendResult:
 
     @property
     def operator_memory_metric(self) -> str:
+        if self.operator_metric:
+            return self.operator_metric
         return OPERATOR_MEMORY_METRICS.get(self.label, "none reported")
 
     @property
@@ -211,7 +222,9 @@ def run_cupauliprop(settings: Settings) -> BackendResult:
         num_terms=1,
         xz_bits=xz_bits,
         coeffs=cp.ones((1,), dtype=cp.float64),
-        options=PauliExpansionOptions(memory_limit="80%", blocking=True),
+        options=PauliExpansionOptions(
+            memory_limit=CUPAULIPROP_MEMORY_LIMIT, blocking=True
+        ),
     )
     truncation = Truncation(
         pauli_coeff_cutoff=settings.lower_atol,
@@ -222,25 +235,29 @@ def run_cupauliprop(settings: Settings) -> BackendResult:
         for theta, paulis, qubits in pauli_rotations(settings)
     ]
 
-    def step(_step_idx: int) -> tuple[float, int, float | None]:
-        nonlocal expansion
-        for gate in reversed(gates):
-            expansion = expansion.apply_gate(
-                gate,
-                truncation=truncation,
-                adjoint=True,
-                sort_order=None,
-                keep_duplicates=False,
-            )
-        significand, exponent = expansion.trace_with_zero_state()
-        expval = float(significand * np.exp2(exponent))
-        # End-of-step pool occupancy, not a peak: a transient freed before the step
-        # returns is invisible here. The device-side analogue of VmHWM is the pool's
-        # cudaMemPoolAttrUsedMemHigh, which is resettable; wiring it up needs a GPU.
-        mem = cp.get_default_memory_pool().used_bytes() / 1024**2
-        return expval, expansion.num_terms, mem
+    device_metric = ""
 
-    return _run_steps(settings, "cuPauliProp (GPU)", step)
+    def step(_step_idx: int) -> tuple[float, int, float | None]:
+        nonlocal expansion, device_metric
+        # The window synchronizes the device on both edges, so it belongs inside the
+        # timed region: GPU work the timer must count is work the reading must cover.
+        with DeviceHighWaterMark() as device_window:
+            for gate in reversed(gates):
+                expansion = expansion.apply_gate(
+                    gate,
+                    truncation=truncation,
+                    adjoint=True,
+                    sort_order=None,
+                    keep_duplicates=False,
+                )
+            significand, exponent = expansion.trace_with_zero_state()
+        expval = float(significand * np.exp2(exponent))
+        device_metric = device_window.metric
+        return expval, expansion.num_terms, device_window.peak_mb
+
+    result = _run_steps(settings, "cuPauliProp (GPU)", step)
+    result.operator_metric = device_metric
+    return result
 
 
 def _pack_pauli_string(
