@@ -57,9 +57,13 @@ def _bricklayer_topology(num_sites: int) -> list[tuple[int, int]]:
 
 
 def _hubbard_terms(
-    num_sites: int, hopping: float, interaction: float
+    num_sites: int, hopping: float, interaction: float, num_modes: int
 ) -> list[FermiOperator]:
-    """First-order Trotter terms of the 1D Hubbard model (mu = 0)."""
+    """First-order Trotter terms of the 1D Hubbard model (mu = 0).
+
+    Every term carries the full ``num_modes`` width, not just the width of its own
+    support: a gate's generator must match the circuit's ``system_size``.
+    """
     terms: list[FermiOperator] = []
     topo = _bricklayer_topology(num_sites)
     for spin in ("up", "down"):
@@ -69,6 +73,7 @@ def _hubbard_terms(
                 FermiOperator(
                     terms=[((left, "+"), (right, "-")), ((right, "+"), (left, "-"))],
                     coefficients=[-hopping, -hopping],
+                    num_modes=num_modes,
                 )
             )
     for site in range(num_sites):
@@ -77,6 +82,7 @@ def _hubbard_terms(
             FermiOperator(
                 terms=[((up, "+"), (up, "-"), (down, "+"), (down, "-"))],
                 coefficients=[interaction],
+                num_modes=num_modes,
             )
         )
     return terms
@@ -101,9 +107,13 @@ def build_majorana(num_qubits: int, cutoff: int, lower_atol: float, observable: 
         raise ValueError("majorana num_qubits must be even (2 per site)")
     num_sites = num_qubits // 2
     hopping, interaction, dt = 1.0, 1.5, 0.07
-    gates = [ExpGate(t) for t in _hubbard_terms(num_sites, hopping, interaction)]
+    gates = [
+        ExpGate(t)
+        for t in _hubbard_terms(num_sites, hopping, interaction, num_qubits)
+    ]
     circuit = Circuit(
         gates=gates,
+        system_size=num_qubits,
         parameters=[dt] * len(gates),
         initial_state=_neel_occupied(num_sites, "up"),
     )
@@ -171,6 +181,7 @@ def build_pauli(num_qubits: int, cutoff: int, lower_atol: float, observable: str
         )
     circuit = Circuit(
         gates=tuple(g for g, _ in gate_angles),
+        system_size=num_qubits,
         parameters=tuple(a for _, a in gate_angles),
         initial_state=[],
     )

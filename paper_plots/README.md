@@ -121,9 +121,6 @@ JULIA=~/opt/julia/julia-1.10.11/bin/julia          # project pins PauliPropagati
 
 # monoprop must be built with monoprop_MAX_NUM_MODES >= 1024 for the N=1024 end
 # (arch-native on a compute node for timing). See the workspace CLAUDE.md.
-# NOTE any monoprop_MAX_NUM_MODES >= 993 needs the four-digit binder-glob fix
-# (PR #165); without it bind_up_to_1024.cpp is dropped from the _core target and
-# the build dies on an undefined reference to bindings::bind_up_to_1024.
 for C in 2 4 6; do for N in $(seq 32 32 1024); do
   <monoprop-venv>/bin/python scripts/monoprop_single_layer.py --basis pauli \
     --num-qubits $N --cutoff $C --layers 5 --lower-atol 0 --rounds 1 \
