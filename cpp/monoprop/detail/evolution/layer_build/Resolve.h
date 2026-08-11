@@ -44,10 +44,11 @@ struct IncomingProbe {
 
 // Phases 1-2, read-only w.r.t. operator contents. query_stride is the per-record width: the plain query
 // width, or kQueryWordsFused for the fused resolver. The caller runs Phase 3, then insert_incoming_misses.
-// NumModes deduces from `op`; the stride is an ordinary argument so it does not have to be named.
+// NumModes is explicit: it only sizes IncomingProbe's fixed-width monomials, and `op` stopped carrying a
+// width once MPOperator was de-templated. The stride stays an ordinary argument.
 template <size_t NumModes>
 auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
-                            MPOperator<NumModes> &op,
+                            MPOperator &op,
                             size_t rank_count,
                             size_t query_stride) -> IncomingProbe<NumModes> {
     const size_t W = query_stride;
@@ -106,7 +107,7 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
 
 // Phase 4 (bulk insert of the distinct absent terms) into op slots [base, base+n_miss). Call after the
 // caller's Phase-3 scatter, which reads pre-insert op_coeffs for hits and needs base == op.size().
-// op/pr are deduced (MPOperator<NumModes>/IncomingProbe<NumModes>, argument types); nothing below
+// op/pr are deduced (MPOperator/IncomingProbe<NumModes>, argument types); nothing below
 // needs NumModes as a value.
 auto insert_incoming_misses(auto &op, const auto &pr) -> void {
     const size_t n_miss = pr.miss_g.size();
@@ -127,11 +128,12 @@ auto insert_incoming_misses(auto &op, const auto &pr) -> void {
 // Resolver rank (any cross-rank sink): for each query from sender s, look up M' locally; found → answer
 // with its index/value, absent → insert it in the same round (the resolver is the sole inserter of
 // cross-rank absent terms). Matched-follower marks stay here so both sinks mark byte-identically.
-// op is deduced (MPOperator<NumModes>, an argument type); Sink stays named -- it is referenced by name
-// below (typename Sink::Response, Sink::kStride). Nothing here needs a NumModes *value* any more: the
-// record stride reaches probe_incoming_queries as an ordinary argument, so this no longer has to
-// recover one as a constant expression from the store's value_type -- which is what let the store stop
-// exposing a compile-time width at all (Stage 2c).
+// op is deduced (MPOperator, an argument type); Sink stays named -- it is referenced by name below
+// (typename Sink::Response, Sink::kStride, Sink::kNumModes). The record stride reaches
+// probe_incoming_queries as an ordinary argument, which is what let the store stop exposing a
+// compile-time width at all (Stage 2c). The one width still named is Sink::kNumModes, and only because
+// IncomingProbe holds fixed-width monomials: this used to deduce it from `op`, which stopped carrying a
+// width when MPOperator was de-templated. It goes when the wire-format cluster does.
 template <class Sink>
 auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                       auto &op,
@@ -141,7 +143,7 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
                       size_t combined_size, // pre-layer op size: bounds the matched set
                       Sink &sink) -> std::vector<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
-    const auto pr = probe_incoming_queries(incoming, op, rank_count, Sink::kStride);
+    const auto pr = probe_incoming_queries<Sink::kNumModes>(incoming, op, rank_count, Sink::kStride);
     std::vector<std::vector<Resp>> responses(rank_count);
     for (size_t s = 0; s < rank_count; ++s) {
         responses[s].assign(pr.goff[s + 1] - pr.goff[s], Sink::init_response());

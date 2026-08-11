@@ -111,11 +111,11 @@ public:
     }
 
     /// This rank's operator storage. Single-partition only — see require_single_partition_.
-    auto mp_op() -> detail::MPOperator<NumModes> & {
+    auto mp_op() -> detail::MPOperator & {
         require_single_partition_("mp_op()");
         return mp_op_;
     }
-    auto mp_op() const -> const detail::MPOperator<NumModes> & {
+    auto mp_op() const -> const detail::MPOperator & {
         require_single_partition_("mp_op()");
         return mp_op_;
     }
@@ -292,7 +292,11 @@ protected:
     bool schrodinger_;
     mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions
     CutoffFn<NumModes> cutoff_fn_;
-    detail::MPOperator<NumModes> mp_op_;
+    // Transitional: MPOperator has no default constructor now that its width is data, and this class
+    // still has a NumModes to supply. Becomes a constructor initializer from the storage width once
+    // this class is de-templated too -- watch the declaration order then, mp_op_ is initialized before
+    // the members below it.
+    detail::MPOperator mp_op_{2 * NumModes};
     MPGraph graph_;
     // Per-gate layer-build scratch, reused across gates; carries no state between them.
     detail::MatchedEpochSet matched_scratch_;

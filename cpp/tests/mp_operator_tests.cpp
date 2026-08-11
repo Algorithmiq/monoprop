@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// White-box tests for detail::MPOperator<N> built directly (append_term / init_op_map / basis) rather
+// White-box tests for detail::MPOperator built directly (append_term / init_op_map / basis) rather
 // than through a simulator, with the algebra primitives (is_paired, algebra_state_phase,
 // encode_pauli_coeff) as the oracle. They pin composition -- incremental scoring, slot placement, the
 // init-map drain, the picture/basis branches -- not the phase math (majorana_cutoff_tests.cpp).
@@ -32,10 +32,15 @@ using cd = std::complex<double>;
 
 namespace {
 
+// These oracles are all written against 8 modes, so every MPOperator here is built at that storage
+// width. MPOperator carries the width as data now, so it is passed rather than named as a template
+// argument.
+constexpr size_t kNumBits = 2 * 8;
+
 // Build an MPOperator whose store rows are also indexed (findable). append_term writes a row only;
 // find() needs the hash index, which only the insert_absent_terms path populates.
-auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis::Majorana) -> detail::MPOperator<8> {
-    detail::MPOperator<8> op;
+auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis::Majorana) -> detail::MPOperator {
+    detail::MPOperator op(kNumBits);
     op.basis = basis;
     detail::insert_absent_terms(
         op,
@@ -46,7 +51,7 @@ auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis
 }
 
 // Independent expected state vector: score paired rows with the basis' state phase, 0 otherwise.
-auto expected_state(detail::MPOperator<8> &op, Basis basis, const VecZ &initial_state) -> VecD {
+auto expected_state(detail::MPOperator &op, Basis basis, const VecZ &initial_state) -> VecD {
     const auto state_mask = initial_state_mask<8>(initial_state);
     VecD expected(op.size(), 0.0);
     for (size_t i = 0; i < op.size(); ++i) {
@@ -59,7 +64,7 @@ auto expected_state(detail::MPOperator<8> &op, Basis basis, const VecZ &initial_
 }
 
 // Independent expected sparse state: ascending rows that score nonzero, and their phases.
-auto expected_sparse_state(detail::MPOperator<8> &op, Basis basis, const VecZ &initial_state) -> std::pair<VecZ, VecD> {
+auto expected_sparse_state(detail::MPOperator &op, Basis basis, const VecZ &initial_state) -> std::pair<VecZ, VecD> {
     const auto dense = expected_state(op, basis, initial_state);
     std::pair<VecZ, VecD> expected;
     for (size_t i = 0; i < dense.size(); ++i) {
@@ -71,8 +76,7 @@ auto expected_sparse_state(detail::MPOperator<8> &op, Basis basis, const VecZ &i
     return expected;
 }
 
-auto sparse_state_equals(const detail::MPOperator<8>::SparseState &sparse, const std::pair<VecZ, VecD> &expected)
-    -> bool {
+auto sparse_state_equals(const detail::MPOperator::SparseState &sparse, const std::pair<VecZ, VecD> &expected) -> bool {
     return std::ranges::equal(sparse.rows, expected.first, {}, [](TermIndex r) { return static_cast<size_t>(r); })
            && std::ranges::equal(sparse.values, expected.second);
 }
@@ -82,7 +86,7 @@ auto sparse_state_equals(const detail::MPOperator<8>::SparseState &sparse, const
 BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_pauli) {
     const VecZ initial_state = {0, 1}; // occupied modes
     for (const Basis basis : {Basis::Majorana, Basis::Pauli}) {
-        detail::MPOperator<8> op;
+        detail::MPOperator op(kNumBits);
         op.basis = basis;
         op.initial_state = initial_state;
 
@@ -118,7 +122,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_paul
 
 BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) {
     const VecZ initial_state = {0};
-    detail::MPOperator<8> op;
+    detail::MPOperator op(kNumBits);
     op.initial_state = initial_state;
 
     Monomial<8> a;
@@ -247,7 +251,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_append_term_after_materialization_rebuilds_inverted_index) {
-    detail::MPOperator<8> op;
+    detail::MPOperator op(kNumBits);
     op.append_term(indices_to_bitset<8>({0, 1}));
     BOOST_CHECK_EQUAL(op.inverted_index().rows(), 1U); // materializes the index (rows == size)
 
@@ -258,7 +262,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_append_term_after_materialization_rebuilds_inve
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_presence) {
-    detail::MPOperator<8> op;
+    detail::MPOperator op(kNumBits);
     op.append_term(indices_to_bitset<8>({0, 1}));
     op.append_term(indices_to_bitset<8>({2, 3}));
 
@@ -277,7 +281,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {
     op.initial_state = {0};
     (void)op.sparse_state();
 
-    detail::MPOperator<8> copy(op); // deep copy via clone()
+    detail::MPOperator copy(op); // deep copy via clone()
     BOOST_CHECK_EQUAL(copy.size(), op.size());
     BOOST_CHECK_EQUAL(copy.state_scored_rows_, op.state_scored_rows_);
     BOOST_CHECK(copy.state_rows_ == op.state_rows_);

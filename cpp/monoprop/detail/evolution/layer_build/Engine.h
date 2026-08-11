@@ -68,6 +68,9 @@ template <size_t NumModes>
 struct GraphSink {
     static constexpr bool wants_values = false;
     static constexpr size_t kStride = kQueryWords<NumModes>;
+    // Transitional: resolve_incoming used to deduce NumModes from its MPOperator<NumModes> argument,
+    // and MPOperator no longer carries one. Goes away with IncomingProbe's fixed-width monomials.
+    static constexpr size_t kNumModes = NumModes;
     using Response = TermIndex;
     static auto init_response() -> Response { return std::numeric_limits<TermIndex>::max(); }
 
@@ -104,7 +107,7 @@ struct GraphSink {
     }
     auto prepare(const IncomingProbe<NumModes> & /*pr*/,
                  size_t rank_count,
-                 MPOperator<NumModes> & /*op*/,
+                 MPOperator & /*op*/,
                  const std::vector<std::vector<Response>> &responses) -> void {
         in_base_.assign(rank_count, 0);
         for (size_t s = 0; s < rank_count; ++s) {
@@ -141,7 +144,7 @@ struct GraphSink {
     // Drains the per-rank accumulators into the LayerCore's sin_send/sin_recv lists (layout derivation:
     // see cross_rank_sin_recv_index). cos covers all anticommuting indices, endpoints included, since the
     // sin_recv apply only adds the sine term.
-    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator<NumModes> &op)
+    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator &op)
         -> std::shared_ptr<LayerCore> {
         std::vector<CrossRankPartnerData> partners(R);
         for (size_t r = 0; r < R; ++r) {
@@ -184,6 +187,7 @@ template <size_t NumModes>
 struct ContractSink {
     static constexpr bool wants_values = true;
     static constexpr size_t kStride = kQueryWordsFused<NumModes>;
+    static constexpr size_t kNumModes = NumModes; // see GraphSink::kNumModes
     using Response = double;
     static auto init_response() -> Response { return 0.0; }
 
@@ -229,7 +233,7 @@ struct ContractSink {
     }
     auto prepare(const IncomingProbe<NumModes> &pr,
                  size_t /*rank_count*/,
-                 MPOperator<NumModes> &op,
+                 MPOperator &op,
                  const std::vector<std::vector<Response>> & /*responses*/) -> void {
         state_mask_ = schrodinger ? initial_state_mask<NumModes>(op.initial_state) : Monomial<NumModes>{};
         cross_base_ = fc.cross_half.size();
@@ -280,7 +284,7 @@ struct ContractSink {
 
     // No LayerCore in the fused path → nullptr. Two-pass fused (k>0 / cos==0 fallback) appends inserted
     // endpoints so the immediate cos scale covers them; the fused cos sweep covers them in-place instead.
-    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator<NumModes> &op)
+    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator &op)
         -> std::shared_ptr<LayerCore> {
         if (out_cos != nullptr && !fused_scale) {
             append_inserted_endpoints(cos_all, combined_size, op);
@@ -299,7 +303,7 @@ struct LayerBuildEngine {
         int phase;
         double v_src = 0.0; // ContractSink only: op_pre[src] captured at scan emit; 0 for GraphSink
     };
-    MPOperator<NumModes> &local_op; // scanned, looked up, and grown by the inserts
+    MPOperator &local_op; // scanned, looked up, and grown by the inserts
     mpi::Comm comm;
     size_t R;
     size_t my_rank;
@@ -316,7 +320,7 @@ struct LayerBuildEngine {
     std::vector<VecZ> combined_qv_;
     Sink sink;
 
-    LayerBuildEngine(MPOperator<NumModes> &local_op_,
+    LayerBuildEngine(MPOperator &local_op_,
                      mpi::Comm comm_,
                      size_t R_,
                      size_t my_rank_,
@@ -516,7 +520,7 @@ static inline auto empty_coeffs() -> const VecD & {
 }
 
 // Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
-// local_op and gen are deduced (MPOperator<NumModes>/Monomial<NumModes>, argument types); cutoff_fn is
+// local_op and gen are deduced (MPOperator/Monomial<NumModes>, argument types); cutoff_fn is
 // left a plain auto (a std::function, not itself MonomialLike or otherwise NumModes-deducible) since
 // gen already recovers NumModes. num_modes below feeds every callee still explicit on it -- the class
 // templates (LayerBuildEngine, ContractSink, GraphSink) and the Stage-2e wire-format cluster

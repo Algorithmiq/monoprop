@@ -85,7 +85,6 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                  size_t partitions)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
-      mp_op_{},
       graph_(schrodinger_cutoff.has_value()),
       cutoff_{cutoff},
       lower_atol_{lower_atol},

@@ -40,28 +40,41 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-// Unchecked: `2 * NumModes - 1 - bit_loc` underflows for an out-of-range index and Monomial::set is
+// Unchecked: `num_bits - 1 - bit_loc` underflows for an out-of-range index and Bitset::set is
 // noexcept, so the result is an out-of-bounds write. Use indices_to_bitset_checked() for user input.
-template <size_t NumModes>
-auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
-    Monomial<NumModes> bs;
+inline auto indices_to_bitset(const VecZ &arr, size_t num_bits) -> Bitset {
+    Bitset bs(num_bits);
     for (const auto &bit_loc : arr) {
-        bs.set(2 * NumModes - 1 - bit_loc); // MSb0 convention: index 0 maps to the top bit
+        bs.set(num_bits - 1 - bit_loc); // MSb0 convention: index 0 maps to the top bit
     }
     return bs;
 }
 
-// The bound is the logical width (2 * logical_num_modes), not the storage width 2 * NumModes: a
-// propagator over fewer modes than its instantiation must still reject indices outside its own system.
-template <size_t NumModes>
-auto indices_to_bitset_checked(const VecZ &arr, size_t max_index) -> Monomial<NumModes> {
+// The two bounds are different quantities and neither implies the other, so they are separate
+// arguments: max_index is the *logical* width (2 * logical_num_modes), which is what a caller's
+// indices must fall inside, while num_bits is the *storage* width the result is built at. A
+// propagator running fewer modes than its storage holds must still reject indices outside its own
+// system, and storage rounds up.
+inline auto indices_to_bitset_checked(const VecZ &arr, size_t max_index, size_t num_bits) -> Bitset {
     for (const auto &bit_loc : arr) {
         if (bit_loc >= max_index) {
             throw AlgebraIndexOutOfRange(
                 std::format("Majorana/Pauli index {} is out of range; must be less than {}.", bit_loc, max_index));
         }
     }
-    return indices_to_bitset<NumModes>(arr);
+    return indices_to_bitset(arr, num_bits);
+}
+
+// Compile-time-width forms, kept while callers still spell a NumModes. They delegate rather than
+// duplicate, so the two cannot drift apart as the remaining call sites migrate.
+template <size_t NumModes>
+auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
+    return indices_to_bitset(arr, 2 * NumModes);
+}
+
+template <size_t NumModes>
+auto indices_to_bitset_checked(const VecZ &arr, size_t max_index) -> Monomial<NumModes> {
+    return indices_to_bitset_checked(arr, max_index, 2 * NumModes);
 }
 
 // O(popcount) via find_first/find_next rather than an O(NumModes) scan.
@@ -94,19 +107,26 @@ auto is_paired(const MonomialLike auto &mono) -> bool {
     return is_paired(mono, cached_even_bits<LSb0>(mono.size()));
 }
 
-// No monomial argument to deduce a width from -- NumModes stays explicit (it sizes the
-// Monomial<NumModes> this constructs from `mono`, an index list, not a monomial itself).
-template <size_t NumModes>
-auto is_paired(const VecZ &mono) -> bool {
-    return is_paired(indices_to_bitset<NumModes>(mono));
+// `mono` is an index list, not a monomial, so there is no argument to deduce a width from -- hence the
+// explicit num_bits, which sizes the bitset this builds.
+inline auto is_paired(const VecZ &mono, size_t num_bits) -> bool {
+    return is_paired(indices_to_bitset(mono, num_bits));
 }
 
-// Rows carries no structural width of its own (unlike a MonomialLike argument), so NumModes stays
-// explicit here too -- it only reaches materialize_row.
-template <size_t NumModes, typename Rows>
-auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
+template <size_t NumModes>
+auto is_paired(const VecZ &mono) -> bool {
+    return is_paired(mono, 2 * NumModes);
+}
+
+// Rows carries no structural width of its own (unlike a MonomialLike argument), so the width is
+// explicit here too. It must be the width of the rows themselves: the mask is compared against them
+// pairwise, and a mismatch trips Bitset's width assertions.
+template <typename Rows>
+auto is_fully_paired(const VecZ &inds, const Rows &op, size_t num_bits) -> VecZ {
     VecZ result;
-    const auto mask = even_bits<2 * NumModes, LSb0>();
+    // Memoized rather than rebuilt: the reference stays valid across the loop because is_paired's
+    // two-argument form takes the mask and so never re-enters the cache with another width.
+    const auto &mask = cached_even_bits<LSb0>(num_bits);
     for (const auto index : inds) {
         const auto &op_row = materialize_row(op, index);
         if (is_paired(op_row, mask)) {
@@ -116,17 +136,26 @@ auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     return result;
 }
 
+template <size_t NumModes, typename Rows>
+auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
+    return is_fully_paired(inds, op, 2 * NumModes);
+}
+
 // Occupation mask of the initial product state: the even index 2*i of each listed mode (Majorana) or
 // qubit (Pauli) that starts in state 1. Both algebras read the same mask and differ only in the phase
 // they score against it (majorana_state_phase / pauli_state_phase).
-template <size_t NumModes>
-auto initial_state_mask(const VecZ &initial_state) -> Monomial<NumModes> {
+inline auto initial_state_mask(const VecZ &initial_state, size_t num_bits) -> Bitset {
     VecZ bits;
     bits.reserve(initial_state.size());
     for (const auto &mode : initial_state) {
         bits.push_back(2 * mode);
     }
-    return indices_to_bitset<NumModes>(bits);
+    return indices_to_bitset(bits, num_bits);
+}
+
+template <size_t NumModes>
+auto initial_state_mask(const VecZ &initial_state) -> Monomial<NumModes> {
+    return initial_state_mask(initial_state, 2 * NumModes);
 }
 
 // The per-mode sums the structural cutoffs measure, over the active modes only.

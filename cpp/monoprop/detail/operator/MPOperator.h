@@ -33,18 +33,20 @@
 
 // Forward-declared to break an include cycle with algebra/Algebra.h.
 namespace monoprop {
-template <size_t NumModes, typename Rows>
-auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ;
+template <typename Rows>
+auto is_fully_paired(const VecZ &inds, const Rows &op, size_t num_bits) -> VecZ;
 
-template <size_t NumModes>
-auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes>;
+// inline here too, matching the definition in AlgebraCommon.h: a declaration that disagreed would
+// leave TUs holding only this one expecting an out-of-line definition that nothing emits.
+inline auto indices_to_bitset(const VecZ &arr, size_t num_bits) -> Bitset;
 
-// Each binds the runtime Basis to its algebra model internally, so no basis branch is needed here.
-template <size_t NumModes, typename Rows, typename Sink>
+// Branches on the runtime Basis internally, so no basis branch is needed here.
+template <typename Rows, typename Sink>
 auto algebra_score_state(Basis basis,
                          const VecZ &paired_inds,
                          const VecZ &initial_state,
                          const Rows &store,
+                         size_t num_bits,
                          Sink &&sink) -> void;
 
 auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const MonomialLike auto &mono) -> double;
@@ -57,11 +59,10 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-template <size_t NumModes>
 struct MPOperator {
     // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
     // itself cheaply movable). Always non-null.
-    std::unique_ptr<OperatorIndex> store = std::make_unique<OperatorIndex>(Monomial<NumModes>::size());
+    std::unique_ptr<OperatorIndex> store;
     VecD op_coeffs = {};
     // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
     // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are
@@ -78,7 +79,11 @@ struct MPOperator {
     Basis basis = Basis::Majorana;
     mutable std::optional<InvertedIndex> inverted_index_ = std::nullopt;
 
-    MPOperator() noexcept = default;
+    // num_bits is the storage bit width of every monomial this operator holds. No default constructor:
+    // the width used to come free from NumModes, and a default-constructed store would be a width-0
+    // one that silently mis-sizes every monomial built from it.
+    explicit MPOperator(size_t num_bits) : store(std::make_unique<OperatorIndex>(num_bits)) {}
+
     MPOperator(MPOperator &&) noexcept = default;
     MPOperator &operator=(MPOperator &&) noexcept = default;
 
@@ -96,9 +101,14 @@ struct MPOperator {
 
     auto size() const -> size_t { return store->size(); }
 
+    // Off the store, not a member of its own, so the width driving row reconstruction and the width
+    // driving the monomials handed to it cannot drift apart. The copy constructor needs no extra
+    // work for the same reason: clone() carries the width across.
+    [[nodiscard]] auto num_bits() const -> size_t { return store->num_bits(); }
+
     // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.
-    auto append_term(const Monomial<NumModes> &mono) -> void { store->push_back(mono); }
+    auto append_term(const Bitset &mono) -> void { store->push_back(mono); }
 
     // Resync the inverted index after a bulk growth of `store`, preserving has_value() ⟹ rows()==store.size().
     auto reindex_after_growth(size_t base, size_t n) -> void {
@@ -111,7 +121,7 @@ struct MPOperator {
         if (!inverted_index_.has_value() || inverted_index_->rows() != store->size()) {
             // Column count is the storage bit width, taken off the store so it cannot drift from the
             // monomials whose positions rebuild() scatters.
-            inverted_index_.emplace(Monomial<NumModes>::size());
+            inverted_index_.emplace(num_bits());
             inverted_index_->rebuild(*store);
         }
         return *inverted_index_;
@@ -198,7 +208,7 @@ struct MPOperator {
 
         for (const auto &[k, v] : op_dict) {
             // Unchecked by design: the only caller bounds-checks against its logical_num_modes_.
-            const auto mono = indices_to_bitset<NumModes>(k);
+            const auto mono = indices_to_bitset(k, num_bits());
             const auto rank_evolved_op = store->find(mono);
             const auto rank_init_op = init_op_map.find(mono);
             const auto coeff = algebra_encode_coeff(basis, v, mono);
@@ -240,12 +250,12 @@ struct MPOperator {
         VecZ new_inds(size() - state_scored_rows_);
         std::iota(new_inds.begin(), new_inds.end(), state_scored_rows_);
 
-        const auto paired_inds = is_fully_paired<NumModes>(new_inds, *store);
+        const auto paired_inds = is_fully_paired(new_inds, *store, num_bits());
         state_rows_.reserve(state_rows_.size() + paired_inds.size());
         state_vals_.reserve(state_vals_.size() + paired_inds.size());
 
         // The algebra picks the diagonal ⟨b|·|b⟩ phase of each fully-paired term.
-        algebra_score_state<NumModes>(basis, paired_inds, initial_state, *store, [this](size_t row, double phase) {
+        algebra_score_state(basis, paired_inds, initial_state, *store, num_bits(), [this](size_t row, double phase) {
             state_rows_.push_back(static_cast<TermIndex>(row));
             state_vals_.push_back(phase);
         });
@@ -324,8 +334,7 @@ struct MPOperatorMemoryBreakdown final {
     }
 };
 
-template <size_t NumModes>
-inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorMemoryBreakdown {
+inline auto estimate_memory_usage(const MPOperator &op) -> MPOperatorMemoryBreakdown {
     MPOperatorMemoryBreakdown breakdown;
     breakdown.operator_terms_bytes = op.store->memory_bytes();
     breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);

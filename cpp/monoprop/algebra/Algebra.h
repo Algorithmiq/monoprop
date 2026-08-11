@@ -165,19 +165,25 @@ auto algebra_state_phase(Basis basis, const MonomialLike auto &mono, const auto 
 // Score each fully-paired term's diagonal element against the initial product state, emitting
 // sink(row, phase). A sink rather than a dense out[row] because the scored set is a vanishing
 // fraction of the rows.
-template <size_t NumModes, typename Rows, typename Sink>
+//
+// num_bits is the width of the rows in `store`, which the state mask must match. No width template
+// parameter and no with_algebra: the only thing the algebra policy supplied here was A::state_phase,
+// and algebra_state_phase above is the same branch without a compile-time width. The branch does move
+// inside the loop, which is why this is spelled out rather than left implicit -- it is a per-*scored*-row
+// branch on a value fixed for the propagator's lifetime, on a path that runs over the fully-paired
+// terms only (~0.07% of rows) and not per term in the scan.
+template <typename Rows, typename Sink>
 auto algebra_score_state(Basis basis,
                          const VecZ &paired_inds,
                          const VecZ &initial_state,
                          const Rows &store,
+                         size_t num_bits,
                          Sink &&sink) -> void {
-    with_algebra<NumModes>(basis, [&]<class A>() {
-        const auto state_mask = initial_state_mask<NumModes>(initial_state);
-        for (size_t i = 0; i < paired_inds.size(); ++i) {
-            const auto &row = materialize_row(store, paired_inds[i]);
-            sink(paired_inds[i], A::state_phase(row, state_mask));
-        }
-    });
+    const auto state_mask = initial_state_mask(initial_state, num_bits);
+    for (size_t i = 0; i < paired_inds.size(); ++i) {
+        const auto &row = materialize_row(store, paired_inds[i]);
+        sink(paired_inds[i], algebra_state_phase(basis, row, state_mask));
+    }
 }
 
 } // namespace monoprop
