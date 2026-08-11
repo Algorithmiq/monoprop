@@ -95,6 +95,16 @@ message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
 message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 
+# Testing is enabled from the *top-level* list file on purpose: CTest's root is wherever
+# enable_testing() was called, so called from cpp/ it wrote no top-level CTestTestfile.cmake and every
+# documented entry point (the CMakePresets test presets, `just test-mpi`, `just test-wide`) pointed
+# ctest at a directory with no tests. ctest reports "No tests were found" and exits 0 for that, so those
+# commands were silently running nothing.
+if(monoprop_ENABLE_CXX_UNIT_TESTS)
+  enable_testing()
+  include(CTest)
+endif()
+
 include(GNUInstallDirs)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
