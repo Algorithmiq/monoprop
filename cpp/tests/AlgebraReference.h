@@ -17,6 +17,7 @@
 // Majorana helpers the shipped library no longer calls, kept alive for tests/cpp/mpfunctions.cpp.
 
 #include <algorithm>
+#include <iterator>
 #include <vector>
 
 #include "monoprop/algebra/MajoranaAlgebra.h"
@@ -24,9 +25,12 @@
 namespace monoprop {
 
 template <size_t NumModes>
-auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MonomialList<NumModes> {
-    auto majorana_operator = MonomialList<NumModes>(op.size());
-    std::transform(op.cbegin(), op.cend(), majorana_operator.begin(), indices_to_bitset<NumModes>);
+auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MonomialList {
+    MonomialList majorana_operator;
+    majorana_operator.reserve(op.size());
+    // push_back, not a sized construction plus transform: sizing up front would fill with width-0
+    // bitsets, and every slot is written here anyway.
+    std::ranges::transform(op, std::back_inserter(majorana_operator), indices_to_bitset<NumModes>);
     return majorana_operator;
 }
 

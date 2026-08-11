@@ -90,15 +90,15 @@ BOOST_AUTO_TEST_CASE(test_fermionic_to_binary_operator_single_term) {
     std::vector<VecZ> single_term_operator = {{0, 1, 2}};
     auto result = fermionic_to_binary_operator<NumQubits>(single_term_operator);
     BOOST_CHECK(result.size() == 1);
-    BOOST_CHECK(result[0] == 0b11100000);
+    BOOST_CHECK(result[0] == Bitset(2 * NumQubits, 0b11100000));
 }
 
 BOOST_AUTO_TEST_CASE(test_fermionic_to_binary_operator_multiple_terms) {
     std::vector<VecZ> multi_term_operator = {{0, 1}, {2, 3}};
     auto result = fermionic_to_binary_operator<NumQubits>(multi_term_operator);
     BOOST_CHECK(result.size() == 2);
-    BOOST_CHECK(result[0] == 0b11000000);
-    BOOST_CHECK(result[1] == 0b00110000);
+    BOOST_CHECK(result[0] == Bitset(2 * NumQubits, 0b11000000));
+    BOOST_CHECK(result[1] == Bitset(2 * NumQubits, 0b00110000));
 }
 
 constexpr size_t NumQubits2 = 2;
@@ -119,7 +119,10 @@ BOOST_DATA_TEST_CASE(get_multiplicative_phase_test, bdata::make(ds_get_multiplic
 
 struct IS_FULLY_PAIRED_TEST_CASE {
     VecZ inds;
-    MonomialList<NumQubits2> op_terms;
+    // Bit patterns, not monomials: a MonomialList element is a runtime-width Bitset, whose one-argument
+    // constructor takes a *width*, so bare literals here would silently mean something else. The test
+    // body widens each to 2 * NumQubits2, leaving the patterns below readable as patterns.
+    std::vector<uint64_t> op_terms;
     VecZ expected_result;
     std::string test_name;
 
@@ -134,7 +137,12 @@ static std::vector<IS_FULLY_PAIRED_TEST_CASE> ds_is_fully_paired_test = {
     {{0, 1, 2, 3, 4, 5, 6}, {0b0001, 0b0011, 0b1000, 0b0101, 0b1100, 0b0110, 0b1110}, {1, 4}, "Partially paired"}};
 
 BOOST_DATA_TEST_CASE(is_fully_paired_test, bdata::make(ds_is_fully_paired_test), test_case) {
-    auto result = is_fully_paired<NumQubits2>(test_case.inds, test_case.op_terms);
+    MonomialList op_terms;
+    op_terms.reserve(test_case.op_terms.size());
+    for (const auto bits : test_case.op_terms) {
+        op_terms.emplace_back(2 * NumQubits2, bits);
+    }
+    auto result = is_fully_paired<NumQubits2>(test_case.inds, op_terms);
     BOOST_CHECK(std::is_permutation(result.cbegin(), result.cend(), test_case.expected_result.cbegin()));
 }
 

@@ -93,28 +93,27 @@ concept MonomialLike = requires(const T &t) {
 };
 
 // Not the evolved operator's row storage -- that is detail::OperatorIndex (see TypeAliases.h).
-template <size_t NumModes>
-using MonomialList = std::vector<Monomial<NumModes>>;
+//
+// Element-width caveat, from Bitset being runtime-width: a sized construction `MonomialList l(n)`
+// fills with *width-0* bitsets, where `std::vector<Monomial<NumModes>>(n)` self-widened. Any site
+// that sizes up front and assigns into slots afterwards must pass a fill value of the intended
+// width, `MonomialList l(n, Bitset(num_bits))`; push_back-only sites need nothing. A width-0 element
+// reaching a binary op trips the width assertions in Bitset.h.
+using MonomialList = std::vector<Bitset>;
 
-template <size_t NumModes>
 struct MonomialHash final {
     using is_transparent = void;
 
-    auto operator()(const Monomial<NumModes> &arr) const noexcept -> size_t { return SplitmixHash{}(arr); }
+    auto operator()(const Bitset &arr) const noexcept -> size_t { return SplitmixHash{}(arr); }
 };
 
-template <size_t NumModes>
 struct MonomialEqual final {
     using is_transparent = void;
 
-    auto operator()(const Monomial<NumModes> &lhs, const Monomial<NumModes> &rhs) const noexcept -> bool {
-        return lhs == rhs;
-    }
+    auto operator()(const Bitset &lhs, const Bitset &rhs) const noexcept -> bool { return lhs == rhs; }
 };
 
-template <size_t NumModes>
-using MonomialMap =
-    boost::unordered_flat_map<Monomial<NumModes>, double, MonomialHash<NumModes>, MonomialEqual<NumModes>>;
+using MonomialMap = boost::unordered_flat_map<Bitset, double, MonomialHash, MonomialEqual>;
 
 template <size_t NumModes>
 inline auto monomial_hash(const Monomial<NumModes> &mono) noexcept -> size_t {
@@ -122,7 +121,7 @@ inline auto monomial_hash(const Monomial<NumModes> &mono) noexcept -> size_t {
         return static_cast<size_t>(SplitmixHash::mix(mono.word(0)));
     }
     else {
-        return MonomialHash<NumModes>{}(mono);
+        return MonomialHash{}(mono);
     }
 }
 

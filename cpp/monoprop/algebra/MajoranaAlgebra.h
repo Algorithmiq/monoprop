@@ -176,8 +176,8 @@ auto for_each_paired_op(size_t max_ones, size_t logical_num_modes, auto &&fn) ->
 // All fully paired Majorana monomials with up to max_ones pairs, over the active logical modes only.
 // Prefer for_each_paired_op() unless the whole list is genuinely needed at once.
 template <size_t NumModes>
-auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialList<NumModes> {
-    MonomialList<NumModes> combinations;
+auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialList {
+    MonomialList combinations;
     combinations.reserve(count_paired_op(max_ones, logical_num_modes));
     for_each_paired_op<NumModes>(max_ones, logical_num_modes, [&combinations](const auto &mono) {
         combinations.push_back(mono);
@@ -199,8 +199,9 @@ auto decode_coeff(const std::complex<double> &coeff, const MonomialLike auto &ma
     return coeff * hermitian_coefficient(maj);
 }
 
-// `basis` stays a plain (unconstrained) auto: it is a MonomialList<NumModes>, not itself
-// MonomialLike, and its NumModes always matches maj's at every call site.
+// `basis` stays a plain (unconstrained) auto: it is a MonomialList, a container of monomials rather
+// than a monomial, so it is not itself MonomialLike. Its elements' width always matches maj's at
+// every call site -- required, since the XOR below asserts matching widths.
 auto change_basis(const MonomialLike auto &maj, const auto &basis) -> std::remove_cvref_t<decltype(maj)> {
     using Mono = std::remove_cvref_t<decltype(maj)>;
     constexpr size_t num_modes = Mono::size() / 2;

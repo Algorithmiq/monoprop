@@ -72,7 +72,7 @@ struct MPOperator {
     // The dense state: empty in Heisenberg unless a caller asks dense_state() to cache one; in Schrödinger
     // it is the live coefficient vector evolution mutates in place.
     VecD state_coeffs = {};
-    MonomialMap<NumModes> init_op_map = {};
+    MonomialMap init_op_map = {};
     VecZ initial_state = {};
     // Set once at propagator construction.
     Basis basis = Basis::Majorana;
@@ -130,7 +130,7 @@ struct MPOperator {
             return op_coeffs;
         }
 
-        std::vector<Monomial<NumModes>> del;
+        MonomialList del;
         for (const auto &kv : init_op_map) {
             const auto &mono = kv.first;
             const auto coeff = kv.second;
@@ -191,10 +191,9 @@ struct MPOperator {
     // Heisenberg rejects a term absent from both (new monomials may have no graph paths); Schrödinger
     // admits them freely (the state was already evolved). Returns the supplied terms with their encoded
     // coefficients, in order.
-    auto update_initial_operator(const OperatorDict &op_dict, bool schrodinger)
-        -> std::pair<MonomialList<NumModes>, VecD> {
-        MonomialMap<NumModes> new_op_map;
-        std::pair<MonomialList<NumModes>, VecD> new_grad_op;
+    auto update_initial_operator(const OperatorDict &op_dict, bool schrodinger) -> std::pair<MonomialList, VecD> {
+        MonomialMap new_op_map;
+        std::pair<MonomialList, VecD> new_grad_op;
         VecD new_op_coeffs(size(), 0.0);
 
         for (const auto &[k, v] : op_dict) {

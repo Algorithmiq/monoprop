@@ -287,7 +287,7 @@ protected:
 
     /// Distribute op_dict across ranks and apply this rank's share; returns its new (terms, coeffs)
     /// so caches can refresh.
-    auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
+    auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList, VecD>;
 
     bool schrodinger_;
     mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions

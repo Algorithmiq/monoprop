@@ -123,8 +123,10 @@ auto jw_bitset(const std::string &p) -> Monomial<NumModes> {
 // jordan_wigner_basis_change(n) as a full-width (2*NumModes) basis so
 // change_basis can index it by slot.
 template <size_t NumModes>
-auto jw_basis(size_t n) -> MonomialList<NumModes> {
-    MonomialList<NumModes> basis(2 * NumModes);
+auto jw_basis(size_t n) -> MonomialList {
+    // The fill value carries the width: a sized MonomialList would otherwise hold width-0 bitsets, and
+    // the slots past 2*n are never assigned below yet still reach change_basis's XOR.
+    MonomialList basis(2 * NumModes, Bitset(2 * NumModes));
     for (size_t i = 0; i < n; ++i) {
         VecZ z_str;
         for (size_t z = 0; z < 2 * i; ++z) {

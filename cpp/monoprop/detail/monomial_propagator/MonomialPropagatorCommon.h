@@ -43,7 +43,7 @@ auto cutoff_function(CutoffType cutoff_type, unsigned int cutoff, size_t logical
 template <size_t NumModes>
 auto cutoff_function_basis_change(CutoffType cutoff_type,
                                   unsigned int cutoff,
-                                  const MonomialList<NumModes> &basis,
+                                  const MonomialList &basis,
                                   size_t logical_num_modes = NumModes) -> CutoffFn<NumModes> {
     switch (cutoff_type) {
         case CutoffType::Length:

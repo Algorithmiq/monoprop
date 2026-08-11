@@ -141,7 +141,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
 
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
-    MonomialList<NumModes> local_heisenberg_terms;
+    MonomialList local_heisenberg_terms;
 
     double core_term = 0.0;
     for (const auto &[indices, coefficient] : initial_operator) {
@@ -362,7 +362,7 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &op_dict)
-    -> std::pair<MonomialList<NumModes>, VecD> {
+    -> std::pair<MonomialList, VecD> {
     if (partition_group_) {
         // The facade holds no local terms of its own, so the return is empty.
         for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
@@ -493,7 +493,7 @@ auto MonomialPropagator<NumModes>::validate_cutoff_config_(CutoffType cutoff_typ
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
     if (basis_change_.has_value()) {
-        MonomialList<NumModes> basis;
+        MonomialList basis;
         basis.reserve(2 * logical_num_modes_);
         for (size_t i = 0; i < 2 * logical_num_modes_; ++i) {
             basis.push_back(indices_to_bitset_checked<NumModes>(basis_change_.value()[i], 2 * logical_num_modes_));
