@@ -18,6 +18,8 @@
 #include <cstring>
 #include <vector>
 
+#include <cassert>
+
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -26,20 +28,25 @@ namespace monoprop::mpi_detail {
 
 static_assert(sizeof(size_t) == sizeof(uint64_t), "MPI serialization assumes 64-bit size_t");
 
-template <size_t NumModes>
-inline constexpr size_t kWords = Monomial<NumModes>::num_words();
-
-template <size_t NumModes>
-inline auto append_monomial_words(const Monomial<NumModes> &mono, VecZ &buffer) -> void {
+// The per-monomial wire width is the monomial's own word count -- there is no kWords<NumModes>
+// constant any more, so a caller that has no monomial in hand carries the count as a value.
+inline auto append_monomial_words(const Bitset &mono, VecZ &buffer) -> void {
     const auto *src = mono.data();
-    for (size_t i = 0; i < kWords<NumModes>; ++i)
+    const size_t nw = mono.num_words();
+    for (size_t i = 0; i < nw; ++i)
         buffer.push_back(src[i]);
 }
 
-template <size_t NumModes>
-inline auto read_monomial_from_words(const VecZ &buffer, size_t start) -> Monomial<NumModes> {
-    Monomial<NumModes> mono;
-    std::memcpy(mono.data(), &buffer[start], kWords<NumModes> * sizeof(uint64_t));
+// mono_out supplies the width: it is the destination, so it already knows how wide the record is, and
+// reading into it avoids constructing a bitset per query on the resolve path.
+inline auto read_monomial_from_words(const VecZ &buffer, size_t start, Bitset &mono_out) -> void {
+    assert(mono_out.num_words() != 0 && "read_monomial_from_words needs a pre-sized destination");
+    std::memcpy(mono_out.data(), &buffer[start], mono_out.num_words() * sizeof(uint64_t));
+}
+
+inline auto read_monomial_from_words(const VecZ &buffer, size_t start, size_t num_bits) -> Bitset {
+    Bitset mono(num_bits);
+    read_monomial_from_words(buffer, start, mono);
     return mono;
 }
 

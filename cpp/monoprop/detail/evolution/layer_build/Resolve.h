@@ -30,29 +30,32 @@ namespace monoprop::detail {
 // the next index base+j in (sender,record) order, so the assignment (and multi-rank bit-exactness) cannot
 // drift between resolvers. Queries are source⊕G over globally-distinct sources, ⊕G injective ⇒ queries
 // pairwise distinct ⇒ misses distinct and absent.
-template <size_t NumModes>
 struct IncomingProbe {
-    std::vector<size_t> goff;                   // rank_count+1 flat offsets: g = goff[s] + q
-    DefaultInitVector<uint32_t> sender_of;      // g → sender rank
-    DefaultInitVector<Monomial<NumModes>> mono; // g → deserialized query monomial
-    DefaultInitVector<int> phase_of;            // g → query phase
-    DefaultInitVector<size_t> idx_of;           // g → resolved index (hit: < base; miss: base+j)
-    std::vector<TermIndex> miss_g;              // j → the g that became miss j (Phase 4 reads mono[miss_g[j]])
-    size_t base = 0;                            // op size before the miss inserts (the miss-index base)
+    std::vector<size_t> goff;              // rank_count+1 flat offsets: g = goff[s] + q
+    DefaultInitVector<uint32_t> sender_of; // g → sender rank
+    // Elements are resized default-constructed (width 0) and then each assigned a full-width monomial
+    // below, so nothing reads one before it has a width.
+    MonomialList mono;                // g → deserialized query monomial
+    DefaultInitVector<int> phase_of;  // g → query phase
+    DefaultInitVector<size_t> idx_of; // g → resolved index (hit: < base; miss: base+j)
+    std::vector<TermIndex> miss_g;    // j → the g that became miss j (Phase 4 reads mono[miss_g[j]])
+    size_t base = 0;                  // op size before the miss inserts (the miss-index base)
     size_t nq_total = 0;
 };
 
 // Phases 1-2, read-only w.r.t. operator contents. query_stride is the per-record width: the plain query
-// width, or kQueryWordsFused for the fused resolver. The caller runs Phase 3, then insert_incoming_misses.
-// NumModes is explicit: it only sizes IncomingProbe's fixed-width monomials, and `op` stopped carrying a
-// width once MPOperator was de-templated. The stride stays an ordinary argument.
-template <size_t NumModes>
-auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
-                            MPOperator &op,
-                            size_t rank_count,
-                            size_t query_stride) -> IncomingProbe<NumModes> {
+// width, or the fused one for the fused resolver. The caller runs Phase 3, then insert_incoming_misses.
+// No width parameter: the monomials are built at `op.num_bits()`, which is the width of the rows they are
+// probed against -- so this takes it from the operator as a value, where it briefly had to be named as
+// Sink::kNumModes. The stride stays an ordinary argument.
+// inline, which being a template used to supply: this is a plain function defined in a header now, so
+// without it every TU that includes this emits its own definition and the link fails.
+inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
+                                   MPOperator &op,
+                                   size_t rank_count,
+                                   size_t query_stride) -> IncomingProbe {
     const size_t W = query_stride;
-    IncomingProbe<NumModes> pr;
+    IncomingProbe pr;
 
     pr.goff.assign(rank_count + 1, 0);
     for (size_t s = 0; s < rank_count; ++s) {
@@ -72,16 +75,16 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     }
 
     // Phase 1 (read-only): deserialize, then probe with the group-prefetch batch find.
-    pr.mono.resize(pr.nq_total);
+    // Sized with a full-width fill value, not plain resize: query_read reads *into* its destination and
+    // needs it already at the record's width.
+    pr.mono.assign(pr.nq_total, Bitset(op.num_bits()));
     pr.phase_of.resize(pr.nq_total);
     pr.idx_of.resize(pr.nq_total);
     for (size_t g = 0; g < pr.nq_total; ++g) {
         const size_t s = pr.sender_of[g];
         const size_t q = g - pr.goff[s];
-        Monomial<NumModes> m;
         int ph = 0;
-        query_read(incoming[s], q, query_stride, m, ph);
-        pr.mono[g] = m;
+        query_read(incoming[s], q, query_stride, pr.mono[g], ph);
         pr.phase_of[g] = ph;
     }
     {
@@ -129,11 +132,8 @@ auto insert_incoming_misses(auto &op, const auto &pr) -> void {
 // with its index/value, absent → insert it in the same round (the resolver is the sole inserter of
 // cross-rank absent terms). Matched-follower marks stay here so both sinks mark byte-identically.
 // op is deduced (MPOperator, an argument type); Sink stays named -- it is referenced by name below
-// (typename Sink::Response, Sink::kStride, Sink::kNumModes). The record stride reaches
-// probe_incoming_queries as an ordinary argument, which is what let the store stop exposing a
-// compile-time width at all (Stage 2c). The one width still named is Sink::kNumModes, and only because
-// IncomingProbe holds fixed-width monomials: this used to deduce it from `op`, which stopped carrying a
-// width when MPOperator was de-templated. It goes when the wire-format cluster does.
+// (typename Sink::Response). No width is named anywhere here any more: the record stride is a member of
+// the sink and the monomial width comes off the operator.
 template <class Sink>
 auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                       auto &op,
@@ -143,7 +143,7 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
                       size_t combined_size, // pre-layer op size: bounds the matched set
                       Sink &sink) -> std::vector<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
-    const auto pr = probe_incoming_queries<Sink::kNumModes>(incoming, op, rank_count, Sink::kStride);
+    const auto pr = probe_incoming_queries(incoming, op, rank_count, sink.stride());
     std::vector<std::vector<Resp>> responses(rank_count);
     for (size_t s = 0; s < rank_count; ++s) {
         responses[s].assign(pr.goff[s + 1] - pr.goff[s], Sink::init_response());

@@ -29,13 +29,20 @@ namespace {
 
 using namespace monoprop;
 using monoprop::detail::build_fused_query_value;
-using monoprop::detail::kQueryWords;
-using monoprop::detail::kQueryWordsFused;
 using monoprop::detail::query_push;
 using monoprop::detail::query_read;
 using monoprop::detail::query_value;
+using monoprop::detail::query_words;
+using monoprop::detail::query_words_fused;
 
 constexpr size_t kModes = 8; // 2*kModes = 16 majorana bits, one 64-bit word
+// The wire record width is in words now, not derived from a NumModes template argument.
+constexpr size_t kWordsPerMono = Monomial<kModes>::num_words();
+
+// query_value takes the word count; wrap it so the assertions below stay readable.
+auto query_value_at(const VecZ &buf, size_t q) -> double {
+    return query_value(buf, q, kWordsPerMono);
+}
 
 // A deterministic, distinct majorana bit pattern per record index.
 auto make_mono(size_t r) -> Monomial<kModes> {
@@ -65,22 +72,22 @@ BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
     std::vector<Monomial<kModes>> monos(nq);
     for (size_t r = 0; r < nq; ++r) {
         monos[r] = make_mono(r);
-        query_push<kModes>(plain, monos[r], phases[r]);
+        query_push(plain, monos[r], phases[r]);
     }
-    BOOST_REQUIRE_EQUAL(plain.size(), nq * kQueryWords<kModes>);
+    BOOST_REQUIRE_EQUAL(plain.size(), nq * query_words(kWordsPerMono));
 
     VecZ fused;
-    build_fused_query_value<kModes>(plain, values, fused);
-    BOOST_REQUIRE_EQUAL(fused.size(), nq * kQueryWordsFused<kModes>);
+    build_fused_query_value(plain, values, fused, kWordsPerMono);
+    BOOST_REQUIRE_EQUAL(fused.size(), nq * query_words_fused(kWordsPerMono));
 
     for (size_t q = 0; q < nq; ++q) {
         Monomial<kModes> m_out;
         int ph_out = 0;
-        query_read(fused, q, kQueryWordsFused<kModes>, m_out, ph_out);
+        query_read(fused, q, query_words_fused(kWordsPerMono), m_out, ph_out);
         BOOST_CHECK(m_out == monos[q]);
         BOOST_CHECK_EQUAL(ph_out, phases[q]);
         // Compare the raw payload, so -0.0 and denormals stay distinguished from 0.0.
-        const double v_out = query_value<kModes>(fused, q);
+        const double v_out = query_value_at(fused, q);
         BOOST_CHECK(std::memcmp(&v_out, &values[q], sizeof(double)) == 0);
     }
 }
@@ -91,23 +98,23 @@ BOOST_AUTO_TEST_CASE(fused_buffer_reuse_shrinks_logical_size) {
     VecZ plain_big;
     std::vector<double> vbig;
     for (size_t r = 0; r < 32; ++r) {
-        query_push<kModes>(plain_big, make_mono(r), (r % 2 == 0) ? 1 : -1);
+        query_push(plain_big, make_mono(r), (r % 2 == 0) ? 1 : -1);
         vbig.push_back(static_cast<double>(r) * 1.5 - 7.0);
     }
     VecZ out;
-    build_fused_query_value<kModes>(plain_big, vbig, out);
+    build_fused_query_value(plain_big, vbig, out, kWordsPerMono);
     const size_t cap_after_big = out.capacity();
 
     VecZ plain_small;
     std::vector<double> vsmall = {42.0, -42.0, 0.25};
     for (size_t r = 0; r < vsmall.size(); ++r) {
-        query_push<kModes>(plain_small, make_mono(100 + r), 1);
+        query_push(plain_small, make_mono(100 + r), 1);
     }
-    build_fused_query_value<kModes>(plain_small, vsmall, out);
-    BOOST_CHECK_EQUAL(out.size(), vsmall.size() * kQueryWordsFused<kModes>);
+    build_fused_query_value(plain_small, vsmall, out, kWordsPerMono);
+    BOOST_CHECK_EQUAL(out.size(), vsmall.size() * query_words_fused(kWordsPerMono));
     BOOST_CHECK_GE(out.capacity(), cap_after_big);
     for (size_t q = 0; q < vsmall.size(); ++q) {
-        const double v_out = query_value<kModes>(out, q);
+        const double v_out = query_value_at(out, q);
         BOOST_CHECK(std::memcmp(&v_out, &vsmall[q], sizeof(double)) == 0);
     }
 }
@@ -117,7 +124,7 @@ BOOST_AUTO_TEST_CASE(fused_empty_input) {
     VecZ empty;
     std::vector<double> no_values;
     VecZ out{1, 2, 3}; // pre-dirtied; build must clear it
-    build_fused_query_value<kModes>(empty, no_values, out);
+    build_fused_query_value(empty, no_values, out, kWordsPerMono);
     BOOST_CHECK(out.empty());
 }
 

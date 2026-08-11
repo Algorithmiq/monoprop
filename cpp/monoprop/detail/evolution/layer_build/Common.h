@@ -94,15 +94,21 @@ struct FusedContract {
     std::vector<HalfRotationRec> cross_half; // R>1: one half per cross-rank query (resolver +φ, querier −φ)
 };
 
-// Queries ride flat VecZ buffers: kQueryWords elements per query (W monomial words + one ±1 phase word).
+// Queries ride flat VecZ buffers: query_words(nw) elements per query (nw monomial words + one ±1 phase
+// word), where nw is the monomial word count.
 // The source index is not in the payload — the resolver answers by position; the querier holds src_idx_r[r][q].
-template <size_t NumModes>
-inline constexpr size_t kQueryWords = mpi_detail::kWords<NumModes> + 1;
+//
+// Functions of the word count rather than kQueryWords<NumModes> constants: the width is data now. Every
+// caller either has a monomial to ask (`mono.num_words()`) or the operator (`op.num_bits()`).
+inline constexpr auto query_words(size_t num_words) -> size_t {
+    return num_words + 1;
+}
 
 // Fused query+value record width (R>1): the plain query record plus one trailing word holding the source's
 // pre-cos coeff (v_src, bit-cast from double), so query + value ride a single alltoallv instead of two.
-template <size_t NumModes>
-inline constexpr size_t kQueryWordsFused = kQueryWords<NumModes> + 1;
+inline constexpr auto query_words_fused(size_t num_words) -> size_t {
+    return query_words(num_words) + 1;
+}
 
 // The unsigned-int intermediate normalizes the ±1 sign bit into a fixed 32-bit pattern so the round-trip
 // is exact for any VecZ element width. Edit encode/decode as a pair.
@@ -122,45 +128,38 @@ inline auto decode_value(size_t word) -> double {
     return std::bit_cast<double>(word);
 }
 
-template <size_t NumModes>
-inline auto query_push(VecZ &buf, const Monomial<NumModes> &mono, int phase) -> void {
-    mpi_detail::append_monomial_words<NumModes>(mono, buf);
+inline auto query_push(VecZ &buf, const Bitset &mono, int phase) -> void {
+    mpi_detail::append_monomial_words(mono, buf);
     buf.push_back(encode_phase(phase));
 }
 
 // The mono + phase words occupy the same leading offsets in the plain and fused record, so readers differ
-// only in the per-record stride: kQueryWords for a plain record, kQueryWordsFused for a fused one.
+// only in the per-record stride: query_words for a plain record, query_words_fused for a fused one.
 //
 // `stride` is an ordinary argument rather than a template parameter (Stage 2c of the
-// NumModes-NTTP-removal plan). It was the last reason a caller had to name NumModes explicitly -- you
-// cannot skip a leading template argument to reach a trailing one -- which forced
-// probe_incoming_queries' callers to recover NumModes as a constant expression from the operator's
-// value_type. NumModes still deduces here, from mono_out.
-template <size_t NumModes>
-inline auto query_read(const VecZ &buf, size_t q, size_t stride, Monomial<NumModes> &mono_out, int &phase_out) -> void {
+// NumModes-NTTP-removal plan), and the word count now comes from mono_out, which as the destination
+// already carries the record's width.
+inline auto query_read(const VecZ &buf, size_t q, size_t stride, Bitset &mono_out, int &phase_out) -> void {
     const size_t base = q * stride;
-    mono_out = mpi_detail::read_monomial_from_words<NumModes>(buf, base);
-    phase_out = decode_phase(buf[base + mpi_detail::kWords<NumModes>]);
+    mpi_detail::read_monomial_from_words(buf, base, mono_out);
+    phase_out = decode_phase(buf[base + mono_out.num_words()]);
 }
 
 // No monomial reconstruction: process_responses needs only the phase.
-template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
-inline auto query_phase(const VecZ &buf, size_t q) -> int {
-    return decode_phase(buf[q * QW + mpi_detail::kWords<NumModes>]);
+inline auto query_phase(const VecZ &buf, size_t q, size_t num_words) -> int {
+    return decode_phase(buf[q * query_words(num_words) + num_words]);
 }
 
-template <size_t NumModes>
-inline auto query_value(const VecZ &buf, size_t q) -> double {
-    return decode_value(buf[q * kQueryWordsFused<NumModes> + mpi_detail::kWords<NumModes> + 1]);
+inline auto query_value(const VecZ &buf, size_t q, size_t num_words) -> double {
+    return decode_value(buf[q * query_words_fused(num_words) + num_words + 1]);
 }
 
-// Requires v.size() == q.size()/kQueryWords: exactly one value per query record.
-template <size_t NumModes>
-inline auto build_fused_query_value(const VecZ &q, const std::vector<double> &v, VecZ &out) -> void {
-    constexpr size_t W = kQueryWords<NumModes>;
+// Requires v.size() == q.size()/query_words(num_words): exactly one value per query record.
+inline auto build_fused_query_value(const VecZ &q, const std::vector<double> &v, VecZ &out, size_t num_words) -> void {
+    const size_t W = query_words(num_words);
     const size_t nq = q.empty() ? 0 : q.size() / W;
     out.clear();
-    out.reserve(nq * kQueryWordsFused<NumModes>);
+    out.reserve(nq * query_words_fused(num_words));
     for (size_t i = 0; i < nq; ++i) {
         out.insert(out.end(),
                    q.begin() + static_cast<std::ptrdiff_t>(i * W),

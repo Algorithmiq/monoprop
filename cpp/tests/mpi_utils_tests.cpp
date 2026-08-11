@@ -56,20 +56,22 @@ BOOST_AUTO_TEST_CASE(mpi_utils_monomial_words_roundtrip) {
     const auto b = indices_to_bitset<N>(VecZ{5});
     const auto c = indices_to_bitset<N>(VecZ{});
 
+    // The record width comes off the monomial now, not a kWords<N> constant.
+    constexpr size_t kW = Monomial<N>::num_words();
     VecZ buf;
-    mpi_detail::append_monomial_words<N>(a, buf);
-    mpi_detail::append_monomial_words<N>(b, buf);
-    mpi_detail::append_monomial_words<N>(c, buf);
-    BOOST_REQUIRE(buf.size() == 3 * mpi_detail::kWords<N>);
+    mpi_detail::append_monomial_words(a, buf);
+    mpi_detail::append_monomial_words(b, buf);
+    mpi_detail::append_monomial_words(c, buf);
+    BOOST_REQUIRE(buf.size() == 3 * kW);
 
-    BOOST_TEST((mpi_detail::read_monomial_from_words<N>(buf, 0) == a));
-    BOOST_TEST((mpi_detail::read_monomial_from_words<N>(buf, mpi_detail::kWords<N>) == b));
-    BOOST_TEST((mpi_detail::read_monomial_from_words<N>(buf, 2 * mpi_detail::kWords<N>) == c));
+    BOOST_TEST((mpi_detail::read_monomial_from_words(buf, 0, 2 * N) == a));
+    BOOST_TEST((mpi_detail::read_monomial_from_words(buf, kW, 2 * N) == b));
+    BOOST_TEST((mpi_detail::read_monomial_from_words(buf, 2 * kW, 2 * N) == c));
 
     constexpr size_t M = 32;
     const auto d = indices_to_bitset<M>(VecZ{2, 40, 63});
     VecZ sbuf;
-    mpi_detail::append_monomial_words<M>(d, sbuf);
-    BOOST_REQUIRE(sbuf.size() == mpi_detail::kWords<M>);
-    BOOST_TEST((mpi_detail::read_monomial_from_words<M>(sbuf, 0) == d));
+    mpi_detail::append_monomial_words(d, sbuf);
+    BOOST_REQUIRE(sbuf.size() == Monomial<M>::num_words());
+    BOOST_TEST((mpi_detail::read_monomial_from_words(sbuf, 0, 2 * M) == d));
 }

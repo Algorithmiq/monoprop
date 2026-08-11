@@ -105,6 +105,8 @@ struct MPOperator {
     // driving the monomials handed to it cannot drift apart. The copy constructor needs no extra
     // work for the same reason: clone() carries the width across.
     [[nodiscard]] auto num_bits() const -> size_t { return store->num_bits(); }
+    // The wire format and the per-word loops are sized in words, not bits.
+    [[nodiscard]] auto num_words() const -> size_t { return (num_bits() + 63) / 64; }
 
     // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.

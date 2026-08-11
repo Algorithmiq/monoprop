@@ -64,14 +64,13 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 
 // Graph-build sink: accumulates the per-rank PartnerAcc endpoints and assembles a LayerCore at finalize.
 // wants_values=false — the scan captures no coeffs and every rotation records only (index, phase).
-template <size_t NumModes>
 struct GraphSink {
     static constexpr bool wants_values = false;
-    static constexpr size_t kStride = kQueryWords<NumModes>;
-    // Transitional: resolve_incoming used to deduce NumModes from its MPOperator<NumModes> argument,
-    // and MPOperator no longer carries one. Goes away with IncomingProbe's fixed-width monomials.
-    static constexpr size_t kNumModes = NumModes;
     using Response = TermIndex;
+    // The record stride was a static constexpr off kQueryWords<NumModes>; it is derived from the
+    // monomial word count now, which the sink is handed at construction.
+    size_t num_words = 0;
+    [[nodiscard]] auto stride() const -> size_t { return query_words(num_words); }
     static auto init_response() -> Response { return std::numeric_limits<TermIndex>::max(); }
 
     size_t R;
@@ -81,7 +80,11 @@ struct GraphSink {
     size_t def_out_base_ = 0;
     std::vector<size_t> in_base_; // cross-rank per-rank base into acc[s].in_entries (set in prepare)
 
-    GraphSink(size_t R_, size_t my_rank_) : R(R_), my_rank(my_rank_), acc(R_) {}
+    GraphSink(size_t num_words_, size_t R_, size_t my_rank_)
+        : num_words(num_words_),
+          R(R_),
+          my_rank(my_rank_),
+          acc(R_) {}
 
     auto self_hit(size_t src, size_t found, int phase, double /*v_src*/) -> void {
         acc[my_rank].in_entries.push_back({found, phase});
@@ -105,7 +108,7 @@ struct GraphSink {
                      std::vector<VecZ> & /*scratch*/) -> std::vector<VecZ> & {
         return queries;
     }
-    auto prepare(const IncomingProbe<NumModes> & /*pr*/,
+    auto prepare(const IncomingProbe & /*pr*/,
                  size_t rank_count,
                  MPOperator & /*op*/,
                  const std::vector<std::vector<Response>> &responses) -> void {
@@ -119,7 +122,7 @@ struct GraphSink {
                      size_t s,
                      size_t q,
                      size_t ip,
-                     const IncomingProbe<NumModes> &pr,
+                     const IncomingProbe &pr,
                      const std::vector<VecZ> & /*incoming*/) -> Response {
         acc[s].in_entries[in_base_[s] + q] = {ip, pr.phase_of[g]};
         return static_cast<TermIndex>(ip);
@@ -137,7 +140,7 @@ struct GraphSink {
         out.resize(base + nq);
         for (size_t q = 0; q < nq; ++q) {
             assert(resp[q] != std::numeric_limits<TermIndex>::max() && "resolver must insert absent cross-rank terms");
-            out[base + q] = {srcs[q], query_phase<NumModes>(qbuf, q)};
+            out[base + q] = {srcs[q], query_phase(qbuf, q, num_words)};
         }
     }
 
@@ -183,12 +186,11 @@ struct GraphSink {
 // Fused ContractImmediately sink: applies each resolved rotation directly to op_coeffs via the
 // FusedContract record streams (no LayerCore — finalize returns nullptr). wants_values=true: the scan
 // captures the signed pre-cos v_src, and resolve reads v_tgt from op_coeffs (·inv_cos under the cos sweep).
-template <size_t NumModes>
 struct ContractSink {
     static constexpr bool wants_values = true;
-    static constexpr size_t kStride = kQueryWordsFused<NumModes>;
-    static constexpr size_t kNumModes = NumModes; // see GraphSink::kNumModes
     using Response = double;
+    size_t num_words = 0; // see GraphSink::num_words
+    [[nodiscard]] auto stride() const -> size_t { return query_words_fused(num_words); }
     static auto init_response() -> Response { return 0.0; }
 
     size_t R;
@@ -197,11 +199,11 @@ struct ContractSink {
     const VecD &op_coeffs; // the very array the scan read, not a copy
     bool fused_scale;      // fused cos sweep active: hit v_tgt recovered as stored·inv_cos
     double inv_cos;
-    bool schrodinger;                 // fresh cross-rank miss coeff: 0 (Heisenberg) vs state-scored (Schrödinger)
-    Basis basis;                      // Pauli vs Majorana state scoring of fresh cross-rank Schrödinger misses
-    size_t def_base_ = 0;             // deferred self-insert base into fc.inserts
-    size_t cross_base_ = 0;           // cross-rank resolver-half base into fc.cross_half
-    Monomial<NumModes> state_mask_{}; // Schrödinger fresh-insert scoring mask (empty in Heisenberg)
+    bool schrodinger;       // fresh cross-rank miss coeff: 0 (Heisenberg) vs state-scored (Schrödinger)
+    Basis basis;            // Pauli vs Majorana state scoring of fresh cross-rank Schrödinger misses
+    size_t def_base_ = 0;   // deferred self-insert base into fc.inserts
+    size_t cross_base_ = 0; // cross-rank resolver-half base into fc.cross_half
+    Bitset state_mask_{};   // Schrödinger fresh-insert scoring mask (empty in Heisenberg)
 
     // No constructor on purpose: as an aggregate the call site names each field, so the two adjacent
     // bools cannot be swapped silently. GraphSink keeps its ctor because it sizes `acc` from R.
@@ -227,15 +229,15 @@ struct ContractSink {
         -> std::vector<VecZ> & {
         scratch.resize(queries.size());
         for (size_t r = 0; r < queries.size(); ++r) {
-            build_fused_query_value<NumModes>(queries[r], vals[r], scratch[r]);
+            build_fused_query_value(queries[r], vals[r], scratch[r], num_words);
         }
         return scratch;
     }
-    auto prepare(const IncomingProbe<NumModes> &pr,
+    auto prepare(const IncomingProbe &pr,
                  size_t /*rank_count*/,
                  MPOperator &op,
                  const std::vector<std::vector<Response>> & /*responses*/) -> void {
-        state_mask_ = schrodinger ? initial_state_mask<NumModes>(op.initial_state) : Monomial<NumModes>{};
+        state_mask_ = schrodinger ? initial_state_mask(op.initial_state, op.num_bits()) : Bitset(op.num_bits());
         cross_base_ = fc.cross_half.size();
         fc.cross_half.resize(cross_base_ + pr.nq_total);
     }
@@ -243,7 +245,7 @@ struct ContractSink {
                      size_t s,
                      size_t q,
                      size_t ip,
-                     const IncomingProbe<NumModes> &pr,
+                     const IncomingProbe &pr,
                      const std::vector<VecZ> &incoming) -> Response {
         double v_tgt;
         if (ip < pr.base) {
@@ -256,7 +258,7 @@ struct ContractSink {
             v_tgt = 0.0; // Heisenberg fresh insert
         }
         fc.cross_half[cross_base_ + g] = HalfRotationRec{ip,
-                                                         query_value<NumModes>(incoming[s], q),
+                                                         query_value(incoming[s], q, num_words),
                                                          static_cast<int32_t>(pr.phase_of[g]),
                                                          /*is_insert=*/ip >= pr.base};
         return v_tgt;
@@ -277,7 +279,7 @@ struct ContractSink {
                            const VecZ &qbuf) -> void {
         const size_t nq = rval.size();
         for (size_t q = 0; q < nq; ++q) {
-            const auto nphase = static_cast<int32_t>(-query_phase<NumModes>(qbuf, q));
+            const auto nphase = static_cast<int32_t>(-query_phase(qbuf, q, num_words));
             fc.cross_half.push_back(HalfRotationRec{srcs[q], rval[q], nphase, /*is_insert=*/false});
         }
     }
@@ -295,10 +297,10 @@ struct ContractSink {
 };
 
 // Owns build_layer's machinery over a compile-time Sink policy. combined_size = the pre-layer operator size.
-template <size_t NumModes, class Sink>
+template <class Sink>
 struct LayerBuildEngine {
     struct DeferredSelfMiss {
-        Monomial<NumModes> mono;
+        Bitset mono;
         size_t src;
         int phase;
         double v_src = 0.0; // ContractSink only: op_pre[src] captured at scan emit; 0 for GraphSink
@@ -319,6 +321,12 @@ struct LayerBuildEngine {
     // Fused query+value send scratch (ContractSink, R>1): shared by a gate's two exchange passes.
     std::vector<VecZ> combined_qv_;
     Sink sink;
+    // The *plain* query record width. Self-resolve records are plain even under the fused sink, whose
+    // wider stride applies only to the cross-rank wire, so this is not sink.stride().
+    size_t words_ = 0;
+    // Self-resolve scratch, sized once at the operator's width: query_read reads into its destination and
+    // requires it already be that wide.
+    MonomialList keys_;
 
     LayerBuildEngine(MPOperator &local_op_,
                      mpi::Comm comm_,
@@ -335,7 +343,9 @@ struct LayerBuildEngine {
           combined_size(combined_size_),
           queries_r(R_),
           src_idx_r(R_),
-          sink(std::move(sink_)) {
+          sink(std::move(sink_)),
+          words_(local_op_.num_words()),
+          keys_(kResolveBatch, Bitset(local_op_.num_bits())) {
         matched.begin_gate(combined_size);
     }
 
@@ -347,7 +357,7 @@ struct LayerBuildEngine {
         if constexpr (Sink::wants_values) {
             lv = &src_val_r[my_rank];
         }
-        const size_t nq = lq.empty() ? 0 : lq.size() / kQueryWords<NumModes>;
+        const size_t nq = lq.empty() ? 0 : lq.size() / query_words(words_);
         resolve_range_(lq, ls, lv, 0, nq, is_leader_pass);
         lq.clear();
         ls.clear();
@@ -389,7 +399,7 @@ struct LayerBuildEngine {
 
     // Followers a leader already matched must not be re-resolved over the wire, so compact them out.
     auto drop_matched_cross_rank_followers() -> void {
-        constexpr size_t W = kQueryWords<NumModes>;
+        const size_t W = query_words(words_);
         for (size_t r = 0; r < R; ++r) {
             if (r == my_rank) {
                 continue;
@@ -435,7 +445,7 @@ struct LayerBuildEngine {
         if (n_miss == 0) {
             return;
         }
-        auto key_at = [&](size_t k) -> const Monomial<NumModes> & { return deferred_self_misses[k].mono; };
+        auto key_at = [&](size_t k) -> const Bitset & { return deferred_self_misses[k].mono; };
         sink.prepare_deferred(n_miss);
         insert_absent_terms(local_op, n_miss, key_at, [&](size_t k, size_t base) {
             const auto &m = deferred_self_misses[k];
@@ -455,7 +465,7 @@ private:
     auto response_recv_counts() const -> std::vector<int> {
         std::vector<int> counts(R);
         for (size_t r = 0; r < R; ++r) {
-            counts[r] = static_cast<int>(queries_r[r].size() / kQueryWords<NumModes>);
+            counts[r] = static_cast<int>(queries_r[r].size() / query_words(words_));
         }
         return counts;
     }
@@ -470,7 +480,7 @@ private:
                         size_t hi,
                         bool is_leader_pass) -> void {
         const size_t op_size = local_op.store->size();
-        std::array<Monomial<NumModes>, kResolveBatch> keys;
+        auto &keys = keys_;
         std::array<int, kResolveBatch> phases;
         std::array<size_t, kResolveBatch> srcs;
         std::array<double, kResolveBatch> vals;
@@ -483,7 +493,7 @@ private:
                 if (!is_leader_pass && matched.is_marked(src)) {
                     continue; // follower already matched by a leader → not an independent rotation
                 }
-                query_read(lq, q, kQueryWords<NumModes>, keys[m], phases[m]);
+                query_read(lq, q, query_words(words_), keys[m], phases[m]);
                 srcs[m] = src;
                 if constexpr (Sink::wants_values) {
                     vals[m] = (*lv)[q];
@@ -595,13 +605,13 @@ auto build_layer(auto &local_op,
     fused.cos_blocks = std::vector<CosMask>{};
 
     auto run = [&]<class Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
-        LayerBuildEngine<num_modes, Sink> eng(local_op,
-                                              comm,
-                                              R,
-                                              my_rank,
-                                              matched_scratch,
-                                              /*combined_size=*/local_op.store->size(),
-                                              std::move(sink));
+        LayerBuildEngine<Sink> eng(local_op,
+                                   comm,
+                                   R,
+                                   my_rank,
+                                   matched_scratch,
+                                   /*combined_size=*/local_op.store->size(),
+                                   std::move(sink));
         eng.run_exchange(/*is_leader_pass=*/true,
                          std::move(fused.leader_queries),
                          std::move(fused.leader_src),
@@ -617,24 +627,25 @@ auto build_layer(auto &local_op,
     std::shared_ptr<LayerCore> storage;
     if (use_fused) {
         const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
-        storage = run(ContractSink<num_modes>{.R = R,
-                                              .my_rank = my_rank,
-                                              .fc = *fused_contract,
-                                              .op_coeffs = coeffs,
-                                              .fused_scale = fused_scale,
-                                              .inv_cos = inv_cos,
-                                              .schrodinger = schrodinger,
-                                              .basis = basis});
+        storage = run(ContractSink{.num_words = local_op.num_words(),
+                                   .R = R,
+                                   .my_rank = my_rank,
+                                   .fc = *fused_contract,
+                                   .op_coeffs = coeffs,
+                                   .fused_scale = fused_scale,
+                                   .inv_cos = inv_cos,
+                                   .schrodinger = schrodinger,
+                                   .basis = basis});
     }
     else {
-        storage = run(GraphSink<num_modes>{R, my_rank});
+        storage = run(GraphSink{local_op.num_words(), R, my_rank});
     }
 
     // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the
     // post-insert operator size: the fold truncated to it reproduces the "all anticommuting" cos
     // bit-for-bit with no stored bitmap. Fused mode has no LayerCore to stamp.
     if (storage != nullptr) {
-        storage->generator_words.assign(gen.data(), gen.data() + mpi_detail::kWords<num_modes>);
+        storage->generator_words.assign(gen.data(), gen.data() + gen.num_words());
         storage->scaled_count = static_cast<uint64_t>(local_op.store->size());
     }
 

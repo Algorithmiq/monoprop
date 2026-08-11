@@ -300,14 +300,14 @@ auto fused_find_and_collect(const auto &op,
             const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<num_modes>(new_mono) % rank_count);
             const size_t source = i;
             if (is_follower) {
-                query_push<num_modes>(fq[r_prime], new_mono, phase);
+                query_push(fq[r_prime], new_mono, phase);
                 fs[r_prime].push_back(source);
                 if (capture_values) {
                     fv[r_prime].push_back(v_src);
                 }
             }
             else {
-                query_push<num_modes>(lq[r_prime], new_mono, phase);
+                query_push(lq[r_prime], new_mono, phase);
                 ls[r_prime].push_back(source);
                 if (capture_values) {
                     lv[r_prime].push_back(v_src);
@@ -338,9 +338,9 @@ auto fused_find_and_collect(const auto &op,
                                    n_foll);
         }
         if (rank_count == 1) {
-            lq[my_rank].reserve((n_anti - n_foll) * kQueryWords<num_modes>);
+            lq[my_rank].reserve((n_anti - n_foll) * query_words(gen.num_words()));
             ls[my_rank].reserve(n_anti - n_foll);
-            fq[my_rank].reserve(n_foll * kQueryWords<num_modes>);
+            fq[my_rank].reserve(n_foll * query_words(gen.num_words()));
             fs[my_rank].reserve(n_foll);
         }
         auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
