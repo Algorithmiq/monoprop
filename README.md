@@ -4,6 +4,7 @@
 [![Documentation](https://github.com/Algorithmiq/monoprop/actions/workflows/docpages.yml/badge.svg)](https://docs.monoprop.algorithmiq.tech/)
 [![Test monoprop](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml/badge.svg)](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml)
 [![codecov](https://codecov.io/gh/Algorithmiq/monoprop/graph/badge.svg?token=1GgmPnNUxk)](https://codecov.io/gh/Algorithmiq/monoprop)
+[![Track benchmarks](https://github.com/Algorithmiq/monoprop/actions/workflows/bench_main.yml/badge.svg)](https://github.com/Algorithmiq/monoprop/actions/workflows/bench_main.yml)
 
 `monoprop` is a high-performance C++ library with Python bindings for **Majorana and
 Pauli propagation** — a backend for classically simulating and variationally
@@ -32,6 +33,9 @@ and against [`MajoranaPropagation.jl`](https://github.com/SparqleSim/MajoranaPro
 </p
 
 Head to our [benchmarks page](https://docs.monoprop.algorithmiq.tech/benchmarks) for more details.
+
+Every commit on `main` also runs the internal benchmark suite, tracked over time
+with [Bencher](https://bencher.dev/) to catch performance regressions.
 
 📖 **Full documentation:** <https://docs.monoprop.algorithmiq.tech>
 
