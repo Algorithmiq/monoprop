@@ -119,6 +119,46 @@ class TestGraphAndParameterValidation:
         with pytest.raises(RuntimeError, match=r"MP object has been modified"):
             functional([1.0, 2.0])
 
+    def test_expectation_value_functional_invalidated_after_initial_operator_update(
+        self, serial_comm
+    ):
+        mp, _ = _two_gate_graph(serial_comm)
+        functional = mp.expectation_value_functional()
+        parameters = [0.3, 0.7]
+        functional(parameters)
+
+        mp.update_initial_operator(
+            MajoranaOperator({(0, 1): 2.0j, (2, 3): 0.5j}, num_modes=2)
+        )
+
+        # The functional snapshotted the old coefficients, so it must reject the call rather than
+        # keep answering for the operator the propagator no longer holds.
+        with pytest.raises(RuntimeError, match=r"MP object has been modified"):
+            functional(parameters)
+
+        rebuilt = mp.expectation_value_functional()(parameters)
+        assert rebuilt == pytest.approx(mp.expval(parameters))
+
+    def test_expectation_value_and_gradient_functional_invalidated_after_initial_operator_update(
+        self, serial_comm
+    ):
+        mp, _ = _two_gate_graph(serial_comm)
+        grad_functional = mp.expectation_value_and_gradient_functional()
+        parameters = [0.3, 0.7]
+        grad_functional(parameters)
+
+        mp.update_initial_operator(
+            MajoranaOperator({(0, 1): 2.0j, (2, 3): 0.5j}, num_modes=2)
+        )
+
+        # The functional snapshotted the old coefficients, so it must reject the call rather than
+        # keep answering for the operator the propagator no longer holds.
+        with pytest.raises(RuntimeError, match=r"MP object has been modified"):
+            grad_functional(parameters)
+
+        rebuilt_expval, _ = mp.expectation_value_and_gradient_functional()(parameters)
+        assert rebuilt_expval == pytest.approx(mp.expval(parameters))
+
 
 class TestEvolvedOperatorBothPictures:
     def test_schrodinger_returns_state_dict(self, serial_comm):

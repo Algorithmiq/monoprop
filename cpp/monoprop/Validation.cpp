@@ -26,8 +26,9 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-// The graph was rebuilt after a functional captured its layer count, so the functional's parameter
-// mapping no longer describes the graph.
+// The propagator was mutated after a functional captured what it replays: a rebuilt graph leaves the
+// functional's parameter mapping describing a graph that is gone, a re-weight leaves its snapshotted
+// operator coefficients stale.
 class StaleFunctionalGraph : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -104,6 +105,14 @@ auto validate_expected_graph_layers(size_t current_layers, size_t expected_layer
                                                "Previous number of graph layers was {} and now is {}.",
                                                expected_layers,
                                                current_layers));
+    }
+}
+
+auto validate_expected_initial_operator(size_t current_epoch, size_t expected_epoch) -> void {
+    if (current_epoch != expected_epoch) {
+        throw StaleFunctionalGraph("MP object has been modified since the functional was created. "
+                                   "The initial operator was re-weighted, so the coefficients the functional "
+                                   "snapshotted are stale; create a new functional.");
     }
 }
 
