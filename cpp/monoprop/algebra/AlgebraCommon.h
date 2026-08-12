@@ -384,6 +384,23 @@ public:
         return std::nullopt;
     }
 
+    // The same bound counted in modes/qubits rather than slots, which is what a store keyed by mode
+    // (SparseRowStore) sizes its rows from. It is `cutoff` for both kinds and not max_slot_bound()/2:
+    // a support cutoff admits `cutoff` modes by definition, and a length cutoff of `cutoff` slots is
+    // worst-case `cutoff` singly-occupied modes -- halving would truncate that row.
+    //
+    // This bounds a *stored* row. A row being toggled in place transiently exceeds it, by as many
+    // modes as the generator touches, so a scratch row needs max_mode_bound() + generator locality.
+    auto max_mode_bound() const -> std::optional<size_t> {
+        if (length_cutoff_ != nullptr) {
+            return length_cutoff_->cutoff;
+        }
+        if (support_cutoff_ != nullptr) {
+            return support_cutoff_->cutoff;
+        }
+        return std::nullopt;
+    }
+
 private:
     const CutoffFn &cutoff_fn_;
     const LengthCutoff *length_cutoff_;

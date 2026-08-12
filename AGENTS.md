@@ -77,6 +77,15 @@ Key files:
   `cached_even_bits` (`Utilities.h`) or a per-layer context rather than rebuilding them per call.
   Within-word pair tricks like `(word >> 1) & even_mask` are safe because a mode's two bits are
   `2m, 2m+1` and never straddle a word.
+- **The row-store seam**: a dense monomial is a transient, not the storage. `TypeAliases.h` declares
+  four accessors — `materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position` — and
+  three backends answer them: `std::vector<Bitset>`, `detail::OperatorIndex` (packed position lists,
+  what the propagator uses) and `detail::SparseRowStore` (fixed-width mode lanes plus one 2-bit-per-slot
+  `codes` word per row, off the hot path for now). Reach rows through the accessors, never through a
+  backend's own API, and add any fourth backend to `cpp/tests/row_accessor_tests.cpp`, which asserts
+  that all of them agree through every accessor. `SparseRowStore::preferred_for_modes()` holds the
+  dense/sparse crossover; it is a build-time constant (`monoprop_SPARSE_ROW_MIN_MODES`, defaulted off
+  `monoprop_ENABLE_ARCH_FLAGS`) because what moves it is the target ISA.
 - **`Basis` / the `Algebra` policy** (`cpp/monoprop/algebra/`): the two algebras are sibling models
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is

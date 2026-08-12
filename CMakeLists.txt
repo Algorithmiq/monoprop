@@ -51,6 +51,15 @@ option(
 
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
+# Empty means "take the default for this ISA", resolved below once CXXFlags.cmake has defined
+# monoprop_ENABLE_ARCH_FLAGS. A cache entry so a build can pin the crossover explicitly.
+set(
+  monoprop_SPARSE_ROW_MIN_MODES
+  ""
+  CACHE STRING
+  "Logical mode count at or above which the sparse row store is preferred (empty = ISA default)"
+)
+
 set(Python_FIND_VIRTUALENV FIRST)
 find_package(
   Python
@@ -69,6 +78,20 @@ if(monoprop_ENABLE_MPI)
 endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
+
+# The sparse/dense crossover is set by whether the target has a vector popcount, so it follows the
+# arch flags rather than the mode count alone: dense costs one pass per storage word, sparse is flat
+# in the width, and without AVX2 the dense pass degrades an order of magnitude sooner. Measured on
+# the Stage 3 gate bench (notes/monomial-storage, K=12 slots): the arms cross at ~1024 modes under
+# -march=native and at ~96 without it. Both land on a whole 32-mode storage block, which is the
+# granularity storage_modes_for() rounds to anyway.
+if(monoprop_SPARSE_ROW_MIN_MODES STREQUAL "")
+  if(monoprop_ENABLE_ARCH_FLAGS)
+    set(monoprop_SPARSE_ROW_MIN_MODES 1024)
+  else()
+    set(monoprop_SPARSE_ROW_MIN_MODES 96)
+  endif()
+endif()
 
 # report on compiler flags in use
 message(STATUS "Configuring a ${CMAKE_BUILD_TYPE} build")
@@ -94,6 +117,10 @@ message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
 message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
+message(
+  STATUS
+  "   Sparse rows from       : ${monoprop_SPARSE_ROW_MIN_MODES} modes"
+)
 
 # Testing is enabled from the *top-level* list file on purpose: CTest's root is wherever
 # enable_testing() was called, so called from cpp/ it wrote no top-level CTestTestfile.cmake and every
