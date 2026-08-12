@@ -104,6 +104,29 @@ namespace monoprop::detail {
     return sums.xor_sum == 0 || sums.or_sum <= cutoff;
 }
 
+// The counterparts of CutoffEvaluator::passes_with_popcount, one per concrete cutoff functor. Same
+// shortcut and same reasoning: the predicate is `xor_sum == 0 || measure <= cutoff`, so a popcount
+// already at or below the bound proves keep without reading the row at all (or_sum <= popcount_sum makes
+// that sound for the support cutoff too). `popcount_sum` is the whole-register count, which can only
+// exceed the active-window one, so the shortcut stays conservative when a logical width is narrower than
+// the storage width.
+//
+// There is no evaluator argument: which cutoff a propagator has is fixed for its lifetime, so the caller
+// resolves it once per gate rather than re-branching per term.
+[[nodiscard]] inline auto codes_length_passes_with_popcount(const SparseRow &row,
+                                                            unsigned int cutoff,
+                                                            size_t popcount_sum,
+                                                            size_t inactive_mode_prefix) noexcept -> bool {
+    return popcount_sum <= cutoff || codes_length_cutoff(row, cutoff, inactive_mode_prefix);
+}
+
+[[nodiscard]] inline auto codes_support_passes_with_popcount(const SparseRow &row,
+                                                             unsigned int cutoff,
+                                                             size_t popcount_sum,
+                                                             size_t inactive_mode_prefix) noexcept -> bool {
+    return popcount_sum <= cutoff || codes_support_cutoff(row, cutoff, inactive_mode_prefix);
+}
+
 // Every occupied mode holds both of its positions, i.e. every field is 0b11. Unoccupied modes are not
 // slots at all and are trivially paired, which is why this needs no window argument -- and matches the
 // dense is_paired, which likewise checks the whole register.

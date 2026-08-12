@@ -20,12 +20,14 @@
 #include <cmath>
 #include <cstddef>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/TermProduct.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
@@ -156,37 +158,6 @@ inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t mono_pop, const 
     return true;
 }
 
-// phase_factor is the basis-specific sign only: Majorana interleave_phase, still to be folded with
-// hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready.
-// ham and the two monomials are deduced from their argument types; A stays the sole explicit template
-// argument at call sites, same as before.
-//
-// `mono` and `new_mono` are scratch owned by the caller for the whole gate, not locals: both are
-// overwritten whole here, and a term must not pay for constructing them. Constructing a Bitset means
-// deriving the word count from a runtime width, testing it against the inline capacity and -- above
-// that capacity -- allocating, all of which the compile-time-width Monomial<NumModes> this used to
-// build folded away to nothing.
-template <Algebra A>
-[[gnu::always_inline]] inline auto emit_term_products(const auto &ham,
-                                                      size_t i,
-                                                      const typename A::GenContext &ctx,
-                                                      MonomialLike auto &mono,
-                                                      MonomialLike auto &new_mono,
-                                                      size_t &overlap,
-                                                      int &phase_factor) -> void {
-    const auto &gen = A::generator(ctx);
-    // for_each_position only sets bits, so the scratch has to start clear; reset() keeps the width,
-    // unlike assigning a default-constructed Bitset.
-    mono.reset();
-    ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
-    // One pass instead of two: mono ^ gen and popcount(mono & gen) are both always needed here, so
-    // fused_xor_into() computes them together, straight into new_mono (see Bitset::fused_xor_into).
-    // Its result_count (popcount of the XOR) goes unused -- the caller already has new_pop for free
-    // via mono_pop + gen_pop - 2*overlap -- so it is not threaded through here.
-    overlap = mono.fused_xor_into(gen, new_mono).overlap;
-    phase_factor = A::rotation_sign(ctx, mono, new_mono);
-}
-
 struct FusedScanResult {
     std::vector<CosMask> cos_blocks;               // ascending, disjoint, chunk order
     std::vector<VecZ> leader_queries;              // size R: serialized leader queries per owner rank
@@ -219,7 +190,6 @@ auto fused_find_and_collect(const auto &op,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult {
     const size_t gen_pop = gen.count();
-    const auto ectx = A::make_gen_context(gen);
 
     FusedScanResult res;
     res.leader_queries.assign(rank_count, VecZ{});
@@ -282,41 +252,41 @@ auto fused_find_and_collect(const auto &op,
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
 
-        // Per-gate scratch, not per-term: emit_term_products overwrites both whole, so constructing them
-        // per term would buy nothing and cost a width derivation, an inline-capacity test and -- above
-        // that capacity -- a heap allocation, every term. Both take the generator's width, which is the
-        // operator's storage width, so every word op below stays on Bitset's matched-width path.
-        Bitset mono(gen.size());
-        Bitset new_mono(gen.size());
+        // Per-gate, not per-term: the kernel's product scratch is overwritten whole per term, so
+        // constructing it per term would buy nothing and cost a width derivation, an inline-capacity test
+        // and -- above that capacity -- a heap allocation, every term. It takes the generator's width,
+        // which is the operator's storage width, so every word op inside stays on Bitset's matched-width
+        // path. Which kernel this is follows from the store (TermProductsFor); the scan below names no
+        // representation.
+        using Store = std::remove_cvref_t<decltype(*op.store)>;
+        typename TermProductsFor<Store, A>::type products(gen, cutoff_eval);
 
-        // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
+        // The dynamic gate runs before the product, so a gate-rejected term computes none.
         // abs_c/v_src come from the caller's coeff read, not re-read.
         auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
             if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
                 return;
             }
-            size_t overlap = 0;
-            int phase_factor = 0;
-            emit_term_products<A>(*op.store, i, ectx, mono, new_mono, overlap, phase_factor);
+            const auto [overlap, phase_factor] = products.product(*op.store, i);
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
-            const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
+            const bool struct_pass = products.passes(new_pop);
             if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
                 return;
             }
             const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
             // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash(new_mono) % rank_count);
+            const size_t r_prime = (rank_count == 1) ? my_rank : products.owner(rank_count);
             const size_t source = i;
             if (is_follower) {
-                query_push(fq[r_prime], new_mono, phase);
+                products.push(fq[r_prime], phase);
                 fs[r_prime].push_back(source);
                 if (capture_values) {
                     fv[r_prime].push_back(v_src);
                 }
             }
             else {
-                query_push(lq[r_prime], new_mono, phase);
+                products.push(lq[r_prime], phase);
                 ls[r_prime].push_back(source);
                 if (capture_values) {
                     lv[r_prime].push_back(v_src);
@@ -347,9 +317,12 @@ auto fused_find_and_collect(const auto &op,
                                    n_foll);
         }
         if (rank_count == 1) {
-            lq[my_rank].reserve((n_anti - n_foll) * query_words(gen.num_words()));
+            // The record width comes off the kernel, not off the generator: it is a property of the form
+            // a query is pushed in, which is the kernel's business and not the monomial's.
+            const size_t record_words = products.record_words();
+            lq[my_rank].reserve((n_anti - n_foll) * record_words);
             ls[my_rank].reserve(n_anti - n_foll);
-            fq[my_rank].reserve(n_foll * query_words(gen.num_words()));
+            fq[my_rank].reserve(n_foll * record_words);
             fs[my_rank].reserve(n_foll);
         }
         auto derive_coeff = [&](size_t i) -> std::pair<double, double> {

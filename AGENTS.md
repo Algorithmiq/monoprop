@@ -96,6 +96,15 @@ Key files:
   `CutoffEvaluator::max_mode_bound()` **plus the generator's locality**; past its capacity
   `sparse_toggle` reports `overflowed` and the caller must fall back to the dense product — never
   truncate, because a truncated mode list still carries a plausible-looking `codes` word.
+- **The per-term kernel seam**: everything the scan asks about one anticommuting term — the product,
+  the overlap, the rotation sign, the structural cutoff, the owner rank and the query record — goes
+  through the per-gate object `TermProductsFor<Store, A>` selects (`layer_build/TermProduct.h`), so the
+  scan itself names no representation. `SparseTermProducts` answers the first four off the `codes` word
+  and falls back to `DenseTermProducts` per term when there is no row to read (a spilled store row, a
+  product past the scratch capacity) or no codes form of the cutoff (`CutoffEvaluator` recovered neither
+  concrete functor, e.g. under a basis change). The store swap has not happened yet, so
+  `cpp/tests/term_product_tests.cpp` is the only thing exercising the sparse kernel: extend it with any
+  new answer, or that answer ships untested.
 - **`Basis` / the `Algebra` policy** (`cpp/monoprop/algebra/`): the two algebras are sibling models
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is

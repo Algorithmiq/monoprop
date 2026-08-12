@@ -24,6 +24,7 @@
 #include <utility>
 
 #include "monoprop/algebra/AlgebraCommon.h"
+#include "monoprop/algebra/CodesAlgebra.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/core/Monomial.h"
@@ -52,6 +53,12 @@ struct MajoranaAlgebra {
     // Ordering sign of mono·G via the per-layer mask (branch/scan-free).
     static auto rotation_sign(const GenContext &ctx, const Bitset &mono, const Bitset & /*new_mono*/) -> int {
         return mono.parity_and(ctx.interleave_mask) ? -1 : 1;
+    }
+    // The same sign in support form. No GenContext: the interleave mask is dense by construction
+    // (roughly half the register), so the sparse form walks the two rows instead of carrying a mask, and
+    // the product row is not an argument either -- see codes_interleave_phase.
+    static auto codes_rotation_sign(const detail::SparseRow &mono, const detail::SparseRow &gen) -> int {
+        return detail::codes_interleave_phase(mono, gen);
     }
     static auto emit_phase(int rotation_sign, size_t mono_pop, size_t gen_pop, size_t overlap) -> int {
         return rotation_sign * hermitian_phase(mono_pop, gen_pop, overlap);
@@ -86,6 +93,11 @@ struct PauliAlgebra {
     // Rotation-ready sign: already the negated raw product sign (see pauli_rotation_sign).
     static auto rotation_sign(const GenContext &ctx, const Bitset &mono, const Bitset &new_mono) -> int {
         return pauli_rotation_sign(ctx.pauli_ctx, mono, new_mono);
+    }
+    // Same exponent as above off the two rows; new_mono never has to exist, since a mode the generator
+    // misses contributes nothing (see codes_pauli_rotation_sign).
+    static auto codes_rotation_sign(const detail::SparseRow &mono, const detail::SparseRow &gen) -> int {
+        return detail::codes_pauli_rotation_sign(mono, gen);
     }
     // Pauli's rotation sign is already the emitted sine phase -- no Hermitian fold.
     static auto emit_phase(int rotation_sign, size_t /*mono_pop*/, size_t /*gen_pop*/, size_t /*overlap*/) -> int {
