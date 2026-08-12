@@ -19,13 +19,16 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/operator/RowHashTable.h"
 
 // Logical mode count at or above which the sparse rows are the cheaper backend. Build-time and not a
 // runtime knob because what moves the crossover is the target ISA, which is fixed when the translation
@@ -87,6 +90,80 @@ struct SparseRow {
     }
 };
 
+// Visits a *dense* monomial as (mode, code) slots, ascending: the same sequence a SparseRow over the
+// same monomial yields. Positions arrive ascending, so a mode's two positions are adjacent and one pass
+// closes each slot before opening the next.
+template <typename Fn>
+inline auto for_each_mode_slot(const Bitset &mono, Fn &&fn) -> void {
+    size_t pos = mono.find_first();
+    while (pos < mono.size()) {
+        const size_t mode = pos >> 1;
+        unsigned int code = 1U << (pos & 1U);
+        pos = mono.find_next(pos);
+        if (pos < mono.size() && (pos >> 1) == mode) {
+            code |= 1U << (pos & 1U);
+            pos = mono.find_next(pos);
+        }
+        fn(mode, code);
+    }
+}
+
+// The row hash, as an accumulator over (mode, code) slots. One definition with two walkers -- a sparse
+// row and a dense monomial -- because a keyed store must hold both and hash them identically: a fully
+// paired term escapes the cutoff, so a row can occupy more modes than any codes word holds and has to
+// spill to the dense side map, where it still needs to be findable.
+//
+// That requirement is why the mix is *sequential* rather than an XOR-fold of slot-indexed terms, which
+// is what the plan's "fixed-width mix over the padded row" would have been. Sequential mixing is
+// positional without packing a slot index into the mixed word, so it does not care how many slots there
+// are -- and it depends on neither the row capacity nor the padding, so two stores tuned to different
+// capacities agree, which matters because the hash decides probe order.
+class SparseRowHasher {
+public:
+    auto add(size_t mode, unsigned int code) noexcept -> void {
+        h_ = SplitmixHash::mix(h_ ^ ((static_cast<uint64_t>(mode) << 2) | code));
+    }
+    [[nodiscard]] auto value() const noexcept -> size_t { return static_cast<size_t>(h_); }
+
+private:
+    // Nonzero, so an empty row does not hash to zero and every slot count starts from a mixed state.
+    uint64_t h_ = 0x9E3779B97F4A7C15ULL;
+};
+
+[[nodiscard]] inline auto sparse_row_hash(const SparseRow &row) noexcept -> size_t {
+    SparseRowHasher hasher;
+    const size_t n = row.num_slots();
+    for (size_t j = 0; j < n; ++j) {
+        hasher.add(row.mode(j), row.code(j));
+    }
+    return hasher.value();
+}
+
+[[nodiscard]] inline auto sparse_row_hash(const Bitset &mono) noexcept -> size_t {
+    SparseRowHasher hasher;
+    for_each_mode_slot(mono, [&](size_t mode, unsigned int code) { hasher.add(mode, code); });
+    return hasher.value();
+}
+
+// Whether a dense monomial and a sparse row hold the same slots, without materializing either. Used
+// where one side is a spilled row (no codes word) and the other is a query.
+[[nodiscard]] inline auto dense_row_equals(const Bitset &mono, const SparseRow &row) -> bool {
+    const size_t n = row.num_slots();
+    size_t j = 0;
+    bool equal = true;
+    for_each_mode_slot(mono, [&](size_t mode, unsigned int code) {
+        if (!equal) {
+            return;
+        }
+        if (j >= n || row.mode(j) != mode || row.code(j) != code) {
+            equal = false;
+            return;
+        }
+        ++j;
+    });
+    return equal && j == n;
+}
+
 // Operator-term store in support form: each row is a fixed-width list of the *modes* it occupies plus
 // one word holding two bits per occupied mode. It is the third backend behind the four TypeAliases.h
 // row accessors, alongside std::vector<Bitset> and OperatorIndex, and agrees with both through them
@@ -110,10 +187,16 @@ struct SparseRow {
 // production models, per MPOperator.h -- and an all-0b11 row needs only its mode list, so a second
 // cheap row kind is available if that ever stops being true.
 //
-// No hash index: this is the row half only. Keying sparse rows is a separate question (a padded row
-// makes equality a memcmp and the hash a fixed-width mix, which changes the hash and so forfeits
-// bit-identity), and it is answered where the default flips rather than here, since a table built now
-// would duplicate OperatorIndex's with no consumer.
+// The keyless index over the rows is the shared RowHashTable, the same one OperatorIndex uses, so both
+// stores produce the same slot layout for the same insertion sequence. What differs is only what a key
+// is: rows hash through sparse_row_hash and confirm through a codes compare plus a lane memcmp, where
+// OperatorIndex hashes a whole Bitset. That hash is *not* the dense one, so a store swap changes probe
+// order, MPI owner routing and therefore floating-point accumulation order -- the deliberate
+// re-baseline, not a regression.
+//
+// static_assert cannot express it, so: SparseRowStore is interchangeable with OperatorIndex through the
+// TypeAliases.h accessors and through find/emplace/bulk_insert/find_batch, and cpp/tests are what hold
+// that. It is not a subclass of anything and nothing dispatches on it.
 //
 // Single-writer, like OperatorIndex: one partition, one thread; parallelism is cross-partition.
 class SparseRowStore {
@@ -133,6 +216,9 @@ public:
     static constexpr ModeT kPadLane = std::numeric_limits<ModeT>::max();
     static constexpr ModeT kOverflowLane = static_cast<ModeT>(kPadLane - 1);
     static constexpr size_t kMaxModes = static_cast<size_t>(kOverflowLane); // exclusive bound
+
+    static constexpr size_t kIndexCeiling = RowHashTable::kIndexCeiling;
+    static constexpr size_t kNotFound = RowHashTable::kNotFound;
 
     // The Stage 3 crossover, as a predicate rather than a bare number so the rule has one home.
     static constexpr size_t kMinModes = monoprop_SPARSE_ROW_MIN_MODES;
@@ -173,21 +259,24 @@ public:
         out->codes_ = codes_;
         out->size_ = size_;
         out->overflow_ = overflow_;
+        out->table_.reserve(table_.count());
+        table_.for_each_slot([&](TermIndex idx, uint32_t h) { out->table_.insert_distinct(idx, h); });
         return out;
     }
 
     auto reserve(size_t n) -> void {
-        modes_.reserve(n * slots_per_row_);
-        codes_.reserve(n);
+        reserve_rows_(n);
+        table_.reserve(n);
     }
 
     // Returns the pre-growth size (the caller's insert base). Growth is geometric (1.5x), never
-    // exact-fit: an exact fit would realloc the whole operator every layer.
+    // exact-fit: an exact fit would realloc the whole operator every layer. Rows only -- the table grows
+    // on its own load factor, and pre-sizing it per layer would rehash for nothing.
     auto grow_rows_geometric(size_t n) -> size_t {
         const size_t base = size_;
         if (capacity() < base + n) {
             const size_t cap = capacity();
-            reserve(std::max(base + n, cap + (cap / 2) + 1));
+            reserve_rows_(std::max(base + n, cap + (cap / 2) + 1));
         }
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
@@ -205,20 +294,26 @@ public:
         ModeT *lanes = &modes_[i * slots_per_row_];
         CodesT codes = 0;
         size_t used = 0;
-        // Positions arrive ascending, so a mode's two positions are adjacent and a new mode is always
-        // the next slot -- no search, and the lanes come out sorted for free.
-        for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
-            const size_t mode = b >> 1;
-            if (used == 0 || static_cast<size_t>(lanes[used - 1]) != mode) {
-                if (used == slots_per_row_) {
-                    lanes[0] = kOverflowLane;
-                    codes_[i] = 0;
-                    overflow_[i] = mono;
-                    return;
-                }
-                lanes[used++] = static_cast<ModeT>(mode);
+        bool overflows = false;
+        // The slot walk is shared with the hash, so the two cannot disagree about what a row's slots are.
+        // Lanes come out ascending because the walk is.
+        for_each_mode_slot(mono, [&](size_t mode, unsigned int code) {
+            if (overflows) {
+                return;
             }
-            codes |= CodesT{1} << ((2 * (used - 1)) + (b & 1U));
+            if (used == slots_per_row_) {
+                overflows = true;
+                return;
+            }
+            lanes[used] = static_cast<ModeT>(mode);
+            codes |= static_cast<CodesT>(code) << (2 * used);
+            ++used;
+        });
+        if (overflows) {
+            lanes[0] = kOverflowLane;
+            codes_[i] = 0;
+            overflow_[i] = mono;
+            return;
         }
         if (!overflow_.empty()) {
             overflow_.erase(i);
@@ -309,6 +404,64 @@ public:
         return row_slot_count(codes) + static_cast<size_t>(std::popcount(row_paired_bits(codes)));
     }
 
+    // --- the keyless index over those rows ---------------------------------------------------------
+    //
+    // A key is a SparseRow or a Bitset, and both hash through sparse_row_hash, so the two are
+    // interchangeable at a call site. Prefer the row: it is what the scan holds, and it is the only form
+    // that needs no slot walk to hash. The Bitset form is what a caller still holding a monomial uses.
+
+    auto find(const SparseRow &key) const -> std::optional<size_t> { return find_hashed_(key); }
+    auto find(const key_type &key) const -> std::optional<size_t> { return find_hashed_(key); }
+
+    // Insert-or-no-op. The row at `value` must already be written -- the confirm reads it.
+    template <typename Key>
+    auto emplace(const Key &key, mapped_type value) -> void {
+        table_.emplace(fold_hash(key), value, [&](size_t i) { return row_eq_key(i, key); });
+    }
+
+    // Insert n distinct rows with consecutive indices [base, base+n). Rows must already be written.
+    template <typename KeyFn>
+    auto bulk_insert(size_t n, mapped_type base, KeyFn &&key_at) -> void {
+        if (n == 0) {
+            return;
+        }
+        RowHashTable::check_index_fits(base + n - 1);
+        for (size_t k = 0; k < n; ++k) {
+            table_.insert_distinct(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
+        }
+    }
+
+    // out[i] = row index of keys[i], or kNotFound. Same result as n find() calls; see
+    // RowHashTable::find_batch for why the row prefetch sits between probe and confirm. Both arrays are
+    // prefetched: the confirm reads the codes word first and the lanes only if it matches, but they are
+    // separate allocations and so separate cache misses.
+    template <typename Key>
+    auto find_batch(const Key *keys, size_t n, size_t *out) const -> void {
+        table_.find_batch(
+            keys,
+            n,
+            out,
+            [this](const Key &key) { return fold_hash(key); },
+            [this](size_t i) {
+                __builtin_prefetch(&codes_[i], 0, 0);
+                __builtin_prefetch(&modes_[i * slots_per_row_], 0, 0);
+            },
+            [this](size_t i, const Key &key) { return row_eq_key(i, key); });
+    }
+
+    // Rows in index order, as fn(row_index). Not the row itself: a spilled row has no view, so what a
+    // caller wants off the index is the index.
+    template <typename Fn>
+    auto for_each_index(Fn &&fn) const -> void {
+        table_.for_each_slot([&](TermIndex idx, uint32_t) { fn(static_cast<size_t>(idx)); });
+    }
+
+    [[nodiscard]] auto indexed_count() const noexcept -> size_t { return table_.count(); }
+
+    [[nodiscard]] auto index_estimated_memory_bytes() const -> size_t {
+        return sizeof(SparseRowStore) + table_.slot_bytes();
+    }
+
     [[nodiscard]] auto memory_bytes() const -> size_t {
         size_t total = modes_.capacity() * sizeof(ModeT);
         total += codes_.capacity() * sizeof(CodesT);
@@ -330,16 +483,51 @@ public:
     }
 
 private:
-    // Spilled rows have no codes word, so their support is counted the dense way. Adjacent set bits do
-    // not straddle a word: a mode's two positions are 2m and 2m+1.
+    // Spilled rows have no codes word, so their support is counted the dense way.
     [[nodiscard]] static auto occupied_modes(const value_type &mono) -> size_t {
         size_t n = 0;
-        for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
-            if ((b & 1U) == 0U || !mono.test(b - 1)) {
-                ++n;
-            }
-        }
+        for_each_mode_slot(mono, [&](size_t, unsigned int) { ++n; });
         return n;
+    }
+
+    // The 32-bit fold the table stores as its equality pre-filter, over the full-width row hash.
+    template <typename Key>
+    static auto fold_hash(const Key &key) noexcept -> uint32_t {
+        const size_t full = sparse_row_hash(key);
+        return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
+    }
+
+    template <typename Key>
+    auto find_hashed_(const Key &key) const -> std::optional<size_t> {
+        return table_.find(fold_hash(key), [&](size_t i) { return row_eq_key(i, key); });
+    }
+
+    // The find confirm, against a row query. Codes first: one word compare rejects nearly every
+    // pre-filter false positive, and it is what fixes the lane compare's length -- equal codes means
+    // equal slot counts, so only the occupied lanes can differ. Comparing the padded width instead (as
+    // the plan sketched) would be the same cost but would silently mismatch any query a caller left
+    // unpadded, and the padding is capacity-dependent where a key must not be.
+    [[nodiscard]] auto row_eq_key(size_t i, const SparseRow &key) const -> bool {
+        if (spilled(i)) {
+            return dense_row_equals(overflow_.at(i), key);
+        }
+        if (codes_[i] != key.codes) {
+            return false;
+        }
+        return std::memcmp(&modes_[i * slots_per_row_], key.modes, row_slot_count(key.codes) * sizeof(ModeT)) == 0;
+    }
+
+    // The same against a monomial query, which is the only form that can match a spilled row exactly.
+    [[nodiscard]] auto row_eq_key(size_t i, const key_type &key) const -> bool {
+        if (spilled(i)) {
+            return overflow_.at(i) == key;
+        }
+        return dense_row_equals(key, view(i));
+    }
+
+    auto reserve_rows_(size_t n) -> void {
+        modes_.reserve(n * slots_per_row_);
+        codes_.reserve(n);
     }
 
     [[nodiscard]] auto capacity() const -> size_t { return codes_.capacity(); }
@@ -351,6 +539,7 @@ private:
     size_t slots_per_row_ = kDefaultSlots;
     // Lossless side-map for rows occupying more than slots_per_row_ modes.
     std::unordered_map<size_t, value_type> overflow_ = {};
+    RowHashTable table_ = {};
 };
 
 } // namespace monoprop::detail
