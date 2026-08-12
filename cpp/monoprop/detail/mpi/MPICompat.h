@@ -203,7 +203,8 @@ inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Com
 // recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a
 // no-op on the synchronous Shm / single-process paths) and unpacks by source.
 template <class T>
-struct PendingAlltoallv {
+struct [[nodiscard("complete the transfer with wait_into(); dropping the handle frees buffers MPI still "
+                   "owns")]] PendingAlltoallv {
     int num_ranks = 0;
     std::vector<int> send_counts;
     std::vector<int> send_displs;
@@ -215,13 +216,46 @@ struct PendingAlltoallv {
     MPI_Request request = MPI_REQUEST_NULL; // set only on the Kind::Mpi async path
 #endif
 
-    auto wait_into(std::vector<std::vector<T>> &recv_data) -> void {
+    // Move-only and self-completing, for the same reason mpi::Ticket is: the posted MPI_Ialltoallv writes
+    // directly into this handle's own send_buffer/recv_buffer, so a copy would hand two owners the same
+    // request (and wait on it twice), and a handle destroyed without wait_into -- what an exception or an
+    // early return between post and unpack does -- would free those buffers while MPI is still writing
+    // into them.
+    PendingAlltoallv() = default;
+    PendingAlltoallv(const PendingAlltoallv &) = delete;
+    auto operator=(const PendingAlltoallv &) -> PendingAlltoallv & = delete;
+    PendingAlltoallv(PendingAlltoallv &&other) noexcept { *this = std::move(other); }
+    auto operator=(PendingAlltoallv &&other) noexcept -> PendingAlltoallv & {
+        if (this != &other) {
+            wait(); // never drop a request this handle already owns
+            num_ranks = other.num_ranks;
+            send_counts = std::move(other.send_counts);
+            send_displs = std::move(other.send_displs);
+            recv_counts = std::move(other.recv_counts);
+            recv_displs = std::move(other.recv_displs);
+            send_buffer = std::move(other.send_buffer);
+            recv_buffer = std::move(other.recv_buffer);
+#ifdef monoprop_ENABLE_MPI
+            request = other.request;
+            other.request = MPI_REQUEST_NULL;
+#endif
+        }
+        return *this;
+    }
+    ~PendingAlltoallv() { wait(); }
+
+    // Idempotent; a no-op on the synchronous Shm / single-process paths and in non-MPI builds.
+    auto wait() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (request != MPI_REQUEST_NULL) {
             MPI_Wait(&request, MPI_STATUS_IGNORE);
             request = MPI_REQUEST_NULL;
         }
 #endif
+    }
+
+    auto wait_into(std::vector<std::vector<T>> &recv_data) -> void {
+        wait();
         recv_data.resize(static_cast<size_t>(num_ranks));
         for (int i = 0; i < num_ranks; ++i) {
             const auto lo = recv_buffer.begin() + recv_displs[static_cast<size_t>(i)];
