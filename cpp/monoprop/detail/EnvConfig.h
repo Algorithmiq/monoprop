@@ -27,6 +27,11 @@
 //   monoprop_COMM_PROFILE       bool, default OFF; per-partition collective accounting to stderr → comm_profile
 //   monoprop_SPIN_BUDGET_US     positive int us, default kDefaultSpinBudgetUs; barrier on-core spin before
 //                               yielding. Exists to be swept against a real workload → spin_budget_us
+//   monoprop_BARRIER_GROUPING   bool, default ON; 0/false forces the flat barrier while LEAVING PINNING ON
+//                               → barrier_grouping. Without this the two-level barrier cannot be measured:
+//                               its domains come from the cpusets, so turning pinning off to get a flat
+//                               barrier also unpins, and every before/after confounds the two. Exists so
+//                               "grouped vs flat, both pinned" is a run rather than an argument.
 
 namespace monoprop::config {
 
@@ -62,6 +67,7 @@ struct Settings {
     bool partition_pinning = true;
     bool comm_profile = false;
     std::optional<int> spin_budget_us; // nullopt ⇒ the barrier's own default
+    bool barrier_grouping = true;
 };
 
 // Parse the environment once; the Settings are cached and shared across TUs.
@@ -72,6 +78,7 @@ inline auto get() -> const Settings & {
         s.partition_pinning = detail::parse_flag(std::getenv("monoprop_PARTITION_PINNING"), true);
         s.comm_profile = detail::parse_flag(std::getenv("monoprop_COMM_PROFILE"), false);
         s.spin_budget_us = detail::parse_positive_int(std::getenv("monoprop_SPIN_BUDGET_US"));
+        s.barrier_grouping = detail::parse_flag(std::getenv("monoprop_BARRIER_GROUPING"), true);
         return s;
     }();
     return settings;

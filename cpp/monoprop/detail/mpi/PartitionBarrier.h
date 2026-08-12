@@ -41,7 +41,15 @@ public:
 // the NUMA node) the barrier becomes two-level: fan in within a domain, then across domains, then release
 // within the domain. Both the arrival fetch_add and the release store then cost O(S/G) coherence
 // transactions instead of O(S), and stay inside one cache slice. No group ids (pinning off, or /sys
-// unreadable), a single domain, or all-singleton domains degrade to the flat barrier.
+// unreadable), a single domain, all-singleton domains, or monoprop_BARRIER_GROUPING=0 degrade to the
+// flat barrier. That last one exists because the domains come from the cpusets: without it the only way
+// to get a flat barrier is to unpin, so "grouped vs flat" and "pinned vs unpinned" could never be
+// separated, and the second level's value could not be measured on a real workload.
+//
+// The second level is not a free win. It replaces one fetch_add with two sequential hops, so it pays
+// only when there is contention to relieve: at high partition counts, or when arrivals are skewed. On a
+// collective short enough that the barrier is most of it, and with partitions arriving together, the
+// extra hop is pure latency.
 //
 // The acquire/release/relaxed orderings below are load-bearing, not an oversight: the release store to
 // `gen_` is what publishes the preceding relaxed reset of `arrived_`. Promoting them to seq_cst would
@@ -59,7 +67,7 @@ public:
         : spin_budget_(spin_budget.value_or(
               std::chrono::microseconds{config::get().spin_budget_us.value_or(detail::kDefaultSpinBudgetUs)})),
           participants_(participants) {
-        if (static_cast<int>(group_of.size()) != participants || participants <= 0) {
+        if (static_cast<int>(group_of.size()) != participants || participants <= 0 || !config::get().barrier_grouping) {
             return; // flat
         }
         // Compact the domain ids to 0..G-1 in first-seen order, and count each group.
