@@ -152,18 +152,17 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
     // Replaces the store MPOperator's constructor made: same width, but now with the cutoff-derived
-    // packed-row width, which is only knowable after regenerate_cutoff_fn_() above.
-    mp_op_.store = std::make_unique<detail::OperatorIndex>(2 * storage_num_modes_, packed_inline_width_());
-    mp_op_.store->reserve(expected_local_terms);
-    // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
-    mp_op_.inverted_index_.reset();
+    // packed-row width, which is only knowable after regenerate_cutoff_fn_() above. set_store() drops the
+    // stale lazy inverted index with it.
+    mp_op_.set_store(std::make_unique<detail::OperatorIndex>(2 * storage_num_modes_, packed_inline_width_()));
+    mp_op_.reserve_terms(expected_local_terms);
 
     size_t i = 0;
     // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here.
     const auto insert_if_owned = [&](const auto &mono) {
         if (my_rank == find_rank(mono, num_ranks)) {
             mp_op_.append_term(mono);
-            mp_op_.store->emplace(mono, i++);
+            mp_op_.index_term(mono, i++);
         }
     };
     if (schrodinger_) {
@@ -1047,11 +1046,11 @@ auto MonomialPropagator::contract_partially(const VecD &parameters, bool inplace
 auto MonomialPropagator::evolved_operator_terms(const VecD &parameters, double atol)
     -> std::vector<std::pair<VecZ, std::complex<double>>> {
     using Term = std::pair<VecZ, std::complex<double>>;
-    // `p` is always unpartitioned here (a partition, or *this), so indexing() is available.
+    // `p` is always unpartitioned here (a partition, or *this), so for_each_term() is available.
     const auto collect = [&](MonomialPropagator &p) -> std::vector<Term> {
         std::vector<Term> terms;
         const VecD evolved = p.contract_partially(parameters, false);
-        p.indexing().for_each([&](const auto &mono, size_t idx) {
+        p.for_each_term([&](const auto &mono, size_t idx) {
             if (idx >= evolved.size()) {
                 return;
             }

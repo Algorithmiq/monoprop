@@ -60,13 +60,21 @@ public:
 };
 
 struct MPOperator {
-    // The row store's concrete type, named once. Selecting a different one (SparseRowStore) is the
-    // representation switch, and this alias plus query_payload_words() below are what it turns on.
-    using Store = OperatorIndex;
-
-    // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
-    // itself cheaply movable). Always non-null.
-    std::unique_ptr<Store> store;
+    // The row store is one of two backends, chosen per propagator from its storage mode count
+    // (SparseRowStore::preferred_for_modes) and then fixed for the propagator's lifetime. Exactly one
+    // of these is non-null.
+    //
+    // Two pointers rather than the compile-time alias this was, because the choice is data. And rather
+    // than a virtual interface, because the scan asks the store for a row per anticommuting term: a
+    // branch or an indirect call on that path is not affordable. with_store() binds the concrete type
+    // once per layer instead -- the same shape as with_algebra() for a runtime Basis, and the reason
+    // build_layer is a template. Everything off that path goes through the forwarding accessors below,
+    // which pay one well-predicted branch.
+    //
+    // Heap-owned because neither store is copyable or movable (single-writer, and their views borrow
+    // their arrays), which keeps MPOperator itself cheaply movable.
+    std::unique_ptr<OperatorIndex> dense_rows = nullptr;
+    std::unique_ptr<SparseRowStore> sparse_rows = nullptr;
     VecD op_coeffs = {};
     // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
     // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are
@@ -85,14 +93,16 @@ struct MPOperator {
 
     // num_bits is the storage bit width of every monomial this operator holds. No default constructor:
     // the width used to come free from NumModes, and a default-constructed store would be a width-0
-    // one that silently mis-sizes every monomial built from it.
-    explicit MPOperator(size_t num_bits) : store(std::make_unique<OperatorIndex>(num_bits)) {}
+    // one that silently mis-sizes every monomial built from it. The backend starts dense and the
+    // propagator replaces it via set_store() once the cutoff -- and with it the row width -- is known.
+    explicit MPOperator(size_t num_bits) : dense_rows(std::make_unique<OperatorIndex>(num_bits)) {}
 
     MPOperator(MPOperator &&) noexcept = default;
     MPOperator &operator=(MPOperator &&) noexcept = default;
 
     MPOperator(const MPOperator &other)
-        : store(other.store->clone()),
+        : dense_rows(other.dense_rows ? other.dense_rows->clone() : nullptr),
+          sparse_rows(other.sparse_rows ? other.sparse_rows->clone() : nullptr),
           op_coeffs(other.op_coeffs),
           state_rows_(other.state_rows_),
           state_vals_(other.state_vals_),
@@ -103,12 +113,48 @@ struct MPOperator {
           basis(other.basis),
           inverted_index_(other.inverted_index_) {}
 
-    auto size() const -> size_t { return store->size(); }
+    // Binds the live store to a concrete type for the duration of the call. Both arms are instantiated,
+    // so `f` must be a generic lambda and must return the same type from each.
+    template <class F>
+    [[gnu::always_inline]] auto with_store(F &&f) -> decltype(auto) {
+        if (sparse_rows) {
+            return f(*sparse_rows);
+        }
+        return f(*dense_rows);
+    }
+    template <class F>
+    [[gnu::always_inline]] auto with_store(F &&f) const -> decltype(auto) {
+        if (sparse_rows) {
+            return f(*sparse_rows);
+        }
+        return f(*dense_rows);
+    }
+
+    // Installs a backend, dropping the lazy inverted index with it: the index addresses the old rows,
+    // and leaving it would let a stale one answer for the new store until its row count happened to
+    // disagree. One overload per backend rather than a tag, so a call site names the choice.
+    auto set_store(std::unique_ptr<OperatorIndex> rows) -> void {
+        dense_rows = std::move(rows);
+        sparse_rows.reset();
+        inverted_index_.reset();
+    }
+    auto set_store(std::unique_ptr<SparseRowStore> rows) -> void {
+        sparse_rows = std::move(rows);
+        dense_rows.reset();
+        inverted_index_.reset();
+    }
+    [[nodiscard]] auto rows_are_sparse() const -> bool { return sparse_rows != nullptr; }
+
+    auto size() const -> size_t {
+        return with_store([](const auto &rows) { return rows.size(); });
+    }
 
     // Off the store, not a member of its own, so the width driving row reconstruction and the width
     // driving the monomials handed to it cannot drift apart. The copy constructor needs no extra
     // work for the same reason: clone() carries the width across.
-    [[nodiscard]] auto num_bits() const -> size_t { return store->num_bits(); }
+    [[nodiscard]] auto num_bits() const -> size_t {
+        return with_store([](const auto &rows) { return rows.num_bits(); });
+    }
     // The per-word loops are sized in words, not bits.
     [[nodiscard]] auto num_words() const -> size_t { return (num_bits() + 63) / 64; }
 
@@ -122,21 +168,40 @@ struct MPOperator {
 
     // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.
-    auto append_term(const Bitset &mono) -> void { store->push_back(mono); }
+    auto append_term(const Bitset &mono) -> void {
+        with_store([&](auto &rows) { rows.push_back(mono); });
+    }
 
-    // Resync the inverted index after a bulk growth of `store`, preserving has_value() ⟹ rows()==store.size().
+    // Both are setup-path forwards, kept here rather than exposing a store, so nothing outside has to
+    // know which backend is live.
+    auto reserve_terms(size_t n) -> void {
+        with_store([&](auto &rows) { rows.reserve(n); });
+    }
+    auto index_term(const Bitset &mono, size_t row) -> void {
+        with_store([&](auto &rows) { rows.emplace(mono, row); });
+    }
+    [[nodiscard]] auto find(const Bitset &mono) const -> std::optional<size_t> {
+        return with_store([&](const auto &rows) { return rows.find(mono); });
+    }
+    // This rank's terms as fn(monomial, row), in the index's slot order. Materializes each row.
+    template <typename Fn>
+    auto for_each_term(Fn &&fn) const -> void {
+        with_store([&](const auto &rows) { rows.for_each(fn); });
+    }
+
+    // Resync the inverted index after a bulk growth of the store, preserving has_value() ⟹ rows()==size().
     auto reindex_after_growth(size_t base, size_t n) -> void {
         if (inverted_index_.has_value()) {
-            inverted_index_->append_rows(*store, base, n);
+            with_store([&](const auto &rows) { inverted_index_->append_rows(rows, base, n); });
         }
     }
 
     auto inverted_index() const -> const InvertedIndex & {
-        if (!inverted_index_.has_value() || inverted_index_->rows() != store->size()) {
+        if (!inverted_index_.has_value() || inverted_index_->rows() != size()) {
             // Column count is the storage bit width, taken off the store so it cannot drift from the
             // monomials whose positions rebuild() scatters.
             inverted_index_.emplace(num_bits());
-            inverted_index_->rebuild(*store);
+            with_store([&](const auto &rows) { inverted_index_->rebuild(rows); });
         }
         return *inverted_index_;
     }
@@ -158,7 +223,7 @@ struct MPOperator {
         for (const auto &kv : init_op_map) {
             const auto &mono = kv.first;
             const auto coeff = kv.second;
-            if (const auto found = store->find(mono)) {
+            if (const auto found = find(mono)) {
                 op_coeffs[*found] = coeff;
                 del.push_back(mono);
             }
@@ -223,7 +288,7 @@ struct MPOperator {
         for (const auto &[k, v] : op_dict) {
             // Unchecked by design: the only caller bounds-checks against its logical_num_modes_.
             const auto mono = indices_to_bitset(k, num_bits());
-            const auto rank_evolved_op = store->find(mono);
+            const auto rank_evolved_op = find(mono);
             const auto rank_init_op = init_op_map.find(mono);
             const auto coeff = algebra_encode_coeff(basis, v, mono);
 
@@ -264,14 +329,16 @@ struct MPOperator {
         VecZ new_inds(size() - state_scored_rows_);
         std::iota(new_inds.begin(), new_inds.end(), state_scored_rows_);
 
-        const auto paired_inds = is_fully_paired(new_inds, *store, num_bits());
-        state_rows_.reserve(state_rows_.size() + paired_inds.size());
-        state_vals_.reserve(state_vals_.size() + paired_inds.size());
+        with_store([&](const auto &rows) {
+            const auto paired_inds = is_fully_paired(new_inds, rows, num_bits());
+            state_rows_.reserve(state_rows_.size() + paired_inds.size());
+            state_vals_.reserve(state_vals_.size() + paired_inds.size());
 
-        // The algebra picks the diagonal ⟨b|·|b⟩ phase of each fully-paired term.
-        algebra_score_state(basis, paired_inds, initial_state, *store, num_bits(), [this](size_t row, double phase) {
-            state_rows_.push_back(static_cast<TermIndex>(row));
-            state_vals_.push_back(phase);
+            // The algebra picks the diagonal ⟨b|·|b⟩ phase of each fully-paired term.
+            algebra_score_state(basis, paired_inds, initial_state, rows, num_bits(), [this](size_t row, double phase) {
+                state_rows_.push_back(static_cast<TermIndex>(row));
+                state_vals_.push_back(phase);
+            });
         });
 
         state_scored_rows_ = size();
@@ -289,14 +356,17 @@ struct MPOperator {
 
 // Callers must pass pairwise-distinct, currently-absent keys: bulk_insert then skips duplicate probes and
 // slot k deterministically lands at base+k. Call after any pass that reads pre-insert op state
-// (op.size() must equal the returned base). Fully deduced -- unlike estimate_memory_usage below, nothing
-// here needs NumModes as a value, so even op (an MPOperator<NumModes>) needs no constraint.
-inline auto insert_absent_terms(auto &op, size_t n, auto &&key_at, auto &&per_slot) -> size_t {
-    const size_t base = op.store->grow_rows_geometric(n);
+// (op.size() must equal the returned base).
+//
+// `store` is passed alongside `op` rather than taken off it: every caller is inside build_layer, which
+// has already bound the concrete backend, and re-entering with_store() here would bind it a second time
+// per insert batch for nothing.
+inline auto insert_absent_terms(auto &op, auto &store, size_t n, auto &&key_at, auto &&per_slot) -> size_t {
+    const size_t base = store.grow_rows_geometric(n);
     for (size_t k = 0; k < n; ++k) {
         per_slot(k, base);
     }
-    op.store->bulk_insert(n, base, std::forward<decltype(key_at)>(key_at));
+    store.bulk_insert(n, base, std::forward<decltype(key_at)>(key_at));
     op.reindex_after_growth(base, n);
     return base;
 }
@@ -350,13 +420,16 @@ struct MPOperatorMemoryBreakdown final {
 
 inline auto estimate_memory_usage(const MPOperator &op) -> MPOperatorMemoryBreakdown {
     MPOperatorMemoryBreakdown breakdown;
-    breakdown.operator_terms_bytes = op.store->memory_bytes();
+    op.with_store([&](const auto &rows) {
+        breakdown.operator_terms_bytes = rows.memory_bytes();
+        breakdown.indexing_bytes = rows.index_estimated_memory_bytes();
+        breakdown.operator_terms_slack_bytes = rows.slack_bytes();
+    });
     breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
     // Every representation of the state at once: the sparse scored set plus the dense vector.
     breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)
                                    + op.state_rows_.capacity() * sizeof(TermIndex)
                                    + op.state_vals_.capacity() * sizeof(double);
-    breakdown.indexing_bytes = op.store->index_estimated_memory_bytes();
     breakdown.init_operator_bytes = unordered_flat_map_storage_bytes(op.init_op_map);
     breakdown.initial_state_bytes = op.initial_state.capacity() * sizeof(size_t);
     if (op.inverted_index_.has_value()) {
@@ -366,7 +439,6 @@ inline auto estimate_memory_usage(const MPOperator &op) -> MPOperatorMemoryBreak
         breakdown.inverted_index_sparse_bytes = tiers[1];
         breakdown.inverted_index_dense_columns = tiers[2];
     }
-    breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
     // State phases are unit-magnitude, so at rest the scored count IS the nonzero count; a live vector needs a scan.
     breakdown.state_coeffs_nonzero =
         op.state_coeffs.empty()

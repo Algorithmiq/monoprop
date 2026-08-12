@@ -190,14 +190,19 @@ public:
     /// graph_layers(), optimizer order) or a per-gate one (length n_gates()); on a tie, per-layer wins.
     auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
-    /// This rank's monomial → coefficient index. Single-partition only — see require_single_partition_.
-    auto indexing() -> detail::OperatorIndex & {
-        require_single_partition_("indexing()");
-        return *mp_op_.store;
+    /// This rank's terms as fn(monomial, coefficient index), in the index's own slot order.
+    /// Single-partition only — see require_single_partition_. No accessor for the store itself: which
+    /// backend holds the rows is a runtime choice (see MPOperator::with_store), so there is no one type
+    /// to hand out.
+    template <typename Fn>
+    auto for_each_term(Fn &&fn) const -> void {
+        require_single_partition_("for_each_term()");
+        mp_op_.for_each_term(std::forward<Fn>(fn));
     }
-    auto indexing() const -> const detail::OperatorIndex & {
-        require_single_partition_("indexing()");
-        return *mp_op_.store;
+    /// This rank's term count. Single-partition only.
+    auto num_local_terms() const -> size_t {
+        require_single_partition_("num_local_terms()");
+        return mp_op_.size();
     }
 
     /// Per-layer (cos_inds, local_cycles, cross_rank_sin_send, cross_rank_sin_recv) for this
@@ -305,7 +310,7 @@ public:
 
     /// Contract the graph into the operator (Heisenberg) or state (Schrodinger). `inplace` consumes the
     /// graph and updates internal state; otherwise nothing is mutated. Core term excluded either way.
-    /// Coefficients are positioned by the owning partition's indexing(), so on a facade the result is
+    /// Coefficients are positioned by the owning partition's own index, so on a facade the result is
     /// the per-partition blocks concatenated in partition order: the same multiset as an unpartitioned
     /// run, but not positionally stable across partition counts — and the count is auto-picked from the
     /// host's core count unless pinned. Use evolved_operator_terms() when positions must mean something.

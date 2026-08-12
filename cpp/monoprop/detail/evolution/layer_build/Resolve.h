@@ -52,8 +52,10 @@ struct IncomingProbe {
 // ordinary argument.
 // inline is load-bearing: this is a plain function defined in a header, so without it every TU that
 // includes this emits its own definition and the link fails.
+template <typename Store>
 inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                                    MPOperator &op,
+                                   Store &store,
                                    size_t rank_count,
                                    size_t query_stride) -> IncomingProbe {
     const size_t W = query_stride;
@@ -96,7 +98,7 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
     // It holds the largest layer's worth of keys until the thread exits, where before it was
     // released after every layer. Peak RSS is unchanged -- the peak was always reached *during* a
     // layer -- but the resting footprint after one is not; the same trade `nz` and `keys_` already make.
-    thread_local typename QueryKeysFor<MPOperator::Store>::type scratch;
+    thread_local typename QueryKeysFor<Store>::type scratch;
     scratch.configure(op.num_bits());
     scratch.ensure(pr.nq_total);
     pr.mono = std::span<const Bitset>(scratch.data(), pr.nq_total);
@@ -108,8 +110,8 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
         pr.phase_of[g] = scratch.read_record(incoming[s], q, query_stride, g);
     }
     {
-        const size_t op_size = op.store->size();
-        op.store->find_batch(pr.mono.data(), pr.nq_total, pr.idx_of.data());
+        const size_t op_size = store.size();
+        store.find_batch(pr.mono.data(), pr.nq_total, pr.idx_of.data());
         for (size_t g = 0; g < pr.nq_total; ++g) {
             if (pr.idx_of[g] >= op_size) { // kNotFound is size_t max → also lands here
                 pr.idx_of[g] = kMissingIndex;
@@ -118,7 +120,7 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
     }
 
     // Phase 2 ((sender,query) prefix order): each miss takes the next index base+j.
-    pr.base = op.store->size();
+    pr.base = store.size();
     for (size_t g = 0; g < pr.nq_total; ++g) {
         if (pr.idx_of[g] == kMissingIndex) {
             pr.idx_of[g] = pr.base + pr.miss_g.size();
@@ -131,16 +133,17 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
 // Phase 4 (bulk insert of the distinct absent terms) into op slots [base, base+n_miss). Call after the
 // caller's Phase-3 scatter, which reads pre-insert op_coeffs for hits and needs base == op.size().
 // op/pr are deduced from their argument types (MPOperator/IncomingProbe).
-auto insert_incoming_misses(auto &op, const auto &pr) -> void {
+auto insert_incoming_misses(auto &op, auto &store, const auto &pr) -> void {
     const size_t n_miss = pr.miss_g.size();
     if (n_miss == 0) {
         return;
     }
     insert_absent_terms(
         op,
+        store,
         n_miss,
         [&](size_t j) -> decltype(auto) { return pr.mono[pr.miss_g[j]]; },
-        [&](size_t j, size_t base) { assign_row(*op.store, base + j, pr.mono[pr.miss_g[j]]); });
+        [&](size_t j, size_t base) { assign_row(store, base + j, pr.mono[pr.miss_g[j]]); });
 }
 
 // resolve_incoming / process_responses are the picture-independent cross-rank exchange skeletons; what
@@ -156,13 +159,14 @@ auto insert_incoming_misses(auto &op, const auto &pr) -> void {
 template <class Sink>
 auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                       auto &op,
+                      auto &store,
                       size_t rank_count,
                       bool is_leader_pass,
                       MatchedEpochSet &matched,
                       size_t combined_size, // pre-layer op size: bounds the matched set
                       Sink &sink) -> std::vector<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
-    const auto pr = probe_incoming_queries(incoming, op, rank_count, sink.stride());
+    const auto pr = probe_incoming_queries(incoming, op, store, rank_count, sink.stride());
     std::vector<std::vector<Resp>> responses(rank_count);
     for (size_t s = 0; s < rank_count; ++s) {
         responses[s].assign(pr.goff[s + 1] - pr.goff[s], Sink::init_response());
@@ -184,7 +188,7 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
         }
     }
 
-    insert_incoming_misses(op, pr);
+    insert_incoming_misses(op, store, pr);
     return responses;
 }
 

@@ -155,7 +155,7 @@ BOOST_AUTO_TEST_CASE(partition_raw_accessors_reject_a_facade) {
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     BOOST_CHECK_THROW(static_cast<void>(sim.graph()), std::runtime_error);
     BOOST_CHECK_THROW(static_cast<void>(sim.mp_op()), std::runtime_error);
-    BOOST_CHECK_THROW(static_cast<void>(sim.indexing()), std::runtime_error);
+    BOOST_CHECK_THROW(static_cast<void>(sim.num_local_terms()), std::runtime_error);
     BOOST_CHECK_THROW(static_cast<void>(sim.graph_data()), std::runtime_error);
 
     auto solo = majorana_sim(data, 1);

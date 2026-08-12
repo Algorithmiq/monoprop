@@ -175,10 +175,15 @@ struct FusedScanResult {
 // deterministic. `fused_scale_coeffs` (k==0 only; must alias coeffs.data()) scales every anticommuting
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
-// op, gen and cutoff_eval are deduced from their argument types; no width is named anywhere below any
-// more -- the monomials this builds take theirs from `gen`, which is the operator's storage width.
+// op, store, gen and cutoff_eval are deduced from their argument types; no width is named anywhere below
+// any more -- the monomials this builds take theirs from `gen`, which is the operator's storage width.
+//
+// `store` is a separate argument rather than reached through `op`, and its concrete type is what selects
+// the per-term kernel: build_layer has already bound the backend, and re-entering that dispatch here
+// would put a branch on the per-term path, which is the one place it cannot go.
 template <Algebra A>
 auto fused_find_and_collect(const auto &op,
+                            const auto &store,
                             const MonomialLike auto &gen,
                             const auto &cutoff_eval,
                             const CutoffContext &cut_st,
@@ -220,7 +225,7 @@ auto fused_find_and_collect(const auto &op,
             return res;
         }
         const uint64_t *const row_parity_ptr = g_odd ? inverted_index.row_parity_words() : nullptr;
-        const size_t n = op.store->size();
+        const size_t n = store.size();
         // The fused sweep writes fused_scale_coeffs[i] for every anticommuting i < n, so it must be the
         // very array the reads come from and cover the full operator — a violation corrupts 1/cos recovery.
         assert(fused_scale_coeffs == nullptr || (fused_scale_coeffs == coeffs.data() && coeffs.size() >= n));
@@ -258,7 +263,7 @@ auto fused_find_and_collect(const auto &op,
         // which is the operator's storage width, so every word op inside stays on Bitset's matched-width
         // path. Which kernel this is follows from the store (TermProductsFor); the scan below names no
         // representation.
-        using Store = std::remove_cvref_t<decltype(*op.store)>;
+        using Store = std::remove_cvref_t<decltype(store)>;
         typename TermProductsFor<Store, A>::type products(gen, cutoff_eval);
 
         // The dynamic gate runs before the product, so a gate-rejected term computes none.
@@ -267,7 +272,7 @@ auto fused_find_and_collect(const auto &op,
             if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
                 return;
             }
-            const auto [overlap, phase_factor] = products.product(*op.store, i);
+            const auto [overlap, phase_factor] = products.product(store, i);
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
             const bool struct_pass = products.passes(new_pop);
@@ -346,7 +351,7 @@ auto fused_find_and_collect(const auto &op,
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t mono_pop = op.store->popcount(i);
+                    const size_t mono_pop = store.popcount(i);
                     const bool is_follower = (w.foll >> tz) & 1u;
                     emit(mono_pop, i, abs_c, v_src, is_follower);
                 }
@@ -362,7 +367,7 @@ auto fused_find_and_collect(const auto &op,
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t mono_pop = op.store->popcount(i);
+                    const size_t mono_pop = store.popcount(i);
                     const bool is_follower = (w.foll >> tz) & 1u;
                     emit(mono_pop, i, abs_c, v_src, is_follower);
                 }
@@ -373,7 +378,7 @@ auto fused_find_and_collect(const auto &op,
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
-                    const size_t mono_pop = op.store->popcount(i);
+                    const size_t mono_pop = store.popcount(i);
                     if (mono_pop > static_cast<size_t>(only_rotate_len_k)) {
                         continue;
                     }

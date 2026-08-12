@@ -284,8 +284,14 @@ private:
     size_t extent_ = 0;
 };
 
-// Which key batch a store wants. Explicit specializations rather than a member typedef on the stores: the
-// record codec lives here, and a store must not depend on the wire format it is queried through.
+// Which key batch a store's query records arrive in. Explicit specializations rather than a member
+// typedef on the stores: the record codec lives here, and a store must not depend on the wire format it
+// is queried through.
+//
+// Both are dense today, including the sparse store's: the query record is still the monomial's words (see
+// SparseTermProducts::dense_row), and a SparseRowStore finds a Bitset key as readily as a row key --
+// sparse_row_hash has an overload for each and they agree. This trait is the seam where that changes, and
+// SparseQueryKeys is what it changes to.
 template <typename Store>
 struct QueryKeysFor;
 template <>
@@ -294,7 +300,7 @@ struct QueryKeysFor<OperatorIndex> {
 };
 template <>
 struct QueryKeysFor<SparseRowStore> {
-    using type = SparseQueryKeys;
+    using type = DenseQueryKeys;
 };
 
 // No monomial reconstruction: process_responses needs only the phase.

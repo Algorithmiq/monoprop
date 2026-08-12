@@ -121,6 +121,10 @@ using OperatorDict = std::map<VecZ, std::complex<double>>;
 
 // Included here (not at the top) because OperatorIndex needs TermIndex/MonomialHash defined above.
 #include "monoprop/detail/operator/OperatorIndex.h"
+// Both stores must be complete before MPOperator.h below, which holds one of each, and this is the only
+// place their order is fixed: a TU that included SparseRowStore.h first would otherwise re-enter here,
+// reach MPOperator.h and find SparseRowStore still undefined.
+#include "monoprop/detail/operator/SparseRowStore.h"
 
 // Must be declared before InvertedIndex.h/MPOperator.h: those templates reach these overloads via
 // ordinary lookup, not ADL (which searches only monoprop::detail).
