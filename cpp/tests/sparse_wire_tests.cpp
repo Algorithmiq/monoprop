@@ -19,10 +19,12 @@
 
 #include <cstddef>
 #include <random>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/operator/OperatorIndex.h"
 #include "monoprop/detail/operator/SparseRowStore.h"
 
 using namespace monoprop;
@@ -181,4 +183,108 @@ BOOST_AUTO_TEST_CASE(sparse_wire_short_rows_keep_the_full_stride) {
     // Nothing was written into lanes, so the poison is still there -- the empty row cannot have inherited
     // the previous record's modes.
     BOOST_TEST(lanes[0] == 0xEEEE);
+}
+
+// --- the query key batches -------------------------------------------------------------------------
+//
+// Both resolve paths fill one of these from wire records and hand it to find_batch contiguously. They are
+// grow-only and reused across layers, which is the shape the measurements asked for, and that reuse is
+// where the two ways to get it wrong live: a stale element read before being overwritten, and -- for the
+// sparse batch, whose keys are views -- a view left pointing into storage that growth moved.
+
+static_assert(std::is_same_v<QueryKeysFor<OperatorIndex>::type, DenseQueryKeys>);
+static_assert(std::is_same_v<QueryKeysFor<SparseRowStore>::type, SparseQueryKeys>);
+
+BOOST_AUTO_TEST_CASE(query_keys_dense_batch_round_trips_records) {
+    constexpr size_t kNumBits = 128;
+    const size_t stride = query_words(kNumBits / 64);
+    VecZ buf;
+    std::vector<Bitset> monos;
+    for (size_t t = 0; t < 40; ++t) {
+        Bitset mono(kNumBits);
+        mono.set(t);
+        mono.set(kNumBits - 1 - t);
+        monos.push_back(mono);
+        query_push(buf, mono, (t % 2) == 0 ? 1 : -1);
+    }
+
+    DenseQueryKeys keys;
+    keys.configure(kNumBits);
+    keys.ensure(monos.size());
+    for (size_t q = 0; q < monos.size(); ++q) {
+        BOOST_TEST(keys.read_record(buf, q, stride, q) == ((q % 2) == 0 ? 1 : -1));
+    }
+    for (size_t q = 0; q < monos.size(); ++q) {
+        BOOST_TEST((keys[q] == monos[q]));
+        BOOST_TEST((keys.data()[q] == monos[q]));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(query_keys_sparse_batch_survives_growth) {
+    constexpr size_t kCapacity = 12;
+    const size_t stride = query_words(sparse_payload_words(kCapacity));
+    std::mt19937_64 rng(20260812U);
+    VecZ buf;
+    std::vector<OwnedRow> rows;
+    for (size_t t = 0; t < 64; ++t) {
+        rows.push_back(random_row(rng, 1024, kCapacity));
+        sparse_query_push(buf, rows.back().view(), kCapacity, (t % 2) == 0 ? 1 : -1);
+    }
+
+    SparseQueryKeys keys;
+    keys.configure(kCapacity);
+
+    // Fill a small prefix, then grow: the lane array reallocates, so every view has to be rebuilt. If only
+    // the new tail were, the prefix read back below would be reading freed storage.
+    keys.ensure(8);
+    for (size_t q = 0; q < 8; ++q) {
+        BOOST_TEST(keys.read_record(buf, q, stride, q) == ((q % 2) == 0 ? 1 : -1));
+    }
+    keys.ensure(rows.size());
+    // Checked as a pointer invariant rather than by reading the prefix and hoping it looks wrong: a view
+    // left over from before the growth points into freed storage, which is undefined behaviour and might
+    // read back plausibly. Every view must address this batch's current lane array at its own stride.
+    for (size_t q = 0; q < rows.size(); ++q) {
+        BOOST_TEST(keys.data()[q].modes == keys.data()[0].modes + (q * kCapacity));
+    }
+    for (size_t q = 8; q < rows.size(); ++q) {
+        BOOST_TEST(keys.read_record(buf, q, stride, q) == ((q % 2) == 0 ? 1 : -1));
+    }
+
+    for (size_t q = 0; q < 8; ++q) {
+        // Re-read the prefix records so the prefix slots are written again after the growth; what is being
+        // checked is that the view still addresses this batch's own lanes.
+        BOOST_TEST(keys.read_record(buf, q, stride, q) == ((q % 2) == 0 ? 1 : -1));
+    }
+    for (size_t q = 0; q < rows.size(); ++q) {
+        const auto &key = keys.data()[q];
+        BOOST_TEST(key.codes == rows[q].codes);
+        const size_t n = key.num_slots();
+        BOOST_REQUIRE(n == rows[q].view().num_slots());
+        for (size_t j = 0; j < n; ++j) {
+            BOOST_TEST(key.mode(j) == rows[q].view().mode(j));
+        }
+    }
+}
+
+// configure() with a different extent must drop the storage: a thread servicing two propagators of
+// different widths would otherwise write a wide record into a narrow element.
+BOOST_AUTO_TEST_CASE(query_keys_reconfigure_resizes_the_elements) {
+    DenseQueryKeys dense;
+    dense.configure(64);
+    dense.ensure(4);
+    BOOST_TEST(dense[0].size() == 64U);
+    dense.configure(256);
+    dense.ensure(4);
+    BOOST_TEST(dense[0].size() == 256U);
+
+    SparseQueryKeys sparse;
+    sparse.configure(4);
+    sparse.ensure(4);
+    const auto *narrow_base = sparse.data()[0].modes;
+    const auto *narrow_next = sparse.data()[1].modes;
+    BOOST_TEST(narrow_next - narrow_base == 4);
+    sparse.configure(12);
+    sparse.ensure(4);
+    BOOST_TEST(sparse.data()[1].modes - sparse.data()[0].modes == 12);
 }

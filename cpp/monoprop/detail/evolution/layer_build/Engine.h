@@ -321,12 +321,12 @@ struct LayerBuildEngine {
     // Fused query+value send scratch (ContractSink, R>1): shared by a gate's two exchange passes.
     std::vector<VecZ> combined_qv_;
     Sink sink;
-    // The *plain* query record width. Self-resolve records are plain even under the fused sink, whose
-    // wider stride applies only to the cross-rank wire, so this is not sink.stride().
+    // The *plain* query record's payload width. Self-resolve records are plain even under the fused sink,
+    // whose wider stride applies only to the cross-rank wire, so this is not sink.stride().
     size_t words_ = 0;
-    // Self-resolve scratch, sized once at the operator's width: query_read reads into its destination and
-    // requires it already be that wide.
-    MonomialList keys_;
+    // Self-resolve key batch, configured once off the operator. Separate from the incoming probe's batch:
+    // the two are live at the same time on the resolve path.
+    typename QueryKeysFor<MPOperator::Store>::type keys_;
 
     LayerBuildEngine(MPOperator &local_op_,
                      mpi::Comm comm_,
@@ -344,8 +344,9 @@ struct LayerBuildEngine {
           queries_r(R_),
           src_idx_r(R_),
           sink(std::move(sink_)),
-          words_(local_op_.num_words()),
-          keys_(kResolveBatch, Bitset(local_op_.num_bits())) {
+          words_(local_op_.query_payload_words()) {
+        keys_.configure(local_op_.num_bits());
+        keys_.ensure(kResolveBatch);
         matched.begin_gate(combined_size);
     }
 
@@ -493,7 +494,7 @@ private:
                 if (!is_leader_pass && matched.is_marked(src)) {
                     continue; // follower already matched by a leader → not an independent rotation
                 }
-                query_read(lq, q, query_words(words_), keys[m], phases[m]);
+                phases[m] = keys.read_record(lq, q, query_words(words_), m);
                 srcs[m] = src;
                 if constexpr (Sink::wants_values) {
                     vals[m] = (*lv)[q];
@@ -624,7 +625,7 @@ auto build_layer(auto &local_op,
     std::shared_ptr<LayerCore> storage;
     if (use_fused) {
         const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
-        storage = run(ContractSink{.num_words = local_op.num_words(),
+        storage = run(ContractSink{.num_words = local_op.query_payload_words(),
                                    .R = R,
                                    .my_rank = my_rank,
                                    .fc = *fused_contract,
@@ -635,7 +636,7 @@ auto build_layer(auto &local_op,
                                    .basis = basis});
     }
     else {
-        storage = run(GraphSink{local_op.num_words(), R, my_rank});
+        storage = run(GraphSink{local_op.query_payload_words(), R, my_rank});
     }
 
     // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the

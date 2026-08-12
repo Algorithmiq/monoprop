@@ -60,9 +60,13 @@ public:
 };
 
 struct MPOperator {
+    // The row store's concrete type, named once. Selecting a different one (SparseRowStore) is the
+    // representation switch, and this alias plus query_payload_words() below are what it turns on.
+    using Store = OperatorIndex;
+
     // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
     // itself cheaply movable). Always non-null.
-    std::unique_ptr<OperatorIndex> store;
+    std::unique_ptr<Store> store;
     VecD op_coeffs = {};
     // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
     // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are
@@ -105,8 +109,16 @@ struct MPOperator {
     // driving the monomials handed to it cannot drift apart. The copy constructor needs no extra
     // work for the same reason: clone() carries the width across.
     [[nodiscard]] auto num_bits() const -> size_t { return store->num_bits(); }
-    // The wire format and the per-word loops are sized in words, not bits.
+    // The per-word loops are sized in words, not bits.
     [[nodiscard]] auto num_words() const -> size_t { return (num_bits() + 63) / 64; }
+
+    // The payload width of one query record, in VecZ words -- the quantity every stride, alltoallv count
+    // and record offset in Engine.h is derived from. Equal to num_words() for a dense store, because a
+    // dense record *is* the monomial's words, but they are separate quantities: a support-form record
+    // carries lane words plus a codes word instead (sparse_payload_words), which is far narrower at large
+    // widths. Kept as its own accessor so the switch is this one function rather than a hunt through the
+    // engine for which num_words() meant "record" and which meant "monomial".
+    [[nodiscard]] auto query_payload_words() const -> size_t { return num_words(); }
 
     // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.

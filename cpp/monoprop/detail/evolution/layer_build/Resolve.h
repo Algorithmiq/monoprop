@@ -34,10 +34,10 @@ namespace monoprop::detail {
 struct IncomingProbe {
     std::vector<size_t> goff;              // rank_count+1 flat offsets: g = goff[s] + q
     DefaultInitVector<uint32_t> sender_of; // g → sender rank
-    // Not owned: a view over the thread_local scratch probe_incoming_queries fills, which is why only
+    // Not owned: a view over the thread_local key batch probe_incoming_queries fills, which is why only
     // one IncomingProbe may be live per thread at a time (see the note there). Every element is
     // full-width and fully overwritten before anything reads it.
-    std::span<Bitset> mono;           // g → deserialized query monomial
+    std::span<const Bitset> mono;     // g → deserialized query monomial
     DefaultInitVector<int> phase_of;  // g → query phase
     DefaultInitVector<size_t> idx_of; // g → resolved index (hit: < base; miss: base+j)
     std::vector<TermIndex> miss_g;    // j → the g that became miss j (Phase 4 reads mono[miss_g[j]])
@@ -78,44 +78,34 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
 
     // Phase 1 (read-only): deserialize, then probe with the group-prefetch batch find.
     //
-    // The monomials come from a scratch buffer that outlives the call, grow-only, rather than being
-    // constructed per resolve. Constructing them was measurable: an element is 72 bytes whose
-    // constructor zeroes all eight inline words whatever the operator's real width, and above that
-    // width it allocates -- so a layer paid nq_total of those, every layer, only to overwrite every
-    // word immediately (read_monomial_from_words memcpys the full num_words(), so no stale bit from a
-    // previous layer can survive). Reusing the buffer is worth -64% to -72% of this phase at 2-8 words
-    // and -41% at 16 (notes/monomial-storage/README.md §6b).
+    // The keys come from a batch that outlives the call, grow-only, rather than being constructed per
+    // resolve. Constructing them was measurable: a dense element is 72 bytes whose constructor zeroes all
+    // eight inline words whatever the operator's real width, and above that width it allocates -- so a
+    // layer paid nq_total of those, every layer, only to overwrite every word immediately (the record
+    // reader overwrites whole, so no stale bit from a previous layer can survive). Reusing the buffer is
+    // worth -64% to -72% of this phase at 2-8 words and -41% at 16 (notes/monomial-storage/README.md §6b).
     //
     // thread_local, matching the scan's `nz`: each partition master gets its own and reuses its
     // capacity across layers. Two consequences, both load-bearing:
     //   - At most one IncomingProbe may be live per thread. Only resolve_incoming builds one, holds it
     //     to the end of the call, and calls nothing that builds another; the self-resolve path has its
-    //     own separate scratch (Engine.h's ResolveScratch::keys_).
-    //   - The width is part of the buffer's state. A thread that services two propagators of different
-    //     storage widths must not reuse elements sized for the other, so a width change rebuilds --
-    //     otherwise read_monomial_from_words would memcpy a wide record into a narrow element.
-    // It holds the largest layer's worth of monomials until the thread exits, where before it was
+    //     own separate batch (Engine.h's keys_).
+    //   - The extent is part of the batch's state, which is why configure() is called every time rather
+    //     than once: a thread servicing two propagators of different storage widths must not reuse
+    //     elements sized for the other, or the reader would write a wide record into a narrow element.
+    // It holds the largest layer's worth of keys until the thread exits, where before it was
     // released after every layer. Peak RSS is unchanged -- the peak was always reached *during* a
     // layer -- but the resting footprint after one is not; the same trade `nz` and `keys_` already make.
-    thread_local MonomialList scratch;
-    thread_local size_t scratch_bits = 0;
-    if (scratch_bits != op.num_bits()) {
-        scratch.clear();
-        scratch_bits = op.num_bits();
-    }
-    if (scratch.size() < pr.nq_total) {
-        // resize only constructs the new tail; elements an earlier layer built keep their storage.
-        scratch.resize(pr.nq_total, Bitset(scratch_bits));
-    }
-    pr.mono = std::span<Bitset>(scratch.data(), pr.nq_total);
+    thread_local typename QueryKeysFor<MPOperator::Store>::type scratch;
+    scratch.configure(op.num_bits());
+    scratch.ensure(pr.nq_total);
+    pr.mono = std::span<const Bitset>(scratch.data(), pr.nq_total);
     pr.phase_of.resize(pr.nq_total);
     pr.idx_of.resize(pr.nq_total);
     for (size_t g = 0; g < pr.nq_total; ++g) {
         const size_t s = pr.sender_of[g];
         const size_t q = g - pr.goff[s];
-        int ph = 0;
-        query_read(incoming[s], q, query_stride, pr.mono[g], ph);
-        pr.phase_of[g] = ph;
+        pr.phase_of[g] = scratch.read_record(incoming[s], q, query_stride, g);
     }
     {
         const size_t op_size = op.store->size();

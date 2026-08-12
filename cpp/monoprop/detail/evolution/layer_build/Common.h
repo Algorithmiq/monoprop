@@ -200,6 +200,103 @@ inline auto sparse_query_read(const VecZ &buf,
     phase_out = decode_phase(buf[base + lane_words + 1]);
 }
 
+// Owned storage for a batch of query keys in whichever form a store keys its rows by, plus the record
+// reader that fills it. Both resolve paths -- the self-resolve batch in Engine.h and the incoming probe in
+// Resolve.h -- want exactly this, and both used to hand-roll it: allocate once, keep the storage across
+// layers, overwrite every element before reading it, and hand the whole run to find_batch contiguously.
+//
+// Grow-only and never cleared between layers. That is the measured shape (see Resolve.h): an element is
+// overwritten whole before any read, so a per-layer rebuild bought nothing and cost a construction per
+// query. The trade is that the buffer holds the largest layer's worth until the thread exits; peak RSS is
+// unchanged because the peak was always reached *during* a layer.
+//
+// configure() must be called before any use and re-called if the extent changes -- a thread servicing two
+// propagators of different widths must not reuse elements sized for the other.
+class DenseQueryKeys {
+public:
+    using key_type = Bitset;
+
+    // extent is the monomial storage width in bits: query_read memcpys the destination's full word count,
+    // so the destination is what fixes the record width.
+    auto configure(size_t extent) -> void {
+        if (extent_ != extent) {
+            keys_.clear();
+            extent_ = extent;
+        }
+    }
+    auto ensure(size_t n) -> void {
+        if (keys_.size() < n) {
+            // resize only constructs the new tail; elements an earlier layer built keep their storage.
+            keys_.resize(n, Bitset(extent_));
+        }
+    }
+    [[nodiscard]] auto read_record(const VecZ &buf, size_t q, size_t stride, size_t slot) -> int {
+        int phase = 0;
+        query_read(buf, q, stride, keys_[slot], phase);
+        return phase;
+    }
+    [[nodiscard]] auto data() const -> const key_type * { return keys_.data(); }
+    [[nodiscard]] auto operator[](size_t slot) const -> const key_type & { return keys_[slot]; }
+
+private:
+    MonomialList keys_ = {};
+    size_t extent_ = 0;
+};
+
+// The support-form counterpart: one lane array for the whole batch plus a parallel array of views into it,
+// since find_batch wants the keys contiguous and a SparseRow is only a pointer and a word.
+class SparseQueryKeys {
+public:
+    using key_type = SparseRow;
+
+    // extent is the row capacity in slots -- the same value that fixes the record stride, since the record
+    // holds exactly that many lanes.
+    auto configure(size_t extent) -> void {
+        if (extent_ != extent) {
+            lanes_.clear();
+            views_.clear();
+            extent_ = extent;
+        }
+    }
+    auto ensure(size_t n) -> void {
+        if (views_.size() >= n) {
+            return;
+        }
+        lanes_.resize(n * extent_);
+        views_.resize(n);
+        // Every view is rebuilt, not just the new tail: the resize above may have moved lanes_, which
+        // would leave the existing views pointing into freed storage.
+        for (size_t i = 0; i < n; ++i) {
+            views_[i].modes = &lanes_[i * extent_];
+        }
+    }
+    [[nodiscard]] auto read_record(const VecZ &buf, size_t q, size_t stride, size_t slot) -> int {
+        int phase = 0;
+        sparse_query_read(buf, q, stride, extent_, &lanes_[slot * extent_], views_[slot].codes, phase);
+        return phase;
+    }
+    [[nodiscard]] auto data() const -> const key_type * { return views_.data(); }
+    [[nodiscard]] auto operator[](size_t slot) const -> const key_type & { return views_[slot]; }
+
+private:
+    DefaultInitVector<RowMode> lanes_ = {};
+    std::vector<SparseRow> views_ = {};
+    size_t extent_ = 0;
+};
+
+// Which key batch a store wants. Explicit specializations rather than a member typedef on the stores: the
+// record codec lives here, and a store must not depend on the wire format it is queried through.
+template <typename Store>
+struct QueryKeysFor;
+template <>
+struct QueryKeysFor<OperatorIndex> {
+    using type = DenseQueryKeys;
+};
+template <>
+struct QueryKeysFor<SparseRowStore> {
+    using type = SparseQueryKeys;
+};
+
 // No monomial reconstruction: process_responses needs only the phase.
 inline auto query_phase(const VecZ &buf, size_t q, size_t num_words) -> int {
     return decode_phase(buf[q * query_words(num_words) + num_words]);
