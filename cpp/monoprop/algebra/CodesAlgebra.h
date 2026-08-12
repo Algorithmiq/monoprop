@@ -37,9 +37,11 @@
 // SparseRow would decide that silently.
 
 #include <bit>
+#include <cassert>
 #include <cstddef>
 
 #include "monoprop/algebra/AlgebraCommon.h"
+#include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/detail/operator/SparseRowStore.h"
 
 namespace monoprop::detail {
@@ -175,6 +177,118 @@ namespace monoprop::detail {
         }
     }
     return parity == 0 ? 1 : -1;
+}
+
+// Pauli's per-term rotation sign, the counterpart of pauli_rotation_sign. Same exponent, one merge walk
+// instead of a masked pass over the generator's nonzero words:
+//   e = g_y + sum(y_mono - y_new) + 2 * sum(v_mono & x_gen),  sign = (e mod 4 == 1 ? -1 : +1)
+// where per mode the code's low bit is v (physical position 2*mode) and its high bit is u, so a Y letter
+// is the field 0b01 and x = u ^ v is one bit.
+//
+// The dense version restricts its sums to the words the generator occupies, on the grounds that
+// elsewhere the two Y counts cancel and x_gen is zero. Per *mode* that argument is exact and tighter: a
+// mode the generator misses has new_mono's field equal to mono's, so the Y terms cancel, and x_gen = 0
+// kills the cross term. So this walks the generator's slots and reads mono's field at each, which also
+// means new_mono never has to exist -- the sign comes out of the same merge the toggle does.
+[[nodiscard]] inline auto codes_pauli_rotation_sign(const SparseRow &mono, const SparseRow &gen) noexcept -> int {
+    long delta = static_cast<long>(codes_pauli_y_count(gen.codes));
+    long cross = 0;
+    const size_t nm = mono.num_slots();
+    const size_t ng = gen.num_slots();
+    size_t i = 0;
+    for (size_t k = 0; k < ng; ++k) {
+        const size_t g_mode = gen.mode(k);
+        while (i < nm && mono.mode(i) < g_mode) {
+            ++i;
+        }
+        const unsigned int a = (i < nm && mono.mode(i) == g_mode) ? mono.code(i) : 0U;
+        const unsigned int b = gen.code(k);
+        delta += (a == 0b01U) ? 1 : 0;
+        delta -= ((a ^ b) == 0b01U) ? 1 : 0;
+        cross += ((a & 1U) != 0U && ((b ^ (b >> 1)) & 1U) != 0U) ? 1 : 0;
+    }
+    return mod4(delta + (2 * cross)) == 1 ? -1 : 1;
+}
+
+// The product row of a term and a generator, and the overlap the emit phase needs. `codes` and
+// `num_slots` describe the row written into `out_lanes`.
+struct SparseProduct {
+    RowCodes codes = 0;
+    size_t num_slots = 0;
+    size_t overlap = 0; // popcount(mono & gen); 0 and meaningless when overflowed
+    bool overflowed = false;
+};
+
+// mono (+) gen: per mode the fields XOR, a mode whose field cancels to zero disappears, and the overlap
+// is the popcount of the fields' AND. This is the dense fused_xor_into in support form, and it is the
+// operation the whole representation exists for -- one merge over two ascending lane arrays, O(slots),
+// against a pass over every storage word.
+//
+// out_lanes must hold `capacity` lanes and capacity must not exceed kRowMaxSlots (a codes word's worth).
+// The product can occupy more modes than either input: up to mono's slots plus the generator's, so a
+// scratch row needs CutoffEvaluator::max_mode_bound() + the generator's locality, not just the bound.
+// When even that is not enough the result is reported as overflowed rather than truncated -- a truncated
+// mode list keeps a plausible-looking codes word, which is exactly how the Stage 3 bench measured a
+// capacity bug as if it were a speedup. On overflow the caller must fall back to the dense product;
+// `overlap` is partial and is deliberately not returned.
+[[nodiscard]] inline auto sparse_toggle(const SparseRow &mono,
+                                        const SparseRow &gen,
+                                        RowMode *out_lanes,
+                                        size_t capacity) noexcept -> SparseProduct {
+    assert(capacity <= kRowMaxSlots && "sparse_toggle capacity exceeds one codes word");
+    const size_t nm = mono.num_slots();
+    const size_t ng = gen.num_slots();
+    SparseProduct result;
+    size_t used = 0;
+    bool over = false;
+
+    const auto emit = [&](size_t mode, unsigned int code) {
+        if (used == capacity) {
+            over = true;
+            return;
+        }
+        out_lanes[used] = static_cast<RowMode>(mode);
+        result.codes |= static_cast<RowCodes>(code) << (2 * used);
+        ++used;
+    };
+
+    size_t i = 0;
+    size_t j = 0;
+    while (!over && i < nm && j < ng) {
+        const size_t m_mode = mono.mode(i);
+        const size_t g_mode = gen.mode(j);
+        if (m_mode < g_mode) {
+            emit(m_mode, mono.code(i));
+            ++i;
+        }
+        else if (g_mode < m_mode) {
+            emit(g_mode, gen.code(j));
+            ++j;
+        }
+        else {
+            const unsigned int a = mono.code(i);
+            const unsigned int b = gen.code(j);
+            result.overlap += static_cast<size_t>(std::popcount(a & b));
+            if (const unsigned int c = a ^ b; c != 0U) {
+                emit(m_mode, c);
+            }
+            ++i;
+            ++j;
+        }
+    }
+    while (!over && i < nm) {
+        emit(mono.mode(i), mono.code(i));
+        ++i;
+    }
+    while (!over && j < ng) {
+        emit(gen.mode(j), gen.code(j));
+        ++j;
+    }
+    if (over) {
+        return SparseProduct{0, 0, 0, true};
+    }
+    result.num_slots = used;
+    return result;
 }
 
 } // namespace monoprop::detail

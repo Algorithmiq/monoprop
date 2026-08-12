@@ -87,10 +87,15 @@ Key files:
   dense/sparse crossover; it is a build-time constant (`monoprop_SPARSE_ROW_MIN_MODES`, defaulted off
   `monoprop_ENABLE_ARCH_FLAGS`) because what moves it is the target ISA.
   `algebra/CodesAlgebra.h` is the structural algebra on a sparse row, one function per dense
-  counterpart, reading the `codes` word instead of looping over storage words. It is exact, not an
-  approximation: `cpp/tests/codes_algebra_tests.cpp` asserts agreement with each dense version over the
-  fixtures and randomized rows, and that test is the gate on making the codes form the default. Change
-  one side and you must change the other.
+  counterpart, reading the `codes` word instead of looping over storage words, plus `sparse_toggle` --
+  the product `M ⊕ G` as one merge over two ascending lane arrays, which is the per-term operation the
+  representation exists for. It is exact, not an approximation: `cpp/tests/codes_algebra_tests.cpp` and
+  `codes_product_tests.cpp` assert agreement with each dense version over the fixtures and randomized
+  rows, and those tests are the gate on making the codes form the default. Change one side and you must
+  change the other. A product can occupy more modes than either input, so a scratch row is sized
+  `CutoffEvaluator::max_mode_bound()` **plus the generator's locality**; past its capacity
+  `sparse_toggle` reports `overflowed` and the caller must fall back to the dense product — never
+  truncate, because a truncated mode list still carries a plausible-looking `codes` word.
 - **`Basis` / the `Algebra` policy** (`cpp/monoprop/algebra/`): the two algebras are sibling models
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
