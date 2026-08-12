@@ -157,6 +157,13 @@ systems work but pay an allocation per by-value monomial. See the plan's Stage 6
 - Fixture msgpack schema is documented in `tests/data/README.md`
 - Tests validate against exact solutions for small systems
 - Heavy use of `@parametrize_with_cases` decorators
+- Nothing on disk is wider than 28 modes, i.e. one 32-mode storage block. A case that needs the
+  wide-system regime (several words per monomial, the width at which sparse rows are selected) is
+  *derived*: `ModeEmbedding`/`WIDE_EMBEDDING` in `tests/cases.py` and `test_utils::embed_case` in
+  `cpp/tests/TestData.h` relabel a fixture's modes into a wider system. The map is monotone, so the
+  fixture's exact energy and gradient still apply and the wide run owes the narrow run's evolved
+  operator term for term (`tests/test_wide_system.py`, `cpp/tests/wide_system_tests.cpp`). Add a case
+  that way rather than checking in a blob that differs from an existing one by a permutation.
 
 ## Key Dependencies & Integration
 

@@ -223,6 +223,12 @@ inline auto bind_monomial_propagator(nb::module_ &mod) -> void {
                     &MonomialPropagator::storage_num_modes,
                     "Mode width this propagator stores monomials at; >= num_modes");
 
+    // Exposed for the test suite: which row backend a width selects is otherwise unobservable from
+    // Python, so a run forced onto the support-form store could silently have used the dense one.
+    cls.def_prop_ro("rows_are_sparse",
+                    &MonomialPropagator::rows_are_sparse,
+                    "Whether this propagator stores operator rows in the support form (see monoprop_ROW_STORE)");
+
     cls.def("size", &MonomialPropagator::size, "Number of monomial terms on this rank");
 
     cls.def("graph_size", &MonomialPropagator::graph_size, "(cosine-only indices, cycles) in the graph on this rank");

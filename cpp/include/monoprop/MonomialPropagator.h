@@ -142,8 +142,12 @@ public:
     /// Whether this propagator stores its terms as sparse rows rather than dense monomials — the choice
     /// made from storage_num_modes() and `monoprop_ROW_STORE`. Both backends compute the same terms and
     /// the same expectation value; they hash rows differently, so they differ in term order and hence in
-    /// floating-point accumulation order. On a facade this reports the facade's own (unused) operator.
-    [[nodiscard]] auto rows_are_sparse() const -> bool { return mp_op_.rows_are_sparse(); }
+    /// floating-point accumulation order. Not partitioned: every partition decides from the same storage
+    /// width, and the facade's own operator holds no terms — so a facade answers from partition 0, whose
+    /// store is the one that runs.
+    [[nodiscard]] auto rows_are_sparse() const -> bool {
+        return partition_group_ ? first_partition_().rows_are_sparse() : mp_op_.rows_are_sparse();
+    }
 
     /// Term count on this rank (allreduce for global).
     auto size() const -> size_t { return partition_group_ ? partitioned_size_() : mp_op_.size(); }

@@ -36,4 +36,47 @@ struct CaseData {
 // Throws std::runtime_error if the fixture cannot be read or parsed.
 auto load_case(const std::filesystem::path& filename) -> CaseData;
 
+// A monotone injection of a case's modes into the modes of a wider system -- the C++ twin of
+// tests/cases.py's ModeEmbedding, carrying the same map.
+//
+// Relabelling modes monotonically is a canonical transformation: the map is strictly increasing, so a
+// sorted Majorana index tuple stays sorted and no anticommutation sign appears, and the physics -- the
+// reference expectation value included -- is the source problem's. That is how the suite reaches a
+// storage width no checked-in fixture has, with no second reference calculation and no second fixture
+// whose only difference from an existing one is a permutation.
+struct ModeEmbedding {
+    size_t num_modes{0};  ///< Width of the embedding system.
+    monoprop::VecZ modes; ///< Where source mode m lands; strictly increasing and below num_modes.
+
+    /// One Majorana index of the source system, in the embedding system.
+    [[nodiscard]] auto majorana(size_t index) const -> size_t { return (2 * modes[index / 2]) + (index % 2); }
+};
+
+/// `data` relabelled through `embedding`. Parameters, coefficients and actual_expval carry over as they
+/// are; only mode-indexed data moves.
+inline auto embed_case(const CaseData& data, const ModeEmbedding& embedding) -> CaseData {
+    const auto map_indices = [&](const monoprop::VecZ& indices) {
+        monoprop::VecZ out;
+        out.reserve(indices.size());
+        for (const auto index : indices) {
+            out.push_back(embedding.majorana(index));
+        }
+        return out;
+    };
+
+    CaseData out = data;
+    out.num_modes = embedding.num_modes;
+    for (auto& mode : out.initial_state) {
+        mode = embedding.modes.at(mode);
+    }
+    for (auto& mono : out.majoranas) {
+        mono = map_indices(mono);
+    }
+    out.hamiltonian.clear();
+    for (const auto& [indices, coeff] : data.hamiltonian) {
+        out.hamiltonian.emplace(map_indices(indices), coeff);
+    }
+    return out;
+}
+
 } // namespace test_utils
