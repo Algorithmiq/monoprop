@@ -139,6 +139,12 @@ public:
     /// Monomials are stored at this width; >= logical_num_modes(). See storage_modes_for.
     auto storage_num_modes() const -> size_t { return storage_num_modes_; }
 
+    /// Whether this propagator stores its terms as sparse rows rather than dense monomials — the choice
+    /// made from storage_num_modes() and `monoprop_ROW_STORE`. Both backends compute the same terms and
+    /// the same expectation value; they hash rows differently, so they differ in term order and hence in
+    /// floating-point accumulation order. On a facade this reports the facade's own (unused) operator.
+    [[nodiscard]] auto rows_are_sparse() const -> bool { return mp_op_.rows_are_sparse(); }
+
     /// Term count on this rank (allreduce for global).
     auto size() const -> size_t { return partition_group_ ? partitioned_size_() : mp_op_.size(); }
 
@@ -351,6 +357,11 @@ protected:
     // A perf hint, never a correctness constraint: overflow spills losslessly. Sized to the cutoff's
     // structural position bound when it has one.
     auto packed_inline_width_() const -> size_t;
+
+    // The backend decision, in one place: monoprop_ROW_STORE if it forces one, else the measured
+    // crossover on the storage width. Throws if the variable holds something unrecognized -- see
+    // config::Settings::row_store_unrecognized for why this one is not silently ignored.
+    auto use_sparse_rows_() const -> bool;
 
 private:
     unsigned int cutoff_;

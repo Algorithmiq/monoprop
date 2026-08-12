@@ -79,13 +79,24 @@ Key files:
   `2m, 2m+1` and never straddle a word.
 - **The row-store seam**: a dense monomial is a transient, not the storage. `TypeAliases.h` declares
   four accessors — `materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position` — and
-  three backends answer them: `std::vector<Bitset>`, `detail::OperatorIndex` (packed position lists,
-  what the propagator uses) and `detail::SparseRowStore` (fixed-width mode lanes plus one 2-bit-per-slot
-  `codes` word per row, off the hot path for now). Reach rows through the accessors, never through a
-  backend's own API, and add any fourth backend to `cpp/tests/row_accessor_tests.cpp`, which asserts
-  that all of them agree through every accessor. `SparseRowStore::preferred_for_modes()` holds the
-  dense/sparse crossover; it is a build-time constant (`monoprop_SPARSE_ROW_MIN_MODES`, defaulted off
-  `monoprop_ENABLE_ARCH_FLAGS`) because what moves it is the target ISA.
+  three backends answer them: `std::vector<Bitset>`, `detail::OperatorIndex` (packed position lists) and
+  `detail::SparseRowStore` (fixed-width mode lanes plus one 2-bit-per-slot `codes` word per row). Reach
+  rows through the accessors, never through a backend's own API, and add any fourth backend to
+  `cpp/tests/row_accessor_tests.cpp`, which asserts that all of them agree through every accessor.
+- **Which backend, and where it is bound**: a propagator uses one of the two, chosen once from its
+  storage width by `SparseRowStore::preferred_for_modes()` — a build-time constant
+  (`monoprop_SPARSE_ROW_MIN_MODES`, defaulted off `monoprop_ENABLE_ARCH_FLAGS`) because what moves the
+  crossover is the target ISA. `monoprop_ROW_STORE=dense|sparse` forces it process-wide; an
+  unrecognized value throws rather than falling back, since the point of setting it is to know which
+  backend ran. `MPOperator` holds one pointer per backend with exactly one non-null and binds the live
+  one via `with_store` — **once per layer, inside `build_layer`**, never per term: the scan asks the
+  store for a row per anticommuting term, so everything downstream is templated on the store
+  (`LayerBuildEngine<Sink, Store>`, `fused_find_and_collect`, `probe_incoming_queries`). Off that path,
+  use `MPOperator`'s forwarding accessors; there is no accessor handing out a store, because there is no
+  one type to hand out. Every C++ case runs a second time under `monoprop_ROW_STORE=sparse` (the
+  `sparse-rows` ctest label) — every fixture is below the crossover, so without that the sparse backend
+  would ship untested. The two backends agree on term sets and values but not on term *order*, so
+  compare them with `just diff-baseline-sparse` (tolerance), never `just diff-baseline` (byte-wise).
   `algebra/CodesAlgebra.h` is the structural algebra on a sparse row, one function per dense
   counterpart, reading the `codes` word instead of looping over storage words, plus `sparse_toggle` --
   the product `M ⊕ G` as one merge over two ascending lane arrays, which is the per-term operation the

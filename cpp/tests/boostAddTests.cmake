@@ -206,6 +206,23 @@ foreach(LINE ${LINES})
       LABELS
         serial
     )
+    # The same case again with the support-form row backend forced. Every fixture and oracle in the
+    # suite is well below SparseRowStore::preferred_for_modes()'s crossover, so the automatic choice
+    # alone would leave that backend compiled and never run -- and it is the one that ships for wide
+    # systems. Per case rather than one whole-suite run, so a divergence names itself.
+    register_variant("${test}_sparse_rows"
+      COMMAND
+        "${TEST_EXECUTABLE}"
+        "--run_test=${test}"
+        "--report_level=detailed"
+        "--catch_system_errors=yes"
+        ${extra_args}
+      LABELS
+        serial
+        sparse-rows
+      ENVIRONMENT
+        "monoprop_ROW_STORE=sparse"
+    )
   endif()
 endforeach()
 

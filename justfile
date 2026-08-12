@@ -44,13 +44,26 @@ capture-baseline LABEL='golden':
     uv run --no-sync python tools/capture-baseline.py --out "{{ baseline_dir }}/{{ LABEL }}"
 
 # Rebuild monoprop and diff a fresh capture against a stored one (default "golden"). Byte-identical
-# is the bar through the plan's Stages 1-2 and 4-5; Stage 6's sparse-row re-baseline is the one
-# deliberate, documented exception (see the plan's "Verification strategy" section).
+# is the bar: term order is a regression signal, not an implementation detail.
 diff-baseline AGAINST='golden':
     uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v
     rm -rf "{{ baseline_dir }}/candidate"
     just capture-baseline candidate
     diff -rq "{{ baseline_dir }}/{{ AGAINST }}" "{{ baseline_dir }}/candidate"
+
+# Capture with the support-form row backend forced (monoprop_ROW_STORE=sparse) and check it against a
+# stored capture as term *sets* plus a relative tolerance. Not a byte diff: the sparse rows hash
+# differently, so they accumulate in a different order on purpose. This is how the two backends are
+# held equivalent on the fixtures, every one of which is below the automatic crossover.
+diff-baseline-sparse AGAINST='golden' TOL='1e-10':
+    rm -rf "{{ baseline_dir }}/sparse"
+    monoprop_ROW_STORE=sparse uv run --no-sync python tools/capture-baseline.py --out "{{ baseline_dir }}/sparse"
+    uv run --no-sync python tools/capture-baseline.py --compare "{{ baseline_dir }}/{{ AGAINST }}" "{{ baseline_dir }}/sparse" --tol "{{ TOL }}"
+
+# The Python suite with the support-form row backend forced, the counterpart of ctest's
+# `-L sparse-rows` variants.
+test-sparse-rows:
+    monoprop_ROW_STORE=sparse uv run --no-sync python -m pytest -m "not mpi"
 
 # MPI is off by default in source builds, so build an MPI-enabled editable install
 # first, then run the suite under mpiexec with --no-sync (avoids a per-rank resync).

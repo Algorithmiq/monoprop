@@ -31,12 +31,17 @@ So ``Basis::Pauli`` coverage instead comes from ``_PAULI_SMOKE_CASES`` below: a 
 ``tests/test_pauli.py``. Their values are not independently re-derived here -- as with the msgpack
 fixtures' *non*-``_EXACT_FIXTURES``, they are simply frozen as-is for regression diffing.
 
-Ordering and diffing: terms are dumped in the engine's own returned order, not sorted -- through
-Stage 5 of the plan this order is itself load-bearing (``SplitmixHash`` -> probe order -> MPI owner
-routing -> insertion order -> floating-point accumulation order), so a silent reorder is exactly the
-kind of regression this tool exists to catch. Stage 6 is a deliberate, documented exception: the
-sparse-row hash changes on purpose, so ``just diff-baseline`` gets a ``--sorted`` / ``--tol`` mode
-for that one re-baseline (see the plan's Stage 6 and "Verification strategy" sections).
+Ordering and diffing: terms are dumped in the engine's own returned order, not sorted -- that order is
+itself load-bearing (``SplitmixHash`` -> probe order -> MPI owner routing -> insertion order ->
+floating-point accumulation order), so a silent reorder is exactly the kind of regression this tool
+exists to catch, and ``just diff-baseline`` stays a byte-wise diff.
+
+``--compare REF CAND [--tol]`` is the other mode, for a change that reorders terms *on purpose*: it
+holds term membership and the term count exactly and compares coefficients and energies only to a
+relative tolerance. The support-form row backend is the case it exists for -- it hashes rows
+differently, so it accumulates in a different order (see ``monoprop_ROW_STORE`` and the plan's
+Stage 6). Use it to check one backend against the other; do not use it to wave through a diff whose
+ordering was supposed to be stable.
 
 Usage (needs the `test` dependency group synced -- this reuses tests/cases.py, which imports
 pytest-cases):
@@ -264,13 +269,120 @@ def _manifest_entry(rec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _hashable(key: Any) -> Any:  # noqa: ANN401
+    """A term key as a nested tuple, so it can go in a dict. Pauli keys nest one level."""
+    if isinstance(key, list):
+        return tuple(_hashable(k) for k in key)
+    return key
+
+
+def _load_records(tree: Path) -> dict[tuple[Any, ...], dict[str, Any]]:
+    """Every record in a capture tree, keyed by (case, basis, cutoff_type, cutoff, rank)."""
+    out: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for path in sorted((tree / "cases").glob("*-rank*.json")):
+        rank = int(path.stem.rsplit("rank", 1)[1])
+        for rec in json.loads(path.read_text()):
+            out[
+                (rec["case"], rec["basis"], rec["cutoff_type"], rec["cutoff"], rank)
+            ] = rec
+    return out
+
+
+def _close(a: float, b: float, tol: float) -> bool:
+    """Relative comparison, floored at 1 so near-zero coefficients are held to an absolute tol."""
+    return abs(a - b) <= tol * max(1.0, abs(a), abs(b))
+
+
+def _compare_terms(
+    ref: list[list[Any]], cand: list[list[Any]], tol: float
+) -> list[str]:
+    """The term sets of one record: membership exactly, coefficients only to ``tol``."""
+    problems = []
+    ref_terms = {_hashable(k): (float(re_), float(im)) for k, re_, im in ref}
+    cand_terms = {_hashable(k): (float(re_), float(im)) for k, re_, im in cand}
+    missing = sorted(map(repr, ref_terms.keys() - cand_terms.keys()))
+    extra = sorted(map(repr, cand_terms.keys() - ref_terms.keys()))
+    if missing:
+        problems.append(f"{len(missing)} term(s) absent, e.g. {missing[0]}")
+    if extra:
+        problems.append(f"{len(extra)} unexpected term(s), e.g. {extra[0]}")
+    worst = 0.0
+    for key in ref_terms.keys() & cand_terms.keys():
+        for a, b in zip(ref_terms[key], cand_terms[key], strict=True):
+            if not _close(a, b, tol):
+                worst = max(worst, abs(a - b))
+    if worst > 0.0:
+        problems.append(f"coefficient(s) differ by up to {worst:.3e} (tol {tol:.1e})")
+    return problems
+
+
+def _compare_record(ref: dict[str, Any], cand: dict[str, Any], tol: float) -> list[str]:
+    """Term sets and energies of one record. Terms compare as sets: order is not preserved here."""
+    problems = []
+    if ref["n_terms"] != cand["n_terms"]:
+        problems.append(f"n_terms {ref['n_terms']} != {cand['n_terms']}")
+    problems.extend(_compare_terms(ref["terms"], cand["terms"], tol))
+    for field in ("energy", "exact_energy"):
+        if field in ref or field in cand:
+            a, b = float(ref.get(field, "nan")), float(cand.get(field, "nan"))
+            if not _close(a, b, tol):
+                problems.append(f"{field} {a!r} != {b!r} (tol {tol:.1e})")
+    return problems
+
+
+def _compare_trees(ref_dir: Path, cand_dir: Path, tol: float) -> int:
+    """Compare two capture trees as term *sets* to a relative tolerance. Returns an exit code."""
+    ref, cand = _load_records(ref_dir), _load_records(cand_dir)
+    if ref.keys() != cand.keys():
+        only_ref = sorted(map(repr, ref.keys() - cand.keys()))
+        only_cand = sorted(map(repr, cand.keys() - ref.keys()))
+        sys.stdout.write(
+            f"record sets differ: {len(only_ref)} only in {ref_dir}, "
+            f"{len(only_cand)} only in {cand_dir}\n"
+        )
+        return 1
+    failures = 0
+    for key in sorted(ref.keys(), key=repr):
+        problems = _compare_record(ref[key], cand[key], tol)
+        if problems:
+            failures += 1
+            sys.stdout.write(f"{key}: {'; '.join(problems)}\n")
+    verdict = "differ" if failures else "agree"
+    sys.stdout.write(
+        f"{len(ref)} records {verdict} between {ref_dir} and {cand_dir} "
+        f"(term sets exact, values to rtol {tol:.1e}); {failures} failing\n"
+    )
+    return 1 if failures else 0
+
+
 def main() -> int:
-    """Capture every fixture/smoke case into ``--out`` and write its per-rank manifest."""
+    """Capture every fixture/smoke case into ``--out``, or compare two capture trees."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--out", type=Path, required=True, help="Output directory (created if absent)."
+        "--out", type=Path, help="Output directory for a capture (created if absent)."
+    )
+    parser.add_argument(
+        "--compare",
+        type=Path,
+        nargs=2,
+        metavar=("REF", "CAND"),
+        help=(
+            "Compare two capture trees instead of capturing: term sets must match exactly, "
+            "values only to --tol. Use when a change reorders terms on purpose."
+        ),
+    )
+    parser.add_argument(
+        "--tol",
+        type=float,
+        default=1e-10,
+        help="Relative tolerance for --compare (default 1e-10).",
     )
     args = parser.parse_args()
+
+    if args.compare:
+        return _compare_trees(args.compare[0], args.compare[1], args.tol)
+    if args.out is None:
+        parser.error("one of --out or --compare is required")
 
     comm = _comm()
     rank = 0 if comm is None else comm.Get_rank()

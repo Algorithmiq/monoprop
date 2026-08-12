@@ -151,10 +151,21 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
     const size_t expected_local_terms = std::max<size_t>(1, total_terms / std::max<size_t>(1, num_ranks));
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
-    // Replaces the store MPOperator's constructor made: same width, but now with the cutoff-derived
-    // packed-row width, which is only knowable after regenerate_cutoff_fn_() above. set_store() drops the
-    // stale lazy inverted index with it.
-    mp_op_.set_store(std::make_unique<detail::OperatorIndex>(2 * storage_num_modes_, packed_inline_width_()));
+    // Replaces the store MPOperator's constructor made: same width, but now with the cutoff-derived row
+    // width, which is only knowable after regenerate_cutoff_fn_() above. set_store() drops the stale lazy
+    // inverted index with it.
+    //
+    // Which backend: the crossover is on the *storage* width, not the logical one, because what the dense
+    // representation costs is one pass per storage word. Rows are sized from the cutoff -- a surviving
+    // term occupies at most `cutoff` modes under either cutoff kind -- and anything wider (a fully paired
+    // term, which escapes the cutoff) spills losslessly.
+    if (use_sparse_rows_()) {
+        mp_op_.set_store(std::make_unique<detail::SparseRowStore>(2 * storage_num_modes_,
+                                                                  detail::SparseRowStore::slots_for_bound(cutoff_)));
+    }
+    else {
+        mp_op_.set_store(std::make_unique<detail::OperatorIndex>(2 * storage_num_modes_, packed_inline_width_()));
+    }
     mp_op_.reserve_terms(expected_local_terms);
 
     size_t i = 0;
@@ -322,6 +333,23 @@ auto MonomialPropagator::packed_inline_width_() const -> size_t {
         return kDefault;
     }
     return std::min<size_t>(*bound, kMax);
+}
+
+auto MonomialPropagator::use_sparse_rows_() const -> bool {
+    const auto &settings = config::get();
+    if (settings.row_store_unrecognized) {
+        throw PropagatorConfigError(
+            "monoprop_ROW_STORE must be \"auto\", \"dense\" or \"sparse\". Unset it to pick by system size.");
+    }
+    switch (settings.row_store) {
+        case config::RowStore::Dense:
+            return false;
+        case config::RowStore::Sparse:
+            return true;
+        case config::RowStore::Auto:
+            break;
+    }
+    return detail::SparseRowStore::preferred_for_modes(storage_num_modes_);
 }
 
 auto MonomialPropagator::apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList, VecD> {

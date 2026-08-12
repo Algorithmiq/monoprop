@@ -35,6 +35,28 @@ flat in the width, so a target without a vector `popcount` reaches the crossover
 order of magnitude sooner. Both values are measured, not guessed; the number is
 build-time because the ISA is.
 
+### Choosing the row backend at run time
+
+A propagator stores its terms either as dense monomials or as sparse rows (a list of
+the modes it occupies plus two bits per mode). The choice is made once, from the
+storage width against the crossover above. Set `monoprop_ROW_STORE` to override it
+for every propagator in the process:
+
+| Value | Effect |
+| --- | --- |
+| `auto` (default, or unset) | Sparse at or above `monoprop_SPARSE_ROW_MIN_MODES` storage modes, dense below. |
+| `dense` | Always dense monomials. |
+| `sparse` | Always sparse rows. |
+
+Anything else is an error rather than a silent fallback to `auto`, because the point
+of setting it is to know which backend ran.
+
+Both backends compute the same terms and the same expectation value. They hash rows
+differently, so they differ in term *order* — and therefore in floating-point
+accumulation order, which is why a cross-backend comparison is a tolerance check and
+not a byte diff. Overriding is mainly a testing and benchmarking tool; leave it unset
+in production.
+
 ## Prerequisites
 
 - a C++23-compliant compiler; on Linux the minimum supported versions are **GCC 14** and **Clang 18**

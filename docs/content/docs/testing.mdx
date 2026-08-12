@@ -80,6 +80,24 @@ one entry per rank count rather than per case, because the ranks have to reach
 the same collectives. Select either group with
 `ctest --test-dir build/editable/Release -L serial` (or `-L mpi-2`).
 
+### The sparse-rows variants
+
+Every case is also registered a second time with `monoprop_ROW_STORE=sparse`,
+labelled `sparse-rows`, so the whole suite runs against both row backends. This is
+not redundancy: every fixture and oracle here is well below the automatic crossover
+(`monoprop_SPARSE_ROW_MIN_MODES`), so without forcing it the support-form backend
+would be compiled and never executed — and it is the one that ships for wide systems.
+Run just that configuration with `-L sparse-rows`, and its Python counterpart with
+`just test-sparse-rows`.
+
+Expect it to be *slower*: at fixture widths a monomial is one word, which is where
+dense rows win. That is the crossover working, not a regression.
+
+The two backends agree on term sets and expectation values but not on term *order*,
+so cross-backend checks use `tools/capture-baseline.py --compare` with a tolerance
+(`just diff-baseline-sparse`), never the byte diff that `just diff-baseline` applies
+within one backend.
+
 
 ## Adding tests
 
