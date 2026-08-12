@@ -17,6 +17,7 @@
 #include <optional>
 
 #include "monoprop/detail/EnvConfig.h"
+#include "monoprop/detail/mpi/CpuRelax.h"
 
 using monoprop::config::detail::parse_flag;
 using monoprop::config::detail::parse_positive_int;
@@ -57,6 +58,17 @@ BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_range) {
     BOOST_CHECK(parse_positive_int("1") == std::optional<int>(1));
     BOOST_CHECK(parse_positive_int("42") == std::optional<int>(42));
     BOOST_CHECK(parse_positive_int("1000000") == std::optional<int>(1'000'000)); // inclusive upper bound
+}
+
+// monoprop_SPIN_BUDGET_US shares parse_positive_int, so what it adds is the fallback: an unset or
+// malformed value must leave the barrier on its own default rather than on a zero-length spin.
+BOOST_AUTO_TEST_CASE(env_config_spin_budget_falls_back_to_barrier_default) {
+    BOOST_CHECK(parse_positive_int(nullptr).value_or(monoprop::mpi::detail::kDefaultSpinBudgetUs)
+                == monoprop::mpi::detail::kDefaultSpinBudgetUs);
+    BOOST_CHECK(parse_positive_int("0").value_or(monoprop::mpi::detail::kDefaultSpinBudgetUs)
+                == monoprop::mpi::detail::kDefaultSpinBudgetUs);
+    BOOST_CHECK(parse_positive_int("25").value_or(monoprop::mpi::detail::kDefaultSpinBudgetUs) == 25);
+    BOOST_CHECK_GT(monoprop::mpi::detail::kDefaultSpinBudgetUs, 0);
 }
 
 BOOST_AUTO_TEST_CASE(env_config_settings_cached_singleton) {

@@ -16,10 +16,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <stdexcept>
 #include <thread>
 #include <vector>
 
+#include "monoprop/detail/EnvConfig.h"
 #include "monoprop/detail/mpi/CpuRelax.h"
 
 namespace monoprop::mpi {
@@ -34,10 +36,11 @@ public:
 // word gets a private cache line: if `gen_` shared `arrived_`'s line, spinners' reloads would miss to
 // L3 on every peer arrival — O(S) coherence bounces (measured top hotspot at S=112).
 //
-// Given a group id per participant (its L3 domain, from CpuTopology) the barrier becomes two-level: fan
-// in within a domain, then across domains, then release within the domain. Both the arrival fetch_add
-// and the release store then cost O(S/G) coherence transactions instead of O(S), and stay inside one L3
-// slice. No group ids (pinning off, or /sys unreadable) or a single domain degrades to the flat barrier.
+// Given a group id per participant (its locality domain, from CpuTopology: the deepest shared cache, or
+// the NUMA node) the barrier becomes two-level: fan in within a domain, then across domains, then release
+// within the domain. Both the arrival fetch_add and the release store then cost O(S/G) coherence
+// transactions instead of O(S), and stay inside one cache slice. No group ids (pinning off, or /sys
+// unreadable), a single domain, or all-singleton domains degrade to the flat barrier.
 //
 // The acquire/release/relaxed orderings below are load-bearing, not an oversight: the release store to
 // `gen_` is what publishes the preceding relaxed reset of `arrived_`. Promoting them to seq_cst would
@@ -62,7 +65,12 @@ public:
                 group_of_[static_cast<size_t>(p)] = static_cast<int>(it - domains.begin());
             }
         }
-        if (domains.size() < 2) {
+        // One domain has nothing to fan in across. So does a set of all-singleton domains, which is what
+        // an unreadable topology produces: every participant would be its own representative and they
+        // would all still meet at the root, i.e. the flat barrier plus a cache line and a release store
+        // per participant. Reporting both as flat also stops group_count() from claiming a level that is
+        // not actually running.
+        if (domains.size() < 2 || domains.size() == static_cast<size_t>(participants)) {
             group_of_.clear();
             return; // flat
         }
@@ -116,7 +124,7 @@ public:
         }
     }
 
-    // L3 domains the participants were grouped into; < 2 means the flat barrier is in use. Reported by
+    // Locality domains the participants were grouped into; < 2 means the flat barrier is in use. Reported by
     // CommProfile so a run states which barrier it ran instead of leaving it inferred from the timing.
     auto group_count() const -> int { return groups_; }
 
@@ -136,17 +144,33 @@ public:
     }
 
 private:
-    // Spin until `word` leaves `seen`. Bounded on-core spin first (pinned partitions ⇒ the release store
-    // lands in the pause window, no syscall); only long waits (imbalance, oversubscription) fall to
-    // yield. A poisoned peer releases us with an exception rather than a hang.
+    // Wait until `word` leaves `seen`, backing off through the two phases CpuRelax.h describes: on-core
+    // relax for a bounded time, then yield indefinitely. Both phases re-read `poisoned_` on every
+    // iteration, so an unwinding peer releases us with an exception rather than a hang and poison() needs
+    // no wakeup channel of its own. There is deliberately no third parking phase: sleeping past the yield
+    // budget measured 2021 vs 762 us/sync when oversubscribed, because one sleeper's timer overshoot
+    // delays every participant behind the barrier (see CpuRelax.h).
     auto spin_until_(const std::atomic<unsigned> &word, unsigned seen) const -> void {
-        int spins = 0;
+        // The deadline is computed lazily, after the first load fails. The overwhelmingly common case is
+        // that the release store has already landed, and a clock read per arrival is pure overhead on the
+        // path this barrier exists to keep cheap.
+        std::chrono::steady_clock::time_point spin_deadline{};
+        bool have_deadline = false;
+        bool spinning = true;
+        int until_check = detail::kRelaxPerClockCheck;
         while (word.load(std::memory_order_acquire) == seen) {
             if (poisoned_.load(std::memory_order_acquire)) {
                 throw ShmCommPoisoned();
             }
-            if (spins < detail::kSpinPauseIters) {
-                ++spins;
+            if (!have_deadline) {
+                spin_deadline = std::chrono::steady_clock::now() + spin_budget_;
+                have_deadline = true;
+            }
+            if (spinning) {
+                if (--until_check <= 0) {
+                    until_check = detail::kRelaxPerClockCheck;
+                    spinning = std::chrono::steady_clock::now() < spin_deadline;
+                }
                 detail::cpu_relax();
             }
             else {
@@ -162,6 +186,10 @@ private:
     struct alignas(64) Gen {
         std::atomic<unsigned> v{0};
     };
+
+    // Read once per barrier, not once per spin: monoprop_SPIN_BUDGET_US is a sweep knob, and the spin loop
+    // is the measured hotspot.
+    std::chrono::microseconds spin_budget_{config::get().spin_budget_us.value_or(detail::kDefaultSpinBudgetUs)};
 
     int participants_;
     int groups_ = 0; // < 2 ⇒ flat: arrived_/gen_ count participants, not domains

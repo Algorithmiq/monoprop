@@ -58,7 +58,7 @@ public:
           partitions_(static_cast<size_t>(n_partitions)),
           errs_(static_cast<size_t>(n_partitions)) {
         // Placement is decided before the transport, because the transport's barrier is grouped by the
-        // L3 domain each partition will be pinned to.
+        // locality domain each partition will be pinned to.
         discover_node_peers_();
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_);
         make_transport_();
@@ -81,6 +81,9 @@ public:
           parent_(src.parent_),
           node_rank_(src.node_rank_),
           node_size_(src.node_size_),
+          // Copied, not re-measured: discover_node_peers_() is collective over the parent and this ctor is
+          // not. Losing it would silently place the clone differently from the group it was copied from.
+          node_mask_(src.node_mask_),
           partitions_(static_cast<size_t>(src.n_)),
           errs_(static_cast<size_t>(src.n_)) {
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_);
@@ -148,15 +151,17 @@ private:
     }
 
     // Free-function wrapper so the header compiles on non-Linux (where partition_cpusets returns {}).
-    static auto topo_partition_cpusets(int n, int group_index, int group_count)
+    auto topo_partition_cpusets(int n, int group_index, int group_count) const
         -> std::vector<monoprop::detail::partition::CpuSet> {
         return monoprop::detail::partition::partition_cpusets(static_cast<size_t>(n),
                                                               static_cast<size_t>(group_index),
-                                                              static_cast<size_t>(group_count));
+                                                              static_cast<size_t>(group_count),
+                                                              node_mask_);
     }
 
     // Under an MPI parent, find how many ranks share this host and which we are, so each co-located rank
-    // pins to a disjoint core block (see partition_cpusets). Collective over `parent`; clones copy the result.
+    // pins to a disjoint core block (see partition_cpusets), and whether the launcher already sliced the
+    // host per rank. Collective over `parent`; clones copy the result.
     auto discover_node_peers_() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
@@ -164,6 +169,17 @@ private:
             MPI_Comm_split_type(parent_.mpi, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node);
             MPI_Comm_rank(node, &node_rank_);
             MPI_Comm_size(node, &node_size_);
+            // Exchange the raw affinity masks while the node communicator is open. Measured rather than
+            // inferred because mask *size* cannot distinguish "8 ranks holding 16 cores each" from "8 ranks
+            // sharing one 16-core mask": both leave a rank seeing 16 of the host's 128 CPUs, and the two
+            // need opposite placement. Guessing it wrong in the collapsing direction points every
+            // co-located rank at the same cores, which is worse than not pinning at all.
+            if (node_size_ > 1) {
+                const auto mine = monoprop::detail::partition::this_thread_cpuset();
+                std::vector<monoprop::detail::partition::CpuSet> all(static_cast<size_t>(node_size_));
+                MPI_Allgather(&mine, sizeof(mine), MPI_BYTE, all.data(), sizeof(mine), MPI_BYTE, node);
+                node_mask_ = monoprop::detail::partition::classify_node_mask(all);
+            }
             MPI_Comm_free(&node);
         }
 #endif
@@ -172,7 +188,7 @@ private:
     auto make_transport_() -> void {
         // Empty unless the partitions are pinned and /sys was readable ⇒ flat barrier (see
         // PartitionBarrier); cpusets_ must already be set.
-        const std::vector<int> domains = monoprop::detail::partition::cpuset_l3_domains(cpusets_);
+        const std::vector<int> domains = monoprop::detail::partition::cpuset_domains(cpusets_);
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
             hyb_ = std::make_unique<mpi::HybridComm>(parent_.mpi, n_, domains);
@@ -255,9 +271,12 @@ private:
     }
 
     int n_;
-    mpi::Comm parent_;                  // enclosing communicator (size R) — decides the transport
-    int node_rank_ = 0;                 // this rank's index among the ranks sharing the host
-    int node_size_ = 1;                 // how many parent ranks share the host (1 unless MPI R>1)
+    mpi::Comm parent_;  // enclosing communicator (size R) — decides the transport
+    int node_rank_ = 0; // this rank's index among the ranks sharing the host
+    int node_size_ = 1; // how many parent ranks share the host (1 unless MPI R>1)
+    // How the launcher divided the host among those ranks, measured in discover_node_peers_(). Shared until
+    // measured, which is both the single-rank truth and the safe default (see partition_cpusets).
+    monoprop::detail::partition::NodeMask node_mask_ = monoprop::detail::partition::NodeMask::Shared;
     std::unique_ptr<mpi::ShmComm> shm_; // set iff R == 1
 #ifdef monoprop_ENABLE_MPI
     std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1

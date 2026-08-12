@@ -98,6 +98,20 @@ BOOST_AUTO_TEST_CASE(partition_barrier_short_group_list_falls_back) {
     no_errors(stamp_rounds(4, {0, 1}, 20));
 }
 
+// All-singleton domains are what an unreadable cache/NUMA topology produces. The two-level path would
+// then have every participant represent itself at the root -- the flat barrier plus a cache line and an
+// extra release store each -- so it must report and behave as flat, and group_count() must not claim a
+// level that is not running.
+BOOST_AUTO_TEST_CASE(partition_barrier_all_singleton_groups_are_flat) {
+    const PartitionBarrier singletons(4, {0, 1, 2, 3});
+    BOOST_CHECK_LT(singletons.group_count(), 2);
+    no_errors(stamp_rounds(4, {0, 1, 2, 3}, 20));
+
+    // A grouping with real fan-in still engages, so the guard has not disabled the optimization wholesale.
+    const PartitionBarrier grouped(4, {0, 0, 1, 1});
+    BOOST_CHECK_EQUAL(grouped.group_count(), 2);
+}
+
 // poison() must release waiters in BOTH levels: a peer that throws mid-round leaves the others parked
 // on their domain's word, not the root's.
 BOOST_AUTO_TEST_CASE(partition_barrier_poison_releases_grouped_waiters) {

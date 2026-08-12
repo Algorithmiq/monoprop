@@ -22,9 +22,20 @@ gives each partition a pinned worker thread that runs it serially. Each partitio
 keeps its own small, cache-resident term index; a gate is applied to all
 partitions at once, synchronised by a lightweight barrier, and anticommuting terms
 whose partner lives in another partition are resolved through a per-gate exchange.
-When the partitions are pinned and span more than one L3 domain, that barrier fans in
-within each domain and then across domains, so both the arrival counter and the
-release store stay inside one L3 slice instead of crossing the socket interconnect.
+When the partitions are pinned and span more than one locality domain, that barrier
+fans in within each domain and then across domains, so both the arrival counter and
+the release store stay inside one cache slice instead of crossing the socket
+interconnect. A domain is the deepest cache level that more than one core shares —
+an L3 slice or CCX on x86 — falling back to the NUMA node on parts that report no
+shared cache at all.
+
+Placement respects whatever CPU mask the process was launched under. When several
+ranks share a node, they compare masks with each other to decide how the node was
+divided: given a mask each (`srun --cpu-bind=cores --cpus-per-task=N`), every rank
+partitions the cores it was actually given, and given one mask between them
+(`mpirun --bind-to none`), they divide it so that no two ranks land on the same
+core. The two cases look identical from a single rank — each sees fewer CPUs than
+the machine has — which is why they are measured rather than guessed.
 
 ## Runtime environment variables
 
@@ -34,6 +45,7 @@ release store stay inside one L3 slice instead of crossing the socket interconne
 | `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
 | `monoprop_PARTITION_PINNING` | `on` | `0`/`false`/`no` disables pinning each partition to a core. Has an effect only on Linux. |
 | `monoprop_COMM_PROFILE` | `off` | `1`/`true`/`yes` makes each transport print one `COMMPROF` line per rank to stderr when it is destroyed, accounting for where its collectives' wall time went. Diagnostic only; off costs one branch per collective phase. |
+| `monoprop_SPIN_BUDGET_US` | `30` | Microseconds a partition spends spinning on-core at a barrier before it starts yielding. Longer suits a pinned one-partition-per-core layout; shorter suits an oversubscribed one, where a spinner holds the core its late peer needs. A tuning knob — the default is calibrated, not arbitrary. |
 
 ```bash
 # Run 8 partitions instead of one-per-core:
