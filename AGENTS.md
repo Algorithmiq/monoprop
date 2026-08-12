@@ -86,6 +86,11 @@ Key files:
   that all of them agree through every accessor. `SparseRowStore::preferred_for_modes()` holds the
   dense/sparse crossover; it is a build-time constant (`monoprop_SPARSE_ROW_MIN_MODES`, defaulted off
   `monoprop_ENABLE_ARCH_FLAGS`) because what moves it is the target ISA.
+  `algebra/CodesAlgebra.h` is the structural algebra on a sparse row, one function per dense
+  counterpart, reading the `codes` word instead of looping over storage words. It is exact, not an
+  approximation: `cpp/tests/codes_algebra_tests.cpp` asserts agreement with each dense version over the
+  fixtures and randomized rows, and that test is the gate on making the codes form the default. Change
+  one side and you must change the other.
 - **`Basis` / the `Algebra` policy** (`cpp/monoprop/algebra/`): the two algebras are sibling models
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is

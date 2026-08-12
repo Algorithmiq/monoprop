@@ -48,6 +48,45 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// A sparse row's two storage types, at namespace scope rather than inside the store: the algebra that
+// reads rows (CodesAlgebra.h) must not depend on the container that owns them.
+using RowMode = uint16_t;
+using RowCodes = uint64_t;
+
+// Two bits per slot in one RowCodes. A wider row is representable in the mode lanes but would put the
+// algebra back on a multi-word loop, which is the whole cost the support form removes.
+inline constexpr size_t kRowMaxSlots = 32;
+inline constexpr RowCodes kRowLoBits = 0x5555555555555555ULL; // bit 2j of every slot
+
+// Bit 2j of each slot: set iff slot j is occupied at all. popcount is n, the support measure.
+[[nodiscard]] inline constexpr auto row_occupied_bits(RowCodes codes) noexcept -> RowCodes {
+    return (codes | (codes >> 1)) & kRowLoBits;
+}
+// Bit 2j of each slot: set iff slot j holds both of its positions. popcount is d.
+[[nodiscard]] inline constexpr auto row_paired_bits(RowCodes codes) noexcept -> RowCodes {
+    return codes & (codes >> 1) & kRowLoBits;
+}
+[[nodiscard]] inline constexpr auto row_slot_count(RowCodes codes) noexcept -> size_t {
+    return static_cast<size_t>(std::popcount(row_occupied_bits(codes)));
+}
+
+// Non-owning view of one row: ascending mode lanes plus the codes word. The lane array is only read
+// below num_slots(), which the codes word determines -- so a view stays valid over a padded row and
+// carries no length of its own. It borrows the store's arrays, so it must not outlive them, and a row
+// mutation invalidates it the way an iterator would.
+struct SparseRow {
+    const RowMode *modes = nullptr;
+    RowCodes codes = 0;
+
+    [[nodiscard]] auto num_slots() const noexcept -> size_t { return row_slot_count(codes); }
+    [[nodiscard]] auto mode(size_t j) const noexcept -> size_t { return static_cast<size_t>(modes[j]); }
+    // The 2-bit field of slot j: 0b01 is physical position 2*mode alone, 0b10 is 2*mode+1 alone, 0b11
+    // the paired mode.
+    [[nodiscard]] auto code(size_t j) const noexcept -> unsigned int {
+        return static_cast<unsigned int>((codes >> (2 * j)) & 0b11U);
+    }
+};
+
 // Operator-term store in support form: each row is a fixed-width list of the *modes* it occupies plus
 // one word holding two bits per occupied mode. It is the third backend behind the four TypeAliases.h
 // row accessors, alongside std::vector<Bitset> and OperatorIndex, and agrees with both through them
@@ -82,12 +121,10 @@ public:
     using value_type = Bitset;
     using key_type = Bitset;
     using mapped_type = size_t;
-    using ModeT = uint16_t;
-    using CodesT = uint64_t;
+    using ModeT = RowMode;
+    using CodesT = RowCodes;
 
-    // Two bits per slot in one CodesT. A wider row is representable in modes_ but would put the algebra
-    // back on a multi-word loop, which is the whole cost the support form removes.
-    static constexpr size_t kMaxSlots = 32;
+    static constexpr size_t kMaxSlots = kRowMaxSlots;
     static constexpr size_t kDefaultSlots = 8;
 
     // The top two ModeT values are markers, so a valid mode index is at most kPadLane - 2. kPadLane
@@ -96,8 +133,6 @@ public:
     static constexpr ModeT kPadLane = std::numeric_limits<ModeT>::max();
     static constexpr ModeT kOverflowLane = static_cast<ModeT>(kPadLane - 1);
     static constexpr size_t kMaxModes = static_cast<size_t>(kOverflowLane); // exclusive bound
-
-    static constexpr uint64_t kLoBits = 0x5555555555555555ULL; // bit 2j of every slot
 
     // The Stage 3 crossover, as a predicate rather than a bare number so the rule has one home.
     static constexpr size_t kMinModes = monoprop_SPARSE_ROW_MIN_MODES;
@@ -248,6 +283,13 @@ public:
     // will need the same guard, which is why the spill is kept rare rather than made general.
     [[nodiscard]] auto codes(size_t i) const -> CodesT { return codes_[i]; }
 
+    // What the codes algebra reads. Borrows this store's arrays, so it is invalidated by anything that
+    // reallocates them (grow_rows_geometric, reserve) or rewrites row i; row i must not be spilled.
+    [[nodiscard]] auto view(size_t i) const -> SparseRow {
+        assert(!spilled(i) && "SparseRowStore::view on a spilled row");
+        return SparseRow{&modes_[i * slots_per_row_], codes_[i]};
+    }
+
     [[nodiscard]] auto spilled(size_t i) const -> bool { return modes_[i * slots_per_row_] == kOverflowLane; }
 
     // Occupied modes -- the support measure, or_sum.
@@ -255,7 +297,7 @@ public:
         if (spilled(i)) {
             return occupied_modes(overflow_.at(i));
         }
-        return static_cast<size_t>(std::popcount(occupied_bits(codes_[i])));
+        return row_slot_count(codes_[i]);
     }
 
     // Set bits -- the length measure, popcount_sum = n + d straight off the codes word.
@@ -264,8 +306,7 @@ public:
             return overflow_.at(i).count();
         }
         const CodesT codes = codes_[i];
-        return static_cast<size_t>(std::popcount(occupied_bits(codes)))
-               + static_cast<size_t>(std::popcount(paired_bits(codes)));
+        return row_slot_count(codes) + static_cast<size_t>(std::popcount(row_paired_bits(codes)));
     }
 
     [[nodiscard]] auto memory_bytes() const -> size_t {
@@ -286,15 +327,6 @@ public:
     // codes word holds. A bound above kMaxSlots is not an error: the rows that exceed it spill.
     [[nodiscard]] static auto slots_for_bound(size_t mode_bound) noexcept -> size_t {
         return std::clamp<size_t>(mode_bound, 1, kMaxSlots);
-    }
-
-    // Bit 2j of each slot: set iff slot j is occupied at all. popcount is n.
-    [[nodiscard]] static constexpr auto occupied_bits(CodesT codes) noexcept -> CodesT {
-        return (codes | (codes >> 1)) & kLoBits;
-    }
-    // Bit 2j of each slot: set iff slot j holds both of its positions. popcount is d.
-    [[nodiscard]] static constexpr auto paired_bits(CodesT codes) noexcept -> CodesT {
-        return codes & (codes >> 1) & kLoBits;
     }
 
 private:

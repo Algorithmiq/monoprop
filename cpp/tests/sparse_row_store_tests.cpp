@@ -40,9 +40,9 @@ namespace {
 
 // The Stage 5 identities, spelled out here against the dense cutoff_sums so the port has something to
 // be differentially tested against before any of it is written.
-auto sums_from_codes(SparseRowStore::CodesT codes) -> CutoffSums {
-    const auto n = static_cast<size_t>(std::popcount(SparseRowStore::occupied_bits(codes)));
-    const auto d = static_cast<size_t>(std::popcount(SparseRowStore::paired_bits(codes)));
+auto sums_from_codes(RowCodes codes) -> CutoffSums {
+    const auto n = static_cast<size_t>(std::popcount(row_occupied_bits(codes)));
+    const auto d = static_cast<size_t>(std::popcount(row_paired_bits(codes)));
     return {n - d, n + d, n};
 }
 
