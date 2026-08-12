@@ -29,13 +29,9 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/operator/RowHashTable.h"
 
 namespace monoprop::detail {
-
-class TermIndexCeilingReached : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
 
 // The requested monomial width needs bit positions wider than PosT can hold. Thrown rather than
 // asserted: with the compile-time mode ceiling gone, the width is user data.
@@ -76,13 +72,8 @@ public:
     static_assert(kMaxInlinePositions < std::numeric_limits<PosT>::max(),
                   "kOverflowMarker sentinel must not collide with a valid popcount");
 
-    // Valid term indices are < kIndexCeiling (check_index_fits throws at the ceiling), so the
-    // all-ones TermIndex is free to mark an empty slot.
-    static constexpr size_t kIndexCeiling = static_cast<size_t>(std::numeric_limits<TermIndex>::max());
-    static constexpr TermIndex kEmptySlot = std::numeric_limits<TermIndex>::max();
-    // find_batch's "absent" result; same value as detail::kMissingIndex (not included here — the
-    // operator store must not depend on evolution headers).
-    static constexpr size_t kNotFound = std::numeric_limits<size_t>::max();
+    static constexpr size_t kIndexCeiling = RowHashTable::kIndexCeiling;
+    static constexpr size_t kNotFound = RowHashTable::kNotFound;
 
     // num_bits is the storage bit width of every monomial this store will hold; row() reconstructs at
     // exactly that width, and a wrong one would change num_words() and therefore the hash, the probe
@@ -115,12 +106,8 @@ public:
         out->rows_ = rows_;
         out->size_ = size_;
         out->overflow_ = overflow_;
-        out->reserve_index(table_.count);
-        for (const Slot &e : table_.slots) {
-            if (e.idx != kEmptySlot) {
-                out->insert_slot_(e.idx, e.h);
-            }
-        }
+        out->table_.reserve(table_.count());
+        table_.for_each_slot([&](TermIndex idx, uint32_t h) { out->table_.insert_distinct(idx, h); });
         return out;
     }
 
@@ -207,20 +194,7 @@ public:
     }
 
     auto find(const key_type &key) const -> std::optional<size_t> {
-        const uint32_t h = fold_hash(key);
-        if (table_.count == 0) {
-            return std::nullopt;
-        }
-        size_t s = spread(h) & table_.mask;
-        for (;; s = (s + 1) & table_.mask) {
-            const Slot &e = table_.slots[s];
-            if (e.idx == kEmptySlot) {
-                return std::nullopt;
-            }
-            if (e.h == h && row_eq_key(static_cast<size_t>(e.idx), key)) {
-                return static_cast<size_t>(e.idx);
-            }
-        }
+        return table_.find(fold_hash(key), [&](size_t i) { return row_eq_key(i, key); });
     }
 
     // Group-prefetch batch find: out[i] = row index of keys[i], or kNotFound. Same result as n
@@ -232,56 +206,18 @@ public:
     // Any Key that binds to const key_type& works, since that is all fold_hash/row_eq_key need.
     template <typename Key>
     auto find_batch(const Key *keys, size_t n, size_t *out) const -> void {
-        static constexpr size_t G = 16; // keys prefetched together per pipeline pass
-        std::array<uint32_t, G> hh;
-        std::array<size_t, G> sp;
-        std::array<TermIndex, G> cand;
-        for (size_t base = 0; base < n; base += G) {
-            const size_t g = std::min(G, n - base);
-            for (size_t j = 0; j < g; ++j) {
-                hh[j] = fold_hash(keys[base + j]);
-                sp[j] = spread(hh[j]);
-                __builtin_prefetch(&table_.slots[sp[j] & table_.mask], 0, 0);
-            }
-            for (size_t j = 0; j < g; ++j) {
-                cand[j] = kEmptySlot;
-                if (table_.count == 0) {
-                    continue;
-                }
-                cand[j] = probe_hash_match_(hh[j], sp[j] & table_.mask);
-                if (cand[j] != kEmptySlot) {
-                    __builtin_prefetch(&rows_[static_cast<size_t>(cand[j]) * stride_], 0, 0);
-                }
-            }
-            for (size_t j = 0; j < g; ++j) {
-                if (cand[j] != kEmptySlot && row_eq_key(static_cast<size_t>(cand[j]), keys[base + j])) {
-                    out[base + j] = static_cast<size_t>(cand[j]);
-                }
-                else if (cand[j] != kEmptySlot) {
-                    const auto v = find(keys[base + j]);
-                    out[base + j] = v ? *v : kNotFound;
-                }
-                else {
-                    out[base + j] = kNotFound;
-                }
-            }
-        }
+        table_.find_batch(
+            keys,
+            n,
+            out,
+            [this](const Key &key) { return fold_hash(key); },
+            [this](size_t i) { __builtin_prefetch(&rows_[i * stride_], 0, 0); },
+            [this](size_t i, const Key &key) { return row_eq_key(i, key); });
     }
 
     // Insert-or-no-op. Row at `value` must already be written (the confirm reads dense rows).
     auto emplace(const key_type &key, mapped_type value) -> void {
-        check_index_fits(value);
-        const uint32_t h = fold_hash(key);
-        table_.rehash_if_needed();
-        size_t s = spread(h) & table_.mask;
-        while (table_.slots[s].idx != kEmptySlot) {
-            if (table_.slots[s].h == h && row_eq_key(static_cast<size_t>(table_.slots[s].idx), key)) {
-                return;
-            }
-            s = (s + 1) & table_.mask;
-        }
-        table_.slots[s] = Slot{static_cast<TermIndex>(value), h};
-        ++table_.count;
+        table_.emplace(fold_hash(key), value, [&](size_t i) { return row_eq_key(i, key); });
     }
     // Insert n distinct rows with consecutive indices [base, base+n). Rows must already be written.
     template <typename KeyFn>
@@ -289,51 +225,24 @@ public:
         if (n == 0) {
             return;
         }
-        check_index_fits(base + n - 1);
+        RowHashTable::check_index_fits(base + n - 1);
         for (size_t k = 0; k < n; ++k) {
-            insert_slot_(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
+            table_.insert_distinct(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
         }
     }
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
-        for (const Slot &e : table_.slots) {
-            if (e.idx != kEmptySlot) {
-                fn(row(static_cast<size_t>(e.idx)), static_cast<size_t>(e.idx));
-            }
-        }
+        table_.for_each_slot(
+            [&](TermIndex idx, uint32_t) { fn(row(static_cast<size_t>(idx)), static_cast<size_t>(idx)); });
     }
     // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
     [[nodiscard]] auto slack_bytes() const -> size_t {
         return (rows_.capacity() * sizeof(PosT)) - (std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT));
     }
 
-    auto index_estimated_memory_bytes() const -> size_t {
-        return sizeof(OperatorIndex) + (table_.slots.capacity() * sizeof(Slot));
-    }
+    auto index_estimated_memory_bytes() const -> size_t { return sizeof(OperatorIndex) + table_.slot_bytes(); }
 
 private:
-    struct Slot {
-        TermIndex idx = kEmptySlot;
-        uint32_t h = 0;
-    };
-
-    // First slot on h's probe chain whose stored hash matches, or kEmptySlot if the chain ends first.
-    // Matches on h alone and leaves the dense-row comparison to the caller — that deferral is what lets
-    // find_batch prefetch the row between probe and confirm, so do not fold row_eq_key in here (find()
-    // deliberately keeps its own confirming variant). `start` must already be masked; the table must not
-    // be mutated concurrently.
-    [[gnu::always_inline]] auto probe_hash_match_(uint32_t h, size_t start) const -> TermIndex {
-        for (size_t s = start;; s = (s + 1) & table_.mask) {
-            const Slot &e = table_.slots[s];
-            if (e.idx == kEmptySlot) {
-                return kEmptySlot;
-            }
-            if (e.h == h) {
-                return e.idx;
-            }
-        }
-    }
-
     // SplitmixHash directly, which is exactly what MonomialHash<NumModes> forwarded to -- the hash is
     // unchanged, and must stay so: it drives probe order and monomial_hash % rank_count owner routing
     // (plan invariant 2).
@@ -341,69 +250,10 @@ private:
         const size_t full = SplitmixHash{}(q);
         return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
     }
-    // Avalanche the cached 32-bit fold into a full-width hash (splitmix64 finalizer): the stored h
-    // is only an equality pre-filter, so it must be re-mixed before its low bits drive table bucketing.
-    static size_t spread(uint32_t h) noexcept {
-        uint64_t x = static_cast<uint64_t>(h) * 0x9E3779B97F4A7C15ULL;
-        x ^= x >> 30;
-        x *= 0xBF58476D1CE4E5B9ULL;
-        x ^= x >> 27;
-        x *= 0x94D049BB133111EBULL;
-        x ^= x >> 31;
-        return static_cast<size_t>(x);
-    }
-
-    // One open-addressing table: power-of-2 slot count, linear probing, max load factor 0.7
-    // (the group-prefetch win erodes at high load — longer probe chains add un-prefetched reads).
-    struct Table {
-        std::vector<Slot> slots = std::vector<Slot>(kMinSlots, Slot{});
-        size_t mask = kMinSlots - 1;
-        size_t count = 0;
-
-        auto rehash_if_needed() -> void {
-            if ((count + 1) * 10 >= slots.size() * 7) {
-                rehash_to(slots.size() * 2);
-            }
-        }
-        auto rehash_to(size_t new_cap) -> void {
-            new_cap = std::bit_ceil(std::max<size_t>(new_cap, kMinSlots));
-            if (new_cap <= slots.size()) {
-                return;
-            }
-            std::vector<Slot> old = std::move(slots);
-            slots.assign(new_cap, Slot{});
-            mask = new_cap - 1;
-            for (const Slot &e : old) {
-                if (e.idx == kEmptySlot) {
-                    continue;
-                }
-                size_t s = spread(e.h) & mask;
-                while (slots[s].idx != kEmptySlot) {
-                    s = (s + 1) & mask;
-                }
-                slots[s] = e;
-            }
-        }
-    };
-    static constexpr size_t kMinSlots = 16;
-    // Slot count for `n` entries at ≤0.7 load.
-    static auto slots_for_(size_t n) -> size_t { return std::bit_ceil(std::max<size_t>(kMinSlots, (n * 10 / 7) + 1)); }
 
     [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
     auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
-    auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
-
-    // Insert (idx, h) into the table with no duplicate probe — callers on this path insert provably distinct
-    // keys (⊕G-injective miss batches, clone re-insertion).
-    auto insert_slot_(TermIndex idx, uint32_t h) -> void {
-        table_.rehash_if_needed();
-        size_t s = spread(h) & table_.mask;
-        while (table_.slots[s].idx != kEmptySlot) {
-            s = (s + 1) & table_.mask;
-        }
-        table_.slots[s] = Slot{idx, h};
-        ++table_.count;
-    }
+    auto reserve_index(size_t n) -> void { table_.reserve(n); }
 
     // Compare row i against key q without materializing the row (the find confirm). Reads the
     // popcount byte first, so a false h prefilter match usually costs one byte compare.
@@ -424,13 +274,6 @@ private:
         return true;
     }
 
-    static auto check_index_fits(size_t value) -> void {
-        if (value >= kIndexCeiling) {
-            throw TermIndexCeilingReached("OperatorIndex: operator index reached the TermIndex ceiling; rebuild with "
-                                          "-Dmonoprop_WIDE_TERM_INDEX (this partition's term count exceeded ~2^32).");
-        }
-    }
-
     DefaultInitVector<PosT> rows_ = {};
     size_t num_bits_ = 0;
     size_t size_ = 0;
@@ -438,7 +281,7 @@ private:
     size_t stride_ = 1 + kMaxInlinePositions;
     // Lossless side-map for rows whose popcount exceeds inline_width_.
     std::unordered_map<size_t, value_type> overflow_ = {};
-    Table table_ = {};
+    RowHashTable table_ = {};
 };
 
 } // namespace monoprop::detail

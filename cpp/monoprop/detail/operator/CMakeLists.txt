@@ -7,5 +7,6 @@ target_sources(
         "InvertedIndex.h"
         "MPOperator.h"
         "OperatorIndex.h"
+        "RowHashTable.h"
         "SparseRowStore.h"
 )
