@@ -456,6 +456,14 @@ public:
         table_.for_each_slot([&](TermIndex idx, uint32_t) { fn(static_cast<size_t>(idx)); });
     }
 
+    // OperatorIndex's signature, fn(monomial, row_index), so the two stores are interchangeable at the
+    // one call site that wants both. Materializes each row, which for_each_index does not -- prefer that
+    // where the index alone will do.
+    template <typename Fn>
+    auto for_each(Fn &&fn) const -> void {
+        for_each_index([&](size_t i) { fn(row(i), i); });
+    }
+
     [[nodiscard]] auto indexed_count() const noexcept -> size_t { return table_.count(); }
 
     [[nodiscard]] auto index_estimated_memory_bytes() const -> size_t {
@@ -480,6 +488,14 @@ public:
     // codes word holds. A bound above kMaxSlots is not an error: the rows that exceed it spill.
     [[nodiscard]] static auto slots_for_bound(size_t mode_bound) noexcept -> size_t {
         return std::clamp<size_t>(mode_bound, 1, kMaxSlots);
+    }
+
+    // Slot count for a row in flight rather than a row at rest: a product occupies up to the term's modes
+    // plus the generator's, so a scan scratch row and a wire record both need the cutoff's mode bound plus
+    // the widest generator's locality. Every rank derives this from the same circuit and cutoff, so they
+    // agree on it without communication -- which is what lets it fix a wire stride.
+    [[nodiscard]] static auto scratch_slots_for(size_t mode_bound, size_t max_generator_modes) noexcept -> size_t {
+        return std::clamp<size_t>(mode_bound + max_generator_modes, 1, kMaxSlots);
     }
 
 private:

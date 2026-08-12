@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cstdint>
 #include <limits>
 #include <utility>
@@ -23,6 +24,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/operator/SparseRowStore.h"
 
 namespace monoprop::detail {
 
@@ -141,6 +143,61 @@ inline auto query_read(const VecZ &buf, size_t q, size_t stride, Bitset &mono_ou
     const size_t base = q * stride;
     mpi_detail::read_monomial_from_words(buf, base, mono_out);
     phase_out = decode_phase(buf[base + mono_out.num_words()]);
+}
+
+// A query record in support form. Deliberately the same *shape* as the dense one -- a fixed-stride
+// payload followed by the phase word -- so every stride computation, alltoallv count and reader offset
+// above holds with `num_words` reinterpreted as the payload word count. Only the payload differs:
+// `sparse_lane_words` words of four uint16 mode lanes each plus one codes word, against the monomial's
+// full word count. That is what the format is for: a 1024-mode monomial is 32 words, where a 12-slot row
+// is 3 lane words plus 1.
+//
+// The stride needs a capacity, and it must be one every rank derives identically without communication --
+// SparseRowStore::scratch_slots_for(cutoff mode bound, widest generator), the same value the scan's
+// scratch row uses, since a query carries exactly such a product. Ranks already owe each other this kind
+// of agreement for the hash width (see find_rank).
+//
+// A row past that capacity has no sparse record: the caller must fall back to the dense one, and the
+// push below asserts rather than truncating.
+inline constexpr auto sparse_lane_words(size_t capacity) -> size_t {
+    return (capacity + 3) / 4;
+}
+inline constexpr auto sparse_payload_words(size_t capacity) -> size_t {
+    return sparse_lane_words(capacity) + 1;
+}
+
+inline auto sparse_query_push(VecZ &buf, const SparseRow &row, size_t capacity, int phase) -> void {
+    const size_t lane_words = sparse_lane_words(capacity);
+    const size_t n = row.num_slots();
+    assert(n <= capacity && "sparse_query_push row exceeds the record capacity");
+    const size_t base = buf.size();
+    // Zero-filled, so the lanes past the row's own are deterministic; the reader ignores them, taking the
+    // slot count off the codes word.
+    buf.resize(base + lane_words + 2, 0);
+    for (size_t j = 0; j < n; ++j) {
+        buf[base + (j / 4)] |= static_cast<size_t>(row.modes[j]) << (16 * (j % 4));
+    }
+    buf[base + lane_words] = static_cast<size_t>(row.codes);
+    buf[base + lane_words + 1] = encode_phase(phase);
+}
+
+// lanes_out must hold `capacity` lanes. Writes only the row's own, for the same reason
+// read_monomial_from_words overwrites whole words: what a previous record left beyond them cannot be read.
+inline auto sparse_query_read(const VecZ &buf,
+                              size_t q,
+                              size_t stride,
+                              size_t capacity,
+                              RowMode *lanes_out,
+                              RowCodes &codes_out,
+                              int &phase_out) -> void {
+    const size_t base = q * stride;
+    const size_t lane_words = sparse_lane_words(capacity);
+    codes_out = static_cast<RowCodes>(buf[base + lane_words]);
+    const size_t n = row_slot_count(codes_out);
+    for (size_t j = 0; j < n; ++j) {
+        lanes_out[j] = static_cast<RowMode>((buf[base + (j / 4)] >> (16 * (j % 4))) & 0xFFFFU);
+    }
+    phase_out = decode_phase(buf[base + lane_words + 1]);
 }
 
 // No monomial reconstruction: process_responses needs only the phase.
