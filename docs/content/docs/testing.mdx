@@ -80,6 +80,18 @@ one entry per rank count rather than per case, because the ranks have to reach
 the same collectives. Select either group with
 `ctest --test-dir build/editable/Release -L serial` (or `-L mpi-2`).
 
+CTest's `-j` is safe for both, including MPI-enabled builds: the harness ignores
+`SIGPIPE` before `MPI_Init`. Each per-case process initialises MPI as a *singleton*
+(no launcher), so PMIx opens a socket to a daemon that is not running, and under
+concurrency a write to it would otherwise kill the process mid-init. If you embed
+monoprop in a C++ program that initialises MPI the same way, do the same — a library
+cannot set a process-wide signal disposition on its caller's behalf. Python callers
+need nothing: CPython already ignores `SIGPIPE`.
+
+You may still see OpenMPI warn that `/dev/shm` is too small for its shared-memory
+segment. That one is about performance, not correctness; raise the container's
+`--shm-size` (Docker defaults to 64 MB) to silence it.
+
 ### The sparse-rows variants
 
 Every case is also registered a second time with `monoprop_ROW_STORE=sparse`,
