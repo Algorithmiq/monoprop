@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -48,7 +49,16 @@ public:
 // in sonar-project.properties. Do not "simplify" them to the default ordering.
 class PartitionBarrier {
 public:
-    explicit PartitionBarrier(int participants, const std::vector<int> &group_of = {}) : participants_(participants) {
+    // `spin_budget` overrides how long a waiter stays on-core before yielding; unset takes
+    // monoprop_SPIN_BUDGET_US, else kDefaultSpinBudgetUs. Injectable because config::get() caches on
+    // first call, so a test cannot reach the env path in-process, and because sweeping the budget is
+    // how its default is justified.
+    explicit PartitionBarrier(int participants,
+                              const std::vector<int> &group_of = {},
+                              std::optional<std::chrono::microseconds> spin_budget = std::nullopt)
+        : spin_budget_(spin_budget.value_or(
+              std::chrono::microseconds{config::get().spin_budget_us.value_or(detail::kDefaultSpinBudgetUs)})),
+          participants_(participants) {
         if (static_cast<int>(group_of.size()) != participants || participants <= 0) {
             return; // flat
         }
@@ -128,6 +138,10 @@ public:
     // CommProfile so a run states which barrier it ran instead of leaving it inferred from the timing.
     auto group_count() const -> int { return groups_; }
 
+    // The on-core spin budget actually in force, so a test can observe the resolution rather than
+    // re-computing it, and so a sweep can report what it swept.
+    auto spin_budget() const -> std::chrono::microseconds { return spin_budget_; }
+
     // Signal that this participant is unwinding (e.g. an engine exception), releasing peers spinning in a
     // barrier. Idempotent.
     auto poison() -> void { poisoned_.store(true, std::memory_order_release); }
@@ -187,9 +201,9 @@ private:
         std::atomic<unsigned> v{0};
     };
 
-    // Read once per barrier, not once per spin: monoprop_SPIN_BUDGET_US is a sweep knob, and the spin loop
-    // is the measured hotspot.
-    std::chrono::microseconds spin_budget_{config::get().spin_budget_us.value_or(detail::kDefaultSpinBudgetUs)};
+    // Resolved once per barrier, not once per spin: monoprop_SPIN_BUDGET_US is a sweep knob, and the spin
+    // loop is the measured hotspot.
+    std::chrono::microseconds spin_budget_;
 
     int participants_;
     int groups_ = 0; // < 2 ⇒ flat: arrived_/gen_ count participants, not domains
