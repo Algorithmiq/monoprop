@@ -447,3 +447,36 @@ Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`)
 Each run writes `results/time-<label>.json` (pytest-benchmark) and
 `<label>.json` (everything else); `report.py` merges all labels into
 `results/REPORT.md`.
+
+### Continuous benchmarking
+
+Every commit on `main` is benchmarked by the `bench_main.yml` workflow and the
+results are tracked by [Bencher](https://bencher.dev/), which graphs them over
+time and alerts when a metric drifts outside its threshold.
+
+The workflow runs the same recipes you can run locally:
+
+```bash
+just bench-ci ci-linux          # the default sizes, more rounds, no slow models
+just bench-bmf ci-linux         # the same results as Bencher Metric Format JSON
+```
+
+`bmf.py` merges both artifacts into one report because Bencher accepts a single
+adapter per upload — the stock `python_pytest` adapter would keep the timings
+and drop the memory and operator metrics. Four measures are tracked:
+
+| Measure | Unit | Source | Threshold |
+|---|---|---|---|
+| `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99 |
+| `peak-memory` | bytes | per-operation peak RSS (`memhwm`) | +10% |
+| `resting-memory` | bytes | settled operator + graph footprint | +10% |
+| `terms` | count | terms in the evolved operator | any change |
+
+`terms` is deterministic for a fixed seed and problem size, so it is held to an
+exact match: any drift is an algorithmic change and should be a deliberate one.
+The timing measures are noisy on shared runners, so alerts on `main` are
+recorded but do not fail the build.
+
+Setting this up on a fork needs a Bencher project and a `BENCHER_API_KEY`
+repository secret; the project slug defaults to `monoprop` and can be overridden
+with a `BENCHER_PROJECT` repository variable.
