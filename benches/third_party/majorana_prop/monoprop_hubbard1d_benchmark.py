@@ -19,6 +19,7 @@ import json
 import os
 import platform
 import resource
+import sys
 from pathlib import Path
 from time import perf_counter
 
@@ -27,7 +28,10 @@ import numpy as np
 from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.fermi import FermiOperator
 
-os.environ["YAQS_LOG_LEVEL"] = "INFO"
+# The repository's own benchmark suite owns the memory instrumentation; this directory is a
+# separate uv project, so reach it by path rather than by dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from _memory_cpu import HighWaterMark  # noqa: E402
 
 
 def mode(site, spin):
@@ -59,13 +63,19 @@ def hubbard_fermion_terms(
     """
     terms = []
     topology = bricklayer_topology(num_sites)
+    # Spin-up and spin-down modes are interleaved, so a spinful chain spans 2 * num_sites modes.
+    num_modes = 2 * num_sites
 
     for spin in ("up", "down"):
         for left_site, right_site in topology:
             left, right = mode(left_site, spin), mode(right_site, spin)
             op_terms = [((left, "+"), (right, "-")), ((right, "+"), (left, "-"))]
             terms.append(
-                FermiOperator(terms=op_terms, coefficients=[-hopping, -hopping])
+                FermiOperator(
+                    terms=op_terms,
+                    coefficients=[-hopping, -hopping],
+                    num_modes=num_modes,
+                )
             )
 
     for site in range(num_sites):
@@ -74,6 +84,7 @@ def hubbard_fermion_terms(
             FermiOperator(
                 terms=[((up, "+"), (up, "-"), (down, "+"), (down, "-"))],
                 coefficients=[interaction],
+                num_modes=num_modes,
             )
         )
 
@@ -85,6 +96,7 @@ def hubbard_fermion_terms(
                     FermiOperator(
                         terms=[((m, "+"), (m, "-"))],
                         coefficients=[-chemical_potential],
+                        num_modes=num_modes,
                     )
                 )
 
@@ -117,28 +129,71 @@ def number_operator_majorana(site, spin, num_qubits):
     )
 
 
+SOURCE_LABEL = "monoprop"
+
+
 def process_cpu_seconds():
     """Return CPU seconds (user + system) consumed by this process, summed over all threads."""
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return usage.ru_utime + usage.ru_stime
 
 
-def save_result(output_path, record):
-    """Append one benchmark result as a JSON line, creating the parent directory if needed."""
+def save_result(
+    output_path,
+    n_spinful_sites,
+    n_layers,
+    values,
+    term_counts,
+    cumulative_runtimes,
+    memory_size,
+    native_memory_size,
+    provenance,
+):
+    """Merge this run's per-step data into the shared results JSON file, keyed by source label."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("a") as f:
-        f.write(json.dumps(record) + "\n")
+    if output_path.exists():
+        with output_path.open() as f:
+            data = json.load(f)
+    else:
+        data = {
+            "n_spinful_sites": n_spinful_sites,
+            "n_layers": n_layers,
+            "step_range": list(range(n_layers + 1)),
+            "num_threads": {},
+            "runtime_seconds": {},
+            "expectation_value": {},
+            "num_terms": {},
+            "memory_MB": {},
+            "native_memory_MB": {},
+        }
+    requested_threads = os.environ.get("monoprop_NUM_THREADS")
+    data.setdefault("num_threads", {})[SOURCE_LABEL] = (
+        int(requested_threads) if requested_threads else None
+    )
+    data["runtime_seconds"][SOURCE_LABEL] = cumulative_runtimes
+    data["expectation_value"][SOURCE_LABEL] = values
+    data["num_terms"][SOURCE_LABEL] = term_counts
+    data["memory_MB"][SOURCE_LABEL] = memory_size
+    data.setdefault("native_memory_MB", {})[SOURCE_LABEL] = native_memory_size
+    data.setdefault("provenance", {})[SOURCE_LABEL] = provenance
+    with output_path.open("w") as f:
+        json.dump(data, f, indent=4)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark for 1D Hubbard model")
-    parser.add_argument("--case", "-c", help="Case pair to run.", type=int, default=0)
+    parser.add_argument(
+        "--n-spins", "-n", help="Number of spinful sites.", type=int, default=60
+    )
+    parser.add_argument(
+        "--max-layers", "-l", help="Number of Trotter layers.", type=int, default=20
+    )
     parser.add_argument(
         "--output",
         "-o",
-        help="Path to the JSONL file results are appended to.",
-        default=Path(__file__).with_name("monoprop_hubbard1d_benchmark_results.jsonl"),
+        help="Path to the shared JSON file results are merged into.",
+        default=Path(__file__).with_name("results.json"),
     )
     parser.add_argument(
         "--mu-gates",
@@ -148,13 +203,7 @@ def main():
 
     args = parser.parse_args()
 
-    spin_layer_cases = []
-    for i in [20, 40, 60]:
-        for j in range(10, 19, 2):
-            spin_layer_cases.append((i, j))
-
-    case_pair = args.case
-    n_spinful_sites, n_layers = spin_layer_cases[case_pair]
+    n_spinful_sites, n_layers = args.n_spins, args.max_layers
     trotter_steps = n_layers
     t = 1.0
     u = 1.5
@@ -192,23 +241,35 @@ def main():
 
     values = np.empty(trotter_steps + 1)
     term_counts = np.empty(trotter_steps + 1, dtype=int)
-
-    values[0] = simulator.expectation_value()
-    term_counts[0] = simulator.size()
+    cumulative_runtimes = np.empty(trotter_steps + 1)
+    memory_size = np.empty(trotter_steps + 1)
+    native_memory_size = np.empty(trotter_steps + 1)
 
     cpu_start = process_cpu_seconds()
-    t_start = perf_counter()
+    with HighWaterMark() as window:
+        t_start = perf_counter()
+        values[0] = simulator.expectation_value()
+        cumulative_runtimes[0] = perf_counter() - t_start
+        term_counts[0] = simulator.size()
+    memory_size[0] = window.peak_mb
+    native_memory_size[0] = simulator._simulator.operator_memory_bytes() / 1024**2
     for step in range(trotter_steps):
-        simulator.propagate(fermi_circuit)
-        values[step + 1] = simulator.expectation_value()
-        term_counts[step + 1] = simulator.size()
-    t_total = perf_counter() - t_start
+        with HighWaterMark() as window:
+            step_start = perf_counter()
+            simulator.propagate(fermi_circuit)
+            step_runtime = perf_counter() - step_start
+            values[step + 1] = simulator.expectation_value()
+            term_counts[step + 1] = simulator.size()
+        cumulative_runtimes[step + 1] = cumulative_runtimes[step] + step_runtime
+        memory_size[step + 1] = window.peak_mb
+        native_memory_size[step + 1] = (
+            simulator._simulator.operator_memory_bytes() / 1024**2
+        )
     cpu_total = process_cpu_seconds() - cpu_start
-    memory_size = simulator._simulator.operator_memory_bytes() / 1024**2
-    peak_rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+
     # The engine picks one partition per core when the env var is unset, so an unset value is
     # not "1 thread"; busy_cores is the only measurement of what the threads actually did.
-    requested_threads = os.environ.get("monoprop_NUM_THREADS")
+    t_total = cumulative_runtimes[-1]
     busy_cores = cpu_total / t_total if t_total > 0 else float("nan")
     print(
         f"{n_spinful_sites} n_spin {n_layers} layers {term_counts[-1]} num_terms {values[-1]} final overlap  runtime {t_total:.3f} seconds"
@@ -216,20 +277,18 @@ def main():
     )
     save_result(
         args.output,
+        n_spinful_sites,
+        n_layers,
+        values.tolist(),
+        term_counts.tolist(),
+        cumulative_runtimes.tolist(),
+        memory_size.tolist(),
+        native_memory_size.tolist(),
         {
-            "n_spinful_sites": n_spinful_sites,
-            "n_layers": n_layers,
-            "num_threads": int(requested_threads) if requested_threads else None,
             "affinity_cores": len(os.sched_getaffinity(0)),
             "mu_gates": bool(args.mu_gates),
-            "runtime_seconds": t_total,
             "cpu_seconds": cpu_total,
             "busy_cores": busy_cores,
-            "final_overlap": float(values[-1]),
-            # np.int64 is not a subclass of int, so json.dumps rejects it as-is.
-            "num_terms": int(term_counts[-1]),
-            "memory_MB": memory_size,
-            "peak_rss_MB": peak_rss_mb,
             "library_version": monoprop.__version__,
             "host": platform.node(),
         },

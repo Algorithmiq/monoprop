@@ -18,6 +18,8 @@ using BenchmarkTools
 using ArgParse
 using JSON
 
+include(joinpath(@__DIR__, "..", "bench_common.jl"))
+
 
 """CPU seconds (user + system) consumed by this process so far, summed over all threads.
 
@@ -30,17 +32,6 @@ function process_cpu_seconds()
 end
 
 
-"""Peak resident set size in MB, from VmHWM in /proc/self/status."""
-function peak_rss_mb()
-    for line in eachline("/proc/self/status")
-        if startswith(line, "VmHWM:")
-            return parse(Int, split(line)[2]) / 1024
-        end
-    end
-    return NaN
-end
-
-
 function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
     site_index = N_spinful_sites ÷ 2
 
@@ -49,54 +40,91 @@ function experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_l
 
     obs = VectorMajoranaSum(MajoranaSum(N_spinful_sites, :nup, site_index))
 
-    res = zeros(n_layers + 1)
-    res[1] = overlapwithfock(obs, fock_state)
+    values = zeros(n_layers + 1)
+    term_counts = zeros(Int, n_layers + 1)
+    cumulative_runtimes = zeros(n_layers + 1)
+    memory_size = zeros(n_layers + 1)
+    native_memory_size = zeros(n_layers + 1)
 
+    sampler = HighWaterMark()
 
-    cpu_start = process_cpu_seconds()
-    stats = @timed for k = 1:n_layers
-        propagate!(circ_single, obs, thetas_single, min_abs_coeff=min_abs_coeff, max_unpaired=max_unpaired)
-        res[k+1] = overlapwithfock(obs, fock_state)
+    # Accumulated across the timed regions only: opening a memory window forces a full GC,
+    # so a counter spanning the whole loop would charge that settling cost to the workload
+    # and inflate both gc_seconds and busy_cores.
+    cpu_seconds = 0.0
+    gc_ns = 0
+
+    start!(sampler)
+    cpu_mark, gc_mark = process_cpu_seconds(), Base.gc_time_ns()
+    cumulative_runtimes[1] = @elapsed (values[1] = overlapwithfock(obs, fock_state))
+    cpu_seconds += process_cpu_seconds() - cpu_mark
+    gc_ns += Base.gc_time_ns() - gc_mark
+    stop!(sampler)
+    term_counts[1] = length(obs)
+    memory_size[1] = peak_mb(sampler)
+    native_memory_size[1] = Base.summarysize(obs) / 1024^2
+    for k = 1:n_layers
+        start!(sampler)
+        cpu_mark, gc_mark = process_cpu_seconds(), Base.gc_time_ns()
+        step_runtime = @elapsed propagate!(circ_single, obs, thetas_single, min_abs_coeff=min_abs_coeff, max_unpaired=max_unpaired)
+        cpu_seconds += process_cpu_seconds() - cpu_mark
+        gc_ns += Base.gc_time_ns() - gc_mark
+        stop!(sampler)
+        values[k+1] = overlapwithfock(obs, fock_state)
+        term_counts[k+1] = length(obs)
+        cumulative_runtimes[k+1] = cumulative_runtimes[k] + step_runtime
+        memory_size[k+1] = peak_mb(sampler)
+        native_memory_size[k+1] = Base.summarysize(obs) / 1024^2
     end
-    cpu_seconds = process_cpu_seconds() - cpu_start
-    memory_size = Base.summarysize(obs) / 1024^2
-    return (
-        res=res,
-        num_terms=length(obs),
-        runtime_seconds=stats.time,
-        gc_seconds=stats.gctime,
-        cpu_seconds=cpu_seconds,
-        memory_MB=memory_size,
+
+    total_runtime = cumulative_runtimes[end]
+    provenance = Dict(
+        "cpu_seconds" => cpu_seconds,
+        "gc_seconds" => gc_ns / 1e9,
+        "busy_cores" => total_runtime > 0 ? cpu_seconds / total_runtime : NaN,
         # Recorded, not hardcoded: only the Vector container dispatches into the
         # AcceleratedKernels path, so this is what proves the run was threaded at all.
-        container=string(nameof(typeof(obs))),
-    )
-
-
-end
-function save_result(output_path, N_spinful_sites, n_layers, result)
-    """Append one benchmark result as a JSON line, creating the parent directory if needed."""
-    record = Dict(
-        "n_spinful_sites" => N_spinful_sites,
-        "n_layers" => n_layers,
-        "num_terms" => result.num_terms,
-        "final_overlap" => result.res[end],
-        "runtime_seconds" => result.runtime_seconds,
-        "cpu_seconds" => result.cpu_seconds,
-        "busy_cores" => result.cpu_seconds / result.runtime_seconds,
-        "gc_seconds" => result.gc_seconds,
-        "num_threads" => Threads.nthreads(),
-        "container" => result.container,
-        "memory_MB" => result.memory_MB,
-        "peak_rss_MB" => peak_rss_mb(),
+        "container" => string(nameof(typeof(obs))),
         "library_version" => string(pkgversion(MajoranaPropagation)),
         "pauliprop_version" => string(pkgversion(PauliPropagation)),
         "host" => gethostname(),
     )
 
-    open(output_path, "a") do io
-        JSON.print(io, record)
-        println(io)
+    return values, term_counts, cumulative_runtimes, memory_size, native_memory_size, provenance
+
+
+end
+function save_result(output_path, source, N_spinful_sites, n_layers, term_counts, values, cumulative_runtimes, memory_size, native_memory_size, num_threads, provenance)
+    """Merge this run's per-step data into the shared results JSON file, keyed by source label."""
+    data = if isfile(output_path)
+        JSON.parsefile(output_path)
+    else
+        Dict(
+            "n_spinful_sites" => N_spinful_sites,
+            "n_layers" => n_layers,
+            "step_range" => collect(0:n_layers),
+            "num_threads" => Dict(),
+            "runtime_seconds" => Dict(),
+            "expectation_value" => Dict(),
+            "num_terms" => Dict(),
+            "memory_MB" => Dict(),
+            "native_memory_MB" => Dict(),
+        )
+    end
+    data["num_threads"] = get(data, "num_threads", Dict())
+    data["num_threads"][source] = num_threads
+    data["runtime_seconds"][source] = cumulative_runtimes
+    data["expectation_value"][source] = values
+    data["num_terms"][source] = term_counts
+    data["memory_MB"][source] = memory_size
+    data["native_memory_MB"] = get(data, "native_memory_MB", Dict())
+    data["native_memory_MB"][source] = native_memory_size
+    data["provenance"] = get(data, "provenance", Dict())
+    data["provenance"][source] = provenance
+
+    mkpath(dirname(output_path))
+    open(output_path, "w") do io
+        JSON.print(io, data, 4)
     end
 end
 
@@ -105,28 +133,27 @@ function main(args)
     s = ArgParseSettings(description="Arguments for the 1D Hubbard model benchmark.")
 
     @add_arg_table! s begin
-        "--case", "-c"
-        help = "Case pair to run."
+        "--n-spins", "-n"
+        help = "Number of spinful sites."
         arg_type = Int
-        default = 1
+        default = 60
+        dest_name = "n_spins"
+        "--max-layers", "-l"
+        help = "Number of Trotter layers."
+        arg_type = Int
+        default = 20
+        dest_name = "max_layers"
         "--output", "-o"
-        help = "Path to the JSONL file results are appended to."
+        help = "Path to the shared JSON file results are merged into."
         arg_type = String
-        default = joinpath(@__DIR__, "julia_hubbard1d_benchmark_results.jsonl")
+        default = joinpath(@__DIR__, "results.json")
 
     end
 
     parsed_args = parse_args(s)
 
-    spin_layers_pairs = []
-    for i in [20, 40, 60]
-        for j in 10:2:18
-            push!(spin_layers_pairs, (i, j))
-        end
-    end
-
-    case_pair = parsed_args["case"]
-    N_spinful_sites, n_layers = spin_layers_pairs[case_pair]
+    N_spinful_sites = parsed_args["n_spins"]
+    n_layers = parsed_args["max_layers"]
 
     t = 1.
     U = 1.5
@@ -161,12 +188,11 @@ function main(args)
 
     println("Number of threads: $(Threads.nthreads())")
 
-    result = experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
-    busy_cores = result.cpu_seconds / result.runtime_seconds
-    println("$N_spinful_sites n_spin $n_layers layers $(result.num_terms) num_terms $(result.res[end]) final overlap $(result.runtime_seconds) seconds")
-    println("container $(result.container)  cpu $(round(result.cpu_seconds, digits=1)) s  busy_cores $(round(busy_cores, digits=2))  gc $(round(result.gc_seconds, digits=1)) s")
+    values, term_counts, cumulative_runtimes, memory_size, native_memory_size, provenance = experiment(N_spinful_sites, fock_state, circ_single, thetas_single, n_layers)
+    println("$N_spinful_sites n_spin $n_layers layers $(term_counts[end]) num_terms $(values[end]) final overlap $(cumulative_runtimes[end]) seconds")
+    println("container $(provenance["container"])  cpu $(round(provenance["cpu_seconds"], digits=1)) s  busy_cores $(round(provenance["busy_cores"], digits=2))  gc $(round(provenance["gc_seconds"], digits=1)) s")
 
-    save_result(parsed_args["output"], N_spinful_sites, n_layers, result)
+    save_result(parsed_args["output"], "MajoranaPropagation.jl", N_spinful_sites, n_layers, term_counts, values, cumulative_runtimes, memory_size, native_memory_size, Threads.nthreads(), provenance)
 
 end
 
