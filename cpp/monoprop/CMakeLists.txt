@@ -1,6 +1,13 @@
 find_package(Boost 1.85 CONFIG REQUIRED)
 message(STATUS "Using Boost: ${Boost_DIR} (version ${Boost_VERSION})")
 
+find_package(PkgConfig REQUIRED QUIET)
+pkg_check_modules(HWLOC REQUIRED QUIET IMPORTED_TARGET GLOBAL "hwloc>=2.9")
+message(
+  STATUS
+  "Using hwloc: ${HWLOC_LINK_LIBRARIES} (version ${HWLOC_VERSION})"
+)
+
 target_sources(
   monoprop-objs
   PRIVATE
@@ -43,6 +50,8 @@ target_link_libraries(
     Boost::boost
     Threads::Threads
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
+  PRIVATE
+    PkgConfig::HWLOC
 )
 
 set_target_properties(
@@ -97,6 +106,8 @@ target_link_libraries(
     Boost::boost
     Threads::Threads
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
+  PRIVATE
+    PkgConfig::HWLOC
 )
 
 add_subdirectory(algebra)

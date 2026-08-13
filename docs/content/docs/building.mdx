@@ -25,6 +25,7 @@ without MPI, so a from-source build is required for multi-rank runs.
 - CMake and Ninja
 - Python 3.11 or newer and the `uv` package manager (for the bindings)
 - an MPI implementation such as Open MPI (only for MPI builds)
+- `hwloc` (version 2.9+) and `pkg-config` (required so CMake can locate `hwloc`)
 
 The repository ships a [DevContainer](https://containers.dev/) with all of the
 above pre-configured; opening the folder in VS Code and rebuilding the container is

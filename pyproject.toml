@@ -82,6 +82,7 @@ keyring-provider = "subprocess"
 cache-keys = [
   { file = "pyproject.toml" },
   { file = "cpp/include/**/*.h" },
+  { file = "cpp/include/**/*.h.in" },
   { file = "cpp/monoprop/**/*.{h,cpp}" },
   { file = "**/CMakeLists.txt" },
   { file = "cmake/**/*" },
@@ -301,6 +302,8 @@ flake8-annotations.allow-star-arg-any = true
 "benches/*" = ["S101", "INP001", "ANN401", "T201"]
 # benchmark test functions: annotations on the pytest signatures are just noise.
 "benches/bench_*.py" = ["ANN"]
+# cupy is an optional, GPU-only dependency of a separate uv project (benches/third_party);
+"benches/_memory_gpu.py" = ["PLC0415"]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,
@@ -349,9 +352,9 @@ test-groups = ["test"]
 test-extras = ["qiskit"]
 
 [tool.cibuildwheel.linux]
-before-build = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
+before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
 environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
 
 [tool.cibuildwheel.macos]
-before-build = "brew install boost"
+before-all = "brew install boost hwloc"
 environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
