@@ -90,6 +90,21 @@ struct SparseRow {
     }
 };
 
+// A row *key* that may be too wide for a codes word: `spilled` non-null means the key is that dense
+// monomial and `row` is unread. These are the two shapes a stored row already has, and a query needs
+// both for the same reason a stored row does -- a query is M ⊕ G, and a fully paired product escapes
+// the cutoff, so nothing bounds its support.
+//
+// Deliberately not folded into SparseRow, which is what the per-term algebra reads: that one is a view
+// of something that fits, and a branch on every read of it is the cost the support form exists to
+// avoid. The branch belongs here, on the probe path, where it runs once per query.
+struct SparseRowKey {
+    SparseRow row;
+    const Bitset *spilled = nullptr;
+
+    [[nodiscard]] auto is_spilled() const noexcept -> bool { return spilled != nullptr; }
+};
+
 // Visits a *dense* monomial as (mode, code) slots, ascending: the same sequence a SparseRow over the
 // same monomial yields. Positions arrive ascending, so a mode's two positions are adjacent and one pass
 // closes each slot before opening the next.
@@ -143,6 +158,13 @@ private:
     SparseRowHasher hasher;
     for_each_mode_slot(mono, [&](size_t mode, unsigned int code) { hasher.add(mode, code); });
     return hasher.value();
+}
+
+// Dispatches to whichever shape the key holds, so a batch of keys hashes identically whether or not any
+// of them spilled. The two arms must agree with the store's own row hash, which is what makes a spilled
+// row findable by either form.
+[[nodiscard]] inline auto sparse_row_hash(const SparseRowKey &key) noexcept -> size_t {
+    return key.is_spilled() ? sparse_row_hash(*key.spilled) : sparse_row_hash(key.row);
 }
 
 // Whether a dense monomial and a sparse row hold the same slots, without materializing either. Used
@@ -324,6 +346,49 @@ public:
         codes_[i] = codes;
     }
 
+    // The row form of set(), and the write the support form exists for: the lanes are already ascending
+    // and the codes word already says what each holds, so this copies `n` lanes and one word where the
+    // dense overload walks the monomial's storage words.
+    //
+    // A row wider than this store's capacity still has to spill, and a spilled row is held densely, so
+    // that arm materializes. It cannot be asserted away: the capacity is sized from the cutoff and a
+    // fully paired term escapes the cutoff.
+    auto set(size_t i, const SparseRow &row) -> void {
+        const size_t n = row.num_slots();
+        // Contiguity from slot 0 is the representation's invariant -- num_slots() counts occupied slots
+        // and the lanes are read from 0 -- so a row with a hole would silently lose its high slots here.
+        assert((n >= kRowMaxSlots || (row.codes >> (2 * n)) == 0) && "SparseRow slots must be contiguous from slot 0");
+        ModeT *lanes = &modes_[i * slots_per_row_];
+        if (n > slots_per_row_) {
+            lanes[0] = kOverflowLane;
+            codes_[i] = 0;
+            overflow_[i] = to_monomial_(row);
+            return;
+        }
+        // Hygiene, not correctness: spilled() reads lane 0, so a stale entry here is already unreachable
+        // -- it would just keep a monomial alive for the store's lifetime.
+        if (!overflow_.empty()) {
+            overflow_.erase(i);
+        }
+        std::memcpy(lanes, row.modes, n * sizeof(ModeT));
+        // Padding is load-bearing for the empty row and only for it: with n == 0 nothing above writes a
+        // lane, so lane 0 would keep a previous occupant's kOverflowLane and the row would read as spilled.
+        for (size_t j = n; j < slots_per_row_; ++j) {
+            lanes[j] = kPadLane;
+        }
+        codes_[i] = row.codes;
+    }
+
+    // Whichever shape the key holds. The spilled arm is the dense set(), so a key that arrived too wide
+    // for a codes word lands in the side map exactly as the dense path would have put it.
+    auto set(size_t i, const SparseRowKey &key) -> void {
+        if (key.is_spilled()) {
+            set(i, *key.spilled);
+            return;
+        }
+        set(i, key.row);
+    }
+
     [[nodiscard]] auto row(size_t i) const -> value_type {
         if (spilled(i)) {
             return overflow_.at(i);
@@ -412,6 +477,7 @@ public:
 
     auto find(const SparseRow &key) const -> std::optional<size_t> { return find_hashed_(key); }
     auto find(const key_type &key) const -> std::optional<size_t> { return find_hashed_(key); }
+    auto find(const SparseRowKey &key) const -> std::optional<size_t> { return find_hashed_(key); }
 
     // Insert-or-no-op. The row at `value` must already be written -- the confirm reads it.
     template <typename Key>
@@ -539,6 +605,26 @@ private:
             return overflow_.at(i) == key;
         }
         return dense_row_equals(key, view(i));
+    }
+
+    [[nodiscard]] auto row_eq_key(size_t i, const SparseRowKey &key) const -> bool {
+        return key.is_spilled() ? row_eq_key(i, *key.spilled) : row_eq_key(i, key.row);
+    }
+
+    // A row at this store's width. Only the spill arms need it: everything else reads slots in place.
+    [[nodiscard]] auto to_monomial_(const SparseRow &row) const -> value_type {
+        value_type mono(num_bits_);
+        const size_t n = row.num_slots();
+        for (size_t j = 0; j < n; ++j) {
+            const unsigned int code = row.code(j);
+            if ((code & 1U) != 0U) {
+                mono.set(2 * row.mode(j));
+            }
+            if ((code & 2U) != 0U) {
+                mono.set((2 * row.mode(j)) + 1);
+            }
+        }
+        return mono;
     }
 
     auto reserve_rows_(size_t n) -> void {

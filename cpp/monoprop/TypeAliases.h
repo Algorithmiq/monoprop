@@ -148,6 +148,17 @@ template <RowStoreLike Op>
 inline auto assign_row(Op &op, size_t i, const typename Op::value_type &mono) -> void {
     op.set(i, mono);
 }
+// A row written from a key that is already in the store's own form -- what the insert of an absent term
+// does once the query record it came from was read in that form. Only the support-form store has a form
+// of its own, so this is the one accessor with a backend-specific overload rather than a generic one:
+// there is no such thing as an OperatorIndex-shaped key that is not simply a monomial.
+inline auto assign_row(detail::SparseRowStore &op, size_t i, const detail::SparseRow &row) -> void {
+    op.set(i, row);
+}
+inline auto assign_row(detail::SparseRowStore &op, size_t i, const detail::SparseRowKey &key) -> void {
+    op.set(i, key);
+}
+
 template <RowStoreLike Op>
 [[nodiscard]] inline auto row_popcount(const Op &op, size_t i) -> size_t {
     return op.popcount(i);
