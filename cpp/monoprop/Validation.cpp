@@ -127,6 +127,10 @@ auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t
     }
 }
 
+auto expected_num_params(const VecZ &parameter_mapping) -> size_t {
+    return parameter_mapping.empty() ? 0 : *std::ranges::max_element(parameter_mapping) + 1;
+}
+
 // NOLINTEND(misc-use-internal-linkage)
 
 } // namespace monoprop

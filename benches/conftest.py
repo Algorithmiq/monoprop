@@ -166,6 +166,8 @@ def _meta() -> dict[str, Any]:
         "cpu_count_physical": psutil.cpu_count(logical=False),
         "hostname": socket.gethostname(),
         "monoprop_version": monoprop.__version__,
+        "monoprop_variant": monoprop.__variant__,
+        "monoprop_compiler_flags": monoprop.__compiler_flags__,
     }
 
 

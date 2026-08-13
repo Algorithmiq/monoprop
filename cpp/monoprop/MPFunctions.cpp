@@ -19,6 +19,7 @@
 #include <stdexcept>
 
 #include "monoprop/Evolution.h"
+#include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
 
 namespace monoprop {
 

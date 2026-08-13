@@ -30,13 +30,14 @@
 #include <thread>
 #include <utility>
 
-#include "monoprop/MonomialPropagator.h"
+#include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/EnvConfig.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/LayerBuilder.h"
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
-#include "monoprop/detail/partition/PartitionGroup.h" // needs the complete type
+#include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
+#include "monoprop/detail/partition/PartitionGroup.h"
 
 namespace monoprop {
 
@@ -970,31 +971,32 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     // must not outlive the propagator.
     auto cos = build_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), basis_);
 
-    return make_parameter_validated_functional(num_params,
-                                               [func = std::move(func),
-                                                core_term,
-                                                state = std::move(state),
-                                                op = std::move(op),
-                                                graph = std::move(graph),
-                                                parameter_mapping,
-                                                gen_coeffs,
-                                                expected_layers,
-                                                epoch,
-                                                expected_epoch,
-                                                cos = std::move(cos),
-                                                comm](const VecD &params) -> R {
-                                                   validate_expected_graph_layers(graph->layers(), expected_layers);
-                                                   validate_expected_initial_operator(*epoch, expected_epoch);
-                                                   return func(EvalRequest{.e_core = core_term,
-                                                                           .state = state,
-                                                                           .op = op,
-                                                                           .parameter_mapping = parameter_mapping,
-                                                                           .gen_coeffs = gen_coeffs,
-                                                                           .graph = graph->replay_view(),
-                                                                           .params = params},
-                                                               comm,
-                                                               cos);
-                                               });
+    return [func = std::move(func),
+            core_term,
+            state = std::move(state),
+            op = std::move(op),
+            graph = std::move(graph),
+            parameter_mapping,
+            gen_coeffs,
+            num_params,
+            epoch,
+            expected_epoch,
+            expected_layers,
+            cos = std::move(cos),
+            comm](const VecD &params) -> R {
+        validate_expected_initial_operator(*epoch, expected_epoch);
+        validate_functional_call(params, num_params);
+        validate_expected_graph_layers(graph->layers(), expected_layers);
+        return func(EvalRequest{.e_core = core_term,
+                                .state = state,
+                                .op = op,
+                                .parameter_mapping = parameter_mapping,
+                                .gen_coeffs = gen_coeffs,
+                                .graph = graph->replay_view(),
+                                .params = params},
+                    comm,
+                    cos);
+    };
 }
 
 template <size_t NumModes>

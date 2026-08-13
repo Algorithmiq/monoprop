@@ -26,7 +26,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
-#include "monoprop/detail/evolution/EvolutionHelpers.h"
+#include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 #include "monoprop/detail/mpi/MPIUtils.h"

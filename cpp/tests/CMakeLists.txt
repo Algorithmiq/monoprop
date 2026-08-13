@@ -46,6 +46,7 @@ target_link_libraries(
     monoprop-objs
     Boost::unit_test_framework
     msgpack-cxx
+    PkgConfig::HWLOC
 )
 
 include(${CMAKE_CURRENT_LIST_DIR}/boost-test.cmake)

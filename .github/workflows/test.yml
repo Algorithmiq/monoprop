@@ -66,10 +66,10 @@ jobs:
       - name: Install dependencies
         run: |
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            brew install boost open-mpi msgpack-cxx
+            brew install boost open-mpi msgpack-cxx hwloc
           else
             sudo apt-get update
-            packages="libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev"
+            packages="libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev"
             if [[ "${{ matrix.compiler }}" == "clang++-18" ]]; then
               packages="$packages clang-18"
             fi
@@ -99,9 +99,21 @@ jobs:
         run: |
           uv tree
 
-      - name: Get monoprop version
+      - name: Get monoprop information
         run: |
-          uv run python -c "import monoprop as mp; print(mp.__version__)"
+          uv run python <<'EOF'
+          import pprint
+
+          import monoprop as mp
+
+          pprint.pprint(
+            {
+              "version": mp.__version__,
+              "variant": mp.__variant__,
+              "compiler_flags": mp.__compiler_flags__,
+            }
+          )
+          EOF
 
       - name: Verify that find_package(monoprop) works
         run: |

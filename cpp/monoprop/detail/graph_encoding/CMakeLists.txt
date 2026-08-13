@@ -7,3 +7,5 @@ target_sources(
         "MPGraphEncodingStorage.h"
         "MPGraphEncodingTypes.h"
 )
+
+target_sources(monoprop-objs PRIVATE MPGraphEncoding.cpp)
