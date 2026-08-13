@@ -176,3 +176,5 @@ benches/results/**
 
 # devcontainer files
 .devcontainer/devcontainer-lock.json
+# local HPC job scripts, tools and measurement logs (see hpc/deucalion/README.md)
+/hpc/
