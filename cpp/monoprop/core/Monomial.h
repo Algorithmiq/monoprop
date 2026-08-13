@@ -27,62 +27,14 @@
 
 namespace monoprop {
 
-// Bitset is runtime-width, so Monomial<NumModes> cannot be a bare alias -- there would be nothing left
-// to tell a default-constructed `Monomial<NumModes> m;` its width. It is instead a thin, empty (no
-// extra data members) subclass that supplies 2*NumModes to Bitset's runtime constructor and shadows
-// size()/num_words() with compile-time versions, so a call site that spells Monomial<NumModes> --
-// default construction, or an array-sizing/template-argument use like
-// `std::array<size_t, Monomial<NumModes>::size()>` -- keeps compiling.
-//
-// Nothing in the library needs this any more: it survives only for the C++ tests, which pick a width
-// per test case and use std::bitset<2*N> oracles. It goes away with them.
-//
-// An operator (^, &, fused_xor's result, ...) still returns plain Bitset by value -- rewrapping
-// would mean redefining every operator on the subclass instead of inheriting them. This is safe:
-// nothing that recovers a width from a value (`decltype(x)::size()`, always a *qualified* call)
-// does so on an operator's result, only on a parameter or an explicitly Monomial<NumModes>-typed
-// local -- so the type used there is always the wrapper. Assigning an
-// operator's plain-Bitset result back into a Monomial<NumModes>-typed variable is unaffected: that
-// variable's static type, and hence which size()/num_words() it resolves to, never changes.
-template <size_t NumModes>
-class Monomial : public Bitset {
-public:
-    static constexpr size_t kNumBits = 2 * NumModes;
+// A monomial is a Bitset of width 2 * num_modes, two bits per mode/qubit -- the width is data, so
+// there is no monomial *type* to name and no header-level alias for one: spell Bitset, and carry the
+// width with the value. Sites that need a NumModes deduce it from a monomial argument's own width
+// (mono.size() / 2), never from a template parameter.
 
-    Monomial() noexcept : Bitset(kNumBits) {}
-    // Implicit, matching the old Bitset<NumBits>(uint64_t) this replaces: unlike Bitset's own
-    // (width, value) constructor, NumModes already supplies the width, so only the value is missing
-    // here -- test code (and BOOST_TEST comparisons like `mono == 0b1010`) relies on this converting.
-    explicit(false) Monomial(uint64_t val) noexcept : Bitset(kNumBits, val) {}
-    // Reinterprets a same-width Bitset (e.g. an operator's result) as a Monomial<NumModes>; the
-    // caller is responsible for the width actually matching -- this does not resize.
-    explicit(false) Monomial(const Bitset &b) noexcept : Bitset(b) {}
-    auto operator=(const Bitset &b) noexcept -> Monomial & {
-        Bitset::operator=(b);
-        return *this;
-    }
-
-    [[nodiscard]] static constexpr auto size() noexcept -> size_t { return kNumBits; }
-    [[nodiscard]] static constexpr auto num_words() noexcept -> size_t { return (kNumBits + 63) / 64; }
-
-    // `mono == 0b1010`-style comparisons (BOOST_TEST literals) relied on int -> Bitset<NumBits> being
-    // a single implicit user-defined conversion. int -> Monomial<NumModes> still is one, but the
-    // inherited Bitset::operator==(const Bitset&) needs a *second* (derived-to-base) step on top of
-    // it, and overload resolution does not chain a derived class's converting constructor to satisfy
-    // a base-class parameter -- so this needs its own overload, not just the constructor above.
-    [[nodiscard]] friend auto operator==(const Monomial &lhs, uint64_t rhs) noexcept -> bool {
-        return static_cast<const Bitset &>(lhs) == Monomial(rhs);
-    }
-    [[nodiscard]] friend auto operator==(uint64_t lhs, const Monomial &rhs) noexcept -> bool { return rhs == lhs; }
-};
-
-// Structural stand-in for "some Monomial<N>/Bitset, width unspecified": the free functions in
-// algebra/*.h and elsewhere that only ever use a monomial parameter's width (never a caller-chosen
-// NumModes unrelated to any parameter) deduce it from the argument instead of naming it as a
-// template parameter -- `decltype(mono)::size()` recovers the storage bit width (2 * NumModes for a
-// Monomial), so a NumModes value where one is still needed is `decltype(mono)::size() / 2`. Instance
-// (not qualified) calls here so a plain Bitset satisfies this too, not just the Monomial<NumModes>
-// wrapper.
+// Structural stand-in for "a monomial, width unspecified", for the free functions in the algebra
+// headers and elsewhere that read a monomial parameter generically. Instance (not qualified) calls,
+// since a width only exists per value.
 template <typename T>
 concept MonomialLike = requires(const T &t) {
     { t.size() } -> std::convertible_to<size_t>;
@@ -94,7 +46,7 @@ concept MonomialLike = requires(const T &t) {
 // Not the evolved operator's row storage -- that is detail::OperatorIndex (see TypeAliases.h).
 //
 // Element-width caveat, from Bitset being runtime-width: a sized construction `MonomialList l(n)`
-// fills with *width-0* bitsets, where `std::vector<Monomial<NumModes>>(n)` self-widened. Any site
+// fills with *width-0* bitsets, since nothing in the element type carries a width. Any site
 // that sizes up front and assigns into slots afterwards must pass a fill value of the intended
 // width, `MonomialList l(n, Bitset(num_bits))`; push_back-only sites need nothing. A width-0 element
 // reaching a binary op trips the width assertions in Bitset.h.

@@ -37,7 +37,7 @@ constexpr size_t kNumModes = 8;
 // truncated to each layer's scaled_count.
 template <size_t NumModes>
 auto recompute_cos(const monoprop::detail::InvertedIndex &inverted_index, const LayerTraversal &layer) -> CosMask {
-    Monomial<NumModes> gen{};
+    Bitset gen(2 * NumModes);
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
     const auto combined =

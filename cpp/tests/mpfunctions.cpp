@@ -37,12 +37,13 @@ static std::vector<VecZ> ds_input_indices_to_bitset_test = {
     {5},          // Single index set
     {4, 7}        // Two indices set
 };
-static std::vector<Monomial<NumQubits>> ds_output_indices_to_bitset_test = {
+// A monomial carries its width, so each pattern is widened here rather than by an element type.
+static MonomialList ds_output_indices_to_bitset_test = {
 
-    {0b11110000}, // Full indices set
-    {0b00000000}, // No indices set, empty majorana
-    {0b00000100}, // Single index set
-    {0b00001001}  // Two indices set
+    Bitset(2 * NumQubits, 0b11110000), // Full indices set
+    Bitset(2 * NumQubits, 0b00000000), // No indices set, empty majorana
+    Bitset(2 * NumQubits, 0b00000100), // Single index set
+    Bitset(2 * NumQubits, 0b00001001)  // Two indices set
 
 };
 
@@ -50,14 +51,14 @@ BOOST_DATA_TEST_CASE(indices_to_bitset_test,
                      bdata::make(ds_input_indices_to_bitset_test) ^ ds_output_indices_to_bitset_test,
                      input_indices,
                      expected_bitset) {
-    auto bitset = indices_to_bitset<NumQubits>(input_indices);
+    auto bitset = indices_to_bitset(input_indices, 2 * NumQubits);
     BOOST_CHECK(bitset == expected_bitset);
 }
 
-static std::vector<Monomial<NumQubits>> ds_input_bitset_to_indices_test = {
-    0b00000000, // fully paired
-    0b00011000, // 2 slots
-    0b10101010  // 4 slots
+static MonomialList ds_input_bitset_to_indices_test = {
+    Bitset(2 * NumQubits, 0b00000000), // fully paired
+    Bitset(2 * NumQubits, 0b00011000), // 2 slots
+    Bitset(2 * NumQubits, 0b10101010)  // 4 slots
 };
 static std::vector<int> ds_cutoff_values = {
     4,
@@ -102,18 +103,18 @@ BOOST_AUTO_TEST_CASE(test_fermionic_to_binary_operator_multiple_terms) {
 }
 
 constexpr size_t NumQubits2 = 2;
-static std::vector<std::pair<Monomial<NumQubits2>, int>> ds_get_multiplicative_phase = {{{0b0001}, 0},
-                                                                                        {{0b0101}, -1},
-                                                                                        {{0b1001}, 1}};
+static std::vector<std::pair<Bitset, int>> ds_get_multiplicative_phase = {{Bitset(2 * NumQubits2, 0b0001), 0},
+                                                                          {Bitset(2 * NumQubits2, 0b0101), -1},
+                                                                          {Bitset(2 * NumQubits2, 0b1001), 1}};
 
 BOOST_DATA_TEST_CASE(get_multiplicative_phase_test, bdata::make(ds_get_multiplicative_phase), test_pair) {
     auto [majorana_set, expected_phase] = test_pair;
     VecZ gen_vec = {0, 1};
-    auto gen_bitset = indices_to_bitset<NumQubits2>(gen_vec);
+    auto gen_bitset = indices_to_bitset(gen_vec, 2 * NumQubits2);
     auto mono_count = majorana_set.count();
     auto gen_count = gen_bitset.count();
     auto overlap = (majorana_set & gen_bitset).count();
-    auto result = get_multiplicative_phase<NumQubits2>(majorana_set, gen_bitset, mono_count, gen_count, overlap);
+    auto result = get_multiplicative_phase(majorana_set, gen_bitset, mono_count, gen_count, overlap);
     BOOST_CHECK(result == expected_phase);
 }
 
@@ -142,7 +143,7 @@ BOOST_DATA_TEST_CASE(is_fully_paired_test, bdata::make(ds_is_fully_paired_test),
     for (const auto bits : test_case.op_terms) {
         op_terms.emplace_back(2 * NumQubits2, bits);
     }
-    auto result = is_fully_paired<NumQubits2>(test_case.inds, op_terms);
+    auto result = is_fully_paired(test_case.inds, op_terms, 2 * NumQubits2);
     BOOST_CHECK(std::is_permutation(result.cbegin(), result.cend(), test_case.expected_result.cbegin()));
 }
 

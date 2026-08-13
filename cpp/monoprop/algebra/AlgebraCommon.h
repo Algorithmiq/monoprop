@@ -66,19 +66,7 @@ inline auto indices_to_bitset_checked(const VecZ &arr, size_t max_index, size_t 
     return indices_to_bitset(arr, num_bits);
 }
 
-// Compile-time-width forms, kept while callers still spell a NumModes. They delegate rather than
-// duplicate, so the two cannot drift apart as the remaining call sites migrate.
-template <size_t NumModes>
-auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
-    return indices_to_bitset(arr, 2 * NumModes);
-}
-
-template <size_t NumModes>
-auto indices_to_bitset_checked(const VecZ &arr, size_t max_index) -> Monomial<NumModes> {
-    return indices_to_bitset_checked(arr, max_index, 2 * NumModes);
-}
-
-// O(popcount) via find_first/find_next rather than an O(NumModes) scan.
+// O(popcount) via find_first/find_next rather than an O(num_bits) scan.
 auto bitset_to_indices(const MonomialLike auto &bs) -> VecZ {
     const auto pop = bs.count();
     VecZ indices(pop);
@@ -114,11 +102,6 @@ inline auto is_paired(const VecZ &mono, size_t num_bits) -> bool {
     return is_paired(indices_to_bitset(mono, num_bits));
 }
 
-template <size_t NumModes>
-auto is_paired(const VecZ &mono) -> bool {
-    return is_paired(mono, 2 * NumModes);
-}
-
 // Rows carries no structural width of its own (unlike a MonomialLike argument), so the width is
 // explicit here too. It must be the width of the rows themselves: the mask is compared against them
 // pairwise, and a mismatch trips Bitset's width assertions.
@@ -137,11 +120,6 @@ auto is_fully_paired(const VecZ &inds, const Rows &op, size_t num_bits) -> VecZ 
     return result;
 }
 
-template <size_t NumModes, typename Rows>
-auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
-    return is_fully_paired(inds, op, 2 * NumModes);
-}
-
 // Occupation mask of the initial product state: the even index 2*i of each listed mode (Majorana) or
 // qubit (Pauli) that starts in state 1. Both algebras read the same mask and differ only in the phase
 // they score against it (majorana_state_phase / pauli_state_phase).
@@ -152,11 +130,6 @@ inline auto initial_state_mask(const VecZ &initial_state, size_t num_bits) -> Bi
         bits.push_back(2 * mode);
     }
     return indices_to_bitset(bits, num_bits);
-}
-
-template <size_t NumModes>
-auto initial_state_mask(const VecZ &initial_state) -> Monomial<NumModes> {
-    return initial_state_mask(initial_state, 2 * NumModes);
 }
 
 // The per-mode sums the structural cutoffs measure, over the active modes only.

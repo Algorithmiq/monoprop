@@ -33,7 +33,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
         for (int k = 0; k < 4; ++k) {
             inds.push_back(slot(rng));
         }
-        const auto mono = indices_to_bitset<N>(inds);
+        const auto mono = indices_to_bitset(inds, 2 * N);
         for (size_t n_ranks : {size_t{1}, size_t{2}, size_t{3}, size_t{7}}) {
             const size_t r = find_rank(mono, n_ranks);
             BOOST_TEST(r < n_ranks);
@@ -46,18 +46,18 @@ BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
 // n_ranks == 0 is degenerate: owner is rank 0, not a modulo by zero.
 BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_zero_ranks) {
     constexpr size_t N = 32;
-    const auto mono = indices_to_bitset<N>(VecZ{0, 3, 5});
+    const auto mono = indices_to_bitset(VecZ{0, 3, 5}, 2 * N);
     BOOST_TEST(find_rank(mono, 0) == 0U);
 }
 
 BOOST_AUTO_TEST_CASE(mpi_utils_monomial_words_roundtrip) {
     constexpr size_t N = 96; // 2N = 192 bits -> 3 words
-    const auto a = indices_to_bitset<N>(VecZ{0, 1, 100, 191});
-    const auto b = indices_to_bitset<N>(VecZ{5});
-    const auto c = indices_to_bitset<N>(VecZ{});
+    const auto a = indices_to_bitset(VecZ{0, 1, 100, 191}, 2 * N);
+    const auto b = indices_to_bitset(VecZ{5}, 2 * N);
+    const auto c = indices_to_bitset(VecZ{}, 2 * N);
 
     // The record width comes off the monomial now, not a kWords<N> constant.
-    constexpr size_t kW = Monomial<N>::num_words();
+    const size_t kW = a.num_words();
     VecZ buf;
     mpi_detail::append_monomial_words(a, buf);
     mpi_detail::append_monomial_words(b, buf);
@@ -69,9 +69,9 @@ BOOST_AUTO_TEST_CASE(mpi_utils_monomial_words_roundtrip) {
     BOOST_TEST((mpi_detail::read_monomial_from_words(buf, 2 * kW, 2 * N) == c));
 
     constexpr size_t M = 32;
-    const auto d = indices_to_bitset<M>(VecZ{2, 40, 63});
+    const auto d = indices_to_bitset(VecZ{2, 40, 63}, 2 * M);
     VecZ sbuf;
     mpi_detail::append_monomial_words(d, sbuf);
-    BOOST_REQUIRE(sbuf.size() == Monomial<M>::num_words());
+    BOOST_REQUIRE(sbuf.size() == d.num_words());
     BOOST_TEST((mpi_detail::read_monomial_from_words(sbuf, 0, 2 * M) == d));
 }

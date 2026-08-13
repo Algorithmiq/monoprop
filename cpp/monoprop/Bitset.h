@@ -329,7 +329,7 @@ public:
 
     // Clear every bit, keeping the width. Not the same as assigning a default-constructed Bitset,
     // which drops the width to 0 -- the distinction matters wherever code needs "a zero monomial the
-    // same shape as this one" and used to get it from `Monomial<NumModes> m;` (see change_basis).
+    // same shape as this one", which is copy-then-reset and nothing shorter (see change_basis).
     auto reset() noexcept -> Bitset & {
         std::memset(data(), 0, nwords_ * sizeof(word_type));
         return *this;
@@ -461,9 +461,9 @@ public:
 
     // Width first, or equality is asymmetric: the loops below run this->nwords_, so without it a
     // default-constructed (width-0) bitset compares equal to everything while nothing compares equal
-    // to it. Unreachable while every bitset is built at a real width, but Monomial keys live in a
+    // to it. Unreachable while every bitset is built at a real width, but monomial keys live in a
     // boost::unordered_flat_map, and an asymmetric operator== there is a silent corruption rather
-    // than a crash -- and de-templating the wire readers introduces exactly the
+    // than a crash -- and the de-templated wire readers use exactly the
     // default-construct-then-assign pattern that produces a width-0 operand.
     [[nodiscard]] auto operator==(const Bitset &o) const noexcept -> bool {
         if (nwords_ != o.nwords_) {

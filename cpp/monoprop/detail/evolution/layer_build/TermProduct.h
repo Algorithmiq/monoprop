@@ -45,8 +45,8 @@ namespace monoprop::detail {
 // `mono` and `new_mono` are scratch owned by the caller for the whole gate, not locals: both are
 // overwritten whole here, and a term must not pay for constructing them. Constructing a Bitset means
 // deriving the word count from a runtime width, testing it against the inline capacity and -- above
-// that capacity -- allocating, all of which the compile-time-width Monomial<NumModes> this used to
-// build folded away to nothing.
+// that capacity -- allocating; with a compile-time width all of that used to fold away to nothing, so
+// the scratch is what keeps it off the per-term path.
 template <Algebra A>
 [[gnu::always_inline]] inline auto emit_term_products(const auto &ham,
                                                       size_t i,

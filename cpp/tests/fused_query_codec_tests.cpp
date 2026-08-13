@@ -38,9 +38,10 @@ using monoprop::detail::query_value;
 using monoprop::detail::query_words;
 using monoprop::detail::query_words_fused;
 
-constexpr size_t kModes = 8; // 2*kModes = 16 majorana bits, one 64-bit word
+constexpr size_t kModes = 8;         // 2*kModes = 16 majorana bits, one 64-bit word
+constexpr size_t kBits = 2 * kModes; // a monomial's width is data, so every one here is built at it
 // The wire record width is in words now, not derived from a NumModes template argument.
-constexpr size_t kWordsPerMono = Monomial<kModes>::num_words();
+constexpr size_t kWordsPerMono = (kBits + 63) / 64;
 
 // query_value takes the word count; wrap it so the assertions below stay readable.
 auto query_value_at(const VecZ &buf, size_t q) -> double {
@@ -48,9 +49,9 @@ auto query_value_at(const VecZ &buf, size_t q) -> double {
 }
 
 // A deterministic, distinct majorana bit pattern per record index.
-auto make_mono(size_t r) -> Monomial<kModes> {
-    Monomial<kModes> m;
-    for (size_t b = 0; b < 2 * kModes; ++b) {
+auto make_mono(size_t r) -> Bitset {
+    Bitset m(kBits);
+    for (size_t b = 0; b < kBits; ++b) {
         if (((r * 2654435761u + b * 40503u) & 3u) == 0u) {
             m.set(b);
         }
@@ -72,7 +73,8 @@ BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
     const size_t nq = values.size();
 
     VecZ plain = query_buffer();
-    std::vector<Monomial<kModes>> monos(nq);
+    // Sized up front and assigned into, so the fill value has to carry the width.
+    MonomialList monos(nq, Bitset(kBits));
     for (size_t r = 0; r < nq; ++r) {
         monos[r] = make_mono(r);
         query_push(plain, monos[r], phases[r]);
@@ -87,7 +89,7 @@ BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
     BOOST_REQUIRE_EQUAL(query_record_count(fused), nq);
 
     for (size_t q = 0; q < nq; ++q) {
-        Monomial<kModes> m_out;
+        Bitset m_out(kBits); // pre-sized: the reader copies mono_out.num_words() words into it
         int ph_out = 0;
         query_read(fused, q, query_words_fused(kWordsPerMono), m_out, ph_out);
         BOOST_CHECK(m_out == monos[q]);

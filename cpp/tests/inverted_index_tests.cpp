@@ -25,7 +25,7 @@
 
 // Internals of the even-parity scan inverted index: the tiered column store, the lazily-built
 // per-row parity(|M|) bitmap, and the fill order. Rows are read through the backend-agnostic
-// for_each_row_position accessor, so a plain std::vector<Monomial<N>> stands in for the store.
+// for_each_row_position accessor, so a plain MonomialList stands in for the store.
 
 using namespace monoprop;
 using namespace monoprop::detail;
@@ -34,9 +34,9 @@ namespace {
 constexpr size_t N = 32; // 2N = 64 majorana columns
 using Sc = InvertedIndex;
 constexpr size_t kCols = 2 * N; // InvertedIndex is runtime-sized: one column per bit position
-using MSet = Monomial<N>;
+using MSet = Bitset;
 MSet bs(const VecZ &r) {
-    return indices_to_bitset<N>(r);
+    return indices_to_bitset(r, kCols);
 }
 // indices_to_bitset maps mode m to bit 2N-1-m; columns are indexed by raw bit position.
 constexpr size_t col_of(size_t mode) {
@@ -103,7 +103,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
         else {
             pos.push_back(2); // mode 2 set in 118 rows -> DENSE (keeps every row non-empty)
         }
-        op.push_back(indices_to_bitset<N>(pos));
+        op.push_back(indices_to_bitset(pos, kCols));
     }
     Sc sc(kCols);
     sc.rebuild(op);
@@ -121,11 +121,11 @@ BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
     using ScW = InvertedIndex;
     constexpr size_t kColsW = 2 * M;
     constexpr size_t kR = 16'385; // large operator, many sparse columns
-    std::vector<Monomial<M>> op;
+    MonomialList op;
     op.reserve(kR);
     for (size_t i = 0; i < kR; ++i) {
         // One mode per row over 128 columns: 128 hits each, and 128*64 < 16385, so all stay sparse.
-        op.push_back(indices_to_bitset<M>({i % 128}));
+        op.push_back(indices_to_bitset({i % 128}, kColsW));
     }
     ScW sc(kColsW);
     sc.rebuild(op);

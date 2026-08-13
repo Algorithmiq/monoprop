@@ -404,7 +404,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
         BOOST_TEST_REQUIRE(layers.size() == 1U);
         const VecZ &cos_inds = std::get<0>(layers[0]);
         std::set<size_t> got(cos_inds.begin(), cos_inds.end());
-        const auto Gb = indices_to_bitset<N>(slots_of_string("XII"));
+        const auto Gb = indices_to_bitset(slots_of_string("XII"), 2 * N);
         std::set<size_t> expected;
         (void)mp.mp_op().get_operator(); // materialize the store size
         mp.for_each_term([&](const auto &mono, size_t idx) {

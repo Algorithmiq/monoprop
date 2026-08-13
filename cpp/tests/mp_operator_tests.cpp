@@ -39,7 +39,13 @@ constexpr size_t kNumBits = 2 * 8;
 
 // Build an MPOperator whose store rows are also indexed (findable). append_term writes a row only;
 // find() needs the hash index, which only the insert_absent_terms path populates.
-auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis::Majorana) -> detail::MPOperator {
+// Every monomial here is built at kNumBits; bs() is the one spelling of that, so the term literals
+// below stay index lists.
+auto bs(const VecZ &inds) -> Bitset {
+    return indices_to_bitset(inds, kNumBits);
+}
+
+auto build_indexed_op(const MonomialList &terms, Basis basis = Basis::Majorana) -> detail::MPOperator {
     detail::MPOperator op(kNumBits);
     op.basis = basis;
     op.with_store([&](auto &rows) {
@@ -47,7 +53,7 @@ auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis
             op,
             rows,
             terms.size(),
-            [&](size_t k) -> const Monomial<8> & { return terms[k]; },
+            [&](size_t k) -> const Bitset & { return terms[k]; },
             [&](size_t k, size_t base) { assign_row(rows, base + k, terms[k]); });
     });
     return op;
@@ -55,7 +61,7 @@ auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis
 
 // Independent expected state vector: score paired rows with the basis' state phase, 0 otherwise.
 auto expected_state(detail::MPOperator &op, Basis basis, const VecZ &initial_state) -> VecD {
-    const auto state_mask = initial_state_mask<8>(initial_state);
+    const auto state_mask = initial_state_mask(initial_state, kNumBits);
     VecD expected(op.size(), 0.0);
     for (size_t i = 0; i < op.size(); ++i) {
         const auto row = op.with_store([&](const auto &rows) { return materialize_row(rows, i); });
@@ -93,11 +99,11 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_paul
         op.basis = basis;
         op.initial_state = initial_state;
 
-        Monomial<8> identity;     // empty -> paired
-        Monomial<8> paired_mode0; // raw bits {0,1} -> mode 0 paired
+        Bitset identity(kNumBits);     // empty -> paired
+        Bitset paired_mode0(kNumBits); // raw bits {0,1} -> mode 0 paired
         paired_mode0.set(0);
         paired_mode0.set(1);
-        Monomial<8> unpaired; // raw bit {0} only -> not paired
+        Bitset unpaired(kNumBits); // raw bit {0} only -> not paired
         unpaired.set(0);
 
         op.append_term(identity);
@@ -128,7 +134,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) 
     detail::MPOperator op(kNumBits);
     op.initial_state = initial_state;
 
-    Monomial<8> a;
+    Bitset a(kNumBits);
     a.set(0);
     a.set(1); // paired
     op.append_term(a);
@@ -141,7 +147,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) 
     // already-scored row, so this value has to survive.
     op.state_coeffs[0] = 7.5;
 
-    Monomial<8> b;
+    Bitset b(kNumBits);
     b.set(2);
     b.set(3); // paired
     op.append_term(b);
@@ -161,11 +167,11 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) 
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map) {
-    const auto a = indices_to_bitset<8>({0, 1});
-    const auto b = indices_to_bitset<8>({2, 3});
+    const auto a = bs({0, 1});
+    const auto b = bs({2, 3});
     auto op = build_indexed_op({a, b});
 
-    const auto absent = indices_to_bitset<8>({4, 5});
+    const auto absent = bs({4, 5});
     op.init_op_map[a] = 3.0;      // present in store -> should land on row 0 and be erased
     op.init_op_map[absent] = 9.0; // absent from store -> stays pending
 
@@ -181,9 +187,9 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pauli) {
-    const auto present = indices_to_bitset<8>({0, 2});
+    const auto present = bs({0, 2});
     auto op = build_indexed_op({present}, Basis::Pauli); // row 0 indexed
-    op.init_op_map[indices_to_bitset<8>({4, 6})] = 0.0;  // seed a pending term
+    op.init_op_map[bs({4, 6})] = 0.0;                    // seed a pending term
 
     OperatorDict dict;
     dict[VecZ{0, 2}] = cd(1.5, 0.0); // present in store -> row coeff
@@ -192,13 +198,13 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pau
     const auto grad = op.update_initial_operator(dict, /*schrodinger=*/false);
     BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), 1U);
     BOOST_CHECK_EQUAL(op.op_coeffs[0], encode_pauli_coeff(cd(1.5, 0.0))); // Pauli encode path
-    BOOST_CHECK(op.init_op_map.find(indices_to_bitset<8>({4, 6})) != op.init_op_map.end());
+    BOOST_CHECK(op.init_op_map.find(bs({4, 6})) != op.init_op_map.end());
     BOOST_CHECK(op.init_op_map.find(present) == op.init_op_map.end());
     BOOST_CHECK_EQUAL(grad.first.size(), 2U); // every supplied term recorded in the grad arrays
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_rejects_absent_term) {
-    auto op = build_indexed_op({indices_to_bitset<8>({0, 2})}, Basis::Pauli);
+    auto op = build_indexed_op({bs({0, 2})}, Basis::Pauli);
 
     OperatorDict dict;
     dict[VecZ{1, 3, 5}] = cd(1.0, 0.0); // absent from both store and init_op_map
@@ -206,10 +212,10 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_rejects_abse
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_absent_term) {
-    auto op = build_indexed_op({indices_to_bitset<8>({0, 2})}, Basis::Pauli);
+    auto op = build_indexed_op({bs({0, 2})}, Basis::Pauli);
 
     OperatorDict dict;
-    const auto fresh = indices_to_bitset<8>({1, 3, 5});
+    const auto fresh = bs({1, 3, 5});
     dict[VecZ{1, 3, 5}] = cd(4.0, 0.0);
     op.update_initial_operator(dict, /*schrodinger=*/true);
     BOOST_CHECK(op.init_op_map.find(fresh) != op.init_op_map.end());
@@ -218,7 +224,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_abse
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identity_term) {
     // The Majorana codec divides by the term's hermitian phase, which is 1 for the identity term, so
     // a real coefficient round-trips as itself without tripping the non-Hermitian guard.
-    const Monomial<8> identity;             // empty
+    const Bitset identity(kNumBits);        // empty
     auto op = build_indexed_op({identity}); // basis defaults to Majorana
 
     OperatorDict dict;
@@ -230,20 +236,18 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identit
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {
-    const auto e0 = indices_to_bitset<8>({0, 1});
-    const auto e1 = indices_to_bitset<8>({2, 3});
+    const auto e0 = bs({0, 1});
+    const auto e1 = bs({2, 3});
     auto op = build_indexed_op({e0, e1});
 
-    const std::vector<Monomial<8>> fresh = {indices_to_bitset<8>({4, 5}),
-                                            indices_to_bitset<8>({6, 7}),
-                                            indices_to_bitset<8>({0, 3})};
+    const MonomialList fresh = {bs({4, 5}), bs({6, 7}), bs({0, 3})};
 
     const size_t base = op.with_store([&](auto &rows) {
         return detail::insert_absent_terms(
             op,
             rows,
             fresh.size(),
-            [&](size_t k) -> const Monomial<8> & { return fresh[k]; },
+            [&](size_t k) -> const Bitset & { return fresh[k]; },
             [&](size_t k, size_t b) { assign_row(rows, b + k, fresh[k]); });
     });
 
@@ -258,19 +262,19 @@ BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {
 
 BOOST_AUTO_TEST_CASE(mp_operator_append_term_after_materialization_rebuilds_inverted_index) {
     detail::MPOperator op(kNumBits);
-    op.append_term(indices_to_bitset<8>({0, 1}));
+    op.append_term(bs({0, 1}));
     BOOST_CHECK_EQUAL(op.inverted_index().rows(), 1U); // materializes the index (rows == size)
 
     // append_term does not sync the index; the next inverted_index() sees rows() != store size and
     // rebuilds against the grown store.
-    op.append_term(indices_to_bitset<8>({2, 3}));
+    op.append_term(bs({2, 3}));
     BOOST_CHECK_EQUAL(op.inverted_index().rows(), 2U);
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_presence) {
     detail::MPOperator op(kNumBits);
-    op.append_term(indices_to_bitset<8>({0, 1}));
-    op.append_term(indices_to_bitset<8>({2, 3}));
+    op.append_term(bs({0, 1}));
+    op.append_term(bs({2, 3}));
 
     const auto before = detail::estimate_memory_usage(op);
     BOOST_CHECK_GT(before.total_bytes(), 0U);
@@ -283,7 +287,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_pre
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {
-    auto op = build_indexed_op({indices_to_bitset<8>({0, 1}), indices_to_bitset<8>({2, 3})});
+    auto op = build_indexed_op({bs({0, 1}), bs({2, 3})});
     op.initial_state = {0};
     (void)op.sparse_state();
 
@@ -293,9 +297,9 @@ BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {
     BOOST_CHECK(copy.state_rows_ == op.state_rows_);
     BOOST_CHECK(copy.state_vals_ == op.state_vals_);
     BOOST_CHECK(copy.materialize_state() == op.materialize_state());
-    BOOST_CHECK(copy.find(indices_to_bitset<8>({0, 1})).has_value());
+    BOOST_CHECK(copy.find(bs({0, 1})).has_value());
     // Mutating the copy must not touch the original (independent stores).
-    copy.append_term(indices_to_bitset<8>({4, 5}));
+    copy.append_term(bs({4, 5}));
     BOOST_CHECK_EQUAL(op.size(), 2U);
     BOOST_CHECK_EQUAL(copy.size(), 3U);
 }

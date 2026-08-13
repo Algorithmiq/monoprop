@@ -47,9 +47,8 @@ public:
 // Single-writer: one partition, one thread; parallelism is cross-partition.
 class OperatorIndex {
 public:
-    // Bitset, not Monomial<NumModes>: the store carries its width as data (num_bits_) rather than in
-    // its type (num_bits_). A Monomial<N> still binds to these by
-    // reference wherever callers hold one -- see find_batch for the one place that is not enough.
+    // The store carries its width as data (num_bits_), so a row is a plain Bitset and the width is not
+    // recoverable from the type.
     using value_type = Bitset;
     using key_type = Bitset;
     using mapped_type = size_t;
@@ -200,10 +199,9 @@ public:
     // Group-prefetch batch find: out[i] = row index of keys[i], or kNotFound. Same result as n
     // find() calls, but overlaps dram misses via a per-group hash/probe/confirm pipeline. An h
     // collision falls back to an exact find. must not run concurrently with inserts.
-    // Templated on the key type rather than taking `const key_type *`: callers hold arrays of
-    // Monomial<N>, and converting that to a Bitset* would make keys[i] index with the base's stride
-    // over a derived array -- which happens to have the same size today, but is undefined behaviour.
-    // Any Key that binds to const key_type& works, since that is all fold_hash/row_eq_key need.
+    // Templated on the key type rather than taking `const key_type *`: any Key that binds to
+    // const key_type& works, since that is all fold_hash/row_eq_key need. SparseRowStore's twin takes
+    // its own key type through the same signature, which is what lets Resolve.h call one spelling.
     template <typename Key>
     auto find_batch(const Key *keys, size_t n, size_t *out) const -> void {
         table_.find_batch(

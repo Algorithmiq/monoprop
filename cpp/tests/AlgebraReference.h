@@ -30,13 +30,14 @@ auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MonomialList {
     majorana_operator.reserve(op.size());
     // push_back, not a sized construction plus transform: sizing up front would fill with width-0
     // bitsets, and every slot is written here anyway.
-    std::ranges::transform(op, std::back_inserter(majorana_operator), indices_to_bitset<NumModes>);
+    std::ranges::transform(op, std::back_inserter(majorana_operator), [](const VecZ &term) {
+        return indices_to_bitset(term, 2 * NumModes);
+    });
     return majorana_operator;
 }
 
-template <size_t NumModes>
-auto get_multiplicative_phase(const Monomial<NumModes> &mono,
-                              const Monomial<NumModes> &gen_mono,
+auto get_multiplicative_phase(const MonomialLike auto &mono,
+                              const MonomialLike auto &gen_mono,
                               size_t mono_count,
                               size_t gen_count,
                               size_t overlap) -> int {

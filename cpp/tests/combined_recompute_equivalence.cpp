@@ -37,8 +37,8 @@ constexpr size_t kNumModes = 8;
 constexpr auto kBasis = Basis::Majorana;
 
 template <size_t NumModes>
-auto generator_of(const LayerTraversal &layer) -> Monomial<NumModes> {
-    Monomial<NumModes> gen{};
+auto generator_of(const LayerTraversal &layer) -> Bitset {
+    Bitset gen(2 * NumModes);
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
     return gen;

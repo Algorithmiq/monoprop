@@ -38,11 +38,11 @@ auto positions_of(const auto &backend, size_t i) -> std::vector<size_t> {
 // drive that row down the overflow path, which must stay invisible through the accessors.
 template <size_t N>
 auto check_backends_agree(const std::vector<std::vector<size_t>> &raw_rows, size_t slots = 8) -> void {
-    std::vector<Monomial<N>> dense;
+    MonomialList dense;
     detail::OperatorIndex packed(2 * N);
     detail::SparseRowStore sparse(2 * N, slots);
     for (const auto &bits : raw_rows) {
-        Monomial<N> m;
+        Bitset m(2 * N);
         for (size_t b : bits) {
             m.set(b);
         }
@@ -82,12 +82,12 @@ BOOST_AUTO_TEST_CASE(row_accessor_backends_agree_sparse_overflow) {
 
 BOOST_AUTO_TEST_CASE(row_accessor_assign_row_overwrites) {
     constexpr size_t N = 32;
-    std::vector<Monomial<N>> dense;
+    MonomialList dense;
     detail::OperatorIndex packed(2 * N);
     // Two slots, and the original occupies three modes: the row starts spilled and the overwrite must
     // pull it back inline rather than leaving the stale side-map entry to shadow it.
     detail::SparseRowStore sparse(2 * N, 2);
-    Monomial<N> original;
+    Bitset original(2 * N);
     original.set(1);
     original.set(2);
     original.set(40);
@@ -99,7 +99,7 @@ BOOST_AUTO_TEST_CASE(row_accessor_assign_row_overwrites) {
     BOOST_TEST(sparse.spilled(0));
 
     // Three set bits over two modes, so it fits the sparse store's two slots.
-    Monomial<N> replacement;
+    Bitset replacement(2 * N);
     replacement.set(10);
     replacement.set(11);
     replacement.set(30);

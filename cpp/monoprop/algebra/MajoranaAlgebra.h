@@ -100,7 +100,8 @@ auto interleave_phase(const MonomialLike auto &maj_bs, const auto &gen_bs) -> in
 // the layer; the per-term sign is then one maj.parity_and(W) instead of the prefix-XOR scan.
 auto interleave_phase_mask(const MonomialLike auto &gen) -> std::remove_cvref_t<decltype(gen)> {
     // Copy-then-reset for the same reason as change_basis: this needs a zero bitset at gen's width, and
-    // no single spelling constructs one for both Monomial<N> and a plain Bitset.
+    // MonomialLike constrains operations, not constructors, so there is no width-argument construction
+    // to call on a deduced type.
     std::remove_cvref_t<decltype(gen)> w = gen;
     w.reset();
     size_t above = 0; // #{g∈G : g>c}, maintained as c descends
@@ -210,10 +211,10 @@ auto decode_coeff(const std::complex<double> &coeff, const MonomialLike auto &ma
 auto change_basis(const MonomialLike auto &maj, const auto &basis) -> std::remove_cvref_t<decltype(maj)> {
     using Mono = std::remove_cvref_t<decltype(maj)>;
     const size_t num_modes = maj.size() / 2;
-    // Copy-then-reset, rather than `Mono new_maj;` (width 0 when Mono is Bitset) or a width-argument
-    // constructor: Bitset's one-argument constructor takes a width and Monomial's takes a *value*, so
-    // no single spelling zero-constructs both at maj's width. The copied words are immediately
-    // overwritten; this path only runs when a basis change is configured.
+    // Copy-then-reset, rather than `Mono new_maj;` (width 0) or a width-argument constructor:
+    // MonomialLike constrains operations, not constructors, so a deduced Mono is not known to have
+    // one. The copied words are immediately overwritten; this path only runs when a basis change is
+    // configured.
     Mono new_maj = maj;
     new_maj.reset();
 

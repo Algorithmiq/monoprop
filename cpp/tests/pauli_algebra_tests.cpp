@@ -36,10 +36,10 @@ namespace {
 
 // Qubit Pauli weight = number of non-identity single-qubit letters = or_sum = |x | z|.
 template <size_t NumModes>
-[[nodiscard]] auto pauli_weight(const Monomial<NumModes> &p) -> size_t {
+[[nodiscard]] auto pauli_weight(const Bitset &p) -> size_t {
     const auto e_mask = pauli_even_mask(2 * NumModes);
     size_t weight = 0;
-    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
+    for (size_t w = 0; w < p.num_words(); ++w) {
         const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
         weight += static_cast<size_t>(std::popcount(v | u));
     }
@@ -50,14 +50,14 @@ template <size_t NumModes>
 //   e = yA + yB - yR + 2*(zA . xB)  (mod 4),  R = A ^ B.
 // e is odd iff A,B anticommute (phase = +/- i); even iff they commute (phase = +/- 1).
 template <size_t NumModes>
-[[nodiscard]] auto product_phase_exponent(const Monomial<NumModes> &a, const Monomial<NumModes> &b) -> int {
+[[nodiscard]] auto product_phase_exponent(const Bitset &a, const Bitset &b) -> int {
     const auto e_mask = pauli_even_mask(2 * NumModes);
     const auto r = a ^ b;
     const long y_a = static_cast<long>(pauli_y_count(a));
     const long y_b = static_cast<long>(pauli_y_count(b));
     const long y_r = static_cast<long>(pauli_y_count(r));
     long cross = 0; // zA . xB = popcount(v-plane(A) & x-plane(B))
-    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
+    for (size_t w = 0; w < a.num_words(); ++w) {
         const uint64_t e = e_mask.word(w);
         const uint64_t z_a = a.word(w) & e; // v-plane of A
         const auto [v_b, u_b] = detail::pauli_uv(b.word(w), e);
@@ -69,15 +69,14 @@ template <size_t NumModes>
 
 // Product phase phi (unit modulus) such that A*B = phi * (A ^ B), A the left operand.
 template <size_t NumModes>
-[[nodiscard]] auto pauli_product_phase(const Monomial<NumModes> &a, const Monomial<NumModes> &b)
-    -> std::complex<double> {
+[[nodiscard]] auto pauli_product_phase(const Bitset &a, const Bitset &b) -> std::complex<double> {
     return POWERS_OF_I[product_phase_exponent<NumModes>(a, b)];
 }
 
 // Emit sign +/-1 such that A*B = sign * i * (A ^ B), valid when A,B anticommute (exponent e odd).
 // The raw product sign; pauli_rotation_sign returns exactly -pauli_emit_sign_antic.
 template <size_t NumModes>
-[[nodiscard]] auto pauli_emit_sign_antic(const Monomial<NumModes> &a, const Monomial<NumModes> &b) -> int {
+[[nodiscard]] auto pauli_emit_sign_antic(const Bitset &a, const Bitset &b) -> int {
     return product_phase_exponent<NumModes>(a, b) == 1 ? 1 : -1;
 }
 
@@ -240,7 +239,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_state_phase) {
                 occupied_slots.push_back(2 * q + 1); // z-plane bit of qubit q (even physical bit)
             }
         }
-        const auto state_mask = indices_to_bitset<N>(occupied_slots);
+        const auto state_mask = indices_to_bitset(occupied_slots, 2 * N);
 
         // Z-only Pauli: pauli_state_phase must match (-1)^{|Z ∩ occupied|} and dense <b|P|b>.
         std::string pz(n, 'I');

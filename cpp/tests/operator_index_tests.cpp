@@ -41,7 +41,7 @@ namespace {
 constexpr size_t N = 32;
 using Store = OperatorIndex;
 constexpr size_t kBits = 2 * N; // the store is runtime-width now
-using MSet = Monomial<N>;
+using MSet = Bitset;
 
 // Owners hold the store by unique_ptr and share stable pointers into it, so it must stay
 // non-copyable and non-movable; clone() is the only deep copy.
@@ -49,7 +49,7 @@ static_assert(!std::is_move_constructible_v<Store>, "OperatorIndex must remain n
 static_assert(!std::is_copy_constructible_v<Store>, "OperatorIndex must remain non-copyable");
 
 MSet bs(const VecZ &r) {
-    return indices_to_bitset<N>(r);
+    return indices_to_bitset(r, kBits);
 }
 } // namespace
 
@@ -64,7 +64,7 @@ BOOST_AUTO_TEST_CASE(rows_roundtrip_dense_popcount_positions) {
     std::vector<size_t> pos;
     s.for_each_position(0, [&](size_t b) { pos.push_back(b); });
     BOOST_TEST(pos.size() == 3u);
-    // for_each_position yields raw bit positions (ascending). indices_to_bitset<32>({0,3,5})
+    // for_each_position yields raw bit positions (ascending). indices_to_bitset({0,3,5}, 64)
     // sets bits at 2*32-1-0=63, 2*32-1-3=60, 2*32-1-5=58, so find_first gives 58 first.
     BOOST_TEST(pos[0] == 58u);
     BOOST_TEST(pos[2] == 63u);
