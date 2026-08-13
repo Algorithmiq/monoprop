@@ -87,6 +87,11 @@ def main() -> None:
     label = backend_mod.LABELS[args.backend]
     print(f"[{label}] {settings.describe()}", flush=True)
 
+    # Taken before the first measurement window opens, because opening one resets
+    # ru_maxrss too (both are the kernel's mm->hiwater_rss). This covers the import and
+    # setup phase; the run's own peaks come from the per-step windows.
+    setup_peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+
     if args.backend == "monoprop":
         result = backend_mod.run_monoprop(settings)
     elif args.backend == "ppvm":
@@ -103,10 +108,9 @@ def main() -> None:
     else:  # unreachable: argparse constrains the choices
         raise SystemExit(f"unknown backend {args.backend}")
 
-    # ru_maxrss is KiB on Linux. This is the whole process, interpreter and imported
-    # libraries included, so it is a ceiling on the operator footprint, not the
-    # operator footprint itself.
-    peak_rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    # Peak over the whole run: the largest per-step window, or the setup phase if the
+    # workload never exceeded it. ru_maxrss cannot be used here (see setup_peak_mb).
+    peak_rss_mb = max(setup_peak_mb, *result.memory)
 
     record = {
         "backend": args.backend,
@@ -126,6 +130,7 @@ def main() -> None:
         "final_memory_MB": result.memory[-1],
         "memory_metric": result.memory_metric,
         "operator_memory_MB": result.operator_memory_mb,
+        "operator_memory_metric": result.operator_memory_metric,
         "peak_rss_MB": peak_rss_mb,
         "final_num_terms": int(result.num_terms[-1]),
         "final_expval": float(result.expvals[-1]),

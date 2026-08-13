@@ -44,6 +44,34 @@ COLORS = {
 }
 ORDER = list(COLORS)
 
+# Backends whose operator lives in device memory. Host RSS does not describe their
+# footprint at all -- it stays flat while the card fills up -- so the working-set column
+# reads them off the device instead. Membership is a property of the backend, not of a
+# run, which is why it is a constant rather than something inferred per record.
+DEVICE_BACKENDS = {"cuPauliProp (GPU)"}
+
+# Per memory column: axis label and headline fragment. The label has to follow the column
+# actually plotted -- a figure titled "final memory" whichever key was passed is how an
+# operator-memory curve gets read as a host-RSS one.
+MEMORY_COLUMNS = {
+    "final_memory_MB": (
+        "final-step peak host RSS [MB]",
+        "final-step peak host RSS",
+    ),
+    "peak_rss_MB": (
+        "whole-run peak host RSS [MB]",
+        "whole-run peak host RSS",
+    ),
+    "operator_memory_MB": (
+        "library's own accounting [MB]",
+        "each library's own memory accounting",
+    ),
+    "working_set_MB": (
+        "peak working memory [MB]   (CPU: host RSS | GPU: device + host)",
+        "peak working memory, per engine's own memory pool",
+    ),
+}
+
 
 def load(paths: list[Path]) -> list[dict]:
     """Read the JSONL files, keeping one record per (backend, size).
@@ -67,6 +95,29 @@ def load(paths: list[Path]) -> list[dict]:
                 chosen[key] = record
                 claimed_by[key] = path
     return list(chosen.values())
+
+
+def add_working_set(records: list[dict]) -> None:
+    """Annotate each record with ``working_set_MB``: the peak memory it actually needed.
+
+    Both inputs are exact high-water marks taken by this suite rather than figures a
+    library reports about itself -- the kernel's ``VmHWM`` on the host, CuPy's allocator
+    hook on the device -- so they answer the same question for engines that answer it in
+    different pools. The GPU's host RSS is added to its device peak because that job needs
+    both at once.
+
+    One asymmetry survives and is not correctable here: host RSS includes pages the
+    allocator has cached but not returned to the OS, while the device figure counts bytes
+    in use and excludes cached-free pool blocks. The host side is therefore the slightly
+    more generous of the two.
+    """
+    for r in records:
+        host = r.get("final_memory_MB")
+        if r.get("label") not in DEVICE_BACKENDS:
+            r["working_set_MB"] = host
+            continue
+        device = r.get("operator_memory_MB")
+        r["working_set_MB"] = None if device is None else device + (host or 0.0)
 
 
 def warn_mixed_hosts(records: list[dict]) -> list[str]:
@@ -206,7 +257,11 @@ def provenance(records: list[dict]) -> str:
 
 
 def _figure(
-    records: list[dict], key: str, ylabel: str, headline: str, out: Path
+    records: list[dict],
+    key: str,
+    ylabel: str,
+    headline: str,
+    out: Path,
 ) -> None:
     """One standalone figure for one measured quantity.
 
@@ -221,7 +276,7 @@ def _figure(
         f"{headline}\n{layers(records)}, {truncation(records)}", fontsize="medium"
     )
     fig.tight_layout()
-    fig.savefig(out, dpi=150)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"wrote {out}")
 
@@ -246,9 +301,12 @@ def _plot_axes(ax, records, key, ylabel) -> None:
     ax.legend(fontsize="small", loc="upper left", bbox_to_anchor=(0.0, -0.13), ncols=3)
 
 
-def _table(records: list[dict]) -> str:
+def _table(records: list[dict], memory_key: str = "final_memory_MB") -> str:
+    # The memory column must be the one the figure plots, or the sidecar silently
+    # contradicts it -- host RSS next to a curve of device bytes, for instance.
+    heading = MEMORY_COLUMNS[memory_key][0]
     lines = [
-        "| backend | qubits | grid | total s | final MB | final terms | status |",
+        f"| backend | qubits | grid | total s | {heading} | final terms | status |",
         "| ------- | -----: | ---- | ------: | -------: | ----------: | ------ |",
     ]
     for r in sorted(
@@ -259,9 +317,11 @@ def _table(records: list[dict]) -> str:
         ),
     ):
         if r.get("status") == "ok":
+            value = r.get(memory_key)
+            shown = "-" if value is None else f"{value:.1f}"
             lines.append(
                 f"| {r['label']} | {r['num_qubits']} | {r['nx']}x{r['ny']} | "
-                f"{r['total_runtime_s']:.3f} | {r['final_memory_MB']:.1f} | "
+                f"{r['total_runtime_s']:.3f} | {shown} | "
                 f"{r['final_num_terms']:,} | ok |"
             )
         else:
@@ -279,14 +339,23 @@ def main() -> None:
     parser.add_argument(
         "--memory-key",
         default="final_memory_MB",
-        choices=["final_memory_MB", "operator_memory_MB", "peak_rss_MB"],
-        help="Which memory column to plot. The default is each library's own final "
-        "operator accounting, which is not the same quantity for every backend "
-        "(see MEMORY_METRICS in backends.py).",
+        choices=[
+            "final_memory_MB",
+            "operator_memory_MB",
+            "peak_rss_MB",
+            "working_set_MB",
+        ],
+        help="Which memory column to plot. The default is the peak process RSS over the "
+        "final step, the same quantity for every backend. `working_set_MB` reads each "
+        "engine against the pool its operator actually lives in (host RSS, or device + "
+        "host for GPU backends), which is the comparison to use when a GPU engine is in "
+        "the field. `operator_memory_MB` is each library's own accounting and is not "
+        "comparable across backends (see OPERATOR_MEMORY_METRICS in backends.py).",
     )
     args = parser.parse_args()
 
     records = load(args.results)
+    add_working_set(records)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for warning in warn_mixed_hosts(records):
         print(warning)
@@ -298,15 +367,25 @@ def main() -> None:
         "2D TFIM Trotter evolution: total runtime vs lattice size",
         args.output_dir / "pauli_scaling_runtime.png",
     )
+    ylabel, headline = MEMORY_COLUMNS[args.memory_key]
+    # The default column keeps the published filename; any other key gets its own, so a
+    # second run cannot quietly replace the default figure with a different quantity.
+    memory_out = (
+        "pauli_scaling_memory.png"
+        if args.memory_key == "final_memory_MB"
+        else f"pauli_scaling_memory_{args.memory_key.removesuffix('_MB')}.png"
+    )
     _figure(
         records,
         args.memory_key,
-        "final memory [MB]",
-        "2D TFIM Trotter evolution: final memory vs lattice size",
-        args.output_dir / "pauli_scaling_memory.png",
+        ylabel,
+        f"2D TFIM Trotter evolution: {headline} vs lattice size",
+        args.output_dir / memory_out,
     )
 
-    sidecar = f"{_table(records)}\n\nMeasured on:\n\n{provenance(records)}\n"
+    sidecar = (
+        f"{_table(records, args.memory_key)}\n\nMeasured on:\n\n{provenance(records)}\n"
+    )
     (args.output_dir / "pauli_scaling.md").write_text(sidecar)
     print(sidecar)
 
