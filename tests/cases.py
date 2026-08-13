@@ -85,18 +85,25 @@ class ModeEmbedding:
         return 2 * self.modes[index // 2] + (index % 2)
 
 
-# 90 logical modes store as 96 (three whole 32-mode blocks, three 64-bit words), which is at or above
-# every shipped sparse-row crossover -- so this is the regime that runs the support-form store in a
-# released wheel, not merely a code path a test forced. 90 rather than 96 leaves the active window
-# short of its storage by 6 modes, which is the offset arithmetic (MSb0: logical modes sit at the HIGH
-# physical positions) rather than the flush case.
+# 260 logical modes store as 288 (nine whole 32-mode blocks, nine 64-bit words). Two regimes at once,
+# both of which a released wheel reaches on its own and neither of which any checked-in fixture does:
 #
-# The 12 positions are chosen, not spread evenly: mode 0 and mode 89 are the two ends of the active
-# window; 25/26 and 57/58 straddle the storage-word boundaries (physical mode 32 and 64, i.e. logical
-# 26 and 58 once the 6-mode offset is applied); 31/32 and 63/64 straddle the boundaries the same modes
-# would fall on if the window were flush, so the pair keeps its point should storage_modes_for change.
+#   * 288 >= monoprop_SPARSE_ROW_MIN_MODES for a wheel (256 without architecture flags), so this is the
+#     support-form row store as it ships, not a code path a test forced on.
+#   * nine words is past Bitset::kInlineWords (8), so every by-value monomial *spills to the heap*.
+#     Nothing else propagates at a spilled width -- bitset_tests.cpp covers spilled bitsets in
+#     isolation, which is not the same as running a scan, a fold and a wire exchange on them.
+#
+# 260 rather than 288 leaves the active window 28 modes short of its storage, exercising the offset
+# arithmetic (MSb0: logical modes sit at the HIGH physical positions) rather than the flush case.
+#
+# The 12 positions are chosen, not spread evenly. With the 28-mode offset, logical L sits at physical
+# L + 28, so: 0 and 259 are the two ends of the active window; 3/4, 35/36 and 67/68 straddle physical
+# modes 32, 64 and 96, the storage-word boundaries; and 227/228 straddles physical mode 256 -- the
+# *inline-to-heap* boundary, where the pair's two bits land in the last inline word and the first
+# spilled one.
 WIDE_EMBEDDING = ModeEmbedding(
-    num_modes=90, modes=(0, 25, 26, 31, 32, 57, 58, 63, 64, 87, 88, 89)
+    num_modes=260, modes=(0, 3, 4, 35, 36, 67, 68, 227, 228, 257, 258, 259)
 )
 
 
@@ -199,7 +206,7 @@ class CasesWideFermionicProblem:
     def case_lih_fermionic_spin_wide(
         self, lazy_shared_datadir: Path
     ) -> FermionicProblem:
-        """LiH, its 12 modes spread across a 90-mode system -- see [WIDE_EMBEDDING][]."""
+        """LiH, its 12 modes spread across a 260-mode system -- see [WIDE_EMBEDDING][]."""
         return _create_case(
             lazy_shared_datadir, "lih_fermionic_spin_exact", WIDE_EMBEDDING
         )

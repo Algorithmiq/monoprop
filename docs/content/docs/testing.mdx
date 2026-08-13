@@ -107,13 +107,16 @@ dense rows win. That is the crossover working, not a regression.
 
 Forcing the backend covers the *code*; it does not cover the *width* the backend
 exists for. That is what the wide case is for: `tests/test_wide_system.py` and
-`cpp/tests/wide_system_tests.cpp` relabel the 12-mode LiH fixture into a 90-mode
-system, which stores at 96 modes — three words per monomial, an active window six
-modes short of its storage, and mode lanes past the first codes word. A released
-wheel selects sparse rows there on its own; a build with `monoprop_ENABLE_ARCH_FLAGS`
-on gets there through `monoprop_ROW_STORE=sparse`, and both suites assert they did,
-so the sparse variant cannot silently be a second dense run. See
-`tests/data/README.md` on why a wide case is derived rather than checked in.
+`cpp/tests/wide_system_tests.cpp` relabel the 12-mode LiH fixture into a 260-mode
+system, which stores at 288 modes — nine words per monomial, an active window 28
+modes short of its storage, and mode lanes past the first codes word. Nine words is
+also past the eight that fit inline in a `Bitset`, so this is the only case in either
+suite that propagates monomials whose words live on the heap. A released wheel
+selects sparse rows at that width on its own; a build with
+`monoprop_ENABLE_ARCH_FLAGS` on gets there through `monoprop_ROW_STORE=sparse`, and
+both suites assert they did, so the sparse variant cannot silently be a second dense
+run. See `tests/data/README.md` on why a wide case is derived rather than checked
+in.
 
 The two backends agree on term sets and expectation values but not on term *order*,
 so cross-backend checks use `tools/capture-baseline.py --compare` with a tolerance

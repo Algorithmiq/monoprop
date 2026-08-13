@@ -20,10 +20,11 @@
 // while the width it was built for -- several words per monomial, an active window short of its
 // storage, mode lanes spread over more than one codes word -- stays unexercised.
 //
-// So this case embeds a fixture instead of adding one: LiH's 12 modes relabelled into a 90-mode system
-// (test_utils::ModeEmbedding), which stores at 96. The embedding is also the oracle -- a monotone mode
-// relabelling is a canonical transformation, so the fixture's exact energy still applies, and the
-// truncated run still owes the narrow run's value.
+// So this case embeds a fixture instead of adding one: LiH's 12 modes relabelled into a 260-mode system
+// (test_utils::ModeEmbedding), which stores at 288 -- nine words, so past Bitset's eight inline ones and
+// into the regime where every by-value monomial spills to the heap. The embedding is also the oracle -- a
+// monotone mode relabelling is a canonical transformation, so the fixture's exact energy still applies,
+// and the truncated run still owes the narrow run's value.
 
 #include <boost/test/unit_test.hpp>
 
@@ -45,18 +46,18 @@ namespace {
 
 // The source fixture's own width. The embedding only relabels, so the physics never leaves these 12
 // modes: no evolved term can carry more than 24 Majorana indices or occupy more than 12 modes, which is
-// what makes the cutoffs below untruncated -- and the reference energy exact -- at 90 modes.
+// what makes the cutoffs below untruncated -- and the reference energy exact -- at 260 modes.
 constexpr size_t kSourceModes = 12;
 
-constexpr size_t kWideModes = 90;
-constexpr size_t kWideStorageModes = 96;
+constexpr size_t kWideModes = 260;
+constexpr size_t kWideStorageModes = 288;
 
 // The twin of tests/cases.py's WIDE_EMBEDDING, position for position; see there for why these twelve.
-// In short: 0 and 89 are the ends of the active window, 25/26 and 57/58 straddle the storage-word
-// boundaries once the 6-mode window offset is applied, and 31/32 and 63/64 straddle the boundaries the
-// same modes would fall on with a flush window.
+// In short: 0 and 259 are the ends of the active window; 3/4, 35/36 and 67/68 straddle the storage-word
+// boundaries once the 28-mode window offset is applied; and 227/228 straddles physical mode 256, the
+// inline-to-heap boundary.
 auto wide_embedding() -> test_utils::ModeEmbedding {
-    return {.num_modes = kWideModes, .modes = {0, 25, 26, 31, 32, 57, 58, 63, 64, 87, 88, 89}};
+    return {.num_modes = kWideModes, .modes = {0, 3, 4, 35, 36, 67, 68, 227, 228, 257, 258, 259}};
 }
 
 auto wide_case() -> test_utils::CaseData {
@@ -64,7 +65,7 @@ auto wide_case() -> test_utils::CaseData {
                                   wide_embedding());
 }
 
-// Storage pinned to 96 and the logical width to 90 -- which is what storage_modes_for(90) would have
+// Storage pinned to 288 and the logical width to 260 -- which is what storage_modes_for(260) would have
 // produced anyway, so this is the one place in the suite where the pinned width is the production one.
 auto wide_propagator(const test_utils::CaseData &data, unsigned int cutoff, CutoffType cutoff_type)
     -> MonomialPropagator {
@@ -86,12 +87,12 @@ constexpr std::array<std::pair<CutoffType, unsigned int>, 2> kUntruncated{
 
 } // namespace
 
-// The premise the two cases below rest on. 96 storage modes is at or above the crossover a released
-// wheel is built with (monoprop_SPARSE_ROW_MIN_MODES is 96 unless -march=native moves it to 1024), so
-// on a wheel this width selects the support-form store by itself; a dev build with arch flags on gets
-// there through monoprop_ROW_STORE=sparse, i.e. the sparse-rows ctest variant. Asserted so that variant
-// cannot quietly have run dense rows a second time.
-BOOST_AUTO_TEST_CASE(wide_case_stores_at_ninety_six_modes) {
+// The premise the two cases below rest on. 288 storage modes is at or above the crossover a released
+// wheel is built with (monoprop_SPARSE_ROW_MIN_MODES is 256 unless -march=native moves it to 768), so on
+// a wheel this width selects the support-form store by itself; a dev build with arch flags on gets there
+// through monoprop_ROW_STORE=sparse, i.e. the sparse-rows ctest variant. Asserted so that variant cannot
+// quietly have run dense rows a second time. Nine words also puts every monomial here on the heap.
+BOOST_AUTO_TEST_CASE(wide_case_stores_at_two_hundred_eighty_eight_modes) {
     const auto data = wide_case();
     const auto propagator = wide_propagator(data, 2 * kSourceModes, CutoffType::Length);
     BOOST_TEST(data.num_modes == kWideModes);

@@ -29,11 +29,17 @@ without MPI, so a from-source build is required for multi-rank runs.
 | `monoprop_SPARSE_ROW_MIN_MODES` | ISA-dependent | Mode count at or above which the operator store prefers sparse rows. |
 
 `monoprop_SPARSE_ROW_MIN_MODES` follows `monoprop_ENABLE_ARCH_FLAGS` unless you set
-it explicitly: `1024` with architecture flags on, `96` without them. The crossover
+it explicitly: `768` with architecture flags on, `256` without them. The crossover
 moves because dense monomials cost one pass per storage word while sparse rows are
-flat in the width, so a target without a vector `popcount` reaches the crossover an
-order of magnitude sooner. Both values are measured, not guessed; the number is
-build-time because the ISA is.
+flat in the width, so a target without a vector `popcount` reaches the crossover
+sooner. The number is build-time because the ISA is.
+
+Both values are measured end to end through the propagator, at the first whole
+32-mode storage block where sparse rows win by more than the run-to-run spread.
+Expect about one block of machine dependence either way — near the crossing the two
+backends are within a few percent of each other, so a threshold that is one block off
+costs very little. If you are running a width close to it and care, measure your own
+workload both ways with `monoprop_ROW_STORE` and pin the value.
 
 ### Choosing the row backend at run time
 

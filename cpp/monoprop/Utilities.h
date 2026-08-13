@@ -52,21 +52,9 @@ inline auto odd_bits(size_t n) -> Bitset {
 }
 } // namespace detail
 
-// Under MSb0 the logical even positions are physically odd, so the pattern is swapped vs LSb0.
-//
-// Two overloads, because a caller's width may be either. Call sites with a compile-time N spell it as
-// a template argument (even_bits<Mono::size(), LSb0>()); anything holding only a Bitset -- an
-// operator's result (a ^ b), say, whose width is data and not recoverable via a static ::size() --
-// passes it as an ordinary argument instead: even_bits<LSb0>(some_bitset.size()).
-template <size_t N, typename Ordering>
-auto even_bits() -> Bitset {
-    if constexpr (std::is_same_v<Ordering, MSb0>) {
-        return detail::odd_bits(N);
-    }
-    else {
-        return detail::even_bits(N);
-    }
-};
+// Under MSb0 the logical even positions are physically odd, so the pattern is swapped vs LSb0. The
+// width is an ordinary argument: only the Ordering has to be a template parameter, since it selects
+// which pattern at compile time and is never data.
 template <typename Ordering>
 auto even_bits(size_t n) -> Bitset {
     if constexpr (std::is_same_v<Ordering, MSb0>) {
@@ -77,15 +65,6 @@ auto even_bits(size_t n) -> Bitset {
     }
 };
 // Same MSb0/LSb0 swap as even_bits().
-template <size_t N, typename Ordering>
-auto odd_bits() -> Bitset {
-    if constexpr (std::is_same_v<Ordering, MSb0>) {
-        return detail::even_bits(N);
-    }
-    else {
-        return detail::odd_bits(N);
-    }
-};
 template <typename Ordering>
 auto odd_bits(size_t n) -> Bitset {
     if constexpr (std::is_same_v<Ordering, MSb0>) {

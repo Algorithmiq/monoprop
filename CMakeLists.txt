@@ -81,15 +81,24 @@ include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
 
 # The sparse/dense crossover is set by whether the target has a vector popcount, so it follows the
 # arch flags rather than the mode count alone: dense costs one pass per storage word, sparse is flat
-# in the width, and without AVX2 the dense pass degrades an order of magnitude sooner. Measured on
-# the Stage 3 gate bench (notes/monomial-storage, K=12 slots): the arms cross at ~1024 modes under
-# -march=native and at ~96 without it. Both land on a whole 32-mode storage block, which is the
-# granularity storage_modes_for() rounds to anyway.
+# in the width, and without a vector popcount the dense pass degrades sooner.
+#
+# Both values are the *first whole 32-mode storage block where sparse rows win by more than the
+# run-to-run spread*, measured end to end through the propagator (not on the Stage 3 representation
+# bench, which predates the codes algebra and the support-form query record and modelled dense as a
+# word-at-a-time scan rather than the packed position lists that actually ship). The workload is held
+# identical across widths by relabelling one operator into a wider register, so only the storage width
+# varies; sparse comes out flat in the width and dense monotone, and the crossing sits in the same
+# block at cutoffs 4, 6 and 10. See notes/monomial-storage §6e for the tables.
+#
+# Expect +-1 block of machine dependence: the crossing is where a dense word pass costs what a lane
+# read does, so cache and popcount throughput move it. Both directions cost only a few percent near
+# the crossing, which is why the first *clear* win is the threshold rather than the first win.
 if(monoprop_SPARSE_ROW_MIN_MODES STREQUAL "")
   if(monoprop_ENABLE_ARCH_FLAGS)
-    set(monoprop_SPARSE_ROW_MIN_MODES 1024)
+    set(monoprop_SPARSE_ROW_MIN_MODES 768)
   else()
-    set(monoprop_SPARSE_ROW_MIN_MODES 96)
+    set(monoprop_SPARSE_ROW_MIN_MODES 256)
   endif()
 endif()
 

@@ -148,10 +148,10 @@ BOOST_DATA_TEST_CASE(is_fully_paired_test, bdata::make(ds_is_fully_paired_test),
 }
 
 BOOST_AUTO_TEST_CASE(bit_flipping_utilities) {
-    auto val1 = even_bits<10, LSb0>();
-    auto val2 = odd_bits<10, LSb0>();
-    auto val3 = even_bits<10, MSb0>();
-    auto val4 = odd_bits<10, MSb0>();
+    auto val1 = even_bits<LSb0>(10);
+    auto val2 = odd_bits<LSb0>(10);
+    auto val3 = even_bits<MSb0>(10);
+    auto val4 = odd_bits<MSb0>(10);
     BOOST_TEST((val1 == Bitset(10, 0b0101010101ULL)));
     BOOST_TEST((val2 == Bitset(10, 0b1010101010ULL)));
     BOOST_TEST((val3 == Bitset(10, 0b1010101010ULL)));

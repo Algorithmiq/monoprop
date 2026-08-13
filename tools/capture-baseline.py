@@ -22,7 +22,7 @@ types, and for a small set of hand-written qubit smoke problems through
 full ``(monomial indices, coefficient)`` set (in the engine's own iteration order -- ordering is
 itself a regression signal, see the module docstring on diffing below), and the expectation value.
 ``_EMBEDDED_CASES`` adds one more Majorana case that is not a file: a fixture relabelled into a system
-wide enough to store its monomials in three words rather than one.
+wide enough to store its monomials in nine words rather than one, past the eight that fit inline.
 
 Dual-basis note: the msgpack fixtures are all fermionic (Majorana). The public API only converts
 Pauli -> Majorana (``PauliOperator.get_majorana_operator()``, the Jordan-Wigner image); there is no
@@ -104,7 +104,13 @@ _EXACT_FIXTURES = frozenset(
 # captured under a name of their own. Every fixture on disk is one 32-mode storage block, i.e. below
 # every sparse-row crossover -- so without this the support-form backend's own regime would never appear
 # in a baseline, and that regime is what the remaining stages change. Probe cutoffs only: the untruncated
-# run is the same half-million terms the narrow case already dumps, at three times the width.
+# run is the same half-million terms the narrow case already dumps, at nine times the width.
+#
+# This is the one case whose *backend* depends on the build: 288 storage modes is above the crossover a
+# wheel build uses and below the one an arch-flags build uses, so it runs sparse rows in the first and
+# dense in the second. The two agree on term sets and values but not on order, so a golden captured in
+# one configuration is not byte-comparable against a capture from the other -- use ``--compare``
+# (``just diff-baseline-sparse``) across that boundary, and re-seed the golden if you switch.
 _EMBEDDED_CASES = (("lih_fermionic_spin_wide", "lih_fermionic_spin_exact.msgpack"),)
 
 

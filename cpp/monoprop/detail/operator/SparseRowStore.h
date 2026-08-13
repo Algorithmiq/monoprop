@@ -38,7 +38,7 @@
 // is the conservative baseline-x86-64 one, so a consumer compiling these headers without the project's
 // definitions gets the value that suits the wheels rather than the developer's machine.
 #if !defined(monoprop_SPARSE_ROW_MIN_MODES)
-#define monoprop_SPARSE_ROW_MIN_MODES 96
+#define monoprop_SPARSE_ROW_MIN_MODES 256
 #endif
 
 namespace monoprop::detail {

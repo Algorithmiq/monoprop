@@ -180,7 +180,8 @@ systems work but pay an allocation per by-value monomial. See the plan's Stage 6
 - Tests validate against exact solutions for small systems
 - Heavy use of `@parametrize_with_cases` decorators
 - Nothing on disk is wider than 28 modes, i.e. one 32-mode storage block. A case that needs the
-  wide-system regime (several words per monomial, the width at which sparse rows are selected) is
+  wide-system regime (260 logical / 288 storage modes: nine words per monomial, so past `Bitset`'s eight
+  inline ones *and* above the crossover a wheel selects sparse rows at) is
   *derived*: `ModeEmbedding`/`WIDE_EMBEDDING` in `tests/cases.py` and `test_utils::embed_case` in
   `cpp/tests/TestData.h` relabel a fixture's modes into a wider system. The map is monotone, so the
   fixture's exact energy and gradient still apply and the wide run owes the narrow run's evolved

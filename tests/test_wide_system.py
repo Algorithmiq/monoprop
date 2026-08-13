@@ -15,11 +15,14 @@
 """A fixture wide enough to run the row store that ships for wide systems.
 
 Every checked-in msgpack fixture is 28 modes or fewer, so all of them store monomials in a single
-32-mode block -- below every sparse-row crossover. The support-form row store could therefore be
-compiled, forced on with ``monoprop_ROW_STORE=sparse``, pass the whole suite, and still never have seen
-the width it exists for. These tests close that gap with ``WIDE_EMBEDDING``: the LiH fixture's 12 modes
-relabelled into a 90-mode system, which stores at 96 modes -- three 64-bit words per monomial, an active
-window six modes short of its storage, and mode positions that straddle both storage-word boundaries.
+32-mode block -- below every sparse-row crossover, and well inside Bitset's inline capacity. The
+support-form row store could therefore be compiled, forced on with ``monoprop_ROW_STORE=sparse``, pass
+the whole suite, and still never have seen the width it exists for; and no propagation would ever run on
+a monomial whose words live on the heap. These tests close both gaps with ``WIDE_EMBEDDING``: the LiH
+fixture's 12 modes relabelled into a 260-mode system, which stores at 288 modes -- nine 64-bit words per
+monomial (past the eight that fit inline, so every by-value monomial spills), an active window 28 modes
+short of its storage, and mode positions that straddle the storage-word boundaries and the
+inline-to-heap one.
 
 The embedding is also the oracle. Relabelling modes monotonically is a canonical transformation, so the
 wide run owes the narrow run's evolved operator term for term under the map, and the fixture's exact
@@ -48,7 +51,7 @@ _SOURCE = "lih_fermionic_spin_exact"
 
 # The source fixture's own width. The embedding only relabels, so the physics stays inside 12 modes and
 # no evolved term can carry more than 24 Majorana indices -- which is what makes a cutoff of 2 * 12
-# untruncated for the 90-mode problem, and its reference values exact.
+# untruncated for the 260-mode problem, and its reference values exact.
 _SOURCE_MODES = 12
 
 
@@ -70,14 +73,15 @@ def _propagate(
 def test_the_wide_case_sits_above_the_shipped_sparse_crossover(
     problem: FermionicProblem, serial_comm
 ) -> None:
-    """The premise the rest of this module rests on: 90 logical modes stored at 96.
+    """The premise the rest of this module rests on: 260 logical modes stored at 288.
 
-    96 is at or above the crossover a released wheel is built with
-    (``monoprop_SPARSE_ROW_MIN_MODES`` defaults to 96, and to 1024 only when ``-march=native`` moves
+    288 is at or above the crossover a released wheel is built with
+    (``monoprop_SPARSE_ROW_MIN_MODES`` defaults to 256, and to 768 only when ``-march=native`` moves
     it), so on a wheel this case reaches the support-form store on its own. A dev build with arch flags
     on selects dense rows at this width and reaches the other backend through
     ``monoprop_ROW_STORE=sparse`` (``just test-sparse-rows``) -- pinned below, so that run cannot
-    quietly have used dense rows after all.
+    quietly have used dense rows after all. 288 modes is also nine words, so the monomials here are
+    spilled either way.
     """
     prop = MajoranaPropagator(
         problem.operator,
@@ -85,9 +89,9 @@ def test_the_wide_case_sits_above_the_shipped_sparse_crossover(
         cutoff=4,
         comm=serial_comm,
     )
-    assert problem.n_modes == 90
-    assert prop.num_modes == 90
-    assert prop._simulator.storage_num_modes == 96
+    assert problem.n_modes == 260
+    assert prop.num_modes == 260
+    assert prop._simulator.storage_num_modes == 288
     # SIM112 asks for an uppercase name; monoprop spells its variables this way (see EnvConfig.h).
     if os.environ.get("monoprop_ROW_STORE") == "sparse":  # noqa: SIM112
         assert prop._simulator.rows_are_sparse

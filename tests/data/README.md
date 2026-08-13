@@ -37,9 +37,9 @@ i.e. `terms = {tuple(k): complex(r, i) for k, r, i in zip(keys, real, imag)}`.
 ## Wide cases are derived, not stored
 
 No fixture here is wider than 28 modes, so every one of them stores its monomials in a single 32-mode
-block. The wide-system regime — several words per monomial, and the storage width at which the
-support-form row store is selected — is reached by *relabelling* one of these fixtures into a wider
-system rather than by adding a file:
+block. The wide-system regime — several words per monomial, the width past which those words spill to
+the heap, and the storage width at which the support-form row store is selected — is reached by
+*relabelling* one of these fixtures into a wider system rather than by adding a file:
 
 - Python: `ModeEmbedding` and `WIDE_EMBEDDING` in `tests/cases.py`, passed to `load_problem()`
 - C++: `test_utils::ModeEmbedding` and `embed_case()` in `cpp/tests/TestData.h`
