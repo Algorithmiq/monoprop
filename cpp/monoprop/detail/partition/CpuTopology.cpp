@@ -14,90 +14,96 @@
 
 #include "monoprop/detail/partition/CpuTopology.h"
 
-#if defined(__linux__)
-
-#include <pthread.h>
 #include <algorithm>
+#include <map>
+#include <vector>
+
+#include <hwloc.h>
 
 namespace monoprop::detail::partition {
 
-auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
-    const std::set<int> allowed = topo_detail::allowed_cpus();
-    const bool filter = !allowed.empty(); // no mask readable ⇒ accept every CPU
-    const auto is_allowed = [&](int cpu) { return !filter || allowed.contains(cpu); };
+namespace {
 
-    std::vector<PhysicalCore> cores;
-    std::set<int> seen_cores;                 // sibling-group key (min sibling) already recorded
-    std::vector<std::vector<int>> l3_members; // cpu-set per distinct L3 domain, in discovery order
+/* ── Process-lifetime hwloc topology ──────────────────────────────────────── */
 
-    // Scan a bounded id range rather than stopping at the first gap: online CPU ids are not contiguous
-    // (offlined or hot-plugged CPUs leave holes), and breaking on the first unreadable id truncates the
-    // core list to whatever preceded the hole, silently under-partitioning and crowding the low CPUs.
-    const int scan_limit = filter ? *allowed.rbegin() + 1 : CPU_SETSIZE;
-    for (int cpu = 0; cpu < scan_limit; ++cpu) {
-        const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(cpu);
-        const std::string sib = topo_detail::read_line(base + "/topology/thread_siblings_list");
-        if (sib.empty()) {
-            continue;
-        }
-        const auto siblings = topo_detail::parse_cpulist(sib);
-        const int group_key = siblings.empty() ? cpu : *std::min_element(siblings.begin(), siblings.end());
-        if (seen_cores.contains(group_key)) {
-            continue;
-        }
-        seen_cores.insert(group_key);
+// hwloc_topology_t is safe for concurrent read-only access after hwloc_topology_load().
+struct TopologyHolder {
+    hwloc_topology_t topo = nullptr;
 
-        int rep = -1;
-        if (siblings.empty()) {
-            rep = is_allowed(cpu) ? cpu : -1;
+    TopologyHolder() noexcept {
+        if (hwloc_topology_init(&topo) < 0) {
+            topo = nullptr;
+            return;
         }
-        else {
-            for (int s : siblings) { // parse_cpulist yields ascending order
-                if (is_allowed(s)) {
-                    rep = s;
-                    break;
-                }
-            }
+        /* Keep all L3 cache objects so shared-L3 domains can always be identified, even on
+         * topologies where the L3 appears private and would otherwise be suppressed by the
+         * default HWLOC_TYPE_FILTER_KEEP_STRUCTURE filter. */
+        hwloc_topology_set_type_filter(topo, HWLOC_OBJ_L3CACHE, HWLOC_TYPE_FILTER_KEEP_ALL);
+        if (hwloc_topology_load(topo) < 0) {
+            hwloc_topology_destroy(topo);
+            topo = nullptr;
         }
-        if (rep < 0) {
-            continue;
-        }
-
-        const auto l3 = topo_detail::parse_cpulist(topo_detail::read_line(base + "/cache/index3/shared_cpu_list"));
-        int domain = -1;
-        for (size_t d = 0; d < l3_members.size(); ++d) {
-            if (std::find(l3_members[d].begin(), l3_members[d].end(), group_key) != l3_members[d].end()) {
-                domain = static_cast<int>(d);
-                break;
-            }
-        }
-        if (domain < 0) {
-            domain = static_cast<int>(l3_members.size());
-            l3_members.push_back(l3.empty() ? std::vector<int>{group_key} : l3);
-        }
-        cores.push_back(PhysicalCore{rep, domain});
     }
-    return cores;
+
+    ~TopologyHolder() {
+        if (topo) {
+            hwloc_topology_destroy(topo);
+        }
+    }
+
+    TopologyHolder(const TopologyHolder &) = delete;
+    auto operator=(const TopologyHolder &) -> TopologyHolder & = delete;
+};
+
+// Returns the loaded topology, or nullptr when initialization failed.
+// The static local is initialized once; subsequent calls return the cached handle.
+auto get_topology() -> hwloc_topology_t {
+    static TopologyHolder holder;
+    return holder.topo;
 }
 
-auto partition_cpusets(size_t n, size_t group_index, size_t group_count) -> std::vector<CpuSet> {
-    if (!config::get().partition_pinning) {
-        return {};
+/* ── Effective allowed cpuset for the calling thread ──────────────────────── */
+
+// Queries the current thread's affinity to respect any launcher-imposed restriction (cgroup, MPI
+// process binding) narrower than the topology's own allowed cpuset. Falls back to the topology
+// allowed cpuset when the cpubind query is unsupported on this platform. Caller must free the bitmap.
+auto effective_allowed_cpuset(hwloc_topology_t topo) -> hwloc_cpuset_t {
+    hwloc_cpuset_t set = hwloc_bitmap_alloc();
+    if (!set) {
+        return nullptr;
     }
-    const auto cores = enumerate_physical_cores();
+    if (hwloc_get_cpubind(topo, set, HWLOC_CPUBIND_THREAD) == 0) {
+        return set;
+    }
+    /* cpubind query not supported (e.g. macOS without OS X binding): fall back. */
+    hwloc_bitmap_free(set);
+    return hwloc_bitmap_dup(hwloc_topology_get_allowed_cpuset(topo));
+}
+
+} // anonymous namespace
+
+/* ── topo_detail::placement_order ─────────────────────────────────────────── */
+
+namespace topo_detail {
+
+auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t group_index, size_t group_count)
+    -> std::vector<int> {
     if (cores.empty() || group_count * n > cores.size()) {
         return {};
     }
+
     int max_domain = 0;
     for (const auto &c : cores) {
         max_domain = std::max(max_domain, c.l3_domain);
     }
-    // Ordering: interleaved for a lone process, contiguous blocks for co-located ranks.
+
+    /* Bucket representative PU indices by L3 domain id. */
     std::vector<std::vector<int>> by_domain(static_cast<size_t>(max_domain) + 1);
     for (const auto &c : cores) {
         by_domain[static_cast<size_t>(c.l3_domain)].push_back(c.cpu);
     }
-    // Interleave `buckets` depth-first: bucket0[0], bucket1[0], …, bucket0[1], bucket1[1], …
+
+    /* Interleave buckets depth-first: b0[0], b1[0], …, b0[1], b1[1], … */
     const auto interleave = [](const std::vector<std::vector<int>> &buckets) {
         std::vector<int> out;
         for (size_t depth = 0;; ++depth) {
@@ -117,7 +123,7 @@ auto partition_cpusets(size_t n, size_t group_index, size_t group_count) -> std:
     std::vector<int> order;
     size_t offset = 0;
     if (group_count <= by_domain.size()) {
-        // Domains dealt to this rank: group_index, +group_count, … (group_count == 1 ⇒ all of them).
+        /* Interleave arm: deal domains round-robin across ranks. */
         std::vector<std::vector<int>> mine;
         for (size_t d = group_index; d < by_domain.size(); d += group_count) {
             mine.push_back(by_domain[d]);
@@ -125,28 +131,127 @@ auto partition_cpusets(size_t n, size_t group_index, size_t group_count) -> std:
         order = interleave(mine);
     }
     else {
-        // More co-located ranks than L3 domains: flat domain-major order, one contiguous slice each.
+        /* More co-located ranks than L3 domains: flat domain-major order, one contiguous slice each. */
         for (const auto &bucket : by_domain) {
             order.insert(order.end(), bucket.begin(), bucket.end());
         }
         offset = group_index * n;
     }
+
     if (offset + n > order.size()) {
         return {};
     }
+    return std::vector<int>(order.begin() + static_cast<std::ptrdiff_t>(offset),
+                            order.begin() + static_cast<std::ptrdiff_t>(offset + n));
+}
 
-    std::vector<CpuSet> sets(n);
-    for (size_t i = 0; i < n; ++i) {
-        CPU_ZERO(&sets[i]);
-        CPU_SET(order[offset + i], &sets[i]);
+} // namespace topo_detail
+
+/* ── enumerate_physical_cores ──────────────────────────────────────────────── */
+
+auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
+    const auto topo = get_topology();
+    if (!topo) {
+        return {};
+    }
+
+    const hwloc_cpuset_t allowed = effective_allowed_cpuset(topo);
+    if (!allowed) {
+        return {};
+    }
+
+    const int core_depth = hwloc_get_type_depth(topo, HWLOC_OBJ_CORE);
+    if (core_depth == HWLOC_TYPE_DEPTH_UNKNOWN || core_depth == HWLOC_TYPE_DEPTH_MULTIPLE) {
+        hwloc_bitmap_free(allowed);
+        return {};
+    }
+
+    std::vector<PhysicalCore> cores;
+    std::map<unsigned, int> l3_domain_map; // l3->logical_index → domain id
+    int next_domain_id = 0;
+
+    const unsigned num_cores = hwloc_get_nbobjs_by_depth(topo, core_depth);
+    for (unsigned i = 0; i < num_cores; ++i) {
+        const hwloc_obj_t core = hwloc_get_obj_by_depth(topo, core_depth, i);
+        if (!core || !core->cpuset) {
+            continue;
+        }
+
+        /* Skip cores that have no PU in the calling thread's effective allowed mask. */
+        if (!hwloc_bitmap_intersects(core->cpuset, allowed)) {
+            continue;
+        }
+
+        /* Lowest allowed PU on this core is the representative OS index. */
+        hwloc_cpuset_t core_allowed = hwloc_bitmap_alloc();
+        if (!core_allowed) {
+            continue;
+        }
+        hwloc_bitmap_and(core_allowed, core->cpuset, allowed);
+        const int rep = hwloc_bitmap_first(core_allowed);
+        hwloc_bitmap_free(core_allowed);
+        if (rep < 0) {
+            continue;
+        }
+
+        /* Find the L3 cache ancestor and assign a stable domain id. Cores sharing an L3 object
+         * (same logical_index) receive the same domain id. Cores without an L3 ancestor each
+         * receive their own singleton domain so the placement algorithm can still spread across
+         * whatever structure the topology does have. */
+        int domain;
+        const hwloc_obj_t l3 = hwloc_get_ancestor_obj_by_type(topo, HWLOC_OBJ_L3CACHE, core);
+        if (l3) {
+            const auto [it, inserted] = l3_domain_map.emplace(l3->logical_index, next_domain_id);
+            if (inserted) {
+                ++next_domain_id;
+            }
+            domain = it->second;
+        }
+        else {
+            domain = next_domain_id++;
+        }
+
+        cores.push_back(PhysicalCore{rep, domain});
+    }
+
+    hwloc_bitmap_free(allowed);
+    return cores;
+}
+
+/* ── partition_cpusets ─────────────────────────────────────────────────────── */
+
+auto partition_cpusets(size_t n, size_t group_index, size_t group_count) -> std::vector<CpuSet> {
+    if (!config::get().partition_pinning) {
+        return {};
+    }
+    const auto cores = enumerate_physical_cores();
+    const auto order = topo_detail::placement_order(cores, n, group_index, group_count);
+
+    std::vector<CpuSet> sets(order.size());
+    for (size_t i = 0; i < order.size(); ++i) {
+        sets[i] = CpuSet{order[i]};
     }
     return sets;
 }
 
+/* ── pin_this_thread ───────────────────────────────────────────────────────── */
+
 auto pin_this_thread(const CpuSet &set) -> void {
-    pthread_setaffinity_np(pthread_self(), sizeof(CpuSet), &set);
+    if (set.pu < 0) {
+        return;
+    }
+    const auto topo = get_topology();
+    if (!topo) {
+        return;
+    }
+    hwloc_cpuset_t cpuset = hwloc_bitmap_alloc();
+    if (!cpuset) {
+        return;
+    }
+    hwloc_bitmap_only(cpuset, static_cast<unsigned>(set.pu));
+    /* Errors are intentionally ignored: pinning is performance-only, not a correctness requirement. */
+    hwloc_set_cpubind(topo, cpuset, HWLOC_CPUBIND_THREAD | HWLOC_CPUBIND_STRICT);
+    hwloc_bitmap_free(cpuset);
 }
 
 } // namespace monoprop::detail::partition
-
-#endif // __linux__
