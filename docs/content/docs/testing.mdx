@@ -73,6 +73,12 @@ A 64-bit `TermIndex` build is the only configuration that compiles the
 just test-wide   # rebuilds via uv sync with monoprop_WIDE_TERM_INDEX=ON, then runs CTest
 ```
 
+The partition threading layer synchronises with hand-written atomic memory
+orderings, which only a ThreadSanitizer build checks. Build with
+`monoprop_ENABLE_TSAN=ON` and run the threading suites against that tree — see
+the [building guide](/building#threadsanitizer-tree) for the `uv sync`
+invocation and what `cpp/tests/tsan.supp` does and does not suppress.
+
 CTest registers every Boost case individually as a `serial` variant. When the
 build has MPI enabled and a launcher is found, it also registers the whole suite
 once per rank count in `monoprop_MPI_TEST_PROCS`, labelled `mpi` and `mpi-<n>` —

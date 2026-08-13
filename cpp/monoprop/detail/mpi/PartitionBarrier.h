@@ -54,7 +54,11 @@ public:
 // The acquire/release/relaxed orderings below are load-bearing, not an oversight: the release store to
 // `gen_` is what publishes the preceding relaxed reset of `arrived_`. Promoting them to seq_cst would
 // put a full barrier in the spin loop of that same hotspot, so cpp:S8417 is suppressed for this file
-// in sonar-project.properties. Do not "simplify" them to the default ordering.
+// in sonar-project.properties. Do not "simplify" them to the default ordering, and do not weaken one
+// either: the monoprop_ENABLE_TSAN build (see docs/content/docs/building.mdx) is the check that stands
+// in for the suppressed rule, and demoting any single one of the five -- either `gen_` store, the
+// `group_gen_` store, the arrival fetch_adds, or the spin load -- makes it report the published data as
+// a race. Every ordering here is individually necessary, and none is stronger than it needs to be.
 class PartitionBarrier {
 public:
     // `spin_budget` overrides how long a waiter stays on-core before yielding; unset takes

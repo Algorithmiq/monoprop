@@ -98,6 +98,7 @@ message(
 message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
 
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
+message(STATUS "   ThreadSanitizer        : ${monoprop_ENABLE_TSAN}")
 message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
 message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")

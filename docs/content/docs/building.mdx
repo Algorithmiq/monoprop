@@ -109,6 +109,37 @@ uv sync --all-extras -v --config-settings=cmake.build-type=Debug
 ctest --test-dir build/editable/Debug
 ```
 
+### ThreadSanitizer tree
+
+`monoprop_ENABLE_TSAN=ON` builds with `-fsanitize=thread`. It is opt-in and
+composes with any build type rather than replacing one, because the partition
+threading layer — the pinned partition masters and the sense-reversing
+`PartitionBarrier` they synchronise on — is only worth auditing at the
+optimization level it ships with. `-g` is added regardless of build type, since a
+report without line tables cannot be attributed to a memory ordering.
+
+```bash
+uv sync --all-extras -v --reinstall-package monoprop --no-cache \
+    --config-settings-package="monoprop:cmake.build-type=RelWithDebInfo" \
+    --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_TSAN=ON"
+ctest --test-dir build/editable/RelWithDebInfo --output-on-failure -L serial
+```
+
+`cpp/tests/CMakeLists.txt` attaches `TSAN_OPTIONS` — including the
+`cpp/tests/tsan.supp` suppressions — to every discovered test, so no extra
+environment is needed. A reported race makes the owning test exit non-zero.
+Expect a large slowdown, so prefer running the threading suites on their own:
+
+```bash
+ctest --test-dir build/editable/RelWithDebInfo --output-on-failure \
+    -R 'partition_barrier_|shm_comm_|partition_'
+```
+
+`tsan.supp` holds third-party entries only (the MPI runtime, whose progress
+engine TSan cannot see the synchronisation of). Nothing under `cpp/monoprop/` is
+suppressed: a suppression there would silently retract the check the
+configuration exists to provide.
+
 ### Related workflows
 
 - Use `just test-wide` for the 64-bit `monoprop_WIDE_TERM_INDEX` configuration.

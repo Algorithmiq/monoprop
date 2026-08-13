@@ -1,0 +1,35 @@
+# ThreadSanitizer suppressions for the monoprop C++ unit tests
+# (monoprop_ENABLE_TSAN=ON). Wired in as TSAN_OPTIONS=suppressions=... by
+# cpp/tests/CMakeLists.txt, so a `ctest` run picks it up with no extra setup.
+#
+# Everything here is a *third-party* entry. There is deliberately no suppression
+# for anything under cpp/monoprop/: the point of the TSan configuration is to
+# machine-check PartitionBarrier's memory orderings, and a suppression there
+# would silently retract that check. If a monoprop access is benign, say so in a
+# comment at the access and, where the tool cannot see the ordering, annotate it
+# — do not hide it here.
+
+# ---------------------------------------------------------------------------
+# MPI (monoprop_ENABLE_MPI=ON builds only).
+#
+# OpenMPI/PMIx are not built with instrumentation, and their progress engine
+# races on its own state by design (lock-free free lists, opal_progress
+# callbacks, the async event thread). TSan cannot see their synchronization, so
+# every report from inside them is noise. `called_from_lib` needs the shared
+# object's soname, which is what OpenMPI 5.x installs.
+# ---------------------------------------------------------------------------
+called_from_lib:libmpi.so
+called_from_lib:libopen-pal.so
+called_from_lib:libopen-rte.so
+called_from_lib:libpmix.so
+called_from_lib:libevent_core.so
+called_from_lib:libevent_pthreads.so
+race:^ompi_
+race:^opal_
+race:^mca_
+race:^pmix
+race:^PMIx
+race:^orte_
+# The MPI_Init_thread/MPI_Finalize pair leaks a progress thread whose teardown
+# races with the runtime's own atexit work; not monoprop's memory.
+thread:^opal_progress_

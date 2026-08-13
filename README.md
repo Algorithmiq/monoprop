@@ -114,6 +114,10 @@ just test-mpi                          # Python + C++ tests under MPI
 just test-wide                         # Python + C++ unit tests with a 64-bit TermIndex
 ```
 
+To audit the partition threading layer for data races, build with
+`cmake.define.monoprop_ENABLE_TSAN=ON` and run CTest against that tree; see the
+[building guide](https://docs.monoprop.algorithmiq.tech/building).
+
 See the [testing guide](https://docs.monoprop.algorithmiq.tech/testing)
 for the with/without-MPI details and the rank matrix.
 
