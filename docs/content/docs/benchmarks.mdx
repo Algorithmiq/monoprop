@@ -446,3 +446,10 @@ Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`)
 Each run writes `results/time-<label>.json` (pytest-benchmark) and
 `<label>.json` (everything else); `report.py` merges all labels into
 `results/REPORT.md`.
+
+The random benchmarks are reported per physical picture, since their size comes from the CLI and is
+shared by every label. The fixed models get a **Fixed models** section instead, one table each, because
+each model carries its own mode count: term count, time, **cost per term**, peak and resting RSS, and
+monoprop's own operator accounting with its **bytes per term**. The two per-term figures are the ones to
+compare across widths — the models grow their term count with their mode count, so the totals beside
+them are not comparable on their own.
