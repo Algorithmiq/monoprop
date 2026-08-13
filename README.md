@@ -118,6 +118,12 @@ just test-mpi                          # Python + C++ tests under MPI
 just test-wide                         # Python + C++ unit tests with a 64-bit TermIndex
 ```
 
+On an MPI build, CTest runs each case as its own process and so pays a full
+`MPI_Init` per case — which initialises every fabric device present even though a
+single-process test never sends a message. `monoprop_TEST_EXCLUDE_MPI_FABRIC` (on by
+default) skips that for the per-case tests only, leaving the multi-rank variants on the
+full component set; see the [testing guide](https://docs.monoprop.algorithmiq.tech/testing).
+
 To audit the partition threading layer for data races, build with
 `cmake.define.monoprop_ENABLE_TSAN=ON` and run CTest against that tree; see the
 [building guide](https://docs.monoprop.algorithmiq.tech/building).

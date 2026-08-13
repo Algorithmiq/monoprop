@@ -119,6 +119,21 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
   measured the same" and "the instrument never fired" are otherwise the same observation, and that
   reads as a result rather than a failure. For the same reason, never diagnose by comparing two
   zeros — get a positive control that is known to emit before concluding anything from silence.
+- **A slow CTest run on an MPI build is `MPI_Init`, not slow tests.** CTest runs each Boost case as
+  its own process, so each pays a full `MPI_Init`, which initialises every fabric device present
+  whether or not the process will send a message — 8.8 s against 0.2 s of user CPU on a login node
+  with 8 HCAs. The tell is wall time with no CPU behind it. `monoprop_ENABLE_MPI` builds default to
+  `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`, which skips fabric init for the per-case tests (8.8 s → 1.9 s;
+  suite 34 min → 5.4).
+- **That exclusion is scoped to the `serial` variants and must stay that way.** A per-case launch is
+  one process — world size 1, `*_World` cases skip themselves, everything else is `MPI_COMM_SELF` — so
+  no transport is used and the fabric can only cost startup time. The multi-rank variants exchange
+  real messages: `OMPI_MCA_pml=^ucx` makes a 2-rank run of the suite hang indefinitely on a case that
+  otherwise passes in 29 ms, on `main` as well, so it is component selection rather than engine code.
+  `discover_tests`' `SERIAL_ENVIRONMENT` argument exists for exactly this split.
+- Use exclusions (`^…`), never a positive component list — naming a component that must exist breaks
+  on the next machine, since `vader` became `sm` in Open MPI 5 and `OMPI_MCA_btl=self,vader` there
+  silently reduces to `self` alone.
 
 ## Key Dependencies & Integration
 
