@@ -286,6 +286,72 @@ BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_pre
     BOOST_CHECK_GT(after.inverted_index_bytes, 0U); // present arm
 }
 
+// get_operator() drains init_op_map as each pending term appears as a row, and a flat map keeps its slot
+// array across erases -- so a propagator would otherwise carry an empty map sized for the whole initial
+// operator for its whole life. The release must fire only once the map is *empty*: a partially drained map
+// still has to answer for the terms left in it.
+BOOST_AUTO_TEST_CASE(mp_operator_drained_init_map_gives_its_slot_array_back) {
+    detail::MPOperator op(kNumBits);
+    // Two pending terms, only one of which is a findable row -- append_term writes a row, index_term is
+    // what makes find() see it -- so the drain is partial and nothing is released.
+    op.append_term(bs({0, 1}));
+    op.index_term(bs({0, 1}), 0);
+    op.init_op_map[bs({0, 1})] = 1.5;
+    op.init_op_map[bs({2, 3})] = 2.5;
+    const size_t buckets_when_pending = op.init_op_map.bucket_count();
+
+    (void)op.get_operator();
+    BOOST_CHECK_EQUAL(op.init_op_map.size(), 1U); // the unmaterialized term stays
+    BOOST_CHECK_EQUAL(op.init_op_map.bucket_count(), buckets_when_pending);
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage(op).init_operator_entries, 1U);
+    BOOST_CHECK_EQUAL(op.op_coeffs[0], 1.5);
+
+    // Now the second term becomes a findable row too, so the map drains fully and hands the array back.
+    op.append_term(bs({2, 3}));
+    op.index_term(bs({2, 3}), 1);
+    (void)op.get_operator();
+    BOOST_CHECK(op.init_op_map.empty());
+    BOOST_CHECK_LT(op.init_op_map.bucket_count(), buckets_when_pending);
+    const auto drained = detail::estimate_memory_usage(op);
+    BOOST_CHECK_EQUAL(drained.init_operator_entries, 0U);
+    BOOST_CHECK_LT(drained.init_operator_bytes, sizeof(MonomialMap) + 64U);
+    BOOST_CHECK_EQUAL(op.op_coeffs[1], 2.5);
+}
+
+// A monomial wider than Bitset's inline capacity (8 words / 256 modes) owns its words on the heap, which
+// the slot array does not contain. Nothing else in the suite runs a *container* of spilled monomials, so
+// this also covers insert / find / erase and the move-on-rehash a growing flat map performs on them.
+BOOST_AUTO_TEST_CASE(mp_operator_init_map_accounts_for_spilled_keys) {
+    constexpr size_t kWideBits = 2 * 512; // 16 words: spilled
+    detail::MPOperator wide(kWideBits);
+    MonomialList keys;
+    for (size_t k = 0; k < 64; ++k) {
+        // Distinct, and spread so no two share a word pattern.
+        keys.push_back(indices_to_bitset({k, 200 + k, 900 + k}, kWideBits));
+        wide.init_op_map[keys.back()] = static_cast<double>(k);
+    }
+    BOOST_REQUIRE_EQUAL(wide.init_op_map.size(), 64U);
+    // Survived every rehash on the way to 64 entries: each key still finds its own coefficient.
+    for (size_t k = 0; k < keys.size(); ++k) {
+        const auto found = wide.init_op_map.find(keys[k]);
+        BOOST_REQUIRE(found != wide.init_op_map.end());
+        BOOST_CHECK_EQUAL(found->second, static_cast<double>(k));
+    }
+
+    const auto b = detail::estimate_memory_usage(wide);
+    const size_t slots_only = detail::unordered_flat_map_storage_bytes(wide.init_op_map);
+    const size_t spilled = 64 * 16 * sizeof(uint64_t);
+    BOOST_CHECK_EQUAL(b.init_operator_bytes, slots_only + spilled);
+    BOOST_CHECK_EQUAL(b.init_operator_entries, 64U);
+
+    // An inline-width map of the same shape owns nothing outside its slots, which is why an accounting
+    // that skips heap_bytes() looks right until someone runs past 8 words.
+    detail::MPOperator narrow(kNumBits);
+    narrow.init_op_map[bs({0, 1})] = 1.0;
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage(narrow).init_operator_bytes,
+                      detail::unordered_flat_map_storage_bytes(narrow.init_op_map));
+}
+
 BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {
     auto op = build_indexed_op({bs({0, 1}), bs({2, 3})});
     op.initial_state = {0};

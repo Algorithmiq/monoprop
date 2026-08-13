@@ -197,6 +197,11 @@ public:
         }
     }
 
+    // Bytes this bitset owns *outside* its own object, so a container counting sizeof(Bitset) per element
+    // can add what a spilled element points at. Zero for an inline width, which is why a container that
+    // omits it looks correct until someone runs past 8 words.
+    [[nodiscard]] auto heap_bytes() const noexcept -> size_t { return spilled() ? nwords_ * sizeof(word_type) : 0; }
+
     [[nodiscard]] auto data() const noexcept -> const word_type * { return spilled() ? s_.heap_ : s_.inline_.data(); }
     [[nodiscard]] auto data() noexcept -> word_type * { return spilled() ? s_.heap_ : s_.inline_.data(); }
     [[nodiscard]] auto word(size_t i) const noexcept -> uint64_t { return data()[i]; }

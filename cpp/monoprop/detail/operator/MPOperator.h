@@ -224,6 +224,14 @@ struct MPOperator {
         for (const auto &mono : del) {
             init_op_map.erase(mono);
         }
+        // Erasing does not give the slot array back, and a drained map is the normal end state: every
+        // initial-operator term is materialized as a row by the time the caches are warmed, so without
+        // this the propagator carries an empty map sized for the whole initial operator for its whole
+        // life -- 2.5 MB behind zero entries for a 20k-term observable. Assignment, not clear(), because
+        // clear() is what keeps the capacity.
+        if (init_op_map.empty()) {
+            init_op_map = MonomialMap{};
+        }
 
         return op_coeffs;
     }
@@ -368,6 +376,17 @@ inline auto unordered_flat_map_storage_bytes(const FlatMap &map) -> size_t {
     return sizeof(FlatMap) + map.bucket_count() * (sizeof(typename FlatMap::value_type) + sizeof(unsigned char));
 }
 
+// The slot array plus what the keys own outside it. A monomial key wider than Bitset's inline capacity
+// points at its own allocation, so slots alone under-report a wide operator's map by more than the slots
+// themselves: 20k keys at 1024 modes hold 5.1 MB of words behind 2.5 MB of slots.
+inline auto monomial_map_bytes(const MonomialMap &map) -> size_t {
+    size_t total = unordered_flat_map_storage_bytes(map);
+    for (const auto &kv : map) {
+        total += kv.first.heap_bytes();
+    }
+    return total;
+}
+
 // No width parameter: nothing in here is width-dependent, and it never was -- every field is a byte
 // count.
 struct MPOperatorMemoryBreakdown final {
@@ -390,6 +409,9 @@ struct MPOperatorMemoryBreakdown final {
     size_t operator_terms_slack_bytes = 0; // of operator_terms_bytes: unused geometric-growth capacity
     // of state_coeffs_bytes: entries of the state that are not exactly 0.0
     size_t state_coeffs_nonzero = 0;
+    // Live entries of init_op_map. Not derivable from init_operator_bytes: a flat map keeps its bucket
+    // count across erases, so the byte figure cannot tell a full map from a drained one.
+    size_t init_operator_entries = 0;
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
@@ -410,6 +432,7 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_dense_columns += o.inverted_index_dense_columns;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
         state_coeffs_nonzero += o.state_coeffs_nonzero;
+        init_operator_entries += o.init_operator_entries;
         return *this;
     }
 };
@@ -426,7 +449,8 @@ inline auto estimate_memory_usage(const MPOperator &op) -> MPOperatorMemoryBreak
     breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)
                                    + op.state_rows_.capacity() * sizeof(TermIndex)
                                    + op.state_vals_.capacity() * sizeof(double);
-    breakdown.init_operator_bytes = unordered_flat_map_storage_bytes(op.init_op_map);
+    breakdown.init_operator_bytes = monomial_map_bytes(op.init_op_map);
+    breakdown.init_operator_entries = op.init_op_map.size();
     breakdown.initial_state_bytes = op.initial_state.capacity() * sizeof(size_t);
     if (op.inverted_index_.has_value()) {
         breakdown.inverted_index_bytes = op.inverted_index_->memory_bytes();

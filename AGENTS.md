@@ -67,7 +67,9 @@ Key files:
   branches a compile-time width allowed. A width therefore only exists per *value*: construct with one
   (`Bitset(num_bits)`), never default-construct as a zero monomial (that is width 0 — copy-then-reset
   instead), take a NumModes from `mono.size() / 2`, and recover a width with an instance call
-  (`x.size()`), never a qualified `decltype(x)::size()`.
+  (`x.size()`), never a qualified `decltype(x)::size()`. Above 8 words (256 modes) the words spill to the
+  heap, so memory accounting over a container of monomials must add `Bitset::heap_bytes()` per element;
+  `sizeof(Bitset)` per element looks right until someone runs a wide system.
   Two consequences for per-term code, both measured: a `Bitset` is sized for the widest supported
   width rather than its own, and constructing one is a real construction rather than a compile-time
   constant. So in anything on the per-term path, write a word loop (`x.word(w) & m.word(w)`) instead
