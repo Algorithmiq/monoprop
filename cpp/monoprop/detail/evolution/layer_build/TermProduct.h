@@ -100,7 +100,7 @@ public:
         return cutoff_->passes_with_popcount(new_mono_, new_pop);
     }
     [[nodiscard]] auto owner(size_t rank_count) const -> size_t { return monomial_hash(new_mono_) % rank_count; }
-    auto push(VecZ &buf, int phase) const -> void { query_push(buf, new_mono_, phase); }
+    auto push(QueryOut out, int phase) const -> void { query_push(out.records, new_mono_, phase); }
 
     // Record width for the per-rank query reserves, which run before the first product.
     [[nodiscard]] auto record_words() const -> size_t { return query_words(new_mono_.num_words()); }
@@ -138,9 +138,9 @@ private:
 // Support-form rows. The five answers split three ways: product, overlap and rotation sign come off the
 // codes word and the two mode lists (sparse_toggle plus A::codes_rotation_sign, O(slots) where the dense
 // form is O(storage words)); the cutoff is a popcount test that reads the row only when the bound is
-// exceeded; and owner()/push() still want a dense monomial, so a survivor materializes once in
-// dense_row(). A term the cutoff rejects therefore never touches a storage word at all, which is the
-// whole point -- and dense_row() is the single site the sparse query record will delete.
+// exceeded; and push() writes the row itself, so a term that survives touches a storage word only when it
+// escaped the sparse form or when owner() needs the dense hash at R>1. A term the cutoff rejects touches
+// none at all, which is the whole point.
 //
 // Three cases fall back to the dense kernel for that term, none of them rare enough to assert away: a
 // spilled store row (no view exists), a product past the scratch capacity (sparse_toggle reports it
@@ -207,13 +207,29 @@ public:
         }
         return codes_support_passes_with_popcount(product_row(), cutoff_value_, new_pop, inactive_mode_prefix_);
     }
+    // Still the dense hash, and it has to be: owner routing is monomial_hash everywhere, including
+    // find_rank's initial distribution, and the store's own probe hash is a different function for a
+    // different purpose. So a *multi-rank* run still materializes once per surviving term here -- moving
+    // that would mean changing find_rank too. A serial run never calls this (the scan short-circuits at
+    // rank_count == 1), so it materializes only for the terms that escape.
     auto owner(size_t rank_count) -> size_t { return monomial_hash(dense_row()) % rank_count; }
-    auto push(VecZ &buf, int phase) -> void { query_push(buf, dense_row(), phase); }
-    [[nodiscard]] auto record_words() const -> size_t { return query_words(dense_.num_words()); }
+
+    // The row when there is one, and the dense escape when there is not. Which of the two is not a tuning
+    // choice: a fully paired product escapes the cutoff, so nothing bounds a query's support.
+    auto push(QueryOut out, int phase) -> void {
+        if (fallback_used_) {
+            sparse_query_push_escape(out.records, out.escapes, dense_row(), capacity_, phase);
+            return;
+        }
+        sparse_query_push(out.records, product_row(), capacity_, phase);
+    }
+    [[nodiscard]] auto record_words() const -> size_t { return query_words(sparse_payload_words(capacity_)); }
 
     // The product in support form. Meaningless when the term fell back to the dense kernel.
     [[nodiscard]] auto product_row() const -> SparseRow { return SparseRow{out_lanes_.data(), product_.codes}; }
     [[nodiscard]] auto fell_back() const -> bool { return fallback_used_; }
+    // The record's lane capacity, which is also this kernel's scratch capacity -- see sparse_record_capacity.
+    [[nodiscard]] auto record_capacity() const -> size_t { return capacity_; }
 
 private:
     enum class Kind : uint8_t { None, Length, Support };

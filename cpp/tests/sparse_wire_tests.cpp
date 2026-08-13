@@ -201,12 +201,9 @@ BOOST_AUTO_TEST_CASE(sparse_wire_short_rows_keep_the_full_stride) {
 // where the two ways to get it wrong live: a stale element read before being overwritten, and -- for the
 // sparse batch, whose keys are views -- a view left pointing into storage that growth moved.
 
-// Both backends key their records densely for now: the query record is still the monomial's words even
-// when the rows are sparse (see SparseTermProducts::dense_row), and a SparseRowStore finds a Bitset key
-// as readily as a row key. SparseQueryKeys is what the sparse specialization becomes when the record
-// swaps, which is why it is still tested below.
+// Each store is queried in the form it keys its rows by, so a resolve never converts one into the other.
 static_assert(std::is_same_v<QueryKeysFor<OperatorIndex>::type, DenseQueryKeys>);
-static_assert(std::is_same_v<QueryKeysFor<SparseRowStore>::type, DenseQueryKeys>);
+static_assert(std::is_same_v<QueryKeysFor<SparseRowStore>::type, SparseQueryKeys>);
 
 BOOST_AUTO_TEST_CASE(query_keys_dense_batch_round_trips_records) {
     constexpr size_t kNumBits = 128;

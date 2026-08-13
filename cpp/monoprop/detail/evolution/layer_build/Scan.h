@@ -159,7 +159,11 @@ inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t mono_pop, const 
 }
 
 struct FusedScanResult {
-    std::vector<CosMask> cos_blocks;               // ascending, disjoint, chunk order
+    std::vector<CosMask> cos_blocks; // ascending, disjoint, chunk order
+    // The escape tails are folded into the query buffers before this is returned, so a consumer sees only
+    // the finished streams; they are members rather than locals because the emit lambda pushes into them.
+    std::vector<VecZ> leader_escapes;
+    std::vector<VecZ> follower_escapes;
     std::vector<VecZ> leader_queries;              // size R: serialized leader queries per owner rank
     std::vector<std::vector<size_t>> leader_src;   // size R: parallel to leader_queries (source op idx)
     std::vector<VecZ> follower_queries;            // size R: serialized follower queries per owner rank
@@ -203,6 +207,8 @@ auto fused_find_and_collect(const auto &op,
     res.leader_src.assign(rank_count, std::vector<size_t>{});
     res.follower_queries.assign(rank_count, query_buffer());
     res.follower_src.assign(rank_count, std::vector<size_t>{});
+    res.leader_escapes.assign(rank_count, VecZ{});
+    res.follower_escapes.assign(rank_count, VecZ{});
     // Sized to R even on the early-return paths below so the fused engine's per-rank src_val_r access
     // is always in bounds (parallel to leader_src / follower_src).
     if (capture_values) {
@@ -258,6 +264,8 @@ auto fused_find_and_collect(const auto &op,
         auto &fq = res.follower_queries;
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
+        auto &lesc = res.leader_escapes;
+        auto &fesc = res.follower_escapes;
 
         // Per-gate, not per-term: the kernel's product scratch is overwritten whole per term, so
         // constructing it per term would buy nothing and cost a width derivation, an inline-capacity test
@@ -286,14 +294,14 @@ auto fused_find_and_collect(const auto &op,
             const size_t r_prime = (rank_count == 1) ? my_rank : products.owner(rank_count);
             const size_t source = i;
             if (is_follower) {
-                products.push(fq[r_prime], phase);
+                products.push(QueryOut{fq[r_prime], fesc[r_prime]}, phase);
                 fs[r_prime].push_back(source);
                 if (capture_values) {
                     fv[r_prime].push_back(v_src);
                 }
             }
             else {
-                products.push(lq[r_prime], phase);
+                products.push(QueryOut{lq[r_prime], lesc[r_prime]}, phase);
                 ls[r_prime].push_back(source);
                 if (capture_values) {
                     lv[r_prime].push_back(v_src);
@@ -392,6 +400,12 @@ auto fused_find_and_collect(const auto &op,
             }
         }
         res.cos_blocks.push_back(cos_b.finish());
+    }
+    // The one place a stream is finished. The early returns above are all before the first push, so their
+    // escape buffers are empty and skipping this is a no-op for them.
+    for (size_t r = 0; r < rank_count; ++r) {
+        append_escape_tail(res.leader_queries[r], res.leader_escapes[r]);
+        append_escape_tail(res.follower_queries[r], res.follower_escapes[r]);
     }
     return res;
 }

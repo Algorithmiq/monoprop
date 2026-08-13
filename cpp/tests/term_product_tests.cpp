@@ -53,6 +53,8 @@ struct Seen {
     size_t cutoff_passed = 0;
     size_t cutoff_failed = 0;
     size_t sparse_cutoff_failed = 0; // the codes cutoff said no, not the dense one
+    size_t row_records = 0;          // survivors pushed as a support-form record
+    size_t escaped_records = 0;      // survivors pushed as an escape plus a tail entry
 };
 
 auto random_term(std::mt19937_64 &rng, size_t num_modes, size_t max_modes) -> Bitset {
@@ -105,18 +107,48 @@ auto check_term(DenseTermProducts<A> &dense,
     const bool candidate_passes = sparse_kernel.passes(new_pop);
     BOOST_TEST(candidate_passes == reference_passes);
 
-    // Both remaining answers are read only for a surviving term, so ask them only there -- and they are
-    // the two that still go through a dense monomial, so this is also where the materialization is checked.
+    // Both remaining answers are read only for a surviving term, so ask them only there. owner() is still
+    // the dense hash on both sides, because owner routing is monomial_hash everywhere.
     if (reference_passes) {
         for (const size_t rank_count : {2U, 3U, 8U}) {
             BOOST_TEST(sparse_kernel.owner(rank_count) == dense.owner(rank_count));
         }
-        BOOST_TEST(sparse_kernel.record_words() == dense.record_words());
-        VecZ reference_record;
-        VecZ candidate_record;
-        dense.push(reference_record, -1);
-        sparse_kernel.push(candidate_record, -1);
-        BOOST_TEST(candidate_record == reference_record);
+
+        // The two records no longer agree byte for byte -- that is what the support form is for -- so what
+        // is compared is what a resolver reads back out of them: the same key, and the same phase.
+        const size_t num_bits = packed.num_bits();
+        const size_t capacity = sparse_kernel.record_capacity();
+        BOOST_TEST(sparse_kernel.record_words() == query_words(sparse_payload_words(capacity)));
+
+        VecZ unused_escapes;
+        VecZ reference_record = query_buffer();
+        dense.push(QueryOut{reference_record, unused_escapes}, -1);
+        BOOST_TEST(unused_escapes.empty()); // a dense record has nowhere to escape to and never needs one
+
+        VecZ candidate_record = query_buffer();
+        VecZ candidate_escapes;
+        sparse_kernel.push(QueryOut{candidate_record, candidate_escapes}, -1);
+        const bool escaped = !candidate_escapes.empty();
+        BOOST_TEST(escaped == sparse_kernel.fell_back());
+        append_escape_tail(candidate_record, candidate_escapes);
+        seen.row_records += escaped ? 0 : 1;
+        seen.escaped_records += escaped ? 1 : 0;
+
+        DenseQueryKeys dense_keys;
+        dense_keys.configure(num_bits, 0);
+        dense_keys.ensure(1);
+        dense_keys.begin_batch();
+        BOOST_TEST(dense_keys.read_record(reference_record, 0, dense.record_words(), 0) == -1);
+
+        SparseQueryKeys sparse_keys;
+        sparse_keys.configure(num_bits, capacity);
+        sparse_keys.ensure(1);
+        sparse_keys.begin_batch();
+        BOOST_TEST(sparse_keys.read_record(candidate_record, 0, sparse_kernel.record_words(), 0) == -1);
+        BOOST_TEST(sparse_keys[0].is_spilled() == escaped);
+        BOOST_TEST((key_monomial(sparse_keys[0], num_bits) == dense_keys[0]));
+        // And the store agrees with the key either way, which is what the resolve's find_batch rests on.
+        BOOST_TEST(sparse_row_hash(sparse_keys[0]) == sparse_row_hash(dense_keys[0]));
     }
 
     if (sparse_kernel.fell_back()) {
@@ -191,6 +223,11 @@ BOOST_AUTO_TEST_CASE(term_product_sparse_kernel_matches_dense_on_randomized_rows
     // The point of the codes cutoff is rejecting a product without materializing it, so a run where
     // nothing was rejected would not have tested it.
     BOOST_TEST(seen.sparse_cutoff_failed > 0U);
+    // Every survivor here was pushed as a row: an overflowing product is wider than the cutoff's bound, so
+    // unless it is fully paired the cutoff rejects it before a record is ever asked for. A *surviving*
+    // escape needs a fully paired product, which has a case of its own below.
+    BOOST_TEST(seen.row_records > 0U);
+    BOOST_TEST(seen.escaped_records == 0U);
 }
 
 // Real terms and generators: the fixtures' Hamiltonian keys against their Majorana generator list, which
@@ -277,9 +314,31 @@ BOOST_AUTO_TEST_CASE(term_product_falls_back_on_a_capacity_overflow) {
     sweep<PauliAlgebra>(terms, gens, cutoff_function(CutoffType::Support, 4, kNumModes, 2 * kNumModes), 20, seen);
     BOOST_TEST(seen.fallback_terms > 0U);
     BOOST_TEST(seen.sparse_terms > 0U);
-    // A fully paired product is kept unconditionally by both cutoffs, so the overflowing terms are also
-    // the ones whose owner and record the fallback had to produce.
     BOOST_TEST(seen.cutoff_passed > 0U);
+}
+
+// The escape's own case, and the reason no capacity can settle the question: a fully paired product is kept
+// unconditionally (xor_sum == 0), so a product both wider than the record and kept by the cutoff exists by
+// construction. The generator is fully paired on modes the term already holds, so the product is the term
+// minus those modes -- still fully paired, still far wider than a capacity of bound + |G|.
+BOOST_AUTO_TEST_CASE(term_product_escapes_a_surviving_product_no_record_can_hold) {
+    constexpr size_t kNumModes = 64;
+    const std::vector<Bitset> terms{paired_term(kNumModes, 12)};
+    Bitset gen(2 * kNumModes);
+    for (const size_t m : {3U, 4U}) {
+        gen.set(2 * m);
+        gen.set((2 * m) + 1);
+    }
+    const std::vector<Bitset> gens{gen};
+
+    Seen seen;
+    sweep<MajoranaAlgebra>(terms, gens, cutoff_function(CutoffType::Length, 4, kNumModes, 2 * kNumModes), 20, seen);
+    sweep<PauliAlgebra>(terms, gens, cutoff_function(CutoffType::Support, 4, kNumModes, 2 * kNumModes), 20, seen);
+    BOOST_TEST(seen.fallback_terms == 2U);
+    BOOST_TEST(seen.sparse_terms == 0U);
+    BOOST_TEST(seen.cutoff_passed == 2U);
+    BOOST_TEST(seen.escaped_records == 2U);
+    BOOST_TEST(seen.row_records == 0U);
 }
 
 // A logical width narrower than the storage width, which is what storage_modes_for() produces for any

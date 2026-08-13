@@ -113,9 +113,21 @@ Key files:
   scan itself names no representation. `SparseTermProducts` answers the first four off the `codes` word
   and falls back to `DenseTermProducts` per term when there is no row to read (a spilled store row, a
   product past the scratch capacity) or no codes form of the cutoff (`CutoffEvaluator` recovered neither
-  concrete functor, e.g. under a basis change). The store swap has not happened yet, so
-  `cpp/tests/term_product_tests.cpp` is the only thing exercising the sparse kernel: extend it with any
-  new answer, or that answer ships untested.
+  concrete functor, e.g. under a basis change). `cpp/tests/term_product_tests.cpp` compares the two
+  kernels answer for answer: extend it with any new answer, or that answer ships untested.
+- **The query record**: a store is queried in the form it keys its rows by, so a resolve never converts —
+  `QueryKeysFor<Store>` (`layer_build/Common.h`) picks the batch, and `query_payload_words_for(store,
+  capacity)` the width. A buffer is `[nq][record 0]…[record nq-1][dense escape tail]`: the header,
+  because a tail means `size/stride` is no longer the record count; the tail, because a query is `M ⊕ G`
+  and a fully paired product escapes the cutoff, so no fixed-stride sparse record can hold every one. An
+  escaped record keeps its place and its stride, marks lane 0 with `SparseRowStore::kOverflowLane` and
+  carries its tail *index* where the codes word would go — an index into the tail, never an offset into
+  the buffer, which is what lets the fused sink widen every record without renumbering anything. Push
+  records through `TermProducts::push(QueryOut{records, escapes}, phase)` and finish a stream with
+  `append_escape_tail`; never append a record after the tail has started.
+  `owner()` is still the dense `monomial_hash` on both sides, because owner routing is that hash
+  everywhere including `find_rank` — so a multi-rank run still materializes one monomial per surviving
+  term, and moving that means changing `find_rank` too.
 - **`Basis` / the `Algebra` policy** (`cpp/monoprop/algebra/`): the two algebras are sibling models
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is

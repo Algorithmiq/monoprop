@@ -157,6 +157,23 @@ inline auto decode_value(size_t word) -> double {
     return std::bit_cast<double>(word);
 }
 
+// The two buffers a scan pushes a query into. A record cannot be appended once the tail has started, so
+// the tail accumulates separately and is concatenated when the scan is done -- an escape's index names a
+// position within the tail, so the concatenation moves nothing it refers to.
+struct QueryOut {
+    VecZ &records;
+    VecZ &escapes;
+};
+
+// The scan's single exit: fold each stream's escapes in behind its records.
+inline auto append_escape_tail(VecZ &records, VecZ &escapes) -> void {
+    if (escapes.empty()) {
+        return;
+    }
+    records.insert(records.end(), escapes.begin(), escapes.end());
+    escapes.clear();
+}
+
 // Appends one record and bumps the header. Every push must precede the escape tail, which the scan
 // guarantees by collecting escapes in a buffer of their own and concatenating once the scan is done.
 inline auto query_push(VecZ &buf, const Bitset &mono, int phase) -> void {
@@ -315,7 +332,6 @@ public:
         return retained_.size() - 1;
     }
     [[nodiscard]] auto retained(size_t handle) const -> const key_type & { return retained_[handle]; }
-    auto clear_retained() -> void { retained_.clear(); }
 
 private:
     MonomialList keys_ = {};
@@ -412,12 +428,6 @@ public:
         }
         return SparseRowKey{.row = SparseRow{&retained_lanes_[retained_bases_[handle]], key.row.codes}};
     }
-    auto clear_retained() -> void {
-        retained_.clear();
-        retained_lanes_.clear();
-        retained_bases_.clear();
-        retained_escapes_.clear();
-    }
 
 private:
     DefaultInitVector<RowMode> lanes_ = {};
@@ -433,6 +443,30 @@ private:
     size_t num_bits_ = 0;
 };
 
+// A query key as a dense monomial, for the handful of places that need one -- the Schrodinger fresh-insert
+// scoring, which has no codes form. Returns a reference when the key already is one and a value otherwise,
+// so callers bind with `const auto &` to extend the temporary, exactly as materialize_row documents.
+[[nodiscard]] inline auto key_monomial(const Bitset &key, size_t /*num_bits*/) -> const Bitset & {
+    return key;
+}
+[[nodiscard]] inline auto key_monomial(const SparseRowKey &key, size_t num_bits) -> Bitset {
+    if (key.is_spilled()) {
+        return *key.spilled;
+    }
+    Bitset mono(num_bits);
+    const size_t n = key.row.num_slots();
+    for (size_t j = 0; j < n; ++j) {
+        const unsigned int code = key.row.code(j);
+        if ((code & 1U) != 0U) {
+            mono.set(2 * key.row.mode(j));
+        }
+        if ((code & 2U) != 0U) {
+            mono.set((2 * key.row.mode(j)) + 1);
+        }
+    }
+    return mono;
+}
+
 // The payload width of one query record for a store, in VecZ words -- the quantity every stride, alltoallv
 // count and record offset in Engine.h derives from. An overload per store rather than one accessor on
 // MPOperator, because it is a property of the wire format the store is queried through, not of the store.
@@ -445,19 +479,17 @@ private:
 [[nodiscard]] inline auto query_payload_words_for(const OperatorIndex &store, size_t /*capacity*/) -> size_t {
     return (store.num_bits() + 63) / 64;
 }
-[[nodiscard]] inline auto query_payload_words_for(const SparseRowStore &store, size_t /*capacity*/) -> size_t {
-    // Still the monomial's words: the record swaps with QueryKeysFor below, not before.
-    return (store.num_bits() + 63) / 64;
+[[nodiscard]] inline auto query_payload_words_for(const SparseRowStore & /*store*/, size_t capacity) -> size_t {
+    return sparse_payload_words(capacity);
 }
 
 // Which key batch a store's query records arrive in. Explicit specializations rather than a member
 // typedef on the stores: the record codec lives here, and a store must not depend on the wire format it
 // is queried through.
 //
-// Both are dense today, including the sparse store's: the query record is still the monomial's words (see
-// SparseTermProducts::dense_row), and a SparseRowStore finds a Bitset key as readily as a row key --
-// sparse_row_hash has an overload for each and they agree. This trait is the seam where that changes, and
-// SparseQueryKeys is what it changes to.
+// Each store is queried in the form it keys its rows by, so a resolve never converts: the dense store
+// receives monomials, the support form receives rows (and, for the queries no row can hold, the escape
+// monomials its tail carries).
 template <typename Store>
 struct QueryKeysFor;
 template <>
@@ -466,7 +498,7 @@ struct QueryKeysFor<OperatorIndex> {
 };
 template <>
 struct QueryKeysFor<SparseRowStore> {
-    using type = DenseQueryKeys;
+    using type = SparseQueryKeys;
 };
 
 // No monomial reconstruction: process_responses needs only the phase.

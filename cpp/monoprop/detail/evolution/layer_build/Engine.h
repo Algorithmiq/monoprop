@@ -113,7 +113,7 @@ struct GraphSink {
                      std::vector<VecZ> & /*scratch*/) -> std::vector<VecZ> & {
         return queries;
     }
-    auto prepare(const IncomingProbe & /*pr*/,
+    auto prepare(const auto & /*pr*/,
                  size_t rank_count,
                  MPOperator & /*op*/,
                  const std::vector<std::vector<Response>> &responses) -> void {
@@ -123,12 +123,8 @@ struct GraphSink {
             acc[s].in_entries.resize(in_base_[s] + responses[s].size());
         }
     }
-    auto on_resolved(size_t g,
-                     size_t s,
-                     size_t q,
-                     size_t ip,
-                     const IncomingProbe &pr,
-                     const std::vector<VecZ> & /*incoming*/) -> Response {
+    auto on_resolved(size_t g, size_t s, size_t q, size_t ip, const auto &pr, const std::vector<VecZ> & /*incoming*/)
+        -> Response {
         acc[s].in_entries[in_base_[s] + q] = {ip, pr.phase_of[g]};
         return static_cast<TermIndex>(ip);
     }
@@ -211,6 +207,7 @@ struct ContractSink {
     size_t def_base_ = 0;   // deferred self-insert base into fc.inserts
     size_t cross_base_ = 0; // cross-rank resolver-half base into fc.cross_half
     Bitset state_mask_{};   // Schrödinger fresh-insert scoring mask (empty in Heisenberg)
+    size_t num_bits_ = 0;   // operator storage width, for materializing a key that has no dense form
 
     // No constructor on purpose: as an aggregate the call site names each field, so the two adjacent
     // bools cannot be swapped silently. GraphSink keeps its ctor because it sizes `acc` from R.
@@ -240,26 +237,26 @@ struct ContractSink {
         }
         return scratch;
     }
-    auto prepare(const IncomingProbe &pr,
+    auto prepare(const auto &pr,
                  size_t /*rank_count*/,
                  MPOperator &op,
                  const std::vector<std::vector<Response>> & /*responses*/) -> void {
+        num_bits_ = op.num_bits();
         state_mask_ = schrodinger ? initial_state_mask(op.initial_state, op.num_bits()) : Bitset(op.num_bits());
         cross_base_ = fc.cross_half.size();
         fc.cross_half.resize(cross_base_ + pr.nq_total);
     }
-    auto on_resolved(size_t g,
-                     size_t s,
-                     size_t q,
-                     size_t ip,
-                     const IncomingProbe &pr,
-                     const std::vector<VecZ> &incoming) -> Response {
+    auto on_resolved(size_t g, size_t s, size_t q, size_t ip, const auto &pr, const std::vector<VecZ> &incoming)
+        -> Response {
         double v_tgt;
         if (ip < pr.base) {
             v_tgt = fused_scale ? op_coeffs[ip] * inv_cos : op_coeffs[ip];
         }
         else if (schrodinger) {
-            v_tgt = is_paired(pr.mono[g]) ? algebra_state_phase(basis, pr.mono[g], state_mask_) : 0.0;
+            // The one arm that needs a dense monomial: this scoring has no codes form, so a support-form
+            // key materializes here. It is a fresh cross-rank Schrodinger miss, so per gate it is rare.
+            const auto &mono = key_monomial(pr.mono[g], num_bits_);
+            v_tgt = is_paired(mono) ? algebra_state_phase(basis, mono, state_mask_) : 0.0;
         }
         else {
             v_tgt = 0.0; // Heisenberg fresh insert
@@ -309,7 +306,9 @@ struct ContractSink {
 template <class Sink, class Store>
 struct LayerBuildEngine {
     struct DeferredSelfMiss {
-        Bitset mono;
+        // A handle into the key batch's retained storage, not a copy: the key is in whatever form the store
+        // is keyed by, and the batch is the only thing that knows how to own one (see Keys::retain).
+        size_t key;
         size_t src;
         int phase;
         double v_src = 0.0; // ContractSink only: op_pre[src] captured at scan emit; 0 for GraphSink
@@ -475,11 +474,13 @@ struct LayerBuildEngine {
         if (n_miss == 0) {
             return;
         }
-        auto key_at = [&](size_t k) -> const Bitset & { return deferred_self_misses[k].mono; };
+        // decltype(auto): the dense batch hands back a reference to its own storage, the support form a
+        // small value view over its lane arena.
+        auto key_at = [&](size_t k) -> decltype(auto) { return keys_.retained(deferred_self_misses[k].key); };
         sink.prepare_deferred(n_miss);
         insert_absent_terms(local_op, store, n_miss, key_at, [&](size_t k, size_t base) {
             const auto &m = deferred_self_misses[k];
-            assign_row(store, base + k, m.mono);
+            assign_row(store, base + k, keys_.retained(m.key));
             sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
         });
     }
@@ -548,7 +549,7 @@ private:
                     sink.self_hit(srcs[j], found[j], phases[j], v_src);
                 }
                 else {
-                    deferred_self_misses.push_back({keys[j], srcs[j], phases[j], v_src});
+                    deferred_self_misses.push_back({keys.retain(j), srcs[j], phases[j], v_src});
                 }
             }
         }
