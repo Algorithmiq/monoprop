@@ -51,10 +51,47 @@ target_link_libraries(
 
 include(${CMAKE_CURRENT_LIST_DIR}/boost-test.cmake)
 
+# CTest runs every Boost case as its own process, so each one pays a full MPI_Init --
+# and MPI_Init initialises every fabric device it finds whether or not the process will
+# ever send a message. Measured on a Deucalion login node (8 Mellanox HCAs): 8.8 s per
+# process, against 0.2 s of user CPU, so 224 cases spend over half an hour opening
+# adapters for single-process tests. Excluding the fabric drops that to 1.9 s.
+#
+# A per-case launch is ONE process: its world size is 1, the `*_World` cases skip
+# themselves, and every remaining communicator is MPI_COMM_SELF. So the fabric cannot
+# affect the outcome, only the startup cost -- which is why this is scoped to the
+# `serial` variants through SERIAL_ENVIRONMENT and must never reach the MPI ones. On
+# this node `OMPI_MCA_pml=^ucx` makes a 2-rank run of
+# zero_cutoff_upper_atol_zero_is_exact_World hang indefinitely where it otherwise
+# passes in 29 ms; the same hang reproduces on the pre-branch commit, so it belongs to
+# the component selection, not to the engine.
+#
+# Exclusions (`^`), never a positive component list -- naming a component that must
+# exist is how this breaks on the next machine: `vader` became `sm` in Open MPI 5, and
+# `OMPI_MCA_btl=self,vader` there silently reduces to `self` alone. Unknown OMPI_MCA_*
+# variables are ignored by other MPIs, so this is inert under MPICH.
+option(
+  monoprop_TEST_EXCLUDE_MPI_FABRIC
+  "Skip fabric init in the single-process (serial) test variants to cut MPI_Init cost"
+  ON
+)
+set(_monoprop_serial_env_entries)
+if(monoprop_TEST_EXCLUDE_MPI_FABRIC AND monoprop_ENABLE_MPI)
+  list(
+    APPEND _monoprop_serial_env_entries
+    "OMPI_MCA_pml=^ucx"
+    "OMPI_MCA_btl=^openib,ofi,uct"
+  )
+endif()
+
 # Automatic discovery of unit tests.
 # Default CTest run includes per-case serial tests plus suite-level MPI variants
 # for monoprop_MPI_TEST_PROCS.
-discover_tests(monoprop_unit_tests.x
+discover_tests(
+  monoprop_unit_tests.x
   PROPERTIES
-    LABELS "unit"
+  LABELS
+  "unit"
+  SERIAL_ENVIRONMENT
+  ${_monoprop_serial_env_entries}
 )
