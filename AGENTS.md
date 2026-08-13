@@ -111,6 +111,14 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - Fixture msgpack schema is documented in `tests/data/README.md`
 - Tests validate against exact solutions for small systems
 - Heavy use of `@parametrize_with_cases` decorators
+- **pytest's default capture is fd-level**, so it hides C++ diagnostics: it replaces fd 2 for each
+  test and discards the buffer when the test passes, while the engine writes straight to fd 2 (the
+  `COMMPROF` line from `monoprop_COMM_PROFILE` comes out of a transport destructor). Reading those
+  under pytest requires `-s`; the `just bench` recipes pass it for this reason.
+- **Assert the count of what an instrument should emit, at the point of collection.** "The two arms
+  measured the same" and "the instrument never fired" are otherwise the same observation, and that
+  reads as a result rather than a failure. For the same reason, never diagnose by comparing two
+  zeros — get a positive control that is known to emit before concluding anything from silence.
 
 ## Key Dependencies & Integration
 
@@ -149,5 +157,15 @@ When changing behavior, APIs, build/test workflows, paths, or developer conventi
 - Check `build/*/compile_commands.json` for compilation flags
 - Use `rm -rf build` to clear environment-specific builds
 - Verify `monoprop_MAX_NUM_MODES` matches your use case (default: 250)
+- **`uv sync` does not relink the C++ test binary.** It builds in a temporary directory and installs
+  only the wheel, and `bin/monoprop_unit_tests.x` is not a wheel target — so an edited test can leave
+  a stale binary that passes, or that reports `no test cases matching filter` for a case you just
+  wrote. Compare the binary's mtime against the source's before trusting either outcome.
+- **The editable tree cannot be reconfigured in place**: its cache pins the build-isolation
+  interpreter scikit-build-core created and deleted, so `cmake --build build/editable/<type>` fails
+  regenerating `build.ninja`, and the `skbuild-*` presets inherit that because they only adopt the
+  tree. To iterate on C++ tests, configure a standalone tree with an explicit `-Dnanobind_DIR=…`
+  (nanobind is a build-isolation-only dependency, absent from `.venv`) — recipe in
+  `docs/content/docs/building.mdx`.
 
 This is a sophisticated scientific computing project requiring careful attention to template instantiation, build system configuration, and the C++/Python boundary.

@@ -140,6 +140,36 @@ engine TSan cannot see the synchronisation of). Nothing under `cpp/monoprop/` is
 suppressed: a suppression there would silently retract the check the
 configuration exists to provide.
 
+### Iterating on a C++ test
+
+`uv sync` builds in a temporary directory and installs only the wheel, and the
+test binary is not a wheel target — so editing a test and re-syncing leaves
+`bin/monoprop_unit_tests.x` as it was. A stale binary does not announce itself: it
+passes, or it reports `no test cases matching filter` for a case you just wrote.
+Compare the binary's mtime against the source's before trusting either outcome.
+
+`cmake --build build/editable/<type>` cannot repair that tree, because its cache
+pins the build-isolation interpreter that scikit-build-core created and deleted, so
+regenerating `build.ninja` fails. The `skbuild-*` presets adopt an existing tree
+and set no cache variables of their own, so they inherit the same failure. To
+iterate without a full `uv sync` per edit, configure a standalone tree instead —
+nanobind is a build-isolation-only dependency and is absent from `.venv`, so it has
+to be supplied by hand:
+
+```bash
+uv pip install --python .venv/bin/python --target /tmp/nbdeps nanobind
+cmake -S . -B /tmp/mp-tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DSKBUILD=2 \
+    -DSKBUILD_PROJECT_VERSION_FULL=0.0.0 -DSKBUILD_SABI_COMPONENT= \
+    -Dnanobind_DIR=/tmp/nbdeps/nanobind/cmake \
+    -DPython_EXECUTABLE="$PWD/.venv/bin/python" \
+    -Dmonoprop_MAX_NUM_MODES=32          # narrow the templates; much faster to build
+cmake --build /tmp/mp-tests
+ctest --test-dir /tmp/mp-tests --output-on-failure -L serial
+```
+
+This leaves the editable install alone, so the Python side keeps working while you
+rebuild the tests. Add `-Dmonoprop_ENABLE_MPI=ON` to get the `mpi`-labelled cases.
+
 ### Related workflows
 
 - Use `just test-wide` for the 64-bit `monoprop_WIDE_TERM_INDEX` configuration.

@@ -37,6 +37,14 @@ SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON" \
 mpiexec --allow-run-as-root -n 2 uv run --no-sync python -m pytest tests --with-mpi
 ```
 
+The C++ engine writes its diagnostics straight to file descriptor 2 — the
+`COMMPROF` line from `monoprop_COMM_PROFILE` comes out of a transport destructor,
+see [Parallelism and distribution](/features/parallelism). pytest's default
+capture is fd-level: it replaces fd 2 for each test and discards the buffer when
+the test passes, so under pytest those lines need `-s` to survive. Count the ones
+you expect rather than reading the log for changes — an instrument that never
+fired and an instrument reporting no change look exactly alike.
+
 ### C++ unit tests
 
 The C++ tests run through CTest. The build tree is produced by `uv sync` (via

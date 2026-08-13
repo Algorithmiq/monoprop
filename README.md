@@ -103,6 +103,10 @@ uv sync --all-extras -v
 ctest --test-dir build/editable/Release
 ```
 
+Note that `uv sync` builds in a temporary directory and installs only the wheel, so
+it does **not** relink the test binary: after editing a C++ test, compare the
+binary's mtime against the source's rather than trusting the result.
+
 Full instructions — prerequisites, MPI options, and running the example
 executable — are in the [building guide](https://docs.monoprop.algorithmiq.tech/building).
 
