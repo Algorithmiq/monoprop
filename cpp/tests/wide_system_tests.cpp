@@ -107,7 +107,7 @@ BOOST_AUTO_TEST_CASE(wide_case_stores_at_ninety_six_modes) {
 // has its own evaluator, and each has a codes-word form the sparse rows use instead.
 BOOST_AUTO_TEST_CASE(wide_case_reaches_its_exact_expectation_value) {
     const auto data = wide_case();
-    for (const auto [cutoff_type, cutoff] : kUntruncated) {
+    for (const auto &[cutoff_type, cutoff] : kUntruncated) {
         BOOST_TEST_CONTEXT("cutoff_type=" << static_cast<int>(cutoff_type) << " cutoff=" << cutoff) {
             auto propagator = wide_propagator(data, cutoff, cutoff_type);
             const double expval = test_utils::evaluate_expval(propagator, data, /*pare=*/false);

@@ -409,7 +409,8 @@ public:
         retained_bases_.push_back(retained_lanes_.size());
         if (keys_[slot].is_spilled()) {
             retained_escapes_.push_back(*keys_[slot].spilled);
-            retained_.push_back(SparseRowKey{.spilled = &retained_escapes_.back()});
+            // .row left empty: is_spilled() sends every read to .spilled instead.
+            retained_.push_back(SparseRowKey{.row = {}, .spilled = &retained_escapes_.back()});
             return handle;
         }
         retained_lanes_.resize(retained_bases_.back() + capacity_);
