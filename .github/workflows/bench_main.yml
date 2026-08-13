@@ -63,7 +63,7 @@ jobs:
         run: |
           just bench-bmf "$BENCHER_LABEL" > bmf.json
 
-      - uses: bencherdev/bencher@main
+      - uses: bencherdev/bencher@v0.6.11
 
       # Credentials and the project slug go through the environment rather than
       # the command line: `bencher` reads BENCHER_PROJECT / BENCHER_API_KEY
