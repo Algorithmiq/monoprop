@@ -15,9 +15,8 @@
 """Device-memory measurement, the GPU counterpart of ``benches/_memory_cpu.py``.
 
 The host metric works because the kernel maintains ``VmHWM`` on every RSS increase: a
-peak, not a sample, so no transient can hide between polls. This module looks for the
-same guarantee on the device, and reports which one it found rather than pretending the
-answer is uniform.
+peak, thus accounting for transients as well. This module looks for the
+same guarantee on the device, reporting which one it found.
 
 Which strategy applies depends on the allocator CuPy is using, so
 :class:`DeviceHighWaterMark` records it in :attr:`~DeviceHighWaterMark.method`:
