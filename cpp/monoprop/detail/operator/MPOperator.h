@@ -26,20 +26,12 @@
 #include <format>
 #include <print>
 
-#include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
 // Forward-declared to break an include cycle with algebra/Algebra.h.
 namespace monoprop {
-template <typename Rows>
-auto is_fully_paired(const VecZ &inds, const Rows &op, size_t num_bits) -> VecZ;
-
-// inline here too, matching the definition in AlgebraCommon.h: a declaration that disagreed would
-// leave TUs holding only this one expecting an out-of-line definition that nothing emits.
-inline auto indices_to_bitset(const VecZ &arr, size_t num_bits) -> Bitset;
-
 // Branches on the runtime Basis internally, so no basis branch is needed here.
 template <typename Rows, typename Sink>
 auto algebra_score_state(Basis basis,

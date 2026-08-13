@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the Julia (MajoranaPropagation.jl) and monoprop 1D Hubbard benchmarks
-# back to back, appending results to their respective JSONL files.
+# back to back, merging both into the shared results.json, then plot them.
 set -euo pipefail
 
 
@@ -14,15 +14,14 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-$monoprop_NUM_THREADS}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-$monoprop_NUM_THREADS}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-$monoprop_NUM_THREADS}"
 
+
+echo "Running monoprop benchmark (monoprop_NUM_THREADS=${monoprop_NUM_THREADS})"
+uv run python monoprop_hubbard1d_benchmark.py
+
 julia --project=@. -e 'using Pkg; Pkg.instantiate()'
 julia --project=@. -e 'using Pkg; Pkg.precompile()'
 
-echo "Running Julia benchmark (cases 1-15, JULIA_NUM_THREADS=${JULIA_NUM_THREADS})"
-for case in $(seq 1 15); do
-    julia --project=@. julia_hubbard1d_benchmark.jl --case "$case"
-done
+echo "Running Julia benchmark (JULIA_NUM_THREADS=${JULIA_NUM_THREADS})"
+julia --project=@. julia_hubbard1d_benchmark.jl
 
-echo "Running monoprop benchmark (cases 0-14, monoprop_NUM_THREADS=${monoprop_NUM_THREADS})"
-for case in $(seq 0 14); do
-    uv run python monoprop_hubbard1d_benchmark.py --case "$case"
-done
+uv run python plot_results.py

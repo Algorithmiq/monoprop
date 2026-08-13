@@ -14,11 +14,11 @@
 
 #include "monoprop/detail/partition/CpuTopology.h"
 
-#include <hwloc.h>
-
 #include <algorithm>
 #include <map>
 #include <vector>
+
+#include <hwloc.h>
 
 namespace monoprop::detail::partition {
 

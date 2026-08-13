@@ -45,7 +45,7 @@ from _builders import (
     build_random_propagator,
     make_random_problem,
 )
-from _memory import (
+from _memory_cpu import (
     HighWaterMark,
     PssSampler,
     merge_peak_of_sum,

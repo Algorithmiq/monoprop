@@ -19,11 +19,13 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <type_traits>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
@@ -147,9 +149,11 @@ inline auto even_parity_scan_pass1(const auto &sc,
 
 // The per-term rotation gate splits into a dynamic part (orbital pop cap, lower-atol sine cutoff) and a
 // static part (the structural cutoff on M'=M⊕G, applied in emit).
-inline auto rotation_dynamic_gate(int only_rotate_len_k, size_t mono_pop, const CutoffContext &ctx, double abs_c)
-    -> bool {
-    if (only_rotate_len_k > 0 && mono_pop > static_cast<size_t>(only_rotate_len_k)) {
+inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
+                                  size_t mono_pop,
+                                  const CutoffContext &ctx,
+                                  double abs_c) -> bool {
+    if (only_rotate_len_k && mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
         return false;
     }
     if (ctx.is_below_sin(abs_c)) {
@@ -176,7 +180,7 @@ struct FusedScanResult {
 
 // Classify, cut off and emit in one pass over the anticommuting terms. Queries go to the owner of
 // M'=M⊕G (hash%R; self at R==1) in ascending source-index order, so resolve and index assignment are
-// deterministic. `fused_scale_coeffs` (k==0 only; must alias coeffs.data()) scales every anticommuting
+// deterministic. `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
 // op, store, gen and cutoff_eval are deduced from their argument types; no width is named anywhere below
@@ -192,12 +196,14 @@ auto fused_find_and_collect(const auto &op,
                             const auto &cutoff_eval,
                             const CutoffContext &cut_st,
                             const VecD &coeffs,
-                            int only_rotate_len_k,
+                            std::optional<size_t> only_rotate_len_k,
                             size_t rank_count,
                             size_t my_rank,
+                            size_t logical_num_modes,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult {
+    validate_only_rotate_len_k(only_rotate_len_k, 2 * logical_num_modes);
     const size_t gen_pop = gen.count();
 
     FusedScanResult res;
@@ -347,7 +353,7 @@ auto fused_find_and_collect(const auto &op,
             }
             return {0.0, cut_st.abs_coeff_for(i, coeffs)};
         };
-        const bool word_aligned_cos = only_rotate_len_k == 0;
+        const bool word_aligned_cos = !only_rotate_len_k.has_value();
         CosineWordBuilder cos_b;
         for (const auto &w : nz) {
             if (word_aligned_cos && fused_scale_coeffs != nullptr) {
@@ -389,7 +395,7 @@ auto fused_find_and_collect(const auto &op,
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
                     const size_t mono_pop = store.popcount(i);
-                    if (mono_pop > static_cast<size_t>(only_rotate_len_k)) {
+                    if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
                         continue;
                     }
                     cos_b.push_index(i);

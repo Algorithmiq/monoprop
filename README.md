@@ -4,6 +4,7 @@
 [![Documentation](https://github.com/Algorithmiq/monoprop/actions/workflows/docpages.yml/badge.svg)](https://docs.monoprop.algorithmiq.tech/)
 [![Test monoprop](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml/badge.svg)](https://github.com/Algorithmiq/monoprop/actions/workflows/test.yml)
 [![codecov](https://codecov.io/gh/Algorithmiq/monoprop/graph/badge.svg?token=1GgmPnNUxk)](https://codecov.io/gh/Algorithmiq/monoprop)
+[![Track benchmarks](https://github.com/Algorithmiq/monoprop/actions/workflows/bench_main.yml/badge.svg)](https://github.com/Algorithmiq/monoprop/actions/workflows/bench_main.yml)
 
 `monoprop` is a high-performance C++ library with Python bindings for **Majorana and
 Pauli propagation** — a backend for classically simulating and variationally
@@ -33,7 +34,10 @@ and against [`MajoranaPropagation.jl`](https://github.com/SparqleSim/MajoranaPro
 
 Head to our [benchmarks page](https://docs.monoprop.algorithmiq.tech/benchmarks) for more details.
 
-📖 **Full documentation:** <https://docs.algorithmiq.fi/monoprop>
+Every commit on `main` also runs the internal benchmark suite, tracked over time
+with [Bencher](https://bencher.dev/) to catch performance regressions.
+
+📖 **Full documentation:** <https://docs.monoprop.algorithmiq.tech>
 
 ## Installation
 
@@ -79,7 +83,7 @@ mp = PauliPropagator.from_circuit(circuit, observable, cutoff=16)  # construct +
 print(mp.evolved_operator())  # the gate splits Z ⊗ Z into two terms
 ```
 
-See the [getting-started guide](https://docs.algorithmiq.fi/monoprop/getting-started.html)
+See the [getting-started guide](https://docs.monoprop.algorithmiq.tech/getting-started)
 for fermionic operators and more.
 
 ## Building from source
@@ -104,7 +108,7 @@ ctest --test-dir build/editable/Release
 ```
 
 Full instructions — prerequisites, MPI options, and running the example
-executable — are in the [building guide](https://docs.algorithmiq.fi/monoprop/docs/building).
+executable — are in the [building guide](https://docs.monoprop.algorithmiq.tech/building).
 In particular, from-source builds require `hwloc` and `pkg-config` so CMake can
 locate `hwloc`.
 
@@ -141,7 +145,7 @@ git clone https://github.com/Algorithmiq/monoprop.git
 ```
 
 Without a DevContainer, install the prerequisites from the
-[building guide](https://docs.algorithmiq.fi/monoprop/docs/building#prerequisites)
+[building guide](https://docs.monoprop.algorithmiq.tech/building#prerequisites)
 by hand.
 
 ## Contributing
@@ -154,7 +158,7 @@ If you are contributing on behalf of your employer, contact
 ## Documentation
 
 The documentation is built with [Fumadocs](https://fumadocs.dev/) and hosted at
-<https://docs.algorithmiq.fi/monoprop>. The Python API reference is generated from
+<https://docs.monoprop.algorithmiq.tech>. The Python API reference is generated from
 docstrings ([griffe](https://mkdocstrings.github.io/griffe/)) and the tutorials are
 executed from the notebooks in `docs/notebooks/`.  Building the documentation locally requires [npm](https://docs.npmjs.com/), the Node.js package manager. Once that is available, you can run:
 

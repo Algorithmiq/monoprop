@@ -174,6 +174,30 @@ BOOST_AUTO_TEST_CASE(generator_index_bound_is_logical_not_storage) {
     BOOST_CHECK_THROW(sim.build_graph({VecZ{9}}, VecZ{0}, VecD{1.0}), std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(only_rotate_len_k_build_graph_validation_matches_python_contract) {
+    auto sim = make(OperatorDict{});
+
+    BOOST_CHECK_THROW(sim.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, /*k=*/0u),
+                      std::runtime_error);
+    BOOST_CHECK_NO_THROW(sim.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, std::nullopt));
+
+    auto logical_bound = make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, 4);
+    BOOST_CHECK_THROW(logical_bound.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, 9u),
+                      std::runtime_error);
+    BOOST_CHECK_NO_THROW(logical_bound.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, 8u));
+}
+
+BOOST_AUTO_TEST_CASE(only_rotate_len_k_propagate_validation_matches_python_contract) {
+    auto sim = make(OperatorDict{});
+
+    BOOST_CHECK_THROW(sim.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, /*k=*/0u), std::runtime_error);
+    BOOST_CHECK_NO_THROW(sim.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, std::nullopt));
+
+    auto logical_bound = make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, 4);
+    BOOST_CHECK_THROW(logical_bound.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, 9u), std::runtime_error);
+    BOOST_CHECK_NO_THROW(logical_bound.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, 8u));
+}
+
 // The update_* setters must not write straight through to regenerate_cutoff_fn_().
 BOOST_AUTO_TEST_CASE(setters_enforce_the_constructor_invariants) {
     auto pauli =

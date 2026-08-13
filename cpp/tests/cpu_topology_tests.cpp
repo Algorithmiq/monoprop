@@ -82,6 +82,11 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
     //   - domain-major slice (group_count > #L3 domains)
     const auto rank0 = partition::partition_cpusets(/*n=*/1, /*group_index=*/0, /*group_count=*/2);
     const auto rank1 = partition::partition_cpusets(/*n=*/1, /*group_index=*/1, /*group_count=*/2);
+    if (rank0.empty() || rank1.empty()) {
+        BOOST_CHECK(rank0.empty());
+        BOOST_CHECK(rank1.empty());
+        return;
+    }
     BOOST_REQUIRE_EQUAL(rank0.size(), 1u);
     BOOST_REQUIRE_EQUAL(rank1.size(), 1u);
     // The two placements must be on distinct PUs; sharing would violate the MPI no-starvation

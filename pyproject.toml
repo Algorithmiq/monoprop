@@ -70,7 +70,7 @@ test = [
   "pytest-cov>=7.1.0",
   "pytest-datadir",
   "pytest-mpi>=0.6",
-  "pytest>=8.2.2,<8.3",
+  "pytest>=8.2.2,<9.1",
   "tabulate>=0.9",
 ]
 bench = [{ include-group = "test" }, "pytest-benchmark>=5"]
@@ -302,6 +302,8 @@ flake8-annotations.allow-star-arg-any = true
 "benches/*" = ["S101", "INP001", "ANN401", "T201"]
 # benchmark test functions: annotations on the pytest signatures are just noise.
 "benches/bench_*.py" = ["ANN"]
+# cupy is an optional, GPU-only dependency of a separate uv project (benches/third_party);
+"benches/_memory_gpu.py" = ["PLC0415"]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,

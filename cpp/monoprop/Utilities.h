@@ -18,9 +18,11 @@
 #include <cstddef>
 #include <format>
 #include <ranges>
+#include <stdexcept>
 #include <type_traits>
 
 #include "monoprop/Bitset.h"
+#include "monoprop/TypeAliases.h"
 #include "monoprop/monopropExport.h"
 
 namespace monoprop {
@@ -88,8 +90,7 @@ auto odd_bits(size_t n) -> Bitset {
 template <typename Ordering>
 [[nodiscard]] inline auto cached_even_bits(size_t n) -> const Bitset & {
     thread_local Bitset cached;
-    thread_local size_t cached_n = static_cast<size_t>(-1);
-    if (cached_n != n) [[unlikely]] {
+    if (thread_local auto cached_n = static_cast<size_t>(-1); cached_n != n) [[unlikely]] {
         cached = even_bits<Ordering>(n);
         cached_n = n;
     }
@@ -111,5 +112,109 @@ auto join_with_separator(std::ranges::range auto const &values, std::string_view
         joined.append(std::format("{}", value));
     }
     return joined;
+}
+
+// A Majorana/Pauli index at or past the width of the system it is being applied to.
+class AlgebraIndexOutOfRange : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+// A coefficient with no real encoding under the algebra model: non-Hermitian for Majorana products,
+// non-real for Pauli strings.
+class NonEncodableCoefficient : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+// Unchecked: `num_bits - 1 - bit_loc` underflows for an out-of-range index and Bitset::set is
+// noexcept, so the result is an out-of-bounds write. Use indices_to_bitset_checked() for user input.
+inline auto indices_to_bitset(const VecZ &arr, size_t num_bits) -> Bitset {
+    Bitset bs(num_bits);
+    for (const auto &bit_loc : arr) {
+        bs.set(num_bits - 1 - bit_loc); // MSb0 convention: index 0 maps to the top bit
+    }
+    return bs;
+}
+
+// The two bounds are different quantities and neither implies the other, so they are separate
+// arguments: max_index is the *logical* width (2 * logical_num_modes), which is what a caller's
+// indices must fall inside, while num_bits is the *storage* width the result is built at. A
+// propagator running fewer modes than its storage holds must still reject indices outside its own
+// system, and storage rounds up.
+inline auto indices_to_bitset_checked(const VecZ &arr, size_t max_index, size_t num_bits) -> Bitset {
+    for (const auto &bit_loc : arr) {
+        if (bit_loc >= max_index) {
+            throw AlgebraIndexOutOfRange(
+                std::format("Majorana/Pauli index {} is out of range; must be less than {}.", bit_loc, max_index));
+        }
+    }
+    return indices_to_bitset(arr, num_bits);
+}
+
+// O(popcount) via find_first/find_next rather than an O(num_bits) scan.
+auto bitset_to_indices(const MonomialLike auto &bs) -> VecZ {
+    const auto pop = bs.count();
+    VecZ indices(pop);
+    size_t idx = pop;
+    for (size_t pos = bs.find_first(); pos < bs.size(); pos = bs.find_next(pos)) {
+        indices[--idx] = bs.size() - 1 - pos;
+    }
+    return indices;
+}
+
+auto is_paired(const MonomialLike auto &mono, const auto &even_mask) -> bool {
+    // Paired = each mode's even bit and its odd partner agree (both set or both clear). Word loop
+    // rather than `(mono & m) ^ ((mono >> 1) & m)`, which built three runtime-width temporaries per
+    // call; (word >> 1) & m is within-word for the same reason as in cutoff_sums().
+    const size_t nw = mono.num_words();
+    for (size_t w = 0; w < nw; ++w) {
+        const uint64_t word = mono.word(w);
+        const uint64_t m = even_mask.word(w);
+        if (((word & m) ^ ((word >> 1) & m)) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+auto is_paired(const MonomialLike auto &mono) -> bool {
+    return is_paired(mono, cached_even_bits<LSb0>(mono.size()));
+}
+
+// `mono` is an index list, not a monomial, so there is no argument to deduce a width from -- hence the
+// explicit num_bits, which sizes the bitset this builds.
+inline auto is_paired(const VecZ &mono, size_t num_bits) -> bool {
+    return is_paired(indices_to_bitset(mono, num_bits));
+}
+
+// Rows carries no structural width of its own (unlike a MonomialLike argument), so the width is
+// explicit here too. It must be the width of the rows themselves: the mask is compared against them
+// pairwise, and a mismatch trips Bitset's width assertions.
+template <typename Rows>
+auto is_fully_paired(const VecZ &inds, const Rows &op, size_t num_bits) -> VecZ {
+    VecZ result;
+    // Memoized rather than rebuilt: the reference stays valid across the loop because is_paired's
+    // two-argument form takes the mask and so never re-enters the cache with another width.
+    const auto &mask = cached_even_bits<LSb0>(num_bits);
+    for (const auto index : inds) {
+        const auto &op_row = materialize_row(op, index);
+        if (is_paired(op_row, mask)) {
+            result.push_back(index);
+        }
+    }
+    return result;
+}
+
+// Occupation mask of the initial product state: the even index 2*i of each listed mode (Majorana) or
+// qubit (Pauli) that starts in state 1. Both algebras read the same mask and differ only in the phase
+// they score against it (majorana_state_phase / pauli_state_phase).
+inline auto initial_state_mask(const VecZ &initial_state, size_t num_bits) -> Bitset {
+    VecZ bits;
+    bits.reserve(initial_state.size());
+    for (const auto &mode : initial_state) {
+        bits.push_back(2 * mode);
+    }
+    return indices_to_bitset(bits, num_bits);
 }
 } // namespace monoprop

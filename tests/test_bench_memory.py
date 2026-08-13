@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the benchmark memory primitives (``benches/_memory.py``).
+"""Unit tests for the benchmark memory primitives (``benches/_memory_cpu.py``).
 
 Two behaviours are pinned. The per-test peak under MPI is the *peak-of-sum* (the largest
 footprint that actually coexisted across ranks), not the sum of per-rank lifetime peaks,
@@ -22,10 +22,14 @@ sampler cannot, which is the whole reason it exists.
 
 from __future__ import annotations
 
+import gc
+import resource
+
 import pytest
-from _memory import (
+from _memory_cpu import (
     HighWaterMark,
     PssSampler,
+    heap_trim,
     merge_peak_of_sum,
     peak_rss_bytes,
     pss_bytes,
@@ -126,3 +130,26 @@ def test_peak_rss_never_below_current_rss() -> None:
     if peak_rss_bytes() == 0:
         pytest.skip("/proc/self/status VmHWM unavailable (non-Linux)")
     assert peak_rss_bytes() >= rss_bytes()
+
+
+def test_reset_also_clears_ru_maxrss() -> None:
+    """``ru_maxrss`` shares ``mm->hiwater_rss`` with ``VmHWM``, so a window reset drops it.
+
+    Benchmarks that record a whole-run ceiling alongside per-step windows have to take the
+    maximum over the windows instead; this pins the behaviour that forces that.
+    """
+    if not reset_peak_rss():
+        pytest.skip("/proc/self/clear_refs unavailable (non-Linux or kernel < 4.0)")
+
+    blob = bytearray(80 * MIB)
+    for i in range(0, len(blob), 4096):
+        blob[i] = 1
+    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+    del blob
+    gc.collect()
+    heap_trim()
+    reset_peak_rss()
+    after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+
+    assert before >= 70 * MIB
+    assert after < before
