@@ -307,9 +307,8 @@ BOOST_AUTO_TEST_CASE(rank_count_matches_under_an_asymmetric_emit_gate) {
             if (graph_path) {
                 graph_gate_bit = graph_gate_bit || n_serial < n_ungated;
             }
-            BOOST_TEST_MESSAGE("cap=" << cap << (graph_path ? " build_graph" : " propagate")
-                                      << " ungated=" << n_ungated << " gated=" << n_serial
-                                      << " dropped=" << (n_ungated - n_serial));
+            BOOST_TEST_MESSAGE("cap=" << cap << (graph_path ? " build_graph" : " propagate") << " ungated=" << n_ungated
+                                      << " gated=" << n_serial << " dropped=" << (n_ungated - n_serial));
             BOOST_TEST_CONTEXT("only_rotate_len_k=" << cap << (graph_path ? " build_graph" : " propagate")
                                                     << " n_serial=" << n_serial << " n_world=" << n_world) {
                 BOOST_TEST(near(e_serial, e_world));
@@ -320,8 +319,8 @@ BOOST_AUTO_TEST_CASE(rank_count_matches_under_an_asymmetric_emit_gate) {
 
     BOOST_CHECK_MESSAGE(gate_bit,
                         "no lower_atol reduced the term count below the ungated " << n_ungated
-                                                                                 << ": the gate never bit, so this "
-                                                                                    "case exercised no asymmetry");
+                                                                                  << ": the gate never bit, so this "
+                                                                                     "case exercised no asymmetry");
     // Measured on LiH/n=12: lower_atol drops 208-232 of 866 on the propagate path and *nothing* on the
     // build_graph path, while the length cap drops 32 on both. So this second check is what keeps
     // GraphSink covered, and it fails independently of the one above -- if a fixture or default change
