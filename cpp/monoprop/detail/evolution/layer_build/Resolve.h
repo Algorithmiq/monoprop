@@ -57,14 +57,15 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
                                    MPOperator &op,
                                    Store &store,
                                    size_t rank_count,
-                                   size_t query_stride) -> IncomingProbe {
-    const size_t W = query_stride;
+                                   size_t query_stride,
+                                   size_t record_capacity) -> IncomingProbe {
     IncomingProbe pr;
 
     pr.goff.assign(rank_count + 1, 0);
     for (size_t s = 0; s < rank_count; ++s) {
-        const size_t nq = incoming[s].empty() ? 0 : incoming[s].size() / W;
-        pr.goff[s + 1] = pr.goff[s] + nq;
+        // Off the buffer's own header, not its size: a support-form buffer carries an escape tail after its
+        // records, so size/stride is not the record count.
+        pr.goff[s + 1] = pr.goff[s] + query_record_count(incoming[s]);
     }
     pr.nq_total = pr.goff[rank_count];
     if (pr.nq_total == 0) {
@@ -99,8 +100,9 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
     // released after every layer. Peak RSS is unchanged -- the peak was always reached *during* a
     // layer -- but the resting footprint after one is not; the same trade `nz` and `keys_` already make.
     thread_local typename QueryKeysFor<Store>::type scratch;
-    scratch.configure(op.num_bits());
+    scratch.configure(op.num_bits(), record_capacity);
     scratch.ensure(pr.nq_total);
+    scratch.begin_batch();
     pr.mono = std::span<const Bitset>(scratch.data(), pr.nq_total);
     pr.phase_of.resize(pr.nq_total);
     pr.idx_of.resize(pr.nq_total);
@@ -166,7 +168,7 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
                       size_t combined_size, // pre-layer op size: bounds the matched set
                       Sink &sink) -> std::vector<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
-    const auto pr = probe_incoming_queries(incoming, op, store, rank_count, sink.stride());
+    const auto pr = probe_incoming_queries(incoming, op, store, rank_count, sink.stride(), sink.capacity());
     std::vector<std::vector<Resp>> responses(rank_count);
     for (size_t s = 0; s < rank_count; ++s) {
         responses[s].assign(pr.goff[s + 1] - pr.goff[s], Sink::init_response());

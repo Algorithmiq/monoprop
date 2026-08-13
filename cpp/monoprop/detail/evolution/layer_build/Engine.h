@@ -70,7 +70,11 @@ struct GraphSink {
     // The record stride is not a constant: it is derived from the
     // monomial word count now, which the sink is handed at construction.
     size_t num_words = 0;
+    // The support form's row capacity, which fixes what a record's lanes hold. Zero and unread for a dense
+    // record; carried by both sinks so the resolve path needs no branch to configure its key batch.
+    size_t record_capacity = 0;
     [[nodiscard]] auto stride() const -> size_t { return query_words(num_words); }
+    [[nodiscard]] auto capacity() const -> size_t { return record_capacity; }
     static auto init_response() -> Response { return std::numeric_limits<TermIndex>::max(); }
 
     size_t R;
@@ -80,8 +84,9 @@ struct GraphSink {
     size_t def_out_base_ = 0;
     std::vector<size_t> in_base_; // cross-rank per-rank base into acc[s].in_entries (set in prepare)
 
-    GraphSink(size_t num_words_, size_t R_, size_t my_rank_)
+    GraphSink(size_t num_words_, size_t record_capacity_, size_t R_, size_t my_rank_)
         : num_words(num_words_),
+          record_capacity(record_capacity_),
           R(R_),
           my_rank(my_rank_),
           acc(R_) {}
@@ -189,8 +194,10 @@ struct GraphSink {
 struct ContractSink {
     static constexpr bool wants_values = true;
     using Response = double;
-    size_t num_words = 0; // see GraphSink::num_words
+    size_t num_words = 0;       // see GraphSink::num_words
+    size_t record_capacity = 0; // see GraphSink::record_capacity
     [[nodiscard]] auto stride() const -> size_t { return query_words_fused(num_words); }
+    [[nodiscard]] auto capacity() const -> size_t { return record_capacity; }
     static auto init_response() -> Response { return 0.0; }
 
     size_t R;
@@ -327,6 +334,8 @@ struct LayerBuildEngine {
     // The *plain* query record's payload width. Self-resolve records are plain even under the fused sink,
     // whose wider stride applies only to the cross-rank wire, so this is not sink.stride().
     size_t words_ = 0;
+    // The support form's row capacity (see GraphSink::record_capacity), for the key batch below.
+    size_t record_capacity_ = 0;
     // Self-resolve key batch, configured once off the operator. Separate from the incoming probe's batch:
     // the two are live at the same time on the resolve path.
     typename QueryKeysFor<Store>::type keys_;
@@ -338,6 +347,8 @@ struct LayerBuildEngine {
                      size_t my_rank_,
                      MatchedEpochSet &matched_scratch,
                      size_t combined_size_,
+                     size_t payload_words,
+                     size_t record_capacity,
                      Sink &&sink_)
         : local_op(local_op_),
           store(store_),
@@ -349,8 +360,9 @@ struct LayerBuildEngine {
           queries_r(R_),
           src_idx_r(R_),
           sink(std::move(sink_)),
-          words_(local_op_.query_payload_words()) {
-        keys_.configure(local_op_.num_bits());
+          words_(payload_words),
+          record_capacity_(record_capacity) {
+        keys_.configure(local_op_.num_bits(), record_capacity_);
         keys_.ensure(kResolveBatch);
         matched.begin_gate(combined_size);
     }
@@ -363,7 +375,7 @@ struct LayerBuildEngine {
         if constexpr (Sink::wants_values) {
             lv = &src_val_r[my_rank];
         }
-        const size_t nq = lq.empty() ? 0 : lq.size() / query_words(words_);
+        const size_t nq = query_record_count(lq);
         resolve_range_(lq, ls, lv, 0, nq, is_leader_pass);
         lq.clear();
         ls.clear();
@@ -418,15 +430,16 @@ struct LayerBuildEngine {
                 v = &src_val_r[r];
             }
             const size_t nq = s.size();
+            assert(nq == query_record_count(q) && "the source array must be parallel to the records");
             size_t kept = 0;
             for (size_t k = 0; k < nq; ++k) {
                 if (matched.is_marked(s[k])) {
                     continue;
                 }
                 if (kept != k) {
-                    std::copy(q.begin() + static_cast<std::ptrdiff_t>(k * W),
-                              q.begin() + static_cast<std::ptrdiff_t>((k + 1) * W),
-                              q.begin() + static_cast<std::ptrdiff_t>(kept * W));
+                    std::copy(q.begin() + static_cast<std::ptrdiff_t>(query_record_offset(k, W)),
+                              q.begin() + static_cast<std::ptrdiff_t>(query_record_offset(k + 1, W)),
+                              q.begin() + static_cast<std::ptrdiff_t>(query_record_offset(kept, W)));
                 }
                 s[kept] = s[k];
                 if (v != nullptr) {
@@ -434,7 +447,18 @@ struct LayerBuildEngine {
                 }
                 ++kept;
             }
-            q.resize(kept * W);
+            // The escape tail follows the records down, contents untouched. Its entries keep their
+            // positions relative to each other, so the indices the surviving records carry stay right --
+            // including the entries a dropped record orphaned, which ride along as unread padding rather
+            // than being renumbered.
+            const size_t tail = query_record_offset(nq, W);
+            const size_t tail_words = q.size() - tail;
+            const size_t kept_end = query_record_offset(kept, W);
+            std::copy(q.begin() + static_cast<std::ptrdiff_t>(tail),
+                      q.end(),
+                      q.begin() + static_cast<std::ptrdiff_t>(kept_end));
+            q.resize(kept_end + tail_words);
+            q[0] = kept;
             s.resize(kept);
             if (v != nullptr) {
                 v->resize(kept);
@@ -471,7 +495,7 @@ private:
     auto response_recv_counts() const -> std::vector<int> {
         std::vector<int> counts(R);
         for (size_t r = 0; r < R; ++r) {
-            counts[r] = static_cast<int>(queries_r[r].size() / query_words(words_));
+            counts[r] = static_cast<int>(query_record_count(queries_r[r]));
         }
         return counts;
     }
@@ -494,6 +518,7 @@ private:
         size_t q = lo;
         while (q < hi) {
             size_t m = 0;
+            keys.begin_batch();
             for (; q < hi && m < kResolveBatch; ++q) {
                 const size_t src = ls[q];
                 if (!is_leader_pass && matched.is_marked(src)) {
@@ -581,6 +606,12 @@ auto build_layer(auto &local_op,
     // one branch per layer instead of one per term. Both arms are instantiated, so this doubles the
     // scan/engine template instantiations -- the same trade with_algebra already makes for Basis.
     std::shared_ptr<LayerCore> storage = local_op.with_store([&]<class S>(S &store) -> std::shared_ptr<LayerCore> {
+        // The record shape, derived once per layer and passed to everything that reads a record: the scan's
+        // kernel, the engine's key batch and the sink's strides. Both numbers are functions of the store, the
+        // generator and the cutoff, so every rank computes the same pair without communication.
+        const size_t record_capacity = sparse_record_capacity(gen, cut_eval);
+        const size_t record_payload_words = query_payload_words_for(store, record_capacity);
+
         FusedScanResult fused = [&] {
             double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
             return with_algebra(basis, [&]<class A>() {
@@ -621,6 +652,8 @@ auto build_layer(auto &local_op,
                                           my_rank,
                                           matched_scratch,
                                           /*combined_size=*/store.size(),
+                                          record_payload_words,
+                                          record_capacity,
                                           std::move(sink));
             eng.run_exchange(/*is_leader_pass=*/true,
                              std::move(fused.leader_queries),
@@ -636,7 +669,8 @@ auto build_layer(auto &local_op,
 
         if (use_fused) {
             const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
-            return run(ContractSink{.num_words = local_op.query_payload_words(),
+            return run(ContractSink{.num_words = record_payload_words,
+                                    .record_capacity = record_capacity,
                                     .R = R,
                                     .my_rank = my_rank,
                                     .fc = *fused_contract,
@@ -646,7 +680,7 @@ auto build_layer(auto &local_op,
                                     .schrodinger = schrodinger,
                                     .basis = basis});
         }
-        return run(GraphSink{local_op.query_payload_words(), R, my_rank});
+        return run(GraphSink{record_payload_words, record_capacity, R, my_rank});
     });
 
     // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the

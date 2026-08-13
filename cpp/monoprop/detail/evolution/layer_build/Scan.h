@@ -197,9 +197,11 @@ auto fused_find_and_collect(const auto &op,
     const size_t gen_pop = gen.count();
 
     FusedScanResult res;
-    res.leader_queries.assign(rank_count, VecZ{});
+    // Header-initialized, not empty: a record push bumps the count in place, so the header has to be there
+    // before the first one -- including on the per-rank streams nothing is ever pushed to.
+    res.leader_queries.assign(rank_count, query_buffer());
     res.leader_src.assign(rank_count, std::vector<size_t>{});
-    res.follower_queries.assign(rank_count, VecZ{});
+    res.follower_queries.assign(rank_count, query_buffer());
     res.follower_src.assign(rank_count, std::vector<size_t>{});
     // Sized to R even on the early-return paths below so the fused engine's per-rank src_val_r access
     // is always in bounds (parallel to leader_src / follower_src).
@@ -325,9 +327,9 @@ auto fused_find_and_collect(const auto &op,
             // The record width comes off the kernel, not off the generator: it is a property of the form
             // a query is pushed in, which is the kernel's business and not the monomial's.
             const size_t record_words = products.record_words();
-            lq[my_rank].reserve((n_anti - n_foll) * record_words);
+            lq[my_rank].reserve(kQueryHeaderWords + ((n_anti - n_foll) * record_words));
             ls[my_rank].reserve(n_anti - n_foll);
-            fq[my_rank].reserve(n_foll * record_words);
+            fq[my_rank].reserve(kQueryHeaderWords + (n_foll * record_words));
             fs[my_rank].reserve(n_foll);
         }
         auto derive_coeff = [&](size_t i) -> std::pair<double, double> {

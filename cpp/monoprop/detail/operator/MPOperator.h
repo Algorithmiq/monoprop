@@ -158,14 +158,6 @@ struct MPOperator {
     // The per-word loops are sized in words, not bits.
     [[nodiscard]] auto num_words() const -> size_t { return (num_bits() + 63) / 64; }
 
-    // The payload width of one query record, in VecZ words -- the quantity every stride, alltoallv count
-    // and record offset in Engine.h is derived from. Equal to num_words() for a dense store, because a
-    // dense record *is* the monomial's words, but they are separate quantities: a support-form record
-    // carries lane words plus a codes word instead (sparse_payload_words), which is far narrower at large
-    // widths. Kept as its own accessor so the switch is this one function rather than a hunt through the
-    // engine for which num_words() meant "record" and which meant "monomial".
-    [[nodiscard]] auto query_payload_words() const -> size_t { return num_words(); }
-
     // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.
     auto append_term(const Bitset &mono) -> void {

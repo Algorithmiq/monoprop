@@ -115,6 +115,26 @@ private:
     Bitset new_mono_;
 };
 
+// Modes the generator occupies: the slot count of its support form. Per gate, never per term.
+[[nodiscard]] inline auto generator_mode_count(const Bitset &gen) -> size_t {
+    size_t n = 0;
+    for_each_mode_slot(gen, [&](size_t, unsigned int) { ++n; });
+    return n;
+}
+
+// The slot capacity a support-form query record is cut to, which is also the scan's scratch product
+// capacity -- a query carries exactly such a product, so one number has to serve both or a product that
+// fits the scratch would not fit the record. A product occupies at most the cutoff's mode bound plus the
+// generator's own modes; an absent bound means the cutoff has no codes form and no term will reach the
+// toggle, but the row is sized anyway so the capacity is never zero.
+//
+// Every rank derives this from the same circuit and cutoff, which is what lets it fix a wire stride with no
+// communication -- the same agreement find_rank already needs for the hash width.
+[[nodiscard]] inline auto sparse_record_capacity(const Bitset &gen, const CutoffEvaluator &cutoff_eval) -> size_t {
+    return SparseRowStore::scratch_slots_for(cutoff_eval.max_mode_bound().value_or(SparseRowStore::kMaxSlots),
+                                             generator_mode_count(gen));
+}
+
 // Support-form rows. The five answers split three ways: product, overlap and rotation sign come off the
 // codes word and the two mode lists (sparse_toggle plus A::codes_rotation_sign, O(slots) where the dense
 // form is O(storage words)); the cutoff is a popcount test that reads the row only when the bound is
@@ -156,12 +176,9 @@ public:
             inactive_mode_prefix_ = support->masks.active_bit_offset / 2;
         }
         sparse_usable_ = gen_fits && kind_ != Kind::None;
-        // A product occupies up to the term's modes plus the generator's, so the scratch is the cutoff's
-        // mode bound plus this generator's locality -- not the bound alone. An absent bound means the
-        // cutoff has no codes form and no term will reach the toggle, but size the row anyway so the
-        // capacity is never zero.
-        capacity_ = SparseRowStore::scratch_slots_for(cutoff_eval.max_mode_bound().value_or(SparseRowStore::kMaxSlots),
-                                                      gen_lanes_.size());
+        // Shared with the record stride rather than derived here: a product that fits the scratch has to fit
+        // the record it is pushed into.
+        capacity_ = sparse_record_capacity(gen, cutoff_eval);
         out_lanes_.resize(capacity_);
     }
 
