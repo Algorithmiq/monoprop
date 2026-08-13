@@ -124,12 +124,19 @@ docs-install:
 #   just bench serial
 #   monoprop_NUM_THREADS=10 just bench serial-t10 --num-modes 64 --bench-rounds 10
 
+# The `-s` below is load-bearing, not cosmetic. pytest's default capture is
+# fd-level: it replaces fd 2 for each test and discards the buffer when the test
+# passes. monoprop_COMM_PROFILE=1 writes its COMMPROF line straight to fd 2 from a
+# transport destructor, so without `-s` a passing benchmark reports no profile at
+# all -- and "the two runs cost the same" is then indistinguishable from "the
+# instrument never fired".
+
 # Run the suite (timing + memory) for one LABEL; extra args go to pytest.
 bench LABEL *ARGS:
     @mkdir -p "{{ bench_results }}"
     label="$1"; shift; \
     monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
-        uv run --no-sync python -m pytest benches -o filterwarnings=default \
+        uv run --no-sync python -m pytest benches -o filterwarnings=default -s \
         --benchmark-json="{{ bench_results }}/time-$label.json" "$@"
     uv run --no-sync python benches/report.py "{{ bench_results }}"
 
@@ -146,7 +153,7 @@ bench-mpi LABEL RANKS *MPIARGS:
     monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
         uv run --no-sync mpiexec -n "$ranks" \
         -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS "$@" \
-        python -m pytest benches -o filterwarnings=default \
+        python -m pytest benches -o filterwarnings=default -s \
         --benchmark-json="{{ bench_results }}/time-$label.json"
     uv run --no-sync python benches/report.py "{{ bench_results }}"
 
@@ -162,7 +169,7 @@ bench-build-mpi:
 bench-smoke:
     @mkdir -p "{{ bench_results }}"
     monoprop_BENCH_LABEL=smoke monoprop_BENCH_RESULTS="{{ bench_results }}" \
-        uv run --no-sync python -m pytest benches -o filterwarnings=default \
+        uv run --no-sync python -m pytest benches -o filterwarnings=default -s \
         --benchmark-json="{{ bench_results }}/time-smoke.json" \
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16
     uv run --no-sync python benches/report.py "{{ bench_results }}"
