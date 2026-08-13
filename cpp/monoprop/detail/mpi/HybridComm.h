@@ -601,6 +601,14 @@ public:
     auto poison() -> void { barrier_.poison(); }
     auto reset() -> void { barrier_.reset(); }
 
+    // Told once by the owning PartitionGroup after its masters are up; a no-op when profiling is off.
+    // See CommProfile::pinned for why the count is reported at all.
+    auto note_pinned(int n) -> void {
+        if (prof_) {
+            prof_->pinned = n;
+        }
+    }
+
 private:
     struct alignas(64) Slot {
         const void *ptr = nullptr;

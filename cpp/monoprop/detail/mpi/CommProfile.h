@@ -52,8 +52,14 @@ public:
         : slots_(static_cast<size_t>(n_partitions)),
           mpi_rank_(mpi_rank) {}
 
-    // L3 domains the transport's barrier grouped its partitions into (< 2 ⇒ the flat barrier ran).
+    // Locality domains the transport's barrier grouped its partitions into (< 2 ⇒ the flat barrier ran).
     int barrier_groups = 0;
+
+    // How many partitions actually got pinned, out of `partitions`. Reported because barrier_groups = 0 has
+    // two legitimate causes that are otherwise indistinguishable from outside the process: nothing was
+    // pinned, or every partition landed in one locality domain and so has nothing to fan in across.
+    // -1 means the transport was never told (no PartitionGroup owns it, e.g. a bare-transport unit test).
+    int pinned = -1;
 
     auto slot(int partition) -> Slot & { return slots_[static_cast<size_t>(partition)]; }
 
@@ -86,12 +92,13 @@ private:
         // Peer barrier wait is the cost of the master's serial phases seen from the other side.
         const uint64_t peer_barrier_ns = total.barrier_ns - p0.barrier_ns;
         std::print(stderr,
-                   "COMMPROF rank={} partitions={} barrier_groups={} verbs={} barriers={} "
+                   "COMMPROF rank={} partitions={} barrier_groups={} pinned={} verbs={} barriers={} "
                    "table_p0_s={:.3f} table_par_s={:.3f} table_move_s={:.3f} mpi_s={:.3f} "
                    "barrier_p0_s={:.3f} barrier_peers_s={:.3f} barrier_per_sync_us={:.2f}\n",
                    mpi_rank_,
                    slots_.size(),
                    barrier_groups,
+                   pinned,
                    p0.n_verbs,
                    p0.n_barriers,
                    to_s(p0.table_p0_ns),

@@ -72,6 +72,7 @@ public:
             stop_and_join_();
             throw;
         }
+        publish_pinned_count_();
     }
 
     // Fresh transport and threads over the same parent; each partition is deep-copied on its new master, then
@@ -100,6 +101,7 @@ public:
             stop_and_join_();
             throw;
         }
+        publish_pinned_count_();
     }
     auto operator=(const PartitionGroup &) -> PartitionGroup & = delete;
 
@@ -185,6 +187,23 @@ private:
 #endif
     }
 
+    // Called once the first run_on_all has returned, which is the earliest point every master has passed
+    // its pin attempt: masters pin before taking any job, so the count is final and needs no extra
+    // synchronisation of its own. Reporting it is what makes `barrier_groups = 0` readable -- unpinned and
+    // one-domain-per-rank are both legitimate causes of it and are otherwise indistinguishable.
+    auto publish_pinned_count_() -> void {
+        const int pinned = pinned_count_.load(std::memory_order_relaxed);
+#ifdef monoprop_ENABLE_MPI
+        if (hyb_) {
+            hyb_->note_pinned(pinned);
+            return;
+        }
+#endif
+        if (shm_) {
+            shm_->note_pinned(pinned);
+        }
+    }
+
     auto make_transport_() -> void {
         // Empty unless the partitions are pinned and /sys was readable ⇒ flat barrier (see
         // PartitionBarrier); cpusets_ must already be set.
@@ -240,8 +259,14 @@ private:
     }
 
     auto master_loop_(int rank) -> void {
-        if (!cpusets_.empty()) {
-            pin_this_thread(cpusets_[static_cast<size_t>(rank)]);
+        // Relaxed is sufficient, but not because ordering does not matter here -- it is because the
+        // ordering comes from somewhere else. Each master increments once before it takes any job, so
+        // every increment happens-before that master's job completion, and job completion is already
+        // published to the facade thread through m_/done_count_. publish_pinned_count_ reads the counter
+        // only after run_on_all has returned, i.e. after acquiring that same mutex. Do not "strengthen"
+        // this to acq_rel expecting it to carry the edge itself; the edge is the dispatch mutex's.
+        if (!cpusets_.empty() && pin_this_thread(cpusets_[static_cast<size_t>(rank)])) {
+            pinned_count_.fetch_add(1, std::memory_order_relaxed);
         }
         unsigned seen = 0;
         for (;;) {
@@ -285,6 +310,9 @@ private:
     std::vector<std::exception_ptr> errs_;
     std::vector<monoprop::detail::partition::CpuSet> cpusets_;
     std::vector<std::thread> masters_;
+    // Incremented by each master that actually pinned. Relaxed throughout: written once per master before
+    // it takes work, read once after they are all up (see publish_pinned_count_).
+    std::atomic<int> pinned_count_{0};
 
     // Job dispatch: the facade thread publishes one job and waits for all masters to complete it.
     std::mutex m_;

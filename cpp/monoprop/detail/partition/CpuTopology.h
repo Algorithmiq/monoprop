@@ -406,9 +406,13 @@ inline auto cpuset_domains(const std::vector<CpuSet> &sets) -> std::vector<int> 
     return domains;
 }
 
-// A failing pthread call is ignored: only performance depends on it.
-inline auto pin_this_thread(const CpuSet &set) -> void {
-    pthread_setaffinity_np(pthread_self(), sizeof(CpuSet), &set);
+// Correctness never depends on pinning, so a failure is not an error -- but it must not be invisible.
+// Returns whether the affinity actually took: `barrier_groups = 0` has two legitimate causes (nothing
+// was pinned, or each rank was confined to a single locality domain and so has nothing to fan in
+// across), and without this they are indistinguishable from outside the process. CommProfile reports
+// the count so a run states what happened instead of leaving it inferred from the timing.
+[[nodiscard]] inline auto pin_this_thread(const CpuSet &set) -> bool {
+    return pthread_setaffinity_np(pthread_self(), sizeof(CpuSet), &set) == 0;
 }
 
 #else // portable fallback: no topology, no pinning
@@ -444,7 +448,11 @@ inline auto classify_node_mask(const std::vector<CpuSet> & /*masks*/) -> NodeMas
 inline auto cpuset_domains(const std::vector<CpuSet> & /*sets*/) -> std::vector<int> {
     return {};
 }
-inline auto pin_this_thread(const CpuSet & /*set*/) -> void {}
+// Always false here: there is no pinning on this platform, so reporting "0 pinned" is accurate rather
+// than a failure. See the Linux overload for why the result is surfaced at all.
+[[nodiscard]] inline auto pin_this_thread(const CpuSet & /*set*/) -> bool {
+    return false;
+}
 
 #endif // __linux__
 

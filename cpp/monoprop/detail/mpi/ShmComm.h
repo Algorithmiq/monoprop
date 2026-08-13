@@ -210,6 +210,14 @@ public:
 
     auto reset() -> void { barrier_.reset(); }
 
+    // Told once by the owning PartitionGroup after its masters are up; a no-op when profiling is off.
+    // See CommProfile::pinned for why the count is reported at all.
+    auto note_pinned(int n) -> void {
+        if (prof_) {
+            prof_->pinned = n;
+        }
+    }
+
 private:
     // One cache-line-isolated publish slot per rank. A rank writes only its own slot, and reads peers'
     // slots only between the two barriers of a collective.
