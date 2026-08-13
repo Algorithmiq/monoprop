@@ -383,6 +383,9 @@ struct MPOperatorMemoryBreakdown final {
     // never double-count.
     size_t inverted_index_dense_bytes = 0;  // of inverted_index_bytes: full-height bitmap columns
     size_t inverted_index_sparse_bytes = 0; // of inverted_index_bytes: ascending set-row lists
+    // of inverted_index_bytes: the Column vector itself, one entry per bit position. The only term that
+    // scales with the mode count instead of the operator, so it is what a width sweep has to watch.
+    size_t inverted_index_columns_bytes = 0;
     size_t inverted_index_dense_columns = 0;
     size_t operator_terms_slack_bytes = 0; // of operator_terms_bytes: unused geometric-growth capacity
     // of state_coeffs_bytes: entries of the state that are not exactly 0.0
@@ -403,6 +406,7 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_bytes += o.inverted_index_bytes;
         inverted_index_dense_bytes += o.inverted_index_dense_bytes;
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
+        inverted_index_columns_bytes += o.inverted_index_columns_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
         state_coeffs_nonzero += o.state_coeffs_nonzero;
@@ -429,6 +433,7 @@ inline auto estimate_memory_usage(const MPOperator &op) -> MPOperatorMemoryBreak
         const auto tiers = op.inverted_index_->tier_memory_bytes();
         breakdown.inverted_index_dense_bytes = tiers[0];
         breakdown.inverted_index_sparse_bytes = tiers[1];
+        breakdown.inverted_index_columns_bytes = op.inverted_index_->columns_bytes();
         breakdown.inverted_index_dense_columns = tiers[2];
     }
     // State phases are unit-magnitude, so at rest the scored count IS the nonzero count; a live vector needs a scan.

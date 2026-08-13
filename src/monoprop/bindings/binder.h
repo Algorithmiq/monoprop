@@ -266,6 +266,7 @@ inline auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              // Diagnostics (not part of total_bytes; see the struct).
                                              {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
                                              {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
+                                             {"d_invidx_columns_bytes", b.inverted_index_columns_bytes},
                                              {"d_invidx_dense_columns", b.inverted_index_dense_columns},
                                              {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
                                              {"d_state_coeffs_nonzero", b.state_coeffs_nonzero}};

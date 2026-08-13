@@ -197,8 +197,13 @@ struct InvertedIndex {
         }
     }
 
+    // The column vector itself is counted, not just the payload it points at: it is one Column per bit
+    // position, so it is the only term here that grows with the mode count rather than with the operator,
+    // and an accounting that omitted it could not answer whether the index is what caps a wide run.
+    auto columns_bytes() const -> size_t { return cols.capacity() * sizeof(Column); }
+
     auto memory_bytes() const -> size_t {
-        size_t total = 0;
+        size_t total = columns_bytes();
         for (const auto &col : cols) {
             total += col.words.capacity() * sizeof(uint64_t);
             total += col.set_rows.capacity() * sizeof(TermIndex);
@@ -207,7 +212,8 @@ struct InvertedIndex {
         return total;
     }
 
-    // Diagnostic tier split of memory_bytes(): {dense_bytes, sparse_bytes, dense_columns}.
+    // Diagnostic tier split of memory_bytes(): {dense_bytes, sparse_bytes, dense_columns}. The
+    // width-driven remainder is columns_bytes() plus the row-parity bitmap.
     auto tier_memory_bytes() const -> std::array<size_t, 3> {
         std::array<size_t, 3> out{0, 0, 0};
         for (const auto &col : cols) {

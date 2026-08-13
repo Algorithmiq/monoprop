@@ -126,6 +126,16 @@ Key files:
   `owner()` is still the dense `monomial_hash` on both sides, because owner routing is that hash
   everywhere including `find_rank` — so a multi-rank run still materializes one monomial per surviving
   term, and moving that means changing `find_rank` too.
+- **The anticommutation fold** (`detail::InvertedIndex`): the transpose of the row store, one column per
+  *bit position* — not per mode. That keying is settled and measured (`notes/monomial-storage/README.md`
+  §6c): a mode-keyed column cannot answer a generator slot that names one Majorana of a mode, which is
+  66% of the Hubbard generators' slots and 31% of the kicked-Ising ones, so anything mode-shaped is an
+  additional derived tier, never a re-keying. Two facts to keep in mind before touching it. The fold is
+  `O(rows)` per *gate* regardless of how few terms anticommute, so it is 15% of a many-cheap-gates Pauli
+  run and under 3% of a few-expensive-gates Majorana one — measure on the right workload. And its memory
+  is the dense tier (>90% on both shipping models) until the operator gets sparse enough that the
+  `Column` vector itself takes over, which happens below roughly `terms < 5 × modes`;
+  `d_invidx_columns_bytes` in `operator_memory_breakdown()` is that term.
 - **`Basis` / the `Algebra` policy** (`cpp/monoprop/algebra/`): the two algebras are sibling models
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is

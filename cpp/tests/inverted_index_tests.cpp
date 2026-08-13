@@ -262,3 +262,32 @@ BOOST_AUTO_TEST_CASE(combine_columns_block_folds_dense_and_sparse_identically) {
     sparse_expected[200 >> 6] |= uint64_t{1} << (200 & 63U);
     BOOST_TEST(sparse_fold == sparse_expected, boost::test_tools::per_element());
 }
+
+// The column vector is the index's only width-driven cost, and the width sweep behind Stage 6 step 2
+// reads it off memory_bytes(), so it has to be inside that number rather than alongside it: an empty
+// index over a wide register holds one Column per bit position and no payload at all.
+BOOST_AUTO_TEST_CASE(inverted_index_memory_counts_the_column_vector) {
+    constexpr size_t kWideCols = 4096;
+    Sc wide(kWideCols);
+    BOOST_TEST(wide.columns_bytes() >= kWideCols * sizeof(Sc::Column));
+    // No rows yet, so the column vector is the whole of it.
+    BOOST_TEST(wide.memory_bytes() == wide.columns_bytes());
+    const auto tiers = wide.tier_memory_bytes();
+    BOOST_TEST(tiers[0] == 0U);
+    BOOST_TEST(tiers[1] == 0U);
+
+    Sc narrow(kWideCols / 4);
+    BOOST_TEST(narrow.columns_bytes() * 4 == wide.columns_bytes());
+
+    // With payload, memory_bytes() is the columns plus both tiers -- nothing double-counted, nothing
+    // left out (row_parity_ is unbuilt here, and is the only other term).
+    MonomialList op;
+    for (size_t r = 0; r < 200; ++r) {
+        op.push_back(indices_to_bitset({r % 7, 3}, kWideCols));
+    }
+    Sc filled(kWideCols);
+    filled.rebuild(op);
+    const auto filled_tiers = filled.tier_memory_bytes();
+    BOOST_TEST(filled.memory_bytes() == filled.columns_bytes() + filled_tiers[0] + filled_tiers[1]);
+    BOOST_TEST(filled_tiers[0] + filled_tiers[1] > 0U);
+}
