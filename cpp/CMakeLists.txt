@@ -51,7 +51,5 @@ install(
 )
 
 if(monoprop_ENABLE_CXX_UNIT_TESTS)
-  enable_testing()
-  include(CTest)
   add_subdirectory(tests)
 endif()
