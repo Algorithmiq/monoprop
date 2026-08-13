@@ -20,6 +20,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     openmpi-bin \
     libboost-dev \
     libboost-test-dev \
+    libhwloc-dev \
     libmsgpack-cxx-dev \
     libopenmpi-dev \
     && apt-get autoremove -y \

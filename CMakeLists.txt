@@ -111,5 +111,12 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 add_library(monoprop-objs OBJECT "")
 add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
 
+# must run before add_subdirectory(cpp): CTest's enabled-ness does not propagate
+# back up to a parent directory that has already been added as a subdirectory.
+if(monoprop_ENABLE_CXX_UNIT_TESTS)
+  enable_testing()
+  include(CTest)
+endif()
+
 add_subdirectory(cpp)
 add_subdirectory(src/monoprop/bindings)

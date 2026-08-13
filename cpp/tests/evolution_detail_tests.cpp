@@ -20,7 +20,7 @@
 #include <limits>
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/detail/evolution/EvolutionHelpers.h"
+#include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 
 using namespace monoprop;

@@ -177,8 +177,8 @@ private:
             // need opposite placement. Guessing it wrong in the collapsing direction points every
             // co-located rank at the same cores, which is worse than not pinning at all.
             if (node_size_ > 1) {
-                const auto mine = monoprop::detail::partition::this_thread_cpuset();
-                std::vector<monoprop::detail::partition::CpuSet> all(static_cast<size_t>(node_size_));
+                const auto mine = monoprop::detail::partition::this_thread_cpumask();
+                std::vector<monoprop::detail::partition::CpuMask> all(static_cast<size_t>(node_size_));
                 MPI_Allgather(&mine, sizeof(mine), MPI_BYTE, all.data(), sizeof(mine), MPI_BYTE, node);
                 node_mask_ = monoprop::detail::partition::classify_node_mask(all);
             }
@@ -205,7 +205,7 @@ private:
     }
 
     auto make_transport_() -> void {
-        // Empty unless the partitions are pinned and /sys was readable ⇒ flat barrier (see
+        // Empty unless the partitions are pinned and hwloc reported a topology ⇒ flat barrier (see
         // PartitionBarrier); cpusets_ must already be set.
         const std::vector<int> domains = monoprop::detail::partition::cpuset_domains(cpusets_);
 #ifdef monoprop_ENABLE_MPI

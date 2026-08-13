@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 from _builders import MODELS, barriered
-from _memory import resting_rss_bytes
+from _memory_cpu import resting_rss_bytes
 
 
 @pytest.mark.slow

@@ -53,10 +53,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # do not use compiler extensions to the C++ standard
 set(CMAKE_CXX_EXTENSIONS FALSE)
-# CMP0155 has CMake scan every C++20-or-later source for `import`s. There are no modules here, so
-# the scan is pure build overhead, and it is not portable: Clang needs the separate clang-scan-deps
-# binary (packaged apart from the compiler), whose absence surfaces as a build failure rather than a
-# configure error. Must be set before any target is created.
+# disable scanning for C++20 modules (unused)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 # generate a JSON database of compiler commands (useful for LSP IDEs)
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
@@ -78,6 +75,109 @@ if(monoprop_ENABLE_ARCH_FLAGS AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(ARCH_FLAG "-xHost")
   endif()
 endif()
+
+# Query the machine-dependent flags for a given -march value and store the
+# cleaned, space-separated string in the variable named by OUTPUT_VARIABLE. A
+# MARCH of "default" queries the default target (no -march flag).
+#
+# Usage:
+#   _monoprop_query_machine_flags(MARCH <arch> OUTPUT_VARIABLE <var>)
+function(_monoprop_query_machine_flags)
+  set(
+    _one_value_args
+    MARCH
+    OUTPUT_VARIABLE
+  )
+  cmake_parse_arguments(PARSE_ARGV 0 _arg "" "${_one_value_args}" "")
+
+  if(NOT _arg_OUTPUT_VARIABLE)
+    message(
+      FATAL_ERROR
+      "_monoprop_query_machine_flags: OUTPUT_VARIABLE is required"
+    )
+  endif()
+  if(NOT _arg_MARCH)
+    message(FATAL_ERROR "_monoprop_query_machine_flags: MARCH is required")
+  endif()
+
+  if(_arg_MARCH STREQUAL "default")
+    set(_march_args "")
+  else()
+    set(_march_args "-march=${_arg_MARCH}")
+  endif()
+
+  if(CMAKE_CXX_COMPILER_ID MATCHES Clang)
+    execute_process(
+      COMMAND
+        # gersemi: off
+        ${CMAKE_CXX_COMPILER} ${_march_args} -\#\#\# -x c++ -c /dev/null
+      # gersemi: on
+      ERROR_VARIABLE _query_output
+      ERROR_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE _query_result
+    )
+    if(NOT _query_result EQUAL 0)
+      message(
+        WARNING
+        "Failed to query machine-dependent flags for '${_arg_MARCH}' with AppleClang (exit code ${_query_result}). Continuing with empty machine flags."
+      )
+      set(_flags "")
+    else()
+      execute_process(
+        COMMAND
+          ${CMAKE_COMMAND} -E echo "${_query_output}"
+        COMMAND
+          ${Python_EXECUTABLE}
+          "${PROJECT_SOURCE_DIR}/tools/target-help-clean.py" --mode clang
+        OUTPUT_VARIABLE _flags
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _parse_result
+      )
+      if(NOT _parse_result EQUAL 0)
+        message(
+          WARNING
+          "Failed to parse AppleClang machine-dependent flags for '${_arg_MARCH}' (exit code ${_parse_result}). Continuing with empty machine flags."
+        )
+        set(_flags "")
+      endif()
+    endif()
+  else()
+    execute_process(
+      COMMAND
+        ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
+      COMMAND
+        ${Python_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tools/target-help-clean.py"
+        --mode gcc
+      OUTPUT_VARIABLE _flags
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE _result
+    )
+    if(NOT _result EQUAL 0)
+      message(
+        FATAL_ERROR
+        "Failed to query machine-dependent flags for '${_arg_MARCH}' (exit code ${_result})"
+      )
+    endif()
+  endif()
+  set(${_arg_OUTPUT_VARIABLE} "${_flags}" PARENT_SCOPE)
+endfunction()
+
+set(monoprop_DEFAULT_VARIANT_FLAGS "")
+if(monoprop_ENABLE_ARCH_FLAGS)
+  _monoprop_query_machine_flags(MARCH native OUTPUT_VARIABLE monoprop_DEFAULT_VARIANT_FLAGS)
+else()
+  _monoprop_query_machine_flags(MARCH default OUTPUT_VARIABLE monoprop_DEFAULT_VARIANT_FLAGS)
+endif()
+
+set(monoprop_VARIANTS "")
+set(monoprop_VARIANT_FLAGS "")
+
+# generate a header file with the macros needed to describe the variant
+configure_file(
+  ${PROJECT_SOURCE_DIR}/cpp/include/monoprop/Variants.h.in
+  ${PROJECT_BINARY_DIR}/include/monoprop/Variants.h
+  @ONLY
+)
 
 set(monoprop_CXX_FLAGS "")
 include(${CMAKE_CURRENT_LIST_DIR}/GNU.CXX.cmake)

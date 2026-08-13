@@ -16,6 +16,8 @@ using PauliPropagation
 using JSON
 using ProgressMeter
 
+include(joinpath(@__DIR__, "..", "bench_common.jl"))
+
 settings = JSON.parsefile(joinpath(@__DIR__, "settings.json"))
 
 nx, ny = settings["nx"], settings["ny"]
@@ -41,15 +43,19 @@ append!(step_parameters, fill(theta_zz, length(topology)))
 append!(step_parameters, fill(theta_z, nq))
 append!(step_parameters, fill(theta_x, nq))
 
-pauli_sum = PauliSum(nq)
+pauli_sum = VectorPauliSum(PauliSum(nq))
 add!(pauli_sum, [:Z, :Z], collect(obs_qubits), 1.0)
 
 num_terms = Int[]
 runtime = Float64[]
 memory = Float64[]
+native_memory = Float64[]
 expvals = Float64[]
 
+window = HighWaterMark()
+
 @showprogress for (step_idx, num_steps) in enumerate(step_range)
+    start!(window)
     t1 = time_ns()
     global pauli_sum = propagate(
         step_circuit, pauli_sum, step_parameters;
@@ -57,12 +63,14 @@ expvals = Float64[]
     )
     expval = overlapwithzero(pauli_sum)
     t2 = time_ns()
+    stop!(window)
 
     if step_idx > 1
         push!(runtime, (t2 - t1) / 1e9)
     end
     push!(num_terms, length(pauli_sum))
-    push!(memory, Base.summarysize(pauli_sum) / 1024^2)
+    push!(memory, peak_mb(window))
+    push!(native_memory, Base.summarysize(pauli_sum) / 1024^2)
     push!(expvals, expval)
 end
 
@@ -71,6 +79,8 @@ data = JSON.parsefile(results_file)
 data["num_terms"]["PauliPropagation.jl"] = num_terms
 data["runtime"]["PauliPropagation.jl"] = runtime
 data["memory"]["PauliPropagation.jl"] = memory
+haskey(data, "native_memory") || (data["native_memory"] = Dict())
+data["native_memory"]["PauliPropagation.jl"] = native_memory
 data["expvals"]["PauliPropagation.jl"] = expvals
 
 open(results_file, "w") do file

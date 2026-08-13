@@ -12,43 +12,64 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Coverage of CpuTopology.h (Linux /sys parsing + affinity pinning; count-only fallback elsewhere).
+// Coverage of CpuTopology (hwloc-based topology discovery + thread affinity pinning).
+//
+// Tests are split into two layers:
+//   1. Live smoke tests — exercise enumerate_physical_cores / partition_cpusets / pin_this_thread
+//      on the actual host topology; these validate end-to-end hwloc integration.
+//   2. Policy unit tests — call topo_detail::placement_order with synthetic PhysicalCore vectors
+//      so the L3-domain interleaving and MPI-rank slicing logic can be checked deterministically
+//      without depending on live hardware or hwloc.
 
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
 #include <cstddef>
-#include <filesystem>
-#include <fstream>
 #include <set>
-#include <string>
-#include <utility>
 #include <vector>
+
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 #include "monoprop/detail/partition/CpuTopology.h"
 
 namespace partition = monoprop::detail::partition;
+using partition::topo_detail::placement_order;
 
-// The enumerate/place/pin surface exists on every platform; exercise it regardless of OS.
+/* RAII helper: save and restore the calling thread's CPU affinity around pin_this_thread() calls
+ * so that CTest is not left pinned to a single PU after the test completes. */
+struct AffinityGuard {
+#if defined(__linux__)
+    cpu_set_t saved_{};
+    AffinityGuard() { sched_getaffinity(0, sizeof(saved_), &saved_); }
+    ~AffinityGuard() { sched_setaffinity(0, sizeof(saved_), &saved_); }
+#endif
+};
+
+/* ── Live smoke tests ─────────────────────────────────────────────────────── */
+
 BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
     const auto cores = partition::enumerate_physical_cores();
 
+    AffinityGuard guard; // save affinity before any potential pin
     const auto one = partition::partition_cpusets(/*n=*/1);
     BOOST_CHECK(one.size() <= 1u);
     if (!one.empty()) {
-        // A placement only comes back where the engine can pin (Linux /sys), which implies cores were
-        // found. Pinning itself is best-effort and no-op-safe; drive it.
+        // A placement only comes back when topology discovery succeeded and pinning is enabled.
         BOOST_CHECK(!cores.empty());
-        partition::pin_this_thread(one.front());
+        // Not asserted: pinning is best-effort, and a restrictive cgroup or seccomp policy can refuse
+        // it without that being a defect. The return value exists so the outcome is reportable (see
+        // CommProfile's pinned count), not so a test can require success.
+        static_cast<void>(partition::pin_this_thread(one.front()));
+        // guard restores affinity on scope exit
     }
-#if defined(__linux__)
-    // With a readable /sys and pinning enabled, a non-empty core list must yield a placement.
+    // When topology discovery succeeds, a non-empty core list must produce a non-empty placement.
     if (!cores.empty()) {
         BOOST_CHECK_EQUAL(one.size(), 1u);
     }
-#endif
 
-    // Asking for more physical cores than exist disables pinning (empty), never oversubscribes.
+    // Oversubscription must always return empty regardless of topology state.
     const auto too_many = partition::partition_cpusets(/*n=*/1'000'000);
     BOOST_CHECK(too_many.empty());
 }
@@ -56,124 +77,205 @@ BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
 BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
     const auto cores = partition::enumerate_physical_cores();
     if (cores.size() < 2) {
-        return; // need at least two cores to deal one to each of two co-located ranks
+        return; // need at least two cores for the disjoint-placement check
     }
-    // Two co-located ranks, one partition each. Covers both placement arms -- interleave across the
-    // dealt domains (group_count <= #L3), and the flat domain-major slice otherwise.
+
+    // Two co-located ranks each requesting one partition. This exercises both placement arms:
+    //   - interleave (group_count ≤ #L3 domains)
+    //   - domain-major slice (group_count > #L3 domains)
     const auto rank0 = partition::partition_cpusets(/*n=*/1, /*group_index=*/0, /*group_count=*/2);
     const auto rank1 = partition::partition_cpusets(/*n=*/1, /*group_index=*/1, /*group_count=*/2);
-    // Off Linux there is no pinning, so both come back empty (unpinned, still disjoint by the scheduler).
-#if defined(__linux__)
-    BOOST_CHECK_EQUAL(rank0.size(), 1u);
-    BOOST_CHECK_EQUAL(rank1.size(), 1u);
-#else
-    BOOST_CHECK(rank0.empty());
-    BOOST_CHECK(rank1.empty());
-#endif
+    if (rank0.empty() || rank1.empty()) {
+        BOOST_CHECK(rank0.empty());
+        BOOST_CHECK(rank1.empty());
+        return;
+    }
+    BOOST_REQUIRE_EQUAL(rank0.size(), 1u);
+    BOOST_REQUIRE_EQUAL(rank1.size(), 1u);
+    // The two placements must be on distinct PUs; sharing would violate the MPI no-starvation
+    // invariant (one rank's busy-polling collectives cannot starve the other's barrier spins).
+    BOOST_CHECK(rank0.front().pu != rank1.front().pu);
 
+    // Oversubscription: 2 ranks × cores.size() partitions > total physical cores.
     const auto past_end = partition::partition_cpusets(/*n=*/cores.size(), /*group_index=*/1, /*group_count=*/2);
     BOOST_CHECK(past_end.empty());
 }
 
+/* ── Policy unit tests (deterministic, no hwloc or live hardware) ─────────── */
+
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_interleave_across_l3) {
+    // 4 cores across 2 L3 domains; single rank receives all.
+    // by_domain[0] = {0, 4}, by_domain[1] = {2, 6}
+    // depth-first interleave: 0, 2, 4, 6
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 1}, {4, 0}, {6, 1}};
+    const auto order = placement_order(cores, 4, 0, 1);
+    BOOST_REQUIRE_EQUAL(order.size(), 4u);
+    BOOST_CHECK_EQUAL(order[0], 0);
+    BOOST_CHECK_EQUAL(order[1], 2);
+    BOOST_CHECK_EQUAL(order[2], 4);
+    BOOST_CHECK_EQUAL(order[3], 6);
+}
+
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_disjoint_mpi_ranks) {
+    // 4 cores across 2 L3 domains; 2 co-located ranks each get 1 partition.
+    // rank0 is dealt domain 0, rank1 is dealt domain 1 ⇒ no shared PU.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 1}, {4, 0}, {6, 1}};
+    const auto r0 = placement_order(cores, 1, 0, 2);
+    const auto r1 = placement_order(cores, 1, 1, 2);
+    BOOST_REQUIRE_EQUAL(r0.size(), 1u);
+    BOOST_REQUIRE_EQUAL(r1.size(), 1u);
+    BOOST_CHECK(r0.front() != r1.front());
+}
+
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_domain_major_more_ranks_than_l3) {
+    // 4 cores in 1 L3 domain; 2 ranks each get 2 partitions (flat domain-major arm).
+    // order = [0, 2, 4, 6]; rank0 offset=0 → {0,2}, rank1 offset=2 → {4,6}.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 0}, {4, 0}, {6, 0}};
+    const auto r0 = placement_order(cores, 2, 0, 2);
+    const auto r1 = placement_order(cores, 2, 1, 2);
+    BOOST_REQUIRE_EQUAL(r0.size(), 2u);
+    BOOST_REQUIRE_EQUAL(r1.size(), 2u);
+
+    const std::set<int> s0(r0.begin(), r0.end());
+    const std::set<int> s1(r1.begin(), r1.end());
+    for (const auto cpu : s1) {
+        BOOST_CHECK(!s0.contains(cpu));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_insufficient_cores_returns_empty) {
+    // 2 cores total; 2 ranks × 2 partitions = 4 > 2 ⇒ oversubscription.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 0}};
+    BOOST_CHECK(placement_order(cores, 2, 0, 2).empty());
+    BOOST_CHECK(placement_order(cores, 2, 1, 2).empty());
+
+    // Single rank requesting more cores than exist.
+    BOOST_CHECK(placement_order(cores, 3, 0, 1).empty());
+
+    // Empty core list.
+    BOOST_CHECK(placement_order({}, 1, 0, 1).empty());
+}
+
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_singleton_l3_domains) {
+    // 2 cores each in its own singleton domain (no shared L3).
+    // by_domain[0] = {0}, by_domain[1] = {4}; interleaved: 0, 4.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {4, 1}};
+    const auto order = placement_order(cores, 2, 0, 1);
+    BOOST_REQUIRE_EQUAL(order.size(), 2u);
+    BOOST_CHECK_EQUAL(order[0], 0);
+    BOOST_CHECK_EQUAL(order[1], 4);
+}
+
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_uneven_domains) {
+    // 3 cores: 2 in domain 0, 1 in domain 1; single rank, 3 partitions.
+    // by_domain[0] = {0, 4}, by_domain[1] = {2}; interleaved: 0, 2, 4.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 1}, {4, 0}};
+    const auto order = placement_order(cores, 3, 0, 1);
+    BOOST_REQUIRE_EQUAL(order.size(), 3u);
+    BOOST_CHECK_EQUAL(order[0], 0);
+    BOOST_CHECK_EQUAL(order[1], 2);
+    BOOST_CHECK_EQUAL(order[2], 4);
+}
+
+/* ── Node-mask classification and the per-rank collapse ───────────────────── */
+
+// The mechanism the collapse in partition_cpusets exists for, stated without needing live hardware.
+// Under a per-rank launcher split, enumerate_physical_cores() already reports only this rank's slice,
+// so passing the node-wide group_count through asks placement_order for group_count x n cores out of
+// a list that only ever held n -- and it correctly refuses. Refusing means unpinned, which also
+// costs the two-level barrier its domains: measured at 437 us/sync against 15.5 us/sync placed.
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_per_rank_slice_starves_without_collapse) {
+    // One rank's slice under `srun --cpu-bind=cores`: 2 cores of a 16-core host, one L3 domain.
+    const std::vector<partition::PhysicalCore> slice = {{6, 0}, {7, 0}};
+
+    // Told the node-wide truth (8 ranks x 2 partitions), the request cannot be met from a slice.
+    BOOST_CHECK(placement_order(slice, 2, /*group_index=*/3, /*group_count=*/8).empty());
+
+    // Collapsed to a single group -- what NodeMask::PerRank does -- the same slice places fully.
+    const auto collapsed = placement_order(slice, 2, /*group_index=*/0, /*group_count=*/1);
+    BOOST_REQUIRE_EQUAL(collapsed.size(), 2u);
+    BOOST_CHECK_EQUAL(collapsed[0], 6);
+    BOOST_CHECK_EQUAL(collapsed[1], 7);
+}
+
+// Two ranks holding disjoint masks are a per-rank split; identical masks are a shared one. Nothing else
+// distinguishes them, which is the whole reason this is measured rather than inferred: mask *width*
+// cannot tell "8 ranks holding 16 cores each" from "8 ranks sharing one 16-core mask", and the two need
+// opposite placement.
+BOOST_AUTO_TEST_CASE(cpu_topology_classify_node_mask_disjoint_vs_identical) {
+    partition::CpuMask a;
+    partition::CpuMask b;
+    partition::cpumask_set(a, 0);
+    partition::cpumask_set(a, 1);
+    partition::cpumask_set(b, 2);
+    partition::cpumask_set(b, 3);
+    BOOST_CHECK(partition::classify_node_mask({a, b}) == partition::NodeMask::PerRank);
+    BOOST_CHECK(partition::classify_node_mask({a, a}) == partition::NodeMask::Shared);
+
+    // Partial overlap is pathological; Shared is the conservative answer because dividing never
+    // double-books a core within a rank, whereas collapsing points every rank at the same cores.
+    partition::CpuMask c = a;
+    partition::cpumask_set(c, 2);
+    BOOST_CHECK(partition::classify_node_mask({a, c}) == partition::NodeMask::Shared);
+
+    // An unreadable mask arrives empty and must not be read as "disjoint from everything".
+    const partition::CpuMask empty;
+    BOOST_CHECK(partition::classify_node_mask({a, empty}) == partition::NodeMask::Shared);
+    // A lone rank has nobody to be disjoint from.
+    BOOST_CHECK(partition::classify_node_mask({a}) == partition::NodeMask::Shared);
+}
+
+// Disjointness must be tested per PU, not by popcount or by first/last index: two masks of equal size
+// in different words are disjoint, and two overlapping in one word are not.
+BOOST_AUTO_TEST_CASE(cpu_topology_classify_node_mask_spans_word_boundaries) {
+    partition::CpuMask low;
+    partition::CpuMask high;
+    partition::cpumask_set(low, 5);
+    partition::cpumask_set(high, 200); // a different 64-bit word
+    BOOST_CHECK(partition::classify_node_mask({low, high}) == partition::NodeMask::PerRank);
+    BOOST_CHECK_EQUAL(partition::cpumask_count(low), 1u);
+
+    partition::CpuMask also_high;
+    partition::cpumask_set(also_high, 200);
+    BOOST_CHECK(partition::classify_node_mask({high, also_high}) == partition::NodeMask::Shared);
+
+    // A PU index past the mask is dropped rather than wrapping onto an unrelated bit.
+    partition::CpuMask overflow;
+    partition::cpumask_set(overflow, partition::kCpuMaskBits + 7);
+    BOOST_CHECK_EQUAL(partition::cpumask_count(overflow), 0u);
+    BOOST_CHECK(!partition::cpumask_test(overflow, 7));
+}
+
+// This thread's mask must be non-empty on any host where hwloc found cores, and must agree with the
+// cores enumerate_physical_cores() reports -- the two are read from the same hwloc cpuset, so a
+// disagreement means the mask exchange would classify against a different machine than the placement.
+BOOST_AUTO_TEST_CASE(cpu_topology_this_thread_cpumask_covers_enumerated_cores) {
+    const auto cores = partition::enumerate_physical_cores();
+    const auto mine = partition::this_thread_cpumask();
+    if (cores.empty()) {
+        return; // no topology (hwloc unavailable); nothing to agree with
+    }
+    BOOST_CHECK(partition::cpumask_count(mine) > 0u);
+    for (const auto &core : cores) {
+        BOOST_CHECK(partition::cpumask_test(mine, static_cast<size_t>(core.cpu)));
+    }
+}
+
+/* ── Live placement under a restricted mask ───────────────────────────────── */
+
 #if defined(__linux__)
 
-#include <sched.h>
-
-using partition::topo_detail::parse_cpulist;
-using partition::topo_detail::read_line;
-
-// Enumeration must span holes in the CPU id space (offline or hot-plugged CPUs leave unreadable ids).
-// Oracle: the sibling groups re-derived straight from /sys over the whole allowed range.
-BOOST_AUTO_TEST_CASE(cpu_topology_enumeration_spans_gaps_in_the_id_space) {
-    const auto allowed = partition::topo_detail::allowed_cpus();
-    if (allowed.empty()) {
-        return; // affinity unreadable; enumeration accepts every CPU and there is nothing to compare
-    }
-
-    std::set<int> expected_groups; // one key (min sibling) per physical core with an allowed sibling
-    for (int cpu = 0; cpu <= *allowed.rbegin(); ++cpu) {
-        const std::string sib =
-            read_line("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings_list");
-        if (sib.empty()) {
-            continue;
-        }
-        const auto siblings = parse_cpulist(sib);
-        if (siblings.empty()) {
-            continue;
-        }
-        if (std::any_of(siblings.begin(), siblings.end(), [&](int s) { return allowed.contains(s); })) {
-            expected_groups.insert(*std::min_element(siblings.begin(), siblings.end()));
-        }
-    }
-    if (expected_groups.empty()) {
-        return; // /sys unreadable on this host
-    }
-
-    const auto cores = partition::enumerate_physical_cores();
-    BOOST_CHECK_EQUAL(cores.size(), expected_groups.size());
-    for (const auto &core : cores) {
-        BOOST_TEST(allowed.contains(core.cpu));
-    }
-}
-
-BOOST_AUTO_TEST_CASE(cpu_topology_parse_cpulist_shapes) {
-    BOOST_TEST(parse_cpulist("5") == (std::vector<int>{5}), boost::test_tools::per_element());
-    BOOST_TEST(parse_cpulist("0-3") == (std::vector<int>{0, 1, 2, 3}), boost::test_tools::per_element());
-    BOOST_TEST(parse_cpulist("0-3,16-17") == (std::vector<int>{0, 1, 2, 3, 16, 17}), boost::test_tools::per_element());
-    BOOST_TEST(parse_cpulist("2,4,6") == (std::vector<int>{2, 4, 6}), boost::test_tools::per_element());
-
-    // Empty input and empty tokens contribute nothing (the !tok.empty() guard).
-    BOOST_CHECK(parse_cpulist("").empty());
-    BOOST_TEST(parse_cpulist("1,,3") == (std::vector<int>{1, 3}), boost::test_tools::per_element());
-}
-
-BOOST_AUTO_TEST_CASE(cpu_topology_read_line_present_and_absent) {
-    BOOST_CHECK(read_line("/nonexistent/monoprop/topology/does_not_exist").empty());
-
-    // cpu0 always exists on Linux, and its thread_siblings_list is a non-empty cpulist.
-    const std::string line = read_line("/sys/devices/system/cpu/cpu0/topology/thread_siblings_list");
-    BOOST_CHECK(!line.empty());
-    BOOST_CHECK(!parse_cpulist(line).empty());
-}
-
-BOOST_AUTO_TEST_CASE(cpu_topology_allowed_cpus_nonempty_on_ci) {
-    // sched_getaffinity succeeds on Linux CI, so the process's allowed set is non-empty.
-    const auto allowed = partition::topo_detail::allowed_cpus();
-    BOOST_CHECK(!allowed.empty());
-}
-
-// Restores the caller's affinity mask however the scope exits, so a failing check cannot leave the rest
-// of the suite pinned to two cores.
-class ScopedAffinity {
-public:
-    ScopedAffinity() { pinned_ = sched_getaffinity(0, sizeof(saved_), &saved_) == 0; }
-    ScopedAffinity(const ScopedAffinity &) = delete;
-    auto operator=(const ScopedAffinity &) -> ScopedAffinity & = delete;
-    ~ScopedAffinity() {
-        if (pinned_) {
-            sched_setaffinity(0, sizeof(saved_), &saved_);
-        }
-    }
-
-private:
-    cpu_set_t saved_{};
-    bool pinned_ = false;
-};
-
-// A rank whose mask is its own slice of the node must still get a placement. Slurm hands each co-located
-// rank a disjoint mask and then tells the rank group_count = ranks-per-node; enumerate_physical_cores()
-// already filtered by the mask, so re-dividing pushed group_count * n past the share and answered
-// "unpinned", which also flattened the two-level barrier (measured on this cluster as barrier_groups=0 and
-// 437 vs 15.5 us/sync at 8 ranks x 16 partitions).
+// A Slurm-style per-rank confinement, end to end: narrow this thread's affinity to two cores, then ask
+// for both of them while passing the node-wide group_count a launcher would report. Nothing asserted
+// this before the collapse landed, which is why the bug surfaced only through monoprop_COMM_PROFILE.
 BOOST_AUTO_TEST_CASE(cpu_topology_per_rank_mask_still_places) {
     const auto full = partition::enumerate_physical_cores();
     if (full.size() < 2) {
-        return; // too small to simulate a slice of a larger host
+        return; // need two cores to confine to
     }
 
-    const ScopedAffinity restore_on_exit;
+    const AffinityGuard guard;
 
-    // Stand in for `srun --cpus-per-task=2`: keep two physical cores of a host that has more.
     cpu_set_t confined;
     CPU_ZERO(&confined);
     CPU_SET(full[0].cpu, &confined);
@@ -185,30 +287,29 @@ BOOST_AUTO_TEST_CASE(cpu_topology_per_rank_mask_still_places) {
     // n = the whole share, and a group_count as if seven sibling ranks shared the node.
     const auto sets =
         partition::partition_cpusets(/*n=*/2, /*group_index=*/3, /*group_count=*/8, partition::NodeMask::PerRank);
-    BOOST_CHECK_EQUAL(sets.size(), 2u);
-    for (const cpu_set_t &set : sets) {
+    BOOST_REQUIRE_EQUAL(sets.size(), 2u);
+    for (const auto &set : sets) {
         // Never pin outside the mask the launcher gave us.
-        BOOST_CHECK(CPU_ISSET(full[0].cpu, &set) || CPU_ISSET(full[1].cpu, &set));
-        BOOST_CHECK_EQUAL(CPU_COUNT(&set), 1);
+        BOOST_CHECK(set.pu == full[0].cpu || set.pu == full[1].cpu);
     }
-    // One domain entry per set, and the two sets must not be the same core.
+    // The two partitions must not land on the same core, and each must carry a domain for the barrier.
+    BOOST_CHECK(sets[0].pu != sets[1].pu);
     BOOST_CHECK_EQUAL(partition::cpuset_domains(sets).size(), 2u);
-    BOOST_CHECK(!CPU_EQUAL(&sets[0], &sets[1]));
 }
 
-// The invariant the PerRank collapse above most endangers: under a genuinely Shared mask, two co-located
+// The invariant the PerRank collapse most endangers: under a genuinely Shared mask, two co-located
 // ranks must still deal themselves DIFFERENT cores. Collapsing unconditionally on "the mask is narrower
-// than the machine" pointed every rank at the same cores, because mask width cannot distinguish a per-rank
-// slice from a shared one -- which is why the caller measures it instead (see classify_node_mask).
+// than the machine" pointed every rank at the same cores, because mask width cannot distinguish a
+// per-rank slice from a shared one -- which is why the caller measures it instead.
 BOOST_AUTO_TEST_CASE(cpu_topology_shared_mask_keeps_co_located_ranks_disjoint) {
     const auto full = partition::enumerate_physical_cores();
     if (full.size() < 4) {
         return; // need two cores per rank for two ranks
     }
 
-    const ScopedAffinity restore_on_exit;
+    const AffinityGuard guard;
 
-    // A shared step mask narrower than the host: four cores that both ranks can see.
+    // A shared mask narrower than the host: four cores that both ranks can see.
     cpu_set_t shared;
     CPU_ZERO(&shared);
     for (size_t i = 0; i < 4; ++i) {
@@ -222,141 +323,14 @@ BOOST_AUTO_TEST_CASE(cpu_topology_shared_mask_keeps_co_located_ranks_disjoint) {
         partition::partition_cpusets(/*n=*/2, /*group_index=*/0, /*group_count=*/2, partition::NodeMask::Shared);
     const auto rank1 =
         partition::partition_cpusets(/*n=*/2, /*group_index=*/1, /*group_count=*/2, partition::NodeMask::Shared);
-    BOOST_CHECK_EQUAL(rank0.size(), 2u);
-    BOOST_CHECK_EQUAL(rank1.size(), 2u);
-    for (const cpu_set_t &a : rank0) {
-        for (const cpu_set_t &b : rank1) {
+    BOOST_REQUIRE_EQUAL(rank0.size(), 2u);
+    BOOST_REQUIRE_EQUAL(rank1.size(), 2u);
+    for (const auto &a : rank0) {
+        for (const auto &b : rank1) {
             // Two ranks sharing a core would have each one's busy-polling collectives starve the other's
             // barrier spins -- the failure this whole placement path exists to avoid.
-            BOOST_CHECK(!CPU_EQUAL(&a, &b));
+            BOOST_CHECK(a.pu != b.pu);
         }
-    }
-}
-
-// Two ranks holding disjoint masks are a per-rank split; identical masks are a shared one. Nothing else
-// distinguishes them, which is the whole reason this is measured rather than inferred.
-BOOST_AUTO_TEST_CASE(cpu_topology_classify_node_mask_disjoint_vs_identical) {
-    cpu_set_t a;
-    cpu_set_t b;
-    CPU_ZERO(&a);
-    CPU_ZERO(&b);
-    CPU_SET(0, &a);
-    CPU_SET(1, &a);
-    CPU_SET(2, &b);
-    CPU_SET(3, &b);
-    BOOST_CHECK(partition::classify_node_mask({a, b}) == partition::NodeMask::PerRank);
-    BOOST_CHECK(partition::classify_node_mask({a, a}) == partition::NodeMask::Shared);
-
-    // Partial overlap is pathological; Shared is the conservative answer because dividing never
-    // double-books a core within a rank, whereas collapsing points every rank at the same cores.
-    cpu_set_t c = a;
-    CPU_SET(2, &c);
-    BOOST_CHECK(partition::classify_node_mask({a, c}) == partition::NodeMask::Shared);
-
-    // An unreadable mask arrives empty and must not be read as "disjoint from everything".
-    cpu_set_t empty;
-    CPU_ZERO(&empty);
-    BOOST_CHECK(partition::classify_node_mask({a, empty}) == partition::NodeMask::Shared);
-    // A lone rank has nobody to be disjoint from.
-    BOOST_CHECK(partition::classify_node_mask({a}) == partition::NodeMask::Shared);
-}
-
-// Malformed and out-of-range /sys content. This path's contract is to degrade to "unpinned", never to
-// throw out of a constructor, and never to answer with a cpulist it half-understood.
-BOOST_AUTO_TEST_CASE(cpu_topology_parse_cpulist_rejects_malformed_ranges) {
-    BOOST_CHECK(parse_cpulist("3-0").empty());  // reversed range names nothing
-    BOOST_CHECK(parse_cpulist("0-").empty());   // missing endpoint drops the token
-    BOOST_CHECK(parse_cpulist("-3").empty());   // ditto
-    BOOST_CHECK(parse_cpulist("abc").empty());  // non-numeric
-    BOOST_CHECK(parse_cpulist("1-2x").empty()); // trailing junk rejects the whole token
-    BOOST_TEST(parse_cpulist("7,3-0,9") == (std::vector<int>{7, 9}), boost::test_tools::per_element());
-
-    // Ids at and past CPU_SETSIZE must still PARSE: parse_id also reads cache levels and NUMA node ids,
-    // and a host with more CPUs than cpu_set_t can address would otherwise have every cpulist it reports
-    // -- including cpu/online -- collapse to empty, silently disabling pinning and the two-level barrier.
-    // Placement drops them where CPU_SET is called instead.
-    BOOST_TEST(parse_cpulist(std::to_string(CPU_SETSIZE)) == (std::vector<int>{CPU_SETSIZE}),
-               boost::test_tools::per_element());
-    BOOST_CHECK_EQUAL(parse_cpulist("0-2047").size(), 2048u);
-
-    // An absurdly wide range is garbage rather than a machine, and must not become an allocation.
-    BOOST_CHECK(parse_cpulist("0-999999999").empty());
-}
-
-// Fixture-driven cover for shared_domain_cpus, which is otherwise exercised only through this host's own
-// /sys -- an x86 part that does have an L3, so neither the shared-L2 shape nor the SMT trap below is
-// reachable from real hardware here. `cpu_base` is a parameter precisely so this is testable.
-namespace {
-
-// Write a synthetic /sys-shaped cache tree. `levels` is (level, shared_cpu_list) in index order.
-auto write_cache_fixture(const std::filesystem::path &base, const std::vector<std::pair<int, std::string>> &levels)
-    -> void {
-    for (size_t i = 0; i < levels.size(); ++i) {
-        const auto dir = base / "cache" / ("index" + std::to_string(i));
-        std::filesystem::create_directories(dir);
-        std::ofstream(dir / "level") << levels[i].first << "\n";
-        std::ofstream(dir / "type") << "Unified\n";
-        std::ofstream(dir / "shared_cpu_list") << levels[i].second << "\n";
-    }
-}
-
-// Removes the fixture tree however the scope exits.
-class ScopedTree {
-public:
-    explicit ScopedTree(std::string name)
-        : path_(std::filesystem::temp_directory_path() / ("monoprop-topo-" + std::move(name))) {
-        std::filesystem::remove_all(path_);
-    }
-    ScopedTree(const ScopedTree &) = delete;
-    auto operator=(const ScopedTree &) -> ScopedTree & = delete;
-    ~ScopedTree() { std::filesystem::remove_all(path_); }
-    auto path() const -> const std::filesystem::path & { return path_; }
-
-private:
-    std::filesystem::path path_;
-};
-
-} // namespace
-
-BOOST_AUTO_TEST_CASE(cpu_topology_shared_domain_prefers_deepest_cross_core_level) {
-    const ScopedTree tree("deepest");
-    // L1 and L2 private to the core (they still list both SMT threads), L3 spanning four cores.
-    write_cache_fixture(tree.path(), {{1, "0,64"}, {2, "0,64"}, {3, "0-3,64-67"}});
-    const auto got = partition::topo_detail::shared_domain_cpus(tree.path().string(), 0, {0, 64});
-    BOOST_TEST(got == (std::vector<int>{0, 1, 2, 3, 64, 65, 66, 67}), boost::test_tools::per_element());
-}
-
-// The SMT trap: a per-core L1/L2 lists every hardware thread of the core, so a "shared by >= 2 CPUs" test
-// accepts it, makes each core its own domain, and never reaches the NUMA fallback. On an SMT part exposing
-// no cross-core cache that silently reinstates the defect this function exists to fix.
-BOOST_AUTO_TEST_CASE(cpu_topology_shared_domain_ignores_smt_siblings) {
-    const ScopedTree tree("smt");
-    write_cache_fixture(tree.path(), {{1, "0,64"}, {2, "0,64"}});
-    const std::vector<int> siblings{0, 64};
-    const auto got = partition::topo_detail::shared_domain_cpus(tree.path().string(), 0, siblings);
-    // Must not have selected the sibling-only level. Whatever it returns comes from the NUMA fallback, so
-    // it either found nothing or found a set wider than this one core.
-    BOOST_CHECK(got != siblings);
-}
-
-// Levels are selected by reported cache level, not by index order, so a /sys that lists them out of order
-// still groups by the deepest one.
-BOOST_AUTO_TEST_CASE(cpu_topology_shared_domain_selects_by_level_not_index) {
-    const ScopedTree tree("order");
-    write_cache_fixture(tree.path(), {{3, "0-3"}, {1, "0"}, {2, "0-1"}});
-    const auto got = partition::topo_detail::shared_domain_cpus(tree.path().string(), 0, {0});
-    BOOST_TEST(got == (std::vector<int>{0, 1, 2, 3}), boost::test_tools::per_element());
-}
-
-// A64FX-shaped: /sys/devices/system/cpu/cpuN/cache does not exist at all on Deucalion's ARM nodes -- no
-// level is reported, not just no L3 -- so the NUMA node is the only signal left. Verified on cna0001.
-BOOST_AUTO_TEST_CASE(cpu_topology_shared_domain_falls_back_when_no_cache_tree) {
-    const ScopedTree tree("nocache");
-    std::filesystem::create_directories(tree.path()); // exists, but with no cache/ inside
-    const auto got = partition::topo_detail::shared_domain_cpus(tree.path().string(), 0, {0});
-    // Falls through to this host's real NUMA topology: either unreadable (empty) or a node containing cpu0.
-    if (!got.empty()) {
-        BOOST_CHECK(std::find(got.begin(), got.end(), 0) != got.end());
     }
 }
 

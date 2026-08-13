@@ -43,4 +43,6 @@ monoprop_EXPORT auto validate_expected_graph_layers(size_t current_layers, size_
 // only_rotate_len_k is optional; when set it must satisfy 0 < k <= max_k.
 monoprop_EXPORT auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void;
 
+monoprop_EXPORT auto expected_num_params(const VecZ &parameter_mapping) -> size_t;
+
 } // namespace monoprop

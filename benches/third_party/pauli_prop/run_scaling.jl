@@ -19,6 +19,8 @@
 using PauliPropagation
 using JSON
 
+include(joinpath(@__DIR__, "..", "bench_common.jl"))
+
 function parse_args(args)
     opts = Dict{String,Any}(
         "nx" => nothing, "ny" => nothing, "step-max" => nothing,
@@ -76,6 +78,7 @@ step_range = settings["step_min"]:settings["step_size"]:step_max
 runtimes = Float64[]
 num_terms = Int[]
 memory = Float64[]
+operator_memory = Float64[]
 expvals = Float64[]
 
 println("[PauliPropagation.jl] $(nx)x$(ny) ($nq qubits), dt=$dt, atol=$lower_atol, " *
@@ -83,14 +86,24 @@ println("[PauliPropagation.jl] $(nx)x$(ny) ($nq qubits), dt=$dt, atol=$lower_ato
         "threads=$(Threads.nthreads()), v$(pkgversion(PauliPropagation))")
 flush(stdout)
 
+# Same instrument as the Python arm (backends._run_steps), so the two are comparable.
+window = HighWaterMark()
+
+# Taken before the first window opens: start! resets the kernel's mm->hiwater_rss, which is
+# what Sys.maxrss() reports, so it stops being a whole-run ceiling from that point on.
+setup_peak_mb = Sys.maxrss() / 1024^2
+
 for _ in step_range
+    start!(window)
     t1 = time_ns()
     global pauli_sum = advance!(pauli_sum)
     expval = overlapwithzero(pauli_sum)
     t2 = time_ns()
+    stop!(window)
     push!(runtimes, (t2 - t1) / 1e9)
     push!(num_terms, length(pauli_sum))
-    push!(memory, Base.summarysize(pauli_sum) / 1024^2)
+    push!(memory, peak_mb(window))
+    push!(operator_memory, Base.summarysize(pauli_sum) / 1024^2)
     push!(expvals, expval)
 end
 
@@ -108,9 +121,10 @@ record = Dict(
     "total_runtime_excl_first_s" => sum(runtimes[2:end]),
     "final_step_s" => runtimes[end],
     "final_memory_MB" => memory[end],
-    "memory_metric" => "Base.summarysize of the Pauli sum",
-    "operator_memory_MB" => memory[end],
-    "peak_rss_MB" => Sys.maxrss() / 1024^2,
+    "memory_metric" => "peak process RSS over the step (kernel VmHWM)",
+    "operator_memory_MB" => operator_memory[end],
+    "operator_memory_metric" => "Base.summarysize of the Pauli sum",
+    "peak_rss_MB" => max(setup_peak_mb, maximum(memory)),
     "final_num_terms" => num_terms[end],
     "final_expval" => expvals[end],
     "max_terms_budget" => nothing,

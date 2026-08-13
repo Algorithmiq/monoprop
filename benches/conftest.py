@@ -45,7 +45,7 @@ from _builders import (
     build_random_propagator,
     make_random_problem,
 )
-from _memory import (
+from _memory_cpu import (
     HighWaterMark,
     PssSampler,
     merge_peak_of_sum,
@@ -166,6 +166,8 @@ def _meta() -> dict[str, Any]:
         "cpu_count_physical": psutil.cpu_count(logical=False),
         "hostname": socket.gethostname(),
         "monoprop_version": monoprop.__version__,
+        "monoprop_variant": monoprop.__variant__,
+        "monoprop_compiler_flags": monoprop.__compiler_flags__,
     }
 
 
