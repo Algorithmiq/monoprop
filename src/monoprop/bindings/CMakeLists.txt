@@ -67,9 +67,11 @@ message(STATUS "Using nanobind: ${nanobind_DIR} (version ${nanobind_VERSION})")
 # One translation unit: MonomialPropagator is a single class, so there is nothing to generate or to
 # split into per-mode-width batches.
 nanobind_add_module(_core
-  STABLE_ABI  # Perform a stable ABI build
-  NB_STATIC  # Compile the core nanobind library as a static library
-  NOMINSIZE  # Don’t perform optimizations to minimize binary size
+ STABLE_ABI  # perform a stable ABI build
+  NB_SUPPRESS_WARNINGS  # suppress warnings from nanobind and Python headers
+  NB_STATIC  # compile the core nanobind library as a static library
+  NOMINSIZE  # don’t perform optimizations to minimize binary size
+  LTO  # perform link-time optimization
   ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
 )
 
@@ -84,27 +86,6 @@ target_include_directories(
 )
 
 target_link_libraries(_core PRIVATE monoprop-objs)
-
-if(APPLE)
-  set(_rpath "@loader_path/${CMAKE_INSTALL_LIBDIR}")
-else()
-  set(_rpath "\$ORIGIN/${CMAKE_INSTALL_LIBDIR}")
-endif()
-
-set_target_properties(
-  _core
-  PROPERTIES
-    MACOSX_RPATH
-      ON
-    SKIP_BUILD_RPATH
-      OFF
-    BUILD_WITH_INSTALL_RPATH
-      OFF
-    INSTALL_RPATH
-      "${_rpath}"
-    INSTALL_RPATH_USE_LINK_PATH
-      ON
-)
 
 if(APPLE)
   set(_rpath "@loader_path/${CMAKE_INSTALL_LIBDIR}")
