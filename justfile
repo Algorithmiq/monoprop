@@ -38,9 +38,9 @@ test:
 # Pass RANKS as either a single integer or a semicolon-separated list (e.g. "1;2;4").
 
 test-mpi RANKS='':
-    export OMPI_MCA_rmaps_base_oversubscribe="1"
     uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v
-    ranks="${1:-${monoprop_MPI_TEST_PROCS:-2}}"
+    export OMPI_MCA_rmaps_base_oversubscribe="1"; \
+    ranks="${1:-${monoprop_MPI_TEST_PROCS:-2}}"; 
     for r in ${ranks//;/ }; \
     do echo "Running full Python test suite with ${r} MPI rank(s)"; \
     mpiexec -n "$r" uv run --no-sync python -m pytest tests --with-mpi -v; \
