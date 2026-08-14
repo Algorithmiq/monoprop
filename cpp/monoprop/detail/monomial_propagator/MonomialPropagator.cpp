@@ -205,6 +205,7 @@ MonomialPropagator::MonomialPropagator(const MonomialPropagator &other)
       lower_atol_(other.lower_atol_),
       upper_atol_(other.upper_atol_),
       core_term_(other.core_term_),
+      initial_operator_epoch_(other.initial_operator_epoch_),
       logical_num_modes_(other.logical_num_modes_),
       cutoff_type_(other.cutoff_type_),
       basis_change_(other.basis_change_),
@@ -353,6 +354,7 @@ auto MonomialPropagator::use_sparse_rows_() const -> bool {
 }
 
 auto MonomialPropagator::apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList, VecD> {
+    ++initial_operator_epoch_;
     if (partition_group_) {
         // The facade holds no local terms of its own, so the return is empty.
         for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
@@ -931,6 +933,9 @@ auto MonomialPropagator::make_functional_(Fn &&func, std::optional<double> pare_
     const auto comm = comm_;
 
     const auto expected_layers = graph_layers();
+    // Aliased rather than copied: the check below needs the live counter, like graph->layers().
+    const auto *epoch = &initial_operator_epoch_;
+    const auto expected_epoch = initial_operator_epoch_;
     const auto &inverted_index = mp_op_.inverted_index();
 
     // One owning handle either way: pare hands back a heap-owned MPGraph the functional must keep alive
@@ -965,9 +970,12 @@ auto MonomialPropagator::make_functional_(Fn &&func, std::optional<double> pare_
             parameter_mapping,
             gen_coeffs,
             num_params,
+            epoch,
+            expected_epoch,
             expected_layers,
             cos = std::move(cos),
             comm](const VecD &params) -> R {
+        validate_expected_initial_operator(*epoch, expected_epoch);
         validate_functional_call(params, num_params);
         validate_expected_graph_layers(graph->layers(), expected_layers);
         return func(EvalRequest{.e_core = core_term,

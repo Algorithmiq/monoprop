@@ -53,6 +53,40 @@ BOOST_AUTO_TEST_CASE(update_initial_operator_updates_core_expval) {
 
     auto updated_fn = simulator.expectation_value_functional(std::nullopt);
     BOOST_TEST(updated_fn(empty_params) == 2.75, tt::tolerance(1e-12));
+
+    // The functional built before the re-weight snapshotted the old coefficients, so it must reject
+    // the call rather than answer for an operator the propagator no longer holds.
+    BOOST_CHECK_THROW(expval_fn(empty_params), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(update_initial_operator_invalidates_gradient_functional) {
+    constexpr size_t n_modes = 2;
+    OperatorDict initial_ham;
+    initial_ham[VecZ{}] = std::complex<double>{1.0, 0.0};
+
+    VecZ initial_state{0, 1};
+    MonomialPropagator simulator(initial_ham,
+                                 6,
+                                 initial_state,
+                                 2 * n_modes,
+                                 std::nullopt,
+                                 MPI_COMM_SELF,
+                                 std::nullopt,
+                                 std::nullopt,
+                                 CutoffType::Support,
+                                 std::nullopt);
+
+    const VecD empty_params;
+    auto grad_fn = simulator.expectation_value_and_gradient_functional(std::nullopt);
+    BOOST_TEST(grad_fn(empty_params).first == 1.0, tt::tolerance(1e-12));
+
+    OperatorDict updated;
+    updated[VecZ{}] = std::complex<double>{2.75, 0.0};
+    simulator.update_initial_operator(updated);
+
+    BOOST_CHECK_THROW(grad_fn(empty_params), std::runtime_error);
+    BOOST_TEST(simulator.expectation_value_and_gradient_functional(std::nullopt)(empty_params).first == 2.75,
+               tt::tolerance(1e-12));
 }
 
 BOOST_AUTO_TEST_CASE(update_initial_operator_throws_for_unknown_term_in_heisenberg) {
