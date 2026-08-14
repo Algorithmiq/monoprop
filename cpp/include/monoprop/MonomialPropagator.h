@@ -308,6 +308,10 @@ private:
     std::optional<double> lower_atol_, upper_atol_;
     double core_term_{0.0};
 
+    // Bumped by every initial-operator re-weight. A functional snapshots the operator coefficients, so
+    // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
+    size_t initial_operator_epoch_{0};
+
     size_t logical_num_modes_{NumModes};
 
     CutoffType cutoff_type_;

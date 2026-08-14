@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import Circuit, ExpGate, MajoranaPropagator
+from monoprop import Circuit, ExpGate, MajoranaPropagator, PauliPropagator
 from monoprop.majorana import MajoranaOperator
+from monoprop.pauli import PauliOperator
 
 
 def _two_gate_graph(serial_comm):
@@ -118,6 +119,85 @@ class TestGraphAndParameterValidation:
         # stale-graph guard fires rather than the parameter-length check.
         with pytest.raises(RuntimeError, match=r"MP object has been modified"):
             functional([1.0, 2.0])
+
+    @pytest.mark.parametrize(
+        (
+            "propagator_cls",
+            "initial_operator",
+            "updated_operator",
+            "gate_generators",
+            "cutoff",
+        ),
+        [
+            pytest.param(
+                MajoranaPropagator,
+                MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2),
+                MajoranaOperator({(0, 1): 2.0j, (2, 3): 0.5j}, num_modes=2),
+                (
+                    MajoranaOperator({(0,): 1.0}, num_modes=2),
+                    MajoranaOperator({(1,): 1.0}, num_modes=2),
+                ),
+                4,
+                id="majorana",
+            ),
+            pytest.param(
+                PauliPropagator,
+                PauliOperator({"ZZ": 1.0, "XX": 0.5}, num_qubits=2),
+                PauliOperator({"ZZ": 2.0, "XX": 0.5}, num_qubits=2),
+                (
+                    PauliOperator({"XI": 1.0}, num_qubits=2),
+                    PauliOperator({"IY": 1.0}, num_qubits=2),
+                ),
+                2,
+                id="pauli",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "schrodinger_cutoff", [None, 2], ids=["heisenberg", "schrodinger"]
+    )
+    @pytest.mark.parametrize(
+        "functional_name",
+        [
+            "expectation_value_functional",
+            "expectation_value_and_gradient_functional",
+        ],
+    )
+    def test_functional_invalidated_after_initial_operator_update(
+        self,
+        serial_comm,
+        propagator_cls,
+        initial_operator,
+        updated_operator,
+        gate_generators,
+        cutoff,
+        schrodinger_cutoff,
+        functional_name,
+    ):
+        mp = propagator_cls(
+            initial_operator,
+            [0, 1],
+            cutoff=cutoff,
+            schrodinger_cutoff=schrodinger_cutoff,
+            comm=serial_comm,
+        )
+        mp.build_graph(
+            Circuit(tuple(ExpGate(generator) for generator in gate_generators), 2)
+        )
+        functional = getattr(mp, functional_name)()
+        parameters = [0.3, 0.7]
+        functional(parameters)
+
+        mp.update_initial_operator(updated_operator)
+
+        # The functional snapshotted the old coefficients, so it must reject the call rather than
+        # keep answering for the operator the propagator no longer holds.
+        with pytest.raises(RuntimeError, match=r"MP object has been modified"):
+            functional(parameters)
+
+        rebuilt = getattr(mp, functional_name)()(parameters)
+        rebuilt_expval = rebuilt[0] if isinstance(rebuilt, tuple) else rebuilt
+        assert rebuilt_expval == pytest.approx(mp.expval(parameters))
 
 
 class TestEvolvedOperatorBothPictures:

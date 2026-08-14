@@ -220,7 +220,9 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         affected -- the gates and their generator coefficients are unchanged. Unlike the
         base method, which takes the engine's raw symplectic-slot keys, this accepts qubit Pauli
         terms and encodes them via
-        [get_local_operator][monoprop.pauli.PauliOperator.get_local_operator].
+        [get_local_operator][monoprop.pauli.PauliOperator.get_local_operator]. Functionals created
+        earlier are invalidated; see
+        [update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator].
 
         Args:
             new_operator: A [PauliOperator][monoprop.pauli.PauliOperator] whose terms replace the
