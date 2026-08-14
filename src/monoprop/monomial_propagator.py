@@ -382,6 +382,10 @@ class MonomialPropagator(ABC, Generic[T_op]):
     ) -> Callable[..., float]:
         """Return a reusable callable computing the expectation value from parameters.
 
+        The callable is built against the graph and initial-operator coefficients present now, so
+        mutating either -- [build_graph][], [contract_partially][], [update_initial_operator][] --
+        invalidates it; build a new one after such a call.
+
         Args:
             pare_threshold: Edge-retention cutoff for this functional's masked plan: edges
                 contributing below it are pared away and skipped during replay, trading memory and
@@ -389,6 +393,10 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
         Returns:
             A callable ``fn(parameters=None) -> float``.
+
+        Raises:
+            RuntimeError: From the returned callable, if the propagator was mutated after this
+                functional was created.
         """
         fn = self._simulator.expectation_value_functional(pare_threshold)
         return lambda parameters=None: fn(self._bind(parameters))
@@ -398,13 +406,18 @@ class MonomialPropagator(ABC, Generic[T_op]):
     ) -> Callable[..., tuple]:
         """Return a reusable callable computing (expectation value, gradient).
 
-        Like [expectation_value_functional][], but one backward pass also yields the gradient.
+        Like [expectation_value_functional][], but one backward pass also yields the gradient. It is
+        invalidated by the same mutations.
 
         Args:
             pare_threshold: See [expectation_value_functional][].
 
         Returns:
             A callable ``fn(parameters=None) -> (float, np.ndarray)``, gradient in parameter order.
+
+        Raises:
+            RuntimeError: From the returned callable, if the propagator was mutated after this
+                functional was created.
         """
         fn = self._simulator.expectation_value_and_gradient_functional(pare_threshold)
 
@@ -527,6 +540,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
         A re-weight, not a rebuild: the graph, its gates, and their generator coefficients are kept.
         Each concrete front-end implements this over its own operator type, encoding the terms into
         the engine's raw index tuples.
+
+        Functionals hold the coefficients they were built with, so any created earlier are
+        invalidated -- they raise instead of answering for the replaced operator.
 
         Args:
             new_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
