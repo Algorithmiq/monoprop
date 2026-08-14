@@ -24,6 +24,7 @@
 #include <boost/unordered/unordered_flat_map.hpp>
 
 #include "monoprop/Bitset.h"
+#include "monoprop/monopropExport.h"
 
 namespace monoprop {
 
@@ -79,11 +80,17 @@ inline auto monomial_hash(const Bitset &mono) noexcept -> size_t {
 // Structural keep/drop predicate applied to a monomial after each gate.
 using CutoffFn = std::function<bool(const Bitset &)>;
 
-enum class CutoffType {
+enum class CutoffType : unsigned char {
     Length, // Keep if the monomial length (number of Majorana operators) <= cutoff (or fully paired)
     Support // Keep if the orbital support (number of distinct orbitals) <= cutoff (or fully paired)
 };
 
-enum class Basis : uint8_t { Majorana, Pauli };
+monoprop_EXPORT auto cutoff_type_str_2_enum(const std::string &cutoff_type) -> CutoffType;
+monoprop_EXPORT auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string;
+
+enum class Basis : unsigned char { Majorana, Pauli };
+
+monoprop_EXPORT auto basis_str_2_enum(const std::string &basis) -> Basis;
+monoprop_EXPORT auto basis_enum_2_str(Basis basis) -> std::string;
 
 } // namespace monoprop
