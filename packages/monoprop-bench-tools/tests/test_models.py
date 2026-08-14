@@ -12,16 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the benchmark model builders (``benches/_builders.py``).
-
-``benches`` is on the pytest pythonpath (see ``pyproject.toml``), so it imports as ``_builders``.
-"""
+"""Tests for the benchmark model builders."""
 
 from __future__ import annotations
 
 import inspect
 
-from _builders import build_random_propagator, make_random_problem
+from monoprop_bench_tools.models import build_random_propagator, make_random_problem
 
 
 def test_random_default_sizes_are_meaningful() -> None:

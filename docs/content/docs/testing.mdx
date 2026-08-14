@@ -18,6 +18,18 @@ The Python tests run with `pytest`. Without MPI:
 uv run python -m pytest -m "not mpi"   # or: just test
 ```
 
+This collects two suites: monoprop's own (`tests/`) and the one belonging to the
+`monoprop-bench-tools` workspace member (`packages/monoprop-bench-tools/tests/`).
+The member has to be installed for the second to import, which is what the
+`workspace-test` dependency group is for:
+
+```bash
+uv sync --all-groups --all-extras   # or: uv sync --group workspace-test --all-extras
+```
+
+The plain `test` group covers monoprop's suite alone; it is deliberately free of
+workspace members so it can be installed against a built wheel in CI.
+
 The MPI tests need an MPI-enabled build, which the default source build does not
 produce. The `just` recipes build an MPI-enabled extension and launch the suite
 under `mpiexec`:

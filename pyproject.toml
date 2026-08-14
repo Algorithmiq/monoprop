@@ -64,6 +64,9 @@ interactive = [
   "qiskit>=2.0.0",
   "pyscf",
 ]
+# Dependencies of monoprop's own suite (`tests/`). Deliberately free of workspace
+# members: cibuildwheel installs this group to exercise a *built wheel*, and a
+# workspace member would drag monoprop back in from source.
 test = [
   "psutil>=7.2",
   "pytest-cases>=3.8.6,<4",
@@ -73,7 +76,10 @@ test = [
   "pytest>=8.2.2,<9.1",
   "tabulate>=0.9",
 ]
-bench = [{ include-group = "test" }, "pytest-benchmark>=5"]
+# What `uv run pytest` needs at the repository root, which also collects the
+# workspace members' suites (see `testpaths`).
+workspace-test = [{ include-group = "test" }, "monoprop-bench-tools"]
+bench = [{ include-group = "workspace-test" }, "pytest-benchmark>=5"]
 
 
 [tool.uv]
@@ -88,6 +94,22 @@ cache-keys = [
   { file = "cmake/**/*" },
   { file = "src/monoprop/bindings/bindings.cpp.in" },
 ]
+
+
+# One lockfile for monoprop and the tooling it releases alongside itself, so a
+# `uv sync` cannot leave the two at incompatible versions.
+#
+# `packages/bench-third-party` is deliberately excluded. It pins a narrower
+# `requires-python`, a git dependency, and CUDA-specific `cupy` / `cuquantum`
+# wheels that exist only for linux-x86_64; folding those into this lock would
+# constrain (and frequently break) resolution for everyone who only wants to
+# build monoprop. It stays a standalone uv project with its own lockfile.
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/bench-third-party"]
+
+[tool.uv.sources]
+monoprop-bench-tools = { workspace = true }
 
 
 [[tool.dynamic-metadata]]
@@ -110,6 +132,7 @@ sdist.exclude = [
   ".github",
   ".devcontainer",
   ".vscode",
+  "packages",
   "performance_scripts",
   "results",
   "src/ex_script.cpp",
@@ -150,11 +173,11 @@ addopts = [
 ]
 xfail_strict = true
 filterwarnings = ["error"]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/monoprop-bench-tools/tests"]
 # Collect both the test suite (test_*.py) and the benchmark suite (bench_*.py);
 # benches/ is excluded from testpaths so it only runs when invoked explicitly.
 python_files = ["test_*.py", "bench_*.py"]
-pythonpath = [".", "benches"]
+pythonpath = ["."]
 markers = [
   "slow: mark test as slow (>=1 minute runtime)",
   "mpi: mark test as requiring --with-mpi (pytest-mpi)",
@@ -196,6 +219,7 @@ exclude_also = [
 # for the default settings, see: https://docs.astral.sh/ruff/configuration/#configuring-ruff
 exclude = [
   "src/monoprop/_version.py",
+  "packages/monoprop-bench-tools/src/monoprop_bench_tools/_version.py",
   "docs/conf.py",
   "performance_scripts/*.py",
 ]
@@ -294,16 +318,22 @@ flake8-annotations.allow-star-arg-any = true
 # - ANN (flake8-annotations)
 # - I002 (isort required import)
 "tests/**/test_*.py" = ["ANN", "I002"]
+# workspace members carry their own test suites, under the same relaxations
+"packages/*/tests/*" = ["S101", "D", "C901", "INP001", "E721", "ANN", "I002"]
 # ignore I002 (isort required import) for all `__init__.py` files
 "src/monoprop/**/__init__.py" = ["I002"]
 # benchmark suite: asserts are fine (S101), it is an intentional non-package
-# directory loaded via pythonpath (INP001), the MPI communicator type is
-# unavoidably dynamic (ANN401), and report.py intentionally prints (T201).
-"benches/*" = ["S101", "INP001", "ANN401", "T201"]
+# directory holding pytest modules (INP001), and the MPI communicator type is
+# unavoidably dynamic (ANN401).
+"benches/*" = ["S101", "INP001", "ANN401"]
 # benchmark test functions: annotations on the pytest signatures are just noise.
 "benches/bench_*.py" = ["ANN"]
-# cupy is an optional, GPU-only dependency of a separate uv project (benches/third_party);
-"benches/_memory_gpu.py" = ["PLC0415"]
+# the report renderer writes to stdout by design (T201) and the MPI communicator
+# type is unavoidably dynamic (ANN401).
+"packages/monoprop-bench-tools/src/**" = ["ANN401", "T201"]
+# cupy is an optional, GPU-only extra, so it is imported inside the functions
+# that need it (PLC0415).
+"packages/monoprop-bench-tools/src/monoprop_bench_tools/memory/gpu.py" = ["PLC0415"]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,

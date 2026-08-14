@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling>=1.27", "hatch-vcs>=0.4"]
+build-backend = "hatchling.build"
+
+
+[project]
+name = "monoprop-bench-tools"
+authors = [
+  { name = "Algorithmiq Development Team", email = "aurora@algorithmiq.fi" },
+]
+description = "Benchmark harness for monoprop: memory accounting, model builders, and result renderers."
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering :: Physics",
+  "Topic :: System :: Benchmark",
+  "Typing :: Typed",
+]
+dynamic = ["version"]
+dependencies = [
+  "monoprop",
+  "numpy>=2",
+  "psutil>=7.2",
+  "tabulate>=0.9",
+]
+
+
+[project.urls]
+Homepage = "https://github.com/Algorithmiq/monoprop"
+"Bug Tracker" = "https://github.com/Algorithmiq/monoprop/issues"
+Changelog = "https://github.com/Algorithmiq/monoprop/releases"
+
+
+[project.scripts]
+monoprop-bench-report = "monoprop_bench_tools.report:main"
+monoprop-bench-bmf = "monoprop_bench_tools.bmf:main"
+
+
+[dependency-groups]
+test = ["pytest>=8.2.2,<9.1"]
+
+
+# Only consulted when this package is tested on its own; a run from the
+# repository root is governed by the root pyproject.toml.
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = ["--import-mode=importlib", "-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
+filterwarnings = ["error"]
+testpaths = ["tests"]
+
+
+# The GPU high-water mark reads CUDA memory-pool counters, so it needs a CUDA
+# build of CuPy. That is deliberately not an extra: the wheels are large and
+# pinned to one CUDA version and one architecture, and declaring them here would
+# pull them into the lockfile of every workspace that depends on this package.
+# Install the CuPy build that matches your toolkit yourself; without it
+# `monoprop_bench_tools.memory.gpu` reports `Method.UNAVAILABLE` rather than
+# failing to import.
+
+
+# `monoprop` is a workspace member during development, but the published
+# distribution resolves it from PyPI like any other dependency.
+[tool.uv.sources]
+monoprop = { workspace = true }
+
+
+# The version comes from the repository's git tags, so a monoprop release tags
+# the tools that measure it. `root` points at the repository, not this package.
+[tool.hatch.version]
+source = "vcs"
+raw-options = { root = "../.." }
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/monoprop_bench_tools/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/monoprop_bench_tools"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE"]

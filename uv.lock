@@ -6,6 +6,12 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
+[manifest]
+members = [
+    "monoprop",
+    "monoprop-bench-tools",
+]
+
 [[package]]
 name = "appnope"
 version = "0.1.4"
@@ -992,6 +998,7 @@ qiskit = [
 
 [package.dev-dependencies]
 bench = [
+    { name = "monoprop-bench-tools" },
     { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
@@ -1030,6 +1037,16 @@ test = [
     { name = "pytest-mpi" },
     { name = "tabulate" },
 ]
+workspace-test = [
+    { name = "monoprop-bench-tools" },
+    { name = "psutil" },
+    { name = "pytest" },
+    { name = "pytest-cases" },
+    { name = "pytest-cov" },
+    { name = "pytest-datadir" },
+    { name = "pytest-mpi" },
+    { name = "tabulate" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1042,6 +1059,7 @@ provides-extras = ["mpi", "qiskit"]
 
 [package.metadata.requires-dev]
 bench = [
+    { name = "monoprop-bench-tools", editable = "packages/monoprop-bench-tools" },
     { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-benchmark", specifier = ">=5" },
@@ -1080,6 +1098,43 @@ test = [
     { name = "pytest-mpi", specifier = ">=0.6" },
     { name = "tabulate", specifier = ">=0.9" },
 ]
+workspace-test = [
+    { name = "monoprop-bench-tools", editable = "packages/monoprop-bench-tools" },
+    { name = "psutil", specifier = ">=7.2" },
+    { name = "pytest", specifier = ">=8.2.2,<9.1" },
+    { name = "pytest-cases", specifier = ">=3.8.6,<4" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-datadir" },
+    { name = "pytest-mpi", specifier = ">=0.6" },
+    { name = "tabulate", specifier = ">=0.9" },
+]
+
+[[package]]
+name = "monoprop-bench-tools"
+source = { editable = "packages/monoprop-bench-tools" }
+dependencies = [
+    { name = "monoprop" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "psutil" },
+    { name = "tabulate" },
+]
+
+[package.dev-dependencies]
+test = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "monoprop", editable = "." },
+    { name = "numpy", specifier = ">=2" },
+    { name = "psutil", specifier = ">=7.2" },
+    { name = "tabulate", specifier = ">=0.9" },
+]
+
+[package.metadata.requires-dev]
+test = [{ name = "pytest", specifier = ">=8.2.2,<9.1" }]
 
 [[package]]
 name = "mpi4py"
