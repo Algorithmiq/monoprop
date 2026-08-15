@@ -87,7 +87,9 @@ mkdir -p "$RESULTS"
 
 export MALLOC_ARENA_MAX="$PARTITIONS"
 export monoprop_NUM_THREADS="$PARTITIONS"
-export monoprop_COMM_PROFILE=1
+# No monoprop_COMM_PROFILE: it exists on neither arm here, so setting it and then counting
+# COMMPROF lines is a check that can only ever report zero -- an alarm every cell, and the
+# kind of two-zeros comparison that has produced false diagnoses on this project before.
 
 # GNU time, not the shell builtin -- only the former has -v. Identical on both arms or
 # neither, since wrapping one side only is a systematic difference between them.
@@ -164,9 +166,24 @@ for rep in $(seq 1 "$REPS"); do
             # and a figure produced by the thing under test is not an independent check of
             # it. `memhwm` in the results JSON is the suite's own answer; this is the
             # control. Absent /usr/bin/time the run proceeds unwrapped rather than failing.
+            # --cpu-bind=none, NOT =cores. Measured on this branch at 8 ranks x 16
+            # partitions: --cpu-bind=cores hands each rank a disjoint 16-core slice, so
+            # enumerate_physical_cores reports 16 while the placement policy still asks for
+            # ranks_per_node x partitions = 128, refuses, and every rank runs UNPLACED --
+            # 0 pinned threads on both arms, which ab_summary rightly refuses as "two
+            # unplaced builds". The measured alternatives, at 8x16:
+            #
+            #   --cpu-bind=cores    affinity 16   0 pinned   UNPLACED
+            #   --cpu-bind=threads  affinity 16   0 pinned   UNPLACED
+            #   --cpu-bind=none     affinity 128  16 pinned  PLACED, and the 8 ranks take
+            #                                                DISJOINT sixteenths covering
+            #                                                all 128 cpus exactly once
+            #
+            # Leaving all 128 visible is what lets the engine divide the node itself. The
+            # per-rank-slice fix that would make =cores work lives on another branch.
             srun --mpi=pmix --ntasks="$NTASKS" --ntasks-per-node="$RANKS_PER_NODE" \
                  --cpus-per-task=$((128 / RANKS_PER_NODE)) \
-                 --cpu-bind=cores --distribution=block:block \
+                 --cpu-bind=none --distribution=block:block \
                  ${TIME_V:-} "$venv/bin/python" -m pytest benches/bench_models.py \
                  -o filterwarnings=default -k "$SELECT" -m slow \
                  "--${MODEL}-cutoff=$CUTOFF" "--${MODEL}-lower-atol=$LOWER_ATOL" \
@@ -176,13 +193,8 @@ for rep in $(seq 1 "$REPS"); do
                  -q -s -p no:cacheprovider >"$OUT" 2>&1 \
                  || echo "!! $LABEL failed (rc=$?), continuing -- see $OUT"
 
-            # Assert the instruments fired, at the point of collection: "both arms measured
+            # Assert the instrument fired, at the point of collection: "both arms measured
             # the same" and "nothing emitted" are otherwise the same observation.
-            if [ "$side" = port ]; then
-                nprof=$(grep -c COMMPROF "$OUT" 2>/dev/null || echo 0)
-                [ "$nprof" -ge "$NTASKS" ] \
-                    || echo "!! COMMPROF: $nprof lines for $NTASKS ranks in $LABEL"
-            fi
             if [ -n "${TIME_V:-}" ]; then
                 nrss=$(grep -c "Maximum resident set size" "$OUT" 2>/dev/null || echo 0)
                 [ "$nrss" -ge "$NTASKS" ] \
@@ -211,7 +223,12 @@ echo "=== paired summary ==="
 # and a parser that dies there writes its traceback to the .err file nobody reads while
 # leaving a headed table with no rows -- which reads exactly like "the two arms are
 # identical". See ab-100m.sh.
-"$PORT_VENV/bin/python" hpc/deucalion/tools/ab_summary.py "$RESULTS" 2>&1 \
+# --allow-both-placed, because here both arms placing is the HEALTHY state. That refusal
+# exists for a branch where placement itself is the change, so a baseline that also placed
+# means a venv is not the build it is labelled as. This branch does not touch placement:
+# both arms run the same launcher settings and both must pin, and it is neither arm pinning
+# that would void the run. Every other refusal is left armed.
+"$PORT_VENV/bin/python" hpc/deucalion/tools/ab_summary.py "$RESULTS" --allow-both-placed 2>&1 \
     | tee "$RESULTS/AB-SUMMARY.md"
 summary_rc=${PIPESTATUS[0]}
 if [ "$summary_rc" -ne 0 ]; then
