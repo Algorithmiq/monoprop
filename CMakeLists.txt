@@ -65,15 +65,6 @@ set(
   "Inverted-index chunk height in 64-bit fold words (must divide 1024)"
 )
 
-# Escape hatch for the inverted index's container choice; 0 leaves the pure smallest-container rule
-# in place. See docs/content/docs/building.mdx.
-set(
-  monoprop_INVIDX_BITMAP_M_STAR
-  "0"
-  CACHE STRING
-  "Force a full bitmap for inverted-index chunks holding at least this many set rows (0 = off)"
-)
-
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
 set(Python_FIND_VIRTUALENV FIRST)
@@ -121,7 +112,6 @@ message(STATUS "   Sanitizer profile      : ${monoprop_SANITIZER}")
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
 message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
 message(STATUS "   Inv. index chunk words : ${monoprop_INVIDX_CHUNK_WORDS}")
-message(STATUS "   Inv. index bitmap M*   : ${monoprop_INVIDX_BITMAP_M_STAR}")
 message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 

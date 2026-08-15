@@ -55,6 +55,12 @@ struct MatchedEpochSet {
     auto mark(size_t i) -> void { epoch_[i] = cur_; }
     [[nodiscard]] auto is_marked(size_t i) const -> bool { return epoch_[i] == cur_; }
     [[nodiscard]] auto memory_bytes() const -> size_t { return epoch_.capacity() * sizeof(Stamp); }
+    // Same bounded-slack rule as OperatorIndex::shrink_rows_to_fit; see the note there.
+    auto shrink_to_fit() -> void {
+        if (epoch_.capacity() > epoch_.size() + (epoch_.size() / 8)) {
+            epoch_.shrink_to_fit();
+        }
+    }
 };
 
 // A trivial aggregate on purpose — not std::pair — so DefaultInitVector can skip the zero-fill and lower

@@ -70,7 +70,6 @@ These are `cmake.define` overrides, passed exactly like `monoprop_ENABLE_MPI` ab
 | `monoprop_MAX_NUM_MODES` | `250` | Highest mode count instantiated. Larger values cost build time and binary size. |
 | `monoprop_WIDE_TERM_INDEX` | `OFF` | 64-bit term indices, for operators past 2^32 terms on one rank. |
 | `monoprop_INVIDX_CHUNK_WORDS` | `512` | Inverted-index chunk height in 64-bit fold words (512 → 32768 rows). Must divide 1024 and stay at or below it. |
-| `monoprop_INVIDX_BITMAP_M_STAR` | `0` (off) | Make the inverted index store a chunk as a full bitmap once it holds this many set rows. |
 
 `monoprop_INVIDX_CHUNK_WORDS` trades two costs against each other. Rows past the
 last sealed chunk sit in a growing tail whose buffer is reserved a whole chunk at
@@ -80,27 +79,27 @@ per-partition sizes, and the minimum is interior rather than at the bottom end
 because the fold also gets slower as chunks shrink. Change it only with a memory
 measurement in hand.
 
-`monoprop_INVIDX_BITMAP_M_STAR` is an escape hatch rather than a knob to reach
-for. By default the inverted index gives every (column, chunk) cell to whichever
-container is smallest, which is what makes it several times smaller than a tiered
-bitmap layout; setting a threshold spends that memory back to make the
-anticommutation fold faster.
+There is no knob for the inverted index's container choice. Every (column, chunk)
+cell goes to whichever container is smallest, and that rule is what makes the index
+several times smaller than a tiered bitmap layout. A `monoprop_INVIDX_BITMAP_M_STAR`
+option used to let you force bitmaps past a posting count, spending memory to make
+the anticommutation fold faster; it was measured and removed.
 
-The trade is much worse than it looks in a single-threaded profile. Measured on
-one core it buys real time, but production runs one partition per core and they
-compete for L3 and memory bandwidth, which is exactly the resource a bitmap
-spends. At a production per-partition size, against the default:
+The trade looked much better in a single-threaded profile than it was. Production
+runs one partition per core, and those partitions compete for L3 and memory
+bandwidth — exactly the resource a bitmap spends. Measured at a production
+per-partition size against the smallest-container rule:
 
 | `M_STAR` | bytes/term | fold, one core | fold, 16 partitions |
 | --- | --- | --- | --- |
-| `0` (default) | 6.87 | 1.00× | 1.00× |
+| off | 6.87 | 1.00× | 1.00× |
 | `850` | 7.25 | 0.97× | 0.99× |
 | `700` | 9.66 | 0.95× | 0.98× |
 | `600` | 11.81 | 0.92× | 0.96× |
 
-So 1.7× the memory buys 4% of the fold under contention, and the fold is itself a
-minority of `propagate`. Reach for this only if a profile shows the fold dominating
-*and* you have memory to spare.
+1.7× the index buys 4% of the fold under contention, and the fold is itself a
+minority of `propagate` — so no setting paid for its bytes, and the option is gone
+rather than shipped defaulted-off.
 
 ### Verify the install
 

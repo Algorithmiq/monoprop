@@ -512,6 +512,18 @@ auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
     (void)mp_op_.inverted_index();
     mp_op_.op_coeffs.shrink_to_fit();
     mp_op_.shrink_state_to_fit();
+    // The follower-marking scratch joins the shrink discipline the two lines above already apply.
+    //
+    // The ROW STORE deliberately does not, even though its slack is larger. This function runs after
+    // every propagate(), not once at the end of a run -- Hubbard's 29 Trotter steps call it 29 times --
+    // and a shrink_to_fit there reallocs the whole row array on each, which measured `propagate`
+    // **1.030x slower, 6/6, p=0.031** on Hubbard c10 while the single-propagate kicked-Ising workload
+    // showed nothing (4/6, unresolved). That contrast is the attribution. The 4.1-6.0 B/term of row
+    // slack is real and still uncollected; taking it needs a row store whose growth does not copy (a
+    // segmented one), not a better-timed shrink, because geometric growth plus shrink-to-fit churns
+    // whenever both run repeatedly. `shrink_rows_to_fit()` stays available for a caller that knows the
+    // operator is final.
+    matched_scratch_.shrink_to_fit();
 }
 
 template <size_t NumModes>
