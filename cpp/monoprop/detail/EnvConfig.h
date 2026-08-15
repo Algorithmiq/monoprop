@@ -24,6 +24,7 @@
 //   monoprop_NUM_THREADS    positive int (1..1e6), else ignored                → num_threads
 //   monoprop_PARTITION_PINNING  bool, default ON; 0/false disables per-core pinning → partition_pinning
 //   monoprop_PARTITIONS         int N | "auto" | "off"; parsed where it is used (resolve_partition_count_)
+//   monoprop_LAYER_PROFILE      bool, default OFF; per-partition layer-build attribution to stderr → layer_profile
 
 namespace monoprop::config {
 
@@ -57,6 +58,7 @@ inline auto parse_positive_int(const char *text) -> std::optional<int> {
 struct Settings {
     std::optional<int> num_threads;
     bool partition_pinning = true;
+    bool layer_profile = false;
 };
 
 // Parse the environment once; the Settings are cached and shared across TUs.
@@ -65,6 +67,7 @@ inline auto get() -> const Settings & {
         Settings s;
         s.num_threads = detail::parse_positive_int(std::getenv("monoprop_NUM_THREADS"));
         s.partition_pinning = detail::parse_flag(std::getenv("monoprop_PARTITION_PINNING"), true);
+        s.layer_profile = detail::parse_flag(std::getenv("monoprop_LAYER_PROFILE"), false);
         return s;
     }();
     return settings;

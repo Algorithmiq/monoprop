@@ -169,6 +169,10 @@ public:
         }
         return overflow_.at(i).count();
     }
+    // Rows whose popcount exceeded inline_width_ and spilled. Diagnostic: every hot-path row read on
+    // one of these is a hash-map lookup, so this fraction is what decides whether the width is right.
+    [[nodiscard]] auto overflow_size() const -> size_t { return overflow_.size(); }
+    [[nodiscard]] auto inline_width() const -> size_t { return inline_width_; }
     [[nodiscard]] auto memory_bytes() const -> size_t {
         size_t total = rows_.capacity() * sizeof(PosT);
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);

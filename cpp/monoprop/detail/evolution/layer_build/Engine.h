@@ -28,6 +28,7 @@
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
+#include "monoprop/detail/evolution/LayerProfile.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
@@ -347,7 +348,11 @@ struct LayerBuildEngine {
             lv = &src_val_r[my_rank];
         }
         const size_t nq = lq.empty() ? 0 : lq.size() / kQueryWords<NumModes>;
-        resolve_range_(lq, ls, lv, 0, nq, is_leader_pass);
+        {
+            auto *const prof = layer_profile::slot();
+            const layer_profile::ScopedNs t(prof != nullptr ? &prof->resolve_ns : nullptr);
+            resolve_range_(lq, ls, lv, 0, nq, is_leader_pass);
+        }
         lq.clear();
         ls.clear();
         if constexpr (Sink::wants_values) {
@@ -376,13 +381,28 @@ struct LayerBuildEngine {
         if (R <= 1) {
             return;
         }
-        std::vector<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
+        auto *const prof = layer_profile::slot();
+        std::vector<VecZ> *sendp = nullptr;
+        {
+            const layer_profile::ScopedNs t(prof != nullptr ? &prof->sendbuf_ns : nullptr);
+            sendp = &sink.send_buffer(queries_r, src_val_r, combined_qv_);
+        }
+        std::vector<VecZ> &send = *sendp;
         std::vector<std::vector<size_t>> inc_q;
-        mpi::begin_alltoallv(send, comm).wait_into(inc_q);
-        auto resp = resolve_incoming<NumModes>(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
+        {
+            const layer_profile::ScopedNs t(prof != nullptr ? &prof->exchange_ns : nullptr);
+            mpi::begin_alltoallv(send, comm).wait_into(inc_q);
+        }
+        auto resp = [&] {
+            const layer_profile::ScopedNs t(prof != nullptr ? &prof->incoming_ns : nullptr);
+            return resolve_incoming<NumModes>(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
+        }();
         std::vector<int> resp_recv = response_recv_counts();
         std::vector<std::vector<typename Sink::Response>> inc_r;
-        mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_r);
+        {
+            const layer_profile::ScopedNs t(prof != nullptr ? &prof->exchange_ns : nullptr);
+            mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_r);
+        }
         process_responses<NumModes>(inc_r, src_idx_r, queries_r, R, my_rank, sink);
     }
 
@@ -435,6 +455,8 @@ struct LayerBuildEngine {
             return;
         }
         auto key_at = [&](size_t k) -> const Monomial<NumModes> & { return deferred_self_misses[k].mono; };
+        auto *const prof = layer_profile::slot();
+        const layer_profile::ScopedNs t(prof != nullptr ? &prof->insert_ns : nullptr);
         sink.prepare_deferred(n_miss);
         insert_absent_terms<NumModes>(local_op, n_miss, key_at, [&](size_t k, size_t base) {
             const auto &m = deferred_self_misses[k];
@@ -493,6 +515,11 @@ private:
                 break;
             }
             local_op.store->find_batch(keys.data(), m, found.data());
+            if (auto *const prof = layer_profile::slot(); prof != nullptr) {
+                for (size_t j = 0; j < m; ++j) {
+                    (found[j] < op_size ? prof->n_hit : prof->n_miss) += 1;
+                }
+            }
             for (size_t j = 0; j < m; ++j) {
                 double v_src = 0.0;
                 if constexpr (Sink::wants_values) {
@@ -537,6 +564,10 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  bool *fused_scale_out = nullptr,
                  Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
+    // Brackets the whole layer so `layer_s` minus the phases is the unattributed remainder. A phase
+    // split without this denominator says nothing about how much of the wall time is reachable.
+    auto *const layer_prof = layer_profile::slot();
+    const layer_profile::ScopedNs layer_timer(layer_prof != nullptr ? &layer_prof->layer_ns : nullptr);
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).

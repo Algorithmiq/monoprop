@@ -613,6 +613,8 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
             bool fused_scale = false;
             build_evolve_result_(mono, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc, op_coeffs, &fused_scale);
             extend_coeffs_from_current_picture_if_needed_(*op_coeffs);
+            auto *const prof = detail::layer_profile::slot();
+            const detail::layer_profile::ScopedNs t(prof != nullptr ? &prof->contract_ns : nullptr);
             detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, schrodinger_, fused_scale);
         });
 }

@@ -30,6 +30,7 @@ whose partner lives in another partition are resolved through a per-gate exchang
 | `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. Set it to run fewer partitions than cores. |
 | `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
 | `monoprop_PARTITION_PINNING` | `on` | `0`/`false`/`no` disables pinning each partition to a core. Supported on platforms where hwloc can bind threads. |
+| `monoprop_LAYER_PROFILE` | `off` | `1` writes a per-partition breakdown of each layer build to **stderr**: phase wall times, per-gate counters, and a periodic population sample. Diagnostic only — it changes no result. Output goes straight to fd 2, so a run under pytest needs `-s` or the capture discards it. |
 
 ```bash
 # Run 8 partitions instead of one-per-core:

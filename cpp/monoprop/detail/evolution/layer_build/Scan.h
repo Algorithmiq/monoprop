@@ -27,6 +27,7 @@
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
+#include "monoprop/detail/evolution/LayerProfile.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
@@ -205,6 +206,16 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t gen_pop = gen.count();
     const auto ectx = A::make_gen_context(gen);
+    auto *const prof = layer_profile::slot();
+    // The popcount below which passes_with_popcount proves keep without reading the bitset. An opaque
+    // cutoff_fn_ has no such bound, and 0 correctly makes every term count as a full evaluation.
+    const size_t prof_fast_cut = (cutoff_eval.length_cutoff() != nullptr)    ? cutoff_eval.length_cutoff()->cutoff
+                                 : (cutoff_eval.support_cutoff() != nullptr) ? cutoff_eval.support_cutoff()->cutoff
+                                                                             : 0;
+    size_t prof_emit = 0;
+    size_t prof_cutoff = 0;
+    size_t prof_reject = 0;
+    size_t prof_push = 0;
 
     FusedScanResult res;
     res.leader_queries.assign(rank_count, VecZ{});
@@ -229,7 +240,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         if (gen_columns.count == 0) {
             return res;
         }
-        const auto &inverted_index = op.inverted_index();
+        // Charged separately: inverted_index() rebuilds the whole transpose whenever rows() has moved,
+        // which is per gate on the build path and has never been attributed.
+        const auto &inverted_index = [&]() -> const InvertedIndex<NumModes> & {
+            const layer_profile::ScopedNs t(prof != nullptr ? &prof->index_ns : nullptr);
+            return op.inverted_index();
+        }();
         const size_t word_count = inverted_index.words();
         if (word_count == 0) {
             return res;
@@ -279,10 +295,16 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             emit_term_products<NumModes, A>(*op.store, i, ectx, new_mono, overlap, phase_factor);
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
+            // Profile counters are unconditional register increments (~3 ALU ops/term); both A/B arms
+            // carry them, so they cancel in a paired ratio.
+            ++prof_emit;
+            prof_cutoff += static_cast<size_t>(new_pop > prof_fast_cut);
             const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
             if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
+                ++prof_reject;
                 return;
             }
+            ++prof_push;
             const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
             // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
             const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_mono) % rank_count);
@@ -312,6 +334,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             nz.clear(); // pass 1 clears it on entry; the skip must too (thread_local reuse)
         }
         else {
+            const layer_profile::ScopedNs t(prof != nullptr ? &prof->fold_ns : nullptr);
             even_parity_scan_pass1<NumModes>(inverted_index,
                                              gen_cols,
                                              gen.find_first(),
@@ -340,55 +363,69 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         };
         const bool word_aligned_cos = !only_rotate_len_k.has_value();
         CosineWordBuilder cos_b;
-        for (const auto &w : nz) {
-            if (word_aligned_cos && fused_scale_coeffs != nullptr) {
-                // Fused cos sweep: scaling in place here is what replaces building a cosine set.
-                for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
-                    const double v_src = fused_scale_coeffs[i];
-                    fused_scale_coeffs[i] = v_src * fused_scale_cos;
-                    const double abs_c = std::abs(v_src);
-                    if (cut_st.is_below_sin(abs_c)) {
-                        continue;
+        { // scoped so emit_ns excludes the profile fold-in and the O(n) population sweep below
+            const layer_profile::ScopedNs emit_timer(prof != nullptr ? &prof->emit_ns : nullptr);
+            for (const auto &w : nz) {
+                if (word_aligned_cos && fused_scale_coeffs != nullptr) {
+                    // Fused cos sweep: scaling in place here is what replaces building a cosine set.
+                    for (uint64_t m = w.overlap; m; m &= m - 1) {
+                        const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                        const size_t i = w.base + tz;
+                        const double v_src = fused_scale_coeffs[i];
+                        fused_scale_coeffs[i] = v_src * fused_scale_cos;
+                        const double abs_c = std::abs(v_src);
+                        if (cut_st.is_below_sin(abs_c)) {
+                            continue;
+                        }
+                        const size_t mono_pop = op.store->popcount(i);
+                        const bool is_follower = (w.foll >> tz) & 1u;
+                        emit(mono_pop, i, abs_c, v_src, is_follower);
                     }
-                    const size_t mono_pop = op.store->popcount(i);
-                    const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(mono_pop, i, abs_c, v_src, is_follower);
+                }
+                else if (word_aligned_cos) {
+                    // No orbital gate: record the whole word in the cosine set, then per bit apply the atol
+                    // gate before the popcount row read — deferring popcount saves random packed-row loads.
+                    cos_b.push_word(w.base, w.overlap);
+                    for (uint64_t m = w.overlap; m; m &= m - 1) {
+                        const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                        const size_t i = w.base + tz;
+                        const auto [v_src, abs_c] = derive_coeff(i);
+                        if (cut_st.is_below_sin(abs_c)) {
+                            continue;
+                        }
+                        const size_t mono_pop = op.store->popcount(i);
+                        const bool is_follower = (w.foll >> tz) & 1u;
+                        emit(mono_pop, i, abs_c, v_src, is_follower);
+                    }
+                }
+                else {
+                    // Orbital gate active: it needs mono_pop, and the per-index cosine push covers only
+                    // orbital-passing terms, so the popcount row read must precede both.
+                    for (uint64_t m = w.overlap; m; m &= m - 1) {
+                        const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                        const size_t i = w.base + tz;
+                        const size_t mono_pop = op.store->popcount(i);
+                        if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
+                            continue;
+                        }
+                        cos_b.push_index(i);
+                        const auto [v_src, abs_c] = derive_coeff(i);
+                        const bool is_follower = (w.foll >> tz) & 1u;
+                        emit(mono_pop, i, abs_c, v_src, is_follower);
+                    }
                 }
             }
-            else if (word_aligned_cos) {
-                // No orbital gate: record the whole word in the cosine set, then per bit apply the atol
-                // gate before the popcount row read — deferring popcount saves random packed-row loads.
-                cos_b.push_word(w.base, w.overlap);
-                for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
-                    const auto [v_src, abs_c] = derive_coeff(i);
-                    if (cut_st.is_below_sin(abs_c)) {
-                        continue;
-                    }
-                    const size_t mono_pop = op.store->popcount(i);
-                    const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(mono_pop, i, abs_c, v_src, is_follower);
-                }
-            }
-            else {
-                // Orbital gate active: it needs mono_pop, and the per-index cosine push covers only
-                // orbital-passing terms, so the popcount row read must precede both.
-                for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
-                    const size_t mono_pop = op.store->popcount(i);
-                    if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
-                        continue;
-                    }
-                    cos_b.push_index(i);
-                    const auto [v_src, abs_c] = derive_coeff(i);
-                    const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(mono_pop, i, abs_c, v_src, is_follower);
-                }
-            }
+        }
+        if (prof != nullptr) {
+            prof->n_gates += 1;
+            prof->n_anti += n_anti;
+            prof->n_foll += n_foll;
+            prof->n_emit += prof_emit;
+            prof->n_cutoff += prof_cutoff;
+            prof->n_reject += prof_reject;
+            prof->n_push += prof_push;
+            prof->query_words += prof_push * kQueryWords<NumModes>;
+            layer_profile::sample_population<NumModes>(prof, *op.store, prof->n_gates - 1);
         }
         res.cos_blocks.push_back(cos_b.finish());
     }

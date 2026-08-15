@@ -21,6 +21,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
+#include "monoprop/detail/evolution/LayerProfile.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/operator/MPOperator.h"
 
@@ -84,9 +85,18 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     {
         const size_t op_size = op.store->size();
         op.store->find_batch(pr.mono.data(), pr.nq_total, pr.idx_of.data());
+        // Counted here, not only on the self path: at R = R*S the self stream is 1/R of the traffic,
+        // so a hit rate read off resolve_range_ alone describes almost none of the work.
+        auto *const prof = layer_profile::slot();
         for (size_t g = 0; g < pr.nq_total; ++g) {
             if (pr.idx_of[g] >= op_size) { // kNotFound is size_t max → also lands here
                 pr.idx_of[g] = kMissingIndex;
+                if (prof != nullptr) {
+                    ++prof->n_miss;
+                }
+            }
+            else if (prof != nullptr) {
+                ++prof->n_hit;
             }
         }
     }
