@@ -140,6 +140,11 @@ _RESULTS: dict[str, Any] = {
     "opmembase": {},  # node id -> the floor itself, without which the other two cannot be read
     "opbytes": {},  # node id -> {"operator": n, "graph": n} from the engine's own accounting
     "opmembreak": {},  # node id -> per-field operator memory split (bytes)
+    # node id -> per-field GRAPH memory split (bytes), plus d_ slot-occupancy diagnostics.
+    # Separate from opmembreak because the graph is the half that does not partition: its
+    # per-layer arrays are sized by the FLAT world (ranks x partitions), so this is the
+    # section that says whether a field grows with the world rather than with the problem.
+    "graphmembreak": {},
 }
 
 
@@ -446,6 +451,16 @@ class OpMemory:
                 "opmembreak",
                 self._key,
                 {k: _reduce_sum(self._comm, v) for k, v in breakdown().items()},
+            )
+        # None => a binding predating graph_memory_breakdown(). Record nothing rather than
+        # zeros: a flat field and an absent instrument must not look alike, and the baseline
+        # arm of an A/B is exactly where the binding will be missing.
+        graph_breakdown = getattr(simulator, "graph_memory_breakdown", None)
+        if graph_breakdown is not None:
+            _record(
+                "graphmembreak",
+                self._key,
+                {k: _reduce_sum(self._comm, v) for k, v in graph_breakdown().items()},
             )
 
 

@@ -5,6 +5,14 @@
 #   hpc/deucalion/sbatch/campaign.sh wave2    # the rest of the sweeps
 #   hpc/deucalion/sbatch/campaign.sh ranks    # the multi-node rungs
 #   hpc/deucalion/sbatch/campaign.sh serial   # "non-MPI": 1 rank x 16 partitions
+#   hpc/deucalion/sbatch/campaign.sh geometry # ranks x partitions at fixed model, one node
+#
+# Both arms are venvs, not branches: MAIN_VENV (default $PROJ/src/mp-main/.venv) and PORT_VENV
+# (default $PROJ/src/mp-invidx/.venv). `cell` forwards the caller's environment, so pointing an
+# arm at another worktree's build needs no edit here:
+#   PORT_VENV=$PROJ/src/mp-gws/.venv hpc/deucalion/sbatch/campaign.sh geometry
+# benches/ comes from THIS checkout for both arms -- only the compiled extension differs -- so a
+# metric the harness records but only one arm's binding emits is recorded for that arm alone.
 #
 # Collate whatever has landed with:
 #   hpc/deucalion/tools/campaign_summary.py "$MONOPROP_RUNS"/models-*
@@ -35,7 +43,7 @@
 # buy. Sizing the serial wave as "8x the ranks means 8x the wall" would have been wrong.
 set -uo pipefail
 
-WAVE="${1:?usage: submit.sh <wave1|wave2|ranks|serial>}"
+WAVE="${1:?usage: submit.sh <wave1|wave2|ranks|serial|geometry>}"
 export MONOPROP_SRC="${MONOPROP_SRC:-$PWD}"
 source "$MONOPROP_SRC/hpc/deucalion/env.sh"
 ACCT="${MONOPROP_SLURM_ACCOUNT:?set MONOPROP_SLURM_ACCOUNT (see hpc/deucalion/env.local.sh.example)}"
@@ -88,6 +96,32 @@ case "$WAVE" in
         cell pau-c14-serial 1 2:30:00 1 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05
         cell hub-c6-serial 1 1:30:00 1 MODEL=hubbard CUTOFF=6 LOWER_ATOL=1.25e-05
         cell pau-c12-serial 1 1:00:00 1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05
+        ;;
+    geometry)  # Separate the flat world size P = ranks x partitions from the MPI rank count.
+               # Every other wave sweeps ranks at a FIXED 16 partitions, so P and the rank
+               # count move together and no cell in this directory can tell which one a cost
+               # tracks. These four break the tie: read down the columns, not across.
+               #
+               #            P = 16        P = 128
+               #   1 rank   g1x16         g1x128
+               #   8 ranks  g8x2          g8x16
+               #
+               # The columns are core-matched (16 cores left, 128 right), so the time row is
+               # also the test of whether extra partitions inside one rank buy anything.
+               # Each rung needs its OWN tag: RESULTS is keyed on (model, tag, nodes) and
+               # omits the layout, so two geometries sharing a tag collide and the second
+               # refuses. PARTITIONS rides along as an env assignment -- `cell` forwards
+               # anything after the 4th positional verbatim -- and rpn x PARTITIONS must stay
+               # <= 128 or models-ab.sh refuses (over 128, pinning silently switches off).
+               # c12 not c14: the P^2 signal is already 2x between P=16 and P=128 at 29.4M
+               # terms, and c12 propagates in half the anchor's time.
+        cell gws-c12-g1x16  1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell gws-c12-g8x2   1 1:30:00  8 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=2
+        cell gws-c12-g1x128 1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=128
+        cell gws-c12-g8x16  1 1:30:00  8 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=16
+               # The headline rung: same geometry and problem as models-pauli-pau-c14-anchor-N1,
+               # so the "before" arm reproduces a measurement that already exists on disk.
+        cell gws-c14-g8x16  1 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
         ;;
     *)
         echo "unknown wave: $WAVE" >&2
