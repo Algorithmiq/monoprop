@@ -332,9 +332,10 @@ inside `/projects` — build them in `$HOME` and move them.
 #SBATCH -o %x-%j.out -e %x-%j.err
 
 source hpc/deucalion/env.sh
-srun --mpi=pmix --cpu-bind=cores --distribution=block:block ./your_binary
+srun --mpi=pmix --cpu-bind=none --distribution=block:block ./your_binary
 ```
 
+- [ ] `--cpu-bind=none` (see §10 rule 3 — `=cores` silently unpins every rank)
 - [ ] `#!/bin/bash -l`
 - [ ] `-A` matches the partition's architecture suffix
 - [ ] `--exclusive --mem=0` (CPU partitions are exclusive anyway; `--mem=0` avoids a default cap)
@@ -424,6 +425,22 @@ Three hard rules:
    Fixed on `perf/multinode-comm-scaling` and **not on `main`**, which is why an A/B across
    that boundary must probe placement rather than assume it.
 
+   **On any branch without that fix, use `--cpu-bind=none`.** It is a launcher-side
+   workaround and needs no engine change. Measured at 8 ranks × 16 partitions:
+
+   | srun binding | `affinity_cpus` | threads pinned per rank | verdict |
+   | --- | ---: | ---: | --- |
+   | `--cpu-bind=cores` | 16 | 0 | unplaced |
+   | `--cpu-bind=threads` | 16 | 0 | unplaced |
+   | `--cpu-bind=none` | 128 | 16 | **placed** |
+
+   Leaving all 128 CPUs visible is what lets the engine divide the node itself, and the
+   ranks then take **disjoint** shares — verified by gathering every rank's actual pinned-CPU
+   set, since `distinct_pinned_cpus` is per process and cannot tell "eight disjoint
+   sixteenths" from "eight ranks on the same sixteen". The engine's own split is striped
+   (rank 0 takes 0–3, 32–35, 64–67, 96–99), so it is not what `--cpu-bind=cores` would have
+   granted; it is pinned and disjoint, which is what a measurement needs.
+
 Runtime environment variables:
 
 | Variable | Default | Meaning |
@@ -438,11 +455,14 @@ Runtime environment variables:
 ### Launching
 
 ```bash
-srun --mpi=pmix --cpu-bind=cores --distribution=block:block \
+srun --mpi=pmix --cpu-bind=none --distribution=block:block \
      "$VENV/bin/python" your_script.py
 ```
 
 - **`--mpi=pmix`**, not the default. Intel MPI would need `--mpi=pmi2`.
+- **`--cpu-bind=none`, unless you are on a branch that has the per-rank-slice collapse.**
+  See rule 3 above: `=cores` confines each rank to a slice the engine then refuses to divide
+  again, and every rank runs unpinned on both arms of an A/B — which reads as a clean null.
 - **Launch `$VENV/bin/python` directly, not `uv run`** — `uv run` re-resolves the
   environment in every rank, which is a Lustre metadata storm at scale.
 - **`just bench-mpi` does not work here.** It hardcodes `mpiexec --map-by slot:PE=N`. Run
