@@ -176,3 +176,9 @@ benches/results/**
 
 # devcontainer files
 .devcontainer/devcontainer-lock.json
+
+# Slurm job output. The hpc/deucalion job scripts default to %x-%j.out / .err, which Slurm
+# writes into the submission directory -- i.e. the checkout root -- so a `git add -A` there
+# sweeps them into the commit. That has already happened once.
+/*.out
+/*.err
