@@ -161,6 +161,47 @@ uv sync --all-extras -v --config-settings=cmake.build-type=Debug
 ctest --test-dir build/editable/Debug
 ```
 
+### Standalone tree (iterating on the C++ tests)
+
+The editable trees above cannot be reconfigured in place. Their CMake cache pins the
+build-isolation interpreter that scikit-build-core created and then deleted, so
+`cmake --build build/editable/<type>` fails as soon as it needs to regenerate
+`build.ninja` — after editing a `CMakeLists.txt`, adding a test file, or changing a
+cache variable. The `skbuild-*` presets inherit the same limitation, because they only
+adopt an existing tree.
+
+For a tree you can reconfigure and rebuild freely, configure one yourself. Three cache
+variables have to be supplied by hand, because scikit-build-core normally provides them:
+
+```bash
+uv sync --all-extras -v   # once, so .venv exists
+
+nanobind_dir=$(uv run --no-project --with nanobind \
+    python -c "import nanobind; print(nanobind.cmake_dir())")
+
+cmake -S . -B build/standalone -G Ninja \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DPython_EXECUTABLE="$PWD/.venv/bin/python" \
+    -DSKBUILD_PROJECT_VERSION_FULL=0.0.0 \
+    -Dnanobind_DIR="$nanobind_dir"
+
+cmake --build build/standalone --target monoprop_unit_tests.x -j
+ctest --test-dir build/standalone/cpp/tests -L serial
+```
+
+- `nanobind_DIR` is needed because nanobind is a build-isolation-only dependency and is
+  absent from `.venv`, so it cannot simply be imported. The command above resolves it into
+  an ephemeral environment and asks it for its own CMake package directory.
+- `Python_EXECUTABLE` is needed because `find_package(Python ... Development.Module)`
+  otherwise picks up an interpreter with no development headers and fails to configure.
+- `SKBUILD_PROJECT_VERSION_FULL` is needed because the install-export step passes it to
+  `write_basic_package_version_file()`, which errors on an empty version. Any value works
+  for a tree you are not installing from.
+- Point `ctest` at `cpp/tests`, not at the tree root: the root has no
+  `CTestTestfile.cmake` and would report success having run nothing.
+- A `Debug` tree keeps `assert()` live (no `-DNDEBUG`), which is the point of building one —
+  the operator index states its preconditions as assertions.
+
 ### Related workflows
 
 - Use `just test-wide` for the 64-bit `monoprop_WIDE_TERM_INDEX` configuration.
