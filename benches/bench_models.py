@@ -32,11 +32,35 @@ the sizes this is used at. Select one group at a time (``-k "build_graph or prop
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pytest
 from _builders import MODELS, barriered
 from _memory_cpu import resting_rss_bytes
+
+# `build_graph` EXTENDS the graph rather than replacing it, so a model whose driver re-applies
+# its circuit holds every step's layer-set at once where `propagate` holds one. Measured on
+# hubbard at 1 rank x 16 partitions, lower_atol=1e-4: `propagate` finishes 1,887,255 terms in
+# 379 MiB, and `build_graph` on the identical config exceeds a 242 GiB node. That operator is
+# ~110 MB at the measured 58 B/term, so it is the retained graph -- and it does not shrink
+# with rank count, since 1, 2 and 4 nodes all died the same way.
+#
+# So the three graph-holding benchmarks skip above this step count rather than OOM the machine
+# of whoever runs `just bench`, which (unlike `just bench-ci`) does not pass -m "not slow".
+# The limit is 2 and not 1 because a 2-step hubbard reaching 278M terms fits in 15.4 GiB --
+# two steps is measured to work, not assumed. Pauli's step count is 1 and is unaffected.
+MAX_GRAPH_STEPS = 2
+
+
+def skip_if_graph_will_not_fit(model: str, steps: int) -> None:
+    """Skip a graph-holding benchmark whose retained graph is known not to fit."""
+    allow = os.environ.get("monoprop_BENCH_ALLOW_BIG_GRAPH")  # noqa: SIM112
+    if steps > MAX_GRAPH_STEPS and allow != "1":
+        pytest.skip(
+            f"{model}: {steps} successive build_graph calls retain {steps} layer-sets, "
+            f"measured to exceed 242 GiB. Set monoprop_BENCH_ALLOW_BIG_GRAPH=1 to run it."
+        )
 
 
 @pytest.mark.slow
@@ -99,6 +123,7 @@ def test_model_build_graph(
     _config_cls, build_fn, steps_fn = MODELS[model]
     config = model_configs[model]
     steps = steps_fn(config)
+    skip_if_graph_will_not_fit(model, steps)
     record_model_config(model, config)
 
     last = []
@@ -169,7 +194,7 @@ def test_model_propagate(
 @pytest.mark.slow
 @pytest.mark.parametrize("model", list(MODELS))
 def test_model_energy(
-    benchmark, model_graph, model, bench_comm, bench_rounds, op_memory
+    benchmark, model_graph, model, model_configs, bench_comm, bench_rounds, op_memory
 ):
     """Benchmark evaluating a fixed model's expectation-value functional.
 
@@ -177,6 +202,7 @@ def test_model_energy(
     rebuilds it on every call, which copies the whole operator, so timing that would time the
     copy rather than the evaluation.
     """
+    skip_if_graph_will_not_fit(model, MODELS[model][2](model_configs[model]))
     propagator, parameters = model_graph(model)
     functional = propagator.expectation_value_functional()
     op_memory.open()
@@ -195,13 +221,14 @@ def test_model_energy(
 @pytest.mark.slow
 @pytest.mark.parametrize("model", list(MODELS))
 def test_model_gradient(
-    benchmark, model_graph, model, bench_comm, bench_rounds, op_memory
+    benchmark, model_graph, model, model_configs, bench_comm, bench_rounds, op_memory
 ):
     """Benchmark evaluating a fixed model's expectation-value-and-gradient functional.
 
     Contains the whole energy forward pass -- there is no API for the reverse pass alone --
     so read this against :func:`test_model_energy` rather than as a standalone cost.
     """
+    skip_if_graph_will_not_fit(model, MODELS[model][2](model_configs[model]))
     propagator, parameters = model_graph(model)
     functional = propagator.expectation_value_and_gradient_functional()
     op_memory.open()
