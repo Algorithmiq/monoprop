@@ -29,22 +29,38 @@ namespace monoprop::detail {
 // Marks matched followers without a per-gate O(n) memset: one counter bump clears every mark. Reused
 // across gates.
 struct MatchedEpochSet {
-    std::vector<uint32_t> epoch_;
-    uint32_t cur_ = 0;
+    // The stamp is 16-bit, not 32-bit. It is one entry per term, so at 4 bytes it measured 6.0 B/term
+    // with growth overshoot -- ~10% of the whole operator, and larger than the inverted index. Halving
+    // it costs one O(n) fill per 65535 gates instead of one per 2^32, which even the largest benchmark
+    // circuit (~10^4 layers per propagate) reaches at most once every few calls. The width is the only
+    // thing that changes: a stamp is never compared against anything but cur_.
+    using Stamp = uint16_t;
 
-    // u32 wrap resets the array — once per 2^32-1 gates.
+    std::vector<Stamp> epoch_;
+    Stamp cur_ = 0;
+
+    // Wrap resets the array — once per 65535 gates.
     auto begin_gate(size_t n) -> void {
-        if (cur_ == std::numeric_limits<uint32_t>::max()) {
-            std::fill(epoch_.begin(), epoch_.end(), 0);
+        if (cur_ == std::numeric_limits<Stamp>::max()) {
+            std::fill(epoch_.begin(), epoch_.end(), Stamp{0});
             cur_ = 0;
         }
         ++cur_;
         if (epoch_.size() < n) {
-            epoch_.resize(n, 0);
+            epoch_.resize(n, Stamp{0});
         }
     }
     auto mark(size_t i) -> void { epoch_[i] = cur_; }
     [[nodiscard]] auto is_marked(size_t i) const -> bool { return epoch_[i] == cur_; }
+    // One stamp per term, so this tracks the operator: it belongs in the memory breakdown even though
+    // it is propagator scratch rather than operator state. Nothing counted it before round 3.
+    [[nodiscard]] auto memory_bytes() const -> size_t { return epoch_.capacity() * sizeof(Stamp); }
+    // Same bounded-slack rule as OperatorIndex::shrink_rows_to_fit; see the note there.
+    auto shrink_to_fit() -> void {
+        if (epoch_.capacity() > epoch_.size() + (epoch_.size() / 8)) {
+            epoch_.shrink_to_fit();
+        }
+    }
 };
 
 // A trivial aggregate on purpose — not std::pair — so DefaultInitVector can skip the zero-fill and lower

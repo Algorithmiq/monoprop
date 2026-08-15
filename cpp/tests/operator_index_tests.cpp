@@ -194,3 +194,33 @@ BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
         BOOST_TEST(out[i] == Store::kNotFound);
     }
 }
+
+// shrink_rows_to_fit is not called from the propagation path on purpose -- doing it once per
+// propagate() measured `propagate` 1.030x slower on Hubbard (6/6, p=0.031), because geometric growth
+// plus shrink-to-fit churns when both run repeatedly. It stays available for a caller that knows the
+// operator is final, so its two behaviours are pinned here rather than by the propagator.
+BOOST_AUTO_TEST_CASE(shrink_rows_to_fit_reclaims_only_past_the_slack_gate) {
+    Store s;
+    s.reserve(1024); // capacity far above what is used -> well past the 12.5% gate
+    // push_back writes the row only; the hash index is a separate emplace, exactly as the propagator's
+    // setup loop does it. Without the emplace, find() below would dereference an empty optional.
+    s.push_back(bs({0, 1}));
+    s.emplace(bs({0, 1}), 0);
+    s.push_back(bs({2, 3}));
+    s.emplace(bs({2, 3}), 1);
+    BOOST_TEST(s.slack_bytes() > 0u);
+
+    s.shrink_rows_to_fit();
+    BOOST_TEST(s.slack_bytes() == 0u);
+
+    // Rows survive the realloc.
+    BOOST_TEST(s.size() == 2u);
+    BOOST_TEST(s.popcount(0) == 2u);
+    BOOST_TEST(s.row(0) == bs({0, 1}));
+    BOOST_TEST(s.row(1) == bs({2, 3}));
+    BOOST_TEST(*s.find(bs({2, 3})) == 1u);
+
+    // Already tight: a second call is a no-op rather than another realloc.
+    s.shrink_rows_to_fit();
+    BOOST_TEST(s.slack_bytes() == 0u);
+}

@@ -58,12 +58,14 @@ BOOST_AUTO_TEST_CASE(matched_epoch_tail_grow) {
     BOOST_TEST(!set.is_marked(3));
 }
 
-// When the epoch counter saturates uint32_t, begin_gate zero-fills and restarts so marks stay correct.
-BOOST_AUTO_TEST_CASE(matched_epoch_u32_wrap_resets) {
+// When the epoch counter saturates its stamp width, begin_gate zero-fills and restarts so marks stay
+// correct. The stamp is 16-bit (see MatchedEpochSet::Stamp), so this path is reached once per 65535
+// gates rather than once per 2^32 — which makes it a case that real circuits actually hit.
+BOOST_AUTO_TEST_CASE(matched_epoch_stamp_wrap_resets) {
     MatchedEpochSet set;
     set.begin_gate(4); // allocate the backing array
     // Force the counter to the wrap boundary; a stale slot still equals the pre-wrap counter.
-    set.cur_ = std::numeric_limits<uint32_t>::max();
+    set.cur_ = std::numeric_limits<MatchedEpochSet::Stamp>::max();
     set.mark(1);
     BOOST_TEST(set.is_marked(1));
 

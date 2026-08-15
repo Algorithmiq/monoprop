@@ -116,8 +116,16 @@ struct MPOperator {
         return *inverted_index_;
     }
 
-    // Pending init_op_map terms are erased after the lookup loop: the flat_map is not iterable while
-    // mutating.
+    // Binds pending init_op_map terms to their rows and drops them from the map. Both loops below only
+    // READ the map, so the "not iterable while mutating" constraint that forced the old collect-then-erase
+    // still holds -- what is gone is the vector of 64-byte Monomial keys it collected into, which at a 7M
+    // -term observable was 28 MB per partition and 448 MB across a 16-partition process.
+    //
+    // The map is then released rather than merely emptied. `erase` never shrinks bucket_count(), and
+    // bucket_count() is what estimate_memory_usage() measures, so a fully drained map used to keep its
+    // whole bucket array resident for the life of the run: 39.58 B/term -- 43.8% of the operator -- on the
+    // large-observable Heisenberg workload. Structured models with a single-site observable never grow the
+    // map and so never paid this; quote the two separately.
     auto get_operator() -> const VecD & {
         if (size() == op_coeffs.size()) {
             return op_coeffs;
@@ -129,18 +137,30 @@ struct MPOperator {
             return op_coeffs;
         }
 
-        std::vector<Monomial<NumModes>> del;
+        size_t bound = 0;
         for (const auto &kv : init_op_map) {
-            const auto &mono = kv.first;
-            const auto coeff = kv.second;
-            if (const auto found = store->find(mono)) {
-                op_coeffs[*found] = coeff;
-                del.push_back(mono);
+            if (const auto found = store->find(kv.first)) {
+                op_coeffs[*found] = kv.second;
+                ++bound;
             }
         }
 
-        for (const auto &mono : del) {
-            init_op_map.erase(mono);
+        if (bound == init_op_map.size()) {
+            // Everything bound: drop the map outright, buckets included. swap-with-empty rather than
+            // clear(), which would leave the bucket array behind.
+            MonomialMap<NumModes>{}.swap(init_op_map);
+        }
+        else if (bound != 0) {
+            // Partial: rebuild from what is still pending, which sizes the buckets to it. The second
+            // find() pass is affordable because this path only runs while terms remain unbound.
+            MonomialMap<NumModes> pending;
+            pending.reserve(init_op_map.size() - bound);
+            for (const auto &kv : init_op_map) {
+                if (!store->find(kv.first)) {
+                    pending.emplace(kv.first, kv.second);
+                }
+            }
+            init_op_map.swap(pending);
         }
 
         return op_coeffs;
@@ -291,6 +311,10 @@ struct MPOperatorMemoryBreakdown final {
     size_t init_operator_bytes = 0;
     size_t initial_state_bytes = 0;
     size_t inverted_index_bytes = 0;
+    // One epoch stamp per term (detail::MatchedEpochSet), owned by the propagator rather than the
+    // operator, which is why it went uncounted until round 3. It is real resident memory and is summed
+    // into total_bytes(); subtract it when comparing against a build that predates this field.
+    size_t matched_scratch_bytes = 0;
 
     // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
     // never double-count.
@@ -304,10 +328,14 @@ struct MPOperatorMemoryBreakdown final {
     size_t operator_terms_slack_bytes = 0; // of operator_terms_bytes: unused geometric-growth capacity
     // of state_coeffs_bytes: entries of the state that are not exactly 0.0
     size_t state_coeffs_nonzero = 0;
+    // Live entries behind init_operator_bytes. That field measures bucket_count(), not size(), and the
+    // map is drained by get_operator() — so a large byte count beside a zero entry count means retained
+    // buckets, not retained terms.
+    size_t init_operator_entries = 0;
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
-               + initial_state_bytes + inverted_index_bytes;
+               + initial_state_bytes + inverted_index_bytes + matched_scratch_bytes;
     }
 
     auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
@@ -318,6 +346,8 @@ struct MPOperatorMemoryBreakdown final {
         init_operator_bytes += o.init_operator_bytes;
         initial_state_bytes += o.initial_state_bytes;
         inverted_index_bytes += o.inverted_index_bytes;
+        matched_scratch_bytes += o.matched_scratch_bytes;
+        init_operator_entries += o.init_operator_entries;
         inverted_index_dense_bytes += o.inverted_index_dense_bytes;
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_bitmap_chunks += o.inverted_index_bitmap_chunks;
@@ -342,6 +372,7 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
                                    + op.state_vals_.capacity() * sizeof(double);
     breakdown.indexing_bytes = op.store->index_estimated_memory_bytes();
     breakdown.init_operator_bytes = unordered_flat_map_storage_bytes(op.init_op_map);
+    breakdown.init_operator_entries = op.init_op_map.size();
     breakdown.initial_state_bytes = op.initial_state.capacity() * sizeof(size_t);
     if (op.inverted_index_.has_value()) {
         breakdown.inverted_index_bytes = op.inverted_index_->memory_bytes();

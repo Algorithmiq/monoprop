@@ -109,9 +109,28 @@ Key files:
       at the first seal, with bounded 12.5% growth as the fallback, and reports what is unused as
       `d_invidx_arena_slack_bytes` — precisely so it cannot quietly become the 1.43x of dead capacity the
       previous per-column layout carried.
-  `monoprop_INVIDX_CHUNK_WORDS` (default 512) sets the chunk height and `monoprop_INVIDX_BITMAP_M_STAR`
-  (default off) forces `Bitmap` at or above a posting count, buying fold speed with memory; see
-  `docs/content/docs/building.mdx`.
+  `monoprop_INVIDX_CHUNK_WORDS` (default 512) sets the chunk height; see `docs/content/docs/building.mdx`.
+  There is deliberately no container-choice knob — `monoprop_INVIDX_BITMAP_M_STAR` was measured (1.7× the
+  index for 4% of a fold that is itself a minority of `propagate`) and deleted.
+- **No container in the operator holds capacity it has not earned.** This started as the inverted-index
+  arena's rule and is now operator-wide, because the same defect was worth far more elsewhere than it ever
+  was in the index. Every growing structure either reserves from a projection or shrinks at a quiescent
+  point, and `estimate_memory_usage` reports the unused part so it cannot hide:
+    - `initialize_operator_caches_` is the quiescent point, and it shrinks `op_coeffs`, the state and the
+      follower-marking scratch. It deliberately does **not** shrink `OperatorIndex::rows_`, even though
+      that has the larger slack: the function runs after *every* `propagate()`, and Hubbard calls it 29
+      times, so a `shrink_to_fit` there reallocs the whole row array on each — measured `propagate`
+      **1.030× slower, 6/6, p=0.031**, against nothing on the single-`propagate` Pauli workload. Geometric
+      growth plus shrink-to-fit churns whenever both run repeatedly, so collecting that 4.1–6.0 B/term
+      needs a row store whose growth does not copy, not a better-timed shrink. `shrink_rows_to_fit()`
+      exists for a caller that knows the operator is final.
+    - `init_op_map` is **released, not merely drained**. `get_operator()` binds its terms to rows and
+      erases them, but `erase` never shrinks `bucket_count()` — and `bucket_count()` is what the memory
+      breakdown measures. A fully drained map used to keep 1.15 GB of empty buckets resident, 43.8% of the
+      operator, on a workload with a large observable. Swap with an empty map; do not call `clear()`.
+    - Two figures move with the **observable size, not the operator size**: `init_operator_bytes` is
+      39.58 B/term when the observable is 7M terms and **0.0** on Hubbard and kicked Ising, whose
+      observable is a single site. Never quote one workload's ledger as the other's.
 - **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
   propagators, one hash partition each. Every method that fans out must use the private partition
   vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`

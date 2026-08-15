@@ -57,15 +57,12 @@ inline constexpr size_t kChunkBitmapBytes = kChunkWords * sizeof(uint64_t);
 static_assert(kChunkRows <= 65536, "chunk-local row ids are 16-bit");
 static_assert(kColumnBlockWords % kChunkWords == 0, "chunks must tile a fold block");
 
-// Escape hatch, off by default: force Bitmap for any chunk holding at least this many postings, buying
-// fold speed with memory. 0 leaves the pure smallest-container rule. The shipped promotion threshold was
-// the equivalent of 1024 (density 1/64 over a chunk); measured on a 250-mode cutoff-6 operator the pure
-// argmin is 2.6x smaller for +3.7% on `energy`, so the default is off. At 2*NumModes = 500 columns no
-// chunk ever reaches 4096 postings, which makes every setting from 4096 up the same index.
-#ifndef monoprop_INVIDX_BITMAP_M_STAR
-#define monoprop_INVIDX_BITMAP_M_STAR 0
-#endif
-inline constexpr size_t kBitmapMStar = static_cast<size_t>(monoprop_INVIDX_BITMAP_M_STAR);
+// There is deliberately no bitmap-promotion threshold here. `monoprop_INVIDX_BITMAP_M_STAR` used to
+// force Bitmap past a posting count, buying fold speed with memory; it was measured and then deleted.
+// At a production per-partition size, against the pure argmin, M* = 850/700/600 costs 1.06x/1.41x/1.72x
+// the index to recover 1%/2%/4% of the fold once 16 partitions compete for the memory system the way
+// they actually do -- and the fold is itself a minority of `propagate`. No setting was worth its bytes,
+// so the knob is gone rather than shipped defaulted-off.
 
 // Which container holds one (column, chunk) cell. Chosen per cell as whichever is smallest, so there is
 // no promotion, no one-way transition and no density constant anywhere in the index.
@@ -391,9 +388,6 @@ struct InvertedIndex {
     static auto choose_tag_(size_t postings, size_t delta_bytes) -> ChunkTag {
         if (postings == 0) {
             return ChunkTag::Empty;
-        }
-        if (kBitmapMStar != 0 && postings >= kBitmapMStar) {
-            return ChunkTag::Bitmap;
         }
         return kChunkBitmapBytes <= delta_bytes ? ChunkTag::Bitmap : ChunkTag::U8Delta;
     }

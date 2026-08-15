@@ -271,6 +271,23 @@ public:
         return (rows_.capacity() * sizeof(PosT)) - (std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT));
     }
 
+    // Return the 1.5x growth overshoot at a quiescent point. rows_ was the only container in the operator
+    // with no shrink path -- op_coeffs, the state and the whole inverted index all shrink -- and it carried
+    // 4.1 B/term on Hubbard and 6.0 on kicked Ising, in both cases comparable to the entire inverted index.
+    //
+    // Gated rather than unconditional, because grow_rows_geometric's refusal to exact-fit is right: a fit
+    // taken while the operator is still growing reallocs the whole row array on the very next layer. The
+    // gate is the rule the inverted index's arena already applies to its own slack -- leave it alone below
+    // a bounded margin -- so this costs one realloc per quiescent point, not one per layer.
+    static constexpr size_t kShrinkSlackDenom = 8; // shrink only past 1/8 = 12.5% dead capacity
+    auto shrink_rows_to_fit() -> void {
+        const size_t live = size_ * stride_;
+        if (rows_.capacity() <= live + (live / kShrinkSlackDenom)) {
+            return;
+        }
+        rows_.shrink_to_fit();
+    }
+
     auto index_estimated_memory_bytes() const -> size_t {
         return sizeof(OperatorIndex) + (table_.slots.capacity() * sizeof(Slot));
     }
