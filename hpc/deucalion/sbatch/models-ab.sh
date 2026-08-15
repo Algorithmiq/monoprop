@@ -140,6 +140,29 @@ CELLS=(
     "graph|${MODEL} and (energy or gradient)"
 )
 
+# CELL_SPEC overrides that list, as `name|selector` entries separated by `;`. It exists
+# because the two operations in a cell are not always both affordable. `build_graph` EXTENDS
+# the graph rather than replacing it, so hubbard's 29 Trotter steps retain 29 layer-sets and
+# OOM a 242 GiB node even at 1.9M terms, while `propagate` releases each layer as it
+# contracts and runs the same model to 97M terms in 379 MiB. Fusing them means reporting
+# nothing for the model at full size; splitting them reports what is actually measurable.
+#
+# The cell name must stay `fresh` or `graph`: ab_summary's LABEL_RE matches exactly those two
+# and a third name makes every file in the directory unparseable, which prints as an empty
+# table rather than an error. A propagate-only cell is a `fresh` cell with one operation.
+if [ -n "${CELL_SPEC:-}" ]; then
+    IFS=';' read -r -a CELLS <<< "$CELL_SPEC"
+    for cell in "${CELLS[@]}"; do
+        case "${cell%%|*}" in
+            fresh | graph) ;;
+            *)
+                echo "refusing: cell name '${cell%%|*}' is not fresh or graph" >&2
+                exit 2
+                ;;
+        esac
+    done
+fi
+
 for rep in $(seq 1 "$REPS"); do
     cell_idx=0
     for cell in "${CELLS[@]}"; do
