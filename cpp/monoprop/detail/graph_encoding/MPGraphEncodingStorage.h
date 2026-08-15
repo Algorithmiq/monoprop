@@ -82,23 +82,38 @@ inline auto cross_rank_sin_send_index(const PackedCrossRankStorage &storage, siz
     return static_cast<size_t>(storage.sin_send_indices[offset]);
 }
 
-// Invariant B=[in(P)]++[out(Q)], D=[out(Q)]++[in(P)] (P=in_count, Q=sin_recv_count-P):
+// Invariant B=[in(P)]++[out(Q)], D=[out(Q)]++[in(P)] (P=in_count, Q=sin_send_count-P):
 // D[idx] = (idx<Q) ? B[P+idx] : B[idx-Q]. So D is not stored (saves ~half of cross_rank).
 inline auto cross_rank_sin_recv_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
     const auto &range = storage.ranges[rank];
     const size_t in_count = range.in_count;                   // P
-    const size_t out_count = range.sin_recv_count - in_count; // Q
+    const size_t out_count = range.sin_send_count - in_count; // Q
     const size_t sin_send_local = (idx < out_count) ? (in_count + idx) : (idx - out_count);
     return cross_rank_sin_send_index(storage, rank, sin_send_local);
 }
 
+// The D phases run parallel to the B indices -- same count per slot, so the same prefix sum
+// addresses both. They are still separate arrays; only the offset into them is shared.
 inline auto cross_rank_sin_recv_phase(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> int {
-    return packed_phase_at(storage.sin_recv_phases, storage.ranges[rank].sin_recv_offset + idx);
+    return packed_phase_at(storage.sin_recv_phases, storage.ranges[rank].sin_send_offset + idx);
 }
 
 auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t;
 
+// The slot-proportional part of cross_rank_storage_bytes: one record per world slot whether or
+// not that slot carries traffic. The remainder (indices and phases) scales with terms crossing.
+auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size_t;
+
+// World slots carrying any traffic for this layer. Read against rank_count() to get occupancy:
+// low occupancy would make a sparse layout pay, high occupancy means only a narrower record does.
+auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t;
+
 auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t;
+
+// The resolve_recv transpose cache hanging off a layout. Separate from
+// layer_exchange_layout_storage_bytes because that function's result is already carried in a
+// shipped metric; folding this in would redefine it.
+auto layer_exchange_layout_cache_bytes(const LayerExchangeLayout &layout) -> size_t;
 
 // Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so
 // MPI_Alltoallv skips it (replay does a local copy).

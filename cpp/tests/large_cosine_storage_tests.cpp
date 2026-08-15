@@ -64,7 +64,7 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
     lt.for_each_cross_rank_sin_send_range(1, 0, 1, [&](size_t, size_t i) { b_idx = i; });
     BOOST_CHECK_EQUAL(b_idx, 200UL);
 
-    // D[0] is derived from B: Q = sin_recv_count - in_count = 20 - 12 = 8, so D[0] = out-block[0] = 100,
+    // D[0] is derived from B: Q = sin_send_count - in_count = 20 - 12 = 8, so D[0] = out-block[0] = 100,
     // stored phase = -(out_phases[0]) = -(+1) = -1.
     size_t d_idx = static_cast<size_t>(-1);
     int d_phi = 0;
@@ -81,8 +81,10 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
 BOOST_AUTO_TEST_CASE(cross_rank_partner_range_counts_track_term_index_width) {
     CrossRankPartnerRange r{};
     BOOST_CHECK_EQUAL(sizeof(r.sin_send_count), sizeof(TermIndex));
-    BOOST_CHECK_EQUAL(sizeof(r.sin_recv_count), sizeof(TermIndex));
     BOOST_CHECK_EQUAL(sizeof(r.in_count), sizeof(TermIndex));
+    // The record is paid once per world slot per layer per partition, so its width is a result,
+    // not an implementation detail. Padding here would be invisible and quadratically expensive.
+    BOOST_CHECK_EQUAL(sizeof(r), sizeof(size_t) + 2 * sizeof(TermIndex));
 }
 
 #if defined(monoprop_WIDE_TERM_INDEX)
@@ -105,7 +107,7 @@ BOOST_AUTO_TEST_CASE(cross_rank_sin_send_index_round_trips_above_u32) {
 
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 1, 0), big_in);
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 1, 1), big_out);
-    // D[0] is derived from B: Q = sin_recv_count - in_count = 1, so D[0] = out-block[0] = big_out.
+    // D[0] is derived from B: Q = sin_send_count - in_count = 1, so D[0] = out-block[0] = big_out.
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_recv_index(storage, 1, 0), big_out);
 }
 #endif
