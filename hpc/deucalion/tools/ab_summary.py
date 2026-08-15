@@ -453,6 +453,52 @@ def _check_environment(cells: dict[str, Cell]) -> list[str]:
     return refusals
 
 
+def _check_versions(cells: dict[str, Cell]) -> list[str]:
+    """Refuse when the two arms are not actually two different builds.
+
+    The version was recorded but never asserted on, so an A/B that pointed both arms at the
+    same venv -- or at two checkouts of the same commit -- printed a full table of 1.00x and
+    called it flat. That is the most expensive way to fail here, because the output looks
+    exactly like a real negative result. models-ab.sh's PORT_VENV default is a DIFFERENT
+    branch's worktree, so getting this wrong takes only forgetting to pass it.
+
+    Absent is not a refusal. Only present-and-equal is: an arm can legitimately record nothing
+    (an older build with no such field), and refusing on absence would refuse the very
+    baseline comparisons this tool exists for.
+
+    Known blind spot, so nobody reads a pass here as more than it is: the version is a git
+    describe of the worktree, not a fingerprint of the extension. An editable install serves
+    whatever .so was last built into that tree, so two arms can report different versions while
+    running the same binary (or the same version while running different ones, if a rebuild was
+    skipped). Distinct versions mean the CHECKOUTS differ; only the .so's hash would prove the
+    BUILDS do. This catches the blunt error -- one venv used twice -- not that subtler one.
+    """
+    refusals: list[str] = []
+    seen: dict[str, set[str]] = {}
+    for side in ("main", "port"):
+        versions = {
+            cell.results.get("meta", {}).get("monoprop_version")
+            for cell in cells.values()
+            if cell.side == side and cell.results.get("meta")
+        }
+        versions.discard(None)
+        seen[side] = {str(v) for v in versions}
+        print(f"- {side} version: {sorted(seen[side])}")
+        if len(seen[side]) > 1:
+            refusals.append(
+                f"{side} arm reports {len(seen[side])} different builds across its reps: "
+                f"{sorted(seen[side])} -- the arm changed mid-campaign"
+            )
+
+    both = seen["main"] & seen["port"]
+    if both and seen["main"] and seen["port"]:
+        refusals.append(
+            f"both arms are the same build ({sorted(both)}); there is nothing being compared. "
+            "Pass PORT_VENV explicitly -- its default points at another branch's worktree."
+        )
+    return refusals
+
+
 def check_provenance(cells: dict[str, Cell], *, allow_both_placed: bool) -> list[str]:
     """Return the reasons this run's tables must not be read as a result."""
     print("## Provenance\n")
@@ -460,6 +506,7 @@ def check_provenance(cells: dict[str, Cell], *, allow_both_placed: bool) -> list
         *_check_terms(cells),
         *_check_placement(cells, allow_both_placed=allow_both_placed),
         *_check_environment(cells),
+        *_check_versions(cells),
     ]
     print()
     return refusals
