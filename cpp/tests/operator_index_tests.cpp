@@ -371,6 +371,116 @@ BOOST_AUTO_TEST_CASE(row_slack_never_exceeds_one_chunk) {
     BOOST_TEST(s.row(Store::kChunkRows) == quad(Store::kChunkRows));
 }
 
+// Rows spanning several chunks, which is what the three cases below all need. quad() is injective below
+// 32000, so this covers three chunks at every swept kChunkRows up to 8192.
+namespace {
+constexpr size_t kSpanRows = std::min<size_t>((3 * Store::kChunkRows) + 7, 32000);
+static_assert(kSpanRows > 2 * Store::kChunkRows, "these cases are about spanning chunks");
+
+// Filled in place: the store is deliberately neither copyable nor movable, so it cannot be returned.
+auto fill_span_store(Store &s) -> void {
+    for (size_t i = 0; i < kSpanRows; ++i) {
+        s.push_back(quad(i));
+        s.emplace(quad(i), i);
+    }
+}
+} // namespace
+
+// A row is never moved once written. Every other assertion in this file re-fetches through row(i), which
+// a flat vector that reallocated on every growth would satisfy just as well, so this holds the addresses
+// instead: each row's address is recorded at the moment it is written and compared after the store has
+// grown past three chunk boundaries.
+BOOST_AUTO_TEST_CASE(row_addresses_are_stable_across_chunk_growth) {
+    Store s;
+    std::vector<const void *> at_write;
+    at_write.reserve(kSpanRows);
+    for (size_t i = 0; i < kSpanRows; ++i) {
+        s.push_back(quad(i));
+        at_write.push_back(s.row_address(i));
+    }
+    BOOST_REQUIRE(s.size() > 3 * Store::kChunkRows); // so the store really did grow, several times
+
+    bool stable = true;
+    for (size_t i = 0; i < kSpanRows; ++i) {
+        if (s.row_address(i) != at_write[i]) {
+            stable = false;
+        }
+    }
+    BOOST_TEST(stable);
+
+    // Control that the address means anything: consecutive rows inside a chunk are one stride apart.
+    constexpr size_t kStride = (1 + Store::kDefaultInlinePositions) * sizeof(Store::PosT);
+    const auto *r0 = static_cast<const char *>(s.row_address(0));
+    BOOST_TEST(static_cast<const char *>(s.row_address(1)) == r0 + kStride);
+}
+
+// clone() copies the row store chunk by chunk. The existing clone cases hold two rows, so that loop has
+// never run more than once -- a copy that stopped after the first chunk, or that mis-strided the second,
+// would pass every one of them.
+BOOST_AUTO_TEST_CASE(clone_copies_a_row_store_that_spans_chunks) {
+    Store a;
+    fill_span_store(a);
+    auto b = a.clone();
+    BOOST_REQUIRE_EQUAL(b->size(), kSpanRows);
+
+    bool rows_match = true;
+    bool finds_match = true;
+    for (size_t i = 0; i < kSpanRows; ++i) {
+        if (b->row(i) != quad(i) || b->popcount(i) != a.popcount(i)) {
+            rows_match = false;
+        }
+        const auto f = b->find(quad(i));
+        if (!f.has_value() || *f != i) {
+            finds_match = false;
+        }
+    }
+    BOOST_TEST(rows_match);
+    BOOST_TEST(finds_match);
+
+    // Deep in the last chunk, not the first: a clone that shared any chunk would follow this write.
+    const size_t deep = kSpanRows - 1;
+    a.set(deep, bs({0, 1, 2, 3}));
+    BOOST_TEST(b->row(deep) == quad(deep));
+    BOOST_TEST(a.row(deep) == bs({0, 1, 2, 3}));
+}
+
+// The rehash rebuilds the table by walking term indices in order, chunk by chunk, rather than old slots
+// in order. Both existing rehash cases sit under kChunkRows, so that walk has only ever covered a single
+// chunk and could not have detected a chunk stride or boundary that was wrong.
+BOOST_AUTO_TEST_CASE(rehash_walks_a_row_store_that_spans_chunks) {
+    Store s;
+    fill_span_store(s);
+    BOOST_REQUIRE_EQUAL(s.index_entry_count(), kSpanRows);
+    BOOST_TEST(s.index_slot_count() * 7u >= kSpanRows * 10u); // the 0.7 load ceiling still holds
+
+    bool all_found = true;
+    for (size_t i = 0; i < kSpanRows; ++i) {
+        const auto f = s.find(quad(i));
+        if (!f.has_value() || *f != i) {
+            all_found = false;
+        }
+    }
+    BOOST_TEST(all_found);
+    BOOST_TEST(!s.find(bs({0, 1})).has_value()); // absent: quad always sets four disjoint positions
+
+    // find_batch walks the same probe loop through its own prefetch pipeline, over keys spread across
+    // every chunk of the row store.
+    std::vector<MSet> q;
+    for (size_t i = 0; i < 128; ++i) {
+        q.push_back(quad((i * 97) % kSpanRows));
+    }
+    std::vector<size_t> out(q.size(), 0);
+    s.find_batch(q.data(), q.size(), out.data());
+    bool batch_agrees = true;
+    for (size_t i = 0; i < q.size(); ++i) {
+        const auto scalar = s.find(q[i]);
+        if (out[i] != (scalar ? *scalar : Store::kNotFound)) {
+            batch_agrees = false;
+        }
+    }
+    BOOST_TEST(batch_agrees);
+}
+
 // An explicit reserve rounds up to whole chunks and nothing beyond, so a caller that knows its final
 // size pays no overshoot at all.
 BOOST_AUTO_TEST_CASE(reserve_allocates_whole_chunks_and_no_more) {

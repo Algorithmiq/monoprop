@@ -77,6 +77,19 @@ auto sparse_state_equals(const detail::MPOperator<8>::SparseState &sparse, const
            && std::ranges::equal(sparse.values, expected.second);
 }
 
+// Distinct Monomial<8> keys, as many as asked for: all 3-position subsets of the 16 positions, in order.
+auto distinct_terms(size_t want) -> std::vector<Monomial<8>> {
+    std::vector<Monomial<8>> terms;
+    for (size_t i = 0; i + 2 < 16 && terms.size() < want; ++i) {
+        for (size_t j = i + 1; j + 1 < 16 && terms.size() < want; ++j) {
+            for (size_t k = j + 1; k < 16 && terms.size() < want; ++k) {
+                terms.push_back(indices_to_bitset<8>({i, j, k}));
+            }
+        }
+    }
+    return terms;
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_pauli) {
@@ -171,6 +184,56 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map
 
     // Second call is a no-op fast path (size already matches).
     BOOST_CHECK(op.get_operator() == coeffs);
+}
+
+// A drained init_op_map must RELEASE its buckets, not merely empty them. erase() never shrinks
+// bucket_count(), and bucket_count() is what estimate_memory_usage reports, so a fully drained map used
+// to keep its whole bucket array resident for the life of the run -- 1.15 GB, 43.8% of the operator, at a
+// 7M-term observable. Nothing else here would notice: every other assertion reads size() or find(), both
+// of which a plain erase already satisfies, so this has to weigh the map.
+BOOST_AUTO_TEST_CASE(mp_operator_get_operator_releases_init_map_buckets_on_a_full_drain) {
+    // Enough distinct keys that the bucket array is unmistakably larger than an empty map's.
+    const auto terms = distinct_terms(400);
+    BOOST_REQUIRE_EQUAL(terms.size(), 400U);
+
+    auto op = build_indexed_op(terms);
+    for (size_t i = 0; i < terms.size(); ++i) {
+        op.init_op_map[terms[i]] = static_cast<double>(i) + 1.0;
+    }
+    const size_t seeded = detail::estimate_memory_usage<8>(op).init_operator_bytes;
+
+    // Control: an empty map's buckets, so "released" below is measured against the floor rather than
+    // against zero.
+    const size_t floor_bytes = detail::estimate_memory_usage<8>(detail::MPOperator<8>{}).init_operator_bytes;
+    BOOST_REQUIRE_GT(seeded, 8 * floor_bytes);
+
+    static_cast<void>(op.get_operator()); // every key is in the store, so this is a full drain
+
+    const auto after = detail::estimate_memory_usage<8>(op);
+    BOOST_TEST(after.init_operator_entries == 0U);
+    BOOST_TEST(after.init_operator_bytes == floor_bytes); // buckets gone, not merely emptied
+    BOOST_TEST(op.get_operator()[7] == 8.0);              // and the coefficients still landed
+}
+
+// The partial drain takes the other arm: the map is rebuilt from what is still pending, which sizes the
+// buckets to the survivors instead of leaving them at the seeded width.
+BOOST_AUTO_TEST_CASE(mp_operator_get_operator_resizes_init_map_buckets_on_a_partial_drain) {
+    const auto terms = distinct_terms(400);
+    BOOST_REQUIRE_EQUAL(terms.size(), 400U);
+
+    auto op = build_indexed_op(terms);
+    for (size_t i = 0; i < terms.size(); ++i) {
+        op.init_op_map[terms[i]] = static_cast<double>(i) + 1.0;
+    }
+    // One key the store does not hold, so the drain cannot take the release-outright arm.
+    op.init_op_map[indices_to_bitset<8>({0, 1, 2, 3})] = 7.0;
+    const size_t seeded = detail::estimate_memory_usage<8>(op).init_operator_bytes;
+
+    static_cast<void>(op.get_operator());
+
+    const auto after = detail::estimate_memory_usage<8>(op);
+    BOOST_TEST(after.init_operator_entries == 1U);
+    BOOST_TEST(after.init_operator_bytes < seeded / 4);
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pauli) {

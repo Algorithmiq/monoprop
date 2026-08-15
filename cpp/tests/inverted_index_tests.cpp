@@ -88,7 +88,7 @@ auto mixed_operator() -> std::vector<MSet> {
 // The fold every assertion below is compared against, built from the authored membership rather than
 // from the index's own storage.
 auto oracle_fold(const std::vector<MSet> &op, const std::vector<size_t> &cols) -> std::vector<uint64_t> {
-    std::vector<uint64_t> expected(kMixedWords, 0);
+    std::vector<uint64_t> expected((op.size() + 63) / 64, 0);
     for (size_t r = 0; r < op.size(); ++r) {
         bool bit = false;
         for (const size_t c : cols) {
@@ -161,6 +161,172 @@ BOOST_AUTO_TEST_CASE(inverted_index_picks_the_smallest_container_per_chunk) {
     const auto stats = sc.stats();
     BOOST_TEST(stats.bitmap_chunks == 4U); // modes 0 and 4, once sealed and once in the tail
     BOOST_TEST(stats.arena_slack_bytes <= sc.arena_bytes() / 8 + 8);
+}
+
+// The tail's bitmap -> delta give-up path. A column goes dense enough to take a tail bitmap, falls
+// quiet, then takes one late posting that stretches the bitmap across the whole silence. A delta stream
+// never exceeds 3 bytes per posting, so a bitmap past kTailBitmapGiveUpFactor times the posting count is
+// provably the worse of the two and must convert back. Nothing else here reaches the transition back --
+// and since the late gap is >= 255, this is also the only cover of the escape inside that re-encode.
+BOOST_AUTO_TEST_CASE(inverted_index_tail_bitmap_gives_up_on_a_late_sparse_posting) {
+    // Dense from row 0, so a byte per posting immediately loses to a bit per row and the tail crosses to
+    // a bitmap inside the first word. Then silence, then one posting far enough out that the bitmap it
+    // has to stretch to costs more than 4 bytes for each posting it holds.
+    constexpr size_t kDense = 9;  // 9 B of gaps against 8 B of bitmap: the crossover
+    constexpr size_t kLate = 320; // 6 words = 48 B of bitmap against 10 postings
+    static_assert(kLate + 1 < kChunkRows, "nothing here may seal; this is a tail test");
+
+    auto build = [](size_t rows) {
+        std::vector<MSet> op;
+        op.reserve(rows);
+        for (size_t i = 0; i < rows; ++i) {
+            VecZ pos{4}; // keep every row non-empty
+            if (i < kDense || i == kLate) {
+                pos.push_back(0);
+            }
+            op.push_back(bs(pos));
+        }
+        return op;
+    };
+
+    // Positive control: with the late posting withheld the column is still a bitmap, so the assertion
+    // below reads a transition rather than a column that was a delta stream the whole time.
+    Sc quiet;
+    quiet.rebuild(build(kLate));
+    BOOST_REQUIRE_EQUAL(quiet.sealed_chunks(), 0U);
+    BOOST_REQUIRE((quiet.container_tag(col_of(0), 0) == ChunkTag::Bitmap));
+
+    const auto op = build(kLate + 1);
+    Sc sc;
+    sc.rebuild(op);
+    BOOST_REQUIRE_EQUAL(sc.sealed_chunks(), 0U);
+    BOOST_TEST((sc.container_tag(col_of(0), 0) == ChunkTag::U8Delta));
+
+    // The re-encode is lossless across the escape: the trailing gap is kLate - kDense = 311.
+    std::vector<size_t> expected_rows;
+    for (size_t i = 0; i < kDense; ++i) {
+        expected_rows.push_back(i);
+    }
+    expected_rows.push_back(kLate);
+    BOOST_TEST(rows_of(sc, col_of(0)) == expected_rows, boost::test_tools::per_element());
+    BOOST_TEST(sc.column_postings(col_of(0)) == expected_rows.size());
+
+    // And the fold agrees, which is what the container choice is not allowed to change.
+    const std::vector<size_t> cols{col_of(0), col_of(4)};
+    const auto expected = oracle_fold(op, cols);
+    std::vector<uint64_t> got(expected.size(), 0xdeadbeefULL);
+    combine_columns_block<N>(sc, cols, got.data(), 0, expected.size());
+    BOOST_TEST(got == expected, boost::test_tools::per_element());
+}
+
+// Sealing re-encodes a bitmap tail back to a delta stream. The seal prices every column against what a
+// delta stream WOULD cost, not against what the tail happens to hold, so a column that was briefly dense
+// and then quiet seals as postings -- taking write_column_'s re-encode arm rather than its memcpy arm.
+// The late posting puts a >= 255 gap in that re-encode.
+BOOST_AUTO_TEST_CASE(inverted_index_seals_a_bitmap_tail_back_to_a_delta_stream) {
+    // Fractions of the chunk, so the argmin and the give-up factor both land the same way at any chunk
+    // height: dense over the first 32nd (bitmap), one posting at the half (still under 4 B/posting, so
+    // the tail stays a bitmap), and a whole-chunk delta cost of ~1/32 B per row against the bitmap's 1/8.
+    constexpr size_t kDense = kChunkRows / 32;
+    constexpr size_t kLate = kChunkRows / 2;
+
+    auto build = [](size_t rows) {
+        std::vector<MSet> op;
+        op.reserve(rows);
+        for (size_t i = 0; i < rows; ++i) {
+            VecZ pos{4};
+            if (i < kDense || i == kLate) {
+                pos.push_back(0);
+            }
+            op.push_back(bs(pos));
+        }
+        return op;
+    };
+
+    // Positive control: one row short of the seal the tail is a bitmap, so the sealed tag below is the
+    // re-encode arm and not a delta tail that was memcpy'd.
+    Sc unsealed;
+    unsealed.rebuild(build(kChunkRows - 1));
+    BOOST_REQUIRE_EQUAL(unsealed.sealed_chunks(), 0U);
+    BOOST_REQUIRE((unsealed.container_tag(col_of(0), 0) == ChunkTag::Bitmap));
+
+    const auto op = build(kChunkRows);
+    Sc sc;
+    sc.rebuild(op);
+    BOOST_REQUIRE_EQUAL(sc.sealed_chunks(), 1U);
+    BOOST_TEST((sc.container_tag(col_of(0), 0) == ChunkTag::U8Delta));
+
+    std::vector<size_t> expected_rows;
+    for (size_t i = 0; i < kDense; ++i) {
+        expected_rows.push_back(i);
+    }
+    expected_rows.push_back(kLate);
+    BOOST_TEST(rows_of(sc, col_of(0)) == expected_rows, boost::test_tools::per_element());
+
+    const std::vector<size_t> cols{col_of(0), col_of(4)};
+    const auto expected = oracle_fold(op, cols);
+    std::vector<uint64_t> got(expected.size(), 0xdeadbeefULL);
+    for (size_t bb = 0; bb < expected.size(); bb += kColumnBlockWords) {
+        const size_t be = std::min(bb + kColumnBlockWords, expected.size());
+        combine_columns_block<N>(sc, cols, got.data() + bb, bb, be);
+    }
+    BOOST_TEST(got == expected, boost::test_tools::per_element());
+}
+
+// Three seals, so chunk_base_ and dir_ are indexed at k > 0 and the first-seal arena projection (which
+// needs more than one whole chunk to fire) is taken. Mode 1 is set in the middle chunk only: a directory
+// read that ignored k, or a chunk base off by one segment, would report its postings against the wrong
+// rows and could not survive the row comparison below.
+BOOST_AUTO_TEST_CASE(inverted_index_indexes_the_directory_per_chunk_across_three_seals) {
+    constexpr size_t kRows = 3 * kChunkRows + kChunkRows / 3; // three sealed chunks plus a partial tail
+
+    std::vector<MSet> op;
+    op.reserve(kRows);
+    std::vector<size_t> mid_rows;
+    for (size_t i = 0; i < kRows; ++i) {
+        VecZ pos{0}; // every row: bitmap in all three sealed chunks and in the tail
+        if (i >= kChunkRows && i < 2 * kChunkRows && i % 4 == 0) {
+            pos.push_back(1); // middle chunk only, dense enough there to take a bitmap
+            mid_rows.push_back(i);
+        }
+        if (i % 1000 == 0) {
+            pos.push_back(2); // every gap escapes: a delta stream in every chunk
+        }
+        op.push_back(bs(pos));
+    }
+
+    Sc sc;
+    sc.rebuild(op);
+    BOOST_REQUIRE_EQUAL(sc.rows(), kRows);
+    BOOST_REQUIRE_EQUAL(sc.sealed_chunks(), 3U);
+    BOOST_REQUIRE_EQUAL(sc.chunk_count(), 4U);
+
+    bool tags_as_authored = true;
+    for (size_t k = 0; k < 4; ++k) {
+        tags_as_authored &= sc.container_tag(col_of(0), k) == ChunkTag::Bitmap;
+        tags_as_authored &= sc.container_tag(col_of(1), k) == (k == 1 ? ChunkTag::Bitmap : ChunkTag::Empty);
+        tags_as_authored &= sc.container_tag(col_of(2), k) == ChunkTag::U8Delta;
+        tags_as_authored &= sc.container_tag(col_of(3), k) == ChunkTag::Empty;
+    }
+    BOOST_TEST(tags_as_authored);
+
+    BOOST_TEST(rows_of(sc, col_of(1)) == mid_rows, boost::test_tools::per_element());
+    BOOST_TEST(rows_of(sc, col_of(0)).size() == kRows);
+    BOOST_TEST(sc.column_postings(col_of(2)) == (kRows + 999) / 1000);
+
+    // The one-shot projection must leave the arena no fatter than the geometric path would have.
+    BOOST_TEST(sc.stats().arena_slack_bytes <= sc.arena_bytes() / 8 + 8);
+
+    // Fold across all three sealed chunks and the tail, blocked as production blocks it.
+    const size_t words = (kRows + 63) / 64;
+    const std::vector<size_t> cols{col_of(0), col_of(1), col_of(2), col_of(3)};
+    const auto expected = oracle_fold(op, cols);
+    std::vector<uint64_t> got(words, 0xdeadbeefULL);
+    for (size_t bb = 0; bb < words; bb += kColumnBlockWords) {
+        const size_t be = std::min(bb + kColumnBlockWords, words);
+        combine_columns_block<N>(sc, cols, got.data() + bb, bb, be);
+    }
+    BOOST_TEST(got == expected, boost::test_tools::per_element());
 }
 
 // Every fill path appends in row order, so a column's rows come out ascending whichever container holds

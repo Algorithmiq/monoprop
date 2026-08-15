@@ -209,6 +209,12 @@ public:
         }
         return overflow_.at(i).count();
     }
+    // Where a row's packed storage lives. A row is never moved once written -- that is the whole reason
+    // the store is chunked rather than one growing vector -- and reading rows back through row(i) cannot
+    // tell that apart from a flat vector that reallocated, so the address is exposed for the test that
+    // does. Opaque on purpose: this is not a route to the packed bytes.
+    [[nodiscard]] auto row_address(size_t i) const noexcept -> const void * { return row_ptr_(i); }
+
     [[nodiscard]] auto memory_bytes() const -> size_t {
         size_t total = capacity() * stride_ * sizeof(PosT);
         total += chunks_.capacity() * sizeof(std::unique_ptr<PosT[]>);
