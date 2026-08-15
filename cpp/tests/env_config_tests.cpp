@@ -14,9 +14,12 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <chrono>
 #include <optional>
 
 #include "monoprop/detail/EnvConfig.h"
+#include "monoprop/detail/mpi/CpuRelax.h"
+#include "monoprop/detail/mpi/PartitionBarrier.h"
 
 using monoprop::config::detail::parse_flag;
 using monoprop::config::detail::parse_positive_int;
@@ -57,6 +60,27 @@ BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_range) {
     BOOST_CHECK(parse_positive_int("1") == std::optional<int>(1));
     BOOST_CHECK(parse_positive_int("42") == std::optional<int>(42));
     BOOST_CHECK(parse_positive_int("1000000") == std::optional<int>(1'000'000)); // inclusive upper bound
+}
+
+// Observe the budget the barrier actually resolved, rather than recomputing
+// `parse_positive_int(...).value_or(kDefault)` here: an assertion of that shape passes even if the
+// barrier is never wired to the setting at all, which is the only thing worth checking. config::get()
+// caches on first call, so the env path is unreachable in-process; the injectable override is not.
+BOOST_AUTO_TEST_CASE(env_config_spin_budget_reaches_the_barrier) {
+    using namespace std::chrono_literals;
+    BOOST_CHECK_GT(monoprop::mpi::detail::kDefaultSpinBudgetUs, 0);
+
+    // Default construction lands on the configured value, else the compiled-in default -- never on a
+    // zero-length spin, which would send every waiter straight to sched_yield.
+    const monoprop::mpi::PartitionBarrier configured(2);
+    const auto expected = std::chrono::microseconds{
+        monoprop::config::get().spin_budget_us.value_or(monoprop::mpi::detail::kDefaultSpinBudgetUs)};
+    BOOST_CHECK(configured.spin_budget() == expected);
+    BOOST_CHECK_GT(configured.spin_budget().count(), 0);
+
+    // An explicit override wins over both, which is what lets the default be swept and justified.
+    const monoprop::mpi::PartitionBarrier overridden(2, {}, 25us);
+    BOOST_CHECK(overridden.spin_budget() == 25us);
 }
 
 BOOST_AUTO_TEST_CASE(env_config_settings_cached_singleton) {

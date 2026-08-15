@@ -107,6 +107,10 @@ uv sync --all-extras -v
 ctest --test-dir build/editable/Release
 ```
 
+Note that `uv sync` builds in a temporary directory and installs only the wheel, so
+it does **not** relink the test binary: after editing a C++ test, compare the
+binary's mtime against the source's rather than trusting the result.
+
 Full instructions — prerequisites, MPI options, and running the example
 executable — are in the [building guide](https://docs.monoprop.algorithmiq.tech/building).
 In particular, from-source builds require `hwloc` and `pkg-config` so CMake can
@@ -119,6 +123,16 @@ uv run python -m pytest -m "not mpi"   # Python tests (serial)
 just test-mpi                          # Python + C++ tests under MPI
 just test-wide                         # Python + C++ unit tests with a 64-bit TermIndex
 ```
+
+On an MPI build, CTest runs each case as its own process and so pays a full
+`MPI_Init` per case — which initialises every fabric device present even though a
+single-process test never sends a message. `monoprop_TEST_EXCLUDE_MPI_FABRIC` (on by
+default) skips that for the per-case tests only, leaving the multi-rank variants on the
+full component set; see the [testing guide](https://docs.monoprop.algorithmiq.tech/testing).
+
+To audit the partition threading layer for data races, build with
+`cmake.define.monoprop_ENABLE_TSAN=ON` and run CTest against that tree; see the
+[building guide](https://docs.monoprop.algorithmiq.tech/building).
 
 See the [testing guide](https://docs.monoprop.algorithmiq.tech/testing)
 for the with/without-MPI details and the rank matrix.

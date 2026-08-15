@@ -116,7 +116,8 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm)
 // recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a
 // no-op on the synchronous Shm / single-process paths) and unpacks by source.
 template <class T>
-struct PendingAlltoallv {
+struct [[nodiscard("complete the transfer with wait_into(); dropping the handle frees buffers MPI still "
+                   "owns")]] PendingAlltoallv {
     int num_ranks = 0;
     std::vector<int> send_counts;
     std::vector<int> send_displs;
@@ -128,13 +129,46 @@ struct PendingAlltoallv {
     MPI_Request request = MPI_REQUEST_NULL; // set only on the Kind::Mpi async path
 #endif
 
-    auto wait_into(std::vector<std::vector<T>> &recv_data) -> void {
+    // Move-only and self-completing, for the same reason mpi::Ticket is: the posted MPI_Ialltoallv writes
+    // directly into this handle's own send_buffer/recv_buffer, so a copy would hand two owners the same
+    // request (and wait on it twice), and a handle destroyed without wait_into -- what an exception or an
+    // early return between post and unpack does -- would free those buffers while MPI is still writing
+    // into them.
+    PendingAlltoallv() = default;
+    PendingAlltoallv(const PendingAlltoallv &) = delete;
+    auto operator=(const PendingAlltoallv &) -> PendingAlltoallv & = delete;
+    PendingAlltoallv(PendingAlltoallv &&other) noexcept { *this = std::move(other); }
+    auto operator=(PendingAlltoallv &&other) noexcept -> PendingAlltoallv & {
+        if (this != &other) {
+            wait(); // never drop a request this handle already owns
+            num_ranks = other.num_ranks;
+            send_counts = std::move(other.send_counts);
+            send_displs = std::move(other.send_displs);
+            recv_counts = std::move(other.recv_counts);
+            recv_displs = std::move(other.recv_displs);
+            send_buffer = std::move(other.send_buffer);
+            recv_buffer = std::move(other.recv_buffer);
+#ifdef monoprop_ENABLE_MPI
+            request = other.request;
+            other.request = MPI_REQUEST_NULL;
+#endif
+        }
+        return *this;
+    }
+    ~PendingAlltoallv() { wait(); }
+
+    // Idempotent; a no-op on the synchronous Shm / single-process paths and in non-MPI builds.
+    auto wait() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (request != MPI_REQUEST_NULL) {
             MPI_Wait(&request, MPI_STATUS_IGNORE);
             request = MPI_REQUEST_NULL;
         }
 #endif
+    }
+
+    auto wait_into(std::vector<std::vector<T>> &recv_data) -> void {
+        wait();
         recv_data.resize(static_cast<size_t>(num_ranks));
         for (int i = 0; i < num_ranks; ++i) {
             const auto lo = recv_buffer.begin() + recv_displs[static_cast<size_t>(i)];
@@ -148,11 +182,18 @@ struct PendingAlltoallv {
 // skip_self: do not send the self slot (the caller handles self inline) — self send/recv = 0.
 // known_recv_counts: recv counts already known (e.g. the transpose of the query counts), so skip the
 // count exchange. The self slot is also zeroed when skip_self is set.
+// reverse_of_previous: this exchange is the answer leg of the immediately preceding begin_alltoallv on
+// the same comm, and forward_stride is that leg's elements per record (a query is several words, its
+// answer one value). Only the hybrid transport acts on it, reusing that round's offset tables instead of
+// rebuilding them (see HybridComm::alltoallv_reverse); it requires known_recv_counts, and no other
+// collective may intervene on that comm.
 template <class T>
 inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                             Comm comm,
                             bool skip_self = false,
-                            const std::vector<int> *known_recv_counts = nullptr) -> PendingAlltoallv<T> {
+                            const std::vector<int> *known_recv_counts = nullptr,
+                            bool reverse_of_previous = false,
+                            int forward_stride = 1) -> PendingAlltoallv<T> {
     const int num_ranks = size(comm);
     if (static_cast<int>(send_data.size()) != num_ranks) {
         throw CollectiveArgumentError(
@@ -255,7 +296,24 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     }
 #ifdef monoprop_ENABLE_MPI
     else if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv(comm.shm_rank, flat, datatype<T>::get());
+        // Both arms read the same bundle, taken after the recv_buffer resize above. The reverse verb
+        // keeps its per-argument signature: it needs forward_stride, which is not part of the shared
+        // bundle because only the hybrid transport's reverse leg has a notion of it.
+        if (reverse_of_previous) {
+            comm.hyb->alltoallv_reverse(comm.shm_rank,
+                                        flat.send,
+                                        flat.send_counts,
+                                        flat.send_displs,
+                                        flat.recv,
+                                        flat.recv_counts,
+                                        flat.recv_displs,
+                                        flat.elem,
+                                        datatype<T>::get(),
+                                        forward_stride);
+        }
+        else {
+            comm.hyb->alltoallv(comm.shm_rank, flat, datatype<T>::get());
+        }
     }
 #endif
     else {

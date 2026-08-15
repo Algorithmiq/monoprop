@@ -57,9 +57,11 @@ public:
           parent_(parent),
           partitions_(static_cast<size_t>(n_partitions)),
           errs_(static_cast<size_t>(n_partitions)) {
-        make_transport_();
+        // Placement is decided before the transport, because the transport's barrier is grouped by the
+        // locality domain each partition will be pinned to.
         discover_node_peers_();
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_);
+        make_transport_();
         start_masters_();
         // The masters are already running, so a ctor throw must not escape: ~PartitionGroup would never run,
         // and destroying joinable threads during unwinding calls std::terminate.
@@ -70,6 +72,7 @@ public:
             stop_and_join_();
             throw;
         }
+        publish_pinned_count_();
     }
 
     // Fresh transport and threads over the same parent; each partition is deep-copied on its new master, then
@@ -79,10 +82,13 @@ public:
           parent_(src.parent_),
           node_rank_(src.node_rank_),
           node_size_(src.node_size_),
+          // Copied, not re-measured: discover_node_peers_() is collective over the parent and this ctor is
+          // not. Losing it would silently place the clone differently from the group it was copied from.
+          node_mask_(src.node_mask_),
           partitions_(static_cast<size_t>(src.n_)),
           errs_(static_cast<size_t>(src.n_)) {
-        make_transport_();
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_);
+        make_transport_(); // after cpusets_, as in the primary ctor
         start_masters_();
         try { // see the primary ctor: a throw past live masters would std::terminate
             run_on_all([&](int r) {
@@ -95,6 +101,7 @@ public:
             stop_and_join_();
             throw;
         }
+        publish_pinned_count_();
     }
     auto operator=(const PartitionGroup &) -> PartitionGroup & = delete;
 
@@ -146,15 +153,17 @@ private:
     }
 
     // Free-function wrapper so the header compiles on non-Linux (where partition_cpusets returns {}).
-    static auto topo_partition_cpusets(int n, int group_index, int group_count)
+    auto topo_partition_cpusets(int n, int group_index, int group_count) const
         -> std::vector<monoprop::detail::partition::CpuSet> {
         return monoprop::detail::partition::partition_cpusets(static_cast<size_t>(n),
                                                               static_cast<size_t>(group_index),
-                                                              static_cast<size_t>(group_count));
+                                                              static_cast<size_t>(group_count),
+                                                              node_mask_);
     }
 
     // Under an MPI parent, find how many ranks share this host and which we are, so each co-located rank
-    // pins to a disjoint core block (see partition_cpusets). Collective over `parent`; clones copy the result.
+    // pins to a disjoint core block (see partition_cpusets), and whether the launcher already sliced the
+    // host per rank. Collective over `parent`; clones copy the result.
     auto discover_node_peers_() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
@@ -162,19 +171,50 @@ private:
             MPI_Comm_split_type(parent_.mpi, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node);
             MPI_Comm_rank(node, &node_rank_);
             MPI_Comm_size(node, &node_size_);
+            // Exchange the raw affinity masks while the node communicator is open. Measured rather than
+            // inferred because mask *size* cannot distinguish "8 ranks holding 16 cores each" from "8 ranks
+            // sharing one 16-core mask": both leave a rank seeing 16 of the host's 128 CPUs, and the two
+            // need opposite placement. Guessing it wrong in the collapsing direction points every
+            // co-located rank at the same cores, which is worse than not pinning at all.
+            if (node_size_ > 1) {
+                const auto mine = monoprop::detail::partition::this_thread_cpumask();
+                std::vector<monoprop::detail::partition::CpuMask> all(static_cast<size_t>(node_size_));
+                MPI_Allgather(&mine, sizeof(mine), MPI_BYTE, all.data(), sizeof(mine), MPI_BYTE, node);
+                node_mask_ = monoprop::detail::partition::classify_node_mask(all);
+            }
             MPI_Comm_free(&node);
         }
 #endif
     }
 
-    auto make_transport_() -> void {
+    // Called once the first run_on_all has returned, which is the earliest point every master has passed
+    // its pin attempt: masters pin before taking any job, so the count is final and needs no extra
+    // synchronisation of its own. Reporting it is what makes `barrier_groups = 0` readable -- unpinned and
+    // one-domain-per-rank are both legitimate causes of it and are otherwise indistinguishable.
+    auto publish_pinned_count_() -> void {
+        const int pinned = pinned_count_.load(std::memory_order_relaxed);
 #ifdef monoprop_ENABLE_MPI
-        if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
-            hyb_ = std::make_unique<mpi::HybridComm>(parent_.mpi, n_);
+        if (hyb_) {
+            hyb_->note_pinned(pinned);
             return;
         }
 #endif
-        shm_ = std::make_unique<mpi::ShmComm>(n_);
+        if (shm_) {
+            shm_->note_pinned(pinned);
+        }
+    }
+
+    auto make_transport_() -> void {
+        // Empty unless the partitions are pinned and hwloc reported a topology ⇒ flat barrier (see
+        // PartitionBarrier); cpusets_ must already be set.
+        const std::vector<int> domains = monoprop::detail::partition::cpuset_domains(cpusets_);
+#ifdef monoprop_ENABLE_MPI
+        if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
+            hyb_ = std::make_unique<mpi::HybridComm>(parent_.mpi, n_, domains);
+            return;
+        }
+#endif
+        shm_ = std::make_unique<mpi::ShmComm>(n_, domains);
     }
     auto comm_for_(int r) -> mpi::Comm {
 #ifdef monoprop_ENABLE_MPI
@@ -219,8 +259,14 @@ private:
     }
 
     auto master_loop_(int rank) -> void {
-        if (!cpusets_.empty()) {
-            pin_this_thread(cpusets_[static_cast<size_t>(rank)]);
+        // Relaxed is sufficient, but not because ordering does not matter here -- it is because the
+        // ordering comes from somewhere else. Each master increments once before it takes any job, so
+        // every increment happens-before that master's job completion, and job completion is already
+        // published to the facade thread through m_/done_count_. publish_pinned_count_ reads the counter
+        // only after run_on_all has returned, i.e. after acquiring that same mutex. Do not "strengthen"
+        // this to acq_rel expecting it to carry the edge itself; the edge is the dispatch mutex's.
+        if (!cpusets_.empty() && pin_this_thread(cpusets_[static_cast<size_t>(rank)])) {
+            pinned_count_.fetch_add(1, std::memory_order_relaxed);
         }
         unsigned seen = 0;
         for (;;) {
@@ -250,9 +296,12 @@ private:
     }
 
     int n_;
-    mpi::Comm parent_;                  // enclosing communicator (size R) — decides the transport
-    int node_rank_ = 0;                 // this rank's index among the ranks sharing the host
-    int node_size_ = 1;                 // how many parent ranks share the host (1 unless MPI R>1)
+    mpi::Comm parent_;  // enclosing communicator (size R) — decides the transport
+    int node_rank_ = 0; // this rank's index among the ranks sharing the host
+    int node_size_ = 1; // how many parent ranks share the host (1 unless MPI R>1)
+    // How the launcher divided the host among those ranks, measured in discover_node_peers_(). Shared until
+    // measured, which is both the single-rank truth and the safe default (see partition_cpusets).
+    monoprop::detail::partition::NodeMask node_mask_ = monoprop::detail::partition::NodeMask::Shared;
     std::unique_ptr<mpi::ShmComm> shm_; // set iff R == 1
 #ifdef monoprop_ENABLE_MPI
     std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1
@@ -261,6 +310,9 @@ private:
     std::vector<std::exception_ptr> errs_;
     std::vector<monoprop::detail::partition::CpuSet> cpusets_;
     std::vector<std::thread> masters_;
+    // Incremented by each master that actually pinned. Relaxed throughout: written once per master before
+    // it takes work, read once after they are all up (see publish_pinned_count_).
+    std::atomic<int> pinned_count_{0};
 
     // Job dispatch: the facade thread publishes one job and waits for all masters to complete it.
     std::mutex m_;

@@ -21,12 +21,16 @@ if(NOT _monoprop_mpiexec_numproc_flag)
   set(_monoprop_mpiexec_numproc_flag "-n")
 endif()
 
+# SERIAL_ENVIRONMENT holds VAR=value entries applied to the per-case `serial` variants ONLY,
+# never to the MPI ones. The two groups differ in a way that matters for MPI: a per-case launch is
+# one process, so its world size is 1 and no inter-process transport is ever used, whereas the MPI
+# variants exchange real messages and need every component the fabric offers.
 function(discover_tests TARGET)
   cmake_parse_arguments(
     ""
     ""
     "WORKING_DIRECTORY"
-    "EXTRA_ARGS;PROPERTIES"
+    "EXTRA_ARGS;PROPERTIES;SERIAL_ENVIRONMENT"
     ${ARGN}
   )
 
@@ -66,6 +70,7 @@ function(discover_tests TARGET)
       "TEST_EXECUTABLE=$<TARGET_FILE:${TARGET}>" -D
       "TEST_WORKING_DIR=${_WORKING_DIRECTORY}" -D
       "TEST_EXTRA_ARGS=${_EXTRA_ARGS}" -D "TEST_PROPERTIES=${_PROPERTIES}" -D
+      "TEST_SERIAL_ENVIRONMENT=${_SERIAL_ENVIRONMENT}" -D
       "TEST_LIST=${_TEST_LIST}" -D "CTEST_FILE=${ctest_tests_file}" -D
       "TEST_ENABLE_MPI_VARIANTS=${_enable_mpi_variants}" -D
       "TEST_MPI_NUMPROCS=${monoprop_MPI_TEST_PROCS}" -D

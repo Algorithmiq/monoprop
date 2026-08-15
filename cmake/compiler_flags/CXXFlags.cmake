@@ -24,9 +24,14 @@
 #   list, *e.g.* to override previous compiler flags without touching the CMake
 #   scripts.  Default is empty.
 #
+# Opt-in sanitizer flags are appended to ``CMAKE_CXX_FLAGS`` by
+# ``Sanitizers.cmake``; see that file for why they do not go into
+# ``monoprop_CXX_FLAGS``.
+#
 # Variables used::
 #
 #   monoprop_ENABLE_ARCH_FLAGS
+#   monoprop_ENABLE_TSAN
 #   EXTRA_CXXFLAGS
 #
 # Variables modified::
@@ -178,3 +183,5 @@ set(monoprop_CXX_FLAGS "")
 include(${CMAKE_CURRENT_LIST_DIR}/GNU.CXX.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/Intel.CXX.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/Clang.CXX.cmake)
+# Last, so the sanitizer flags cannot be clobbered by a per-compiler `set()`.
+include(${CMAKE_CURRENT_LIST_DIR}/Sanitizers.cmake)

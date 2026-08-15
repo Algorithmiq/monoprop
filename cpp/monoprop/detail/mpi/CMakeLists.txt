@@ -6,6 +6,7 @@ target_sources(
       FILES
         "CheckedCount.h"
         "Comm.h"
+        "CommProfile.h"
         "CpuRelax.h"
         "Exchange.h"
         "HybridComm.h"

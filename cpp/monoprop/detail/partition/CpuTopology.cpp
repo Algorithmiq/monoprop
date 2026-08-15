@@ -15,6 +15,7 @@
 #include "monoprop/detail/partition/CpuTopology.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <map>
 #include <vector>
 
@@ -220,9 +221,16 @@ auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
 
 /* ── partition_cpusets ─────────────────────────────────────────────────────── */
 
-auto partition_cpusets(size_t n, size_t group_index, size_t group_count) -> std::vector<CpuSet> {
+auto partition_cpusets(size_t n, size_t group_index, size_t group_count, NodeMask mask) -> std::vector<CpuSet> {
     if (!config::get().partition_pinning) {
         return {};
+    }
+    /* A PerRank mask is already this rank's own slice, so dividing it again by group_count would
+     * overflow placement_order()'s capacity guard and disable pinning entirely. See the note on
+     * partition_cpusets() in the header for the measurement behind this. */
+    if (mask == NodeMask::PerRank) {
+        group_index = 0;
+        group_count = 1;
     }
     const auto cores = enumerate_physical_cores();
     const auto order = topo_detail::placement_order(cores, n, group_index, group_count);
@@ -236,22 +244,84 @@ auto partition_cpusets(size_t n, size_t group_index, size_t group_count) -> std:
 
 /* ── pin_this_thread ───────────────────────────────────────────────────────── */
 
-auto pin_this_thread(const CpuSet &set) -> void {
+auto pin_this_thread(const CpuSet &set) -> bool {
     if (set.pu < 0) {
-        return;
+        return false;
     }
     const auto topo = get_topology();
     if (!topo) {
-        return;
+        return false;
     }
     hwloc_cpuset_t cpuset = hwloc_bitmap_alloc();
     if (!cpuset) {
-        return;
+        return false;
     }
     hwloc_bitmap_only(cpuset, static_cast<unsigned>(set.pu));
-    /* Errors are intentionally ignored: pinning is performance-only, not a correctness requirement. */
-    hwloc_set_cpubind(topo, cpuset, HWLOC_CPUBIND_THREAD | HWLOC_CPUBIND_STRICT);
+    /* A failure is not an error -- pinning is performance-only -- but it is reported rather than
+     * swallowed, so `barrier_groups = 0` can be told apart from "nothing was pinned". */
+    const bool ok = hwloc_set_cpubind(topo, cpuset, HWLOC_CPUBIND_THREAD | HWLOC_CPUBIND_STRICT) == 0;
     hwloc_bitmap_free(cpuset);
+    return ok;
+}
+
+/* ── Node-mask classification ──────────────────────────────────────────────── */
+
+auto this_thread_cpumask() -> CpuMask {
+    CpuMask mask;
+    const auto topo = get_topology();
+    if (!topo) {
+        return mask;
+    }
+    const hwloc_cpuset_t allowed = effective_allowed_cpuset(topo);
+    if (!allowed) {
+        return mask;
+    }
+    int pu = hwloc_bitmap_first(allowed);
+    while (pu >= 0) {
+        cpumask_set(mask, static_cast<size_t>(pu));
+        pu = hwloc_bitmap_next(allowed, pu);
+    }
+    hwloc_bitmap_free(allowed);
+    return mask;
+}
+
+auto classify_node_mask(const std::vector<CpuMask> &masks) -> NodeMask {
+    if (masks.size() < 2) {
+        return NodeMask::Shared; // nobody to be disjoint from
+    }
+    for (size_t a = 0; a < masks.size(); ++a) {
+        if (cpumask_count(masks[a]) == 0) {
+            return NodeMask::Shared; // a mask we could not read ⇒ cannot tell
+        }
+        for (size_t b = a + 1; b < masks.size(); ++b) {
+            for (size_t w = 0; w < masks[a].words.size(); ++w) {
+                if ((masks[a].words[w] & masks[b].words[w]) != 0) {
+                    return NodeMask::Shared; // shares a PU ⇒ not a per-rank split
+                }
+            }
+        }
+    }
+    return NodeMask::PerRank;
+}
+
+/* ── cpuset_domains ────────────────────────────────────────────────────────── */
+
+auto cpuset_domains(const std::vector<CpuSet> &sets) -> std::vector<int> {
+    if (sets.empty()) {
+        return {};
+    }
+    const auto cores = enumerate_physical_cores();
+    std::vector<int> domains;
+    domains.reserve(sets.size());
+    for (const CpuSet &set : sets) {
+        const auto it =
+            std::find_if(cores.begin(), cores.end(), [&](const PhysicalCore &c) { return c.cpu == set.pu; });
+        if (it == cores.end()) {
+            return {}; // a token naming no known core ⇒ flat barrier rather than a wrong grouping
+        }
+        domains.push_back(it->l3_domain);
+    }
+    return domains;
 }
 
 } // namespace monoprop::detail::partition
