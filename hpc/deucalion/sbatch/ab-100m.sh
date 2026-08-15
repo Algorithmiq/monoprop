@@ -54,7 +54,16 @@ source hpc/deucalion/env.sh
 
 NODES="${SLURM_JOB_NUM_NODES:-1}"
 NTASKS=$((RANKS_PER_NODE * NODES))
-LAYOUT="B_$(printf '%dx%d' "$RANKS_PER_NODE" "$PARTITIONS")"
+# Derived, not hardcoded: this said "B_" regardless of the layout actually run, so every
+# rung collated into one table under a letter that was only right for 8x16. The letter names
+# a (ranks, partitions) PAIR -- A is one rank over the whole node, not merely one rank.
+case "${RANKS_PER_NODE}x${PARTITIONS}" in
+    1x128) LAYOUT_LETTER=A ;;
+    8x16) LAYOUT_LETTER=B ;;
+    2x64) LAYOUT_LETTER=C ;;
+    *) LAYOUT_LETTER=X ;;
+esac
+LAYOUT="${LAYOUT_LETTER}_$(printf '%dx%d' "$RANKS_PER_NODE" "$PARTITIONS")"
 
 if [ $((RANKS_PER_NODE * PARTITIONS)) -gt 128 ]; then
     echo "refusing: ${RANKS_PER_NODE} ranks x ${PARTITIONS} partitions exceeds 128 cores/node" >&2
@@ -154,9 +163,18 @@ for rep in $(seq 1 "$REPS"); do
             # --bench-rounds=1 is mandatory, not a default: pedantic builds round k+1's
             # arguments before releasing round k's, so more than one round holds two
             # propagators at once and doubles peak memory. Repetition comes from $REPS.
+            # --cpu-bind=none, NOT =cores. With =cores Slurm hands each co-located rank a
+            # disjoint 16-core mask, enumerate_physical_cores() then reports 16 while the
+            # placement policy asks for ranks_per_node x partitions = 128, and it correctly
+            # refuses -- leaving every rank UNPINNED. The node would be partitioned twice,
+            # once by Slurm and once by us. Leaving all 128 visible lets the engine divide
+            # the node itself; the ranks then take disjoint sixteenths covering all 128 CPUs
+            # exactly once. This is a launcher-side workaround for a bug in the placement
+            # policy, so it is needed on any branch that lacks the engine-side collapse.
+            # Three runs behind RESULTS-invidx-memory.md were refused for exactly this.
             srun --mpi=pmix --ntasks="$NTASKS" --ntasks-per-node="$RANKS_PER_NODE" \
                  --cpus-per-task=$((128 / RANKS_PER_NODE)) \
-                 --cpu-bind=cores --distribution=block:block \
+                 --cpu-bind=none --distribution=block:block \
                  "$venv/bin/python" -m pytest benches/bench_random.py \
                  -o filterwarnings=default -k "$SELECT" \
                  --num-modes="$NUM_MODES" --cutoff="$CUTOFF" \
