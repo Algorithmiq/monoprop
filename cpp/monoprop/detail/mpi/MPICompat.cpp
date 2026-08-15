@@ -119,7 +119,8 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm)
 #endif
 }
 
-auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache) -> const RecvLayout & {
+auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache, uint64_t generation)
+    -> const RecvLayout & {
     const auto n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);
     // alltoall_counts moves comm_size ints each way regardless of `n`, so a send vector that is not
@@ -132,7 +133,14 @@ auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayout
                         n,
                         comm_size));
     }
-    if (cache.comm_size == comm_size && static_cast<int>(cache.layout.counts.size()) == n) {
+    // `generation` identifies the send pattern. Without it the predicate was "have we ever
+    // resolved anything for a communicator this size", which is true for every layer after the
+    // first -- correct only while each cache belonged to the one layout that produced it, and
+    // silently wrong the moment a caller resolves a second pattern through the same cache.
+    // Every rank holds the same generation for the same layer, so all ranks agree on the miss
+    // and enter alltoall_counts together.
+    if (cache.comm_size == comm_size && cache.generation == generation
+        && static_cast<int>(cache.layout.counts.size()) == n) {
         return cache.layout;
     }
 
@@ -147,6 +155,7 @@ auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayout
     }
     out.total = checked_mpi_count(total);
     cache.comm_size = comm_size;
+    cache.generation = generation;
     return out;
 }
 
