@@ -19,6 +19,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -62,10 +63,10 @@ public:
     static_assert(kMaxInlinePositions < std::numeric_limits<PosT>::max(),
                   "kOverflowMarker sentinel must not collide with a valid popcount");
 
-    // Valid term indices are < kIndexCeiling (check_index_fits throws at the ceiling), so the
-    // all-ones TermIndex is free to mark an empty slot.
+    // Valid term indices are < kIndexCeiling (check_index_fits throws at the ceiling). Emptiness is
+    // carried by the slot's fingerprint byte, not by a reserved index, so the whole TermIndex range
+    // below the ceiling is usable.
     static constexpr size_t kIndexCeiling = static_cast<size_t>(std::numeric_limits<TermIndex>::max());
-    static constexpr TermIndex kEmptySlot = std::numeric_limits<TermIndex>::max();
     // find_batch's "absent" result; same value as detail::kMissingIndex (not included here — the
     // operator store must not depend on evolution headers).
     static constexpr size_t kNotFound = std::numeric_limits<size_t>::max();
@@ -85,9 +86,12 @@ public:
         out->size_ = size_;
         out->overflow_ = overflow_;
         out->reserve_index(table_.count);
-        for (const Slot &e : table_.slots) {
-            if (e.idx != kEmptySlot) {
-                out->insert_slot_(e.idx, e.h);
+        // The stored fingerprint is not a hash, so the clone rebuilds each entry's hash from the row
+        // it already copied. Clone runs off a quiescent store and is rare; this is not a hot path.
+        for (size_t s = 0; s < table_.slots; ++s) {
+            if (slot_fp_(s) != 0) {
+                const size_t i = slot_idx_(s);
+                out->insert_slot_(static_cast<TermIndex>(i), spread(fold_hash(row(i))));
             }
         }
         return out;
@@ -176,75 +180,82 @@ public:
     }
 
     auto find(const key_type &key) const -> std::optional<size_t> {
-        const uint32_t h = fold_hash(key);
         if (table_.count == 0) {
             return std::nullopt;
         }
-        size_t s = spread(h) & table_.mask;
-        for (;; s = (s + 1) & table_.mask) {
-            const Slot &e = table_.slots[s];
-            if (e.idx == kEmptySlot) {
+        const size_t sp = spread(fold_hash(key));
+        const uint8_t f = fingerprint(sp);
+        for (size_t s = sp & table_.mask;; s = (s + 1) & table_.mask) {
+            const uint8_t e = slot_fp_(s);
+            if (e == 0) {
                 return std::nullopt;
             }
-            if (e.h == h && row_eq_key(static_cast<size_t>(e.idx), key)) {
-                return static_cast<size_t>(e.idx);
+            if (e == f) {
+                const size_t i = slot_idx_(s);
+                if (row_eq_key(i, key)) {
+                    return i;
+                }
             }
         }
     }
 
     // Group-prefetch batch find: out[i] = row index of keys[i], or kNotFound. Same result as n
-    // find() calls, but overlaps dram misses via a per-group hash/probe/confirm pipeline. An h
-    // collision falls back to an exact find. must not run concurrently with inserts.
+    // find() calls, but overlaps dram misses via a per-group hash/probe/confirm pipeline. A
+    // fingerprint collision falls back to an exact find. must not run concurrently with inserts.
     auto find_batch(const key_type *keys, size_t n, size_t *out) const -> void {
         static constexpr size_t G = 16; // keys prefetched together per pipeline pass
-        std::array<uint32_t, G> hh;
         std::array<size_t, G> sp;
-        std::array<TermIndex, G> cand;
+        std::array<size_t, G> cand;
         for (size_t base = 0; base < n; base += G) {
             const size_t g = std::min(G, n - base);
             for (size_t j = 0; j < g; ++j) {
-                hh[j] = fold_hash(keys[base + j]);
-                sp[j] = spread(hh[j]);
-                __builtin_prefetch(&table_.slots[sp[j] & table_.mask], 0, 0);
+                sp[j] = spread(fold_hash(keys[base + j]));
+                // One prefetch covers the probe and the confirm: the fingerprint and the index it
+                // guards are consecutive bytes of the same record.
+                __builtin_prefetch(slot_addr_(sp[j] & table_.mask), 0, 0);
             }
             for (size_t j = 0; j < g; ++j) {
-                cand[j] = kEmptySlot;
+                cand[j] = kNoSlot;
                 if (table_.count == 0) {
                     continue;
                 }
-                cand[j] = probe_hash_match_(hh[j], sp[j] & table_.mask);
-                if (cand[j] != kEmptySlot) {
-                    __builtin_prefetch(&rows_[static_cast<size_t>(cand[j]) * stride_], 0, 0);
+                cand[j] = probe_fp_match_(fingerprint(sp[j]), sp[j] & table_.mask);
+                if (cand[j] != kNoSlot) {
+                    __builtin_prefetch(&rows_[slot_idx_(cand[j]) * stride_], 0, 0);
                 }
             }
             for (size_t j = 0; j < g; ++j) {
-                if (cand[j] != kEmptySlot && row_eq_key(static_cast<size_t>(cand[j]), keys[base + j])) {
-                    out[base + j] = static_cast<size_t>(cand[j]);
+                if (cand[j] == kNoSlot) {
+                    out[base + j] = kNotFound;
+                    continue;
                 }
-                else if (cand[j] != kEmptySlot) {
-                    const auto v = find(keys[base + j]);
-                    out[base + j] = v ? *v : kNotFound;
+                const size_t i = slot_idx_(cand[j]);
+                if (row_eq_key(i, keys[base + j])) {
+                    out[base + j] = i;
                 }
                 else {
-                    out[base + j] = kNotFound;
+                    const auto v = find(keys[base + j]);
+                    out[base + j] = v ? *v : kNotFound;
                 }
             }
         }
     }
 
-    // Insert-or-no-op. Row at `value` must already be written (the confirm reads dense rows).
+    // Insert-or-no-op. Row at `value` must already be written: the confirm reads dense rows, and since
+    // the table stores a fingerprint rather than a hash, so does every rehash this insert may trigger.
     auto emplace(const key_type &key, mapped_type value) -> void {
         check_index_fits(value);
-        const uint32_t h = fold_hash(key);
-        table_.rehash_if_needed();
-        size_t s = spread(h) & table_.mask;
-        while (table_.slots[s].idx != kEmptySlot) {
-            if (table_.slots[s].h == h && row_eq_key(static_cast<size_t>(table_.slots[s].idx), key)) {
+        const size_t sp = spread(fold_hash(key));
+        const uint8_t f = fingerprint(sp);
+        rehash_if_needed_();
+        size_t s = sp & table_.mask;
+        while (slot_fp_(s) != 0) {
+            if (slot_fp_(s) == f && row_eq_key(slot_idx_(s), key)) {
                 return;
             }
             s = (s + 1) & table_.mask;
         }
-        table_.slots[s] = Slot{static_cast<TermIndex>(value), h};
+        write_slot_(s, f, static_cast<TermIndex>(value));
         ++table_.count;
     }
     // Insert n distinct rows with consecutive indices [base, base+n). Rows must already be written.
@@ -255,14 +266,15 @@ public:
         }
         check_index_fits(base + n - 1);
         for (size_t k = 0; k < n; ++k) {
-            insert_slot_(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
+            insert_slot_(static_cast<TermIndex>(base + k), spread(fold_hash(key_at(k))));
         }
     }
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
-        for (const Slot &e : table_.slots) {
-            if (e.idx != kEmptySlot) {
-                fn(row(static_cast<size_t>(e.idx)), static_cast<size_t>(e.idx));
+        for (size_t s = 0; s < table_.slots; ++s) {
+            if (slot_fp_(s) != 0) {
+                const size_t i = slot_idx_(s);
+                fn(row(i), i);
             }
         }
     }
@@ -288,35 +300,31 @@ public:
         rows_.shrink_to_fit();
     }
 
-    auto index_estimated_memory_bytes() const -> size_t {
-        return sizeof(OperatorIndex) + (table_.slots.capacity() * sizeof(Slot));
-    }
+    auto index_estimated_memory_bytes() const -> size_t { return sizeof(OperatorIndex) + table_.buf.capacity(); }
 
     // Diagnostics on the dedup table's realised sizing: the slot count is what indexing_bytes is
     // really measuring, and occupancy is entries/slots. Exposed so the load-factor ceiling can be
     // pinned by a test rather than asserted in a comment.
-    [[nodiscard]] auto index_slot_count() const -> size_t { return table_.slots.size(); }
+    [[nodiscard]] auto index_slot_count() const -> size_t { return table_.slots; }
     [[nodiscard]] auto index_entry_count() const -> size_t { return table_.count; }
 
 private:
-    struct Slot {
-        TermIndex idx = kEmptySlot;
-        uint32_t h = 0;
-    };
+    // No slot on the chain matched, as distinct from a slot index that happens to be valid.
+    static constexpr size_t kNoSlot = std::numeric_limits<size_t>::max();
 
-    // First slot on h's probe chain whose stored hash matches, or kEmptySlot if the chain ends first.
-    // Matches on h alone and leaves the dense-row comparison to the caller — that deferral is what lets
-    // find_batch prefetch the row between probe and confirm, so do not fold row_eq_key in here (find()
-    // deliberately keeps its own confirming variant). `start` must already be masked; the table must not
-    // be mutated concurrently.
-    [[gnu::always_inline]] auto probe_hash_match_(uint32_t h, size_t start) const -> TermIndex {
+    // First slot on the chain whose fingerprint matches, or kNoSlot if the chain ends first. Matches on
+    // the prefilter byte alone and leaves the dense-row comparison to the caller — that deferral is what
+    // lets find_batch prefetch the row between probe and confirm, so do not fold row_eq_key in here
+    // (find() deliberately keeps its own confirming variant). `start` must already be masked; the table
+    // must not be mutated concurrently.
+    [[gnu::always_inline]] auto probe_fp_match_(uint8_t f, size_t start) const -> size_t {
         for (size_t s = start;; s = (s + 1) & table_.mask) {
-            const Slot &e = table_.slots[s];
-            if (e.idx == kEmptySlot) {
-                return kEmptySlot;
+            const uint8_t e = slot_fp_(s);
+            if (e == 0) {
+                return kNoSlot;
             }
-            if (e.h == h) {
-                return e.idx;
+            if (e == f) {
+                return s;
             }
         }
     }
@@ -350,57 +358,188 @@ private:
     //
     // The cost is not the multiply, it is the density the memory win is made of: linear-probe chain
     // length goes as (1 + 1/(1-α))/2, so moving Hubbard's load from 0.396 to 0.490 buys 7% of the
-    // operator with 11% more probe steps on hits and 29% more on misses. On THIS lever memory and time
-    // are strictly opposed, and the no-runtime-penalty rule decides it. Narrowing the slot is the
-    // opposite trade — fewer bytes at constant α — and is the lever to reach for instead.
+    // operator with 11% more probe steps on hits and 29% more on misses.
+    //
+    // It was then tried a second time STACKED on the narrow slot below, where the two levers are
+    // orthogonal — one sets slots per term, the other bytes per slot — and it reached index 20.18 →
+    // 9.12 B/term on Hubbard, 21.4% of the whole operator, for `propagate` 1.024×. It still loses, on
+    // the other model: kicked Ising `propagate` **1.056×** and `build_graph` **1.072×**, 6/6, while its
+    // load barely moved (0.633 → 0.623) because `bit_ceil` had already dealt that workload a good
+    // number. All of the cost, none of the win — the same row that went backwards the first time.
+    //
+    // The cost is carried by the **1.5× growth factor**, which is what bounds the load band to
+    // [0.467, 0.7] and is therefore inseparable from the win: it takes rehash work from 2n to 3n and
+    // the number of resizes from ~18 to ~30, each re-materialising every live row AND reallocating a
+    // multi-megabyte buffer. Dropping back to 2× growth to pay for it was measured too (exact sizing
+    // and multiply-shift retained) and collects **nothing**: load came back 0.396 → 0.396, 0.633 →
+    // 0.633, 0.426 → 0.426, and 0.432 → 0.363 on the Majorana point — i.e. once growth doubles, exact
+    // sizing lands in the same band `bit_ceil` does, and can land worse. The occupancy win lives
+    // entirely in the growth factor, not in the sizing arithmetic, and it is not affordable.
+    //
+    // Narrowing the slot is the opposite trade — fewer bytes at constant α — and it is what shipped.
+    //
+    // The slot is 1 + sizeof(TermIndex) bytes — a fingerprint byte in place of the 4-byte hash — and the
+    // two fields are **interleaved**, one record per slot, not split into parallel arrays.
+    //
+    // Splitting them was built and measured first, on the Swiss-table reasoning that a miss should walk
+    // a 1-byte-per-slot array (64 slots to a line instead of 8). It delivers exactly the predicted
+    // memory — index 20.18 → 12.61 B/term on Hubbard, 18.51 → 11.57 on the 29M-term Majorana point —
+    // and it costs **`propagate` 1.036× on Hubbard (6/6, p=0.031) and `build_graph` 1.036× on kicked
+    // Ising (6/6)**. The reason is that the fp scan has nothing to amortise here: this table is sized
+    // to ≤0.7 load and realises α ∈ [0.35, 0.7], where chains are 1–2 slots, so a probe never reads a
+    // second fp byte — while every hit now touches two cache lines, fp's and idx's, where the 8-byte
+    // slot touched one. The wide-scan win needs the α ≈ 0.875 a Swiss table runs at; at this density
+    // the split is pure added traffic on the operator's hottest random-access structure.
+    //
+    // Interleaved, a slot's fingerprint and index are 5 consecutive bytes, so the probe and the confirm
+    // land on one line (a record straddles a boundary 4 times in 64) — the base layout's line count at
+    // 5/8 of its bytes. The unaligned index is read and written by memcpy from a raw byte array rather
+    // than through a packed struct member: GCC lowers packed-member access to byte-wise reads on
+    // aarch64 and this project builds for both partitions of Deucalion, whereas the memcpy form is a
+    // single load on both. (Confirmed on x86-64 GCC 14.3: both forms emit one `movl`.)
     struct Table {
-        std::vector<Slot> slots = std::vector<Slot>(kMinSlots, Slot{});
+        // One interleaved record per slot: [fingerprint][TermIndex]. fp == 0 marks an empty slot, so a
+        // zero-filled buffer is an empty table and the probe never needs a separate index sentinel.
+        std::vector<uint8_t> buf = std::vector<uint8_t>(kMinSlots * kSlotBytes, 0);
+        size_t slots = kMinSlots;
         size_t mask = kMinSlots - 1;
         size_t count = 0;
-
-        auto rehash_if_needed() -> void {
-            if ((count + 1) * 10 >= slots.size() * 7) {
-                rehash_to(slots.size() * 2);
-            }
-        }
-        auto rehash_to(size_t new_cap) -> void {
-            new_cap = std::bit_ceil(std::max<size_t>(new_cap, kMinSlots));
-            if (new_cap <= slots.size()) {
-                return;
-            }
-            std::vector<Slot> old = std::move(slots);
-            slots.assign(new_cap, Slot{});
-            mask = new_cap - 1;
-            for (const Slot &e : old) {
-                if (e.idx == kEmptySlot) {
-                    continue;
-                }
-                size_t s = spread(e.h) & mask;
-                while (slots[s].idx != kEmptySlot) {
-                    s = (s + 1) & mask;
-                }
-                slots[s] = e;
-            }
-        }
     };
     static constexpr size_t kMinSlots = 16;
+    static constexpr size_t kSlotBytes = 1 + sizeof(TermIndex);
     // Slot count for `n` entries at ≤0.7 load.
     static auto slots_for_(size_t n) -> size_t { return std::bit_ceil(std::max<size_t>(kMinSlots, (n * 10 / 7) + 1)); }
 
-    [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
-    auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
-    auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
+    // Prefilter byte for a spread hash. The low log2(slots) bits pick the bucket, so the top byte is
+    // independent of it. 0 is reserved for "empty", so the value is folded into 1..255; the resulting
+    // 1/255 false-prefilter rate costs one row_eq_key, which reads the popcount byte first and almost
+    // always exits on it.
+    static auto fingerprint(size_t sp) noexcept -> uint8_t {
+        const auto f = static_cast<uint8_t>(sp >> 56);
+        return f == 0 ? uint8_t{1} : f;
+    }
 
-    // Insert (idx, h) into the table with no duplicate probe — callers on this path insert provably distinct
-    // keys (⊕G-injective miss batches, clone re-insertion).
-    auto insert_slot_(TermIndex idx, uint32_t h) -> void {
-        table_.rehash_if_needed();
-        size_t s = spread(h) & table_.mask;
-        while (table_.slots[s].idx != kEmptySlot) {
+    // Slot record access. The index is unaligned by construction, so it goes through memcpy — see the
+    // Table comment for why that and not a packed struct member.
+    [[gnu::always_inline]] auto slot_fp_(size_t s) const noexcept -> uint8_t { return table_.buf[s * kSlotBytes]; }
+    [[gnu::always_inline]] auto slot_idx_(size_t s) const noexcept -> size_t {
+        TermIndex v = 0;
+        std::memcpy(&v, table_.buf.data() + (s * kSlotBytes) + 1, sizeof(TermIndex));
+        return static_cast<size_t>(v);
+    }
+    [[gnu::always_inline]] auto write_slot_(size_t s, uint8_t f, TermIndex v) noexcept -> void {
+        table_.buf[s * kSlotBytes] = f;
+        std::memcpy(table_.buf.data() + (s * kSlotBytes) + 1, &v, sizeof(TermIndex));
+    }
+    // The one line a probe of slot s touches.
+    [[gnu::always_inline]] auto slot_addr_(size_t s) const noexcept -> const uint8_t * {
+        return table_.buf.data() + (s * kSlotBytes);
+    }
+
+    auto rehash_if_needed_() -> void {
+        if ((table_.count + 1) * 10 >= table_.slots * 7) {
+            rehash_to_(table_.slots * 2);
+        }
+    }
+    // An 8-bit fingerprint cannot survive a resize: the new home bucket needs a hash bit the slot does
+    // not carry, so every live row's hash is recomputed from the row itself. That recompute is not a
+    // rounding error and it is where nearly all of this layout's cost lives. A null-control arm that
+    // stored the hash and skipped it — a 9-byte slot, wider than the 8-byte baseline and therefore
+    // unshippable — measured **1.004×** against the baseline where the same layout with a slot-order
+    // recompute measured 1.024×. Four fifths of the narrowing penalty was this one loop.
+    //
+    // Both sides of the move have to be overlapped, and each was got wrong once:
+    //
+    //   * Reads. Visiting live entries in old-slot order scatters the row reads at random across a
+    //     rows_ array far larger than L3. Term indices are dense in [0, size_), so the same rows are
+    //     visited in index order instead and the read side becomes one sequential stream. The live set
+    //     rides in a bitmap — one bit per term, 3.3 MB at 26.6M terms, cache-resident — filled by a
+    //     sequential walk of the old table.
+    //   * Writes. Old-slot order was not arbitrary: under doubling a slot's new home is its old home
+    //     with at most one bit set above the old mask, so walking old slots in order wrote the new
+    //     table in two interleaved ascending runs, i.e. nearly sequentially. Index order gives that up,
+    //     and on Hubbard that trade ALONE measured 1.037× against 1.024× — the scattered writes cost
+    //     more than the scattered reads saved. So the hash is computed a group ahead and each entry's
+    //     destination line is prefetched for write.
+    //
+    // With both overlapped the penalty is 1.017×, against the 1.004× floor; what remains is arithmetic,
+    // not stalls — materialising each row and hashing it, ~53M times over a Hubbard build.
+    //
+    // Rebuilding in index order changes insertion order into the table. That is legal: the determinism
+    // contract is bit-identity at fixed (R, S), which no table ordering participates in, and nothing
+    // serializes or iterates this table for output.
+    auto rehash_to_(size_t new_cap) -> void {
+        new_cap = std::bit_ceil(std::max<size_t>(new_cap, kMinSlots));
+        if (new_cap <= table_.slots) {
+            return;
+        }
+        const std::vector<uint8_t> old_buf = std::move(table_.buf);
+        const size_t old_slots = table_.slots;
+        const size_t old_count = table_.count;
+        table_.buf.assign(new_cap * kSlotBytes, uint8_t{0});
+        table_.slots = new_cap;
+        table_.mask = new_cap - 1;
+        table_.count = 0;
+        if (old_count == 0) {
+            return;
+        }
+
+        std::vector<uint64_t> live((size_ / 64) + 1, 0);
+        for (size_t s = 0; s < old_slots; ++s) {
+            if (old_buf[s * kSlotBytes] == 0) {
+                continue;
+            }
+            TermIndex v = 0;
+            std::memcpy(&v, old_buf.data() + (s * kSlotBytes) + 1, sizeof(TermIndex));
+            const size_t i = static_cast<size_t>(v);
+            live[i / 64] |= uint64_t{1} << (i % 64);
+        }
+
+        static constexpr size_t G = 16;
+        std::array<TermIndex, G> idxb{};
+        std::array<size_t, G> spb{};
+        size_t m = 0;
+        const auto flush = [&] {
+            for (size_t j = 0; j < m; ++j) {
+                place_slot_(idxb[j], spb[j]);
+            }
+            m = 0;
+        };
+        for (size_t w = 0; w < live.size(); ++w) {
+            for (uint64_t bits = live[w]; bits != 0; bits &= bits - 1) {
+                const size_t i = (w * 64) + static_cast<size_t>(std::countr_zero(bits));
+                idxb[m] = static_cast<TermIndex>(i);
+                spb[m] = spread(fold_hash(row(i)));
+                __builtin_prefetch(&table_.buf[(spb[m] & table_.mask) * kSlotBytes], 1, 0);
+                if (++m == G) {
+                    flush();
+                }
+            }
+        }
+        flush();
+    }
+
+    // Place a provably-absent entry without a growth check. Only rehash_to_ may use this: it has
+    // already sized the table for every entry it is about to place, and calling the growing variant
+    // there would recurse.
+    auto place_slot_(TermIndex idx, size_t sp) -> void {
+        size_t s = sp & table_.mask;
+        while (slot_fp_(s) != 0) {
             s = (s + 1) & table_.mask;
         }
-        table_.slots[s] = Slot{idx, h};
+        write_slot_(s, fingerprint(sp), idx);
         ++table_.count;
+    }
+
+    [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
+    auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
+    auto reserve_index(size_t n) -> void { rehash_to_(slots_for_(n + 1)); }
+
+    // Insert (idx, spread hash) into the table with no duplicate probe — callers on this path insert
+    // provably distinct keys (⊕G-injective miss batches, clone re-insertion).
+    auto insert_slot_(TermIndex idx, size_t sp) -> void {
+        rehash_if_needed_();
+        place_slot_(idx, sp);
     }
 
     // Compare row i against key q without materializing the row (the find confirm). Reads the
