@@ -151,14 +151,27 @@ Key files:
     - Two figures move with the **observable size, not the operator size**: `init_operator_bytes` is
       39.58 B/term when the observable is 7M terms and **0.0** on Hubbard and kicked Ising, whose
       observable is a single site. Never quote one workload's ledger as the other's.
-    - **The dedup table's `bit_ceil` overshoot is the one exception, and it is paid on purpose.**
-      `OperatorIndex::Table` is the largest structure left in the operator (18.51 B/term on the 29M
-      -term Majorana point) and power-of-2 sizing leaves it anywhere in [0.35, 0.7] load — 0.432
-      there, i.e. 2.31 slots per term where 1.43 would do. Exact sizing with multiply-shift range
-      reduction was built and measured: it delivers 7% of the operator and costs `propagate`
-      **1.015× on Hubbard and 1.019× on kicked Ising, both 6/6, p=0.031**. Occupancy *is* the memory
-      win, and chain length goes as (1 + 1/(1−α))/2, so on this container memory and time are
-      strictly opposed. Do not re-derive this; the frontier is in `RESULTS-invidx-memory.md`.
+    - **The dedup table is sized by two independent levers, and only one of them is affordable.**
+      `OperatorIndex::Table` costs `slots_per_term × bytes_per_slot`, and those factors move
+      independently. **Bytes per slot is taken**: one fingerprint byte plus a `TermIndex`, interleaved
+      as a single record, which is 1.60× smaller than the 8-byte `{idx, hash}` slot on every workload
+      and worth 8.3–14.7% of the whole operator. **Slots per term is not.** `bit_ceil` leaves the load
+      anywhere in [0.35, 0.7], but fixing that takes 1.5× growth, *not* exact sizing: measured, exact
+      sizing at 2× growth returns load 0.396 → 0.396, 0.633 → 0.633, 0.426 → 0.426 and 0.432 →
+      **0.363** — nothing, or worse. The 1.5× growth that does deliver it (Hubbard 0.396 → 0.548, index
+      2.21× smaller, 21.4% of the operator) also takes rehash work 2n → 3n and resizes ~18 → ~30, and
+      costs kicked Ising `propagate` **1.056×** and `build_graph` **1.072×**, 6/6 — on a workload whose
+      load barely moved, because `bit_ceil` had already dealt it a good draw. Do not re-derive either
+      lever; all five rejected variants are in `RESULTS-invidx-memory.md` with their numbers.
+    - **A narrowed slot moves the cost into the rehash, and the rehash's cost is its ORDER.** An 8-bit
+      fingerprint cannot survive a resize, so every live row is re-materialised and re-hashed. A null
+      control that stored the hash instead measured **1.004×** where the same layout measured 1.024×:
+      four fifths of the narrowing penalty is that one loop. Both of its memory sides must be
+      overlapped, and each was got wrong once. Old-slot order scatters the reads — but it also writes
+      the new table *nearly sequentially*, because a slot's new home is its old home plus at most one
+      bit above the old mask. Switching to term-index order for sequential reads without also
+      prefetching the writes measured **worse**, 1.037×. Index order *plus* a write-side prefetch is
+      1.017×. If you touch `rehash_to_`, you are trading two scattered streams against each other.
 - **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
   propagators, one hash partition each. Every method that fans out must use the private partition
   vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`

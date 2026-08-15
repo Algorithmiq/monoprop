@@ -203,12 +203,36 @@ BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
     }
 }
 
+// Every rehash re-derives each live entry's hash from its row, so rows that live in the lossless
+// overflow side-map -- not in the packed inline area -- must survive a rehash too. Width 2 with
+// 3-position rows sends every single row through overflow, which the other cases never do at scale.
+BOOST_AUTO_TEST_CASE(rehash_preserves_overflow_rows) {
+    Store s(2); // width 2; every 3-position row overflows
+    constexpr size_t kN = 600;
+    for (size_t i = 0; i < kN; ++i) {
+        const auto key = tri(i);
+        s.push_back(key);
+        s.emplace(key, i);
+    }
+    BOOST_TEST(s.index_entry_count() == kN);
+    bool all_found = true;
+    for (size_t i = 0; i < kN; ++i) {
+        const auto f = s.find(tri(i));
+        if (!f.has_value() || *f != i) {
+            all_found = false;
+        }
+    }
+    BOOST_TEST(all_found);
+    BOOST_TEST(s.popcount(kN - 1) == 3u);
+}
+
 // Growing the store through many rehashes must not strand a key. This is the regression guard for
 // anything that touches the probe loop or the table's sizing rule: `find` and `find_batch` agree with
 // each other and with insertion at every table size the growth path visits, and the load-factor
 // ceiling holds throughout. It is deliberately larger than the other cases here (~8 doublings) --
 // a probe or wraparound bug typically strands keys near the top of the table, silently, rather than
-// failing on a small example.
+// failing on a small example. At this size it also drives ~20 fingerprint collisions through
+// find_batch's exact-find fallback, a path a handful of keys would essentially never reach.
 BOOST_AUTO_TEST_CASE(probing_is_correct_across_rehashes) {
     Store s;
     constexpr size_t kN = 4000;
@@ -252,6 +276,54 @@ BOOST_AUTO_TEST_CASE(probing_is_correct_across_rehashes) {
     }
     BOOST_TEST(batch_agrees);
     BOOST_TEST(out.back() == Store::kNotFound);
+}
+
+// The dedup table is the largest structure in the operator after the rows, and its size is entirely
+// slots x slot width. The width is 1 fingerprint byte + one TermIndex, interleaved -- widening it back
+// to a hash-sized slot would cost ~3 B/term across the whole operator without failing any other test
+// here, so pin the per-slot cost directly.
+BOOST_AUTO_TEST_CASE(index_slot_costs_one_byte_plus_a_term_index) {
+    Store s;
+    constexpr size_t kN = 4000;
+    for (size_t i = 0; i < kN; ++i) {
+        const auto key = tri(i);
+        s.push_back(key);
+        s.emplace(key, i);
+    }
+    // Subtract the fixed object so what is left is the slot array alone.
+    const size_t table_bytes = s.index_estimated_memory_bytes() - sizeof(Store);
+    BOOST_TEST(table_bytes == s.index_slot_count() * (1u + sizeof(TermIndex)));
+}
+
+// The rehash rebuilds the table by walking term indices in order rather than old slots in order, via a
+// live-index bitmap. That is only equivalent if the bitmap reproduces the live set EXACTLY: a row that
+// is indexed but not marked vanishes from the table, and a row marked but never indexed invents an
+// entry for a key nobody inserted. Neither shows up as a crash -- only as a silently wrong find() --
+// so pin it on a store where the indexed rows are a strict, scattered subset of the rows present.
+BOOST_AUTO_TEST_CASE(rehash_rebuilds_exactly_the_indexed_subset) {
+    Store s;
+    constexpr size_t kN = 3000;
+    // Every row is pushed, but only every third is indexed, so index order and slot order differ and
+    // the bitmap has to carry the gaps. ~9 doublings over this range.
+    for (size_t i = 0; i < kN; ++i) {
+        const auto key = tri(i);
+        s.push_back(key);
+        if (i % 3 == 0) {
+            s.emplace(key, i);
+        }
+    }
+    BOOST_TEST(s.size() == kN);
+    BOOST_TEST(s.index_entry_count() == (kN + 2) / 3);
+
+    bool exact = true;
+    for (size_t i = 0; i < kN; ++i) {
+        const auto f = s.find(tri(i));
+        const bool want = (i % 3 == 0);
+        if (f.has_value() != want || (want && *f != i)) {
+            exact = false;
+        }
+    }
+    BOOST_TEST(exact);
 }
 
 // shrink_rows_to_fit is not called from the propagation path on purpose -- doing it once per
