@@ -327,32 +327,44 @@ def record_model_config() -> Callable[[str, Any], None]:
     return _do
 
 
+def _record_model_stats(
+    comm: Any, key: str, propagator: Any, baseline_rss: int | None = None
+) -> None:
+    """Record term count, operator memory breakdown and footprint under ``key``.
+
+    Module-level rather than fixture-local because :func:`model_graph` is session-scoped and
+    needs exactly this accounting; two copies of it would drift.
+    """
+    _record("opsize", key, {"terms": _reduce_sum(comm, propagator.size())})
+
+    # Sparse InvertedIndex columns cost a TermIndex (4B) per set bit against ~1-2B per
+    # set bit in the rows, so which of the two dominates is what sizing decisions turn on.
+    # The Python front-end does not re-export the C++ accounting; it hangs off ._simulator.
+    breakdown = getattr(propagator._simulator, "operator_memory_breakdown", None)
+    # None => binding predates operator_memory_breakdown()
+    if breakdown is not None:
+        _record(
+            "opmem",
+            key,
+            {k: _reduce_sum(comm, v) for k, v in breakdown().items()},
+        )
+
+    resting = _reduce_sum(comm, resting_rss_bytes())
+    if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
+        _record("memrest", key, resting)
+
+    if baseline_rss is not None:
+        baseline = _reduce_sum(comm, baseline_rss)
+        if baseline:
+            _record("membase", key, baseline)
+
+
 @pytest.fixture
 def record_model_stats(bench_comm: Any) -> Callable[..., None]:
     """Return ``record(model, propagator, baseline_rss)`` for fixed-model runs."""
 
     def _do(model: str, propagator: Any, baseline_rss: int) -> None:
-        _record("opsize", model, {"terms": _reduce_sum(bench_comm, propagator.size())})
-
-        # Sparse InvertedIndex columns cost a TermIndex (4B) per set bit against ~1-2B per
-        # set bit in the rows, so which of the two dominates is what sizing decisions turn on.
-        # The Python front-end does not re-export the C++ accounting; it hangs off ._simulator.
-        breakdown = getattr(propagator._simulator, "operator_memory_breakdown", None)
-        # None => binding predates operator_memory_breakdown()
-        if breakdown is not None:
-            _record(
-                "opmem",
-                model,
-                {k: _reduce_sum(bench_comm, v) for k, v in breakdown().items()},
-            )
-
-        resting = _reduce_sum(bench_comm, resting_rss_bytes())
-        if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
-            _record("memrest", model, resting)
-
-        baseline = _reduce_sum(bench_comm, baseline_rss)
-        if baseline:
-            _record("membase", model, baseline)
+        _record_model_stats(bench_comm, model, propagator, baseline_rss)
 
     return _do
 
@@ -587,3 +599,50 @@ def built_graph(
         _record("memrest", picture, resting)
 
     return mp
+
+
+@pytest.fixture(scope="session")
+def model_graph(
+    model_configs: dict[str, Any], bench_comm: Any
+) -> Callable[[str], tuple[Any, list[float]]]:
+    """Return ``get(model)`` giving a fixed model's built graph and its parameter vector.
+
+    The fixed-model analogue of :func:`built_graph`: session-scoped and cached per model, so
+    the graph-backed benchmarks (``energy``, ``gradient``) share one build instead of each
+    paying for it. A factory rather than a parametrized fixture because the benchmarks select
+    their model with ``@pytest.mark.parametrize``, which a session-scoped fixture cannot see.
+
+    Hubbard's circuit is a single Trotter step that the driver re-applies ``trotter_steps``
+    times, so the graph takes that many successive ``build_graph`` calls and the parameter
+    vector is the circuit's own repeated to match -- ``build_graph`` extends the parameter
+    axis on each call. Pauli's circuit already holds every layer, so its step count is 1.
+    """
+    cache: dict[str, tuple[Any, list[float]]] = {}
+
+    def _get(model: str) -> tuple[Any, list[float]]:
+        if model not in cache:
+            _config_cls, build_fn, steps_fn = MODELS[model]
+            config = model_configs[model]
+            steps = steps_fn(config)
+            propagator, circuit = build_fn(config, comm=bench_comm)
+            for _ in range(steps):
+                propagator.build_graph(circuit)
+            parameters = list(circuit.parameters) * steps
+            # A mismatch here would silently benchmark a different graph than the one the
+            # build_graph and propagate cells measured.
+            assert len(parameters) == propagator.n_parameters
+
+            # The graph cell runs no test that calls record_model_config, so without this the
+            # cutoff and system size the cell was run at are absent from its results file --
+            # and the campaign is a sweep over exactly those.
+            _record("configs", model, asdict(config))
+            _record_model_stats(bench_comm, model, propagator)
+            # Same reason as random_problem: at these term counts the model's observable and
+            # circuit are millions of GC-tracked objects that live until the session ends and
+            # can never become garbage, so freezing keeps every later HighWaterMark's
+            # collection from traversing them.
+            gc.freeze()
+            cache[model] = (propagator, parameters)
+        return cache[model]
+
+    return _get
