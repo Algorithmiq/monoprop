@@ -14,6 +14,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -56,6 +57,12 @@ MSet bs(const VecZ &r) {
 // inside the default inline width of 11.
 MSet tri(size_t i) {
     return bs({i % 20, 20 + ((i / 20) % 20), 40 + ((i / 400) % 20)});
+}
+
+// Same construction with a fourth digit, for i < 32000 -- enough to walk past several row-store chunks.
+// Monomial<32> has 64 positions, so the last digit gets the four that are left.
+MSet quad(size_t i) {
+    return bs({i % 20, 20 + ((i / 20) % 20), 40 + ((i / 400) % 20), 60 + ((i / 8000) % 4)});
 }
 } // namespace
 
@@ -325,32 +332,51 @@ BOOST_AUTO_TEST_CASE(rehash_rebuilds_exactly_the_indexed_subset) {
     BOOST_TEST(exact);
 }
 
-// shrink_rows_to_fit is not called from the propagation path on purpose -- doing it once per
-// propagate() measured `propagate` 1.030x slower on Hubbard (6/6, p=0.031), because geometric growth
-// plus shrink-to-fit churns when both run repeatedly. It stays available for a caller that knows the
-// operator is final, so its two behaviours are pinned here rather than by the propagator.
-BOOST_AUTO_TEST_CASE(shrink_rows_to_fit_reclaims_only_past_the_slack_gate) {
+// The row store's dead capacity is bounded by one chunk no matter how large the operator gets. This is
+// what replaced shrink_rows_to_fit: a gated shrink measured `propagate` 1.030x slower on Hubbard
+// (6/6, p=0.031) because geometric growth plus shrink-to-fit churns when both run repeatedly, so the
+// overshoot is now bounded at the source instead of handed back afterwards.
+BOOST_AUTO_TEST_CASE(row_slack_never_exceeds_one_chunk) {
+    constexpr size_t kRowBytes = (1 + Store::kDefaultInlinePositions) * sizeof(Store::PosT);
+    constexpr size_t kChunkBytes = Store::kChunkRows * kRowBytes;
+    // quad() is injective below 32000; that covers three chunks at every swept kChunkRows up to 8192.
+    const size_t kStop = std::min<size_t>((3 * Store::kChunkRows) + 7, 32000);
     Store s;
-    s.reserve(1024); // capacity far above what is used -> well past the 12.5% gate
     // push_back writes the row only; the hash index is a separate emplace, exactly as the propagator's
     // setup loop does it. Without the emplace, find() below would dereference an empty optional.
     s.push_back(bs({0, 1}));
     s.emplace(bs({0, 1}), 0);
     s.push_back(bs({2, 3}));
     s.emplace(bs({2, 3}), 1);
-    BOOST_TEST(s.slack_bytes() > 0u);
+    BOOST_TEST(s.slack_bytes() < kChunkBytes);
 
-    s.shrink_rows_to_fit();
-    BOOST_TEST(s.slack_bytes() == 0u);
+    // Cross several chunk boundaries: the bound holds at every size, and no row moves while it happens.
+    bool bounded = true;
+    for (size_t i = 2; i < kStop; ++i) {
+        s.push_back(quad(i));
+        s.emplace(quad(i), i);
+        if (s.slack_bytes() >= kChunkBytes) {
+            bounded = false;
+        }
+    }
+    BOOST_TEST(bounded);
 
-    // Rows survive the realloc.
-    BOOST_TEST(s.size() == 2u);
+    // Rows written before the growth are still readable and still findable.
+    BOOST_TEST(s.size() == kStop);
     BOOST_TEST(s.popcount(0) == 2u);
     BOOST_TEST(s.row(0) == bs({0, 1}));
     BOOST_TEST(s.row(1) == bs({2, 3}));
     BOOST_TEST(*s.find(bs({2, 3})) == 1u);
+    BOOST_TEST(*s.find(quad(Store::kChunkRows + 1)) == Store::kChunkRows + 1);
+    BOOST_TEST(s.row(Store::kChunkRows) == quad(Store::kChunkRows));
+}
 
-    // Already tight: a second call is a no-op rather than another realloc.
-    s.shrink_rows_to_fit();
-    BOOST_TEST(s.slack_bytes() == 0u);
+// An explicit reserve rounds up to whole chunks and nothing beyond, so a caller that knows its final
+// size pays no overshoot at all.
+BOOST_AUTO_TEST_CASE(reserve_allocates_whole_chunks_and_no_more) {
+    Store s;
+    s.reserve(Store::kChunkRows + 1);
+    BOOST_TEST(s.size() == 0u);
+    const size_t rows_held = s.slack_bytes() / ((1 + Store::kDefaultInlinePositions) * sizeof(Store::PosT));
+    BOOST_TEST(rows_held == 2 * Store::kChunkRows);
 }

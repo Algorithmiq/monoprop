@@ -114,16 +114,44 @@ Key files:
   index for 4% of a fold that is itself a minority of `propagate`) and deleted.
 - **No container in the operator holds capacity it has not earned.** This started as the inverted-index
   arena's rule and is now operator-wide, because the same defect was worth far more elsewhere than it ever
-  was in the index. Every growing structure either reserves from a projection or shrinks at a quiescent
-  point, and `estimate_memory_usage` reports the unused part so it cannot hide:
+  was in the index. Every growing structure either reserves from a projection, shrinks at a quiescent
+  point, or grows in fixed chunks it never has to copy, and `estimate_memory_usage` reports the unused
+  part so it cannot hide — subject to the first rule below, which says what that report is and is not:
+    - **Reported capacity is not resident memory, and for `OperatorIndex::rows_` it never was.**
+      `estimate_memory_usage` measures capacity. That is honest for a hash table, whose slots are written
+      scattered across the whole buffer, so `table_.buf.capacity()` and `init_op_map`'s buckets genuinely
+      are faulted in. It was **fictional** for the row store: growth copied only the live prefix and
+      `DefaultInitVector` exists precisely so `resize` never touches the tail, so at ~18 MB per partition
+      the slack was untouched mmap and therefore not resident. Measured against `/usr/bin/time -v`, the
+      ledger was wrong by up to **23×, in both directions** — claiming 110 MB on Hubbard where 4.8 MB
+      moved, and 15.6 MB on kicked Ising c10 where 43.7 MB moved. **Never quote a B/term saving as a
+      memory saving without a peak-RSS figure beside it**; `RESULTS-invidx-memory.md` round 5 has the
+      table, and round 3's R2 is the cautionary case — it "collected" 4.27 B/term, cost 1.030×, and
+      improved nothing, because there was nothing there.
     - `initialize_operator_caches_` is the quiescent point, and it shrinks `op_coeffs`, the state and the
-      follower-marking scratch. It deliberately does **not** shrink `OperatorIndex::rows_`, even though
-      that has the larger slack: the function runs after *every* `propagate()`, and Hubbard calls it 29
-      times, so a `shrink_to_fit` there reallocs the whole row array on each — measured `propagate`
-      **1.030× slower, 6/6, p=0.031**, against nothing on the single-`propagate` Pauli workload. Geometric
-      growth plus shrink-to-fit churns whenever both run repeatedly, so collecting that 4.1–6.0 B/term
-      needs a row store whose growth does not copy, not a better-timed shrink. `shrink_rows_to_fit()`
-      exists for a caller that knows the operator is final.
+      follower-marking scratch. It deliberately does **not** shrink `OperatorIndex::rows_`, and there is
+      no shrink path for the row store at all any more: the function runs after *every* `propagate()`,
+      and Hubbard calls it 29 times, so a `shrink_to_fit` there reallocs the whole row array on each —
+      measured `propagate` **1.030× slower, 6/6, p=0.031**. Geometric growth plus shrink-to-fit churns
+      whenever both run repeatedly, so the fix was a row store whose growth does not copy, not a
+      better-timed shrink.
+    - **The row store is chunked, and what that buys is the growth transient, not the slack.**
+      `rows_` is `vector<unique_ptr<PosT[]>>` of fixed `kChunkRows`-row blocks, addressed by a shift and
+      a mask; a row is never moved once written, so growth appends a chunk instead of reallocating and
+      copying (~3× the final size over a build). The steady-state slack this "collects" was the virtual
+      kind above and is worth ~0. The real win is that the old path held **both** buffers with the live
+      prefix touched in each, and no telemetry field ever counted that. Its size is arbitrary — it
+      depends on where the last 1.5× growth landed relative to the final row count — measuring 2.45%,
+      8.9% and 1.99% of peak RSS on kicked Ising c8/c10/c12 and **12.12% (347 MB)** on c14, against
+      0.15–0.30% on workloads with a large observable, where another phase sets the peak. It costs
+      Hubbard `propagate` **1.016×**, and that cost is the chunk **table's** L1 footprint, not the extra
+      dependent load: 1024/2048/4096/8192 measure 1.0248/1.0228/1.0158/1.0155, plateauing once the table
+      stops competing for L1. Hence the 4096 default. Counting the chunk in **rows** is load-bearing —
+      `stride_` is a runtime value, so only row-granular chunks keep every row inside one allocation.
+      Do **not** re-pick the chunk size from the slack arithmetic: 2048 → 4096 was predicted to cost
+      1.4 MB of quantization on c14 and measured 78 MB *better*, because chunks sit under glibc's 128 KB
+      mmap threshold and smaller heap blocks fragment harder. Allocator packing is a third term, and it
+      is larger than the one the sweep was designed around.
     - `init_op_map` is **released, not merely drained**. `get_operator()` binds its terms to rows and
       erases them, but `erase` never shrinks `bucket_count()` — and `bucket_count()` is what the memory
       breakdown measures. A fully drained map used to keep 1.15 GB of empty buckets resident, 43.8% of the

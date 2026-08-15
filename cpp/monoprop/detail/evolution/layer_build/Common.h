@@ -55,7 +55,8 @@ struct MatchedEpochSet {
     // One stamp per term, so this tracks the operator: it belongs in the memory breakdown even though
     // it is propagator scratch rather than operator state. Nothing counted it before round 3.
     [[nodiscard]] auto memory_bytes() const -> size_t { return epoch_.capacity() * sizeof(Stamp); }
-    // Same bounded-slack rule as OperatorIndex::shrink_rows_to_fit; see the note there.
+    // Bounded-slack rule: leave capacity alone below a 12.5% margin so this costs one realloc per
+    // quiescent point rather than one per layer. A flat vector, so unlike the row store it still needs it.
     auto shrink_to_fit() -> void {
         if (epoch_.capacity() > epoch_.size() + (epoch_.size() / 8)) {
             epoch_.shrink_to_fit();
