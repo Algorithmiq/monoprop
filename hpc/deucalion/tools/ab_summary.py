@@ -1,27 +1,42 @@
-# Paired time+memory summary for ab-100m.sh.
+# Copyright 2026 Algorithmiq
 #
-# Reads the two artifacts an interleaved run drops per cell -- pytest-benchmark's
-# `time-<label>.json` and the suite's own `<label>.json` -- and reports, per node count and
-# operation, each side's median across repetitions plus the port/main ratio for time and
-# for memory.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# The headline ratio is the median of the PER-REP PAIRED ratios, not the ratio of the two
-# sides' medians. The two arms of a rep run back to back on the same node, so a node-state
-# swing hits both and cancels in the quotient; taking medians per side first throws that
-# pairing away and lets a swing that touched only one arm survive into the result. The
-# pairing is the entire reason ab-100m.sh interleaves, and computing the ratio the obvious
-# way spends it for nothing.
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
-# `agree` -- how many reps point the same way as their median -- is reported next to every
-# ratio, because the ratio alone cannot distinguish "flat" from "unresolvable". Median
-# across reps rather than mean, for the same reason: an interleaved run is deliberately
-# exposed to whatever else is in the allocation, and one slow rep should move nothing.
-#
-# The Provenance section is not decoration. It exits non-zero when the two arms did not do
-# the same work, or when the run is void because thread placement failed -- states that
-# otherwise print as a clean table full of meaningless ratios.
-#
-#   python hpc/deucalion/tools/ab_summary.py <results-dir> [--allow-both-placed]
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Paired time+memory summary for ab-100m.sh.
+
+Reads the two artifacts an interleaved run drops per cell -- pytest-benchmark's
+`time-<label>.json` and the suite's own `<label>.json` -- and reports, per node count and
+operation, each side's median across repetitions plus the port/main ratio for time and
+for memory.
+
+The headline ratio is the median of the PER-REP PAIRED ratios, not the ratio of the two
+sides' medians. The two arms of a rep run back to back on the same node, so a node-state
+swing hits both and cancels in the quotient; taking medians per side first throws that
+pairing away and lets a swing that touched only one arm survive into the result. The
+pairing is the entire reason ab-100m.sh interleaves, and computing the ratio the obvious
+way spends it for nothing.
+
+`agree` -- how many reps point the same way as their median -- is reported next to every
+ratio, because the ratio alone cannot distinguish "flat" from "unresolvable". Median
+across reps rather than mean, for the same reason: an interleaved run is deliberately
+exposed to whatever else is in the allocation, and one slow rep should move nothing.
+
+The Provenance section is not decoration. It exits non-zero when the two arms did not do
+the same work, or when the run is void because thread placement failed -- states that
+otherwise print as a clean table full of meaningless ratios.
+
+  python hpc/deucalion/tools/ab_summary.py <results-dir> [--allow-both-placed]
+"""
 
 from __future__ import annotations
 
@@ -311,12 +326,9 @@ def emit_table(nodes: int, cells: list[Cell], flagged: list[str]) -> None:
     print()
 
 
-def check_provenance(cells: dict[str, Cell], *, allow_both_placed: bool) -> list[str]:
-    """Return the reasons this run's tables must not be read as a result."""
+def _check_terms(cells: dict[str, Cell]) -> list[str]:
+    """Refuse unless both arms propagated the same operator."""
     refusals: list[str] = []
-    print("## Provenance\n")
-
-    # 1. Both arms must have propagated the same operator.
     terms = {
         (cell.side, op): entry["terms"]
         for cell in cells.values()
@@ -336,9 +348,17 @@ def check_provenance(cells: dict[str, Cell], *, allow_both_placed: bool) -> list
             "no term counts recorded: cannot show the arms did the same work"
         )
 
-    # 2. Placement. The engine's own COMMPROF `pinned=` field exists only on builds that
-    #    have monoprop_COMM_PROFILE, so it cannot be compared across the boundary that
-    #    added it; this comes from /proc and works identically on both.
+    return refusals
+
+
+def _check_placement(cells: dict[str, Cell], *, allow_both_placed: bool) -> list[str]:
+    """Refuse when thread placement makes the timings meaningless.
+
+    The engine's own COMMPROF `pinned=` field exists only on builds that have
+    monoprop_COMM_PROFILE, so it cannot be compared across the boundary that added it;
+    this comes from /proc and works identically on both arms.
+    """
+    refusals: list[str] = []
     placed = {}
     for side in ("main", "port"):
         values = [
@@ -366,7 +386,12 @@ def check_provenance(cells: dict[str, Cell], *, allow_both_placed: bool) -> list
     elif None in placed.values():
         refusals.append("placement was not recorded on at least one arm")
 
-    # 3. The two builds and their environments must otherwise match.
+    return refusals
+
+
+def _check_environment(cells: dict[str, Cell]) -> list[str]:
+    """Refuse when the two builds' environments, or the round count, differ from the protocol."""
+    refusals: list[str] = []
     for field in (
         "monoprop_max_num_modes",
         "malloc_arena_max",
@@ -406,6 +431,17 @@ def check_provenance(cells: dict[str, Cell], *, allow_both_placed: bool) -> list
         variants.discard(None)
         print(f"- {side} variant: {sorted(map(str, variants))}")
 
+    return refusals
+
+
+def check_provenance(cells: dict[str, Cell], *, allow_both_placed: bool) -> list[str]:
+    """Return the reasons this run's tables must not be read as a result."""
+    print("## Provenance\n")
+    refusals = [
+        *_check_terms(cells),
+        *_check_placement(cells, allow_both_placed=allow_both_placed),
+        *_check_environment(cells),
+    ]
     print()
     return refusals
 
