@@ -40,6 +40,31 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// Rows per chunk of the row store. Fixed rather than geometric: the index -> (chunk, offset) split is a
+// shift and a mask on the hottest path in propagate, and a geometric ladder would make it a countl_zero
+// plus a branch there to save capacity only on operators small enough for their absolute footprint not
+// to matter. Trades one whole chunk of quantized slack per partition for never copying a row on growth.
+//
+// 4096 is measured, not guessed. The cost of chunking is the chunk TABLE's L1 footprint, not the extra
+// dependent load: sweeping 1024/2048/4096/8192 moves Hubbard `propagate` 1.0248/1.0228/1.0158/1.0155x,
+// i.e. it plateaus once the table stops competing for L1 (3.2 KB at 4096 on Hubbard's 1.66M rows per
+// partition). Past 4096 the curve is flat and only the quantized slack grows, which is why this is the
+// operating point and not 8192.
+//
+// There is a third term the sweep did not isolate: allocator packing. Going 2048 -> 4096 took kicked
+// Ising c14's peak RSS 2,657,232 -> 2,576,992 KB, 78 MB BETTER, where the quantized slack predicted
+// ~1.4 MB worse. Chunks land under glibc's 128 KB mmap threshold, so they come off the heap and the
+// smaller ones fragment it harder. Do not reason about this constant from the slack alone.
+//
+// Deliberately NOT a CMake cache variable, unlike monoprop_INVIDX_CHUNK_WORDS: 4096 and 8192 differ by
+// 0.03% and everything below is strictly worse, so there is no workload-dependent trade for a user to
+// tune. It stays overridable here only so the sweep can be re-run against a future machine.
+#ifndef monoprop_OPINDEX_CHUNK_ROWS
+#define monoprop_OPINDEX_CHUNK_ROWS 4096
+#endif
+inline constexpr size_t kOpIndexChunkRows = static_cast<size_t>(monoprop_OPINDEX_CHUNK_ROWS);
+static_assert(std::has_single_bit(kOpIndexChunkRows), "chunk rows must be a power of two (shift/mask addressing)");
+
 // Operator-term store: entropy-packed position-list rows plus a keyless open-addressing hash index over
 // those rows. Row layout: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c =
 // ascending set-bit positions; stride_ is fixed for the container's life so row offsets stay stable.
@@ -74,6 +99,12 @@ public:
     // operator store must not depend on evolution headers).
     static constexpr size_t kNotFound = std::numeric_limits<size_t>::max();
 
+    // Row-store chunk geometry. Counted in rows, not bytes: stride_ is a runtime value, so only a
+    // row-granular chunk keeps every row entirely inside one allocation.
+    static constexpr size_t kChunkRows = kOpIndexChunkRows;
+    static constexpr size_t kChunkShift = static_cast<size_t>(std::countr_zero(kChunkRows));
+    static constexpr size_t kChunkMask = kChunkRows - 1;
+
     explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
           stride_(1 + inline_width_) {}
@@ -85,7 +116,12 @@ public:
     // Called only on an idle store, so it needs no synchronization.
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
         auto out = std::make_unique<OperatorIndex>(inline_width_);
-        out->rows_ = rows_;
+        out->reserve_rows(size_);
+        for (size_t i = 0; i < size_; i += kChunkRows) {
+            const size_t n = std::min(kChunkRows, size_ - i);
+            std::memcpy(out->chunks_[i >> kChunkShift].get(), chunks_[i >> kChunkShift].get(),
+                        n * stride_ * sizeof(PosT));
+        }
         out->size_ = size_;
         out->overflow_ = overflow_;
         out->reserve_index(table_.count);
@@ -109,28 +145,26 @@ public:
         reserve_rows(n);
         reserve_index(n);
     }
-    // Returns the pre-growth size (the caller's insert base). Growth is geometric (1.5×), never
-    // exact-fit: an exact fit would realloc the whole operator every layer.
-    auto grow_rows_geometric(size_t n) -> size_t {
+    // Returns the pre-growth size (the caller's insert base). Growth appends whole chunks and never
+    // moves an existing row, so there is no overshoot to carry and no copy to amortise: the 1.5x
+    // geometric rule this replaces left 4.1-6.0 B/term of dead capacity and memcpied the whole row
+    // array on every step (~3x the final size over a build).
+    auto grow_rows(size_t n) -> size_t {
         const size_t base = size_;
         if (capacity() < base + n) {
-            const size_t cap = capacity();
-            reserve_rows(std::max(base + n, cap + (cap / 2) + 1));
+            reserve_rows(base + n);
         }
-        // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
-        // before any read, so a tail zero-fill would be wasted bandwidth.
-        rows_.resize((base + n) * stride_);
         size_ = base + n;
         return base;
     }
 
-    auto push_back(const value_type &mono) -> void { set(grow_rows_geometric(1), mono); }
+    auto push_back(const value_type &mono) -> void { set(grow_rows(1), mono); }
 
     // Row i may be grown-but-uninitialized or hold a prior value, so the row header is never pre-read
     // (freshly grown headers are indeterminate); a stale overflow entry at i, if any, is dropped.
     auto set(size_t i, const value_type &mono) -> void {
         const size_t c = mono.count();
-        PosT *row = &rows_[i * stride_];
+        PosT *row = row_ptr_mut_(i);
         if (c > inline_width_) {
             row[0] = kOverflowMarker;
             overflow_[i] = mono;
@@ -174,12 +208,13 @@ public:
     }
 
     [[nodiscard]] auto row(size_t i) const -> value_type {
-        const PosT c = rows_[i * stride_];
+        const PosT *r = row_ptr_(i);
+        const PosT c = r[0];
         if (c == kOverflowMarker) {
             return overflow_.at(i);
         }
         value_type mono;
-        const PosT *pos = &rows_[(i * stride_) + 1];
+        const PosT *pos = r + 1;
         for (size_t j = 0; j < c; ++j) {
             mono.set(pos[j]);
         }
@@ -187,7 +222,8 @@ public:
     }
     template <typename Fn>
     auto for_each_position(size_t i, Fn &&fn) const -> void {
-        const PosT c = rows_[i * stride_];
+        const PosT *r = row_ptr_(i);
+        const PosT c = r[0];
         if (c == kOverflowMarker) {
             const auto &m = overflow_.at(i);
             for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
@@ -195,13 +231,13 @@ public:
             }
             return;
         }
-        const PosT *pos = &rows_[(i * stride_) + 1];
+        const PosT *pos = r + 1;
         for (size_t j = 0; j < c; ++j) {
             fn(static_cast<size_t>(pos[j]));
         }
     }
     [[nodiscard]] auto popcount(size_t i) const -> size_t {
-        if (const PosT c = rows_[i * stride_]; c != kOverflowMarker) {
+        if (const PosT c = row_ptr_(i)[0]; c != kOverflowMarker) {
             return c;
         }
         return overflow_.at(i).count();
@@ -220,7 +256,8 @@ public:
         return {&rows_[(i * stride_) + 1], static_cast<size_t>(c)};
     }
     [[nodiscard]] auto memory_bytes() const -> size_t {
-        size_t total = rows_.capacity() * sizeof(PosT);
+        size_t total = capacity() * stride_ * sizeof(PosT);
+        total += chunks_.capacity() * sizeof(std::unique_ptr<PosT[]>);
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
         return total;
     }
@@ -267,7 +304,10 @@ public:
                 }
                 cand[j] = probe_fp_match_(fingerprint(sp[j]), sp[j] & table_.mask);
                 if (cand[j] != kNoSlot) {
-                    __builtin_prefetch(&rows_[slot_idx_(cand[j]) * stride_], 0, 0);
+                    // One extra load (the chunk pointer) now sits in front of this address. The chunk
+                    // table is one pointer per kChunkRows rows -- a few KB at 26M terms -- so it is an
+                    // L1 hit and the lead time this prefetch buys is preserved.
+                    __builtin_prefetch(row_ptr_(slot_idx_(cand[j])), 0, 0);
                 }
             }
             for (size_t j = 0; j < g; ++j) {
@@ -410,26 +450,17 @@ public:
             }
         }
     }
-    // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
-    [[nodiscard]] auto slack_bytes() const -> size_t {
-        return (rows_.capacity() * sizeof(PosT)) - (std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT));
-    }
-
-    // Return the 1.5x growth overshoot at a quiescent point. rows_ was the only container in the operator
-    // with no shrink path -- op_coeffs, the state and the whole inverted index all shrink -- and it carried
-    // 4.1 B/term on Hubbard and 6.0 on kicked Ising, in both cases comparable to the entire inverted index.
+    // Diagnostic: the unused tail of the last chunk, which is all the dead capacity a chunked store can
+    // hold. Bounded by kChunkRows-1 rows regardless of operator size, where the 1.5x flat vector this
+    // replaced carried up to half of live (measured 4.1-6.0 B/term across the benchmark workloads).
     //
-    // Gated rather than unconditional, because grow_rows_geometric's refusal to exact-fit is right: a fit
-    // taken while the operator is still growing reallocs the whole row array on the very next layer. The
-    // gate is the rule the inverted index's arena already applies to its own slack -- leave it alone below
-    // a bounded margin -- so this costs one realloc per quiescent point, not one per layer.
-    static constexpr size_t kShrinkSlackDenom = 8; // shrink only past 1/8 = 12.5% dead capacity
-    auto shrink_rows_to_fit() -> void {
-        const size_t live = size_ * stride_;
-        if (rows_.capacity() <= live + (live / kShrinkSlackDenom)) {
-            return;
-        }
-        rows_.shrink_to_fit();
+    // There is deliberately no shrink_rows_to_fit() any more. It existed to hand back geometric
+    // overshoot at a quiescent point, and a gated shrink could never win: any rule leaving low slack at
+    // rest has to fire near the end of a build, and "the end" is not observable to the library -- it
+    // measured 1.030x on Hubbard propagate (6/6, p=0.031) and was left uncalled. Bounding the overshoot
+    // at the source removes both the slack and the mechanism.
+    [[nodiscard]] auto slack_bytes() const -> size_t {
+        return (capacity() - std::min(capacity(), size_)) * stride_ * sizeof(PosT);
     }
 
     auto index_estimated_memory_bytes() const -> size_t { return sizeof(OperatorIndex) + table_.buf.capacity(); }
@@ -582,9 +613,11 @@ private:
     //
     // Both sides of the move have to be overlapped, and each was got wrong once:
     //
-    //   * Reads. Visiting live entries in old-slot order scatters the row reads at random across a
-    //     rows_ array far larger than L3. Term indices are dense in [0, size_), so the same rows are
-    //     visited in index order instead and the read side becomes one sequential stream. The live set
+    //   * Reads. Visiting live entries in old-slot order scatters the row reads at random across a row
+    //     store far larger than L3. Term indices are dense in [0, size_), so the same rows are
+    //     visited in index order instead and the read side becomes one sequential stream. Chunking the
+    //     row store does not break that: ascending indices walk each chunk start to finish, so the
+    //     stream restarts once per kChunkRows rather than being scattered. The live set
     //     rides in a bitmap — one bit per term, 3.3 MB at 26.6M terms, cache-resident — filled by a
     //     sequential walk of the old table.
     //   * Writes. Old-slot order was not arbitrary: under doubling a slot's new home is its old home
@@ -663,8 +696,28 @@ private:
         ++table_.count;
     }
 
-    [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
-    auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
+    [[nodiscard]] auto capacity() const -> size_t { return chunks_.size() * kChunkRows; }
+
+    // Allocate whole chunks up to n rows. make_unique_for_overwrite, not make_unique: every row is
+    // written by set() before it is read, so zeroing a chunk is the same wasted bandwidth the
+    // default_init_allocator on the old flat vector existed to avoid.
+    auto reserve_rows(size_t n) -> void {
+        const size_t want = (n + kChunkRows - 1) / kChunkRows;
+        chunks_.reserve(want);
+        while (chunks_.size() < want) {
+            chunks_.push_back(std::make_unique_for_overwrite<PosT[]>(kChunkRows * stride_));
+        }
+    }
+
+    // The whole point of the chunked layout: one shift, one mask, one load from a table small enough to
+    // stay in L1 (one pointer per kChunkRows rows). Callers that walk a run of consecutive rows should
+    // hoist the chunk base instead of calling this per row -- see rehash_to_.
+    [[gnu::always_inline]] [[nodiscard]] auto row_ptr_(size_t i) const noexcept -> const PosT * {
+        return chunks_[i >> kChunkShift].get() + ((i & kChunkMask) * stride_);
+    }
+    [[gnu::always_inline]] [[nodiscard]] auto row_ptr_mut_(size_t i) noexcept -> PosT * {
+        return chunks_[i >> kChunkShift].get() + ((i & kChunkMask) * stride_);
+    }
     auto reserve_index(size_t n) -> void { rehash_to_(slots_for_(n + 1)); }
 
     // Insert (idx, spread hash) into the table with no duplicate probe — callers on this path insert
@@ -677,14 +730,15 @@ private:
     // Compare row i against key q without materializing the row (the find confirm). Reads the
     // popcount byte first, so a false h prefilter match usually costs one byte compare.
     [[nodiscard]] auto row_eq_key(size_t i, const key_type &q) const -> bool {
-        const PosT c = rows_[i * stride_];
+        const PosT *r = row_ptr_(i);
+        const PosT c = r[0];
         if (c == kOverflowMarker) {
             return overflow_.at(i) == q;
         }
         if (q.count() != static_cast<size_t>(c)) {
             return false;
         }
-        const PosT *pos = &rows_[(i * stride_) + 1];
+        const PosT *pos = r + 1;
         for (size_t j = 0; j < c; ++j) {
             if (!q.test(pos[j])) {
                 return false;
@@ -736,7 +790,9 @@ private:
         }
     }
 
-    DefaultInitVector<PosT> rows_ = {};
+    // One allocation per kChunkRows rows, never reallocated once handed out. The chunk table itself does
+    // double, but at one pointer per kChunkRows*stride_ bytes of payload it is ~0.04% of the store.
+    std::vector<std::unique_ptr<PosT[]>> chunks_ = {};
     size_t size_ = 0;
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;

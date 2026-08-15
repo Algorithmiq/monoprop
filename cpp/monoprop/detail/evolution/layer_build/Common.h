@@ -55,7 +55,8 @@ struct MatchedEpochSet {
     auto mark(size_t i) -> void { epoch_[i] = cur_; }
     [[nodiscard]] auto is_marked(size_t i) const -> bool { return epoch_[i] == cur_; }
     [[nodiscard]] auto memory_bytes() const -> size_t { return epoch_.capacity() * sizeof(Stamp); }
-    // Same bounded-slack rule as OperatorIndex::shrink_rows_to_fit; see the note there.
+    // Bounded-slack rule: leave capacity alone below a 12.5% margin so this costs one realloc per
+    // quiescent point rather than one per layer. A flat vector, so unlike the row store it still needs it.
     auto shrink_to_fit() -> void {
         if (epoch_.capacity() > epoch_.size() + (epoch_.size() / 8)) {
             epoch_.shrink_to_fit();

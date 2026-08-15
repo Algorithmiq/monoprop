@@ -265,7 +265,7 @@ struct MPOperator {
 // (op.size() must equal the returned base).
 template <size_t NumModes, typename KeyAt, typename PerSlot>
 inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
-    const size_t base = op.store->grow_rows_geometric(n);
+    const size_t base = op.store->grow_rows(n);
     for (size_t k = 0; k < n; ++k) {
         per_slot(k, base);
     }
