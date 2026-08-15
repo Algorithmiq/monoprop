@@ -1,37 +1,70 @@
 # Inverted-index memory: `perf/invidx-memory` vs its base
 
-2026-08-14, Deucalion x86. Harness `sbatch/ab-100m.sh`, jobs `1821536`/`1821568`, summaries under
-`$PROJ/runs/ab-100m-invidx{,2,3}-N1/AB-SUMMARY.md`. The headline table is the last of the
-three; all three agree on it to 0.1 B/term.
+2026-08-15, Deucalion x86. Harness `sbatch/ab-100m.sh`, job `1825647`, summary under
+`$PROJ/runs/ab-100m-invidx-vsmain-N1/AB-SUMMARY.md`.
 
 | | |
 | --- | --- |
-| arms | `bench/hpc-harness` @ `97c1fb6` (0.8.1.dev36) vs the branch, i.e. base vs base+change |
+| arms | `origin/main` @ `6abd839` (0.8.1.dev37) vs the branch, all four changes present |
 | problem | 7M observable terms → **29,007,110 propagated terms**, 250 modes, cutoff 6, 100 generators |
 | layout | B_8x16 — 8 ranks × 16 partitions, world 128, so ~226k rows per inverted index |
 | reps | 6, interleaved, order flipped per (rep, cell), `--bench-rounds=1` |
 | identical | `MAX_NUM_MODES=1024`, `MALLOC_ARENA_MAX=16`, `OMP_NUM_THREADS=1`, MPI on, same `benches/` |
+| placement | 16 threads pinned per rank on **both** arms, under `--cpu-bind=none` |
 
-Both arms passed `ctest -L serial` (209/209) and the 609-case serial Python suite before
-measuring. Term counts agree to the term across all cells.
+Term counts agree to the term across all cells.
+
+> **This supersedes the 2026-08-14 measurement** (jobs `1821536`/`1821568`, dirs
+> `ab-100m-invidx{,2,3}-N1`), which read 5.17× on the index and 1.40× on the operator. That
+> measurement is wrong twice over: its base was `bench/hpc-harness` @ `97c1fb6` rather than
+> main, and its branch arm predated three of the four changes — visible in its own table,
+> where `indexing_bytes` and `operator_terms_bytes` came back byte-identical across the arms,
+> which cannot happen once the dedup slot and the chunked row store are present. Those runs
+> were also refused for unplaced threads. The numbers below replace them.
 
 ## Result — Majorana, the regime the change targets
 
-**The inverted index is 5.17× smaller and the whole operator 1.40× smaller, 24/24 paired
-measurements** (four operations × six reps).
+**The operator is 2.97× smaller: 129.67 → 43.59 B/term, 3.76 GB → 1.26 GB, so 2.33 GiB off a
+29M-term operator.** The four changes do not contribute in the expected order:
 
-| field | base B/term | branch B/term | base/branch | agree |
+| field | main B/term | branch B/term | main/branch | Δ B/term | share |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `init_operator_bytes` | 39.58 | **0.00** | — | 39.58 | **46%** |
+| `inverted_index_bytes` | 46.20 | **7.87** | **5.87×** | 38.33 | **45%** |
+| `indexing_bytes` | 18.51 | 11.57 | 1.60× | 6.94 | 8% |
+| `operator_terms_bytes` | 17.38 | 14.17 | 1.23× | 3.21 | 4% |
+| `matched_scratch_bytes` | — | 1.98 | — | −1.98 | −2%, the branch pays |
+| **`total_bytes`** | **129.67** | **43.59** | **2.97×** | 86.08 | 100% |
+
+The largest single win is **not the index**. It is releasing `init_op_map`, which holds
+**1.15 GB** of empty buckets here that `erase` never returns. That is a large-observable
+effect — 7M observable terms — and it disappears on the fixed models, where
+`init_operator_bytes` is a few kilobytes on both arms and the total ratio is 1.35×. Quote
+2.97× only with the observable size beside it.
+
+The index falls from 36% of the operator to 18%, so the monomial→row hash (11.57) and the row
+store (14.17) are now the two largest structures, and the two worth attacking next.
+
+### What is actually resident
+
+Capacity is not residency, so the ledger is quoted beside the suite's own per-rank `VmHWM`,
+`_reduce_sum`-ed over the 8 ranks and medianed over 6 reps. Both arms share a geometry, so
+the ratio is meaningful even though the summed total is not comparable across layouts:
+
+| operation | main GiB | branch GiB | main/branch | GiB saved |
 | --- | ---: | ---: | ---: | ---: |
-| `inverted_index_bytes` | 46.20 | **8.94** | **5.17×** | 24/24 |
-| `total_bytes` | 129.67 | **92.41** | **1.40×** | 24/24 |
-| `operator_terms_bytes` | 17.38 | 17.38 | 1.00× | 24/24 |
-| `indexing_bytes` | 18.51 | 18.51 | 1.00× | 24/24 |
+| `build_graph` | 34.99 | 32.79 | 1.07× | 2.20 |
+| `propagate` | 34.57 | 33.03 | 1.05× | 1.54 |
+| `energy` | 14.71 | 12.16 | **1.21×** | 2.55 |
+| `gradient` | 14.94 | 12.46 | **1.20×** | 2.48 |
 
-At 29M terms that is 1.08 GiB off the operator. The index falls from 36% of the operator to
-9.7%, which inverts the ranking: the monomial→row hash (18.51) and the row store (17.38) are
-now the two things worth attacking.
+The ledger's 2.33 GiB and the kernel's 1.5–2.6 GiB agree here, which they do **not** on the
+fixed models. The whole-job ratio is 1.05–1.21×, not 2.97×, because the operator is about a
+tenth of the footprint at this size; `energy` and `gradient` show the most because they do not
+also hold the transient build structures.
 
-Where the branch's 8.94 B/term goes: 8.43 byte-delta payload (of which 3.04 is the unsealed
+Where the branch's index bytes go, from the earlier run's breakdown (8.94 B/term there,
+7.87 here): 8.43 byte-delta payload (of which 3.04 is the unsealed
 tail), 0.43 of bitmap cells on the handful of columns dense enough to earn one, 0.07 directory,
 and 0.01 arena slack. The base's 46.20 is 33.77 of full-height bitmaps plus 12.43 of 4-byte
 postings — and that bitmap figure is the point, since only ~95 of 500 columns qualify as dense
@@ -74,10 +107,30 @@ Two independent 6-rep runs of the identical comparison land on **opposite signs*
 | `energy` | 0.92× | 4/6 | 0.94× | 5/6 |
 | `gradient` | 1.02× flat | 6/6 | 1.06× flat | 5/6 |
 
-That disagreement is the result: at this rep count on an unpinned node the harness cannot see
-an effect of either sign, and neither can anyone reading it. It is emphatically not evidence
-that the branch is faster, which is what run 2 alone would suggest. The fold measurement above
-is the timing claim; this table is only here to show it was checked end to end.
+That disagreement is the result: at this rep count the harness cannot see an effect of either
+sign, and neither can anyone reading it. It is emphatically not evidence that the branch is
+faster, which is what run 2 alone would suggest. The fold measurement above is the timing
+claim; this table is only here to show it was checked end to end.
+
+### Placement was not the cause — tested, and refuted
+
+The paragraph above blames the spread on unpinned threads. **That explanation is wrong.** The
+2026-08-15 re-run (job `1825647`) places 16 threads per rank on both arms under
+`--cpu-bind=none`, and the timing is *still* unresolved, with spreads no better:
+
+| operation | branch/main | agree | per-rep spread |
+| --- | ---: | ---: | ---: |
+| `build_graph` | 1.01× | 3/6 | 4.4× |
+| `propagate` | 1.31× | 4/6 | 4.6× |
+| `energy` | 1.08× | 5/6 | 1.3× |
+| `gradient` | 1.06× | 6/6 | — |
+
+Unpinned the spreads were 1.6–2.6×; pinned they are 1.3–4.6×. Pinning fixed a real bug and
+changed nothing about the variance, so the residual is the harness, not the placement — which
+is what the direct fold measurement already implied by resolving cleanly on one pinned core.
+The fixed-model cells resolve small effects at the same rep count (`propagate` 1.05× at 6/6 on
+pauli c12), so this is a property of the random problem's per-rep setup, not of six reps being
+too few everywhere.
 
 One thing does reproduce across both runs: `gradient`'s peak above its own floor is ~20 MB
 higher on the branch (0.03 → 0.05–0.06 GiB, on a 3.74 GiB operator), while the operator is
