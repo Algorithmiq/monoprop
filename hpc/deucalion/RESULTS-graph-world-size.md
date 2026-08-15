@@ -105,7 +105,7 @@ predicted delta = L × 16 B = 5,420 × 16 = 86,720 B/P²        agreement: 0.04%
 port arm against 148,998 measured, so ~19,000 B/P² of the graph is P-proportional content this
 change does not touch. The *difference* is what the change claims, and that is predicted to 0.04%.
 
-## Time is flat, and is reported as flat
+## Phase 1 time is flat, and is reported as flat
 
 | cell | build_graph | propagate | energy | gradient |
 | --- | --- | --- | --- | --- |
@@ -125,6 +125,103 @@ cells put gradient at 0.99–1.04× and none reach 6/6, so it is probably node s
 clear the bar in the slower direction and suppressing that would be cherry-picking.
 
 This is the expected shape: the change removes retained bytes, not work from any hot loop.
+
+## Phase 2: deriving the layouts saves 2.26× at P=512, and moves the gradient
+
+The second change stops **retaining** the exchange layouts. `counts[r]` is a function of the slot
+records and `displs` is its prefix sum, so both are derived into per-thread scratch at the call
+site; the derivative round is the evolution round at scale 2, and scaling commutes with the
+transpose, so it needs no collective of its own.
+
+Arms: `main` `0.8.1.dev37+g6abd839e6` against this branch @ `5f33a71`, confirmed distinct by
+**`.so` hash** (`f73d17f2…` vs `d37b0f1e…`) rather than by version string — the port venv's stamp
+reads `dev38+g1d6277344.d20260815` because the gate built it before the commit existed, which is
+exactly the orphaned-stamp trap. 7 cells, 6 reps, up to 4 nodes.
+
+| cell | P | main | port | saved | ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| c12 1x16 | 16 | 1.442 GiB | 1.397 GiB | 0.045 GiB | 1.03× |
+| c12 8x2 | 16 | 1.442 GiB | 1.397 GiB | 0.045 GiB | 1.03× |
+| c12 1x128 | 128 | 4.982 GiB | 2.888 GiB | 2.093 GiB | 1.72× |
+| c12 8x16 | 128 | 4.982 GiB | 2.888 GiB | 2.093 GiB | 1.72× |
+| c14 8x16, 1 node | 128 | 7.091 GiB | 4.998 GiB | 2.093 GiB | 1.42× |
+| c14 8x16, 2 nodes | 256 | 17.340 GiB | 9.183 GiB | 8.157 GiB | 1.89× |
+| **c14 8x16, 4 nodes** | **512** | **57.686 GiB** | **25.494 GiB** | **32.192 GiB** | **2.26×** |
+
+The paired geometries are byte-identical again (1x16 = 8x2, 1x128 = 8x16), so `P` is still the axis.
+
+### The saving is two terms, and predicts every cell to the byte
+
+Job-total slots = `L·P²` and layer-cores = `L·P`, so with `L = 5,420`:
+
+```
+saved = 24 B × slots  +  168 B × layer_cores
+```
+
+| cell | P | predicted | measured | ratio |
+| --- | ---: | ---: | ---: | ---: |
+| c12 | 16 | 47,869,440 B | 47,869,440 B | **1.00000** |
+| c12 | 128 | 2,247,782,400 B | 2,247,782,400 B | **1.00000** |
+| c14 | 128 | 2,247,782,400 B | 2,247,782,400 B | **1.00000** |
+| c14 | 256 | 8,758,026,240 B | 8,758,026,240 B | **1.00000** |
+| c14 | 512 | 34,565,898,240 B | 34,565,898,240 B | **1.00000** |
+
+Zero free parameters, across a 4× range in `P` and a 3.1× range in term count. The 24 B/slot is the
+record fields plus `counts`/`displs`; the 168 B/core is `sizeof(LayerCore)` falling **416 → 248 B**
+as two `LayerExchangeLayout` structs and their embedded caches leave it.
+
+> **The second term is why a one-term reading looked inconsistent.** Per slot the saving reads
+> 34.50 B at P=16 and 25.31 B at P=128, which invites "the effect is not slot-proportional". It is:
+> the *other* term is linear in `P`, so it is a larger share of the total when `P` is small. Divide
+> a two-term law by one of its variables and it will look unstable in exactly this way.
+
+### The ledger understates it
+
+The derivative layout was a diagnostic outside `total_bytes()`, so neither it nor its removal can
+appear in `graph`. At P=512, uncounted: `recv_cache` **10.59 GiB measured** on the port arm
+(`d_recv_cache_bytes` = 11,366,563,840 = exactly 8 B/slot) against ~31.76 GiB computed for `main`
+(8 B/slot cache + 16 B/slot derivative layout). That is ~21 GiB more than the table shows.
+
+`main`'s figure is **computed from struct layout, not measured** — `main` has no such binding.
+Independent corroboration: `gradient` peak transient memory on the worst rank falls 0.88 → 0.04 GiB
+at P=512, and a per-rank derivative layout works out to ~0.66 GiB. Same order, from a metric that
+knows nothing about the ledger.
+
+`recv_cache` is now the largest remaining P² term, and it is the one piece that cannot be derived.
+
+### Time — this one does move, and the win grows with P
+
+`*` = 6/6, clearing a sign test at p=0.031. 5/6 is p=0.109 and does not clear.
+
+| cell | P | build_graph | propagate | energy | gradient |
+| --- | ---: | --- | --- | --- | --- |
+| c12 1x16 | 16 | 1.00× (4/6) | 1.03× faster (5/6) | **1.04× slower** (6/6\*) | 1.01× slower (6/6\*) |
+| c12 8x2 | 16 | 1.01× slower (5/6) | 1.00× (4/6) | **1.04× slower** (6/6\*) | 1.02× faster (6/6\*) |
+| c12 1x128 | 128 | 1.23× faster (5/6) | 1.11× faster (3/6) | 1.01× faster (5/6) | **2.10× faster** (6/6\*) |
+| c12 8x16 | 128 | 1.02× slower (5/6) | 1.01× faster (3/6) | 1.00× (3/6) | **1.15× faster** (6/6\*) |
+| c14 N1 | 128 | 1.02× faster (6/6\*) | 1.00× (3/6) | 1.01× slower (4/6) | 1.03× faster (5/6) |
+| c14 N2 | 256 | 1.02× faster (5/6) | 1.00× (4/6) | **1.06× faster** (6/6\*) | **1.13× faster** (6/6\*) |
+| c14 N4 | 512 | 1.01× faster (5/6) | 1.01× faster (4/6) | **1.26× faster** (6/6\*) | **1.43× faster** (6/6\*) |
+
+`gradient` is the operation this moves, and the win grows with `P`: 1.15× at P=128, 1.13× at P=256,
+1.43× at P=512, and **2.10× at 1x128** where 128 partitions sit inside one rank (per-rep ratios
+0.466–0.486, the tightest cell in the campaign). The mechanism is that `main` resolved a *separate*
+transpose for the derivative round — one extra `alltoall_counts` per layer, 5,420 of them, on the
+first gradient. The derivative transpose is now the evolution one scaled by 2.
+
+`build_graph` and `propagate` are flat everywhere. The 1.23× on `build_graph` at 1x128 is the
+largest number in the table and is **not a result** — 5/6.
+
+### The honest negative, and one thing that is unresolved
+
+At **P=16 this is a small loss**: `energy` is 1.04× slower on *both* geometries at 6/6. Expected
+rather than surprising — deriving counts is a fixed cost paid per exchange while the saving grows
+with `P`, so a small world pays without earning.
+
+`gradient` at P=16 is **unresolved, not a regression**: 1.01× slower on 1x16 and 1.02× faster on
+8x2, each at 6/6, in opposite directions. Two geometries at the same `P` disagreeing in direction
+while both reach 6/6 means the effect is per-geometry, not per-`P`. Neither figure is the P=16
+gradient result, and quoting either alone would be picking the one that suits the story.
 
 ## Occupancy — measured for the first time, and initially over-read
 
@@ -180,11 +277,19 @@ Rank a lever by its bytes against the other levers, not by the percentage of its
 
 ```bash
 cd $PROJ/src/mp-gwsbench
+# Phase 1: the record shrink.       Phase 2: the retained layouts, + a node ladder.
 PORT_VENV=$PROJ/src/mp-gws/.venv hpc/deucalion/sbatch/campaign.sh geometry
-hpc/deucalion/tools/graph_world_report.py $PROJ/runs/models-pauli-gws-c12-g1x16-N1 \
-                                          $PROJ/runs/models-pauli-gws-c12-g1x128-N1
+PORT_VENV=$PROJ/src/mp-gws/.venv hpc/deucalion/sbatch/campaign.sh layout
+
+hpc/deucalion/tools/graph_world_report.py $PROJ/runs/models-pauli-gws2-c12-g1x16-N1 \
+                                          $PROJ/runs/models-pauli-gws2-c12-g1x128-N1
 ```
+
+`PORT_VENV` is **not optional**: its default points at another branch's worktree. `ab_summary` now
+refuses an A/B whose two arms report the same build, but that check cannot see a stale `.so` — the
+arms here were confirmed by hashing the extension, not by reading `__version__`.
 
 Use a venv python for the tools: the login node's `python3` is 3.6.8.
 
-Cost: **6 node-hours of 3 000 node-hours (0.2 %).**
+Cost: **~13 node-hours of 3 000 (0.4 %)** — 6 for phase 1, ~7 for phase 2's seven cells (the
+4-node rung is 4 nodes × 21 min).
