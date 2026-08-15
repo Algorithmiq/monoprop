@@ -169,6 +169,22 @@ public:
         }
         return overflow_.at(i).count();
     }
+    // The row's ascending positions as they are stored, for callers that can consume the sparse form
+    // directly instead of rebuilding a bitset from it. Empty (nullptr, 0) for a spilled row: the
+    // overflow map holds a Monomial and has no position array to point at, so a caller must fall back
+    // to for_each_position / row(). The pointer is invalidated by any insert, exactly like rows_.
+    struct RowPositions {
+        const PosT *pos;
+        size_t count;
+        [[nodiscard]] auto inlined() const -> bool { return pos != nullptr; }
+    };
+    [[nodiscard]] auto row_positions(size_t i) const -> RowPositions {
+        const PosT c = rows_[i * stride_];
+        if (c == kOverflowMarker) {
+            return {nullptr, 0};
+        }
+        return {&rows_[(i * stride_) + 1], static_cast<size_t>(c)};
+    }
     // Rows whose popcount exceeded inline_width_ and spilled. Diagnostic: every hot-path row read on
     // one of these is a hash-map lookup, so this fraction is what decides whether the width is right.
     [[nodiscard]] auto overflow_size() const -> size_t { return overflow_.size(); }

@@ -24,6 +24,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
+#include "monoprop/core/SparseMonomial.h"
 
 namespace monoprop {
 
@@ -95,6 +96,9 @@ auto is_paired(const VecZ &mono) -> bool {
     return is_paired<NumModes>(indices_to_bitset<NumModes>(mono));
 }
 
+// The (k, d) digest form of the predicate above is is_paired(size_t, size_t) in SparseMonomial.h,
+// pulled into this namespace by the include; it is not repeated here so the two cannot drift.
+
 template <size_t NumModes, typename Rows>
 auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     VecZ result;
@@ -154,6 +158,42 @@ template <size_t NumModes>
     return {(first_pair ^ second_pair).count(), active_mono.count(), (first_pair | second_pair).count()};
 }
 
+// The same sums from a pair digest (SparseMonomial.h): k = popcount, d = modes with both Majoranas
+// set. No logical_num_modes argument, because a monomial built through indices_to_bitset() has every
+// set bit at physical position >= 2*(NumModes - logical_num_modes) and the masking above is then
+// inert -- so the digest an emit-path merge already carries decides the same thing the bitset does.
+// The bitset overload stays the oracle the fuzz differentials measure this one against.
+[[nodiscard]] inline constexpr auto cutoff_sums(size_t k, size_t d) noexcept -> CutoffSums {
+    return {k - (2 * d), k, k - d};
+}
+
+// d on its own, straight from the dense words. Mode m occupies bits (2m, 2m+1) in LSb0, so both its
+// Majoranas are set exactly when `w & (w >> 1)` has bit 2m set; masking to the even bits then counts
+// each doubly-occupied mode once.
+//
+// The shift is word-local even though the bitset is not. A multiword `>> 1` would carry bit 0 of word
+// i+1 into bit 63 of word i, and 63 is odd, so the even mask discards it -- no cross-word carry, and
+// therefore no multiword shift. That matters more than the popcounts do: the out-of-line
+// cutoff_sums(mono, L) this exists to displace spends its cost on the call, a spilled frame and a
+// *variable* multiword shift, not on counting bits.
+//
+// Precondition, the same one cutoff_sums(k, d) carries: the monomial is well formed, i.e. every set
+// bit lies at physical position >= 2 * (NumModes - logical_num_modes). indices_to_bitset establishes
+// it and XOR, pair_swap and the initial-state mask all preserve it, so cutoff_sums' active_bit_offset
+// masking is inert on every production path. It is NOT inert for a monomial built below the offset by
+// hand -- majorana_cutoff_tests.cpp:79,101 does exactly that -- so those callers keep the bitset
+// overload, which stays the oracle the differentials measure this against.
+template <size_t NumModes>
+[[gnu::always_inline]] [[nodiscard]] inline auto paired_mode_count(const Monomial<NumModes> &mono) noexcept -> size_t {
+    constexpr auto even = even_bits<2 * NumModes, LSb0>();
+    size_t d = 0;
+    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
+        const uint64_t word = mono.word(w);
+        d += static_cast<size_t>(std::popcount(word & (word >> 1) & even.word(w)));
+    }
+    return d;
+}
+
 // Both cutoffs below keep a fully paired monomial (xor_sum == 0) unconditionally: those are the only
 // terms contributing to an expectation value against a product reference state, so bounding them by
 // length or support would discard signal.
@@ -169,6 +209,11 @@ auto length_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff) -> bool 
     return length_cutoff<NumModes>(mono, cutoff, NumModes);
 }
 
+// Digest form, on the same precondition as cutoff_sums(k, d). Width-independent, hence not templated.
+[[nodiscard]] inline constexpr auto length_cutoff(size_t k, size_t d, unsigned int cutoff) noexcept -> bool {
+    return length_keeps(k, d, cutoff);
+}
+
 template <size_t NumModes>
 auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
     const auto sums = cutoff_sums<NumModes>(mono, logical_num_modes);
@@ -178,6 +223,11 @@ auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff, size_t 
 template <size_t NumModes>
 auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff) -> bool {
     return support_cutoff<NumModes>(mono, cutoff, NumModes);
+}
+
+// Digest form, on the same precondition as cutoff_sums(k, d). Width-independent, hence not templated.
+[[nodiscard]] inline constexpr auto support_cutoff(size_t k, size_t d, unsigned int cutoff) noexcept -> bool {
+    return support_keeps(k, d, cutoff);
 }
 
 namespace detail {
@@ -240,6 +290,38 @@ public:
             return (*support_cutoff_)(mono);
         }
         return cutoff_fn_(mono);
+    }
+
+    // Digest form of the above: decides from the (k, d) an emit-path merge already carries, so the
+    // rejected majority never reads the bitset at all. std::nullopt is the one case it cannot decide
+    // -- an opaque cutoff_fn_ takes a monomial and nothing else, so the caller must fall back to
+    // operator(). Same well-formedness precondition as cutoff_sums(k, d).
+    auto passes_with_popcount(size_t k, size_t d) const -> std::optional<bool> {
+        if (length_cutoff_ != nullptr) {
+            return length_keeps(k, d, length_cutoff_->cutoff);
+        }
+        if (support_cutoff_ != nullptr) {
+            return support_keeps(k, d, support_cutoff_->cutoff);
+        }
+        return std::nullopt;
+    }
+
+    // Same decision, from the dense monomial, without calling cutoff_sums. Every emit site already
+    // knows k (mono_pop + gen_pop - 2*overlap), so only d has to be computed, and paired_mode_count
+    // does that inline and branchlessly.
+    //
+    // Deliberately unconditional -- no popcount <= cutoff early-out, unlike the overload above. That
+    // early-out exists to skip an expensive out-of-line call; once the digest is this cheap the branch
+    // costs more than the work it skips, and it was measured slower (variant B vs B2, 80.4 vs 72.8
+    // cycles/term). nullopt for an opaque cutoff_fn_, which takes a monomial and nothing else.
+    auto passes_from_dense(const Monomial<NumModes> &mono, size_t k) const -> std::optional<bool> {
+        if (length_cutoff_ != nullptr) {
+            return length_keeps(k, paired_mode_count<NumModes>(mono), length_cutoff_->cutoff);
+        }
+        if (support_cutoff_ != nullptr) {
+            return support_keeps(k, paired_mode_count<NumModes>(mono), support_cutoff_->cutoff);
+        }
+        return std::nullopt;
     }
 
     // Upper bound on the set bits (physical slots) a surviving term can carry, so the store can size

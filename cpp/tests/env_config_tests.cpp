@@ -14,6 +14,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <cstdlib>
 #include <optional>
 
 #include "monoprop/detail/EnvConfig.h"
@@ -57,6 +58,40 @@ BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_range) {
     BOOST_CHECK(parse_positive_int("1") == std::optional<int>(1));
     BOOST_CHECK(parse_positive_int("42") == std::optional<int>(42));
     BOOST_CHECK(parse_positive_int("1000000") == std::optional<int>(1'000'000)); // inclusive upper bound
+}
+
+// Every knob declares its default TWICE -- once as a Settings member initialiser, once as parse_flag's
+// fallback in get() -- and get() unconditionally overwrites the first with the second. So changing only
+// the member silently does nothing. That is not hypothetical: it happened once on a knob that was being
+// turned OFF after measuring a 7.2% regression -- the member was set to false, the flip was documented in
+// the header and in the docs, parse_flag's fallback was left at true, and the regression shipped enabled
+// by default anyway. Any knob whose two declarations disagree fails here.
+BOOST_AUTO_TEST_CASE(env_config_member_defaults_match_parsed_defaults) {
+    const monoprop::config::Settings declared;
+    const auto &effective = monoprop::config::get();
+
+    struct Knob {
+        const char *name;
+        bool declared;
+        bool effective;
+    };
+    const Knob knobs[] = {
+        {"monoprop_PARTITION_PINNING", declared.partition_pinning, effective.partition_pinning},
+        {"monoprop_LAYER_PROFILE", declared.layer_profile, effective.layer_profile},
+        {"monoprop_DIGEST_CUTOFF", declared.digest_cutoff, effective.digest_cutoff},
+    };
+
+    size_t compared = 0;
+    for (const auto &knob : knobs) {
+        const char *override_value = std::getenv(knob.name);
+        if (override_value != nullptr && override_value[0] != '\0') {
+            continue; // the environment is meant to win; there is no default to compare against
+        }
+        ++compared;
+        BOOST_CHECK_MESSAGE(knob.declared == knob.effective, knob.name);
+    }
+    // Under a fully-exported environment every knob would be skipped and the case would pass vacuously.
+    BOOST_CHECK_GT(compared, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(env_config_settings_cached_singleton) {

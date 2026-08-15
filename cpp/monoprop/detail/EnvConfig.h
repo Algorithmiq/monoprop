@@ -25,6 +25,8 @@
 //   monoprop_PARTITION_PINNING  bool, default ON; 0/false disables per-core pinning → partition_pinning
 //   monoprop_PARTITIONS         int N | "auto" | "off"; parsed where it is used (resolve_partition_count_)
 //   monoprop_LAYER_PROFILE      bool, default OFF; per-partition layer-build attribution to stderr → layer_profile
+//   monoprop_DIGEST_CUTOFF      bool, default ON; decide it from an inline dense digest instead of
+//                               cutoff_sums, keeping the dense path otherwise intact → digest_cutoff
 
 namespace monoprop::config {
 
@@ -59,6 +61,25 @@ struct Settings {
     std::optional<int> num_threads;
     bool partition_pinning = true;
     bool layer_profile = false;
+    // On computes the structural cutoff's d inline from the dense words (paired_mode_count) and drops
+    // the popcount<=cutoff early-out, instead of calling out to cutoff_sums. The dense path is
+    // otherwise untouched -- it changes no representation and moves no data.
+    //
+    // Default ON. Measured: emit_s 0.9200x, 11/12 paired reps over two nodes, sign-test p=0.0063; and
+    // pooled with two further shapes (128 and 512 modes) 0.9214x, 19/20, p=4.0e-5. Counters
+    // (emit/reject/push/qbytes) are bit-identical between arms in all 20 pairs, memory is flat, and
+    // nothing measured is worse anywhere.
+    //
+    // Size it honestly: emit_s is ~18% of layer_s and layer_s ~57% of build_graph wall, so this is
+    // ~0.8% of build_graph -- NOT the ~3% the microbenchmark projected. The kernel really is 0.415x in
+    // isolation but only 0.92x in the real scan, which has more surrounding ILP to hide it. It is also
+    // below build_graph's paired noise floor here (4.2x spread), so it can never be confirmed by an
+    // end-to-end A/B on this system, and at N>1 exchange grows and this shrinks further.
+    //
+    // What justifies enabling it is not the timing but the instruction count: retired instructions
+    // around build_graph are 0.9128x on/off, 4/4 reps, -23.4 per emitted term, with branch-misses
+    // unchanged. Two arms running the same instruction stream cannot differ.
+    bool digest_cutoff = true;
 };
 
 // Parse the environment once; the Settings are cached and shared across TUs.
@@ -68,6 +89,7 @@ inline auto get() -> const Settings & {
         s.num_threads = detail::parse_positive_int(std::getenv("monoprop_NUM_THREADS"));
         s.partition_pinning = detail::parse_flag(std::getenv("monoprop_PARTITION_PINNING"), true);
         s.layer_profile = detail::parse_flag(std::getenv("monoprop_LAYER_PROFILE"), false);
+        s.digest_cutoff = detail::parse_flag(std::getenv("monoprop_DIGEST_CUTOFF"), true);
         return s;
     }();
     return settings;

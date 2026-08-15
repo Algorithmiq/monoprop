@@ -82,7 +82,11 @@ name and cannot address suite-nested cases, tests use flat
   CutoffEvaluator, interleave phase, coeff encode/decode), `validation_tests.cpp`
   (parameter validators), `mpi_utils_tests.cpp` (find_rank + word serialization),
   `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
-  `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
+  `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors),
+  `sparse_monomial_tests.cpp` (xor_gen against the dense primitives it replaces,
+  and the `(k, d)` digest overloads of cutoff_sums / length_cutoff /
+  support_cutoff / CutoffEvaluator::passes_with_popcount against their bitset
+  forms, plus the bit-offset precondition those overloads rest on).
 - **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`,
   `mp_operator_tests.cpp` (MPOperator get_state Pauli/Majorana scoring,
   get_operator init-map drain, update_initial_operator picture branches,

@@ -21,11 +21,13 @@
 #include <cstddef>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
+#include "monoprop/detail/EnvConfig.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/LayerProfile.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
@@ -202,7 +204,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             size_t my_rank,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
-                            double fused_scale_cos = 1.0) -> FusedScanResult {
+                            double fused_scale_cos = 1.0,
+                            std::optional<bool> force_digest_cutoff = std::nullopt) -> FusedScanResult {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t gen_pop = gen.count();
     const auto ectx = A::make_gen_context(gen);
@@ -283,27 +286,20 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
 
-        // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
-        // abs_c/v_src come from the caller's coeff read, not re-read.
-        auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
-            if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
-                return;
-            }
-            Monomial<NumModes> new_mono;
-            size_t overlap = 0;
-            int phase_factor = 0;
-            emit_term_products<NumModes, A>(*op.store, i, ectx, new_mono, overlap, phase_factor);
-            // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
-            const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
-            // Profile counters are unconditional register increments (~3 ALU ops/term); both A/B arms
-            // carry them, so they cancel in a paired ratio.
-            ++prof_emit;
-            prof_cutoff += static_cast<size_t>(new_pop > prof_fast_cut);
-            const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
-            if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
-                ++prof_reject;
-                return;
-            }
+        const OperatorIndex<NumModes> &ham = *op.store;
+        // Read once per scan, not per term: config::get() caches, but a per-term load
+        // through it is still a load the branch predictor has to carry.
+        const bool digest_cutoff = force_digest_cutoff.value_or(config::get().digest_cutoff);
+
+        // Everything after a term survives the structural cutoff, factored out so routing, ordering and
+        // the query record cannot drift between the paths that reach it.
+        auto push = [&](const Monomial<NumModes> &new_mono,
+                        size_t mono_pop,
+                        size_t overlap,
+                        int phase_factor,
+                        size_t i,
+                        double v_src,
+                        bool is_follower) {
             ++prof_push;
             const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
             // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
@@ -323,6 +319,43 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     lv[r_prime].push_back(v_src);
                 }
             }
+        };
+
+        // The dynamic gate runs before any product, so a gate-rejected term computes nothing.
+        // abs_c/v_src come from the caller's coeff read, not re-read.
+        auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
+            if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
+                return;
+            }
+            // Profile counters are unconditional register increments (~3 ALU ops/term); both A/B arms
+            // carry them, so they cancel in a paired ratio.
+            ++prof_emit;
+
+            Monomial<NumModes> new_mono;
+            size_t overlap = 0;
+            int phase_factor = 0;
+            emit_term_products<NumModes, A>(ham, i, ectx, new_mono, overlap, phase_factor);
+            // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
+            const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
+            // Counted on this path only: under the sparse path no cutoff_sums runs at all, so the
+            // counter going to ~0 between the two A/B arms is the evidence the change took effect.
+            prof_cutoff += static_cast<size_t>(new_pop > prof_fast_cut);
+            // Two ways to reach the same verdict on the partner that has just been built. The digest
+            // form computes d inline from the dense words and skips cutoff_sums entirely; the fallback
+            // is the original, and is also what an opaque cutoff_fn_ (nullopt) must still use.
+            bool struct_pass = false;
+            if (digest_cutoff) {
+                const auto keep = cutoff_eval.passes_from_dense(new_mono, new_pop);
+                struct_pass = keep.value_or(false) || (!keep.has_value() && cutoff_eval(new_mono));
+            }
+            else {
+                struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
+            }
+            if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
+                ++prof_reject;
+                return;
+            }
+            push(new_mono, mono_pop, overlap, phase_factor, i, v_src, is_follower);
         };
 
         // Pass 1 and pass 2 stay fused over `nz`: splitting them regressed measurably, as `nz` spills L1
