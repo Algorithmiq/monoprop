@@ -15,6 +15,7 @@
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 
 #include <algorithm>
+#include <atomic>
 #include <format>
 #include <limits>
 #include <memory>
@@ -51,15 +52,6 @@ auto build_layer_exchange_layout(const std::vector<size_t> &send_counts, int sca
     }
     layout.total_count = total;
     return layout;
-}
-
-auto build_derivative_exchange_layout(const LayerExchangeLayout &evolution) -> LayerExchangeLayout {
-    std::vector<size_t> send_counts;
-    send_counts.reserve(evolution.counts.size());
-    for (const int count : evolution.counts) {
-        send_counts.push_back(static_cast<size_t>(count));
-    }
-    return build_layer_exchange_layout(send_counts, 2, "Layer derivative exchange");
 }
 
 auto checked_term_index(size_t value, const char *what) -> TermIndex {
@@ -182,58 +174,68 @@ auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> s
     return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
 }
 
-auto layer_exchange_layout_cache_bytes(const LayerExchangeLayout &layout) -> size_t {
-    const auto &cached = layout.recv_cache.layout;
+auto layer_exchange_layout_cache_bytes(const mpi::RecvLayoutCache &cache) -> size_t {
+    const auto &cached = cache.layout;
     return cached.counts.capacity() * sizeof(int) + cached.displs.capacity() * sizeof(int);
+}
+
+auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
+                            size_t my_rank,
+                            int scale,
+                            LayerExchangeLayout &out,
+                            const char *what) -> void {
+    const std::string count_label = std::format("{} count", what);
+    const std::string displacement_label = std::format("{} displacement", what);
+
+    const size_t num_ranks = cross_rank.rank_count();
+    out.counts.resize(num_ranks);
+    out.displs.resize(num_ranks);
+    size_t total = 0;
+    for (size_t r = 0; r < num_ranks; ++r) {
+        // The self slot is excluded from the transfer and handled locally, exactly as the
+        // stored layout did; an empty slot still gets a valid (repeated) displacement.
+        const size_t count = (r == my_rank) ? size_t{0} : static_cast<size_t>(scale) * cross_rank.sin_send_size(r);
+        out.counts[r] = checked_mpi_int(count, count_label.c_str());
+        out.displs[r] = checked_mpi_int(total, displacement_label.c_str());
+        total += count;
+    }
+    out.total_count = total;
 }
 
 auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore> {
+    // Identifies the send pattern this core holds, so its recv cache cannot be served to a
+    // different one. Starts at 1 because a default-constructed cache carries 0 = never populated.
+    static std::atomic<uint64_t> next_generation{1};
+
     auto storage = std::make_shared<LayerCore>();
-
-    {
-        std::vector<size_t> send_counts;
-        send_counts.reserve(all_partners.size());
-        for (size_t r = 0; r < all_partners.size(); ++r) {
-            send_counts.push_back((r == my_rank) ? size_t{0} : all_partners[r].sin_send_indices.size());
-        }
-        storage->evolution_exchange_layout = build_layer_exchange_layout(send_counts, 1);
-
-        // The derivative layout (2x) is allocated lazily on first gradient read, but validated here: an
-        // overflow must throw during build_graph, not from inside the gradient collective window, where
-        // peers are already blocked in mpi::resolve_recv's count round -> a distributed hang, not an error.
-        static_cast<void>(build_derivative_exchange_layout(storage->evolution_exchange_layout));
-    }
+    storage->exchange_generation = next_generation.fetch_add(1, std::memory_order_relaxed);
+    const size_t num_ranks = all_partners.size();
 
     storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
 
-    // Both are indexed by the same rank space.
-    if (storage->evolution_exchange_layout.counts.size() != storage->cross_rank.rank_count()) {
+    // Both are indexed by the same rank space. Checked here because everything downstream now
+    // derives the layout from cross_rank, so this is the one place the two can still disagree.
+    if (num_ranks != storage->cross_rank.rank_count()) {
         throw ExchangeLayoutRankMismatch(
             std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
-                        storage->evolution_exchange_layout.counts.size(),
+                        num_ranks,
                         storage->cross_rank.rank_count()));
     }
+
+    // Derive both scales once at build time and throw the result away. This is purely eager
+    // validation: an overflow of MPI's int has to throw from build_graph, not from inside the
+    // exchange, where peers are already blocked in resolve_recv's count round -- there it is a
+    // distributed hang rather than an error. Scale 2 is checked as well as 1 because the
+    // derivative round overflows first and a gradient may run long after the graph was built.
+    //
+    // The vectors are not kept. They are a prefix sum of what cross_rank already holds, and
+    // retaining them per layer per partition is the O(P^2) term this change removes.
+    LayerExchangeLayout scratch;
+    derive_exchange_layout(storage->cross_rank, my_rank, 1, scratch);
+    derive_exchange_layout(storage->cross_rank, my_rank, 2, scratch, "Layer derivative exchange");
+
     return storage;
 }
 
 } // namespace monoprop::detail
-
-namespace monoprop {
-
-auto LayerCore::derivative_exchange_layout() const -> const LayerExchangeLayout & {
-    if (!derivative_exchange_layout_cache_) {
-        derivative_exchange_layout_cache_ = detail::build_derivative_exchange_layout(evolution_exchange_layout);
-    }
-    return *derivative_exchange_layout_cache_;
-}
-
-auto LayerCore::derivative_exchange_layout_bytes() const -> size_t {
-    if (!derivative_exchange_layout_cache_) {
-        return 0;
-    }
-    const auto &layout = *derivative_exchange_layout_cache_;
-    return detail::layer_exchange_layout_storage_bytes(layout) + detail::layer_exchange_layout_cache_bytes(layout);
-}
-
-} // namespace monoprop

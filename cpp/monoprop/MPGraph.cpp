@@ -51,14 +51,19 @@ auto layer_storage_memory_usage(const LayerCore &storage) -> GraphMemoryBreakdow
     GraphMemoryBreakdown breakdown;
     breakdown.layer_storage_object_bytes = sizeof(LayerCore);
     breakdown.cross_rank_bytes = detail::cross_rank_storage_bytes(storage.cross_rank);
-    breakdown.exchange_layout_bytes = detail::layer_exchange_layout_storage_bytes(storage.evolution_exchange_layout);
+    // Nothing: the layer no longer retains counts/displs. They are derived into per-thread
+    // scratch for the exchange being posted, so what used to be 2*P ints per layer per partition
+    // is now 2*P ints per THREAD. The field stays, reporting the truth, so an A/B against a build
+    // that did retain them shows the drop rather than silently losing the row.
+    breakdown.exchange_layout_bytes = 0;
 
-    // Diagnostics. recv_cache and the derivative layout are real resident memory that
-    // total_bytes() has never counted, which is why the reported graph size sits below the
-    // process RSS by a margin that itself widens with the world size.
+    // Diagnostics. recv_cache is real resident memory that total_bytes() has never counted, which
+    // is why the reported graph size sits below the process RSS.
     breakdown.slot_record_bytes = detail::cross_rank_slot_record_bytes(storage.cross_rank);
-    breakdown.recv_cache_bytes = detail::layer_exchange_layout_cache_bytes(storage.evolution_exchange_layout);
-    breakdown.derivative_layout_bytes = storage.derivative_exchange_layout_bytes();
+    breakdown.recv_cache_bytes = detail::layer_exchange_layout_cache_bytes(storage.evolution_recv_cache);
+    // The derivative layout is no longer retained at all: it is 2x the evolution layout, and its
+    // transpose is 2x the evolution transpose, so both are derived on demand without a collective.
+    breakdown.derivative_layout_bytes = 0;
     breakdown.layer_cores = 1;
     breakdown.slot_records = storage.cross_rank.rank_count();
     breakdown.occupied_slots = detail::cross_rank_occupied_slots(storage.cross_rank);

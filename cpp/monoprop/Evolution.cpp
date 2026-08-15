@@ -62,6 +62,12 @@ struct FlatExchangeBuffers {
     VecD recv_buffer;
     std::vector<int> recv_counts;
     std::vector<int> recv_displs;
+    // The send layout for the exchange currently being posted, derived per layer rather than
+    // read from one retained per layer. Reused, so it allocates once per thread per world size.
+    // Sharing one instance across layers is only sound because at most one exchange is in flight
+    // per thread -- the same invariant send_buffer above has always required.
+    LayerExchangeLayout layout;
+    int recv_total = 0;
 };
 
 auto &acquire_flat_exchange_buffers() {
@@ -73,21 +79,56 @@ auto &acquire_flat_exchange_buffers() {
 }
 
 void resize_flat_exchange_buffers(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers) {
-    // Recv size isn't known until counts are exchanged; keep it at 1 element so data() stays non-null.
+    // Only the send side: the recv counts/displs are filled by derive_layer_exchange before this
+    // runs, so clearing them here (as this did when the recv side was resolved afterwards) would
+    // throw away the layout the transfer is about to be posted with.
     const size_t send_alloc = layout.total_count == 0 ? 1 : layout.total_count;
     buffers.send_buffer.resize(send_alloc);
-    buffers.recv_buffer.resize(1);
-    buffers.recv_counts.clear();
-    buffers.recv_displs.clear();
 }
 
-auto active_evolution_exchange_layout(const LayerTraversal &layer, const mpi::Comm &comm)
-    -> const LayerExchangeLayout * {
-    if (mpi::size(comm) == 1) {
-        return nullptr;
+// Nothing to exchange at one rank. All ranks must participate even at local total_count 0, else
+// MPI_Alltoallv deadlocks, so this is a property of the communicator and not of the layer.
+auto layer_exchange_participates(const mpi::Comm &comm) -> bool {
+    return mpi::size(comm) != 1;
+}
+
+// Derive this layer's send layout into `buffers.layout` at `scale`, and its recv side into
+// buffers.recv_counts/recv_displs at the same scale.
+//
+// The recv side is resolved ONCE per layer, at scale 1, into the layer's own cache. Scaling
+// commutes with the transpose -- every rank multiplies its counts by the same literal, so peer q
+// sends me exactly `scale` times what it sent at scale 1, and displacements are prefix sums of
+// counts so they scale with them. That is what lets the derivative round reuse the evolution
+// round's collective instead of paying an alltoall of its own.
+auto derive_layer_exchange(const LayerTraversal &layer,
+                           const mpi::Comm &comm,
+                           int scale,
+                           FlatExchangeBuffers &buffers) -> void {
+    const auto my_rank = static_cast<size_t>(mpi::rank(comm));
+
+    // Resolve the transpose at scale 1, so evolution and derivative rounds share one cache entry
+    // and therefore one collective.
+    detail::derive_exchange_layout(layer.cross_rank(), my_rank, 1, buffers.layout);
+    const auto &recv =
+        mpi::resolve_recv(buffers.layout.counts, comm, layer.evolution_recv_cache(), layer.exchange_generation());
+
+    const size_t n = recv.counts.size();
+    buffers.recv_counts.resize(n);
+    buffers.recv_displs.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        buffers.recv_counts[i] = detail::checked_mpi_int(static_cast<size_t>(recv.counts[i]) * static_cast<size_t>(scale),
+                                                         "Layer exchange recv count");
+        buffers.recv_displs[i] = detail::checked_mpi_int(static_cast<size_t>(recv.displs[i]) * static_cast<size_t>(scale),
+                                                         "Layer exchange recv displacement");
     }
-    // All ranks must participate even at local total_count 0, else MPI_Alltoallv deadlocks.
-    return &layer.evolution_exchange_layout();
+    buffers.recv_total = detail::checked_mpi_int(static_cast<size_t>(recv.total) * static_cast<size_t>(scale),
+                                                 "Layer exchange recv total");
+
+    // Now the send side at the requested scale. Re-derived rather than scaled in place so the
+    // overflow check runs against the value MPI actually receives.
+    if (scale != 1) {
+        detail::derive_exchange_layout(layer.cross_rank(), my_rank, scale, buffers.layout, "Layer derivative exchange");
+    }
 }
 
 // The completed alltoallv payload as an apply pass sees it: peer `rank`'s entries start at
@@ -105,15 +146,12 @@ struct CrossRankExchangeHandle {
     [[no_unique_address]] mpi::Ticket ticket;
 };
 
-inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers, const mpi::Comm &comm)
-    -> CrossRankExchangeHandle {
+inline auto begin_flat_exchange(FlatExchangeBuffers &buffers, const mpi::Comm &comm) -> CrossRankExchangeHandle {
+    const LayerExchangeLayout &layout = buffers.layout;
     CrossRankExchangeHandle handle;
     handle.layout = &layout;
     handle.buffers = &buffers;
-    const auto &recv = mpi::resolve_recv(layout.counts, comm, layout.recv_cache);
-    buffers.recv_counts = recv.counts;
-    buffers.recv_displs = recv.displs;
-    buffers.recv_buffer.resize(recv.total == 0 ? 1 : static_cast<size_t>(recv.total));
+    buffers.recv_buffer.resize(buffers.recv_total == 0 ? 1 : static_cast<size_t>(buffers.recv_total));
     handle.ticket = mpi::post_flat_alltoallv<double>({.send = buffers.send_buffer.data(),
                                                       .send_counts = layout.counts.data(),
                                                       .send_displs = layout.displs.data(),
@@ -136,19 +174,20 @@ struct InFlightExchange {
     bool active = false;
 };
 
-// Callers run the participation guard first (see active_evolution_exchange_layout) so the layout is
-// never materialized at a single rank.
+// Callers run layer_exchange_participates first, so no layout is derived at a single rank -- where
+// deriving one would allocate a P-int pair and resolve a transpose for a transfer that never posts.
 template <typename Pack>
-inline auto begin_layer_exchange(const LayerExchangeLayout &layout, const mpi::Comm &comm, Pack pack)
+inline auto begin_layer_exchange(const LayerTraversal &layer, int scale, const mpi::Comm &comm, Pack pack)
     -> InFlightExchange {
     InFlightExchange in_flight;
     in_flight.my_rank = mpi::rank(comm);
     in_flight.active = true;
 
     auto &buffers = acquire_flat_exchange_buffers();
-    resize_flat_exchange_buffers(layout, buffers);
-    pack(in_flight.my_rank, layout, buffers.send_buffer);
-    in_flight.handle = begin_flat_exchange(layout, buffers, comm);
+    derive_layer_exchange(layer, comm, scale, buffers);
+    resize_flat_exchange_buffers(buffers.layout, buffers);
+    pack(in_flight.my_rank, buffers.layout, buffers.send_buffer);
+    in_flight.handle = begin_flat_exchange(buffers, comm);
     return in_flight;
 }
 
@@ -258,11 +297,13 @@ inline auto begin_cross_rank_derivative_exchange(const DerivativeSnapshotScratch
                                                  const LayerTraversal &layer,
                                                  const mpi::Comm &comm) -> InFlightExchange {
     // Single-rank (or no peer participating): nothing to exchange — the self slot covers everything.
-    if (active_evolution_exchange_layout(layer, comm) == nullptr) {
+    if (!layer_exchange_participates(comm)) {
         return {};
     }
     // Safe to fire before the cos pass: pack reads pre-cos snapshots and the transfer touches only buffers.
-    return begin_layer_exchange(layer.derivative_exchange_layout(),
+    // Scale 2: each rotation endpoint carries both the op and the state payload.
+    return begin_layer_exchange(layer,
+                                2,
                                 comm,
                                 [&snap, &layer](int my_rank, const LayerExchangeLayout &layout, VecD &send_buffer) {
                                     pack_cross_rank_derivative_payload_impl(snap, layer, my_rank, layout, send_buffer);
@@ -328,12 +369,12 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
 
 inline auto begin_cross_rank_evolution_exchange(VecD &op, const LayerTraversal &layer, const mpi::Comm &comm)
     -> InFlightExchange {
-    const auto *layout = active_evolution_exchange_layout(layer, comm);
-    if (layout == nullptr) {
+    if (!layer_exchange_participates(comm)) {
         return {};
     }
     return begin_layer_exchange(
-        *layout,
+        layer,
+        1,
         comm,
         [&op, &layer](int my_rank, const LayerExchangeLayout &active_layout, VecD &send_buffer) {
             pack_cross_rank_evolution_payload_impl(op, layer, my_rank, active_layout, send_buffer);
@@ -362,12 +403,16 @@ auto apply_self_slot_derivative_paired(VecD &state,
         return {};
     }
     const auto pairs = self_d_count / 2;
+    // my_rank is loop-invariant, so resolve the slot once: the four fetches below are four
+    // lookups into the P-sized record array per rotation pair otherwise, in the innermost
+    // gradient loop.
+    const auto slot = layer.cross_rank_slot(my_rank);
     EndpointContrib local{};
     for (size_t k = 0; k < pairs; ++k) {
-        const size_t i1 = layer.cross_rank_sin_recv_index_at(my_rank, k);
-        const double phi1 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k));
-        const size_t i2 = layer.cross_rank_sin_recv_index_at(my_rank, k + pairs);
-        const auto phi2 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k + pairs));
+        const size_t i1 = detail::slot_sin_recv_index(slot, k);
+        const double phi1 = static_cast<double>(detail::slot_sin_recv_phase(slot, k));
+        const size_t i2 = detail::slot_sin_recv_index(slot, k + pairs);
+        const auto phi2 = static_cast<double>(detail::slot_sin_recv_phase(slot, k + pairs));
         // Recover pre-cos values.
         const double s1 = state[i1] * trig.sec_val;
         const double h1 = op[i1] * trig.cos_val;

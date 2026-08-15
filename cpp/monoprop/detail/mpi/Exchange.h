@@ -25,10 +25,14 @@
 
 namespace monoprop::mpi {
 
-// Resolve the recv side of a send-count vector, reusing `cache` when comm size is unchanged: a
-// replayed graph's send pattern is fixed, so a hit removes one blocking count round-trip per layer
-// per evaluation.
-auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache) -> const RecvLayout &;
+// Resolve the recv side of a send-count vector, reusing `cache` when the comm size and the send
+// pattern are both unchanged: a replayed graph's send pattern is fixed, so a hit removes one
+// blocking count round-trip per layer per evaluation.
+//
+// `generation` identifies the send pattern and MUST be rank-uniform -- see RecvLayoutCache, where
+// the reason (a miss is a collective, so a split decision hangs) is spelled out.
+auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache, uint64_t generation)
+    -> const RecvLayout &;
 
 // Idempotent completion handle for a posted payload transfer; move-only, so a request is waited on
 // exactly once. wait() is a no-op on the blocking path and in non-MPI builds. Owns its request: the

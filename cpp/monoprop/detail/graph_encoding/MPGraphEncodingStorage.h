@@ -77,25 +77,62 @@ inline auto store_packed_phase(PackedPhaseStorage &storage, size_t idx, int phas
 
 auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &data) -> PackedCrossRankStorage;
 
-inline auto cross_rank_sin_send_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
-    const size_t offset = storage.ranges[rank].sin_send_offset + idx;
-    return static_cast<size_t>(storage.sin_send_indices[offset]);
+// One world slot's position in the flat B/D arrays, resolved once.
+//
+// Resolving is per-SLOT work -- an index into `ranges`, which is the array sized by the flat
+// world P. The per-element accessors below take this instead of a slot id so that walking a
+// slot's endpoints pays that cost once rather than on every endpoint. It matters more than it
+// looks: a recv endpoint reads three fields of the record, so the unhoisted form touched the
+// P-sized array three times per term. It is also the precondition for ever storing the slots
+// sparsely -- under a sparse layout resolving a slot stops being an array index, and anything
+// that resolves per term rather than per slot would become unaffordable.
+struct CrossRankSlotView final {
+    const TermIndex *sin_send_indices = nullptr; // B, already advanced to this slot's offset
+    const PackedPhaseStorage *sin_recv_phases = nullptr;
+    size_t phase_offset = 0;
+    size_t sin_send_count = 0;
+    size_t in_count = 0;
+};
+
+inline auto cross_rank_slot(const PackedCrossRankStorage &storage, size_t rank) -> CrossRankSlotView {
+    const auto &range = storage.ranges[rank];
+    return CrossRankSlotView{.sin_send_indices = storage.sin_send_indices.data() + range.sin_send_offset,
+                             .sin_recv_phases = &storage.sin_recv_phases,
+                             .phase_offset = range.sin_send_offset,
+                             .sin_send_count = range.sin_send_count,
+                             .in_count = range.in_count};
+}
+
+inline auto slot_sin_send_index(const CrossRankSlotView &slot, size_t idx) -> size_t {
+    return static_cast<size_t>(slot.sin_send_indices[idx]);
 }
 
 // Invariant B=[in(P)]++[out(Q)], D=[out(Q)]++[in(P)] (P=in_count, Q=sin_send_count-P):
 // D[idx] = (idx<Q) ? B[P+idx] : B[idx-Q]. So D is not stored (saves ~half of cross_rank).
-inline auto cross_rank_sin_recv_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
-    const auto &range = storage.ranges[rank];
-    const size_t in_count = range.in_count;                   // P
-    const size_t out_count = range.sin_send_count - in_count; // Q
-    const size_t sin_send_local = (idx < out_count) ? (in_count + idx) : (idx - out_count);
-    return cross_rank_sin_send_index(storage, rank, sin_send_local);
+inline auto slot_sin_recv_index(const CrossRankSlotView &slot, size_t idx) -> size_t {
+    const size_t out_count = slot.sin_send_count - slot.in_count; // Q
+    const size_t sin_send_local = (idx < out_count) ? (slot.in_count + idx) : (idx - out_count);
+    return slot_sin_send_index(slot, sin_send_local);
 }
 
 // The D phases run parallel to the B indices -- same count per slot, so the same prefix sum
 // addresses both. They are still separate arrays; only the offset into them is shared.
+inline auto slot_sin_recv_phase(const CrossRankSlotView &slot, size_t idx) -> int {
+    return packed_phase_at(*slot.sin_recv_phases, slot.phase_offset + idx);
+}
+
+// Single-endpoint forms, for callers that genuinely touch one endpoint of one slot. A loop
+// should resolve the slot once with cross_rank_slot() instead of calling these repeatedly.
+inline auto cross_rank_sin_send_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
+    return slot_sin_send_index(cross_rank_slot(storage, rank), idx);
+}
+
+inline auto cross_rank_sin_recv_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
+    return slot_sin_recv_index(cross_rank_slot(storage, rank), idx);
+}
+
 inline auto cross_rank_sin_recv_phase(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> int {
-    return packed_phase_at(storage.sin_recv_phases, storage.ranges[rank].sin_send_offset + idx);
+    return slot_sin_recv_phase(cross_rank_slot(storage, rank), idx);
 }
 
 auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t;
@@ -108,12 +145,24 @@ auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size
 // low occupancy would make a sparse layout pay, high occupancy means only a narrower record does.
 auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t;
 
+// Derive a layer's send layout into caller-owned scratch instead of reading a stored one.
+//
+// counts[r] = scale * (r == my_rank ? 0 : cross_rank.sin_send_size(r)), displs the prefix sum --
+// the same rule build_layer_storage_unified used to build the stored copy, so this reproduces it
+// exactly rather than approximating it. `out` is resized, not reallocated, when reused across
+// layers at a fixed world size.
+auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
+                            size_t my_rank,
+                            int scale,
+                            LayerExchangeLayout &out,
+                            const char *what = "Layer exchange") -> void;
+
 auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t;
 
-// The resolve_recv transpose cache hanging off a layout. Separate from
+// The resolve_recv transpose cache a layer retains. Separate from
 // layer_exchange_layout_storage_bytes because that function's result is already carried in a
 // shipped metric; folding this in would redefine it.
-auto layer_exchange_layout_cache_bytes(const LayerExchangeLayout &layout) -> size_t;
+auto layer_exchange_layout_cache_bytes(const mpi::RecvLayoutCache &cache) -> size_t;
 
 // Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so
 // MPI_Alltoallv skips it (replay does a local copy).
