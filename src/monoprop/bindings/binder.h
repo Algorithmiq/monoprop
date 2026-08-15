@@ -266,8 +266,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"matched_scratch_bytes", b.matched_scratch_bytes},
                                              {"total_bytes", b.total_bytes()},
                                              // Diagnostics (not part of total_bytes; see the struct).
-                                             {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
-                                             {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
+                                             {"d_invidx_bitmap_bytes", b.inverted_index_bitmap_bytes},
                                              {"d_invidx_bitmap_chunks", b.inverted_index_bitmap_chunks},
                                              {"d_invidx_delta_bytes", b.inverted_index_delta_bytes},
                                              {"d_invidx_dir_bytes", b.inverted_index_dir_bytes},

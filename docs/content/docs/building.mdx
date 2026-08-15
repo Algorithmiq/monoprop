@@ -76,8 +76,19 @@ last sealed chunk sit in a growing tail whose buffer is reserved a whole chunk a
 a time, so tail bytes grow with the chunk height, while the per-chunk directory
 grows as it shrinks. The default is the measured minimum of that sum at production
 per-partition sizes, and the minimum is interior rather than at the bottom end
-because the fold also gets slower as chunks shrink. Change it only with a memory
-measurement in hand.
+because the fold also gets slower as chunks shrink. Measured at ~226k rows per
+partition:
+
+| Chunk words | bytes/term | fold, ms/generator |
+| --- | --- | --- |
+| `128` | 7.33 | 0.0188 |
+| `256` | 7.11 | 0.0170 |
+| `512` | 7.02 | 0.0164 |
+| `1024` | 8.05 | 0.0160 |
+
+512 is the robust pick rather than merely the best one: it wins 12.8% where the
+tail dominates and loses 0.6% at 777k rows where it does not. Change it only with
+a memory measurement in hand.
 
 There is no knob for the inverted index's container choice. Every (column, chunk)
 cell goes to whichever container is smallest, and that rule is what makes the index

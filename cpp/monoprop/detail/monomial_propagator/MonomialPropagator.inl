@@ -511,13 +511,11 @@ auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
     mp_op_.shrink_state_to_fit();
     // The follower-marking scratch joins the shrink discipline the two lines above already apply.
     //
-    // The ROW STORE needs no shrink at all any more, and that is round 5's result rather than an
-    // oversight. A gated shrink_to_fit here reallocs the whole row array on each of Hubbard's 29 Trotter
-    // steps and measured `propagate` **1.030x slower, 6/6, p=0.031**, while the single-propagate
-    // kicked-Ising workload showed nothing (4/6) -- the contrast is the attribution. The fix was to stop
-    // producing the overshoot: the store now grows in fixed chunks that are never copied, so its dead
-    // capacity is bounded by one chunk instead of by half of live.
-    matched_scratch_.shrink_to_fit();
+    // The row store is deliberately absent from this list. Shrinking it here reallocs the whole row
+    // array on each of Hubbard's 29 Trotter steps and measured `propagate` 1.030x slower, 6/6,
+    // p=0.031. It grows in fixed chunks that are never copied instead, so its dead capacity is bounded
+    // by one chunk and there is nothing left to hand back.
+    matched_scratch_.shrink_if_slack();
 }
 
 template <size_t NumModes>

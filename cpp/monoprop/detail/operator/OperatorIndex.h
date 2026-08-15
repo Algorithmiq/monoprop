@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -42,16 +43,14 @@ public:
 // plus a branch there to save capacity only on operators small enough for their absolute footprint not
 // to matter. Trades one whole chunk of quantized slack per partition for never copying a row on growth.
 //
-// 4096 is measured, not guessed. The cost of chunking is the chunk TABLE's L1 footprint, not the extra
-// dependent load: sweeping 1024/2048/4096/8192 moves Hubbard `propagate` 1.0248/1.0228/1.0158/1.0155x,
-// i.e. it plateaus once the table stops competing for L1 (3.2 KB at 4096 on Hubbard's 1.66M rows per
-// partition). Past 4096 the curve is flat and only the quantized slack grows, which is why this is the
-// operating point and not 8192.
+// 4096 is measured. The cost of chunking is the chunk TABLE's L1 footprint rather than the extra
+// dependent load, so the sweep plateaus once that table stops competing for L1; past 4096 the curve is
+// flat and only the quantized slack grows.
 //
-// There is a third term the sweep did not isolate: allocator packing. Going 2048 -> 4096 took kicked
-// Ising c14's peak RSS 2,657,232 -> 2,576,992 KB, 78 MB BETTER, where the quantized slack predicted
-// ~1.4 MB worse. Chunks land under glibc's 128 KB mmap threshold, so they come off the heap and the
-// smaller ones fragment it harder. Do not reason about this constant from the slack alone.
+// Do not re-derive this constant from the slack arithmetic alone. Allocator packing is a third term and
+// it is the larger one: 2048 -> 4096 took kicked Ising c14's peak RSS 78 MB BETTER where the quantized
+// slack predicted ~1.4 MB worse, because chunks land under glibc's 128 KB mmap threshold and the
+// smaller ones fragment the heap harder.
 //
 // Deliberately NOT a CMake cache variable, unlike monoprop_INVIDX_CHUNK_WORDS: 4096 and 8192 differ by
 // 0.03% and everything below is strictly worse, so there is no workload-dependent trade for a user to
@@ -116,7 +115,8 @@ public:
         out->reserve_rows(size_);
         for (size_t i = 0; i < size_; i += kChunkRows) {
             const size_t n = std::min(kChunkRows, size_ - i);
-            std::memcpy(out->chunks_[i >> kChunkShift].get(), chunks_[i >> kChunkShift].get(),
+            std::memcpy(out->chunks_[i >> kChunkShift].get(),
+                        chunks_[i >> kChunkShift].get(),
                         n * stride_ * sizeof(PosT));
         }
         out->size_ = size_;
@@ -124,7 +124,7 @@ public:
         out->reserve_index(table_.count);
         // The stored fingerprint is not a hash, so the clone rebuilds each entry's hash from the row
         // it already copied. Clone runs off a quiescent store and is rare; this is not a hot path.
-        for (size_t s = 0; s < table_.slots; ++s) {
+        for (size_t s = 0; s < slot_count_(); ++s) {
             if (slot_fp_(s) != 0) {
                 const size_t i = slot_idx_(s);
                 out->insert_slot_(static_cast<TermIndex>(i), spread(fold_hash(row(i))));
@@ -252,10 +252,8 @@ public:
                 __builtin_prefetch(slot_addr_(sp[j] & table_.mask), 0, 0);
             }
             for (size_t j = 0; j < g; ++j) {
-                cand[j] = kNoSlot;
-                if (table_.count == 0) {
-                    continue;
-                }
+                // No empty-table guard: an all-zero buffer has no set fingerprint, so the probe below
+                // already returns kNoSlot on the first slot it reads.
                 cand[j] = probe_fp_match_(fingerprint(sp[j]), sp[j] & table_.mask);
                 if (cand[j] != kNoSlot) {
                     // One extra load (the chunk pointer) now sits in front of this address. The chunk
@@ -283,7 +281,10 @@ public:
 
     // Insert-or-no-op. Row at `value` must already be written: the confirm reads dense rows, and since
     // the table stores a fingerprint rather than a hash, so does every rehash this insert may trigger.
+    // The assert is not decoration -- rehash_to_ sizes its live-index bitmap from size_, so an index at
+    // or past it is an out-of-bounds write on the *next* rehash rather than a wrong answer here.
     auto emplace(const key_type &key, mapped_type value) -> void {
+        assert(value < size_);
         check_index_fits(value);
         const size_t sp = spread(fold_hash(key));
         const uint8_t f = fingerprint(sp);
@@ -304,6 +305,7 @@ public:
         if (n == 0) {
             return;
         }
+        assert(base + n <= size_); // same bitmap-sizing precondition as emplace
         check_index_fits(base + n - 1);
         for (size_t k = 0; k < n; ++k) {
             insert_slot_(static_cast<TermIndex>(base + k), spread(fold_hash(key_at(k))));
@@ -311,7 +313,7 @@ public:
     }
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
-        for (size_t s = 0; s < table_.slots; ++s) {
+        for (size_t s = 0; s < slot_count_(); ++s) {
             if (slot_fp_(s) != 0) {
                 const size_t i = slot_idx_(s);
                 fn(row(i), i);
@@ -322,11 +324,10 @@ public:
     // hold. Bounded by kChunkRows-1 rows regardless of operator size, where the 1.5x flat vector this
     // replaced carried up to half of live (measured 4.1-6.0 B/term across the benchmark workloads).
     //
-    // There is deliberately no shrink_rows_to_fit() any more. It existed to hand back geometric
-    // overshoot at a quiescent point, and a gated shrink could never win: any rule leaving low slack at
-    // rest has to fire near the end of a build, and "the end" is not observable to the library -- it
-    // measured 1.030x on Hubbard propagate (6/6, p=0.031) and was left uncalled. Bounding the overshoot
-    // at the source removes both the slack and the mechanism.
+    // Deliberately no shrink_rows_to_fit(). A gated shrink could never win: any rule leaving low slack
+    // at rest has to fire near the end of a build, and "the end" is not observable to the library -- it
+    // measured 1.030x on Hubbard propagate (6/6, p=0.031). Bounding the overshoot at the source removes
+    // both the slack and the mechanism.
     [[nodiscard]] auto slack_bytes() const -> size_t {
         return (capacity() - std::min(capacity(), size_)) * stride_ * sizeof(PosT);
     }
@@ -336,7 +337,7 @@ public:
     // Diagnostics on the dedup table's realised sizing: the slot count is what indexing_bytes is
     // really measuring, and occupancy is entries/slots. Exposed so the load-factor ceiling can be
     // pinned by a test rather than asserted in a comment.
-    [[nodiscard]] auto index_slot_count() const -> size_t { return table_.slots; }
+    [[nodiscard]] auto index_slot_count() const -> size_t { return slot_count_(); }
     [[nodiscard]] auto index_entry_count() const -> size_t { return table_.count; }
 
 private:
@@ -376,63 +377,32 @@ private:
         return static_cast<size_t>(x);
     }
 
-    // One open-addressing table: power-of-2 slot count, linear probing, max load factor 0.7
-    // (the group-prefetch win erodes at high load — longer probe chains add un-prefetched reads).
+    // One open-addressing table: power-of-2 slot count, linear probing, max load factor 0.7 (the
+    // group-prefetch win erodes at high load, since longer probe chains add un-prefetched reads).
     //
-    // The power of 2 is deliberate and was re-measured, because it looks like pure waste: `bit_ceil`
-    // against a 0.7 threshold leaves the realised load anywhere in [0.35, 0.7], and this table is the
-    // largest structure in the operator, so the overshoot is worth ~4 B/term. Sizing the table exactly
-    // and range-reducing with a multiply-shift instead of this mask was built and measured: it does
-    // deliver the memory (index 20.18 → 16.32 B/term on Hubbard, 18.51 → 14.91 on the 29M-term
-    // Majorana point, 7% of the whole operator) and it costs **`propagate` 1.015× on Hubbard and
-    // 1.019× on kicked Ising, both 6/6, p=0.031**.
+    // Two levers on this table were built, measured and rejected. Neither should be re-proposed without
+    // a workload that behaves differently from both benchmark models:
     //
-    // The cost is not the multiply, it is the density the memory win is made of: linear-probe chain
-    // length goes as (1 + 1/(1-α))/2, so moving Hubbard's load from 0.396 to 0.490 buys 7% of the
-    // operator with 11% more probe steps on hits and 29% more on misses.
+    //   * Occupancy -- exact sizing with a multiply-shift instead of the mask. It delivers the memory
+    //     (7% of the whole operator, 21.4% stacked on the narrow slot) and costs `propagate` 1.015x to
+    //     1.056x and `build_graph` 1.072x, 6/6. The win is not in the sizing arithmetic but in the 1.5x
+    //     growth factor it needs, which takes rehash work from 2n to 3n; at 2x growth exact sizing lands
+    //     in the same load band `bit_ceil` does, and can land worse.
+    //   * Splitting the slot into parallel fp[] and idx[] arrays, on Swiss-table reasoning. Costs
+    //     `propagate` 1.036x, 6/6. A wide fp scan has nothing to amortise at this density: chains are
+    //     1-2 slots, so a probe never reads a second fp byte, while every hit now touches two lines
+    //     where the interleaved record touches one. Do not split fp[] from idx[].
     //
-    // It was then tried a second time STACKED on the narrow slot below, where the two levers are
-    // orthogonal — one sets slots per term, the other bytes per slot — and it reached index 20.18 →
-    // 9.12 B/term on Hubbard, 21.4% of the whole operator, for `propagate` 1.024×. It still loses, on
-    // the other model: kicked Ising `propagate` **1.056×** and `build_graph` **1.072×**, 6/6, while its
-    // load barely moved (0.633 → 0.623) because `bit_ceil` had already dealt that workload a good
-    // number. All of the cost, none of the win — the same row that went backwards the first time.
-    //
-    // The cost is carried by the **1.5× growth factor**, which is what bounds the load band to
-    // [0.467, 0.7] and is therefore inseparable from the win: it takes rehash work from 2n to 3n and
-    // the number of resizes from ~18 to ~30, each re-materialising every live row AND reallocating a
-    // multi-megabyte buffer. Dropping back to 2× growth to pay for it was measured too (exact sizing
-    // and multiply-shift retained) and collects **nothing**: load came back 0.396 → 0.396, 0.633 →
-    // 0.633, 0.426 → 0.426, and 0.432 → 0.363 on the Majorana point — i.e. once growth doubles, exact
-    // sizing lands in the same band `bit_ceil` does, and can land worse. The occupancy win lives
-    // entirely in the growth factor, not in the sizing arithmetic, and it is not affordable.
-    //
-    // Narrowing the slot is the opposite trade — fewer bytes at constant α — and it is what shipped.
-    //
-    // The slot is 1 + sizeof(TermIndex) bytes — a fingerprint byte in place of the 4-byte hash — and the
-    // two fields are **interleaved**, one record per slot, not split into parallel arrays.
-    //
-    // Splitting them was built and measured first, on the Swiss-table reasoning that a miss should walk
-    // a 1-byte-per-slot array (64 slots to a line instead of 8). It delivers exactly the predicted
-    // memory — index 20.18 → 12.61 B/term on Hubbard, 18.51 → 11.57 on the 29M-term Majorana point —
-    // and it costs **`propagate` 1.036× on Hubbard (6/6, p=0.031) and `build_graph` 1.036× on kicked
-    // Ising (6/6)**. The reason is that the fp scan has nothing to amortise here: this table is sized
-    // to ≤0.7 load and realises α ∈ [0.35, 0.7], where chains are 1–2 slots, so a probe never reads a
-    // second fp byte — while every hit now touches two cache lines, fp's and idx's, where the 8-byte
-    // slot touched one. The wide-scan win needs the α ≈ 0.875 a Swiss table runs at; at this density
-    // the split is pure added traffic on the operator's hottest random-access structure.
-    //
-    // Interleaved, a slot's fingerprint and index are 5 consecutive bytes, so the probe and the confirm
-    // land on one line (a record straddles a boundary 4 times in 64) — the base layout's line count at
-    // 5/8 of its bytes. The unaligned index is read and written by memcpy from a raw byte array rather
-    // than through a packed struct member: GCC lowers packed-member access to byte-wise reads on
-    // aarch64 and this project builds for both partitions of Deucalion, whereas the memcpy form is a
-    // single load on both. (Confirmed on x86-64 GCC 14.3: both forms emit one `movl`.)
+    // Narrowing the slot is the opposite trade -- fewer bytes at constant load -- and it is what
+    // shipped. The index is read and written by memcpy from a raw byte array rather than through a
+    // packed struct member: GCC lowers packed-member access to byte-wise reads on aarch64, and this
+    // project builds for both partitions of Deucalion.
     struct Table {
         // One interleaved record per slot: [fingerprint][TermIndex]. fp == 0 marks an empty slot, so a
         // zero-filled buffer is an empty table and the probe never needs a separate index sentinel.
         std::vector<uint8_t> buf = std::vector<uint8_t>(kMinSlots * kSlotBytes, 0);
-        size_t slots = kMinSlots;
+        // Slot count is carried as the probe mask, the form every hot path wants; slot_count_() derives
+        // the other. Keeping both invited them to disagree.
         size_t mask = kMinSlots - 1;
         size_t count = 0;
     };
@@ -449,6 +419,9 @@ private:
         const auto f = static_cast<uint8_t>(sp >> 56);
         return f == 0 ? uint8_t{1} : f;
     }
+
+    // The table is a power of two, so the slot count is the mask plus one rather than a stored field.
+    [[gnu::always_inline]] auto slot_count_() const noexcept -> size_t { return table_.mask + 1; }
 
     // Slot record access. The index is unaligned by construction, so it goes through memcpy — see the
     // Table comment for why that and not a packed struct member.
@@ -468,49 +441,36 @@ private:
     }
 
     auto rehash_if_needed_() -> void {
-        if ((table_.count + 1) * 10 >= table_.slots * 7) {
-            rehash_to_(table_.slots * 2);
+        if ((table_.count + 1) * 10 >= slot_count_() * 7) {
+            rehash_to_(slot_count_() * 2);
         }
     }
-    // An 8-bit fingerprint cannot survive a resize: the new home bucket needs a hash bit the slot does
-    // not carry, so every live row's hash is recomputed from the row itself. That recompute is not a
-    // rounding error and it is where nearly all of this layout's cost lives. A null-control arm that
-    // stored the hash and skipped it — a 9-byte slot, wider than the 8-byte baseline and therefore
-    // unshippable — measured **1.004×** against the baseline where the same layout with a slot-order
-    // recompute measured 1.024×. Four fifths of the narrowing penalty was this one loop.
+    // An 8-bit fingerprint cannot survive a resize -- the new home bucket needs a hash bit the slot does
+    // not carry -- so every live row's hash is recomputed from the row itself. That recompute is where
+    // nearly all of the narrow slot's cost lives, and both sides of it have to stay overlapped:
     //
-    // Both sides of the move have to be overlapped, and each was got wrong once:
+    //   * Reads run in index order, not old-slot order, so they are one sequential stream over a row
+    //     store far larger than L3. Chunking does not break that: ascending indices walk each chunk
+    //     start to finish. The live set rides in a bitmap filled by a sequential walk of the old table.
+    //   * Writes are prefetched a group ahead, because index order gives up the near-sequential write
+    //     pattern old-slot order had for free (under doubling a slot's new home is its old home with at
+    //     most one bit set above the old mask). Dropping the prefetch measured 1.037x against 1.024x --
+    //     the scattered writes cost more than the scattered reads saved.
     //
-    //   * Reads. Visiting live entries in old-slot order scatters the row reads at random across a row
-    //     store far larger than L3. Term indices are dense in [0, size_), so the same rows are
-    //     visited in index order instead and the read side becomes one sequential stream. Chunking the
-    //     row store does not break that: ascending indices walk each chunk start to finish, so the
-    //     stream restarts once per kChunkRows rather than being scattered. The live set
-    //     rides in a bitmap — one bit per term, 3.3 MB at 26.6M terms, cache-resident — filled by a
-    //     sequential walk of the old table.
-    //   * Writes. Old-slot order was not arbitrary: under doubling a slot's new home is its old home
-    //     with at most one bit set above the old mask, so walking old slots in order wrote the new
-    //     table in two interleaved ascending runs, i.e. nearly sequentially. Index order gives that up,
-    //     and on Hubbard that trade ALONE measured 1.037× against 1.024× — the scattered writes cost
-    //     more than the scattered reads saved. So the hash is computed a group ahead and each entry's
-    //     destination line is prefetched for write.
-    //
-    // With both overlapped the penalty is 1.017×, against the 1.004× floor; what remains is arithmetic,
-    // not stalls — materialising each row and hashing it, ~53M times over a Hubbard build.
+    // With both overlapped the penalty is 1.017x, and what remains is arithmetic rather than stalls.
     //
     // Rebuilding in index order changes insertion order into the table. That is legal: the determinism
     // contract is bit-identity at fixed (R, S), which no table ordering participates in, and nothing
     // serializes or iterates this table for output.
     auto rehash_to_(size_t new_cap) -> void {
         new_cap = std::bit_ceil(std::max<size_t>(new_cap, kMinSlots));
-        if (new_cap <= table_.slots) {
+        if (new_cap <= slot_count_()) {
             return;
         }
         const std::vector<uint8_t> old_buf = std::move(table_.buf);
-        const size_t old_slots = table_.slots;
+        const size_t old_slots = slot_count_();
         const size_t old_count = table_.count;
         table_.buf.assign(new_cap * kSlotBytes, uint8_t{0});
-        table_.slots = new_cap;
         table_.mask = new_cap - 1;
         table_.count = 0;
         if (old_count == 0) {

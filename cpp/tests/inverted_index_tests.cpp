@@ -160,7 +160,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_picks_the_smallest_container_per_chunk) {
     // The arena replaced std::vector's doubling precisely so unused capacity stays bounded.
     const auto stats = sc.stats();
     BOOST_TEST(stats.bitmap_chunks == 4U); // modes 0 and 4, once sealed and once in the tail
-    BOOST_TEST(stats.arena_slack_bytes <= sc.arena_.size() / 8 + 8);
+    BOOST_TEST(stats.arena_slack_bytes <= sc.arena_bytes() / 8 + 8);
 }
 
 // Every fill path appends in row order, so a column's rows come out ascending whichever container holds
@@ -285,7 +285,7 @@ BOOST_AUTO_TEST_CASE(combine_columns_block_folds_every_container_identically) {
         for (const auto &split : splits) {
             // Pre-dirtied: the kernel seeds, never accumulates.
             std::vector<uint64_t> got(kMixedWords, 0xdeadbeefULL);
-            for (const auto [bb, be] : split) {
+            for (const auto &[bb, be] : split) {
                 combine_columns_block<N>(sc, cols, got.data() + bb, bb, be);
             }
             BOOST_TEST(got == expected, boost::test_tools::per_element());

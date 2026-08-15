@@ -318,12 +318,13 @@ struct MPOperatorMemoryBreakdown final {
 
     // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
     // never double-count.
-    size_t inverted_index_dense_bytes = 0;  // of inverted_index_bytes: chunk-height bitmap payloads
-    size_t inverted_index_sparse_bytes = 0; // of inverted_index_bytes: posting-container payloads
+    // Named for the containers they measure. The pre-chunking layout called these dense/sparse, but the
+    // index has no tier any more -- every (column, chunk) cell picks its own container.
+    size_t inverted_index_bitmap_bytes = 0; // of inverted_index_bytes: chunk-height bitmap payloads
     size_t inverted_index_bitmap_chunks = 0;
-    size_t inverted_index_delta_bytes = 0; // of inverted_index_sparse_bytes: the byte-delta payloads
+    size_t inverted_index_delta_bytes = 0; // of inverted_index_bytes: the byte-delta payloads
     size_t inverted_index_dir_bytes = 0;   // the chunk directory: this layout's fixed per-chunk overhead
-    size_t inverted_index_tail_bytes = 0;  // of inverted_index_sparse_bytes: the unsealed growing chunk
+    size_t inverted_index_tail_bytes = 0;  // of inverted_index_delta_bytes: the unsealed growing chunk
     size_t inverted_index_arena_slack_bytes = 0;
     size_t operator_terms_slack_bytes = 0; // of operator_terms_bytes: unused geometric-growth capacity
     // of state_coeffs_bytes: entries of the state that are not exactly 0.0
@@ -348,8 +349,7 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_bytes += o.inverted_index_bytes;
         matched_scratch_bytes += o.matched_scratch_bytes;
         init_operator_entries += o.init_operator_entries;
-        inverted_index_dense_bytes += o.inverted_index_dense_bytes;
-        inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
+        inverted_index_bitmap_bytes += o.inverted_index_bitmap_bytes;
         inverted_index_bitmap_chunks += o.inverted_index_bitmap_chunks;
         inverted_index_delta_bytes += o.inverted_index_delta_bytes;
         inverted_index_dir_bytes += o.inverted_index_dir_bytes;
@@ -377,8 +377,7 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
     if (op.inverted_index_.has_value()) {
         breakdown.inverted_index_bytes = op.inverted_index_->memory_bytes();
         const auto s = op.inverted_index_->stats();
-        breakdown.inverted_index_dense_bytes = s.bitmap_bytes;
-        breakdown.inverted_index_sparse_bytes = s.posting_bytes;
+        breakdown.inverted_index_bitmap_bytes = s.bitmap_bytes;
         breakdown.inverted_index_bitmap_chunks = s.bitmap_chunks;
         breakdown.inverted_index_delta_bytes = s.delta_bytes;
         breakdown.inverted_index_dir_bytes = s.dir_bytes;

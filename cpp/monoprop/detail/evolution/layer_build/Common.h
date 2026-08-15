@@ -29,11 +29,10 @@ namespace monoprop::detail {
 // Marks matched followers without a per-gate O(n) memset: one counter bump clears every mark. Reused
 // across gates.
 struct MatchedEpochSet {
-    // The stamp is 16-bit, not 32-bit. It is one entry per term, so at 4 bytes it measured 6.0 B/term
-    // with growth overshoot -- ~10% of the whole operator, and larger than the inverted index. Halving
-    // it costs one O(n) fill per 65535 gates instead of one per 2^32, which even the largest benchmark
-    // circuit (~10^4 layers per propagate) reaches at most once every few calls. The width is the only
-    // thing that changes: a stamp is never compared against anything but cur_.
+    // The stamp is 16-bit, not 32-bit: it is one entry per term, so at 4 bytes it measured 6.0 B/term
+    // with growth overshoot, larger than the whole inverted index. Halving it costs one O(n) fill per
+    // 65535 gates instead of one per 2^32. The width is the only thing that changes -- a stamp is never
+    // compared against anything but cur_.
     using Stamp = uint16_t;
 
     std::vector<Stamp> epoch_;
@@ -55,10 +54,12 @@ struct MatchedEpochSet {
     // One stamp per term, so this tracks the operator: it belongs in the memory breakdown even though
     // it is propagator scratch rather than operator state. Nothing counted it before round 3.
     [[nodiscard]] auto memory_bytes() const -> size_t { return epoch_.capacity() * sizeof(Stamp); }
-    // Bounded-slack rule: leave capacity alone below a 12.5% margin so this costs one realloc per
-    // quiescent point rather than one per layer. A flat vector, so unlike the row store it still needs it.
-    auto shrink_to_fit() -> void {
-        if (epoch_.capacity() > epoch_.size() + (epoch_.size() / 8)) {
+    // Deliberately not named shrink_to_fit: unlike the vector member it wraps, this is conditional, and
+    // leaves capacity alone below a 12.5% margin so it costs one realloc per quiescent point rather than
+    // one per layer. A flat vector, so unlike the chunked row store it still needs a shrink at all.
+    static constexpr size_t kSlackDen = 8;
+    auto shrink_if_slack() -> void {
+        if (epoch_.capacity() > epoch_.size() + (epoch_.size() / kSlackDen)) {
             epoch_.shrink_to_fit();
         }
     }
