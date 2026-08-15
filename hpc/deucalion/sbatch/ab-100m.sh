@@ -216,7 +216,13 @@ echo "=== paired summary ==="
 # pipefail does not catch it either: tee exits 0 and creates the file regardless, so the
 # python side's status has to be read out of PIPESTATUS. stderr is folded into the pipe so
 # the reason lands in the summary a reader is looking at, not in a second file.
-"$PORT_VENV/bin/python" hpc/deucalion/tools/ab_summary.py "$RESULTS" 2>&1 \
+# --allow-both-placed: the refusal it suppresses is written for a branch where placement IS
+# the change under test, and there a baseline that places means the venv is not the build it
+# is labelled as. Neither arm here touches placement, so both arms placing is the CORRECT
+# outcome and refusing on it would reject every good run. Every other refusal stays armed --
+# in particular the term-count and neither-arm-placed ones, which is what actually caught the
+# --cpu-bind=cores bug.
+"$PORT_VENV/bin/python" hpc/deucalion/tools/ab_summary.py --allow-both-placed "$RESULTS" 2>&1 \
     | tee "$RESULTS/AB-SUMMARY.md"
 summary_rc=${PIPESTATUS[0]}
 if [ "$summary_rc" -ne 0 ]; then
