@@ -46,13 +46,19 @@ import statistics
 import sys
 from pathlib import Path
 
-# time-N2_B_8x16_fresh_port_r3.json -> nodes 2, layout "B_8x16", group "fresh", side "port"
+# time-N2_B_8x16_fresh_port_r3.json          -> nodes 2, layout "B_8x16", no model
+# time-N1_B_8x16_hubbard_fresh_port_r3.json  -> the same, model "hubbard"
 #
 # Anchored on the layout's own shape rather than a greedy `.+`: with the group appended, a
 # greedy layout group swallows "B_8x16_fresh" and every cell lands in its own table.
+#
+# The model segment is optional so the random-problem runs (ab-100m.sh) keep parsing
+# unchanged; models-ab.sh emits it, and it becomes part of the table key. Without it every
+# model in a campaign directory collates into one table and the ratios average across
+# workloads that are not comparable.
 LABEL_RE = re.compile(
-    r"^(?P<nodes>\d+)_(?P<layout>[A-Z]_\d+x\d+)_(?P<group>fresh|graph)"
-    r"_(?P<side>main|port)_r(?P<rep>\d+)$"
+    r"^(?P<nodes>\d+)_(?P<layout>[A-Z]_\d+x\d+)(?:_(?P<model>[a-z][a-z0-9]*))?"
+    r"_(?P<group>fresh|graph)_(?P<side>main|port)_r(?P<rep>\d+)$"
 )
 
 # Above/below these the difference is called out rather than left for the reader to spot.
@@ -91,7 +97,10 @@ def short_op(op: str) -> str:
     The full key is kept everywhere it is used to join the two artifact families; only the
     table shows this, because the shared prefix pushes every number off the screen.
     """
-    return op.rsplit("::", maxsplit=1)[-1].removeprefix("test_random_")
+    name = op.rsplit("::", maxsplit=1)[-1]
+    for prefix in ("test_random_", "test_model_"):
+        name = name.removeprefix(prefix)
+    return name
 
 
 def label_of(path: Path) -> re.Match[str] | None:
@@ -101,7 +110,7 @@ def label_of(path: Path) -> re.Match[str] | None:
 
 
 class Cell:
-    """One (nodes, layout, group, side, rep) run's timing and memory artifacts."""
+    """One (nodes, layout, model, group, side, rep) run's timing and memory artifacts."""
 
     def __init__(self, match: re.Match[str]) -> None:
         """Record the label fields; payloads are attached as the files are read."""
@@ -109,8 +118,14 @@ class Cell:
         self.side = match["side"]
         self.rep = int(match["rep"])
         self.layout = match["layout"]
+        self.model = match["model"] or ""
         self.times: dict[str, dict[str, float]] = {}
         self.results: dict[str, dict] = {}
+
+    @property
+    def table_key(self) -> tuple[int, str, str]:
+        """The table this cell belongs in. Cells from different keys must not be pooled."""
+        return (self.nodes, self.layout, self.model)
 
 
 def collect(results_dir: Path) -> tuple[dict[str, Cell], list[str]]:
@@ -231,12 +246,16 @@ def ratio_of(port: float | None, main: float | None) -> float | None:
     return port / main
 
 
-def emit_table(nodes: int, cells: list[Cell], flagged: list[str]) -> None:
-    """Print one node count's operation table."""
+def emit_table(
+    key: tuple[int, str, str], cells: list[Cell], flagged: list[str]
+) -> None:
+    """Print one (nodes, layout, model) operation table."""
+    nodes, layout, model = key
     by_side = {side: [c for c in cells if c.side == side] for side in ("main", "port")}
     ops = sorted({op for cell in cells for op in cell.times}, key=op_rank)
 
-    print(f"## N={nodes}\n")
+    where = f"N={nodes} / {layout}" + (f" / {model}" if model else "")
+    print(f"## {where}\n")
     headers = [
         "operation",
         "main med (ms)",
@@ -304,7 +323,7 @@ def emit_table(nodes: int, cells: list[Cell], flagged: list[str]) -> None:
         spread = max(ratios) / min(ratios) if ratios and min(ratios) > 0 else 1.0
         if compared and agree < compared and spread > REGRESS + 0.15:
             flagged.append(
-                f"- `N={nodes}` / `{short_op(op)}` / time: **unresolved** -- only "
+                f"- `{where}` / `{short_op(op)}` / time: **unresolved** -- only "
                 f"{agree} of {compared} reps agree on a direction, spread {spread:.1f}x "
                 f"(per-rep {', '.join(f'{r:.2f}' for r in ratios)})"
             )
@@ -320,7 +339,7 @@ def emit_table(nodes: int, cells: list[Cell], flagged: list[str]) -> None:
             ):
                 direction = "slower/larger" if ratio >= REGRESS else "faster/smaller"
                 flagged.append(
-                    f"- `N={nodes}` / `{short_op(op)}` / {name}: "
+                    f"- `{where}` / `{short_op(op)}` / {name}: "
                     f"{ratio:.2f}x {direction} ({extra})"
                 )
     print()
@@ -483,8 +502,8 @@ def main(argv: list[str]) -> int:
 
     refusals = check_provenance(cells, allow_both_placed="--allow-both-placed" in argv)
     flagged: list[str] = []
-    for nodes in sorted({cell.nodes for cell in cells.values()}):
-        emit_table(nodes, [c for c in cells.values() if c.nodes == nodes], flagged)
+    for key in sorted({cell.table_key for cell in cells.values()}):
+        emit_table(key, [c for c in cells.values() if c.table_key == key], flagged)
 
     print("## Flagged\n")
     if flagged:
