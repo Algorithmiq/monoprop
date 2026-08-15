@@ -304,6 +304,9 @@ flake8-annotations.allow-star-arg-any = true
 "benches/bench_*.py" = ["ANN"]
 # cupy is an optional, GPU-only dependency of a separate uv project (benches/third_party);
 "benches/_memory_gpu.py" = ["PLC0415"]
+# cluster tooling: standalone scripts a job script runs by path, so the directory is an
+# intentional non-package (INP001), and the report they print IS their output (T201).
+"hpc/**/*.py" = ["INP001", "T201"]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,
