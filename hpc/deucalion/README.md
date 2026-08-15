@@ -16,12 +16,15 @@ Companion files:
 | --- | --- |
 | [§10 Running monoprop here](#10-running-monoprop-here) | Building and launching monoprop: toolchain choice, rank/partition layout, the A/B procedure |
 | [RESULTS-layout-bakeoff.md](RESULTS-layout-bakeoff.md) | Which `R × S` layout to use, measured. Short answer: 8 ranks/node × 16 partitions |
-| [RESULTS-scaling.md](RESULTS-scaling.md) | Strong and weak scaling, and the defect that currently stops monoprop scaling across nodes. **Read before planning any multi-node run** |
+| [RESULTS-scaling.md](RESULTS-scaling.md) | Strong and weak scaling, and the defect that currently stops monoprop scaling across nodes. **Read before planning any multi-node run** — §4's axis and mechanism are corrected in place by the file below |
+| [RESULTS-graph-world-size.md](RESULTS-graph-world-size.md) | The graph's memory is quadratic in the **flat world size `P = ranks × partitions`**, not in the rank count. **Read before choosing a layout for a large run**: the same core count at a smaller `S` costs quadratically less graph |
 | [RESULTS-threading-baseline.md](RESULTS-threading-baseline.md) | The placement/barrier fixes, measured before and after, at 0.8M and 29M terms |
 | [RESULTS-ab-100m.md](RESULTS-ab-100m.md) | Branch vs `main` at **100M terms**, time and memory, 1 and 2 nodes. **The most current numbers here** — and the size at which the placement fix stops paying for itself |
+| [RESULTS-port-ab.md](RESULTS-port-ab.md) | The `perf/multinode-comm-scaling` A/B, and the unpinned-layout finding that voided its first run |
+| [RESULTS-invidx-memory.md](RESULTS-invidx-memory.md) | The inverted-index memory work: what shipped, and the rounds that were measured and rejected |
 | `env.sh` | Module loads and exports; sourced by every build and job script. A **runtime** requirement, not just build-time |
-| `sbatch/` | `build-worktree.sh` (build one checkout), `mpi-tests-worktree.sh` (correctness), `ab-100m.sh` (the time+memory A/B) |
-| `tools/` | `mpi_sanity.py` (smoke-test a fresh venv), `ab_summary.py` (render and gate an A/B run) |
+| `sbatch/` | `build-worktree.sh` (build one checkout), `mpi-tests-worktree.sh` (correctness), `ab-100m.sh` (the time+memory A/B), `campaign.sh` (the fixed-model waves) |
+| `tools/` | `mpi_sanity.py` (smoke-test a fresh venv), `ab_summary.py` (render and gate an A/B run), `campaign_summary.py` (collate a campaign), `graph_world_report.py` (graph memory against `P`) |
 
 ---
 

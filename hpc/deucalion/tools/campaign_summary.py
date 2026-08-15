@@ -79,6 +79,57 @@ LEDGER_FIELDS = (
 )
 PORT_ONLY_IN_TOTAL = "matched_scratch_bytes"
 
+# The graph ledger. Deliberately NOT normalised by terms the way the operator ledger is: these
+# fields scale with the flat world size P = ranks x partitions, not with the operator, so
+# bytes-per-term would divide the effect away and print a shrinking number for a growing cost.
+# Reported as raw GiB against P instead.
+#
+# The `d_` fields are diagnostics that total_bytes has never included -- see
+# GraphMemoryBreakdown, which keeps them out on purpose so `graph` means the same thing across
+# builds. slot_record is the part of cross_rank sized by the world rather than by the traffic;
+# recv_cache and derivative_layout are resident memory the total has never counted, which is why
+# the reported graph sits below RSS.
+GRAPH_FIELDS = (
+    "cross_rank_bytes",
+    "exchange_layout_bytes",
+    "cos_data_bytes",
+    "layer_descriptor_bytes",
+    "total_bytes",
+    "d_slot_record_bytes",
+    "d_recv_cache_bytes",
+    "d_derivative_layout_bytes",
+)
+
+
+def graph_field(cells: list, field: str) -> float | None:
+    """Return one arm's median bytes for one graph-ledger field.
+
+    Absent on any build predating the graph_memory_breakdown binding, which includes every
+    `main` arm -- conftest records nothing rather than zeros there, so an absent instrument and
+    a genuinely flat field cannot be confused. None means "not reported", not "zero".
+    """
+    values = [
+        fields[field]
+        for cell in cells
+        for _op, fields in (cell.results.get("graphmembreak") or {}).items()
+        if field in fields
+    ]
+    return medians(values)
+
+
+def graph_occupancy(cells: list) -> tuple[float | None, int | None]:
+    """(occupied fraction, layer cores) for one arm, or (None, None) if unreported.
+
+    Occupancy is the number that decides whether a sparse slot layout would pay; nothing
+    reported it before this instrument existed.
+    """
+    slots = graph_field(cells, "d_slot_records")
+    occupied = graph_field(cells, "d_occupied_slots")
+    cores = graph_field(cells, "d_layer_cores")
+    if not slots or occupied is None:
+        return None, None
+    return occupied / slots, int(cores) if cores else None
+
 
 def ledger_bpt(cells: list, field: str) -> float | None:
     """Return one arm's median bytes-per-term for one ledger field.
@@ -168,6 +219,14 @@ class Point:
         first = next(iter(self.cells.values()), None)
         self.nodes = first.nodes if first else 0
         self.layout = first.layout if first else "?"
+        # The flat world size, which is the axis the graph ledger lives on. Not a config field:
+        # it is ranks x partitions, and `monoprop_threads` is where the partition count is
+        # recorded. 0 when unrecorded, so a graph table can say so rather than print a wrong P.
+        meta = first.results.get("meta", {}) if first else {}
+        try:
+            self.world = int(meta.get("ranks", 0)) * int(meta.get("monoprop_threads", 0))
+        except (TypeError, ValueError):
+            self.world = 0
 
     @property
     def ok(self) -> bool:
@@ -384,6 +443,69 @@ def emit_ledger(model: str, points: list[Point], axis: list[str]) -> None:
         )
 
 
+def emit_graph_ledger(model: str, points: list[Point], axis: list[str]) -> None:
+    """Print one model's graph-memory table, in GiB against the flat world size P.
+
+    Separate from the operator ledger because it lives on a different axis. The operator
+    partitions -- it is flat in P at a fixed problem -- while the graph is the half that does
+    not, and its per-layer arrays are indexed by P = ranks x partitions. Printing the two in
+    one table invites reading a P-driven growth as a term-driven one, which is the mistake
+    RESULTS-scaling.md section 4 made.
+    """
+    reported = [p for p in points if graph_field(list(p.cells.values()), "total_bytes") is not None]
+    if not reported:
+        return
+
+    print(f"\n### {model} -- graph memory (GiB) against the flat world P\n")
+    print(
+        "`P` = ranks x partitions, which is what the engine's `rank_count` returns on a "
+        "partitioned run -- not the MPI rank count. Raw GiB, NOT bytes per term: these fields "
+        "scale with P, so normalising by terms would divide the effect away. Blank where the "
+        "arm's binding predates `graph_memory_breakdown`, which is every `main` arm -- absent "
+        "is not zero.\n"
+    )
+
+    headers = [*axis, "N", "layout", "P", "arm", *(f.replace("_bytes", "") for f in GRAPH_FIELDS), "occupancy"]
+    print("| " + " | ".join(headers) + " |")
+    print("|" + "|".join(["---"] * len(headers)) + "|")
+
+    for point in sorted(reported, key=lambda p: [repr(p.config.get(k)) for k in axis] + [p.world, p.nodes]):
+        cells = list(point.cells.values())
+        # Keyed on the first row actually PRINTED, not on the first arm: `main` is skipped
+        # whenever its binding predates the instrument, which is the common case, and keying on
+        # the arm index would then blank the identity columns of every row in the table.
+        first_row = True
+        for side in ("main", "port"):
+            side_cells = [c for c in cells if c.side == side]
+            if graph_field(side_cells, "total_bytes") is None:
+                continue
+            occupied, _cores = graph_occupancy(side_cells)
+            values = [graph_field(side_cells, f) for f in GRAPH_FIELDS]
+            lead = first_row
+            first_row = False
+            print(
+                "| "
+                + " | ".join(
+                    [
+                        *((str(point.config.get(k, "-")) if lead else "") for k in axis),
+                        str(point.nodes) if lead else "",
+                        point.layout if lead else "",
+                        (str(point.world) if point.world else "?") if lead else "",
+                        side,
+                        *(f"{v / GIB:.3f}" if v is not None else "-" for v in values),
+                        f"{100 * occupied:.1f}%" if occupied is not None else "-",
+                    ]
+                )
+                + " |"
+            )
+
+    print(
+        "\nOccupancy is the fraction of world slots carrying any traffic. It decides whether a "
+        "sparse slot layout would pay: a slot record is retained whether or not anything crosses "
+        "to it, so `1 - occupancy` is the share of `d_slot_record` describing nothing."
+    )
+
+
 def main(argv: list[str]) -> int:
     """Render the campaign tables; return non-zero if any collated point was refused."""
     paths = [Path(a) for a in argv if not a.startswith("-")]
@@ -410,6 +532,7 @@ def main(argv: list[str]) -> int:
         axis = axis_of(chosen)
         emit_model(model, chosen, axis)
         emit_ledger(model, chosen, axis)
+        emit_graph_ledger(model, chosen, axis)
 
     print("\n## Void\n")
     if void:

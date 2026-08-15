@@ -17,8 +17,9 @@ Two things this prints that the A/B tables cannot:
     occupancy, which says whether a sparse layout would pay or only a narrower record would.
 
 Reads only what the harness already writes. Cells whose arms disagree on the term count are
-refused rather than averaged: a memory number is meaningless without knowing it walked the
-same operator.
+refused rather than averaged -- a memory number is meaningless without knowing it walked the
+same operator -- and a refusal is a non-zero exit, not a mark in a column, so a caller that
+pipes this into a report cannot miss it.
 """
 
 from __future__ import annotations
@@ -161,6 +162,14 @@ def main(argv: list[str]) -> int:
     print("so read them as what the job costs, not what a node holds.\n")
     print("| dir | arm | ranks x parts | P | terms | pinned | graph GB | RSS GB | reps |")
     print("|---|---|---:|---:|---:|---:|---:|---:|---:|")
+    # Collected, not raised inline: printing the table first means a refused run still shows
+    # WHICH rows disagreed, which is what tells you whether it was one bad cell or the sweep.
+    refusals = [
+        f"{r['dir']} [{r['arm']}] recorded {r['terms_spread']} different term counts across reps"
+        for r in rows
+        if r["terms_spread"] > 1
+    ]
+
     for r in rows:
         flag = " !!" if r["terms_spread"] > 1 else ""
         g = f"{r['graph'] / GB:.2f}" if r["graph"] else "-"
@@ -201,6 +210,14 @@ def main(argv: list[str]) -> int:
             cores = b.get("d_layer_cores", 0)
             per_part = f"{slots // cores}" if cores else "-"
             print(f"| {r['dir']} | {r['arm']} | {r['P']} | {vals} | {occupancy} | {cores} (P={per_part}) |")
+
+    if refusals:
+        print("\n## REFUSED\n")
+        for reason in refusals:
+            print(f"- {reason}")
+        print("\nThe arms did not walk the same operator, so the memory columns above are not")
+        print("comparable. Fix the cell and re-run; do not quote these numbers.")
+        return 1
 
     return 0
 

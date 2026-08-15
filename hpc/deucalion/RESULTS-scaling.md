@@ -161,6 +161,15 @@ offset prefix scans in the same function.
 
 ## 4. Memory — a second, independent defect
 
+> **The defect is real and the ladder is sound; the axis and the mechanism are both
+> wrong.** Measured from the engine's own ledger in 2026-08-15 (see
+> `RESULTS-graph-world-size.md`), the growth is quadratic in the **flat world size
+> `P = ranks × partitions`**, not in `R`, and the structure is a per-world-slot record
+> retained **per layer** — held whether or not that slot carries any traffic. Read the
+> corrections inline below before quoting any number in this section. The conclusion
+> that this is a separate defect from `perf/multinode-comm-scaling` still stands, but
+> the reason given for it does not.
+
 This one is **not** fixed by `perf/multinode-comm-scaling`, and it is easy to
 misattribute after the port lands.
 
@@ -176,6 +185,18 @@ That is **9.3× the memory per rank for identical per-rank work**, tracking at
 roughly **11.4 MiB per unit R** at the top end — which makes the job total
 quadratic in R.
 
+> **Quadratic in `P = R × S`, not in `R`.** Every rung of this ladder ran at a fixed
+> S=16, so `R` and `P` move together and nothing here can tell them apart. A 2×2 that
+> holds `P` fixed while moving `R` across its whole range settles it: 1×16 and 8×2 are
+> byte-identical, and so are 1×128, 8×16, 2×64 and 4×32 — six geometries, two values. A
+> *single* MPI rank at 1×128 pays 7.6× what the same rank pays at 1×16.
+>
+> This is the correction that changes what a reader does. `R` is the axis you control by
+> asking for nodes; `P` is the axis you control by asking for nodes **and** partitions.
+> An 8×16 layout multiplies the coefficient by 256, not by 8 — and shrinking S at fixed
+> core count is a lever this section does not know exists. The slope "11.4 MiB per unit
+> R" is a slope against the wrong abscissa; the coefficient is `b` in `graph = a + b·P²`.
+
 Two controls rule out the obvious explanations:
 
 - **Not the MPI transport.** `tools/mpi_memory_probe.py` measures per-rank `VmHWM`
@@ -188,18 +209,49 @@ Two controls rule out the obvious explanations:
   in both R (265, 267, 275, 213 MiB at R=8…64) and S (201→213 MiB at S=2…16). The
   baseline does not scale; only loaded structures do.
 
+> **The second control is not refuted, but it could not have seen this.** It swept R and
+> S independently — the right design — on a **near-empty problem**. The cost here is one
+> record per world slot *per layer*, so a problem with no layers has none of it, whatever
+> R and S do. A reader who now knows the mechanism will otherwise assume this line
+> already excluded a `P = R × S` term. It did not; it was blind to it.
+
 So the growth is **traffic-coupled per-(partition, destination) storage**, which at
 `S` local partitions × `R·S` destinations is another `O(R·S²)` structure —
 this time in memory rather than time. At R=256, S=16 that is 65 536 destination
 buffers per rank, and the measured ~11.4 MiB per unit R works out to roughly 45 KB
 per buffer, far more than the ~1.5 terms each actually carries.
 
+> **Not traffic-coupled, and not per-(partition, destination).** The structure is a
+> per-world-slot record retained per layer, written for **every** slot whether or not
+> anything crosses to it — which is why *occupancy* is the diagnostic, and why measured
+> occupancy of 24–31% means three quarters of it describes slots with no traffic at all.
+> A traffic-coupled cost would shrink with sparsity; this one does not. The derived
+> figures above — 65 536 buffers per rank, ~45 KB per buffer — are void, because both
+> come from dividing an RSS-fitted slope by the wrong structure count.
+>
+> The correct closed form has no free parameters: job-total slot bytes are
+> `L × bytes_per_slot × P²`, where `L` is the circuit's gate count. At the `pauli`
+> anchor `L = 20 × (127 + 144) = 5,420`, and that predicts the measured coefficient to
+> within 1.6%.
+
 **Consequence for the beyond-one-node goal: past some rank count, adding nodes
 reduces the largest problem the job can hold.** Spreading wider costs more memory
 than it adds. This wants fixing before any run that is trying to exceed 242 GB.
 
+> **Past some WORLD SIZE, and the mitigation is not only "fewer nodes".** Because the
+> axis is `P = R × S`, the same core count at a smaller S costs quadratically less
+> graph. That option is invisible in the sentence above, which is the practical cost of
+> the wrong axis.
+
 `monoprop_multinode.py` now reports `memory_bytes` (operator only, allreduced),
 `rss_bytes`, and `overhead_per_rank` side by side, which is what separates the two.
+
+> **Stale instrument list.** RSS was the wrong instrument for this: it carries the
+> allocator's growth transient and cannot attribute anything. The separation is now
+> `opbytes.graph` against `graphmembreak`'s per-field split, with `memhwm` beside them —
+> and note `memhwm` is a **sum** over ranks while `dmem` is a **max**, so comparing one
+> against the other is what made an 8-rank job look like it cost 2.3× a 1-rank job when
+> per rank it costs 0.29×.
 
 ---
 
@@ -217,6 +269,13 @@ than it adds. This wants fixing before any run that is trying to exceed 242 GB.
 3. **Treat the memory growth in §4 as a separate defect** with its own fix. The
    branch's new arrays are all `O(R·S)`, so it will not address this, and a
    post-port memory regression should not be blamed on the port.
+
+   > **Right conclusion, retired reasoning.** "The branch's new arrays are all `O(R·S)`"
+   > misidentified the offending structure, so it cannot support the inference — a
+   > structure sized `R·S` is *exactly* one sized `P`, which is the whole problem. The
+   > conclusion survives on different evidence: the graph bytes are byte-identical
+   > between the port and main arms at all four rungs, so the defect is pure
+   > main-lineage and orthogonal to the port. Do not carry the old reason forward.
 4. **Do not size production runs off these numbers.** They characterise a known
    bottleneck; the useful capacity numbers come after (1).
 
