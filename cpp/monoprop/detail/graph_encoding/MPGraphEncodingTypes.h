@@ -120,23 +120,33 @@ struct CrossRankPartnerData {
     size_t in_count = 0;
 };
 
+// One record per world slot, occupied or not, retained for every layer -- so on a partitioned run
+// this is sizeof(record) x P x layers x partitions per rank, i.e. O(P^2) across the job. That is
+// why it holds only what cannot be recovered: B and D are the two endpoints of the same rotation
+// set, so their counts are equal and their prefix sums therefore identical, and storing the D pair
+// separately cost 16 bytes a slot to say twice what the B pair already said.
+// build_packed_cross_rank_storage enforces the equality rather than trusting it.
 struct CrossRankPartnerRange final {
-    size_t sin_send_offset = 0; // into sin_send_indices; cumulative across ranks, so size_t (may exceed 2^32)
-    TermIndex sin_send_count =
-        0;                      // == sin_recv_count (both endpoints); TermIndex-wide so one rank/layer can exceed 2^32
-    size_t sin_recv_offset = 0; // into sin_recv_phases; cumulative across ranks, so size_t (see sin_send_offset)
-    TermIndex sin_recv_count = 0;
+    size_t sin_send_offset = 0; // into sin_send_indices AND sin_recv_phases; cumulative, so may exceed 2^32
+    // == the D count; TermIndex-wide so one rank/layer can exceed 2^32.
+    TermIndex sin_send_count = 0;
     TermIndex in_count = 0;
 };
 
+// Pins the saving: 8 + 4 + 4 narrow, 8 + 8 + 8 wide, with no tail padding either way. A new field
+// here is paid for once per world slot per layer per partition, so it should be a deliberate act.
+static_assert(sizeof(CrossRankPartnerRange) == sizeof(size_t) + 2 * sizeof(TermIndex),
+              "CrossRankPartnerRange is the per-world-slot record; keep it free of padding.");
+
 struct PackedCrossRankStorage final {
-    std::vector<CrossRankPartnerRange> ranges; // size == R
+    std::vector<CrossRankPartnerRange> ranges; // size == the flat world P, not the MPI rank count
     std::vector<TermIndex> sin_send_indices;
     PackedPhaseStorage sin_recv_phases; // one phased entry per D index, sign baked in
 
     auto rank_count() const -> size_t { return ranges.size(); }
     auto sin_send_size(size_t rank) const -> size_t { return ranges[rank].sin_send_count; }
-    auto sin_recv_size(size_t rank) const -> size_t { return ranges[rank].sin_recv_count; }
+    // D holds the same endpoints as B in the other order, so it has the same length.
+    auto sin_recv_size(size_t rank) const -> size_t { return ranges[rank].sin_send_count; }
     auto in_count(size_t rank) const -> size_t { return ranges[rank].in_count; }
 };
 
@@ -145,6 +155,12 @@ struct LayerCore final {
     LayerExchangeLayout evolution_exchange_layout;
 
     auto derivative_exchange_layout() const -> const LayerExchangeLayout &;
+
+    // Bytes held by the lazily built derivative layout, 0 while it has never been asked for.
+    // Deliberately NOT implemented as a call to derivative_exchange_layout(): that would
+    // allocate the very thing being measured, turning an accounting read into a 2*P-int
+    // allocation on every layer and making the instrument report its own footprint.
+    auto derivative_exchange_layout_bytes() const -> size_t;
 
     // A copied core must not inherit the source's cache: it is eval-time state, not data.
     auto reset_derivative_exchange_layout() -> void { derivative_exchange_layout_cache_.reset(); }

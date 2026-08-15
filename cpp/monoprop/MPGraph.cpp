@@ -52,6 +52,16 @@ auto layer_storage_memory_usage(const LayerCore &storage) -> GraphMemoryBreakdow
     breakdown.layer_storage_object_bytes = sizeof(LayerCore);
     breakdown.cross_rank_bytes = detail::cross_rank_storage_bytes(storage.cross_rank);
     breakdown.exchange_layout_bytes = detail::layer_exchange_layout_storage_bytes(storage.evolution_exchange_layout);
+
+    // Diagnostics. recv_cache and the derivative layout are real resident memory that
+    // total_bytes() has never counted, which is why the reported graph size sits below the
+    // process RSS by a margin that itself widens with the world size.
+    breakdown.slot_record_bytes = detail::cross_rank_slot_record_bytes(storage.cross_rank);
+    breakdown.recv_cache_bytes = detail::layer_exchange_layout_cache_bytes(storage.evolution_exchange_layout);
+    breakdown.derivative_layout_bytes = storage.derivative_exchange_layout_bytes();
+    breakdown.layer_cores = 1;
+    breakdown.slot_records = storage.cross_rank.rank_count();
+    breakdown.occupied_slots = detail::cross_rank_occupied_slots(storage.cross_rank);
     return breakdown;
 }
 
