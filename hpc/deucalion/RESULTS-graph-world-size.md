@@ -126,18 +126,31 @@ clear the bar in the slower direction and suppressing that would be cherry-picki
 
 This is the expected shape: the change removes retained bytes, not work from any hot loop.
 
-## Occupancy — the number that picks the next fix, and had never been measured
+## Occupancy — measured for the first time, and initially over-read
 
-| cell | occupancy | slot bytes a sparse layout could drop |
-| --- | ---: | ---: |
-| c12, P=16 | 31.5% | 68.5% |
-| c12, P=128 | 23.9% | 76.1% |
-| c14, P=128 | 27.8% | 72.2% |
+| cell | occupancy |
+| --- | ---: |
+| c12, P=16 | 31.5% |
+| c12, P=128 | 23.9% |
+| c14, P=128 | 27.8% |
 
 **Roughly three quarters of world slots carry no traffic**, and tripling the term count moves
 occupancy only 23.9% → 27.8%, so this is structural rather than an artifact of small problems.
 Routing is a uniform hash with no locality, so it is not skew — a layer's terms simply do not reach
 most of the world.
+
+> **The inference first drawn from this was wrong, and the error is worth keeping.** This table
+> originally carried a second column — "slot bytes a sparse layout could drop", 68.5% / 76.1% /
+> 72.2% — and on that basis sparsifying `ranges` was reported as the largest remaining lever,
+> worth about 3× the record shrink. Low occupancy bounds what sparsifying could reclaim **as a
+> fraction of itself**, which says nothing about its size beside the other levers. Ranked in bytes
+> per slot, sparsifying `ranges` saves ~12 B — *less* than the 16 B the record shrink had already
+> shipped — and it is the one option that changes a structure three consumers index by global
+> slot. The retained exchange layouts were the larger prize (24 B/slot, 40 once gradients run) and
+> needed no such change. The column is removed because it invites the same mistake; the occupancy
+> figures themselves stand.
+
+Rank a lever by its bytes against the other levers, not by the percentage of itself it reclaims.
 
 ## Reading rules and limits
 
@@ -153,10 +166,13 @@ most of the world.
 - **The per-field split and occupancy exist on the port arm only** — the binding postdates `main`.
   `conftest` records nothing rather than zeros for the baseline, by design: a flat field and an
   absent instrument must not look alike.
-- **Nothing in the harness asserts the two arms are different builds.** `check_provenance` refuses
-  on term counts, placement and environment, but only *prints* `monoprop_version`. The default
-  `PORT_VENV` points at `mp-invidx`, a different branch — read the `=== main:` / `=== port:` banner
-  in the job log before trusting any table here.
+- **The harness now refuses an A/B whose arms are the same build** (`_check_versions`), which it did
+  not when the cells above were run — it recorded `monoprop_version` and never asserted on it, and
+  the default `PORT_VENV` points at `mp-invidx`, a different branch. The check has a known blind
+  spot: the version is a git describe of the worktree, not a fingerprint of the extension, and an
+  editable install serves whatever `.so` was last built into that tree. Distinct versions prove the
+  *checkouts* differ; only the `.so`'s hash proves the *builds* do. Still read the `=== main:` /
+  `=== port:` banner.
 - `$PROJ/runs` is shared between sessions. Collate from an explicit directory list; a `models-*`
   glob has swept another campaign's cells into a table before.
 
