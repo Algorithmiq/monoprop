@@ -14,9 +14,10 @@
 
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
-// Kept MPI-free and dependency-light so graph-encoding types (LayerExchangeLayout) can embed the cache
+// Kept MPI-free and dependency-light so graph-encoding types (LayerCore) can embed the cache
 // without pulling in <mpi.h> or the exchange machinery (see Exchange.h).
 
 namespace monoprop::mpi {
@@ -27,9 +28,22 @@ struct RecvLayout {
     int total = 0;
 };
 
+// The transpose of ONE send pattern. Reusing it for a different pattern returns wrong
+// displacements silently, so the cache carries the identity of the pattern it was built from.
+//
+// What must be rank-uniform is the hit/miss DECISION, not the id's value. A miss runs
+// alltoall_counts, which is a collective, so two ranks disagreeing about validity is a
+// distributed HANG rather than a wrong answer. Binding the id to the layer that owns the cache
+// gives that for free: every rank walks the same layers in the same order, so every rank misses
+// on a layer's first resolve and hits afterwards, whatever the local id values happen to be.
+//
+// It must NOT be derived from the send counts themselves (a total, a checksum). Those are
+// rank-local, so two patterns can collide on one rank and not on another -- and that difference
+// is exactly the split decision that hangs.
 struct RecvLayoutCache {
     RecvLayout layout;
     int comm_size = -1;
+    uint64_t generation = 0; // 0 = never populated
 };
 
 } // namespace monoprop::mpi

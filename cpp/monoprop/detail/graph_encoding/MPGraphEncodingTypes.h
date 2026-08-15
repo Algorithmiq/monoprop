@@ -27,13 +27,18 @@
 
 namespace monoprop {
 
+// counts/displs for one alltoallv. Both are dense int[P] because MPI requires that at the call
+// site, but this is a TRANSIENT: it is materialized into per-thread scratch for the exchange
+// being posted, never retained per layer. A retained one costs P ints x2 x layers x partitions,
+// which is O(P^2) across a job for something derivable in a prefix sum.
+//
+// It deliberately does NOT own a RecvLayoutCache any more. The cache is the transpose of one
+// specific send pattern, so hanging it off a reused scratch object is precisely the way to serve
+// layer A's transpose to layer B; it now lives on LayerCore, beside the pattern that produced it.
 struct LayerExchangeLayout final {
     std::vector<int> counts;
     std::vector<int> displs;
     size_t total_count = 0;
-
-    // Cached recv counts/displs (see mpi::resolve_recv); mutable — filled through const handles at eval time.
-    mutable mpi::RecvLayoutCache recv_cache;
 };
 
 } // namespace monoprop
@@ -44,12 +49,16 @@ auto checked_mpi_int(size_t value, const char *what) -> int;
 
 // Per-rank MPI counts = send_counts[r] * scale, with prefix-sum displacements. send_counts is full-width
 // (size_t) so checked_mpi_int catches the narrowing to MPI's int.
+//
+// The engine no longer calls this: it derives the layout from the slot records instead (see
+// derive_exchange_layout, declared in MPGraphEncodingStorage.h because it needs
+// PackedCrossRankStorage). It is kept deliberately, as the REFERENCE the derivation is tested
+// against -- graph_encoding_derived_layout_matches_the_layout_it_replaces asserts the two agree
+// elementwise. Checking a derivation against an independent construction is worth more than
+// checking it against literals, so this is a test oracle, not dead code. Do not delete it
+// without replacing what it proves.
 auto build_layer_exchange_layout(const std::vector<size_t> &send_counts, int scale, const char *what = "Layer exchange")
     -> LayerExchangeLayout;
-
-// The derivative layout is the evolution layout at 2x (each rotation endpoint carries both the op and
-// state payload).
-auto build_derivative_exchange_layout(const LayerExchangeLayout &evolution) -> LayerExchangeLayout;
 
 } // namespace monoprop::detail
 
@@ -152,18 +161,29 @@ struct PackedCrossRankStorage final {
 
 struct LayerCore final {
     PackedCrossRankStorage cross_rank;
-    LayerExchangeLayout evolution_exchange_layout;
 
-    auto derivative_exchange_layout() const -> const LayerExchangeLayout &;
+    // The evolution layout is NOT stored at all: counts[r] is
+    // (r == my_rank ? 0 : cross_rank.sin_send_size(r)), displs is its prefix sum, and the total
+    // is the last displacement -- so the whole 2*P-int array was a second copy of what `ranges`
+    // already says, retained per layer per partition. detail::derive_exchange_layout rebuilds it
+    // into per-thread scratch for the transfer being posted.
 
-    // Bytes held by the lazily built derivative layout, 0 while it has never been asked for.
-    // Deliberately NOT implemented as a call to derivative_exchange_layout(): that would
-    // allocate the very thing being measured, turning an accounting read into a 2*P-int
-    // allocation on every layer and making the instrument report its own footprint.
-    auto derivative_exchange_layout_bytes() const -> size_t;
+    // The transpose of this layer's send pattern, which is the one part that cannot be derived
+    // locally -- it takes a collective. Cached per layer because the alternative is an
+    // MPI_Alltoall per layer per evaluation. mutable: filled through const handles at eval time.
+    mutable mpi::RecvLayoutCache evolution_recv_cache;
 
-    // A copied core must not inherit the source's cache: it is eval-time state, not data.
-    auto reset_derivative_exchange_layout() -> void { derivative_exchange_layout_cache_.reset(); }
+    // Rank-uniform identity for the send pattern this core holds, assigned in build order so
+    // every rank agrees on it. It is what makes reusing evolution_recv_cache safe: see
+    // mpi::resolve_recv, where a rank-LOCAL key would let one rank reuse while another rebuilds
+    // and rebuilding is a collective -- a hang, not a wrong answer.
+    uint64_t exchange_generation = 0;
+
+    // There is deliberately no reset here. The retained derivative layout that used to need
+    // dropping on a copy no longer exists -- it is derived per exchange. The transpose cache
+    // that remains is a function of the send pattern, and a copy carries that pattern and its
+    // generation with it, so the copy inherits a cache that is still correct. Clearing it would
+    // cost an MPI_Alltoall per layer on the next evaluation to rebuild something already right.
 
     // Per-layer recompute metadata: generator_words = this layer's generator G as backing words;
     // scaled_count = fold truncation bound = operator size after this layer's partner inserts.
@@ -175,9 +195,6 @@ struct LayerCore final {
     double gen_coeff = 0.0;
     // Shared by all layers of one multi-term gate; absolute across build_graph calls (parameter_mapping).
     size_t gate_index = 0;
-
-private:
-    mutable std::optional<LayerExchangeLayout> derivative_exchange_layout_cache_;
 };
 
 } // namespace monoprop

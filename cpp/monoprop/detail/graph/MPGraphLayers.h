@@ -64,26 +64,36 @@ struct LayerTraversal final {
         return detail::cross_rank_sin_recv_phase(core_->cross_rank, rank, idx);
     }
 
+    // The slot is resolved ONCE, outside the loop: the lookup it costs is indexed by the flat
+    // world P, so doing it per endpoint made per-term work out of what is per-slot work.
     template <typename Func>
     auto for_each_cross_rank_sin_send_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
+        const auto slot = detail::cross_rank_slot(core_->cross_rank, rank);
         for (size_t idx = begin; idx < end; ++idx) {
-            func(idx, detail::cross_rank_sin_send_index(core_->cross_rank, rank, idx));
+            func(idx, detail::slot_sin_send_index(slot, idx));
         }
     }
 
     template <typename Func>
     auto for_each_cross_rank_sin_recv_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
+        const auto slot = detail::cross_rank_slot(core_->cross_rank, rank);
         for (size_t idx = begin; idx < end; ++idx) {
-            func(idx,
-                 detail::cross_rank_sin_recv_index(core_->cross_rank, rank, idx),
-                 detail::cross_rank_sin_recv_phase(core_->cross_rank, rank, idx));
+            func(idx, detail::slot_sin_recv_index(slot, idx), detail::slot_sin_recv_phase(slot, idx));
         }
     }
 
-    auto evolution_exchange_layout() const -> const LayerExchangeLayout & { return core_->evolution_exchange_layout; }
-    auto derivative_exchange_layout() const -> const LayerExchangeLayout & {
-        return core_->derivative_exchange_layout();
+    // For the paired self-slot derivative fetches, which read d[k] and d[k+pairs] together:
+    // resolve the slot once and hand the caller the view rather than four lookups per pair.
+    auto cross_rank_slot(size_t rank) const -> detail::CrossRankSlotView {
+        return detail::cross_rank_slot(core_->cross_rank, rank);
     }
+
+    // The exchange layout is derived at the call site from these, not stored: see
+    // detail::derive_exchange_layout. Only the transpose cache survives, because only it
+    // needs a collective.
+    auto cross_rank() const -> const PackedCrossRankStorage & { return core_->cross_rank; }
+    auto evolution_recv_cache() const -> mpi::RecvLayoutCache & { return core_->evolution_recv_cache; }
+    auto exchange_generation() const -> uint64_t { return core_->exchange_generation; }
 
     auto param_index() const -> size_t { return core_->param_index; }
     auto gen_coeff() const -> double { return core_->gen_coeff; }
