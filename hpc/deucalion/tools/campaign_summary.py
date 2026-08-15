@@ -188,6 +188,27 @@ def axis_of(points: list[Point]) -> list[str]:
     return axis
 
 
+# Below this the effect is too small to care about even when every rep agrees on it.
+NOISE_BAND = 0.01
+
+
+def verdict_with_agreement(ratio: float | None, same: int, total: int) -> str:
+    """Render a ratio, but do not call a UNANIMOUS small difference "flat".
+
+    `verdict` labels everything inside 0.90..1.10 flat, which is right when the reps
+    disagree and wrong when they do not. A 1.05x that every one of six reps points the
+    same way is p=0.031 under a sign test -- the best six reps can do, and the bar this
+    project already set. Calling it flat asserts the absence of an effect the data
+    resolved. "consistent" says small AND real, which is the honest reading.
+    """
+    base = verdict(ratio)
+    if ratio is None or not base.endswith("(flat)"):
+        return base
+    if total >= 6 and same == total and abs(ratio - 1.0) > NOISE_BAND:
+        return f"{ratio:.2f}x (consistent)"
+    return base
+
+
 def emit_model(model: str, points: list[Point], axis: list[str]) -> None:
     """Print one model's campaign table."""
     print(f"\n## {model}\n")
@@ -244,7 +265,7 @@ def emit_model(model: str, points: list[Point], axis: list[str]) -> None:
                         ]
                     )
                 ),
-                verdict(med),
+                verdict_with_agreement(med, same, total),
                 f"{same}/{total}" if total else "-",
                 fmt_gib(
                     medians(
