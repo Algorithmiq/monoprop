@@ -479,7 +479,9 @@ def main(argv: list[str]) -> int:
         print(f"no A/B artifacts found in {results_dir}", file=sys.stderr)
         return 1
 
-    print("# 100M-term A/B: main vs perf/multinode-comm-scaling\n")
+    # The port branch is whatever PORT_VENV was built from, so naming one here goes stale
+    # silently; the run's own directory is the thing that identifies it.
+    print("# Paired A/B: main vs port\n")
     print(f"Results: `{results_dir}`\n")
     print("`port/main` below 1.00 means the port is better. It is the **median of the")
     print(
