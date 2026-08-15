@@ -6,6 +6,8 @@
 #   hpc/deucalion/sbatch/campaign.sh ranks    # the multi-node rungs
 #   hpc/deucalion/sbatch/campaign.sh serial   # "non-MPI": 1 rank x 16 partitions
 #   hpc/deucalion/sbatch/campaign.sh geometry # ranks x partitions at fixed model, one node
+#   hpc/deucalion/sbatch/campaign.sh layout   # geometry again + a node ladder, for the
+#                                             # retained-exchange-layout change
 #
 # Both arms are venvs, not branches: MAIN_VENV (default $PROJ/src/mp-main/.venv) and PORT_VENV
 # (default $PROJ/src/mp-invidx/.venv). `cell` forwards the caller's environment, so pointing an
@@ -43,7 +45,7 @@
 # buy. Sizing the serial wave as "8x the ranks means 8x the wall" would have been wrong.
 set -uo pipefail
 
-WAVE="${1:?usage: submit.sh <wave1|wave2|ranks|serial|geometry>}"
+WAVE="${1:?usage: submit.sh <wave1|wave2|ranks|serial|geometry|layout>}"
 export MONOPROP_SRC="${MONOPROP_SRC:-$PWD}"
 source "$MONOPROP_SRC/hpc/deucalion/env.sh"
 ACCT="${MONOPROP_SLURM_ACCOUNT:?set MONOPROP_SLURM_ACCOUNT (see hpc/deucalion/env.local.sh.example)}"
@@ -122,6 +124,29 @@ case "$WAVE" in
                # The headline rung: same geometry and problem as models-pauli-pau-c14-anchor-N1,
                # so the "before" arm reproduces a measurement that already exists on disk.
         cell gws-c14-g8x16  1 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        ;;
+    layout)  # The same four geometries again, plus a node ladder, for the change that stops
+             # RETAINING the P-sized exchange layouts. `geometry` measured the record shrink;
+             # this measures the layouts, and it has to re-run the four rather than reuse them
+             # because the port arm is a different build. Tags are gws2-, not gws-: reusing a
+             # tag would make models-ab.sh refuse a non-empty RESULTS dir, and that refusal is
+             # the only thing standing between two campaigns and one silently merged table.
+        cell gws2-c12-g1x16  1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell gws2-c12-g8x2   1 1:30:00  8 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=2
+        cell gws2-c12-g1x128 1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=128
+        cell gws2-c12-g8x16  1 1:30:00  8 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=16
+             # The node ladder at the anchor: P = 128, 256, 512 at a FIXED 8x16 per node, so
+             # the only thing moving is the world size. This is the rung that matters most --
+             # the retained layouts are P ints per layer per partition, so the saving grows
+             # with P while the operator each rank walks does not.
+             #
+             # One tag across all three: RESULTS keys on (model, tag, NODES), so the node
+             # count already separates them and three tags would only make the ladder harder
+             # to collate. Time is flat in N, not divided by it -- setup is replicated per
+             # rank -- so N=4 gets the same limit as N=1, which the `ranks` wave established.
+        cell gws2-c14-g8x16  1 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell gws2-c14-g8x16  2 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell gws2-c14-g8x16  4 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
         ;;
     *)
         echo "unknown wave: $WAVE" >&2
