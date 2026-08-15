@@ -352,3 +352,137 @@ BOOST_AUTO_TEST_CASE(shm_comm_poison_releases_waiters) {
         }
     }
 }
+
+// Buffer reuse across successive exchanges on one thread. begin_alltoallv leases its buffers from a
+// per-thread free list rather than allocating per call, so the round that follows a LARGER round is the
+// one that can go wrong: a logical size left at the high-water mark, or a recv_counts tail never
+// rewritten, both surface as an earlier round's data appearing in a later one. Sizes therefore go
+// large -> small -> large, and every block is checked for exact length and exact contents, not just
+// for the prefix a stale buffer would still get right.
+BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_reuse_leaves_no_stale_data) {
+    for (const int S : {2, 4}) {
+        // Round r of source s sends kPer[r] * (s + 1) elements, tagged so any survivor is traceable to
+        // the round and source that wrote it.
+        const std::vector<int> kPer = {7, 1, 5};
+        std::vector<std::vector<std::vector<std::vector<int>>>> recv(static_cast<size_t>(S));
+        auto errs = run_shm(S, [&](ShmComm &sh, int r) {
+            Comm c = Comm::make_shm(&sh, r);
+            std::vector<std::vector<std::vector<int>>> rounds;
+            for (size_t round = 0; round < kPer.size(); ++round) {
+                std::vector<std::vector<int>> send(static_cast<size_t>(S));
+                const int n = kPer[round] * (r + 1);
+                for (int t = 0; t < S; ++t) {
+                    for (int j = 0; j < n; ++j) {
+                        send[static_cast<size_t>(t)].push_back((static_cast<int>(round) * 1000000) + (r * 1000) + j);
+                    }
+                }
+                auto h = monoprop::mpi::begin_alltoallv(send, c);
+                std::vector<std::vector<int>> got;
+                h.wait_into(got);
+                rounds.push_back(std::move(got));
+            }
+            recv[static_cast<size_t>(r)] = std::move(rounds);
+        });
+        for (const auto &e : errs) {
+            BOOST_CHECK(e == nullptr);
+        }
+        for (int r = 0; r < S; ++r) {
+            const auto &rounds = recv[static_cast<size_t>(r)];
+            BOOST_REQUIRE_EQUAL(rounds.size(), kPer.size());
+            for (size_t round = 0; round < kPer.size(); ++round) {
+                const auto &got = rounds[round];
+                BOOST_REQUIRE_EQUAL(static_cast<int>(got.size()), S);
+                for (int s = 0; s < S; ++s) {
+                    const auto &blk = got[static_cast<size_t>(s)];
+                    const int n = kPer[round] * (s + 1);
+                    BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), n); // the shrink check
+                    for (int j = 0; j < n; ++j) {
+                        BOOST_REQUIRE_EQUAL(blk[static_cast<size_t>(j)],
+                                            (static_cast<int>(round) * 1000000) + (s * 1000) + j);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The same hazard on the recv_counts vector specifically. A known_recv_counts shorter than the comm is
+// copied as a prefix, so a leased buffer whose tail still holds a previous round's counts would size
+// the receive from data nobody sent. Round 1 establishes a full set of large counts; round 2 passes a
+// one-element prefix and must see zeros everywhere the prefix does not reach.
+BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_known_counts_tail_is_cleared) {
+    const int S = 4;
+    std::vector<std::vector<std::vector<int>>> recv(static_cast<size_t>(S));
+    auto errs = run_shm(S, [&](ShmComm &sh, int r) {
+        Comm c = Comm::make_shm(&sh, r);
+        std::vector<std::vector<int>> send(static_cast<size_t>(S));
+        for (int t = 0; t < S; ++t) {
+            send[static_cast<size_t>(t)] = {r * 10 + 1, r * 10 + 2, r * 10 + 3};
+        }
+        std::vector<std::vector<int>> first;
+        monoprop::mpi::begin_alltoallv(send, c).wait_into(first);
+
+        const std::vector<int> short_counts = {3}; // source 0 only; sources 1.. must resolve to zero
+        std::vector<std::vector<int>> got;
+        monoprop::mpi::begin_alltoallv(send, c, /*skip_self=*/false, &short_counts).wait_into(got);
+        recv[static_cast<size_t>(r)] = std::move(got);
+    });
+    for (const auto &e : errs) {
+        BOOST_CHECK(e == nullptr);
+    }
+    for (int r = 0; r < S; ++r) {
+        const auto &got = recv[static_cast<size_t>(r)];
+        BOOST_REQUIRE_EQUAL(static_cast<int>(got.size()), S);
+        BOOST_CHECK_EQUAL(got[0].size(), 3U);
+        for (int s = 1; s < S; ++s) {
+            BOOST_CHECK_EQUAL(got[static_cast<size_t>(s)].size(), 0U);
+        }
+    }
+}
+
+// The no-argument wait_into()/received() pair, which is the form the layer build uses: the unpacked
+// per-source blocks live in the leased bundle and therefore survive into whichever call borrows it
+// next, unlike a caller-owned vector that is fresh each round. Sizes again go large -> small -> large,
+// and each round is read through received() exactly as Engine.h reads it.
+BOOST_AUTO_TEST_CASE(shm_comm_alltoallv_received_blocks_do_not_accumulate) {
+    const int S = 4;
+    const std::vector<int> kPer = {6, 1, 4};
+    std::vector<std::vector<std::vector<std::vector<int>>>> recv(static_cast<size_t>(S));
+    auto errs = run_shm(S, [&](ShmComm &sh, int r) {
+        Comm c = Comm::make_shm(&sh, r);
+        std::vector<std::vector<std::vector<int>>> rounds;
+        for (size_t round = 0; round < kPer.size(); ++round) {
+            std::vector<std::vector<int>> send(static_cast<size_t>(S));
+            const int n = kPer[round] * (r + 1);
+            for (int t = 0; t < S; ++t) {
+                for (int j = 0; j < n; ++j) {
+                    send[static_cast<size_t>(t)].push_back((static_cast<int>(round) * 1000000) + (r * 1000) + j);
+                }
+            }
+            auto h = monoprop::mpi::begin_alltoallv(send, c);
+            h.wait_into();
+            rounds.emplace_back(h.received()); // copy out before the lease returns the bundle
+        }
+        recv[static_cast<size_t>(r)] = std::move(rounds);
+    });
+    for (const auto &e : errs) {
+        BOOST_CHECK(e == nullptr);
+    }
+    for (int r = 0; r < S; ++r) {
+        const auto &rounds = recv[static_cast<size_t>(r)];
+        BOOST_REQUIRE_EQUAL(rounds.size(), kPer.size());
+        for (size_t round = 0; round < kPer.size(); ++round) {
+            const auto &got = rounds[round];
+            BOOST_REQUIRE_EQUAL(static_cast<int>(got.size()), S);
+            for (int s = 0; s < S; ++s) {
+                const auto &blk = got[static_cast<size_t>(s)];
+                const int n = kPer[round] * (s + 1);
+                BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), n);
+                for (int j = 0; j < n; ++j) {
+                    BOOST_REQUIRE_EQUAL(blk[static_cast<size_t>(j)],
+                                        (static_cast<int>(round) * 1000000) + (s * 1000) + j);
+                }
+            }
+        }
+    }
+}

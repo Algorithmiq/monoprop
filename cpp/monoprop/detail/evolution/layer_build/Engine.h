@@ -388,22 +388,31 @@ struct LayerBuildEngine {
             sendp = &sink.send_buffer(queries_r, src_val_r, combined_qv_);
         }
         std::vector<VecZ> &send = *sendp;
-        std::vector<std::vector<size_t>> inc_q;
-        {
+        // The handle owns the unpacked per-source blocks (leased from the partition master's scratch
+        // pool), so it has to outlive its reader rather than being a temporary: the whole point is that
+        // those blocks keep their capacity from gate to gate. Holding it across resolve_incoming also
+        // keeps the leg's send buffer leased for as long as `send` is meaningful, which is what makes
+        // the pooling invisible to the second-barrier contract in Comm.h.
+        auto qh = [&] {
             const layer_profile::ScopedNs t(prof != nullptr ? &prof->exchange_ns : nullptr);
-            mpi::begin_alltoallv(send, comm).wait_into(inc_q);
-        }
+            auto h = mpi::begin_alltoallv(send, comm);
+            h.wait_into();
+            return h;
+        }();
         auto resp = [&] {
             const layer_profile::ScopedNs t(prof != nullptr ? &prof->incoming_ns : nullptr);
-            return resolve_incoming<NumModes>(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
+            return resolve_incoming<NumModes>(qh.received(), local_op, R, is_leader_pass, matched, combined_size, sink);
         }();
         std::vector<int> resp_recv = response_recv_counts();
-        std::vector<std::vector<typename Sink::Response>> inc_r;
-        {
+        // A second live handle, so the response leg leases its own bundle: the query leg's is still held
+        // here, and the two must never be the same buffer even where their element types coincide.
+        auto rh = [&] {
             const layer_profile::ScopedNs t(prof != nullptr ? &prof->exchange_ns : nullptr);
-            mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_r);
-        }
-        process_responses<NumModes>(inc_r, src_idx_r, queries_r, R, my_rank, sink);
+            auto h = mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv);
+            h.wait_into();
+            return h;
+        }();
+        process_responses<NumModes>(rh.received(), src_idx_r, queries_r, R, my_rank, sink);
     }
 
     // Followers a leader already matched must not be re-resolved over the wire, so compact them out.
