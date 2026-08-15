@@ -17,8 +17,10 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -28,6 +30,7 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/EnvConfig.h"
 
 namespace monoprop::detail {
 
@@ -136,6 +139,37 @@ public:
         }
     }
 
+    // set() from the row's own form. A row IS an ascending position list, so a caller that already holds
+    // one -- the compact query record carries exactly this -- is otherwise made to pack it into a dense
+    // bitset only for set() to unpack it again with a count() and a find_first/find_next walk over every
+    // word. Same postcondition as set(), including the dropped stale overflow entry.
+    //
+    // `pos` must be strictly ascending and every entry < 2*NumModes; both are the record's own invariants
+    // (CompactQuery::push asserts ascending on the way out) and both are asserted here on the way in,
+    // because a violation is silent: an unsorted row still compares equal to nothing and simply never
+    // matches, and an out-of-range position writes a row that row() would decode into a different term.
+    auto set_positions(size_t i, const PosT *pos, size_t count) -> void {
+        assert(std::is_sorted(pos, pos + count, std::less_equal<PosT>{}) && "row positions must be strictly ascending");
+        assert((count == 0 || static_cast<size_t>(pos[count - 1]) < 2 * NumModes) && "row position out of range");
+        PosT *row = &rows_[i * stride_];
+        if (count > inline_width_) {
+            // The spill path has no position array by construction, so the dense form has to be built --
+            // but only here, on the ~1-in-20M rows that reach it.
+            row[0] = kOverflowMarker;
+            value_type mono;
+            for (size_t j = 0; j < count; ++j) {
+                mono.set(pos[j]);
+            }
+            overflow_[i] = mono;
+            return;
+        }
+        if (!overflow_.empty()) {
+            overflow_.erase(i);
+        }
+        row[0] = static_cast<PosT>(count);
+        std::copy_n(pos, count, row + 1);
+    }
+
     [[nodiscard]] auto row(size_t i) const -> value_type {
         const PosT c = rows_[i * stride_];
         if (c == kOverflowMarker) {
@@ -215,7 +249,12 @@ public:
     // Group-prefetch batch find: out[i] = row index of keys[i], or kNotFound. Same result as n
     // find() calls, but overlaps dram misses via a per-group hash/probe/confirm pipeline. An h
     // collision falls back to an exact find. must not run concurrently with inserts.
-    auto find_batch(const key_type *keys, size_t n, size_t *out) const -> void {
+    //
+    // hash_out, when non-null, receives the folded hash of every key. It is not a diagnostic: at the
+    // measured ~0 hit rate essentially every query becomes an insert, and the insert path recomputes
+    // exactly this hash from exactly this key -- so without it the splitmix runs twice per term.
+    // Feed it to bulk_insert_hashed.
+    auto find_batch(const key_type *keys, size_t n, size_t *out, uint32_t *hash_out = nullptr) const -> void {
         static constexpr size_t G = 16; // keys prefetched together per pipeline pass
         std::array<uint32_t, G> hh;
         std::array<size_t, G> sp;
@@ -226,6 +265,9 @@ public:
                 hh[j] = fold_hash(keys[base + j]);
                 sp[j] = spread(hh[j]);
                 __builtin_prefetch(&table_.slots[sp[j] & table_.mask], 0, 0);
+            }
+            if (hash_out != nullptr) {
+                std::copy_n(hh.begin(), g, hash_out + base);
             }
             for (size_t j = 0; j < g; ++j) {
                 cand[j] = kEmptySlot;
@@ -252,6 +294,81 @@ public:
         }
     }
 
+    // find_batch over ascending position lists instead of dense monomials: query q is
+    // pos_flat[pos_off[q] .. pos_off[q] + k_of[q]). Identical results to find_batch on the monomials
+    // those positions describe -- the hash is the same function of the same key, and the confirm is a
+    // position-vs-position compare of the same two lists.
+    //
+    // WHY IT EXISTS. The caller already holds positions: that is what arrives on the wire under the
+    // compact record. Handing find_batch a dense key means writing 64 B per query into an array sized
+    // by the whole incoming batch, reading it back once to hash it, and then unpacking it a third time
+    // at insert. This entry point lets the positions stay the currency end to end; the one dense
+    // monomial still built per query is a stack temporary the hash consumes immediately, never a store.
+    //
+    // The three-stage pipeline is deliberately the same shape as find_batch's, including the row
+    // prefetch that is dead weight at a ~0 hit rate: it is gated on a 32-bit hash match, which fires
+    // ~21 times in 22M probes, so it costs nothing and stays honest on a hit-heavy workload.
+    auto find_batch_positions(const PosT *pos_flat,
+                              const size_t *pos_off,
+                              const uint32_t *k_of,
+                              size_t n,
+                              size_t *out,
+                              uint32_t *hash_out = nullptr) const -> void {
+        static constexpr size_t G = 16;
+        std::array<uint32_t, G> hh;
+        std::array<size_t, G> sp;
+        std::array<TermIndex, G> cand;
+        for (size_t base = 0; base < n; base += G) {
+            const size_t g = std::min(G, n - base);
+            for (size_t j = 0; j < g; ++j) {
+                hh[j] = fold_hash_positions(pos_flat + pos_off[base + j], k_of[base + j]);
+                sp[j] = spread(hh[j]);
+                __builtin_prefetch(&table_.slots[sp[j] & table_.mask], 0, 0);
+            }
+            if (hash_out != nullptr) {
+                std::copy_n(hh.begin(), g, hash_out + base);
+            }
+            for (size_t j = 0; j < g; ++j) {
+                cand[j] = kEmptySlot;
+                if (table_.count == 0) {
+                    continue;
+                }
+                cand[j] = probe_hash_match_(hh[j], sp[j] & table_.mask);
+                if (cand[j] != kEmptySlot) {
+                    __builtin_prefetch(&rows_[static_cast<size_t>(cand[j]) * stride_], 0, 0);
+                }
+            }
+            for (size_t j = 0; j < g; ++j) {
+                const size_t q = base + j;
+                const PosT *qpos = pos_flat + pos_off[q];
+                const size_t qk = k_of[q];
+                if (cand[j] == kEmptySlot) {
+                    out[q] = kNotFound;
+                }
+                else if (row_eq_positions(static_cast<size_t>(cand[j]), qpos, qk)) {
+                    out[q] = static_cast<size_t>(cand[j]);
+                }
+                else {
+                    // A 32-bit collision along the chain. Rare enough to be measured at ~0.01 events per
+                    // run, so this walks the chain from the top rather than resuming it.
+                    out[q] = find_positions_(hh[j], qpos, qk);
+                }
+            }
+        }
+    }
+
+    // fold_hash of the monomial `pos` describes. Built through the same Monomial and the same fold, so
+    // it is equal to fold_hash(mono) by construction rather than by an identity that has to be proved
+    // and could drift when either side is edited. The bitset is a stack temporary: what this avoids is
+    // the caller's per-query 64 B array, not the hash itself.
+    [[nodiscard]] static auto fold_hash_positions(const PosT *pos, size_t count) noexcept -> uint32_t {
+        key_type mono;
+        for (size_t j = 0; j < count; ++j) {
+            mono.set(pos[j]);
+        }
+        return fold_hash(mono);
+    }
+
     // Insert-or-no-op. Row at `value` must already be written (the confirm reads dense rows).
     auto emplace(const key_type &key, mapped_type value) -> void {
         check_index_fits(value);
@@ -273,9 +390,51 @@ public:
         if (n == 0) {
             return;
         }
+        // Folding the key here and delegating means the two entry points share one insert loop, so the
+        // prefetch pipeline below cannot end up on only one of them.
+        bulk_insert_hashed(n, base, [&](size_t k) { return fold_hash(key_at(k)); });
+    }
+    // bulk_insert with the hashes already in hand. Same precondition (n distinct rows, already written,
+    // at consecutive indices) and the same slot assignment; the only difference is that it does not
+    // recompute a hash the caller's probe just computed from the same key. `hashes[k]` MUST be
+    // fold_hash of the key of row base+k -- a wrong hash does not corrupt the row, it makes the row
+    // unfindable, which reads later as a duplicate insert rather than as an error here.
+    //
+    // GROUP PREFETCH, and why it belongs here. find_batch hides its probe miss behind a 16-wide
+    // prefetch pipeline; this loop is the same random access into the same table on the same workload
+    // -- at the measured hit rate essentially every incoming query becomes an insert, so this runs ~22M
+    // times per build_graph against a 4 MB table with two partitions sharing a 16 MB L3 -- and it had no
+    // pipeline at all. Issuing the group's slot addresses before walking any of them puts G misses in
+    // flight instead of one.
+    //
+    // Correctness does not depend on any of it: a prefetch is a hint, the insert re-reads the slot, and
+    // a rehash mid-group only makes the remaining hints stale (the address is recomputed from the
+    // current mask at insert time). hash_at is called exactly ONCE per element and buffered, because on
+    // the key-taking path it is a splitmix over eight words, not an array read.
+    //
+    // This was briefly selectable, because three "obviously fewer instructions" changes on this branch
+    // had measured SLOWER and a prefetch that misses its window is cache pollution rather than a no-op.
+    // It measured 0.9008x and 0.9106x on incoming_s and 0.8786x/0.8763x on insert_s, 8/8 paired reps in
+    // each of two independent cells at p=0.0078, so the unpipelined loop is gone. Note what separates it
+    // from the three that lost: it removes no instructions, it overlaps a DRAM miss. The wins on this
+    // branch have been memory-system wins and the losses instruction-count guesses.
+    template <typename HashFn>
+    auto bulk_insert_hashed(size_t n, mapped_type base, HashFn &&hash_at) -> void {
+        if (n == 0) {
+            return;
+        }
         check_index_fits(base + n - 1);
-        for (size_t k = 0; k < n; ++k) {
-            insert_slot_(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
+        static constexpr size_t G = 16; // same group width as find_batch, for the same reason
+        std::array<uint32_t, G> hh;
+        for (size_t b = 0; b < n; b += G) {
+            const size_t g = std::min(G, n - b);
+            for (size_t j = 0; j < g; ++j) {
+                hh[j] = hash_at(b + j);
+                __builtin_prefetch(&table_.slots[spread(hh[j]) & table_.mask], /*rw=*/1, /*locality=*/0);
+            }
+            for (size_t j = 0; j < g; ++j) {
+                insert_slot_(static_cast<TermIndex>(base + b + j), hh[j]);
+            }
         }
     }
     template <typename Func>
@@ -403,6 +562,42 @@ private:
             }
         }
         return true;
+    }
+
+    // Compare row i against an ascending position list. Both sides are ascending position lists, so this
+    // is the natural form of the confirm and the dense round-trip in row_eq_key exists only because the
+    // key used to arrive dense. A spilled row has no position array, so it falls back to a dense compare
+    // built from the query -- the one place this form has to materialise anything.
+    [[nodiscard]] auto row_eq_positions(size_t i, const PosT *q, size_t qk) const -> bool {
+        const PosT c = rows_[i * stride_];
+        if (c == kOverflowMarker) {
+            key_type mono;
+            for (size_t j = 0; j < qk; ++j) {
+                mono.set(q[j]);
+            }
+            return overflow_.at(i) == mono;
+        }
+        if (qk != static_cast<size_t>(c)) {
+            return false;
+        }
+        return std::equal(q, q + qk, &rows_[(i * stride_) + 1]);
+    }
+
+    // find()'s chain walk for a position-list key, entered with the hash already folded. Only reachable
+    // from find_batch_positions' 32-bit-collision arm.
+    [[nodiscard]] auto find_positions_(uint32_t h, const PosT *q, size_t qk) const -> size_t {
+        if (table_.count == 0) {
+            return kNotFound;
+        }
+        for (size_t s = spread(h) & table_.mask;; s = (s + 1) & table_.mask) {
+            const Slot &e = table_.slots[s];
+            if (e.idx == kEmptySlot) {
+                return kNotFound;
+            }
+            if (e.h == h && row_eq_positions(static_cast<size_t>(e.idx), q, qk)) {
+                return static_cast<size_t>(e.idx);
+            }
+        }
     }
 
     static auto check_index_fits(size_t value) -> void {

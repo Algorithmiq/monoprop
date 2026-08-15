@@ -30,6 +30,7 @@
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/LayerProfile.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/QueryCodec.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
@@ -70,7 +71,12 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 template <size_t NumModes>
 struct GraphSink {
     static constexpr bool wants_values = false;
-    static constexpr size_t kStride = kQueryWords<NumModes>;
+    // Two layouts, deliberately named apart. incoming_layout describes the records this rank RECEIVES;
+    // querier_layout describes this rank's OWN send buffer. For ContractSink those differ in `fused`,
+    // and reading one with the other silently takes a neighbouring record's phase. They coincide here
+    // only because GraphSink never fuses. See the note on ContractSink::querier_layout.
+    [[nodiscard]] auto incoming_layout() const -> QueryLayout { return {/*fused=*/false}; }
+    [[nodiscard]] auto querier_layout() const -> QueryLayout { return {/*fused=*/false}; }
     using Response = TermIndex;
     static auto init_response() -> Response { return std::numeric_limits<TermIndex>::max(); }
 
@@ -134,11 +140,16 @@ struct GraphSink {
         auto &out = acc[r].out_entries;
         const size_t base = out.size();
         const size_t nq = resp.size();
+        const QueryLayout layout = querier_layout();
         out.resize(base + nq);
+        // Forward walk, not indexing by q: a compact query's width depends on its own popcount.
+        size_t off = 0;
         for (size_t q = 0; q < nq; ++q) {
             assert(resp[q] != std::numeric_limits<TermIndex>::max() && "resolver must insert absent cross-rank terms");
-            out[base + q] = {srcs[q], query_phase<NumModes>(qbuf, q)};
+            out[base + q] = {srcs[q], QueryCodec<NumModes>::phase_at(qbuf, off)};
+            off = QueryCodec<NumModes>::next_off(qbuf, layout, off);
         }
+        assert(off == qbuf.size() && "querier buffer does not hold exactly one query per response");
     }
 
     // Drains the per-rank accumulators into the LayerCore's sin_send/sin_recv lists (layout derivation:
@@ -186,7 +197,15 @@ struct GraphSink {
 template <size_t NumModes>
 struct ContractSink {
     static constexpr bool wants_values = true;
-    static constexpr size_t kStride = kQueryWordsFused<NumModes>;
+    // This rank RECEIVES fused (query+value) records, so incoming_layout is fused. The buffer handed to
+    // on_response_block, though, is this rank's own queries_r, which is PLAIN -- build_fused writes the
+    // fused form into the separate combined_qv_ scratch, and process_responses is called with queries_r.
+    // Reading the phase at the fused stride would take it from a neighbouring record for every q >= 1,
+    // and a wrong +/-1 on a querier half-rotation is a sign flip on a coefficient, not a crash. Until
+    // these were named apart, on_response_block used query_phase's default (plain) stride and was
+    // correct only by the accident of which buffer Engine happens to pass.
+    [[nodiscard]] auto incoming_layout() const -> QueryLayout { return {/*fused=*/true}; }
+    [[nodiscard]] auto querier_layout() const -> QueryLayout { return {/*fused=*/false}; }
     using Response = double;
     static auto init_response() -> Response { return 0.0; }
 
@@ -226,7 +245,7 @@ struct ContractSink {
         -> std::vector<VecZ> & {
         scratch.resize(queries.size());
         for (size_t r = 0; r < queries.size(); ++r) {
-            build_fused_query_value<NumModes>(queries[r], vals[r], scratch[r]);
+            QueryCodec<NumModes>::build_fused(queries[r], vals[r], scratch[r]);
         }
         return scratch;
     }
@@ -249,16 +268,20 @@ struct ContractSink {
             v_tgt = fused_scale ? op_coeffs[ip] * inv_cos : op_coeffs[ip];
         }
         else if (schrodinger) {
-            v_tgt =
-                is_paired<NumModes>(pr.mono[g]) ? algebra_state_phase<NumModes>(basis, pr.mono[g], state_mask_) : 0.0;
+            // Through the probe's accessors, not pr.mono: the probe may hold its keys as position lists.
+            // is_paired_at costs no bitset on either arm, and mono_at builds one only for the terms that
+            // pass it -- 94 in 20,860,967 at the measured configuration.
+            v_tgt = pr.is_paired_at(g) ? algebra_state_phase<NumModes>(basis, pr.mono_at(g), state_mask_) : 0.0;
         }
         else {
             v_tgt = 0.0; // Heisenberg fresh insert
         }
-        fc.cross_half[cross_base_ + g] = HalfRotationRec{ip,
-                                                         query_value<NumModes>(incoming[s], q),
-                                                         static_cast<int32_t>(pr.phase_of[g]),
-                                                         /*is_insert=*/ip >= pr.base};
+        // pr.off_of[g], not q: under the compact record a query ordinal does not name a buffer position.
+        fc.cross_half[cross_base_ + g] =
+            HalfRotationRec{ip,
+                            QueryCodec<NumModes>::value_at(incoming[s], incoming_layout(), pr.off_of[g]),
+                            static_cast<int32_t>(pr.phase_of[g]),
+                            /*is_insert=*/ip >= pr.base};
         return v_tgt;
     }
     auto process_reserve(const std::vector<std::vector<Response>> &inc_r, size_t rank_count, size_t my_rank_) -> void {
@@ -276,10 +299,14 @@ struct ContractSink {
                            const std::vector<size_t> &srcs,
                            const VecZ &qbuf) -> void {
         const size_t nq = rval.size();
+        const QueryLayout layout = querier_layout();
+        size_t off = 0;
         for (size_t q = 0; q < nq; ++q) {
-            const auto nphase = static_cast<int32_t>(-query_phase<NumModes>(qbuf, q));
+            const auto nphase = static_cast<int32_t>(-QueryCodec<NumModes>::phase_at(qbuf, off));
             fc.cross_half.push_back(HalfRotationRec{srcs[q], rval[q], nphase, /*is_insert=*/false});
+            off = QueryCodec<NumModes>::next_off(qbuf, layout, off);
         }
+        assert(off == qbuf.size() && "querier buffer does not hold exactly one query per response");
     }
 
     // No LayerCore in the fused path → nullptr. Two-pass fused (k>0 / cos==0 fallback) appends inserted
@@ -347,7 +374,8 @@ struct LayerBuildEngine {
         if constexpr (Sink::wants_values) {
             lv = &src_val_r[my_rank];
         }
-        const size_t nq = lq.empty() ? 0 : lq.size() / kQueryWords<NumModes>;
+        // Not a division: under the compact record, size/stride counts records rather than queries.
+        const size_t nq = QueryCodec<NumModes>::count_queries(lq, sink.querier_layout());
         {
             auto *const prof = layer_profile::slot();
             const layer_profile::ScopedNs t(prof != nullptr ? &prof->resolve_ns : nullptr);
@@ -417,7 +445,8 @@ struct LayerBuildEngine {
 
     // Followers a leader already matched must not be re-resolved over the wire, so compact them out.
     auto drop_matched_cross_rank_followers() -> void {
-        constexpr size_t W = kQueryWords<NumModes>;
+        using QC = QueryCodec<NumModes>;
+        const QueryLayout layout = sink.querier_layout();
         for (size_t r = 0; r < R; ++r) {
             if (r == my_rank) {
                 continue;
@@ -431,22 +460,26 @@ struct LayerBuildEngine {
             }
             const size_t nq = s.size();
             size_t kept = 0;
+            // Two cursors, because a dropped query is not a fixed number of words wide any more: src_off
+            // walks the original stream and dst_off trails it, so surviving queries stay in order and
+            // contiguous. Order matters -- Resolve mints miss indices in record order, which is the
+            // floating-point accumulation order.
+            size_t src_off = 0;
+            size_t dst_off = 0;
             for (size_t k = 0; k < nq; ++k) {
-                if (matched.is_marked(s[k])) {
-                    continue;
+                const size_t next = QC::next_off(q, layout, src_off);
+                if (!matched.is_marked(s[k])) {
+                    dst_off += QC::move_query(q, layout, src_off, dst_off);
+                    s[kept] = s[k];
+                    if (v != nullptr) {
+                        (*v)[kept] = (*v)[k];
+                    }
+                    ++kept;
                 }
-                if (kept != k) {
-                    std::copy(q.begin() + static_cast<std::ptrdiff_t>(k * W),
-                              q.begin() + static_cast<std::ptrdiff_t>((k + 1) * W),
-                              q.begin() + static_cast<std::ptrdiff_t>(kept * W));
-                }
-                s[kept] = s[k];
-                if (v != nullptr) {
-                    (*v)[kept] = (*v)[k];
-                }
-                ++kept;
+                src_off = next;
             }
-            q.resize(kept * W);
+            assert(src_off == q.size() && "follower compaction did not consume the whole query buffer");
+            q.resize(dst_off);
             s.resize(kept);
             if (v != nullptr) {
                 v->resize(kept);
@@ -485,7 +518,8 @@ private:
     auto response_recv_counts() const -> std::vector<int> {
         std::vector<int> counts(R);
         for (size_t r = 0; r < R; ++r) {
-            counts[r] = static_cast<int>(queries_r[r].size() / kQueryWords<NumModes>);
+            // One response per QUERY, which is not size/stride once records vary in width.
+            counts[r] = static_cast<int>(QueryCodec<NumModes>::count_queries(queries_r[r], sink.querier_layout()));
         }
         return counts;
     }
@@ -505,15 +539,26 @@ private:
         std::array<size_t, kResolveBatch> srcs;
         std::array<double, kResolveBatch> vals;
         std::array<size_t, kResolveBatch> found;
+        using QC = QueryCodec<NumModes>;
+        const QueryLayout layout = sink.querier_layout();
+        // A cursor rather than an ordinal, and it must advance even when the query is skipped: a compact
+        // record's width depends on its own popcount, so failing to step past a skipped follower reads
+        // the wrong term for every query after it.
+        size_t off = 0;
+        for (size_t skip = 0; skip < lo; ++skip) {
+            off = QC::next_off(lq, layout, off);
+        }
         size_t q = lo;
         while (q < hi) {
             size_t m = 0;
             for (; q < hi && m < kResolveBatch; ++q) {
                 const size_t src = ls[q];
+                const size_t this_off = off;
+                off = QC::next_off(lq, layout, off);
                 if (!is_leader_pass && matched.is_marked(src)) {
                     continue; // follower already matched by a leader → not an independent rotation
                 }
-                query_read<NumModes>(lq, q, keys[m], phases[m]);
+                QC::read_mono(lq, this_off, keys[m], phases[m]);
                 srcs[m] = src;
                 if constexpr (Sink::wants_values) {
                     vals[m] = (*lv)[q];
@@ -628,6 +673,11 @@ auto build_layer(MPOperator<NumModes> &local_op,
         }
     }
     fused.cos_blocks = std::vector<CosMask>{};
+
+    // Read once per layer, and by BOTH the sinks below and the scan (which reads the same cached
+    // Settings). It is a wire format, so it must also agree across every rank of the job -- a rank
+    // writing position records while another reads dense words does not diverge subtly, it exchanges
+    // garbage. srun exports the environment to all ranks, so per job is safe and per rank is not.
 
     auto run = [&]<class Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
         LayerBuildEngine<NumModes, Sink> eng(local_op,

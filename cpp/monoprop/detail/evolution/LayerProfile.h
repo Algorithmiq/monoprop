@@ -66,6 +66,12 @@ struct alignas(64) Slot {
     uint64_t n_hit = 0;    // self-resolve hits
     uint64_t n_miss = 0;   // self-resolve misses (deferred inserts)
     uint64_t query_words = 0;
+    // query_words is byte accounting, summed from what push() actually WROTE rather than from
+    // record_count * an assumed stride. The compact record is variable-width, so there is no stride to
+    // assume -- and an assumed one is how this counter previously reported the old fixed record's width
+    // on a buffer that no longer held it, which reads exactly like a change that did not happen. It is
+    // charged at emit, so it still counts records that drop_matched_cross_rank_followers removes and the
+    // self slot that never travels: read it as an upper bound on wire bytes, not as a byte count.
 
     // Population sample, overwritten each time the sweep runs (last sample wins; the per-sample line
     // is emitted at sweep time, so the growth curve is in the log even though only the last is here).

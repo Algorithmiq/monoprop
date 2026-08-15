@@ -31,6 +31,7 @@
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/LayerProfile.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/QueryCodec.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
@@ -219,6 +220,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     size_t prof_cutoff = 0;
     size_t prof_reject = 0;
     size_t prof_push = 0;
+    size_t prof_query_words = 0;
 
     FusedScanResult res;
     res.leader_queries.assign(rank_count, VecZ{});
@@ -290,9 +292,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // Read once per scan, not per term: config::get() caches, but a per-term load
         // through it is still a load the branch predictor has to carry.
         const bool digest_cutoff = force_digest_cutoff.value_or(config::get().digest_cutoff);
-
-        // Everything after a term survives the structural cutoff, factored out so routing, ordering and
-        // the query record cannot drift between the paths that reach it.
+        // Routing only, and only at R>1 -- see the owner selection in `push`. zob(G) is fixed for the
+        // whole scan, so the per-term work is the parent row's k table loads plus one XOR and one mix.
+        // Everything after a term survives the structural cutoff, shared by both decision paths below so
+        // routing, ordering and the query record cannot drift between them.
         auto push = [&](const Monomial<NumModes> &new_mono,
                         size_t mono_pop,
                         size_t overlap,
@@ -302,18 +305,24 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                         bool is_follower) {
             ++prof_push;
             const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
-            // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_mono) % rank_count);
+            // Single rank: every partner is self-owned, so skip the O(W) hash entirely. Multi-rank
+            // routes by owner, and this must agree with find_rank across the whole JOB rather than
+            // merely within this process -- a disagreement places a term on one rank and queries it on
+            // another, which duplicates a row instead of failing.
+            size_t r_prime = my_rank;
+            if (rank_count != 1) {
+                r_prime = monomial_hash<NumModes>(new_mono) % rank_count;
+            }
             const size_t source = i;
             if (is_follower) {
-                query_push<NumModes>(fq[r_prime], new_mono, phase);
+                prof_query_words += QueryCodec<NumModes>::push(fq[r_prime], new_mono, phase);
                 fs[r_prime].push_back(source);
                 if (capture_values) {
                     fv[r_prime].push_back(v_src);
                 }
             }
             else {
-                query_push<NumModes>(lq[r_prime], new_mono, phase);
+                prof_query_words += QueryCodec<NumModes>::push(lq[r_prime], new_mono, phase);
                 ls[r_prime].push_back(source);
                 if (capture_values) {
                     lv[r_prime].push_back(v_src);
@@ -382,9 +391,14 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                                              n_foll);
         }
         if (rank_count == 1) {
-            lq[my_rank].reserve((n_anti - n_foll) * kQueryWords<NumModes>);
+            // 2 words covers k <= 6, which the measured population is 99.9995% of; the rare wider term
+            // grows the buffer rather than being reserved for. Reserving a worst-case width instead
+            // would hold several times the memory the format exists to save -- the wire bytes would
+            // still fall and the resident bytes would not.
+            const size_t qw = CompactQuery<NumModes>::kWordsPerRecord;
+            lq[my_rank].reserve((n_anti - n_foll) * qw);
             ls[my_rank].reserve(n_anti - n_foll);
-            fq[my_rank].reserve(n_foll * kQueryWords<NumModes>);
+            fq[my_rank].reserve(n_foll * qw);
             fs[my_rank].reserve(n_foll);
         }
         auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
@@ -457,7 +471,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             prof->n_cutoff += prof_cutoff;
             prof->n_reject += prof_reject;
             prof->n_push += prof_push;
-            prof->query_words += prof_push * kQueryWords<NumModes>;
+            // Summed from what push() actually wrote, NOT prof_push * <a record width>. The record is
+            // variable width, so any product form reports the inline size for every term including the
+            // continued ones -- and an instrument blind to the thing it exists to measure reads exactly
+            // like a change that did not happen. This is how qbytes once reported 72 B/record for a
+            // 16 B format.
+            prof->query_words += prof_query_words;
             layer_profile::sample_population<NumModes>(prof, *op.store, prof->n_gates - 1);
         }
         res.cos_blocks.push_back(cos_b.finish());
