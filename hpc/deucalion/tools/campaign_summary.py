@@ -276,16 +276,31 @@ def emit_ledger(model: str, points: list[Point], axis: list[str]) -> None:
 
     Separate from the timing table because it is a different measurement with a different
     failure mode: these are the engine's own CAPACITY figures, which have disagreed with
-    the kernel by more than an order of magnitude in both directions, so every row is
-    printed beside the peak RSS of the arm it came from.
+    the kernel by more than an order of magnitude in both directions, so BOTH arms' peak
+    RSS is printed beside them. One arm's RSS alone cannot settle the question the ledger
+    raises; only the ratio of the two can, and the two ratios have already disagreed in
+    sign -- a cell whose ledger said the port was 7% larger measured 2.7% smaller.
     """
     print(f"\n### {model} -- operator memory (B/term)\n")
     print(
-        "`main/port` above 1.00x means the port is smaller. These are capacity, not "
-        "residency; read them beside `peak RSS`.\n"
+        "`main/port` above 1.00x means the port is smaller, for the ledger columns and "
+        "for RSS alike. The ledger is CAPACITY and the RSS is the kernel's answer for the "
+        "whole job: they answer different questions and are allowed to disagree. Where "
+        "they do, the RSS ratio is the one a user feels.\n"
     )
 
-    headers = [*axis, "N", "terms", "field", "main", "port", "main/port", "peak RSS"]
+    headers = [
+        *axis,
+        "N",
+        "terms",
+        "field",
+        "main",
+        "port",
+        "main/port",
+        "main RSS",
+        "port RSS",
+        "RSS main/port",
+    ]
     print("| " + " | ".join(headers) + " |")
     print("|" + "|".join(["---"] * len(headers)) + "|")
 
@@ -296,7 +311,9 @@ def emit_ledger(model: str, points: list[Point], axis: list[str]) -> None:
         cells = list(point.cells.values())
         by_side = {s: [c for c in cells if c.side == s] for s in ("main", "port")}
         terms = terms_of(point.cells, "port") or terms_of(point.cells, "main")
+        rss_main, _ = time_v_peak(point.path, "main")
         rss_port, _ = time_v_peak(point.path, "port")
+        rss_ratio = f"{rss_main / rss_port:.3f}x" if (rss_main and rss_port) else "-"
 
         extra = ledger_bpt(by_side["port"], PORT_ONLY_IN_TOTAL)
         if extra:
@@ -322,7 +339,9 @@ def emit_ledger(model: str, points: list[Point], axis: list[str]) -> None:
                         f"{main_bpt:.2f}" if main_bpt is not None else "-",
                         f"{port_bpt:.2f}" if port_bpt is not None else "-",
                         ratio,
+                        (f"{rss_main / GIB:.1f}" if (rss_main and i == 0) else ""),
                         (f"{rss_port / GIB:.1f}" if (rss_port and i == 0) else ""),
+                        rss_ratio if i == 0 else "",
                     ]
                 )
                 + " |"
