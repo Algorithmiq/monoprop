@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
@@ -186,4 +187,78 @@ BOOST_AUTO_TEST_CASE(graph_encoding_d_from_b_derivation_both_arms) {
     // send side reads B verbatim
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 0, 0), 10U);
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 0, 4), 22U);
+}
+
+// The accounting split behind graph_memory_breakdown(). These lock the property the split
+// exists to expose: the slot-record cost is set by the size of the world, and does not move
+// when the traffic through it does.
+
+BOOST_AUTO_TEST_CASE(graph_encoding_occupied_slots_counts_only_slots_carrying_traffic) {
+    std::vector<CrossRankPartnerData> data(5); // five world slots, two of them used
+    data[1].sin_send_indices.push_back(7);
+    data[1].sin_recv_entries.push_back({0, 1});
+    data[1].in_count = 1;
+    data[3].sin_send_indices.push_back(9);
+    data[3].sin_recv_entries.push_back({0, 1});
+    data[3].in_count = 1;
+
+    const auto storage = detail::build_packed_cross_rank_storage(data);
+
+    BOOST_CHECK_EQUAL(storage.rank_count(), 5U);
+    BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(storage), 2U);
+}
+
+BOOST_AUTO_TEST_CASE(graph_encoding_slot_record_bytes_track_the_world_not_the_traffic) {
+    // Same single sender, two different world sizes: the traffic is identical, so anything
+    // that grows here is paid for the world rather than for the work.
+    std::vector<CrossRankPartnerData> narrow(2);
+    std::vector<CrossRankPartnerData> wide(8);
+    for (auto *data : {&narrow, &wide}) {
+        (*data)[0].sin_send_indices.push_back(1);
+        (*data)[0].sin_recv_entries.push_back({0, 1});
+        (*data)[0].in_count = 1;
+    }
+
+    const auto narrow_storage = detail::build_packed_cross_rank_storage(narrow);
+    const auto wide_storage = detail::build_packed_cross_rank_storage(wide);
+
+    BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(narrow_storage), 1U);
+    BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(wide_storage), 1U);
+    // Four times the slots for the same one term crossing.
+    BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(wide_storage),
+                      4 * detail::cross_rank_slot_record_bytes(narrow_storage));
+    BOOST_CHECK_LT(detail::cross_rank_slot_record_bytes(narrow_storage),
+                   detail::cross_rank_storage_bytes(narrow_storage));
+}
+
+BOOST_AUTO_TEST_CASE(graph_encoding_lazy_layout_bytes_do_not_force_the_allocation) {
+    LayerCore core;
+    core.evolution_exchange_layout = detail::build_layer_exchange_layout({3, 0, 5}, /*scale=*/1);
+
+    // Reading the size must not build the thing being sized, or the instrument reports its
+    // own footprint and every layer pays 2*P ints for having been measured.
+    BOOST_CHECK_EQUAL(core.derivative_exchange_layout_bytes(), 0U);
+    static_cast<void>(core.derivative_exchange_layout());
+    BOOST_CHECK_GT(core.derivative_exchange_layout_bytes(), 0U);
+
+    core.reset_derivative_exchange_layout();
+    BOOST_CHECK_EQUAL(core.derivative_exchange_layout_bytes(), 0U);
+
+    // The transpose cache is eval-time state: nothing has resolved it, so it is not resident.
+    BOOST_CHECK_EQUAL(detail::layer_exchange_layout_cache_bytes(core.evolution_exchange_layout), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(graph_encoding_skewed_endpoint_counts_are_refused) {
+    // B and D are the two endpoints of the same rotation set, so the packed record keeps one
+    // count and one offset for both. GraphSink::finalize resizes the two vectors from the same
+    // expression, so the engine cannot produce a skew -- but nothing in the TYPE prevents one,
+    // and unchecked it would not throw: cross_rank_sin_recv_index would mis-derive Q and read a
+    // wrong-but-valid endpoint. Refusing at the choke point makes the assumption a precondition.
+    std::vector<CrossRankPartnerData> data(1);
+    data[0].sin_send_indices.push_back(1);
+    data[0].sin_send_indices.push_back(2);
+    data[0].sin_recv_entries.push_back({1, 1}); // one D against two B
+    data[0].in_count = 1;
+
+    BOOST_CHECK_THROW(detail::build_packed_cross_rank_storage(data), std::logic_error);
 }

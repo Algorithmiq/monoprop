@@ -14,9 +14,11 @@
 
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 
+#include <algorithm>
 #include <format>
 #include <limits>
 #include <memory>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -103,18 +105,27 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
     storage.ranges.resize(num_ranks);
 
     size_t total_b = 0;
-    size_t total_d = 0;
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         const auto &partner = data[rank];
+        // B and D are the two endpoints of the same rotation set, so they must be the same
+        // length. The record stores one count and one offset for both; checking here is what
+        // makes that a precondition instead of a convention. Unchecked, a skew would not throw
+        // -- cross_rank_sin_recv_index would mis-derive Q and silently read the wrong endpoint,
+        // and Evolution's self-slot snapshot would run off the end of its B-sized buffer.
+        if (partner.sin_send_indices.size() != partner.sin_recv_entries.size()) {
+            throw std::logic_error(std::format(
+                "Cross-rank slot {} has {} send endpoints against {} recv endpoints; B and D are the same set.",
+                rank,
+                partner.sin_send_indices.size(),
+                partner.sin_recv_entries.size()));
+        }
         auto &range = storage.ranges[rank];
         range.sin_send_offset = total_b;
         range.sin_send_count = static_cast<TermIndex>(partner.sin_send_indices.size());
-        range.sin_recv_offset = total_d;
-        range.sin_recv_count = static_cast<TermIndex>(partner.sin_recv_entries.size());
         range.in_count = static_cast<TermIndex>(partner.in_count);
         total_b += partner.sin_send_indices.size();
-        total_d += partner.sin_recv_entries.size();
     }
+    const size_t total_d = total_b;
 
     bool uses_binary_phases = true;
     for (const auto &partner : data) {
@@ -130,8 +141,10 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
 
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         const auto &partner = data[rank];
+        // One offset addresses both arrays: the counts are equal per slot (checked above), so
+        // their prefix sums are too.
         const size_t b_off = storage.ranges[rank].sin_send_offset;
-        const size_t d_off = storage.ranges[rank].sin_recv_offset;
+        const size_t d_off = b_off;
 
         for (size_t k = 0; k < partner.sin_send_indices.size(); ++k) {
             storage.sin_send_indices[b_off + k] = checked_term_index(partner.sin_send_indices[k], "Cross-rank B index");
@@ -154,8 +167,24 @@ auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t {
     return bytes;
 }
 
+auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size_t {
+    return storage.ranges.capacity() * sizeof(CrossRankPartnerRange);
+}
+
+auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t {
+    // sin_send_count alone is the predicate: it is the whole endpoint set for the slot,
+    // in-block and out-block together, so in_count cannot be non-zero while it is zero.
+    return static_cast<size_t>(std::ranges::count_if(
+        storage.ranges, [](const CrossRankPartnerRange &range) { return range.sin_send_count != 0; }));
+}
+
 auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t {
     return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
+}
+
+auto layer_exchange_layout_cache_bytes(const LayerExchangeLayout &layout) -> size_t {
+    const auto &cached = layout.recv_cache.layout;
+    return cached.counts.capacity() * sizeof(int) + cached.displs.capacity() * sizeof(int);
 }
 
 auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
@@ -197,6 +226,14 @@ auto LayerCore::derivative_exchange_layout() const -> const LayerExchangeLayout 
         derivative_exchange_layout_cache_ = detail::build_derivative_exchange_layout(evolution_exchange_layout);
     }
     return *derivative_exchange_layout_cache_;
+}
+
+auto LayerCore::derivative_exchange_layout_bytes() const -> size_t {
+    if (!derivative_exchange_layout_cache_) {
+        return 0;
+    }
+    const auto &layout = *derivative_exchange_layout_cache_;
+    return detail::layer_exchange_layout_storage_bytes(layout) + detail::layer_exchange_layout_cache_bytes(layout);
 }
 
 } // namespace monoprop
