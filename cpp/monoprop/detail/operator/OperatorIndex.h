@@ -421,6 +421,12 @@ public:
         return sizeof(OperatorIndex) + (table_.slots.capacity() * sizeof(Slot));
     }
 
+    // Diagnostics on the dedup table's realised sizing: the slot count is what indexing_bytes is
+    // really measuring, and occupancy is entries/slots. Exposed so the load-factor ceiling can be
+    // pinned by a test rather than asserted in a comment.
+    [[nodiscard]] auto index_slot_count() const -> size_t { return table_.slots.size(); }
+    [[nodiscard]] auto index_entry_count() const -> size_t { return table_.count; }
+
 private:
     struct Slot {
         TermIndex idx = kEmptySlot;
@@ -462,6 +468,20 @@ private:
 
     // One open-addressing table: power-of-2 slot count, linear probing, max load factor 0.7
     // (the group-prefetch win erodes at high load — longer probe chains add un-prefetched reads).
+    //
+    // The power of 2 is deliberate and was re-measured, because it looks like pure waste: `bit_ceil`
+    // against a 0.7 threshold leaves the realised load anywhere in [0.35, 0.7], and this table is the
+    // largest structure in the operator, so the overshoot is worth ~4 B/term. Sizing the table exactly
+    // and range-reducing with a multiply-shift instead of this mask was built and measured: it does
+    // deliver the memory (index 20.18 → 16.32 B/term on Hubbard, 18.51 → 14.91 on the 29M-term
+    // Majorana point, 7% of the whole operator) and it costs **`propagate` 1.015× on Hubbard and
+    // 1.019× on kicked Ising, both 6/6, p=0.031**.
+    //
+    // The cost is not the multiply, it is the density the memory win is made of: linear-probe chain
+    // length goes as (1 + 1/(1-α))/2, so moving Hubbard's load from 0.396 to 0.490 buys 7% of the
+    // operator with 11% more probe steps on hits and 29% more on misses. On THIS lever memory and time
+    // are strictly opposed, and the no-runtime-penalty rule decides it. Narrowing the slot is the
+    // opposite trade — fewer bytes at constant α — and is the lever to reach for instead.
     struct Table {
         std::vector<Slot> slots = std::vector<Slot>(kMinSlots, Slot{});
         size_t mask = kMinSlots - 1;

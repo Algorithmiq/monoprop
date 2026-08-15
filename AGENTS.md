@@ -151,6 +151,14 @@ Key files:
     - Two figures move with the **observable size, not the operator size**: `init_operator_bytes` is
       39.58 B/term when the observable is 7M terms and **0.0** on Hubbard and kicked Ising, whose
       observable is a single site. Never quote one workload's ledger as the other's.
+    - **The dedup table's `bit_ceil` overshoot is the one exception, and it is paid on purpose.**
+      `OperatorIndex::Table` is the largest structure left in the operator (18.51 B/term on the 29M
+      -term Majorana point) and power-of-2 sizing leaves it anywhere in [0.35, 0.7] load — 0.432
+      there, i.e. 2.31 slots per term where 1.43 would do. Exact sizing with multiply-shift range
+      reduction was built and measured: it delivers 7% of the operator and costs `propagate`
+      **1.015× on Hubbard and 1.019× on kicked Ising, both 6/6, p=0.031**. Occupancy *is* the memory
+      win, and chain length goes as (1 + 1/(1−α))/2, so on this container memory and time are
+      strictly opposed. Do not re-derive this; the frontier is in `RESULTS-invidx-memory.md`.
 - **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
   propagators, one hash partition each. Every method that fans out must use the private partition
   vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`

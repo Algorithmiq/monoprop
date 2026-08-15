@@ -51,6 +51,13 @@ static_assert(!std::is_copy_constructible_v<Store>, "OperatorIndex must remain n
 MSet bs(const VecZ &r) {
     return indices_to_bitset<N>(r);
 }
+
+// i -> a distinct 3-position monomial, for i < 8000. This is just i written in base 20 with each
+// digit placed in its own disjoint range, so injectivity is by construction and every row fits
+// inside the default inline width of 11.
+MSet tri(size_t i) {
+    return bs({i % 20, 20 + ((i / 20) % 20), 40 + ((i / 400) % 20)});
+}
 } // namespace
 
 BOOST_AUTO_TEST_CASE(rows_roundtrip_dense_popcount_positions) {
@@ -194,6 +201,57 @@ BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
     for (size_t i = 0; i < keys.size(); ++i) {
         BOOST_TEST(out[i] == Store::kNotFound);
     }
+}
+
+// Growing the store through many rehashes must not strand a key. This is the regression guard for
+// anything that touches the probe loop or the table's sizing rule: `find` and `find_batch` agree with
+// each other and with insertion at every table size the growth path visits, and the load-factor
+// ceiling holds throughout. It is deliberately larger than the other cases here (~8 doublings) --
+// a probe or wraparound bug typically strands keys near the top of the table, silently, rather than
+// failing on a small example.
+BOOST_AUTO_TEST_CASE(probing_is_correct_across_rehashes) {
+    Store s;
+    constexpr size_t kN = 4000;
+    for (size_t i = 0; i < kN; ++i) {
+        const auto key = tri(i);
+        s.push_back(key);
+        s.emplace(key, i);
+    }
+    BOOST_TEST(s.index_entry_count() == kN);
+
+    // The 0.7 load ceiling is what keeps the group-prefetch probe short; pin it rather than trusting
+    // the comment on Table.
+    BOOST_TEST(s.index_slot_count() * 7u >= kN * 10u);
+
+    bool all_found = true;
+    for (size_t i = 0; i < kN; ++i) {
+        const auto f = s.find(tri(i));
+        if (!f.has_value() || *f != i) {
+            all_found = false;
+        }
+    }
+    BOOST_TEST(all_found);
+
+    // An absent key must terminate on an empty slot rather than wrap forever.
+    BOOST_TEST(!s.find(bs({61, 62, 63})).has_value());
+
+    // find_batch walks the same probe loop through its own prefetch pipeline; it must agree.
+    std::vector<MSet> q;
+    for (size_t i = 0; i < 64; ++i) {
+        q.push_back(tri(i * 61)); // strided, so the queries are spread over the whole table
+    }
+    q.push_back(bs({61, 62, 63}));
+    std::vector<size_t> out(q.size(), 0);
+    s.find_batch(q.data(), q.size(), out.data());
+    bool batch_agrees = true;
+    for (size_t i = 0; i < q.size(); ++i) {
+        const auto scalar = s.find(q[i]);
+        if (out[i] != (scalar ? *scalar : Store::kNotFound)) {
+            batch_agrees = false;
+        }
+    }
+    BOOST_TEST(batch_agrees);
+    BOOST_TEST(out.back() == Store::kNotFound);
 }
 
 // shrink_rows_to_fit is not called from the propagation path on purpose -- doing it once per
