@@ -22,6 +22,8 @@ target_compile_definitions(
   PUBLIC
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
     $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
+    monoprop_INVIDX_CHUNK_WORDS=${monoprop_INVIDX_CHUNK_WORDS}
+    monoprop_INVIDX_BITMAP_M_STAR=${monoprop_INVIDX_BITMAP_M_STAR}
 )
 
 # flags to prepend
@@ -98,6 +100,8 @@ target_compile_definitions(
   INTERFACE
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
     $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
+    monoprop_INVIDX_CHUNK_WORDS=${monoprop_INVIDX_CHUNK_WORDS}
+    monoprop_INVIDX_BITMAP_M_STAR=${monoprop_INVIDX_BITMAP_M_STAR}
 )
 
 target_link_libraries(

@@ -267,7 +267,11 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              // Diagnostics (not part of total_bytes; see the struct).
                                              {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
                                              {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
-                                             {"d_invidx_dense_columns", b.inverted_index_dense_columns},
+                                             {"d_invidx_bitmap_chunks", b.inverted_index_bitmap_chunks},
+                                             {"d_invidx_delta_bytes", b.inverted_index_delta_bytes},
+                                             {"d_invidx_dir_bytes", b.inverted_index_dir_bytes},
+                                             {"d_invidx_tail_bytes", b.inverted_index_tail_bytes},
+                                             {"d_invidx_arena_slack_bytes", b.inverted_index_arena_slack_bytes},
                                              {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
                                              {"d_state_coeffs_nonzero", b.state_coeffs_nonzero}};
     });

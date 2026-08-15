@@ -19,6 +19,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <optional>
 #include <span>
 #include <vector>
@@ -69,6 +70,11 @@ auto build_even_parity_generator_columns(const Monomial<NumModes> &gen_mono) -> 
 
 // One nonzero-overlap word carried from scan pass 1 to emit pass 2. `overlap` bit t set ⟺ term (base+t)
 // anticommutes with G; `foll` = overlap & pivot column = the followers (leaders are `overlap ^ foll`).
+//
+// This stays a COMPACTED array of 24-byte entries. Storing it densely in the word index makes `base`
+// implicit and the entry 16 bytes, which at the measured ~94% word density is the smaller array -- and it
+// measured nothing: `propagate` 1.000x with only 3 of 6 reps agreeing on Hubbard at 26.6M terms, and
+// 1.004x the wrong way on kicked Ising. The traffic it saves is L2-resident either way.
 struct EvenParityNzWord {
     size_t base;
     uint64_t overlap;
@@ -95,14 +101,35 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     nz.clear();
     n_anti = 0;
     n_foll = 0;
-    const bool pivot_dense = sc.column_is_dense(pivot_col);
-    const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_data(pivot_col) : nullptr;
+    // Majorana folds G itself and splits on gen.find_first(), and build_even_parity_generator_columns
+    // emits ascending, so there the pivot IS gen_cols[0]: expand it into its own scratch, seed the main
+    // block from that, and fold the remaining columns on top. The pivot is then read once instead of
+    // twice and the deferred pass below never runs. Pauli folds J(G) = pair_swap(G), which is disjoint
+    // from G, so its pivot stays a genuine extra column and takes the deferred path.
+    size_t pivot_in_gen = gen_cols.size();
+    for (size_t ci = 0; ci < gen_cols.size(); ++ci) {
+        if (gen_cols[ci] == pivot_col) {
+            pivot_in_gen = ci;
+            break;
+        }
+    }
+    const bool pivot_is_fold_column = pivot_in_gen < gen_cols.size();
     std::vector<uint64_t> &blk = column_block_scratch();
-    // A dense pivot is read inline; a sparse pivot is scatter-expanded lazily (only for blocks with a
-    // nonzero overlap, so no-anticommuter blocks skip it) via a deferred follower fix-up — bit-identical
-    // to eager expansion.
+    std::vector<uint64_t> &pblk = pivot_column_block_scratch();
+    // A pivot that is not a fold column is scatter-expanded lazily (only for blocks with a nonzero
+    // overlap, so no-anticommuter blocks skip it) via a deferred follower fix-up — bit-identical to eager
+    // expansion.
     auto fold_range = [&](size_t bb, size_t be) {
-        combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
+        const uint64_t *pivot_words = nullptr;
+        if (pivot_is_fold_column) {
+            combine_columns_block<NumModes>(sc, std::span<const size_t>(&pivot_col, 1), pblk.data(), bb, be);
+            std::memcpy(blk.data(), pblk.data(), (be - bb) * sizeof(uint64_t));
+            xor_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be, pivot_in_gen);
+            pivot_words = pblk.data();
+        }
+        else {
+            combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
+        }
         const size_t nz_block_start = nz.size();
         for (size_t wi = bb; wi < be; ++wi) {
             uint64_t overlap = blk[wi - bb];
@@ -117,16 +144,15 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
             }
             n_anti += static_cast<size_t>(std::popcount(overlap));
             uint64_t foll = 0;
-            if (pivot_dense) {
-                foll = overlap & pivot_dense_ptr[wi];
+            if (pivot_words != nullptr) {
+                foll = overlap & pivot_words[wi - bb];
                 n_foll += static_cast<size_t>(std::popcount(foll));
             }
             nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
         }
-        if (pivot_dense || nz.size() == nz_block_start) {
-            return; // dense pivot already folded in, or no anticommuting term — nothing to expand
+        if (pivot_words != nullptr || nz.size() == nz_block_start) {
+            return; // pivot already expanded, or no anticommuting term — nothing to expand
         }
-        std::vector<uint64_t> &pblk = pivot_column_block_scratch();
         combine_columns_block<NumModes>(sc, std::span<const size_t>(&pivot_col, 1), pblk.data(), bb, be);
         const uint64_t *pw = pblk.data();
         for (size_t k = nz_block_start; k < nz.size(); ++k) {
@@ -244,16 +270,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const uint64_t last_word_mask = (n % 64 == 0) ? ~uint64_t{0} : ((uint64_t{1} << (n % 64)) - 1);
         const std::span<const size_t> gen_cols(gen_columns.indices.data(), gen_columns.count);
 
-        // The scan can be skipped only when every fold column is empty; a dense column always holds ≥1
-        // posting, so any dense column makes it non-empty.
+        // The scan can be skipped only when every fold column is empty.
         bool fold_cols_empty = true;
         for (size_t ci = 0; ci < gen_columns.count; ++ci) {
-            const size_t c = gen_columns.indices[ci];
-            if (inverted_index.column_is_dense(c)) {
+            if (!inverted_index.column_is_empty(gen_columns.indices[ci])) {
                 fold_cols_empty = false;
-            }
-            else if (!inverted_index.sparse_column_rows(c).empty()) {
-                fold_cols_empty = false;
+                break;
             }
         }
         // Zero-postings early-out: no term touches a fold column ⇒ nothing anticommutes, so skip pass 1.

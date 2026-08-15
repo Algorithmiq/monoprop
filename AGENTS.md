@@ -85,6 +85,33 @@ Key files:
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
   templated on the algebra policy and bound to a runtime `Basis` once, via `with_algebra`.
+- **`InvertedIndex<N>`** (`cpp/monoprop/detail/operator/InvertedIndex.h`) is the transposed copy of the
+  operator: one bit-vector per bit position over the term rows, so XOR-combining a generator's columns
+  yields the anticommutation bit for every term at once. It is stored as **one arena of sealed 32768-row
+  chunks plus a delta-encoded growing tail**, and the whole tiering policy is one rule: *each (column,
+  chunk) cell takes whichever container is smallest* — `Empty`, `Bitmap`, or `U8Delta` byte gaps. No
+  promotion, no one-way transition, no density constant. Every container holds the same row set, so the
+  fold is bit-identical whichever one is picked, and three invariants are load-bearing:
+    - **Chunks tile a fold block, and the chunk height is a memory decision.** `kChunkWords` must divide
+      `kColumnBlockWords` and keep `kChunkRows <= 65536` so the chunk-local row id stays 16-bit; both are
+      `static_assert`ed. Within that it trades tail against directory: `seal_chunk_` reserves the next
+      tail from the chunk it just sealed, so tail bytes scale with the chunk height while the directory
+      scales inversely. Measured across the benchmark workloads the sum bottoms out at 512 words, and the
+      fold gets slower as chunks shrink, so the minimum is interior rather than at either end.
+    - **The smallest-container rule applies to the tail too**, restricted to the two containers that can
+      still be appended to: a delta stream, which is nothing but appends, and a row-proportional bitmap,
+      where an append is one bit. That is what keeps `append_rows` a `push_back` and makes sealing usually
+      a `memcpy`; `append_rows` runs several times per gate, so this is not an optimisation but the reason
+      the layout is usable at all. Do not "simplify" the tail to delta-only — that was measured at
+      **1.34× worse**, and only in the Pauli regime, where enough columns go dense that a byte per posting
+      loses to a bit per row.
+    - **The arena never uses `std::vector`'s doubling.** It reserves from a projection of the finished size
+      at the first seal, with bounded 12.5% growth as the fallback, and reports what is unused as
+      `d_invidx_arena_slack_bytes` — precisely so it cannot quietly become the 1.43x of dead capacity the
+      previous per-column layout carried.
+  `monoprop_INVIDX_CHUNK_WORDS` (default 512) sets the chunk height and `monoprop_INVIDX_BITMAP_M_STAR`
+  (default off) forces `Bitmap` at or above a posting count, buying fold speed with memory; see
+  `docs/content/docs/building.mdx`.
 - **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
   propagators, one hash partition each. Every method that fans out must use the private partition
   vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`

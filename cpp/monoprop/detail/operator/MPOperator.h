@@ -294,9 +294,13 @@ struct MPOperatorMemoryBreakdown final {
 
     // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
     // never double-count.
-    size_t inverted_index_dense_bytes = 0;  // of inverted_index_bytes: full-height bitmap columns
-    size_t inverted_index_sparse_bytes = 0; // of inverted_index_bytes: ascending set-row lists
-    size_t inverted_index_dense_columns = 0;
+    size_t inverted_index_dense_bytes = 0;  // of inverted_index_bytes: chunk-height bitmap payloads
+    size_t inverted_index_sparse_bytes = 0; // of inverted_index_bytes: posting-container payloads
+    size_t inverted_index_bitmap_chunks = 0;
+    size_t inverted_index_delta_bytes = 0; // of inverted_index_sparse_bytes: the byte-delta payloads
+    size_t inverted_index_dir_bytes = 0;   // the chunk directory: this layout's fixed per-chunk overhead
+    size_t inverted_index_tail_bytes = 0;  // of inverted_index_sparse_bytes: the unsealed growing chunk
+    size_t inverted_index_arena_slack_bytes = 0;
     size_t operator_terms_slack_bytes = 0; // of operator_terms_bytes: unused geometric-growth capacity
     // of state_coeffs_bytes: entries of the state that are not exactly 0.0
     size_t state_coeffs_nonzero = 0;
@@ -316,7 +320,11 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_bytes += o.inverted_index_bytes;
         inverted_index_dense_bytes += o.inverted_index_dense_bytes;
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
-        inverted_index_dense_columns += o.inverted_index_dense_columns;
+        inverted_index_bitmap_chunks += o.inverted_index_bitmap_chunks;
+        inverted_index_delta_bytes += o.inverted_index_delta_bytes;
+        inverted_index_dir_bytes += o.inverted_index_dir_bytes;
+        inverted_index_tail_bytes += o.inverted_index_tail_bytes;
+        inverted_index_arena_slack_bytes += o.inverted_index_arena_slack_bytes;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
         state_coeffs_nonzero += o.state_coeffs_nonzero;
         return *this;
@@ -337,10 +345,14 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
     breakdown.initial_state_bytes = op.initial_state.capacity() * sizeof(size_t);
     if (op.inverted_index_.has_value()) {
         breakdown.inverted_index_bytes = op.inverted_index_->memory_bytes();
-        const auto tiers = op.inverted_index_->tier_memory_bytes();
-        breakdown.inverted_index_dense_bytes = tiers[0];
-        breakdown.inverted_index_sparse_bytes = tiers[1];
-        breakdown.inverted_index_dense_columns = tiers[2];
+        const auto s = op.inverted_index_->stats();
+        breakdown.inverted_index_dense_bytes = s.bitmap_bytes;
+        breakdown.inverted_index_sparse_bytes = s.posting_bytes;
+        breakdown.inverted_index_bitmap_chunks = s.bitmap_chunks;
+        breakdown.inverted_index_delta_bytes = s.delta_bytes;
+        breakdown.inverted_index_dir_bytes = s.dir_bytes;
+        breakdown.inverted_index_tail_bytes = s.tail_bytes;
+        breakdown.inverted_index_arena_slack_bytes = s.arena_slack_bytes;
     }
     breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
     // State phases are unit-magnitude, so at rest the scored count IS the nonzero count; a live vector needs a scan.
