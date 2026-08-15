@@ -65,6 +65,36 @@ from ab_summary import (
 # directions, so the two are reported side by side rather than one standing in for the other.
 RSS_RE = re.compile(r"Maximum resident set size \(kbytes\):\s*(\d+)")
 
+# The operator ledger fields that exist on BOTH arms, so a ratio means something. The index
+# is the change under test; `indexing_bytes` is the dedup table beside it; the row store and
+# the total are what a reader actually budgets against. Fields carried by one arm only --
+# the `d_invidx_*` breakdown keys, which this branch renamed -- are omitted rather than
+# printed against a blank, and `matched_scratch_bytes` gets its own footnote: it is summed
+# into the port's total and into no main total at all, which makes the total ratio a FLOOR.
+LEDGER_FIELDS = (
+    "inverted_index_bytes",
+    "indexing_bytes",
+    "operator_terms_bytes",
+    "total_bytes",
+)
+PORT_ONLY_IN_TOTAL = "matched_scratch_bytes"
+
+
+def ledger_bpt(cells: list, field: str) -> float | None:
+    """Return one arm's median bytes-per-term for one ledger field.
+
+    Every operation in a cell reports the same operator, so this medians over operations
+    and reps alike: they are repeated measurements of one quantity, not a distribution.
+    """
+    values = [
+        fields[field] / terms
+        for cell in cells
+        for op, fields in (cell.results.get("opmembreak") or {}).items()
+        for terms in [((cell.results.get("opsize") or {}).get(op) or {}).get("terms")]
+        if terms and field in fields
+    ]
+    return medians(values)
+
 
 def time_v_peak(results_dir: Path, side: str) -> tuple[float | None, float | None]:
     """Return (summed, worst-rank) peak RSS in bytes for one arm, from its cell logs."""
@@ -145,15 +175,21 @@ class Point:
         return not self.refusals
 
 
-def emit_model(model: str, points: list[Point]) -> None:
-    """Print one model's campaign table."""
-    # The axis names itself: report only the config fields that actually move across the
-    # collated points, so a cutoff sweep shows cutoff and a size sweep shows the size.
+def axis_of(points: list[Point]) -> list[str]:
+    """Return the config fields that actually move across these points.
+
+    The axis names itself: a cutoff sweep shows cutoff and a size sweep shows the size,
+    without this file knowing what the models are.
+    """
     keys = sorted({k for p in points for k in p.config})
     axis = [k for k in keys if len({repr(p.config.get(k)) for p in points}) > 1]
     if not axis:  # a single point, or every point at the same size
         axis = [k for k in ("cutoff", "lower_atol") if k in keys]
+    return axis
 
+
+def emit_model(model: str, points: list[Point], axis: list[str]) -> None:
+    """Print one model's campaign table."""
     print(f"\n## {model}\n")
     print(f"Axis: {', '.join(axis) if axis else '(single size)'}\n")
 
@@ -235,6 +271,73 @@ def emit_model(model: str, points: list[Point]) -> None:
             print("| " + " | ".join(row) + " |")
 
 
+def emit_ledger(model: str, points: list[Point], axis: list[str]) -> None:
+    """Print one model's operator-memory table, in bytes per term.
+
+    Separate from the timing table because it is a different measurement with a different
+    failure mode: these are the engine's own CAPACITY figures, which have disagreed with
+    the kernel by more than an order of magnitude in both directions, so every row is
+    printed beside the peak RSS of the arm it came from.
+    """
+    print(f"\n### {model} -- operator memory (B/term)\n")
+    print(
+        "`main/port` above 1.00x means the port is smaller. These are capacity, not "
+        "residency; read them beside `peak RSS`.\n"
+    )
+
+    headers = [*axis, "N", "terms", "field", "main", "port", "main/port", "peak RSS"]
+    print("| " + " | ".join(headers) + " |")
+    print("|" + "|".join(["---"] * len(headers)) + "|")
+
+    floors = []
+    for point in sorted(
+        points, key=lambda p: [repr(p.config.get(k)) for k in axis] + [p.nodes]
+    ):
+        cells = list(point.cells.values())
+        by_side = {s: [c for c in cells if c.side == s] for s in ("main", "port")}
+        terms = terms_of(point.cells, "port") or terms_of(point.cells, "main")
+        rss_port, _ = time_v_peak(point.path, "port")
+
+        extra = ledger_bpt(by_side["port"], PORT_ONLY_IN_TOTAL)
+        if extra:
+            floors.append((point.path.name, extra))
+
+        for i, field in enumerate(LEDGER_FIELDS):
+            main_bpt = ledger_bpt(by_side["main"], field)
+            port_bpt = ledger_bpt(by_side["port"], field)
+            if main_bpt is None and port_bpt is None:
+                continue
+            ratio = f"{main_bpt / port_bpt:.2f}x" if (main_bpt and port_bpt) else "-"
+            print(
+                "| "
+                + " | ".join(
+                    [
+                        *(
+                            (str(point.config.get(k, "-")) if i == 0 else "")
+                            for k in axis
+                        ),
+                        str(point.nodes) if i == 0 else "",
+                        f"{terms:,}" if (terms and i == 0) else "",
+                        field,
+                        f"{main_bpt:.2f}" if main_bpt is not None else "-",
+                        f"{port_bpt:.2f}" if port_bpt is not None else "-",
+                        ratio,
+                        (f"{rss_port / GIB:.1f}" if (rss_port and i == 0) else ""),
+                    ]
+                )
+                + " |"
+            )
+
+    if floors:
+        worst = max(v for _, v in floors)
+        print(
+            f"\n`total_bytes` understates the saving: the port sums "
+            f"`{PORT_ONLY_IN_TOTAL}` (up to {worst:.2f} B/term here) into its total and "
+            f"main counts it in no field at all. The `total_bytes` ratios above are a "
+            f"floor, not a best case."
+        )
+
+
 def main(argv: list[str]) -> int:
     """Render the campaign tables; return non-zero if any collated point was refused."""
     paths = [Path(a) for a in argv if not a.startswith("-")]
@@ -257,7 +360,10 @@ def main(argv: list[str]) -> int:
     )
 
     for model in sorted({p.model for p in good}):
-        emit_model(model, [p for p in good if p.model == model])
+        chosen = [p for p in good if p.model == model]
+        axis = axis_of(chosen)
+        emit_model(model, chosen, axis)
+        emit_ledger(model, chosen, axis)
 
     print("\n## Void\n")
     if void:
