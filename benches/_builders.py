@@ -22,6 +22,7 @@ Import-only (no pytest) so the builders are reusable from scripts or notebooks:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -50,10 +51,24 @@ Built = tuple[MajoranaPropagator, Circuit]
 
 
 def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
-    """Wrap ``fn`` so all MPI ranks enter and leave the call together.
+    """Wrap ``fn`` so the measured time ends only when every rank has finished.
 
-    The barriers make each rank's measured time reflect the makespan (the slowest
-    rank). A serial run returns ``fn`` unchanged, so there is no overhead.
+    Only the *exit* barrier belongs in the timed region. It is what makes each rank's
+    measurement the makespan -- the slowest rank's finish. Pair this with
+    :func:`barrier_setup`, which performs the entry barrier untimed.
+
+    The entry barrier used to live here, and it was charging every rank's measurement
+    with the skew in the *preceding* setup rather than with any work under test.
+    Measured directly at 8 ranks, that wait was 0.000/0.098/0.059/0.257/0.000/0.136 s
+    across six rounds of ``build_graph`` -- against a ~0.5 s operation. It accounted for
+    roughly 1.44x of the 2.86x spread pytest-benchmark reported on ``build_graph``, and
+    is why the reported remainder (wall minus instrumented layer time) correlated with
+    wall at +0.987 while the actual layer time correlated at +0.176. The engine was
+    steady; the instrument was not. (The residual, ~2.86x/1.44x, is NOT explained by
+    this and remains open -- suspects are pytest-benchmark's own per-round machinery,
+    the ``op_memory`` window, and the ``fresh`` cell running two ops in one process.)
+
+    A serial run returns ``fn`` unchanged, so there is no overhead.
 
     Args:
         fn: The callable to wrap.
@@ -63,12 +78,40 @@ def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
         return fn
 
     def wrapped(*args: object, **kwargs: object) -> _T:
-        comm.Barrier()
         result = fn(*args, **kwargs)
         comm.Barrier()
         return result
 
     return wrapped
+
+
+def barrier_setup(
+    comm: Any | None, setup: Callable[[], _T] | None = None
+) -> Callable[[], _T] | None:
+    """Build a ``pedantic(setup=...)`` callable that leaves the ranks synchronised.
+
+    ``pytest-benchmark``'s ``pedantic`` runs ``setup`` before each round and does not
+    time it, which is exactly where the entry barrier has to go: the ranks still start
+    the timed call together, but nobody's measurement absorbs the wait for the slowest
+    rank to finish setting up.
+
+    Args:
+        comm: An MPI communicator, or ``None`` for a serial run.
+        setup: The round's existing setup, or ``None`` if it has none.
+
+    Returns:
+        A setup callable, or ``None`` when there is nothing to do (serial run with no
+        setup), which ``pedantic`` accepts.
+    """
+    if comm is None or comm.Get_size() == 1:
+        return setup
+
+    def wrapped_setup() -> _T:
+        result = setup() if setup is not None else None
+        comm.Barrier()
+        return result  # type: ignore[return-value]
+
+    return wrapped_setup
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,23 +150,152 @@ class RandomProblem:
         return np.asarray(self.circuit.parameters, dtype=float)
 
 
+# Above this ratio of distinct monomials to requested terms, collisions are rare enough
+# that a flat margin beats computing the coupon-collector estimate in floating point,
+# where the huge binomials involved are not representable.
+_SPARSE_RATIO = 100
+
+# Rows are materialized in blocks so the transient list of freshly-boxed ints stays
+# bounded; a single ``tolist()`` over 24M rows is itself a multi-GiB spike.
+_TUPLE_CHUNK = 1 << 20
+
+
+def _unique_rows(rows: np.ndarray, num_majorana_indices: int) -> np.ndarray:
+    """Return ``rows`` with duplicate monomials dropped, draw order preserved.
+
+    Each row is already sorted ascending, so a row is a monomial and two equal rows are
+    the same monomial. When the indices fit, the row is packed into one ``int64`` and
+    uniqueness becomes a 1-D sort instead of a lexsort over a void view of the whole
+    array -- an order of magnitude cheaper at 24M rows, which is the size this exists for.
+    """
+    bits = max(int(num_majorana_indices - 1).bit_length(), 1)
+    if bits * rows.shape[1] <= 63:
+        keys = np.zeros(len(rows), dtype=np.int64)
+        for col in range(rows.shape[1]):
+            keys = (keys << bits) | rows[:, col].astype(np.int64)
+        _, first = np.unique(keys, return_index=True)
+    else:
+        _, first = np.unique(rows, axis=0, return_index=True)
+    # np.unique returns first occurrences in *sorted* order; re-sorting the indices puts
+    # the survivors back in draw order, so truncating to num_terms stays seed-stable.
+    return rows[np.sort(first)]
+
+
+def _draw_size(want: int, distinct: int) -> int:
+    """Return how many rows to draw so that ~``want`` of them are distinct monomials.
+
+    Drawing ``m`` rows uniformly from ``distinct`` possibilities leaves
+    ``distinct * (1 - (1 - 1/distinct)**m)`` expected distinct ones; inverting that gives
+    the draw size. The margin is what keeps the top-up loop to a single pass.
+    """
+    if distinct > want * _SPARSE_RATIO:
+        return want + max(16, want // 50)
+    # Clamped below 1: asking for the whole space is coupon collecting, whose exact draw
+    # count is unbounded in expectation, so aim just short of it and let the caller top up.
+    ratio = min(want / distinct, 1 - 1 / (2 * distinct))
+    return int(-distinct * math.log1p(-ratio)) + 16
+
+
+def _draw_monomials(
+    rng: np.random.Generator, size: int, length: int, num_majorana_indices: int
+) -> np.ndarray:
+    """Return ``size`` sorted rows of ``length`` pairwise-distinct indices."""
+    rows = np.sort(rng.integers(0, num_majorana_indices, size=(size, length)), axis=1)
+    if length == 1:
+        return rows
+    # Redraw rows that repeat an index, rather than permuting per row: with
+    # length << num_majorana_indices a repeat is a ~1% event, so a couple of redraws beat
+    # materializing a (size, num_majorana_indices) key matrix -- ~96 GiB at 24M rows.
+    repeated = (rows[:, :-1] == rows[:, 1:]).any(axis=1)
+    while repeated.any():
+        rows[repeated] = np.sort(
+            rng.integers(0, num_majorana_indices, size=(int(repeated.sum()), length)),
+            axis=1,
+        )
+        repeated = (rows[:, :-1] == rows[:, 1:]).any(axis=1)
+    return rows
+
+
 def _random_terms(
     rng: np.random.Generator,
     num_terms: int,
     length: int,
     num_majorana_indices: int,
 ) -> list[tuple[int, ...]]:
-    """Return ``num_terms`` distinct-index sorted Majorana monomials of ``length``."""
+    """Return ``num_terms`` distinct sorted Majorana monomials of ``length`` indices.
+
+    Drawn as a batch rather than one ``rng.choice`` per term. The per-term form cost
+    ~10 us/term, i.e. ~4 minutes and several GiB of transient heap at the 24M-term size
+    the 100M-term A/B needs, on every rank of every run. This changes the RNG stream, so
+    term sets are not comparable with runs predating it -- an A/B stays valid because both
+    arms import this one module.
+    """
     if length > num_majorana_indices:
         msg = (
             f"Cannot draw {length} distinct Majorana indices from "
             f"{num_majorana_indices} available indices."
         )
         raise ValueError(msg)
-    return [
-        tuple(sorted(rng.choice(num_majorana_indices, size=length, replace=False)))
-        for _ in range(num_terms)
-    ]
+
+    distinct = math.comb(num_majorana_indices, length)
+    if num_terms > distinct:
+        msg = (
+            f"Only {distinct} distinct monomials of length {length} exist over "
+            f"{num_majorana_indices} indices; {num_terms} requested."
+        )
+        raise ValueError(msg)
+
+    # Top up until enough distinct monomials survive. One pass is nearly always enough --
+    # _draw_size already inflates the request by the expected duplicate rate -- but the
+    # loop is what makes the function correct at every density rather than only the sparse
+    # one the 24M-term case sits at.
+    rows: np.ndarray | None = None
+    while rows is None or len(rows) < num_terms:
+        want = num_terms - (0 if rows is None else len(rows))
+        batch = _draw_monomials(
+            rng, _draw_size(want, distinct), length, num_majorana_indices
+        )
+        rows = batch if rows is None else np.concatenate((rows, batch))
+        rows = _unique_rows(rows, num_majorana_indices)
+    rows = rows[:num_terms]
+
+    # The bypass in _random_majorana_operator is only sound while every row is strictly
+    # ascending. Vectorized, so this costs nothing next to the draw it guards.
+    if length > 1 and not bool((rows[:, :-1] < rows[:, 1:]).all()):
+        msg = "internal: drawn monomials are not strictly ascending"
+        raise AssertionError(msg)
+
+    # Intern the indices. ``tolist()`` boxes every element into its own int object, and at
+    # 24M x 4 that is ~3 GiB of int objects that live as long as the problem does; mapping
+    # through a lookup list makes every tuple share one object per index value instead.
+    lookup = [*range(num_majorana_indices)]
+    terms: list[tuple[int, ...]] = []
+    for start in range(0, len(rows), _TUPLE_CHUNK):
+        terms.extend(
+            tuple(map(lookup.__getitem__, row))
+            for row in rows[start : start + _TUPLE_CHUNK].tolist()
+        )
+    return terms
+
+
+def _random_majorana_operator(
+    terms: list[tuple[int, ...]],
+    coefficients: list[float],
+    num_modes: int,
+) -> MajoranaOperator:
+    """Build a :class:`MajoranaOperator` directly from already-canonical terms.
+
+    ``MajoranaOperator.__init__`` re-derives each term's sign through
+    ``Majorana.from_unsorted`` and accumulates into a second dict. That is required in
+    general, but :func:`_random_terms` already returns sorted, distinct-index, pairwise
+    distinct monomials, so the canonicalization is a no-op that costs a full duplicate of
+    a 24M-entry mapping plus one ``Majorana`` object per term. Bypassing it is what keeps
+    the 100M-term working point inside a node's memory.
+    """
+    operator = MajoranaOperator.__new__(MajoranaOperator)
+    operator.num_modes = num_modes
+    operator.terms = dict(zip(terms, coefficients, strict=True))
+    return operator
 
 
 def make_random_problem(
@@ -154,7 +326,7 @@ def make_random_problem(
 
     obs_majoranas = _random_terms(rng, obs_terms, gen_length, num_majorana_indices)
     obs_coeffs = rng.standard_normal(obs_terms).tolist()  # Hermitian -> real
-    observable = MajoranaOperator(dict(zip(obs_majoranas, obs_coeffs)), num_modes)
+    observable = _random_majorana_operator(obs_majoranas, obs_coeffs, num_modes)
 
     gen_majoranas = _random_terms(rng, num_generators, gen_length, num_majorana_indices)
     gen_coeffs = rng.standard_normal(num_generators).tolist()
