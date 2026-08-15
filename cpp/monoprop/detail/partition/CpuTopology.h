@@ -25,6 +25,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "monoprop/detail/EnvConfig.h"
@@ -89,6 +90,34 @@ auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t gr
 auto enumerate_physical_cores() -> std::vector<PhysicalCore>;
 
 /*!
+ * @brief Whether something outside this process has already restricted its usable CPUs.
+ *
+ * True when the calling thread's affinity mask is a STRICT subset of the machine's allowed cpuset,
+ * i.e. a Slurm cgroup, a taskset or an MPI launcher binding has restricted this process.
+ *
+ * @warning This is NOT sufficient to decide that the mask is this rank's PRIVATE share. Mask width
+ *          cannot distinguish "8 ranks holding 16 cores each" from "8 ranks sharing one 16-core
+ *          mask" -- both leave a rank seeing 16 of 128 CPUs. Only comparing the co-located ranks'
+ *          masks answers that, which is why partition_cpusets() takes @c mask_is_private from the
+ *          caller (PartitionGroup allgathers the masks over its node communicator) rather than
+ *          inferring it here.
+ *
+ * @returns false when hwloc cannot load the topology or the affinity mask is the whole machine.
+ */
+auto process_is_cpu_confined() -> bool;
+
+/*!
+ * @brief This process's effective allowed cpuset, as a bit array of @p nwords 64-bit words.
+ *
+ * Exposed so callers can exchange masks between co-located ranks and test them for pairwise
+ * disjointness -- the only sound basis for deciding whether each rank owns a private share.
+ *
+ * @returns false (leaving @p out zeroed) when hwloc cannot load the topology or the mask needs
+ *          more than @p nwords words, which is treated as "cannot classify" and hence not private.
+ */
+auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
+
+/*!
  * @brief Build placement tokens for one MPI rank's partitions.
  *
  * Calls enumerate_physical_cores() and applies topo_detail::placement_order() to select @p n
@@ -98,10 +127,23 @@ auto enumerate_physical_cores() -> std::vector<PhysicalCore>;
  * @param n            Number of partitions to place.
  * @param group_index  This rank's 0-based index among the co-located ranks on the host.
  * @param group_count  Total number of co-located ranks on the host.
+ * @param mask_is_private  True only when the caller has established that the co-located ranks'
+ *                     affinity masks are pairwise DISJOINT, so this rank's mask is its own share of
+ *                     the node. See PartitionGroup::discover_node_peers_(), which allgathers the
+ *                     masks over its node communicator to decide.
  * @returns Vector of @p n CpuSet tokens, or empty when @c monoprop_PARTITION_PINNING is disabled,
- *          hwloc is unavailable, or the host cannot provide @p group_count × @p n distinct cores.
+ *          hwloc is unavailable, or not even @p n distinct cores are visible to this process.
+ *
+ * @note With @p mask_is_private, @p group_index / @p group_count are ignored once the normal split
+ *       has failed: the batch system has already partitioned the node (Slurm with per-rank cgroups),
+ *       so subdividing our own share a second time asks for @p group_count × more cores than exist
+ *       and places nothing at all. Disjointness is what makes ignoring them safe. Without it, a set
+ *       of ranks SHARING one narrow mask would every one of them collapse onto the same cores --
+ *       worse than not pinning, since each rank's busy-polling collectives would then starve the
+ *       others' barrier spins.
  */
-auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1) -> std::vector<CpuSet>;
+auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1, bool mask_is_private = false)
+    -> std::vector<CpuSet>;
 
 /*!
  * @brief Bind the calling thread to the PU identified by @p set.

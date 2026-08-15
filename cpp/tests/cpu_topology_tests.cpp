@@ -93,9 +93,43 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
     // invariant (one rank's busy-polling collectives cannot starve the other's barrier spins).
     BOOST_CHECK(rank0.front().pu != rank1.front().pu);
 
-    // Oversubscription: 2 ranks × cores.size() partitions > total physical cores.
-    const auto past_end = partition::partition_cpusets(/*n=*/cores.size(), /*group_index=*/1, /*group_count=*/2);
-    BOOST_CHECK(past_end.empty());
+    // 2 ranks × cores.size() partitions asks for more cores than this process can see. What that
+    // MEANS depends on whether the co-located ranks' masks are disjoint, which no local test can
+    // answer, so partition_cpusets takes it as an argument and both arms are pinned here:
+    //
+    //   shared mask  → a genuine oversubscription. Refuse: placing anyway would hand both ranks the
+    //                  same cores, and each rank's busy-polling collectives would starve the other's
+    //                  barrier spins — worse than not pinning at all.
+    //   private mask → the batch system already split the node (Slurm per-rank cgroups) and this is
+    //                  our own share. Refusing here is exactly what left every rank unpinned on the
+    //                  benchmark nodes, voiding four A/B jobs. Fill our mask.
+    //
+    // Passing the flag explicitly is what makes this deterministic on any machine; the earlier
+    // version branched on the ambient environment and so asserted whichever answer the host gave.
+    const auto shared_mask = partition::partition_cpusets(/*n=*/cores.size(),
+                                                          /*group_index=*/1,
+                                                          /*group_count=*/2,
+                                                          /*mask_is_private=*/false);
+    BOOST_CHECK(shared_mask.empty());
+
+    const auto private_mask = partition::partition_cpusets(/*n=*/cores.size(),
+                                                           /*group_index=*/1,
+                                                           /*group_count=*/2,
+                                                           /*mask_is_private=*/true);
+    BOOST_REQUIRE_EQUAL(private_mask.size(), cores.size());
+    std::set<int> placed;
+    for (const auto &set : private_mask) {
+        placed.insert(set.pu);
+    }
+    // Distinct PUs, and every one of them a core this process was actually granted.
+    BOOST_CHECK_EQUAL(placed.size(), cores.size());
+    std::set<int> visible;
+    for (const auto &core : cores) {
+        visible.insert(core.cpu);
+    }
+    for (const int pu : placed) {
+        BOOST_CHECK(visible.count(pu) == 1);
+    }
 }
 
 /* ── Policy unit tests (deterministic, no hwloc or live hardware) ─────────── */
