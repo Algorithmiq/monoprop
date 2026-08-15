@@ -217,6 +217,7 @@ def emit_model(model: str, points: list[Point], axis: list[str]) -> None:
     headers = [
         *axis,
         "N",
+        "layout",
         "terms",
         "op",
         "main ms",
@@ -231,7 +232,8 @@ def emit_model(model: str, points: list[Point], axis: list[str]) -> None:
     print("|" + "|".join(["---"] * len(headers)) + "|")
 
     for point in sorted(
-        points, key=lambda p: [repr(p.config.get(k)) for k in axis] + [p.nodes]
+        points,
+        key=lambda p: [repr(p.config.get(k)) for k in axis] + [p.layout, p.nodes],
     ):
         cells = list(point.cells.values())
         by_side = {s: [c for c in cells if c.side == s] for s in ("main", "port")}
@@ -245,6 +247,7 @@ def emit_model(model: str, points: list[Point], axis: list[str]) -> None:
             row = [
                 *((str(point.config.get(k, "-")) if i == 0 else "") for k in axis),
                 str(point.nodes) if i == 0 else "",
+                point.layout if i == 0 else "",
                 f"{terms:,}" if (terms and i == 0) else "",
                 short_op(op),
                 fmt_ms(
@@ -313,6 +316,7 @@ def emit_ledger(model: str, points: list[Point], axis: list[str]) -> None:
     headers = [
         *axis,
         "N",
+        "layout",
         "terms",
         "field",
         "main",
@@ -327,7 +331,8 @@ def emit_ledger(model: str, points: list[Point], axis: list[str]) -> None:
 
     floors = []
     for point in sorted(
-        points, key=lambda p: [repr(p.config.get(k)) for k in axis] + [p.nodes]
+        points,
+        key=lambda p: [repr(p.config.get(k)) for k in axis] + [p.layout, p.nodes],
     ):
         cells = list(point.cells.values())
         by_side = {s: [c for c in cells if c.side == s] for s in ("main", "port")}
@@ -355,6 +360,7 @@ def emit_ledger(model: str, points: list[Point], axis: list[str]) -> None:
                             for k in axis
                         ),
                         str(point.nodes) if i == 0 else "",
+                        point.layout if i == 0 else "",
                         f"{terms:,}" if (terms and i == 0) else "",
                         field,
                         f"{main_bpt:.2f}" if main_bpt is not None else "-",
