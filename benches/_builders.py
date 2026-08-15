@@ -126,6 +126,26 @@ def _random_terms(
     ]
 
 
+def _random_majorana_operator(
+    terms: list[tuple[int, ...]],
+    coefficients: list[float],
+    num_modes: int,
+) -> MajoranaOperator:
+    """Build a :class:`MajoranaOperator` directly from already-canonical terms.
+
+    ``MajoranaOperator.__init__`` re-derives each term's sign through
+    ``Majorana.from_unsorted`` and accumulates into a second dict. That is required in
+    general, but :func:`_random_terms` already returns sorted, distinct-index, pairwise
+    distinct monomials, so the canonicalization is a no-op that costs a full duplicate of
+    a 24M-entry mapping plus one ``Majorana`` object per term. Bypassing it is what keeps
+    the 100M-term working point inside a node's memory.
+    """
+    operator = MajoranaOperator.__new__(MajoranaOperator)
+    operator.num_modes = num_modes
+    operator.terms = dict(zip(terms, coefficients, strict=True))
+    return operator
+
+
 def make_random_problem(
     *,
     gen_length: int = 4,
@@ -154,7 +174,7 @@ def make_random_problem(
 
     obs_majoranas = _random_terms(rng, obs_terms, gen_length, num_majorana_indices)
     obs_coeffs = rng.standard_normal(obs_terms).tolist()  # Hermitian -> real
-    observable = MajoranaOperator(dict(zip(obs_majoranas, obs_coeffs)), num_modes)
+    observable = _random_majorana_operator(obs_majoranas, obs_coeffs, num_modes)
 
     gen_majoranas = _random_terms(rng, num_generators, gen_length, num_majorana_indices)
     gen_coeffs = rng.standard_normal(num_generators).tolist()

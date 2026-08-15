@@ -30,6 +30,7 @@ the slowest rank, and only rank 0 writes results.
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import socket
@@ -49,6 +50,7 @@ from _memory_cpu import (
     HighWaterMark,
     PssSampler,
     merge_peak_of_sum,
+    pinned_thread_summary,
     resting_rss_bytes,
 )
 
@@ -86,6 +88,29 @@ def _reduce_sum(comm: Any, value: int) -> int:
     return value
 
 
+def _reduce_max(comm: Any, value: int) -> int:
+    """Return the largest ``value`` over ranks. Collective; serial returns ``value``."""
+    if comm is not None and comm.Get_size() > 1:
+        return comm.allreduce(value, op=MPI.MAX)
+    return value
+
+
+def _reduce_min(comm: Any, value: int) -> int:
+    """Return the smallest ``value`` over ranks. Collective; serial returns ``value``."""
+    if comm is not None and comm.Get_size() > 1:
+        return comm.allreduce(value, op=MPI.MIN)
+    return value
+
+
+def _spread(comm: Any, value: int) -> dict[str, int]:
+    """Reduce one per-rank number to the pair a footprint has to be read as.
+
+    ``sum`` bounds the job; ``max`` is the rank that decides whether a node has the
+    memory, since ranks are symmetric and a node holds several of them.
+    """
+    return {"sum": _reduce_sum(comm, value), "max": _reduce_max(comm, value)}
+
+
 _RANDOM_OPTIONS = (
     ("gen-length", 4, "Majorana operators per generator."),
     ("obs-terms", 10000, "Observable terms."),
@@ -98,15 +123,23 @@ _RANDOM_OPTIONS = (
 
 # Non-timing results, written at session end (rank 0) to ``results/<label>.json``.
 _RESULTS: dict[str, Any] = {
-    "meta": {},  # run configuration (ranks, threads, host, ...)
+    "meta": {},  # run configuration (ranks, threads, host, placement, ...)
     "params": {},  # resolved random-problem hyperparameters
-    "mem": {},  # node id -> peak-of-sum PSS bytes (per operation; MPI lower bound)
-    "memhwm": {},  # node id -> summed per-rank peak RSS bytes (per operation; may fall back to exit RSS if VmHWM can't be reset)  # noqa: E501
-    "opsize": {},  # picture / model -> {"terms": n}
+    "mem": {},  # node id -> peak-of-sum PSS bytes (per operation; MPI lower bound; opt-in)
+    "memhwm": {},  # node id -> summed per-rank peak RSS bytes for the WHOLE test, setup() included
+    "opsize": {},  # picture / model / node id -> {"terms": n}
     "memrest": {},  # picture / model -> resting RSS bytes
     "membase": {},  # fixed model -> resting RSS bytes before the model is built
     "configs": {},  # fixed model -> config dataclass fields
     "opmem": {},  # fixed model -> per-field operator memory split (bytes)
+    # Per-operation memory, measured over the timed call only (see ``op_memory``). Each
+    # is {"sum": over ranks, "max": worst rank} -- ``max`` times the ranks per node is the
+    # node footprint, which is what decides whether a size fits; ``sum`` is the job bound.
+    "opmemdelta": {},  # node id -> peak ABOVE the operation's own floor: its incremental cost
+    "opmempeak": {},  # node id -> peak including everything already resident
+    "opmembase": {},  # node id -> the floor itself, without which the other two cannot be read
+    "opbytes": {},  # node id -> {"operator": n, "graph": n} from the engine's own accounting
+    "opmembreak": {},  # node id -> per-field operator memory split (bytes)
 }
 
 
@@ -144,6 +177,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("monoprop-bench", "monoprop random benchmark sizing")
     for name, default, help_text in _RANDOM_OPTIONS:
         group.addoption(f"--{name}", type=int, default=default, help=help_text)
+    group.addoption(
+        "--bench-pss-sampler",
+        action="store_true",
+        default=False,
+        help=(
+            "Sample per-rank PSS to record the job's peak-of-sum footprint. Off by "
+            "default: the sampler perturbs runs whose address space is more than a few "
+            "GiB (see the record_memory fixture)."
+        ),
+    )
 
     models = parser.getgroup("monoprop-models", "monoprop fixed-model overrides")
     for model, (config_cls, _builder, _steps) in MODELS.items():
@@ -156,8 +199,23 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             )
 
 
+def _thp_setting() -> str:
+    """Return the node's transparent-hugepage mode, or ``"?"``."""
+    try:
+        return Path("/sys/kernel/mm/transparent_hugepage/enabled").read_text().strip()
+    except OSError:  # pragma: no cover - not Linux, or no THP
+        return "?"
+
+
 def _meta() -> dict[str, Any]:
-    """Return this run's configuration metadata for the report."""
+    """Return this run's configuration metadata for the report.
+
+    Beyond identifying the build, this carries the two things an A/B summary has to check
+    before it is allowed to believe a difference: whether the engine actually placed its
+    threads (``pinning``), and whether the allocator was configured the same way on both
+    sides (``malloc_arena_max`` -- glibc opens per-thread arenas, so an unplaced build can
+    show a purely allocator-driven RSS difference that has nothing to do with the code).
+    """
     return {
         "label": os.environ.get("monoprop_BENCH_LABEL", "?"),  # noqa: SIM112
         "ranks": _size(),
@@ -168,6 +226,14 @@ def _meta() -> dict[str, Any]:
         "monoprop_version": monoprop.__version__,
         "monoprop_variant": monoprop.__variant__,
         "monoprop_compiler_flags": monoprop.__compiler_flags__,
+        "monoprop_max_num_modes": monoprop.MAX_NUM_MODES,
+        "malloc_arena_max": os.environ.get("MALLOC_ARENA_MAX", "default"),
+        "omp_num_threads": os.environ.get("OMP_NUM_THREADS", "default"),
+        "transparent_hugepage": _thp_setting(),
+        # Filled in after the first timed call, not here: at configure time no propagator
+        # exists, so the engine has not spawned the partition threads whose placement this
+        # is meant to observe, and probing now would report "nothing pinned" on every build.
+        "pinning": {},
     }
 
 
@@ -291,31 +357,153 @@ def record_model_stats(bench_comm: Any) -> Callable[..., None]:
     return _do
 
 
+class OpMemory:
+    """Records one benchmarked operation's memory over the timed call alone.
+
+    The autouse :func:`record_memory` window spans the whole test, which for a benchmark
+    with a ``setup`` means it is dominated by building the problem rather than by running
+    the operation. This one is opened from inside ``setup`` (or immediately before
+    ``pedantic``) and closed as soon as it returns, so ``delta`` is the operation's own
+    incremental cost.
+
+    ``settle=False`` deliberately: settling runs ``gc.collect()`` over every tracked object
+    (~100M of them at the 24M-term working point) and ``malloc_trim`` over a multi-GiB
+    heap. That is seconds of work immediately beside a timed region. Skipping it costs a
+    slightly higher floor, which ``opmembase`` reports.
+    """
+
+    def __init__(self, key: str, comm: Any) -> None:
+        """Bind the recorder to one benchmark's report key and communicator."""
+        self._key = key
+        self._comm = comm
+        self._window: HighWaterMark | None = None
+
+    def open(self) -> None:
+        """Start the window. Safe to call once per round; the last round wins."""
+        self._window = HighWaterMark(settle=False)
+        self._window.start()
+
+    def close(self, propagator: Any = None) -> None:
+        """Close the window and record it, plus ``propagator``'s exact byte counts.
+
+        Collective (every reduction is), so every rank must call this the same number of
+        times. Off rank 0 nothing is stored, but the reductions still have to happen.
+        """
+        if self._window is None:
+            return
+        self._window.stop()
+        window, self._window = self._window, None
+
+        _record("opmemdelta", self._key, _spread(self._comm, window.delta_bytes))
+        _record("opmempeak", self._key, _spread(self._comm, window.peak_bytes))
+        _record("opmembase", self._key, _spread(self._comm, window.baseline_bytes))
+
+        # Placement is only observable while the engine's partition threads are alive,
+        # which is now rather than at configure time. min/max across ranks because a
+        # partial failure -- some ranks placed, some not -- is the interesting case. Both
+        # reductions run on every rank; only rank 0 keeps the answer.
+        summary = pinned_thread_summary()
+        placed = summary["single_cpu_threads"]
+        spread = {
+            "single_cpu_threads_min": _reduce_min(self._comm, placed),
+            "single_cpu_threads_max": _reduce_max(self._comm, placed),
+        }
+        if _rank() == 0:
+            _RESULTS["meta"]["pinning"] = {**summary, **spread}
+
+        if propagator is None:
+            return
+        simulator = getattr(propagator, "_simulator", None)
+        counts = {
+            name: getattr(simulator, f"{name}_memory_bytes", None)
+            for name in ("operator", "graph")
+        }
+        # None => a binding predating the accounting; record nothing rather than zeros.
+        if all(fn is not None for fn in counts.values()):
+            _record(
+                "opbytes",
+                self._key,
+                {
+                    name: _reduce_sum(self._comm, int(fn()))
+                    for name, fn in counts.items()
+                },
+            )
+        breakdown = getattr(simulator, "operator_memory_breakdown", None)
+        if breakdown is not None:
+            _record(
+                "opmembreak",
+                self._key,
+                {k: _reduce_sum(self._comm, v) for k, v in breakdown().items()},
+            )
+
+
+@pytest.fixture
+def op_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[OpMemory]:
+    """Return this test's :class:`OpMemory` recorder, keyed as the timing report keys it."""
+    recorder = OpMemory(request.node.nodeid.split("/")[-1], bench_comm)
+    yield recorder
+    # A test that raised before closing would otherwise leave the window open and desync
+    # the collectives; closing without a propagator records the memory and no byte counts.
+    recorder.close()
+
+
+@pytest.fixture
+def record_opsize(
+    request: pytest.FixtureRequest, bench_comm: Any
+) -> Callable[[Any], None]:
+    """Return ``record(propagator)`` storing the propagator's global term count.
+
+    Keyed exactly as the timing report keys the same benchmark, so the two join.
+
+    The graph-backed benchmarks get this from :func:`built_graph`, but the ones that build
+    their own propagator had no term count at all -- and it is the number an A/B has to
+    compare across arms before believing any ratio, since two arms that propagated
+    different numbers of terms did different work.
+    """
+    key = request.node.nodeid.split("/")[-1]
+
+    def _do(propagator: Any) -> None:
+        _record("opsize", key, {"terms": _reduce_sum(bench_comm, propagator.size())})
+
+    return _do
+
+
 @pytest.fixture(autouse=True)
 def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[None]:
-    """Record each benchmark's peak physical-memory footprint for the report.
-
-    Two numbers, because neither alone is both exact and MPI-aware:
+    """Record each benchmark's whole-test peak physical-memory footprint.
 
     ``memhwm``
-        The kernel's exact peak RSS (:class:`HighWaterMark`) summed over ranks. Exact per
-        rank, and an upper bound on the job total, since ranks that peak at different
-        moments are added as though they had peaked together.
+        The kernel's exact peak RSS (:class:`HighWaterMark`) summed over ranks, across the
+        **whole test including its ``setup``**. For a benchmark that builds a problem in
+        ``setup`` this is the construction transient, not the operation -- which makes it
+        the number that predicts an out-of-memory kill, and the wrong number for comparing
+        operations. Use ``opmemdelta`` (see :class:`OpMemory`) for the latter.
     ``mem``
-        The peak-of-sum of the sampled per-rank PSS timelines, which is the quantity that
-        actually bounds a node's RAM. A lower bound: the sampler only advances when a rank
-        drops the GIL, and monoprop's ``propagate()`` holds it for the whole call.
+        The peak-of-sum of the sampled per-rank PSS timelines. Opt-in via
+        ``--bench-pss-sampler`` and **off by default**: ``/proc/self/smaps_rollup`` costs a
+        full page-table walk under ``mmap_lock``, so above a few GiB the sampler both slows
+        the thing it measures and contends with the engine's own threads. Its sample count
+        also scales with how long the GIL is held, so in an A/B the faster side is sampled
+        less and reports a lower peak -- a confound, not just a lower bound.
 
     Both are footprints, not deltas: they include structures already resident when the
     operation starts (e.g. the shared :func:`built_graph`). The gather is collective, but
     only rank 0 records.
     """
-    with HighWaterMark() as window, PssSampler() as sampler:
-        yield
+    sample_pss = request.config.getoption("--bench-pss-sampler")
+    with HighWaterMark() as window:
+        if sample_pss:
+            with PssSampler() as sampler:
+                yield
+            samples = sampler.samples
+        else:
+            samples = []
+            yield
     key = request.node.nodeid.split("/")[-1]
-    mem = _peak_of_sum(bench_comm, sampler.samples)
-    if mem:  # 0 => non-root rank or /proc unavailable: nothing to record
-        _record("mem", key, mem)
+    if sample_pss:
+        mem = _peak_of_sum(bench_comm, samples)
+        if mem:  # 0 => non-root rank or /proc unavailable: nothing to record
+            _record("mem", key, mem)
     hwm = _reduce_sum(bench_comm, window.peak_bytes)
     if hwm:
         _record("memhwm", key, hwm)
@@ -334,7 +522,7 @@ def picture(request: pytest.FixtureRequest) -> str:
 def random_problem(request: pytest.FixtureRequest) -> RandomProblem:
     """Build the random observable/circuit problem from the CLI options."""
     opt = request.config.getoption
-    return make_random_problem(
+    problem = make_random_problem(
         gen_length=opt("--gen-length"),
         obs_terms=opt("--obs-terms"),
         num_generators=opt("--num-generators"),
@@ -342,6 +530,13 @@ def random_problem(request: pytest.FixtureRequest) -> RandomProblem:
         cutoff=opt("--cutoff"),
         seed=opt("--seed"),
     )
+    # The observable is a dict of tuples, so at the sizes this suite is used for it is tens
+    # of millions of GC-tracked objects that live until the session ends and can never
+    # become garbage. Freezing moves them to the permanent generation, so the collections
+    # run by every later HighWaterMark stop traversing them -- otherwise settling the
+    # process costs seconds per benchmark and grows with the problem.
+    gc.freeze()
+    return problem
 
 
 @pytest.fixture
