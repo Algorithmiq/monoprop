@@ -18,9 +18,16 @@
 Reads off `terms` and a wall time so the campaign's cells can be chosen before spending
 node-hours on them, and so `--time` can be set from a measurement rather than a guess.
 
-Deliberately propagate-only. build_graph needs its own propagator (this one has consumed its
-circuit), and holding two at these term counts doubles the resident operator for nothing --
-the term count is the same either way, which is the number this exists to report.
+Propagate-only by default: the term count is the same either way, and build_graph needs its
+own propagator, which doubles the resident operator to learn nothing new about size.
+
+`CALIB_BUILD_GRAPH=1` adds a second process-lifetime measurement that is NOT redundant, and
+skipping it cost this project six cells. `propagate` releases each layer as it contracts it;
+`steps x build_graph` RETAINS all of them, because that is what a gradient functional needs
+to walk backwards. On a model with many Trotter steps the two differ by orders of magnitude:
+hubbard at 23.9M terms propagates in 1.7 GiB and builds its 29-layer graph in more than 229
+GiB, so a cell sized from `propagate` alone is sized from the wrong number and dies. Size
+the `graph` cell from `graph_vmhwm_mib`, never from `vmhwm_mib`.
 
 One process per point, so a point that OOMs or overruns does not take the rest of the ladder
 with it and each point's peak RSS is its own.
@@ -76,13 +83,22 @@ def main() -> int:
     config = config_cls(**overrides)
     steps = steps_fn(config)
 
+    # Graph mode REPLACES propagate rather than following it, because VmHWM is a high-water
+    # mark that never falls: run after a propagate arm, the graph's own peak is hidden behind
+    # whatever the propagate arm already touched, and the excess over it is not the number a
+    # cell has to fit. One process, one arm, one absolute peak.
+    graph_mode = os.environ.get("CALIB_BUILD_GRAPH") == "1"
+
     t0 = time.perf_counter()
     propagator, circuit = build_fn(config, comm=None)
     build_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
     for _ in range(steps):
-        propagator.propagate(circuit)
+        if graph_mode:
+            propagator.build_graph(circuit)
+        else:
+            propagator.propagate(circuit)
     propagate_s = time.perf_counter() - t0
 
     terms = propagator.size() if callable(propagator.size) else propagator.size
@@ -96,10 +112,13 @@ def main() -> int:
         b_per_term["total"] = round(b["total_bytes"] / terms, 2)
 
     spec = " ".join(f"{k}={v}" for k, v in sorted(overrides.items())) or "default"
+    arm = "build_graph" if graph_mode else "propagate"
+    peak_mib = vmhwm_kb() / 1024
     print(
-        f"CALIB model={model} {spec} steps={steps} terms={terms} "
-        f"build_s={build_s:.1f} propagate_s={propagate_s:.1f} "
-        f"vmhwm_mib={vmhwm_kb() / 1024:.0f} "
+        f"CALIB model={model} {spec} steps={steps} terms={terms} arm={arm} "
+        f"build_s={build_s:.1f} {arm}_s={propagate_s:.1f} "
+        f"vmhwm_mib={peak_mib:.0f} "
+        f"b_per_term_resident={peak_mib * 1024 * 1024 / terms if terms else 0:.0f} "
         f"b_per_term={b_per_term}",
         flush=True,
     )
