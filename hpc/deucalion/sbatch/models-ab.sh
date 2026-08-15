@@ -65,11 +65,15 @@ NTASKS=$((RANKS_PER_NODE * NODES))
 # The layout letter is the bake-off's, derived rather than hardcoded: ab-100m.sh pinned
 # "B_" into the label, so every layout it ran was labelled B and colliding labels collated
 # into one table.
-case "$RANKS_PER_NODE" in
-    1) LAYOUT_LETTER=A ;;  # 1 rank x 128 partitions
-    8) LAYOUT_LETTER=B ;;  # 1 rank per NUMA domain x 16 partitions -- the measured winner
-    2) LAYOUT_LETTER=C ;;  # 1 rank per socket x 64 partitions
-    *) LAYOUT_LETTER=X ;;  # unnamed: still distinct, still collates on its own
+# The letter names a (ranks, partitions) PAIR, not a rank count: the bake-off's A is one
+# rank over the whole node, and calling the 1x16 "non-MPI" rung A too would claim it used
+# 128 cores when it uses 16. A rung that is not one of the three named layouts gets X, which
+# still collates on its own -- an honest "not the bake-off's" beats a familiar wrong letter.
+case "${RANKS_PER_NODE}x${PARTITIONS}" in
+    1x128) LAYOUT_LETTER=A ;;  # 1 rank over the whole node
+    8x16) LAYOUT_LETTER=B ;;   # 1 rank per NUMA domain -- the measured winner
+    2x64) LAYOUT_LETTER=C ;;   # 1 rank per socket
+    *) LAYOUT_LETTER=X ;;      # unnamed, e.g. the 1x16 rung that uses 16 of 128 cores
 esac
 LAYOUT="${LAYOUT_LETTER}_$(printf '%dx%d' "$RANKS_PER_NODE" "$PARTITIONS")"
 
