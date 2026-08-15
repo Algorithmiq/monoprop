@@ -22,6 +22,17 @@
 #
 # A cell that hits its time limit degrades rather than dies: ab_summary pairs on the reps
 # BOTH arms ran, so a truncated cell is a cell with fewer reps.
+#
+# Time limits come from the same calibration, which timed `steps x propagate` at 1x16:
+#
+#   hubbard  c6 24.4s   c8 69.0s   s20 70.6s   s30 84.5s   s45 93.4s   c12 102.2s
+#   pauli    c10 2.0s   c12 17.2s  l10 16.0s   l30 83.5s
+#
+# A cell is 24 invocations (2 arms x 6 reps x 2 cells), so the limit is roughly
+# 24 x (build_graph + propagate + ~15s of import and model construction). Note the serial
+# rungs are NOT 8x the 8x16 ones: at 4.75M terms 1x16 propagate is 2.0s against the 8x16
+# cell's 3.0s, because at these sizes the exchange funnel costs more than the extra cores
+# buy. Sizing the serial wave as "8x the ranks means 8x the wall" would have been wrong.
 set -uo pipefail
 
 WAVE="${1:?usage: submit.sh <wave1|wave2|ranks|serial>}"
@@ -70,12 +81,13 @@ case "$WAVE" in
         ;;
     serial)  # "non-MPI": the MPI build at ONE rank x 16 partitions. This is NOT a build
              # without MPI -- conftest still imports mpi4py and bench_comm is COMM_WORLD at
-             # size 1 -- and it uses 16 of the node's 128 cores, so it is much slower than
-             # the 8x16 cells and needs a longer limit, not a shorter one.
-        cell hub-c10-serial 1 3:50:00 1 MODEL=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05
-        cell pau-c14-serial 1 3:50:00 1 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05
-        cell hub-c6-serial 1 2:00:00 1 MODEL=hubbard CUTOFF=6 LOWER_ATOL=1.25e-05
-        cell pau-c12-serial 1 2:00:00 1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05
+             # size 1 -- and it uses 16 of the node's 128 cores, so it is not comparable
+             # with the 8x16 cells. The limits are the measured 1x16 propagate times above
+             # with about 2x margin, NOT 8x the 8x16 limit: see the note in the header.
+        cell hub-c10-serial 1 2:30:00 1 MODEL=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05
+        cell pau-c14-serial 1 2:30:00 1 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05
+        cell hub-c6-serial 1 1:30:00 1 MODEL=hubbard CUTOFF=6 LOWER_ATOL=1.25e-05
+        cell pau-c12-serial 1 1:00:00 1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05
         ;;
     *)
         echo "unknown wave: $WAVE" >&2
