@@ -23,7 +23,6 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/detail/mpi/RecvLayout.h"
 
 namespace monoprop {
 
@@ -32,9 +31,9 @@ namespace monoprop {
 // being posted, never retained per layer. A retained one costs P ints x2 x layers x partitions,
 // which is O(P^2) across a job for something derivable in a prefix sum.
 //
-// It deliberately does NOT own a RecvLayoutCache any more. The cache is the transpose of one
-// specific send pattern, so hanging it off a reused scratch object is precisely the way to serve
-// layer A's transpose to layer B; it now lives on LayerCore, beside the pattern that produced it.
+// It describes the recv side too: the count matrix is symmetric, so the transpose of a send
+// pattern is that send pattern. There is no RecvLayoutCache anywhere any more -- not here, and
+// not on LayerCore, which is where one briefly lived.
 struct LayerExchangeLayout final {
     std::vector<int> counts;
     std::vector<int> displs;
@@ -168,22 +167,12 @@ struct LayerCore final {
     // already says, retained per layer per partition. detail::derive_exchange_layout rebuilds it
     // into per-thread scratch for the transfer being posted.
 
-    // The transpose of this layer's send pattern, which is the one part that cannot be derived
-    // locally -- it takes a collective. Cached per layer because the alternative is an
-    // MPI_Alltoall per layer per evaluation. mutable: filled through const handles at eval time.
-    mutable mpi::RecvLayoutCache evolution_recv_cache;
-
-    // Rank-uniform identity for the send pattern this core holds, assigned in build order so
-    // every rank agrees on it. It is what makes reusing evolution_recv_cache safe: see
-    // mpi::resolve_recv, where a rank-LOCAL key would let one rank reuse while another rebuilds
-    // and rebuilding is a collective -- a hang, not a wrong answer.
-    uint64_t exchange_generation = 0;
-
-    // There is deliberately no reset here. The retained derivative layout that used to need
-    // dropping on a copy no longer exists -- it is derived per exchange. The transpose cache
-    // that remains is a function of the send pattern, and a copy carries that pattern and its
-    // generation with it, so the copy inherits a cache that is still correct. Clearing it would
-    // cost an MPI_Alltoall per layer on the next evaluation to rebuild something already right.
+    // NOTHING about the exchange is retained here -- no send layout, no transpose, no identity
+    // for one. The recv layout equals the send layout (the count matrix is symmetric; see
+    // Evolution.cpp's derive_layer_exchange), so the transpose that used to be cached per layer
+    // at 8 B per world slot is not merely derivable, it is the same array. With it goes the
+    // rank-uniform generation id that existed only to make reusing that cache safe, and the
+    // hazard it managed: there is no longer a collective on any cache-miss path to split ranks on.
 
     // Per-layer recompute metadata: generator_words = this layer's generator G as backing words;
     // scaled_count = fold truncation bound = operator size after this layer's partner inserts.

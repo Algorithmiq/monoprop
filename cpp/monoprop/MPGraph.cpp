@@ -57,10 +57,12 @@ auto layer_storage_memory_usage(const LayerCore &storage) -> GraphMemoryBreakdow
     // that did retain them shows the drop rather than silently losing the row.
     breakdown.exchange_layout_bytes = 0;
 
-    // Diagnostics. recv_cache is real resident memory that total_bytes() has never counted, which
-    // is why the reported graph size sits below the process RSS.
+    // Diagnostics.
     breakdown.slot_record_bytes = detail::cross_rank_slot_record_bytes(storage.cross_rank);
-    breakdown.recv_cache_bytes = detail::layer_exchange_layout_cache_bytes(storage.evolution_recv_cache);
+    // The transpose cache is gone: the recv layout equals the send layout, so there was never
+    // anything to cache. Reported as 0 rather than removed, because it was never inside
+    // total_bytes() -- an A/B has no other way to see resident memory leave.
+    breakdown.recv_cache_bytes = 0;
     // The derivative layout is no longer retained at all: it is 2x the evolution layout, and its
     // transpose is 2x the evolution transpose, so both are derived on demand without a collective.
     breakdown.derivative_layout_bytes = 0;

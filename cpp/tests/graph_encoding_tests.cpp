@@ -285,11 +285,8 @@ BOOST_AUTO_TEST_CASE(graph_encoding_slot_record_bytes_track_the_world_not_the_tr
 
 BOOST_AUTO_TEST_CASE(graph_encoding_a_layer_retains_no_exchange_layout) {
     // The point of the change: a built layer holds the slot records and nothing else sized by P.
-    // The transpose cache is eval-time state, so on a freshly built layer nothing has resolved it
-    // and it is not resident either.
+    // Neither side of the exchange is retained -- not the send layout, and not a transpose of it.
     const auto core = detail::build_layer_storage_unified(slot_partners({3, 0, 5}), /*my_rank=*/1);
-
-    BOOST_CHECK_EQUAL(detail::layer_exchange_layout_cache_bytes(core->evolution_recv_cache), 0U);
 
     // Not stored, but not lost: the send total is still recoverable from the slot records alone,
     // which is the whole claim. 3 + 5, with my_rank's own slot contributing nothing.
@@ -297,10 +294,10 @@ BOOST_AUTO_TEST_CASE(graph_encoding_a_layer_retains_no_exchange_layout) {
     detail::derive_exchange_layout(core->cross_rank, /*my_rank=*/1, /*scale=*/1, derived);
     BOOST_CHECK_EQUAL(derived.total_count, 8U);
 
-    // Rank-uniform identity for the send pattern, so the cache above cannot be served to another.
-    BOOST_CHECK_GT(core->exchange_generation, 0U);
-    const auto other = detail::build_layer_storage_unified(slot_partners({3, 0, 5}), /*my_rank=*/1);
-    BOOST_CHECK_NE(core->exchange_generation, other->exchange_generation);
+    // A LayerCore is what gets held L x P times across a job, so its size is the thing the change
+    // is about. Pinned against the members it should have: three vectors' worth of storage plus
+    // the scalars. A new P-sized member here would be paid for once per layer per partition.
+    BOOST_CHECK_LE(sizeof(LayerCore), 256U);
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_skewed_endpoint_counts_are_refused) {

@@ -159,11 +159,6 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
 
 auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t;
 
-// The resolve_recv transpose cache a layer retains. Separate from
-// layer_exchange_layout_storage_bytes because that function's result is already carried in a
-// shipped metric; folding this in would redefine it.
-auto layer_exchange_layout_cache_bytes(const mpi::RecvLayoutCache &cache) -> size_t;
-
 // Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so
 // MPI_Alltoallv skips it (replay does a local copy).
 auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
