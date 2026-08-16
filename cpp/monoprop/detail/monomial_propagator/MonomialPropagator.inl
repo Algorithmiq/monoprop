@@ -389,31 +389,24 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
         // Always empty: local cycles are folded into cross_rank[my_rank].
         std::vector<LocalCycleData> local_cyc_data;
 
-        std::vector<CrossRankData> b_data, d_data;
-        b_data.reserve(rank_count);
-        d_data.reserve(rank_count);
-        for (size_t rank = 0; rank < rank_count; ++rank) {
-            VecZ sin_send_indices(traversal.cross_rank_sin_send_size(rank));
-            VecI b_phases(traversal.cross_rank_sin_send_size(rank), 0);
-            VecZ d_indices(traversal.cross_rank_sin_recv_size(rank));
-            VecI sin_recv_phases(traversal.cross_rank_sin_recv_size(rank));
-
-            traversal.for_each_cross_rank_sin_send_range(
-                rank,
-                0,
-                traversal.cross_rank_sin_send_size(rank),
-                [&](size_t logical_idx, size_t value_idx) { sin_send_indices[logical_idx] = value_idx; });
-            traversal.for_each_cross_rank_sin_recv_range(rank,
-                                                         0,
-                                                         traversal.cross_rank_sin_recv_size(rank),
-                                                         [&](size_t logical_idx, size_t value_idx, int phase) {
-                                                             d_indices[logical_idx] = value_idx;
-                                                             sin_recv_phases[logical_idx] = phase;
-                                                         });
-
-            b_data.emplace_back(std::move(sin_send_indices), std::move(b_phases));
-            d_data.emplace_back(std::move(d_indices), std::move(sin_recv_phases));
-        }
+        // The exported shape stays dense in the world size -- callers index it by rank -- but only the
+        // occupied slots have anything to put in it, so it is filled by scattering into a sized-empty
+        // array rather than by asking every possible slot how much it holds.
+        std::vector<CrossRankData> b_data(rank_count), d_data(rank_count);
+        traversal.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
+            const size_t count = slot.sin_send_count;
+            VecZ sin_send_indices(count);
+            VecI b_phases(count, 0);
+            VecZ d_indices(count);
+            VecI sin_recv_phases(count);
+            for (size_t k = 0; k < count; ++k) {
+                sin_send_indices[k] = detail::slot_sin_send_index(slot, k);
+                d_indices[k] = detail::slot_sin_recv_index(slot, k);
+                sin_recv_phases[k] = detail::slot_sin_recv_phase(slot, k);
+            }
+            b_data[rank] = CrossRankData{std::move(sin_send_indices), std::move(b_phases)};
+            d_data[rank] = CrossRankData{std::move(d_indices), std::move(sin_recv_phases)};
+        });
         // Same two-way read as cos_index_count_(): a pared layer's stored set is authoritative, and
         // recomputing the fold over it would report the indices the pare removed.
         VecZ cos_inds;

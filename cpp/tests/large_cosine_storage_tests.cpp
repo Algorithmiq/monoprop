@@ -79,12 +79,12 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
 // The per-rank cross-rank counts index into one layer's term set, so under the wide build they must
 // be TermIndex-wide; uint32_t would silently cap a single partition/layer at ~2^32 terms.
 BOOST_AUTO_TEST_CASE(cross_rank_partner_range_counts_track_term_index_width) {
-    CrossRankPartnerRange r{};
+    CrossRankOccupiedSlot r{};
     BOOST_CHECK_EQUAL(sizeof(r.sin_send_count), sizeof(TermIndex));
     BOOST_CHECK_EQUAL(sizeof(r.in_count), sizeof(TermIndex));
-    // The record is paid once per world slot per layer per partition, so its width is a result,
-    // not an implementation detail. Padding here would be invisible and quadratically expensive.
-    BOOST_CHECK_EQUAL(sizeof(r), sizeof(size_t) + 2 * sizeof(TermIndex));
+    // One record per OCCUPIED slot, so its width scales the traffic-bounded term, not a P-squared one.
+    // The B/D offset is derived rather than stored precisely to keep it this narrow.
+    BOOST_CHECK_EQUAL(sizeof(CrossRankOccupiedSlot), sizeof(uint32_t) + 2 * sizeof(TermIndex));
 }
 
 #if defined(monoprop_WIDE_TERM_INDEX)

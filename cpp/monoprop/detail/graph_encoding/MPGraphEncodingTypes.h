@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -128,34 +129,69 @@ struct CrossRankPartnerData {
     size_t in_count = 0;
 };
 
-// One record per world slot, occupied or not, retained for every layer -- so on a partitioned run
-// this is sizeof(record) x P x layers x partitions per rank, i.e. O(P^2) across the job. That is
-// why it holds only what cannot be recovered: B and D are the two endpoints of the same rotation
-// set, so their counts are equal and their prefix sums therefore identical, and storing the D pair
-// separately cost 16 bytes a slot to say twice what the B pair already said.
-// build_packed_cross_rank_storage enforces the equality rather than trusting it.
-struct CrossRankPartnerRange final {
-    size_t sin_send_offset = 0; // into sin_send_indices AND sin_recv_phases; cumulative, so may exceed 2^32
-    // == the D count; TermIndex-wide so one rank/layer can exceed 2^32.
+// One world slot that carries traffic.
+//
+// Slots with none are not stored at all. The dense array this replaces reserved a record for every
+// POSSIBLE partner, so its size was the flat world P and, summed over the P participants that each
+// hold one, the graph carried P-squared records regardless of how much was ever sent. What is stored
+// instead is bounded by the traffic, which does not depend on P.
+//
+// The D range is not stored: it IS the B range. B and D hold the same endpoint set in two orders, so
+// their counts are equal by construction (Engine.h resizes both to P+Q) and the two prefix sums are
+// therefore identical. The equality is enforced in build_packed_cross_rank_storage, not assumed.
+//
+// The B/D offset is not a field either. It is the running prefix over stored entries in ascending slot
+// order, and empty slots contributed zero to the dense prefix, so the derived value equals the stored
+// one exactly. Deriving it is what keeps this record at 12 B: a size_t offset would pad it to 24.
+struct CrossRankOccupiedSlot final {
+    uint32_t slot = 0; // flat world slot id -- what the dense array encoded by position
+    // TermIndex-wide so one slot in one layer can exceed 2^32 endpoints.
     TermIndex sin_send_count = 0;
     TermIndex in_count = 0;
 };
+static_assert(sizeof(TermIndex) != sizeof(uint32_t) || sizeof(CrossRankOccupiedSlot) == 12,
+              "narrow build: the occupied-slot record is the graph's P coefficient; keep it padding-free.");
 
-// Pins the saving: 8 + 4 + 4 narrow, 8 + 8 + 8 wide, with no tail padding either way. A new field
-// here is paid for once per world slot per layer per partition, so it should be a deliberate act.
-static_assert(sizeof(CrossRankPartnerRange) == sizeof(size_t) + 2 * sizeof(TermIndex),
-              "CrossRankPartnerRange is the per-world-slot record; keep it free of padding.");
+// Sentinel for self_pos: this rank's own slot carries no traffic in this layer.
+inline constexpr size_t kNoSelfSlot = static_cast<size_t>(-1);
 
 struct PackedCrossRankStorage final {
-    std::vector<CrossRankPartnerRange> ranges; // size == the flat world P, not the MPI rank count
+    // Ascending by slot, unique, every entry carrying traffic.
+    std::vector<CrossRankOccupiedSlot> occupied;
     std::vector<TermIndex> sin_send_indices;
     PackedPhaseStorage sin_recv_phases; // one phased entry per D index, sign baked in
 
-    auto rank_count() const -> size_t { return ranges.size(); }
-    auto sin_send_size(size_t rank) const -> size_t { return ranges[rank].sin_send_count; }
-    // D holds the same endpoints as B in the other order, so it has the same length.
-    auto sin_recv_size(size_t rank) const -> size_t { return ranges[rank].sin_send_count; }
-    auto in_count(size_t rank) const -> size_t { return ranges[rank].in_count; }
+    // P. No longer recoverable from the array length -- that is the point -- but the exchange still
+    // needs it, since MPI_Alltoallv wants dense counts and displacements.
+    size_t world_size = 0;
+
+    // The self slot is read in the innermost gradient loop, so it gets O(1) access instead of the
+    // search the general case pays. Resolved once at build; see resolve_self_slot.
+    size_t self_pos = kNoSelfSlot;
+    size_t self_offset = 0;
+
+    auto rank_count() const -> size_t { return world_size; }
+
+    // O(log occupied). Callers walking every partner should use for_each_occupied_slot instead, which
+    // is O(occupied) for the whole sweep and carries the offset with it.
+    auto find(size_t rank) const -> const CrossRankOccupiedSlot * {
+        const auto it = std::lower_bound(occupied.begin(),
+                                         occupied.end(),
+                                         rank,
+                                         [](const CrossRankOccupiedSlot &e, size_t r) { return e.slot < r; });
+        return (it == occupied.end() || it->slot != rank) ? nullptr : &*it;
+    }
+
+    auto sin_send_size(size_t rank) const -> size_t {
+        const auto *e = find(rank);
+        return e == nullptr ? 0 : e->sin_send_count;
+    }
+    // Same count as the send side: B and D are the same endpoint set, permuted.
+    auto sin_recv_size(size_t rank) const -> size_t { return sin_send_size(rank); }
+    auto in_count(size_t rank) const -> size_t {
+        const auto *e = find(rank);
+        return e == nullptr ? 0 : e->in_count;
+    }
 };
 
 struct LayerCore final {

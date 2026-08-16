@@ -64,8 +64,22 @@ struct LayerTraversal final {
         return detail::cross_rank_sin_recv_phase(core_->cross_rank, rank, idx);
     }
 
-    // The slot is resolved ONCE, outside the loop: the lookup it costs is indexed by the flat
-    // world P, so doing it per endpoint made per-term work out of what is per-slot work.
+    // O(1); the self slot is read per rotation pair in the innermost gradient loop.
+    auto cross_rank_self_slot() const -> detail::CrossRankSlotView {
+        return detail::cross_rank_self_slot(core_->cross_rank);
+    }
+
+    // Every slot carrying traffic, ascending, each with its offset. func(slot_id, view).
+    //
+    // This is what a partner sweep should use. The old shape -- loop 0..P, ask each slot its size,
+    // `continue` on zero -- walked the whole world to find the part of it that had anything in it.
+    template <typename Func>
+    auto for_each_occupied_slot(Func &&func) const -> void {
+        detail::for_each_occupied_slot(core_->cross_rank, std::forward<Func>(func));
+    }
+
+    // The slot is resolved ONCE, outside the loop: the lookup it costs is indexed by the flat world P,
+    // so doing it per endpoint made per-term work out of what is per-slot work.
     template <typename Func>
     auto for_each_cross_rank_sin_send_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
         const auto slot = detail::cross_rank_slot(core_->cross_rank, rank);
@@ -97,12 +111,11 @@ struct LayerTraversal final {
     auto gate_index() const -> size_t { return core_->gate_index; }
 
     // Rotations (Givens cycles) = sum of per-rank in-counts (one in-entry per rotation). sin_recv_size
-    // would double-count self-rank rotations (in+out).
+    // would double-count self-rank rotations (in+out). Empty slots contribute nothing, so summing over
+    // the occupied ones is the same total the full sweep gave.
     auto total_cycles() const -> size_t {
         size_t count = 0;
-        for (size_t rank = 0; rank < cross_rank_rank_count(); ++rank) {
-            count += cross_rank_in_count(rank);
-        }
+        for_each_occupied_slot([&count](size_t, const detail::CrossRankSlotView &slot) { count += slot.in_count; });
         return count;
     }
 
@@ -110,9 +123,8 @@ struct LayerTraversal final {
     // indices = num_cos_inds() - total_rotation_endpoints().
     auto total_rotation_endpoints() const -> size_t {
         size_t count = 0;
-        for (size_t rank = 0; rank < cross_rank_rank_count(); ++rank) {
-            count += cross_rank_sin_recv_size(rank);
-        }
+        for_each_occupied_slot(
+            [&count](size_t, const detail::CrossRankSlotView &slot) { count += slot.sin_send_count; });
         return count;
     }
 
