@@ -163,11 +163,21 @@ auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size
 }
 
 auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t {
-    // sin_send_count alone is the predicate: it is the whole endpoint set for the slot,
-    // in-block and out-block together, so in_count cannot be non-zero while it is zero.
+    // sin_send_count alone is the predicate. B and D hold the same endpoint set in two orders (see
+    // cross_rank_sin_recv_index), so a slot cannot carry D entries while carrying no B entries, and
+    // counting either gives the same answer.
     return static_cast<size_t>(std::ranges::count_if(
         storage.ranges, [](const CrossRankPartnerRange &range) { return range.sin_send_count != 0; }));
 }
+
+auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t {
+    size_t count = 0;
+    for (const auto &range : storage.ranges) {
+        count += range.sin_send_count;
+    }
+    return count;
+}
+
 
 auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t {
     return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
