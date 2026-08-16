@@ -45,7 +45,7 @@
 # buy. Sizing the serial wave as "8x the ranks means 8x the wall" would have been wrong.
 set -uo pipefail
 
-WAVE="${1:?usage: submit.sh <wave1|wave2|ranks|serial|geometry|layout|nocache|sparse>}"
+WAVE="${1:?usage: submit.sh <wave1|wave2|ranks|serial|geometry|layout|nocache|sparse|sparse-stack>}"
 export MONOPROP_SRC="${MONOPROP_SRC:-$PWD}"
 source "$MONOPROP_SRC/hpc/deucalion/env.sh"
 ACCT="${MONOPROP_SLURM_ACCOUNT:?set MONOPROP_SLURM_ACCOUNT (see hpc/deucalion/env.local.sh.example)}"
@@ -199,6 +199,30 @@ case "$WAVE" in
         cell sp2-c14-g8x16   1 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
         cell sp2-c14-g8x16   2 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
         cell sp2-c14-g8x16   4 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        ;;
+    sparse-stack)  # The sparse slot records measured on top of the DERIVED exchange layout.
+             #
+             # Different baseline again, and this is the one that is easy to get wrong: the arm is
+             # perf/graph-world-size (PR #237), NOT main. #238 is now stacked on #237, so its own
+             # before/after is against its base. Pass both explicitly:
+             #
+             #   MAIN_VENV=$PROJ/src/mp-gws/.venv \
+             #   PORT_VENV=$PROJ/src/mp-slots/.venv \
+             #   hpc/deucalion/sbatch/campaign.sh sparse-stack
+             #
+             # Why it is worth re-measuring rather than reusing the sp2 numbers: on main the dense
+             # record was 32 B and the retained exchange layout dominated everything; on #237 the
+             # record is 16 B and the exchange layout is gone, so the slot array is ~84% of what is
+             # left. The same commit is a much bigger lever here, and the two branches have never
+             # been compiled together before -- derive_exchange_layout now scatters over occupied
+             # slots instead of probing sin_send_size(r), which is a binary search once sparse.
+             #
+             # Time matters here more than in sp2: that scatter is on the exchange path.
+        cell sp3-c12-g1x16   1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell sp3-c12-g1x128  1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=128
+        cell sp3-c14-g8x16   1 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell sp3-c14-g8x16   2 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell sp3-c14-g8x16   4 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
         ;;
     *)
         echo "unknown wave: $WAVE" >&2
