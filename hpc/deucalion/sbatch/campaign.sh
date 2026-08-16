@@ -45,7 +45,7 @@
 # buy. Sizing the serial wave as "8x the ranks means 8x the wall" would have been wrong.
 set -uo pipefail
 
-WAVE="${1:?usage: submit.sh <wave1|wave2|ranks|serial|geometry|layout>}"
+WAVE="${1:?usage: submit.sh <wave1|wave2|ranks|serial|geometry|layout|nocache|sparse>}"
 export MONOPROP_SRC="${MONOPROP_SRC:-$PWD}"
 source "$MONOPROP_SRC/hpc/deucalion/env.sh"
 ACCT="${MONOPROP_SLURM_ACCOUNT:?set MONOPROP_SLURM_ACCOUNT (see hpc/deucalion/env.local.sh.example)}"
@@ -163,6 +163,36 @@ case "$WAVE" in
              # barely moves is the correct result here, not a disappointing one.
         cell gws3-c12-g1x128 1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=128
         cell gws3-c14-g8x16  4 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        ;;
+    sparse)  # Storing only the world slots that carry traffic.
+             #
+             # This wave runs against a DIFFERENT baseline from every wave above it: the arm is
+             # origin/main plus the memory instrument and nothing else, because origin/main
+             # predates graph_memory_breakdown() and records none of the fields the law below is
+             # asserted on. Pass it explicitly:
+             #
+             #   MAIN_VENV=$PROJ/src/mp-slotsbase/.venv \
+             #   PORT_VENV=$PROJ/src/mp-slots/.venv \
+             #   hpc/deucalion/sbatch/campaign.sh sparse
+             #
+             # The prediction, stated before the cells run. The baseline record is 32 B per world
+             # slot (main stores the D range twice); the port stores 12 B per OCCUPIED slot and
+             # gains 24 B per layer core for the world size and the self-slot position:
+             #
+             #   graph drop  =  32 x slots  -  12 x occupied  -  24 x cores
+             #
+             # exactly, to the byte. `occupied` must be IDENTICAL on both arms -- occupancy is a
+             # property of the traffic, not of the format -- and that is the load-bearing check:
+             # if it moves, the layout changed what is being sent, not merely how it is addressed.
+             #
+             # The P ladder is the same 8x16 geometry at 1, 2 and 4 nodes, so only the node count
+             # moves. c12 at 1x16 is included precisely because it is the WORST case for sparsity:
+             # occupancy is 31.5% there against 17.5% at P=512, so it is where this could lose.
+        cell sp-c12-g1x16   1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell sp-c12-g1x128  1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=128
+        cell sp-c14-g8x16   1 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell sp-c14-g8x16   2 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell sp-c14-g8x16   4 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
         ;;
     *)
         echo "unknown wave: $WAVE" >&2

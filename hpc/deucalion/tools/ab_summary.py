@@ -453,7 +453,7 @@ def _check_environment(cells: dict[str, Cell]) -> list[str]:
     return refusals
 
 
-def _check_versions(cells: dict[str, Cell]) -> list[str]:
+def _check_builds(cells: dict[str, Cell]) -> list[str]:
     """Refuse when the two arms are not actually two different builds.
 
     The version was recorded but never asserted on, so an A/B that pointed both arms at the
@@ -466,35 +466,60 @@ def _check_versions(cells: dict[str, Cell]) -> list[str]:
     (an older build with no such field), and refusing on absence would refuse the very
     baseline comparisons this tool exists for.
 
-    Known blind spot, so nobody reads a pass here as more than it is: the version is a git
-    describe of the worktree, not a fingerprint of the extension. An editable install serves
-    whatever .so was last built into that tree, so two arms can report different versions while
-    running the same binary (or the same version while running different ones, if a rebuild was
-    skipped). Distinct versions mean the CHECKOUTS differ; only the .so's hash would prove the
-    BUILDS do. This catches the blunt error -- one venv used twice -- not that subtler one.
+    Identity is the .so's md5, NOT ``__version__``. The version is a git describe of the
+    worktree stamped into the dist-info at install time; a later ``cmake --build`` and copy
+    into the venv does not rewrite it. So an arm can advertise the commit it was installed at
+    while serving a binary from several commits later. Keying on the version refused a run
+    whose two arms were provably distinct (different md5s, and a 3.17x graph-memory gap that
+    one binary cannot produce), and it would equally have PASSED two arms that shared a .so
+    across differing checkouts. The hash catches both directions; the version catches neither.
+
+    Versions are still reported, as a checkout-level breadcrumb. They are never refused on
+    when hashes are available. When no arm records a hash (artifacts older than this field),
+    fall back to the version -- a weak check is better than none, and absence is not a refusal.
     """
     refusals: list[str] = []
-    seen: dict[str, set[str]] = {}
+    md5s: dict[str, set[str]] = {}
+    versions: dict[str, set[str]] = {}
     for side in ("main", "port"):
-        versions = {
-            cell.results.get("meta", {}).get("monoprop_version")
+        metas = [
+            cell.results["meta"]
             for cell in cells.values()
             if cell.side == side and cell.results.get("meta")
+        ]
+        versions[side] = {str(m["monoprop_version"]) for m in metas if m.get("monoprop_version")}
+        md5s[side] = {
+            str(m["monoprop_core_md5"])
+            for m in metas
+            if m.get("monoprop_core_md5") and m["monoprop_core_md5"] != "unavailable"
         }
-        versions.discard(None)
-        seen[side] = {str(v) for v in versions}
-        print(f"- {side} version: {sorted(seen[side])}")
-        if len(seen[side]) > 1:
+        print(f"- {side} version: {sorted(versions[side])}")
+        print(f"- {side} _core.so md5: {sorted(md5s[side]) or ['not recorded']}")
+        if len(md5s[side]) > 1:
             refusals.append(
-                f"{side} arm reports {len(seen[side])} different builds across its reps: "
-                f"{sorted(seen[side])} -- the arm changed mid-campaign"
+                f"{side} arm ran {len(md5s[side])} different binaries across its reps: "
+                f"{sorted(md5s[side])} -- the arm was rebuilt mid-campaign"
             )
 
-    both = seen["main"] & seen["port"]
-    if both and seen["main"] and seen["port"]:
+    if md5s["main"] and md5s["port"]:
+        shared = md5s["main"] & md5s["port"]
+        if shared:
+            refusals.append(
+                f"both arms ran the same binary (md5 {sorted(shared)}); there is nothing being "
+                "compared. Pass PORT_VENV explicitly -- its default points at another branch's "
+                "worktree."
+            )
+        elif versions["main"] & versions["port"]:
+            print(
+                "- note: the arms share a version string but differ in md5 -- an editable "
+                "install's stamp is stale, not its binary. Identity is the hash."
+            )
+    elif versions["main"] and versions["port"] and (versions["main"] & versions["port"]):
+        # No hashes recorded anywhere: pre-md5 artifacts, so the weak check is all there is.
         refusals.append(
-            f"both arms are the same build ({sorted(both)}); there is nothing being compared. "
-            "Pass PORT_VENV explicitly -- its default points at another branch's worktree."
+            f"both arms report one version ({sorted(versions['main'] & versions['port'])}) and "
+            "neither records a binary hash, so they cannot be told apart. Re-run: the harness "
+            "now records _core.so's md5."
         )
     return refusals
 
@@ -506,7 +531,7 @@ def check_provenance(cells: dict[str, Cell], *, allow_both_placed: bool) -> list
         *_check_terms(cells),
         *_check_placement(cells, allow_both_placed=allow_both_placed),
         *_check_environment(cells),
-        *_check_versions(cells),
+        *_check_builds(cells),
     ]
     print()
     return refusals
