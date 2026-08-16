@@ -148,6 +148,22 @@ case "$WAVE" in
         cell gws2-c14-g8x16  2 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
         cell gws2-c14-g8x16  4 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
         ;;
+    nocache) # Deriving the RECV layout too, instead of caching the transpose per layer.
+             # Deliberately narrower than `layout`: that wave had to separate P from the rank
+             # count, which is settled. This buys a second point on a known axis rather than a
+             # fifth geometry at one P.
+             #
+             # Both cells run against the SAME main arm the `layout` wave used, so the increment
+             # is readable against gws2's numbers cell for cell.
+             #
+             # What to expect -- a prediction, not a hope: counted `graph` falls by exactly 80 B
+             # per layer core (sizeof(LayerCore) 248 -> 168) and by nothing per slot, because the
+             # transpose cache was a diagnostic OUTSIDE total_bytes. The 8 B/slot it did cost has
+             # to be read from d_recv_cache_bytes going to zero and from RSS. A headline that
+             # barely moves is the correct result here, not a disappointing one.
+        cell gws3-c12-g1x128 1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=128
+        cell gws3-c14-g8x16  4 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        ;;
     *)
         echo "unknown wave: $WAVE" >&2
         exit 2
