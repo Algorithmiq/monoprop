@@ -15,7 +15,6 @@
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 
 #include <algorithm>
-#include <atomic>
 #include <format>
 #include <limits>
 #include <memory>
@@ -174,11 +173,6 @@ auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> s
     return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
 }
 
-auto layer_exchange_layout_cache_bytes(const mpi::RecvLayoutCache &cache) -> size_t {
-    const auto &cached = cache.layout;
-    return cached.counts.capacity() * sizeof(int) + cached.displs.capacity() * sizeof(int);
-}
-
 auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
                             size_t my_rank,
                             int scale,
@@ -204,12 +198,7 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
 
 auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore> {
-    // Identifies the send pattern this core holds, so its recv cache cannot be served to a
-    // different one. Starts at 1 because a default-constructed cache carries 0 = never populated.
-    static std::atomic<uint64_t> next_generation{1};
-
     auto storage = std::make_shared<LayerCore>();
-    storage->exchange_generation = next_generation.fetch_add(1, std::memory_order_relaxed);
     const size_t num_ranks = all_partners.size();
 
     storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
@@ -225,7 +214,7 @@ auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners,
 
     // Derive both scales once at build time and throw the result away. This is purely eager
     // validation: an overflow of MPI's int has to throw from build_graph, not from inside the
-    // exchange, where peers are already blocked in resolve_recv's count round -- there it is a
+    // exchange, where peers are already committed to a transfer of that size -- there it is a
     // distributed hang rather than an error. Scale 2 is checked as well as 1 because the
     // derivative round overflows first and a gradient may run long after the graph was built.
     //

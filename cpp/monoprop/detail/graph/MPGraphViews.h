@@ -50,7 +50,7 @@ struct GraphMemoryBreakdown final {
     // partition and O(P^2) across the job. slot_bytes is that part; traffic_bytes is the
     // part that scales with terms actually crossing, which is real work.
     size_t slot_record_bytes = 0;      // cross_rank ranges[]: one record per world slot, occupied or not
-    size_t recv_cache_bytes = 0;       // evolution layout's resolve_recv transpose cache -- never in total_bytes()
+    size_t recv_cache_bytes = 0;       // retired: the recv layout IS the send layout, nothing is cached
     size_t derivative_layout_bytes = 0; // the lazily retained 2x layout AND its own recv cache -- likewise
     size_t layer_cores = 0;            // distinct LayerCores walked (shared cores counted once)
     size_t slot_records = 0;           // sum over cores of ranges.size(); divide by layer_cores to recover P

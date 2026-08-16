@@ -14,9 +14,11 @@
 
 #include "monoprop/detail/mpi/Exchange.h"
 
+#include <cstdlib>
 #include <format>
 #include <print>
 #include <stdexcept>
+#include <vector>
 
 namespace monoprop::mpi {
 
@@ -119,8 +121,13 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm)
 #endif
 }
 
-auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache, uint64_t generation)
-    -> const RecvLayout & {
+auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm) -> void {
+    // One read of the environment, not one per layer. Rank-uniform by assumption: this is a
+    // collective, so a variable set on some ranks and not others hangs rather than misreports.
+    static const bool enabled = std::getenv("MONOPROP_CHECK_EXCHANGE_SYMMETRY") != nullptr;
+    if (!enabled) {
+        return;
+    }
     const auto n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);
     // alltoall_counts moves comm_size ints each way regardless of `n`, so a send vector that is not
@@ -133,30 +140,23 @@ auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayout
                         n,
                         comm_size));
     }
-    // `generation` identifies the send pattern. Without it the predicate was "have we ever
-    // resolved anything for a communicator this size", which is true for every layer after the
-    // first -- correct only while each cache belonged to the one layout that produced it, and
-    // silently wrong the moment a caller resolves a second pattern through the same cache.
-    // Every rank holds the same generation for the same layer, so all ranks agree on the miss
-    // and enter alltoall_counts together.
-    if (cache.comm_size == comm_size && cache.generation == generation
-        && static_cast<int>(cache.layout.counts.size()) == n) {
-        return cache.layout;
-    }
-
-    RecvLayout &out = cache.layout;
-    out.counts.resize(static_cast<size_t>(n));
-    alltoall_counts(send_counts.data(), out.counts.data(), n, comm);
-    out.displs.resize(static_cast<size_t>(n));
-    long long total = 0;
+    std::vector<int> recv_counts(static_cast<size_t>(n));
+    alltoall_counts(send_counts.data(), recv_counts.data(), n, comm);
     for (int i = 0; i < n; ++i) {
-        out.displs[static_cast<size_t>(i)] = checked_mpi_count(total);
-        total += out.counts[static_cast<size_t>(i)];
+        const int sent = send_counts[static_cast<size_t>(i)];
+        const int received = recv_counts[static_cast<size_t>(i)];
+        if (sent != received) {
+            // Naming the slot and both counts, because the whole point of the check is that the
+            // unguarded failure carries neither.
+            throw CollectiveArgumentError(std::format(
+                "Exchange count matrix is not symmetric at slot {}: this rank sends {} there but receives {} back. "
+                "The exchange derives its recv layout from its send layout on the strength of that equality, so a "
+                "routing change that breaks it must be caught here rather than as a hang in MPI_Alltoallv.",
+                i,
+                sent,
+                received));
+        }
     }
-    out.total = checked_mpi_count(total);
-    cache.comm_size = comm_size;
-    cache.generation = generation;
-    return out;
 }
 
 } // namespace monoprop::mpi

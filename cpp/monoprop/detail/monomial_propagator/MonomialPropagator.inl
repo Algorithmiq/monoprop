@@ -819,12 +819,10 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
     auto relabel = [this](size_t layer, size_t new_param_index) {
         auto &target = graph_.get_layer(layer);
         auto new_core = std::make_shared<LayerCore>(target.core());
-        // The copy keeps the source's transpose cache on purpose. Relabelling changes only which
-        // parameter drives the rotation, never which endpoints cross to which slot, so the cached
-        // recv layout is still the transpose of this core's send pattern -- it carries the pattern
-        // and its generation along with it. Dropping it would cost one collective per layer to
-        // rebuild an identical answer. (The retained derivative layout that used to be dropped
-        // here no longer exists; it is derived per exchange from the evolution one.)
+        // A plain copy, with nothing to invalidate: the core no longer retains any exchange
+        // state for a stale copy to serve. Relabelling changes only which parameter drives the
+        // rotation, never which endpoints cross to which slot, but that argument is no longer
+        // load-bearing -- both the send layout and its transpose are derived per exchange.
         new_core->param_index = new_param_index;
         if (const CosMask *pruned = target.pruned_cos()) {
             target = Layer(std::move(new_core), *pruned);
