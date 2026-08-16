@@ -223,16 +223,29 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
     const std::string displacement_label = std::format("{} displacement", what);
 
     const size_t num_ranks = cross_rank.rank_count();
-    out.counts.resize(num_ranks);
+    // assign() over resize(): every slot that carries nothing must read zero, and `out` is reused
+    // across layers, so last layer's counts would otherwise survive into this one's.
+    out.counts.assign(num_ranks, 0);
     out.displs.resize(num_ranks);
+
+    // Scatter over the slots that carry traffic instead of interrogating every possible partner.
+    // sin_send_size(r) is a binary search once the storage is sparse, so the dense probe this
+    // replaces would cost O(P log occupied) per layer per exchange -- to fill an array that is
+    // ~82% zeros at P=512 by construction. Occupancy only falls as P grows, so the gap widens.
+    for_each_occupied_slot(cross_rank, [&](size_t slot, const CrossRankSlotView &view) {
+        if (slot == my_rank) {
+            return; // excluded from the transfer and handled locally, as the stored layout did
+        }
+        out.counts[slot] =
+            checked_mpi_int(static_cast<size_t>(scale) * view.sin_send_count, count_label.c_str());
+    });
+
+    // The prefix sum stays dense: MPI_Alltoallv wants a displacement for every rank, and an empty
+    // slot still needs a valid (repeated) one.
     size_t total = 0;
     for (size_t r = 0; r < num_ranks; ++r) {
-        // The self slot is excluded from the transfer and handled locally, exactly as the
-        // stored layout did; an empty slot still gets a valid (repeated) displacement.
-        const size_t count = (r == my_rank) ? size_t{0} : static_cast<size_t>(scale) * cross_rank.sin_send_size(r);
-        out.counts[r] = checked_mpi_int(count, count_label.c_str());
         out.displs[r] = checked_mpi_int(total, displacement_label.c_str());
-        total += count;
+        total += static_cast<size_t>(out.counts[r]);
     }
     out.total_count = total;
 }
