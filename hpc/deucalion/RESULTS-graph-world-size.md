@@ -290,9 +290,74 @@ per layer per first evaluation. It is uncounted by `total_bytes`, so it would no
 > the previous day's `.so` and reported "no probe files" on all three stages. Ask the interpreter
 > which file it loaded (`from monoprop import _core; _core.__file__`) and gate on that one.
 
-Still a hypothesis about *all* patterns, not a proof — the evidence is 550M slot comparisons plus a
+**Shipped in phase 3 below.** Still a hypothesis about *all* patterns, not a proof — the evidence is 550M slot comparisons plus a
 construction argument. Implementing it should keep an assertion on the equality in debug builds
 rather than delete the check with the cache.
+
+## Phase 3: the transpose was never worth computing, and the prediction held to the byte
+
+The cache the previous phase kept is gone. `resolve_recv`, `RecvLayoutCache`, and the
+rank-uniform `exchange_generation` go with it — the hazard phase 2 documented is removed rather
+than managed, because with no cache there is no miss path and so no collective for ranks to split
+on. `sizeof(LayerCore)` 248 → 168 B.
+
+Cells `gws3-*`, jobs 1826439 / 1826440, against the same `origin/main` arm as `gws2`.
+
+| | P=128 (c12) | P=512 (c14, N=4) |
+| --- | ---: | ---: |
+| main | 4.982 GiB | 57.686 GiB |
+| port, retained layouts (`5f33a71`) | 2.888 | 25.494 |
+| port, derived transpose (`cff597e`) | **2.837** | **25.288** |
+| main → now | 1.76× | **2.28×** (32.399 GiB saved) |
+
+**The increment was predicted before the cells ran and is asserted by the collator, not eyeballed:
+80 B per layer core and nothing per slot.** Measured 80.00 B/core at both cells, ratio
+measured/predicted **1.0000**. Nothing per slot is the load-bearing half — the cache sat outside
+`total_bytes`, so a per-slot movement here would have meant the model of what that field contains
+was wrong.
+
+| | P=128 | P=512 |
+| --- | ---: | ---: |
+| `d_recv_cache_bytes` before | 0.662 GiB | 10.586 GiB |
+| after | **0** | **0** |
+| per slot removed | 8.00 B | 8.00 B |
+
+That is the larger half of the change and it moves no shipped metric. The structural check came
+out clean at both cells: `cores / L = P` and `slots / cores = P` for L = 5,420.
+
+### Time — isolated with a port-vs-port arm, because the cumulative one cannot attribute it
+
+`main → cff597e` mixes both phases, so a third arm was built from the phase-2 binaries
+(`work-gws/venv-gws2`, `.so` md5 `5ad94fee`) and run against `cff597e` (`97dc2277`) under the same
+protocol. Jobs 1826567 / 1826568.
+
+| operation | P=128 | agree | P=512 | agree |
+| --- | --- | ---: | --- | ---: |
+| `build_graph` | **1.12× faster** | 6/6* | 1.05× faster | 6/6* |
+| `propagate` | unresolved | 5/6 | flat | 3/6 |
+| `energy` | flat | 5/6 | **1.14× faster** | 6/6* |
+| `gradient` | 1.05× faster | 6/6* | **1.17× faster** | 6/6* |
+| `build_graph` dmem | 1.13× smaller | — | **1.29× smaller** | — |
+
+`*` clears the 6/6 sign-test floor, p = 0.031. The mechanism is 5,420 `alltoall_counts` per first
+evaluation that no longer happen. `build_graph` dmem falling is what places the old cache's
+allocation in the build rather than the first eval.
+
+> **One negative, 6/6 and unexplained.** `gradient` dmem at P=512 is **1.16× LARGER** on the new
+> build, 0.04 → 0.05 GiB. It is ~10 MiB against a 10.6 GiB resident saving in the same cell, and
+> gradient time is 1.17× faster, so it is not a blocker — but it agrees on all six reps, which is
+> not noise, and I do not have a mechanism for it. Recorded rather than rounded away.
+
+> **`ab_summary` REFUSED both port-vs-port cells**, correctly by its own rule and wrongly in fact:
+> the two arms report the same `monoprop_version` because they are the same worktree. That is the
+> blind spot already documented below — version is a git describe, not a fingerprint of the
+> extension. The arms were confirmed distinct by `.so` md5, and each venv was confirmed to import
+> its own before submission. The tables above are quoted on that basis and on no other.
+
+Verified by job 1826413 on the exact binary that shipped (md5 `97dc2277`, unchanged by the final
+rebuild): 214 `ctest -L serial`, plus 625 Python tests on each of four geometries **twice** — once
+on the production path, once with `MONOPROP_CHECK_EXCHANGE_SYMMETRY=1` asserting the equality on
+every layer. The second pass is the one that matters; the first only says nobody noticed.
 
 ## Reading rules and limits
 
