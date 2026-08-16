@@ -249,6 +249,51 @@ most of the world.
 
 Rank a lever by its bytes against the other levers, not by the percentage of itself it reclaims.
 
+## The next lever: the transpose cache survives 550M comparisons without a single mismatch
+
+Phase 2 kept `evolution_recv_cache` on the grounds that it is "the one part that cannot be derived
+locally — it takes a collective". Reading the sink that builds the partner data says otherwise.
+
+On rank *m*, slot *r* holds `in_entries` (the queries *r* sent *m*) followed by `out_entries` (the
+responses *m* got for the queries it sent *r*), and the stored count is `P + Q`
+(`Engine.h:145-175`). On rank *r*, slot *m* holds those two swapped. So `count(m→r) == count(r→m)`
+by construction, and since displacements are prefix sums of the same array, **the recv layout is
+the send layout**. If that holds, `resolve_recv`'s `alltoall_counts` is unnecessary and the cache
+is deletable.
+
+Measured with a temporary probe (`sbatch/symcheck.sh` + `sbatch/symcheck-probe.patch`) that
+compares the alltoall's answer against the send counts on every resolve, job 1826390:
+
+| stage | world P | resolves | slots compared | mismatched |
+| --- | ---: | ---: | ---: | ---: |
+| pytest `--with-mpi` | 32 | 280,160 | 5,743,104 | **0** |
+| pytest `--with-mpi` | 256 | 2,241,280 | 189,190,144 | **0** |
+| pauli c12 energy + gradient | 256 | 1,387,520 | 355,205,120 | **0** |
+
+The counters are the point. A probe that only fires on mismatch reports nothing on a clean run and
+nothing when it never ran, and the first attempt at this job did exactly that — see below.
+
+**The one path that could have broken it does not.** Symmetry is a property of the send pattern, so
+any rank-local edit to `cross_rank` after the build would end it, and the failure would be a
+distributed hang rather than a wrong answer. The only place a `LayerCore` is copied and modified is
+`set_parameter_mapping`'s relabel (`MonomialPropagator.inl:815-830`), which writes `param_index` and
+nothing else.
+
+Worth, if implemented: **8 B/slot — 10.59 GiB at P=512** (measured, port arm), plus one collective
+per layer per first evaluation. It is uncounted by `total_bytes`, so it would not move the headline.
+
+> **Two gates in this job failed for reasons that had nothing to do with the claim**, both worth
+> keeping. `strings … | grep -q` under `set -o pipefail` reports *failure* on a match — `-q` exits
+> early, `strings` takes SIGPIPE, and the pipeline status is the failure. And the gate was checking
+> `build/editable/Release/…/_core.so` while Python imports its own copy under
+> `site-packages/monoprop/`: `cmake --build` does not update the imported binary, so a whole job ran
+> the previous day's `.so` and reported "no probe files" on all three stages. Ask the interpreter
+> which file it loaded (`from monoprop import _core; _core.__file__`) and gate on that one.
+
+Still a hypothesis about *all* patterns, not a proof — the evidence is 550M slot comparisons plus a
+construction argument. Implementing it should keep an assertion on the equality in debug builds
+rather than delete the check with the cache.
+
 ## Reading rules and limits
 
 - **`memhwm` is a sum over ranks; `dmem` and `opmempeak.max` are maxima.** Comparing one against the

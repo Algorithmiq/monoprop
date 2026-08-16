@@ -1,0 +1,100 @@
+diff --git a/cpp/monoprop/detail/mpi/MPICompat.cpp b/cpp/monoprop/detail/mpi/MPICompat.cpp
+index c744ff6..0597726 100644
+--- a/cpp/monoprop/detail/mpi/MPICompat.cpp
++++ b/cpp/monoprop/detail/mpi/MPICompat.cpp
+@@ -14,12 +14,68 @@
+ 
+ #include "monoprop/detail/mpi/Exchange.h"
+ 
++#include <atomic>
++#include <cstdio>
++#include <cstdlib>
+ #include <format>
+ #include <print>
+ #include <stdexcept>
++#include <string>
++#include <unistd.h>
+ 
+ namespace monoprop::mpi {
+ 
++namespace {
++// TEMPORARY falsification probe -- not for merge.
++//
++// Claim under test: the exchange count matrix is SYMMETRIC, i.e. what I send to r equals what r
++// sends to me, so resolve_recv's alltoall_counts is unnecessary and the retained transpose cache
++// (8 B per world slot, 10.59 GiB at P=512) can be deleted outright. Derived from Engine.h's
++// sink: slot r on my rank holds in_entries (queries r sent me) ++ out_entries (queries I sent
++// r), and slot me on rank r holds those two swapped -- so P+Q is equal on both sides.
++//
++// Reports through a FILE, not stderr: pytest's fd capture eats C++ stderr. Written from the
++// CONSTRUCTOR and again on every resolve, never only at exit -- measured, the static destructor
++// does not run under this interpreter, and a probe that reports only at exit produces zero files,
++// which reads identically to "no cross-rank traffic" and is worth nothing.
++struct SymmetryProbe final {
++    const char *out = std::getenv("MONOPROP_SYMCHECK");
++    std::atomic<uint64_t> resolves{0};
++    std::atomic<uint64_t> slots{0};
++    std::atomic<uint64_t> mismatched_resolves{0};
++    std::atomic<uint64_t> mismatched_slots{0};
++    std::atomic<uint64_t> first_send{0};
++    std::atomic<uint64_t> first_recv{0};
++    std::atomic<int> first_slot{-1};
++
++    auto report() -> void {
++        if (out == nullptr) {
++            return;
++        }
++        const std::string path = std::string(out) + "." + std::to_string(::getpid());
++        FILE *f = std::fopen(path.c_str(), "w");
++        if (f == nullptr) {
++            return;
++        }
++        std::fprintf(f,
++                     "resolves=%llu slots=%llu mismatched_resolves=%llu mismatched_slots=%llu "
++                     "first_bad_slot=%d first_send=%llu first_recv=%llu\n",
++                     static_cast<unsigned long long>(resolves.load()),
++                     static_cast<unsigned long long>(slots.load()),
++                     static_cast<unsigned long long>(mismatched_resolves.load()),
++                     static_cast<unsigned long long>(mismatched_slots.load()),
++                     first_slot.load(),
++                     static_cast<unsigned long long>(first_send.load()),
++                     static_cast<unsigned long long>(first_recv.load()));
++        std::fclose(f);
++    }
++
++    SymmetryProbe() { report(); }
++    ~SymmetryProbe() { report(); }
++};
++SymmetryProbe g_symmetry_probe;
++} // namespace
++
+ #ifdef monoprop_ENABLE_MPI
+ auto init(int *argc, char ***argv) -> void {
+     auto initialized = 0;
+@@ -147,6 +203,26 @@ auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayout
+     RecvLayout &out = cache.layout;
+     out.counts.resize(static_cast<size_t>(n));
+     alltoall_counts(send_counts.data(), out.counts.data(), n, comm);
++    if (g_symmetry_probe.out != nullptr) {
++        g_symmetry_probe.resolves.fetch_add(1);
++        g_symmetry_probe.slots.fetch_add(static_cast<uint64_t>(n));
++        uint64_t bad = 0;
++        for (int i = 0; i < n; ++i) {
++            if (out.counts[static_cast<size_t>(i)] != send_counts[static_cast<size_t>(i)]) {
++                if (bad == 0 && g_symmetry_probe.first_slot.load() < 0) {
++                    g_symmetry_probe.first_slot.store(i);
++                    g_symmetry_probe.first_send.store(static_cast<uint64_t>(send_counts[static_cast<size_t>(i)]));
++                    g_symmetry_probe.first_recv.store(static_cast<uint64_t>(out.counts[static_cast<size_t>(i)]));
++                }
++                ++bad;
++            }
++        }
++        if (bad != 0) {
++            g_symmetry_probe.mismatched_resolves.fetch_add(1);
++            g_symmetry_probe.mismatched_slots.fetch_add(bad);
++        }
++        g_symmetry_probe.report();
++    }
+     out.displs.resize(static_cast<size_t>(n));
+     long long total = 0;
+     for (int i = 0; i < n; ++i) {
