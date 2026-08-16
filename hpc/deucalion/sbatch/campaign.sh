@@ -188,11 +188,17 @@ case "$WAVE" in
              # The P ladder is the same 8x16 geometry at 1, 2 and 4 nodes, so only the node count
              # moves. c12 at 1x16 is included precisely because it is the WORST case for sparsity:
              # occupancy is 31.5% there against 17.5% at P=512, so it is where this could lose.
-        cell sp-c12-g1x16   1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=16
-        cell sp-c12-g1x128  1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=128
-        cell sp-c14-g8x16   1 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
-        cell sp-c14-g8x16   2 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
-        cell sp-c14-g8x16   4 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+             #
+             # Tagged sp2 because the sp cells already exist and models-ab.sh refuses to write
+             # over a populated results dir. Those cells are valid measurements -- the arms were
+             # distinct, by md5 -- but they predate monoprop_core_md5, so their own provenance
+             # cannot prove it and ab_summary refuses them. sp2 re-runs the same two binaries to
+             # get a record that stands on its own; keep sp so the two can be compared.
+        cell sp2-c12-g1x16   1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell sp2-c12-g1x128  1 1:30:00  1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05 PARTITIONS=128
+        cell sp2-c14-g8x16   1 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell sp2-c14-g8x16   2 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
+        cell sp2-c14-g8x16   4 3:30:00  8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 PARTITIONS=16
         ;;
     *)
         echo "unknown wave: $WAVE" >&2

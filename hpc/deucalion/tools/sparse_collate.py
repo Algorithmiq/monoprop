@@ -25,6 +25,7 @@ Collates from an EXPLICIT dir list -- $PROJ/runs is shared between sessions and 
 """
 
 import json
+import os
 import pathlib
 import sys
 
@@ -36,13 +37,16 @@ BASE_RECORD = 32  # sizeof(CrossRankPartnerRange) on the baseline arm
 PORT_RECORD = 12  # sizeof(CrossRankOccupiedSlot)
 CORE_GROWTH = 24  # sizeof(LayerCore): world_size + self_pos + self_offset
 
-# (label, flat world P, run dir)
+# (label, flat world P, run dir). Override the wave prefix with SPARSE_TAG=sp to collate the
+# first wave, which measured the same two binaries before the harness recorded
+# monoprop_core_md5 -- it is a free replication of every number below, not a discard.
+TAG = os.environ.get("SPARSE_TAG", "sp2")
 CELLS = [
-    ("c12 1x16", 16, "models-pauli-sp-c12-g1x16-N1"),
-    ("c12 1x128", 128, "models-pauli-sp-c12-g1x128-N1"),
-    ("c14 8x16 N1", 128, "models-pauli-sp-c14-g8x16-N1"),
-    ("c14 8x16 N2", 256, "models-pauli-sp-c14-g8x16-N2"),
-    ("c14 8x16 N4", 512, "models-pauli-sp-c14-g8x16-N4"),
+    ("c12 1x16", 16, f"models-pauli-{TAG}-c12-g1x16-N1"),
+    ("c12 1x128", 128, f"models-pauli-{TAG}-c12-g1x128-N1"),
+    ("c14 8x16 N1", 128, f"models-pauli-{TAG}-c14-g8x16-N1"),
+    ("c14 8x16 N2", 256, f"models-pauli-{TAG}-c14-g8x16-N2"),
+    ("c14 8x16 N4", 512, f"models-pauli-{TAG}-c14-g8x16-N4"),
 ]
 
 FIELDS = ("total_bytes", "cross_rank_bytes", "d_slot_record_bytes", "d_layer_cores",
