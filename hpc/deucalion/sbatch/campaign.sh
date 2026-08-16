@@ -12,7 +12,7 @@
 # Both arms are venvs, not branches: MAIN_VENV (default $PROJ/src/mp-main/.venv) and PORT_VENV
 # (default $PROJ/src/mp-invidx/.venv). `cell` forwards the caller's environment, so pointing an
 # arm at another worktree's build needs no edit here:
-#   PORT_VENV=$PROJ/src/mp-gws/.venv hpc/deucalion/sbatch/campaign.sh geometry
+#   PORT_VENV=$PROJ/src/mp-slots/.venv hpc/deucalion/sbatch/campaign.sh geometry
 # benches/ comes from THIS checkout for both arms -- only the compiled extension differs -- so a
 # metric the harness records but only one arm's binding emits is recorded for that arm alone.
 #
@@ -175,6 +175,10 @@ case "$WAVE" in
              #   PORT_VENV=$PROJ/src/mp-slots/.venv \
              #   hpc/deucalion/sbatch/campaign.sh sparse
              #
+             # That baseline worktree was deleted once this wave was collated. The arm's identity
+             # is the tag `arm/main-instrumented`, not the directory, and work-slots/build-base.sh
+             # recreates the worktree from it.
+             #
              # The prediction, stated before the cells run. The baseline record is 32 B per world
              # slot (main stores the D range twice); the port stores 12 B per OCCUPIED slot and
              # gains 24 B per layer core for the world size and the self-slot position:
@@ -203,12 +207,18 @@ case "$WAVE" in
     sparse-stack)  # The sparse slot records measured on top of the DERIVED exchange layout.
              #
              # Different baseline again, and this is the one that is easy to get wrong: the arm is
-             # perf/graph-world-size (PR #237), NOT main. #238 is now stacked on #237, so its own
-             # before/after is against its base. Pass both explicitly:
+             # perf/graph-world-size, which was PR #237 before it was absorbed -- NOT main. This
+             # wave measures the last three commits of #238 against its own first three, so it
+             # needs an arm that is neither end of the branch. Pass both explicitly:
              #
              #   MAIN_VENV=$PROJ/src/mp-gws/.venv \
              #   PORT_VENV=$PROJ/src/mp-slots/.venv \
              #   hpc/deucalion/sbatch/campaign.sh sparse-stack
+             #
+             # #237 was closed and its branch and worktree deleted when the two halves became one
+             # PR. The arm survives as the tag `arm/gws-only`; recreate it with
+             #   git worktree add --detach $PROJ/src/mp-gws arm/gws-only
+             # and build it the way work-slots/build-integrated.sh builds the port.
              #
              # Why it is worth re-measuring rather than reusing the sp2 numbers: on main the dense
              # record was 32 B and the retained exchange layout dominated everything; on #237 the

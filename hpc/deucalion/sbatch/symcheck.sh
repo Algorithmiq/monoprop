@@ -13,7 +13,7 @@
 # The probe is NOT in the engine. Apply it, rebuild, and install the result into the venv, which
 # is a separate step -- `cmake --build` leaves site-packages holding the previous binary:
 #
-#   cd $PROJ/src/mp-gws
+#   cd $PROJ/src/mp-slots
 #   git apply $PROJ/src/mp-gwsbench/hpc/deucalion/sbatch/symcheck-probe.patch
 #   cmake --build build/editable/Release
 #   SP=.venv/lib/python3.11/site-packages/monoprop
@@ -37,7 +37,10 @@
 set -uo pipefail
 
 PROJ=/projects/EEHPC-DEV-2026D08-260
-GWS="$PROJ/src/mp-gws"
+# The consolidated worktree. This used to be src/mp-gws, which held perf/graph-world-size on
+# its own; that branch is now the first three commits of perf/sparse-world-slots and the
+# separate worktree is gone. The probe applies to the same code either way.
+GWS="$PROJ/src/mp-slots"
 WORK="$PROJ/work-gws/symcheck-${SLURM_JOB_ID:-manual}"
 mkdir -p "$WORK"
 
@@ -140,7 +143,8 @@ done
 echo
 echo "############ stage 2: pauli c12, energy + gradient, world 256 ############"
 # Driven from the BENCH worktree: the per-operation model benchmarks (test_model_energy,
-# test_model_gradient) exist only there -- mp-gws's benches/bench_models.py has just test_model,
+# test_model_gradient) exist only there -- the library worktree's benches/bench_models.py has
+# only test_model, because the harness is deliberately kept off the PR branch,
 # so `-k "energy or gradient"` deselected everything and the stage measured nothing. The venv is
 # still the gws one, so the binary under test is unchanged; only the test code comes from
 # elsewhere. Verified below by printing which monoprop the interpreter actually imported.
