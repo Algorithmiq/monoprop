@@ -19,20 +19,22 @@
 #include <vector>
 
 #include "monoprop/detail/mpi/MPICompat.h"
-#include "monoprop/detail/mpi/RecvLayout.h"
 
 // Keeps #ifdef monoprop_ENABLE_MPI out of the consumers; non-MPI builds get self-copy stubs.
 
 namespace monoprop::mpi {
 
-// Resolve the recv side of a send-count vector, reusing `cache` when the comm size and the send
-// pattern are both unchanged: a replayed graph's send pattern is fixed, so a hit removes one
-// blocking count round-trip per layer per evaluation.
+// Opt-in audit of the invariant the exchange now rests on: a layer's recv counts equal its send
+// counts, so there is no transpose to compute or store (see Evolution.cpp's derive_layer_exchange).
 //
-// `generation` identifies the send pattern and MUST be rank-uniform -- see RecvLayoutCache, where
-// the reason (a miss is a collective, so a split decision hangs) is spelled out.
-auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache, uint64_t generation)
-    -> const RecvLayout &;
+// Off unless MONOPROP_CHECK_EXCHANGE_SYMMETRY is set, because ON it costs exactly the collective
+// the change exists to remove. It IS a collective, so the variable must be set identically on
+// every rank -- setting it on one rank alone hangs. Read once, at first use.
+//
+// Worth having at all because of how the invariant fails if a future routing change breaks it: a
+// peer blocks in MPI_Alltoallv against a size nobody sends, which is a hang with no line number.
+// This turns that into an exception naming the slot.
+auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm) -> void;
 
 // Idempotent completion handle for a posted payload transfer; move-only, so a request is waited on
 // exactly once. wait() is a no-op on the blocking path and in non-MPI builds. Owns its request: the

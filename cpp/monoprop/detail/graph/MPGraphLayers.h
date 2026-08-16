@@ -88,12 +88,9 @@ struct LayerTraversal final {
         return detail::cross_rank_slot(core_->cross_rank, rank);
     }
 
-    // The exchange layout is derived at the call site from these, not stored: see
-    // detail::derive_exchange_layout. Only the transpose cache survives, because only it
-    // needs a collective.
+    // The exchange layout -- both sides of it -- is derived at the call site from these and
+    // nothing else is stored: see detail::derive_exchange_layout and Evolution.cpp.
     auto cross_rank() const -> const PackedCrossRankStorage & { return core_->cross_rank; }
-    auto evolution_recv_cache() const -> mpi::RecvLayoutCache & { return core_->evolution_recv_cache; }
-    auto exchange_generation() const -> uint64_t { return core_->exchange_generation; }
 
     auto param_index() const -> size_t { return core_->param_index; }
     auto gen_coeff() const -> double { return core_->gen_coeff; }

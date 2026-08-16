@@ -60,14 +60,14 @@ auto combine_endpoint_contrib(const EndpointContrib &a, const EndpointContrib &b
 struct FlatExchangeBuffers {
     VecD send_buffer;
     VecD recv_buffer;
-    std::vector<int> recv_counts;
-    std::vector<int> recv_displs;
-    // The send layout for the exchange currently being posted, derived per layer rather than
-    // read from one retained per layer. Reused, so it allocates once per thread per world size.
-    // Sharing one instance across layers is only sound because at most one exchange is in flight
-    // per thread -- the same invariant send_buffer above has always required.
+    // The layout for the exchange currently being posted, derived per layer rather than read from
+    // one retained per layer. Reused, so it allocates once per thread per world size. Sharing one
+    // instance across layers is only sound because at most one exchange is in flight per thread --
+    // the same invariant send_buffer above has always required.
+    //
+    // ONE layout, not two: it describes the recv side as well as the send side. See
+    // derive_layer_exchange.
     LayerExchangeLayout layout;
-    int recv_total = 0;
 };
 
 auto &acquire_flat_exchange_buffers() {
@@ -79,11 +79,8 @@ auto &acquire_flat_exchange_buffers() {
 }
 
 void resize_flat_exchange_buffers(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers) {
-    // Only the send side: the recv counts/displs are filled by derive_layer_exchange before this
-    // runs, so clearing them here (as this did when the recv side was resolved afterwards) would
-    // throw away the layout the transfer is about to be posted with.
-    const size_t send_alloc = layout.total_count == 0 ? 1 : layout.total_count;
-    buffers.send_buffer.resize(send_alloc);
+    const size_t alloc = layout.total_count == 0 ? 1 : layout.total_count;
+    buffers.send_buffer.resize(alloc);
 }
 
 // Nothing to exchange at one rank. All ranks must participate even at local total_count 0, else
@@ -92,43 +89,29 @@ auto layer_exchange_participates(const mpi::Comm &comm) -> bool {
     return mpi::size(comm) != 1;
 }
 
-// Derive this layer's send layout into `buffers.layout` at `scale`, and its recv side into
-// buffers.recv_counts/recv_displs at the same scale.
+// Derive this layer's exchange layout into `buffers.layout` at `scale`. It describes BOTH sides.
 //
-// The recv side is resolved ONCE per layer, at scale 1, into the layer's own cache. Scaling
-// commutes with the transpose -- every rank multiplies its counts by the same literal, so peer q
-// sends me exactly `scale` times what it sent at scale 1, and displacements are prefix sums of
-// counts so they scale with them. That is what lets the derivative round reuse the evolution
-// round's collective instead of paying an alltoall of its own.
+// The count matrix is symmetric: rank m's slot for r holds (the queries r sent m) ++ (the queries
+// m sent r), and rank r's slot for m holds those two swapped, so the two slots have the same
+// length (MPGraphEncoding's sink, via layer_build/Engine.h). Counts are equal, and displacements
+// are prefix sums of counts, so the recv layout is the send layout -- there is nothing to
+// transpose and nothing to communicate. This is what a per-layer RecvLayoutCache used to hold,
+// at 8 B per world slot, and what an alltoall_counts per layer used to compute.
+//
+// Scaling is applied once, here, rather than to a scale-1 result: every rank multiplies by the
+// same literal, so the equality survives it.
+//
+// Verified end to end rather than reasoned about alone: with MONOPROP_CHECK_EXCHANGE_SYMMETRY set
+// the derived counts are checked against a real alltoall on every layer (see
+// check_exchange_symmetry). A campaign at world 32 and 256 compared 550M slots with no mismatch.
 auto derive_layer_exchange(const LayerTraversal &layer,
                            const mpi::Comm &comm,
                            int scale,
                            FlatExchangeBuffers &buffers) -> void {
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
-
-    // Resolve the transpose at scale 1, so evolution and derivative rounds share one cache entry
-    // and therefore one collective.
-    detail::derive_exchange_layout(layer.cross_rank(), my_rank, 1, buffers.layout);
-    const auto &recv =
-        mpi::resolve_recv(buffers.layout.counts, comm, layer.evolution_recv_cache(), layer.exchange_generation());
-
-    const size_t n = recv.counts.size();
-    buffers.recv_counts.resize(n);
-    buffers.recv_displs.resize(n);
-    for (size_t i = 0; i < n; ++i) {
-        buffers.recv_counts[i] = detail::checked_mpi_int(static_cast<size_t>(recv.counts[i]) * static_cast<size_t>(scale),
-                                                         "Layer exchange recv count");
-        buffers.recv_displs[i] = detail::checked_mpi_int(static_cast<size_t>(recv.displs[i]) * static_cast<size_t>(scale),
-                                                         "Layer exchange recv displacement");
-    }
-    buffers.recv_total = detail::checked_mpi_int(static_cast<size_t>(recv.total) * static_cast<size_t>(scale),
-                                                 "Layer exchange recv total");
-
-    // Now the send side at the requested scale. Re-derived rather than scaled in place so the
-    // overflow check runs against the value MPI actually receives.
-    if (scale != 1) {
-        detail::derive_exchange_layout(layer.cross_rank(), my_rank, scale, buffers.layout, "Layer derivative exchange");
-    }
+    const char *what = scale == 1 ? "Layer exchange" : "Layer derivative exchange";
+    detail::derive_exchange_layout(layer.cross_rank(), my_rank, scale, buffers.layout, what);
+    mpi::check_exchange_symmetry(buffers.layout.counts, comm);
 }
 
 // The completed alltoallv payload as an apply pass sees it: peer `rank`'s entries start at
@@ -151,13 +134,15 @@ inline auto begin_flat_exchange(FlatExchangeBuffers &buffers, const mpi::Comm &c
     CrossRankExchangeHandle handle;
     handle.layout = &layout;
     handle.buffers = &buffers;
-    buffers.recv_buffer.resize(buffers.recv_total == 0 ? 1 : static_cast<size_t>(buffers.recv_total));
+    buffers.recv_buffer.resize(layout.total_count == 0 ? 1 : layout.total_count);
+    // Same arrays on both sides. MPI reads recvcounts/recvdispls, it does not write them, so
+    // aliasing them onto the send layout is legal as well as correct here.
     handle.ticket = mpi::post_flat_alltoallv<double>({.send = buffers.send_buffer.data(),
                                                       .send_counts = layout.counts.data(),
                                                       .send_displs = layout.displs.data(),
                                                       .recv = buffers.recv_buffer.data(),
-                                                      .recv_counts = buffers.recv_counts.data(),
-                                                      .recv_displs = buffers.recv_displs.data()},
+                                                      .recv_counts = layout.counts.data(),
+                                                      .recv_displs = layout.displs.data()},
                                                      mpi::size(comm),
                                                      comm);
     return handle;
@@ -206,7 +191,7 @@ inline auto finish_layer_exchange(InFlightExchange &in_flight, Apply apply)
     }
     wait_flat_exchange(in_flight.handle);
     return apply(ExchangePayload{.recv_buffer = in_flight.handle.buffers->recv_buffer,
-                                 .recv_displs = in_flight.handle.buffers->recv_displs,
+                                 .recv_displs = in_flight.handle.buffers->layout.displs,
                                  .my_rank = in_flight.my_rank});
 }
 
