@@ -40,21 +40,25 @@ struct GraphMemoryBreakdown final {
     size_t cross_rank_bytes = 0;
     size_t exchange_layout_bytes = 0;
 
-    // Diagnostics, deliberately EXCLUDED from total_bytes(): the first three are either a
-    // subset of a field above or memory that total_bytes() has never counted, and folding
-    // them in would silently redefine graph_memory_bytes() mid-flight, so an A/B against an
-    // older build would compare two different quantities. The rest are counts, not bytes.
+    // Diagnostics, deliberately EXCLUDED from total_bytes(): each is either a count, a subset of a
+    // field above, or memory total_bytes() has never counted. Folding any of them in would silently
+    // redefine graph_memory_bytes() mid-flight, so an A/B against an older build would compare two
+    // different quantities.
     //
     // The point of the split: a per-layer array indexed by rank is sized by the FLAT world
     // (mpi::size on a Hybrid comm is ranks x partitions), so it costs O(P) per layer per
-    // partition and O(P^2) across the job. slot_bytes is that part; traffic_bytes is the
-    // part that scales with terms actually crossing, which is real work.
-    size_t slot_record_bytes = 0;      // cross_rank ranges[]: one record per world slot, occupied or not
-    size_t recv_cache_bytes = 0;       // retired: the recv layout IS the send layout, nothing is cached
+    // partition and O(P^2) across the job. slot_record_bytes is that part; the endpoint count below
+    // is the part that scales with terms actually crossing, which is real work.
+    size_t slot_record_bytes = 0;       // one record per STORED world slot -- occupied only, once sparse
+    size_t recv_cache_bytes = 0;        // retired: the recv layout IS the send layout, nothing is cached
     size_t derivative_layout_bytes = 0; // the lazily retained 2x layout AND its own recv cache -- likewise
-    size_t layer_cores = 0;            // distinct LayerCores walked (shared cores counted once)
-    size_t slot_records = 0;           // sum over cores of ranges.size(); divide by layer_cores to recover P
-    size_t occupied_slots = 0;         // slots carrying any traffic: occupancy = occupied_slots / slot_records
+    size_t layer_cores = 0;             // distinct LayerCores walked (shared cores counted once)
+    size_t slot_records = 0;            // the flat world P per core, so slot_records / layer_cores == P
+    size_t occupied_slots = 0;          // slots carrying any traffic: occupancy = occupied_slots / slot_records
+    // Cross-rank endpoints -- the traffic itself, and the ceiling on occupied_slots, since an
+    // occupied slot holds at least one endpoint. Unlike slot_records it does not depend on P, so the
+    // two together say how much of the slot array is information and how much is reserved-and-empty.
+    size_t cross_rank_endpoints = 0;
 
     auto total_bytes() const -> size_t {
         return layer_descriptor_bytes + layer_storage_object_bytes + cos_data_bytes + cross_rank_bytes
@@ -74,6 +78,7 @@ struct GraphMemoryBreakdown final {
         layer_cores += o.layer_cores;
         slot_records += o.slot_records;
         occupied_slots += o.occupied_slots;
+        cross_rank_endpoints += o.cross_rank_endpoints;
         return *this;
     }
 };

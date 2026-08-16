@@ -243,44 +243,31 @@ BOOST_AUTO_TEST_CASE(graph_encoding_d_from_b_derivation_both_arms) {
 
 // The accounting split behind graph_memory_breakdown(). These lock the property the split
 // exists to expose: the slot-record cost is set by the size of the world, and does not move
-// when the traffic through it does.
+// when the traffic through it does. (slot_partners is defined above, with the layout tests.)
 
 BOOST_AUTO_TEST_CASE(graph_encoding_occupied_slots_counts_only_slots_carrying_traffic) {
-    std::vector<CrossRankPartnerData> data(5); // five world slots, two of them used
-    data[1].sin_send_indices.push_back(7);
-    data[1].sin_recv_entries.push_back({0, 1});
-    data[1].in_count = 1;
-    data[3].sin_send_indices.push_back(9);
-    data[3].sin_recv_entries.push_back({0, 1});
-    data[3].in_count = 1;
+    // Zeros at the front, in the interior and at the back -- the three places a scan loses count.
+    const auto storage = detail::build_packed_cross_rank_storage(slot_partners({0, 3, 0, 0, 7, 0}));
 
-    const auto storage = detail::build_packed_cross_rank_storage(data);
-
-    BOOST_CHECK_EQUAL(storage.rank_count(), 5U);
+    BOOST_CHECK_EQUAL(storage.rank_count(), 6U);
     BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(storage), 2U);
+    BOOST_CHECK_EQUAL(detail::cross_rank_endpoint_count(storage), 10U);
+    // The ceiling this instrument exists to expose: an occupied slot holds at least one endpoint.
+    BOOST_CHECK_LE(detail::cross_rank_occupied_slots(storage), detail::cross_rank_endpoint_count(storage));
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_slot_record_bytes_track_the_world_not_the_traffic) {
-    // Same single sender, two different world sizes: the traffic is identical, so anything
-    // that grows here is paid for the world rather than for the work.
-    std::vector<CrossRankPartnerData> narrow(2);
-    std::vector<CrossRankPartnerData> wide(8);
-    for (auto *data : {&narrow, &wide}) {
-        (*data)[0].sin_send_indices.push_back(1);
-        (*data)[0].sin_recv_entries.push_back({0, 1});
-        (*data)[0].in_count = 1;
-    }
+    // Same traffic, four times the world. The record array grows; the payload does not.
+    const auto narrow = detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0}));
+    const auto wide = detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0, 0, 0, 0, 0,
+                                                                             0, 0, 0, 0, 0, 0, 0, 0}));
 
-    const auto narrow_storage = detail::build_packed_cross_rank_storage(narrow);
-    const auto wide_storage = detail::build_packed_cross_rank_storage(wide);
-
-    BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(narrow_storage), 1U);
-    BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(wide_storage), 1U);
-    // Four times the slots for the same one term crossing.
-    BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(wide_storage),
-                      4 * detail::cross_rank_slot_record_bytes(narrow_storage));
-    BOOST_CHECK_LT(detail::cross_rank_slot_record_bytes(narrow_storage),
-                   detail::cross_rank_storage_bytes(narrow_storage));
+    BOOST_CHECK_EQUAL(detail::cross_rank_endpoint_count(narrow), detail::cross_rank_endpoint_count(wide));
+    BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(narrow), detail::cross_rank_occupied_slots(wide));
+    BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(narrow), 4U * sizeof(CrossRankPartnerRange));
+    BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(wide), 16U * sizeof(CrossRankPartnerRange));
+    // And the slot records are a slice of cross_rank_bytes, not an addition to it.
+    BOOST_CHECK_LT(detail::cross_rank_slot_record_bytes(wide), detail::cross_rank_storage_bytes(wide));
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_a_layer_retains_no_exchange_layout) {
