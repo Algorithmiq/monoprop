@@ -256,16 +256,20 @@ BOOST_AUTO_TEST_CASE(graph_encoding_occupied_slots_counts_only_slots_carrying_tr
     BOOST_CHECK_LE(detail::cross_rank_occupied_slots(storage), detail::cross_rank_endpoint_count(storage));
 }
 
-BOOST_AUTO_TEST_CASE(graph_encoding_slot_record_bytes_track_the_world_not_the_traffic) {
-    // Same traffic, four times the world. The record array grows; the payload does not.
+BOOST_AUTO_TEST_CASE(graph_encoding_slot_record_bytes_track_the_traffic_not_the_world) {
+    // Same traffic, four times the world. This is the whole claim of the sparse layout: the record
+    // array is a function of what is sent, not of how many participants could have been sent to.
     const auto narrow = detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0}));
     const auto wide = detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0, 0, 0, 0, 0,
                                                                              0, 0, 0, 0, 0, 0, 0, 0}));
 
+    BOOST_CHECK_EQUAL(narrow.rank_count(), 4U);
+    BOOST_CHECK_EQUAL(wide.rank_count(), 16U);
     BOOST_CHECK_EQUAL(detail::cross_rank_endpoint_count(narrow), detail::cross_rank_endpoint_count(wide));
     BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(narrow), detail::cross_rank_occupied_slots(wide));
-    BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(narrow), 4U * sizeof(CrossRankPartnerRange));
-    BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(wide), 16U * sizeof(CrossRankPartnerRange));
+    // The world quadrupled and the record array did not move at all.
+    BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(narrow), detail::cross_rank_slot_record_bytes(wide));
+    BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(wide), 1U * sizeof(CrossRankOccupiedSlot));
     // And the slot records are a slice of cross_rank_bytes, not an addition to it.
     BOOST_CHECK_LT(detail::cross_rank_slot_record_bytes(wide), detail::cross_rank_storage_bytes(wide));
 }
@@ -300,4 +304,67 @@ BOOST_AUTO_TEST_CASE(graph_encoding_skewed_endpoint_counts_are_refused) {
     data[0].in_count = 1;
 
     BOOST_CHECK_THROW(detail::build_packed_cross_rank_storage(data), std::logic_error);
+}
+
+BOOST_AUTO_TEST_CASE(graph_encoding_occupied_sweep_matches_the_dense_sweep_it_replaces) {
+    // Zeros at the front, interior and back, and a slot whose in_count splits the B list, so the
+    // derived offset has somewhere to go wrong.
+    auto data = slot_partners({0, 3, 0, 0, 7, 0});
+    data[1].in_count = 1;
+    data[4].in_count = 4;
+    const auto storage = detail::build_packed_cross_rank_storage(data);
+
+    // What the dense layout would have produced for the occupied slots. The offsets are the prefix over
+    // ALL slots -- which the empty ones contributed zero to, which is why dropping them is lossless.
+    struct Expected {
+        size_t slot, offset, count, in_count;
+    };
+    const std::vector<Expected> expected{{1, 0, 3, 1}, {4, 3, 7, 4}};
+
+    std::vector<Expected> seen;
+    detail::for_each_occupied_slot(storage, [&](size_t slot, const detail::CrossRankSlotView &view) {
+        seen.push_back({slot, view.phase_offset, view.sin_send_count, view.in_count});
+    });
+
+    BOOST_REQUIRE_EQUAL(seen.size(), expected.size());
+    for (size_t k = 0; k < expected.size(); ++k) {
+        BOOST_CHECK_EQUAL(seen[k].slot, expected[k].slot);
+        BOOST_CHECK_EQUAL(seen[k].offset, expected[k].offset);
+        BOOST_CHECK_EQUAL(seen[k].count, expected[k].count);
+        BOOST_CHECK_EQUAL(seen[k].in_count, expected[k].in_count);
+    }
+
+    // The general single-slot resolver must agree with the sweep, including on an absent slot.
+    for (const auto &e : expected) {
+        const auto view = detail::cross_rank_slot(storage, e.slot);
+        BOOST_CHECK_EQUAL(view.phase_offset, e.offset);
+        BOOST_CHECK_EQUAL(view.sin_send_count, e.count);
+    }
+    BOOST_CHECK_EQUAL(detail::cross_rank_slot(storage, 0).sin_send_count, 0U);
+    BOOST_CHECK_EQUAL(detail::cross_rank_slot(storage, 5).sin_send_count, 0U);
+    BOOST_CHECK_EQUAL(storage.sin_send_size(3), 0U);
+    BOOST_CHECK_EQUAL(storage.sin_send_size(4), 7U);
+}
+
+BOOST_AUTO_TEST_CASE(graph_encoding_self_slot_is_resolved_without_a_search) {
+    auto storage = detail::build_packed_cross_rank_storage(slot_partners({0, 3, 0, 7, 0}));
+
+    detail::resolve_self_slot(storage, 3);
+    BOOST_CHECK_EQUAL(storage.self_offset, 3U); // slot 1's three endpoints precede it
+    const auto self = detail::cross_rank_self_slot(storage);
+    BOOST_CHECK_EQUAL(self.sin_send_count, 7U);
+    BOOST_CHECK_EQUAL(self.phase_offset, 3U);
+
+    // A rank whose own slot carries nothing must resolve to an empty view, not to a neighbour's.
+    detail::resolve_self_slot(storage, 2);
+    BOOST_CHECK_EQUAL(storage.self_pos, kNoSelfSlot);
+    BOOST_CHECK_EQUAL(detail::cross_rank_self_slot(storage).sin_send_count, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(graph_encoding_a_layer_with_no_cross_rank_traffic_stores_no_slots) {
+    const auto storage = detail::build_packed_cross_rank_storage(slot_partners({0, 0, 0, 0, 0, 0, 0, 0}));
+
+    BOOST_CHECK_EQUAL(storage.rank_count(), 8U); // the world is still eight wide
+    BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(storage), 0U);
+    BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(storage), 0U);
 }

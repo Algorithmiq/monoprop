@@ -216,23 +216,18 @@ void pack_cross_rank_derivative_payload_impl(const DerivativeSnapshotScratch &sn
                                              int my_rank,
                                              const LayerExchangeLayout &layout,
                                              VecD &send_buffer) {
-    const size_t num_ranks = layer.cross_rank_rank_count();
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
+    layer.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
         if (static_cast<int>(rank) == my_rank) {
-            continue;
-        }
-        const size_t end = layer.cross_rank_sin_send_size(rank);
-        if (end == 0) {
-            continue;
+            return;
         }
         const auto base = static_cast<size_t>(layout.displs[rank]);
         const auto &bs = snap.sin_send_state[rank];
         const auto &bh = snap.sin_send_op[rank];
-        layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&send_buffer, &base, &bs, &bh](size_t k, size_t /*i*/) {
+        for (size_t k = 0; k < slot.sin_send_count; ++k) {
             send_buffer[base + 2 * k] = bs[k];
             send_buffer[base + 2 * k + 1] = bh[k];
-        });
-    }
+        }
+    });
 }
 
 // Remote endpoint pass: own pre-cos values come from the sin_recv snapshots, partner values from the
@@ -243,37 +238,29 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
                                                const DerivativeSnapshotScratch &snap,
                                                const TrigValues &trig,
                                                const ExchangePayload &payload) -> EndpointContrib {
-    const size_t num_ranks = layer.cross_rank_rank_count();
     EndpointContrib local{};
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
+    layer.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
         if (static_cast<int>(rank) == payload.my_rank) {
-            continue;
-        }
-        const size_t end = layer.cross_rank_sin_recv_size(rank);
-        if (end == 0) {
-            continue;
+            return;
         }
         const auto *rv = payload.recv_buffer.data() + payload.recv_displs[rank];
         const auto &ds = snap.sin_recv_state[rank];
         const auto &dh = snap.sin_recv_op[rank];
-        layer.for_each_cross_rank_sin_recv_range(
-            rank,
-            0,
-            end,
-            [&trig, &ds, &dh, &rv, &local, &op, &state](size_t k, size_t i, int phi_signed) {
-                const auto phi = static_cast<double>(phi_signed);
-                // Inverse-rotation write-back (−sin): un-evolves state/op for the next reverse layer.
-                const double ps = -trig.sin_val * phi;
-                const double s_old = ds[k];
-                const double h_old = dh[k];
-                const double s_p = rv[2 * k];
-                const double h_p = rv[2 * k + 1];
-                local.cos_terms += s_old * h_old;
-                local.sin_terms += phi * s_old * h_p;
-                op[i] = (h_old * trig.cos_val) + (ps * h_p);
-                state[i] = (s_old * trig.cos_val) + (ps * s_p);
-            });
-    }
+        for (size_t k = 0; k < slot.sin_send_count; ++k) {
+            const size_t i = detail::slot_sin_recv_index(slot, k);
+            const auto phi = static_cast<double>(detail::slot_sin_recv_phase(slot, k));
+            // Inverse-rotation write-back (−sin): un-evolves state/op for the next reverse layer.
+            const double ps = -trig.sin_val * phi;
+            const double s_old = ds[k];
+            const double h_old = dh[k];
+            const double s_p = rv[2 * k];
+            const double h_p = rv[2 * k + 1];
+            local.cos_terms += s_old * h_old;
+            local.sin_terms += phi * s_old * h_p;
+            op[i] = (h_old * trig.cos_val) + (ps * h_p);
+            state[i] = (s_old * trig.cos_val) + (ps * s_p);
+        }
+    });
     return local;
 }
 
@@ -312,20 +299,15 @@ void pack_cross_rank_evolution_payload_impl(VecD &op,
                                             int my_rank,
                                             const LayerExchangeLayout &layout,
                                             VecD &send_buffer) {
-    const size_t num_ranks = layer.cross_rank_rank_count();
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
+    layer.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
         if (static_cast<int>(rank) == my_rank) {
-            continue;
-        }
-        const size_t end = layer.cross_rank_sin_send_size(rank);
-        if (end == 0) {
-            continue;
+            return;
         }
         const auto base = static_cast<size_t>(layout.displs[rank]);
-        layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&send_buffer, &base, &op](size_t k, size_t i) {
-            send_buffer[base + k] = op[i];
-        });
-    }
+        for (size_t k = 0; k < slot.sin_send_count; ++k) {
+            send_buffer[base + k] = op[detail::slot_sin_send_index(slot, k)];
+        }
+    });
 }
 
 void apply_cross_rank_evolution_exchange_impl(VecD &op,
@@ -333,23 +315,16 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
                                               double sin_val,
                                               const ExchangePayload &payload) {
     // op[i] is already cos-scaled, so only the sine term is added; rv[k] is the partner's pre-cos value.
-    const size_t num_ranks = layer.cross_rank_rank_count();
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
+    layer.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
         if (static_cast<int>(rank) == payload.my_rank) {
-            continue;
-        }
-        const size_t end = layer.cross_rank_sin_recv_size(rank);
-        if (end == 0) {
-            continue;
+            return;
         }
         const auto *rv = payload.recv_buffer.data() + payload.recv_displs[rank];
-        layer.for_each_cross_rank_sin_recv_range(rank,
-                                                 0,
-                                                 end,
-                                                 [&op, &sin_val, &rv](size_t k, size_t i, int phi_signed) {
-                                                     op[i] += sin_val * static_cast<double>(phi_signed) * rv[k];
-                                                 });
-    }
+        for (size_t k = 0; k < slot.sin_send_count; ++k) {
+            const size_t i = detail::slot_sin_recv_index(slot, k);
+            op[i] += sin_val * static_cast<double>(detail::slot_sin_recv_phase(slot, k)) * rv[k];
+        }
+    });
 }
 
 inline auto begin_cross_rank_evolution_exchange(VecD &op, const LayerTraversal &layer, const mpi::Comm &comm)
@@ -383,15 +358,13 @@ auto apply_self_slot_derivative_paired(VecD &state,
                                        const LayerTraversal &layer,
                                        size_t my_rank,
                                        const TrigValues &trig) -> EndpointContrib {
-    const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);
+    // O(1): the self slot's position is recorded at build precisely so this loop does not search for it.
+    const auto slot = layer.cross_rank_self_slot();
+    const size_t self_d_count = slot.sin_send_count;
     if (self_d_count == 0) {
         return {};
     }
     const auto pairs = self_d_count / 2;
-    // my_rank is loop-invariant, so resolve the slot once: the four fetches below are four
-    // lookups into the P-sized record array per rotation pair otherwise, in the innermost
-    // gradient loop.
-    const auto slot = layer.cross_rank_slot(my_rank);
     EndpointContrib local{};
     for (size_t k = 0; k < pairs; ++k) {
         const size_t i1 = detail::slot_sin_recv_index(slot, k);
@@ -428,40 +401,37 @@ void snapshot_remote_endpoints(const VecD &state,
     snap.sin_send_op.resize(R);
     snap.sin_recv_state.resize(R);
     snap.sin_recv_op.resize(R);
+    // The scratch is indexed by world slot, so it is still sized R -- but only the occupied slots have
+    // anything to put in it. Clear first, then fill those: an empty slot's snapshot is an empty vector,
+    // which is what the dense sweep produced for it anyway.
     for (size_t r = 0; r < R; ++r) {
-        if (r == my_rank) {
-            snap.sin_send_state[r].clear();
-            snap.sin_send_op[r].clear();
-            snap.sin_recv_state[r].clear();
-            snap.sin_recv_op[r].clear();
-            continue;
-        }
-        const size_t bc = layer.cross_rank_sin_send_size(r);
-        snap.sin_send_state[r].resize(bc);
-        snap.sin_send_op[r].resize(bc);
-        if (bc > 0) {
-            auto &bs = snap.sin_send_state[r];
-            auto &bh = snap.sin_send_op[r];
-            layer.for_each_cross_rank_sin_send_range(r, 0, bc, [&bs, &bh, &state, &op](size_t k, size_t i) {
-                bs[k] = state[i];
-                bh[k] = op[i];
-            });
-        }
-        const size_t dc = layer.cross_rank_sin_recv_size(r);
-        snap.sin_recv_state[r].resize(dc);
-        snap.sin_recv_op[r].resize(dc);
-        if (dc > 0) {
-            auto &ds = snap.sin_recv_state[r];
-            auto &dh = snap.sin_recv_op[r];
-            layer.for_each_cross_rank_sin_recv_range(r,
-                                                     0,
-                                                     dc,
-                                                     [&ds, &dh, &state, &op](size_t k, size_t i, int /*phi*/) {
-                                                         ds[k] = state[i];
-                                                         dh[k] = op[i];
-                                                     });
-        }
+        snap.sin_send_state[r].clear();
+        snap.sin_send_op[r].clear();
+        snap.sin_recv_state[r].clear();
+        snap.sin_recv_op[r].clear();
     }
+    layer.for_each_occupied_slot([&](size_t r, const detail::CrossRankSlotView &slot) {
+        if (r == my_rank) {
+            return; // the self slot recovers live; it needs no snapshot
+        }
+        const size_t count = slot.sin_send_count;
+        auto &bs = snap.sin_send_state[r];
+        auto &bh = snap.sin_send_op[r];
+        bs.resize(count);
+        bh.resize(count);
+        auto &ds = snap.sin_recv_state[r];
+        auto &dh = snap.sin_recv_op[r];
+        ds.resize(count);
+        dh.resize(count);
+        for (size_t k = 0; k < count; ++k) {
+            const size_t bi = detail::slot_sin_send_index(slot, k);
+            bs[k] = state[bi];
+            bh[k] = op[bi];
+            const size_t di = detail::slot_sin_recv_index(slot, k);
+            ds[k] = state[di];
+            dh[k] = op[di];
+        }
+    });
 }
 
 } // namespace
@@ -513,14 +483,12 @@ auto evolve_step_traversal_impl(VecD &op,
 
     // Snapshot my_rank's own sin_send values before the cos pass; runs unconditionally (the remote pack
     // skips my_rank) so single-rank works.
-    const size_t self_b_count = (my_rank < layer.cross_rank_rank_count()) ? layer.cross_rank_sin_send_size(my_rank) : 0;
+    const auto self_slot = layer.cross_rank_self_slot();
+    const size_t self_b_count = self_slot.sin_send_count;
     VecD self_b_snapshot;
     self_b_snapshot.resize(self_b_count);
-    if (self_b_count > 0) {
-        auto &snap = self_b_snapshot;
-        layer.for_each_cross_rank_sin_send_range(my_rank, 0, self_b_count, [&snap, &op](size_t k, size_t i) {
-            snap[k] = op[i];
-        });
+    for (size_t k = 0; k < self_b_count; ++k) {
+        self_b_snapshot[k] = op[detail::slot_sin_send_index(self_slot, k)];
     }
 
     // Pack + start the exchange before the cos scan so partner values are pre-cos and the transfer overlaps.
@@ -528,16 +496,11 @@ auto evolve_step_traversal_impl(VecD &op,
     cos_scale(layer_idx, op_data, cos_val);
     finish_cross_rank_evolution_exchange(op, layer, sin_val, in_flight);
 
-    // Self-slot sin_recv entries: op[i] is already cos-scaled, so only the sine term is added.
-    if (self_b_count > 0) {
-        const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);
-        layer.for_each_cross_rank_sin_recv_range(my_rank,
-                                                 0,
-                                                 self_d_count,
-                                                 [&op, &sin_val, &self_b_snapshot](size_t k, size_t i, int phi_signed) {
-                                                     op[i] +=
-                                                         sin_val * static_cast<double>(phi_signed) * self_b_snapshot[k];
-                                                 });
+    // Self-slot sin_recv entries: op[i] is already cos-scaled, so only the sine term is added. B and D
+    // have the same count, so self_b_count serves both.
+    for (size_t k = 0; k < self_b_count; ++k) {
+        const size_t i = detail::slot_sin_recv_index(self_slot, k);
+        op[i] += sin_val * static_cast<double>(detail::slot_sin_recv_phase(self_slot, k)) * self_b_snapshot[k];
     }
 }
 

@@ -77,6 +77,10 @@ inline auto store_packed_phase(PackedPhaseStorage &storage, size_t idx, int phas
 
 auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &data) -> PackedCrossRankStorage;
 
+// Record where my_rank's own slot sits, so the gradient's self-slot reads are O(1). Called once per
+// layer at build; separate from the builder because only build_layer_storage_unified knows my_rank.
+auto resolve_self_slot(PackedCrossRankStorage &storage, size_t my_rank) -> void;
+
 // One world slot's position in the flat B/D arrays, resolved once.
 //
 // Resolving is per-SLOT work -- an index into `ranges`, which is the array sized by the flat
@@ -94,13 +98,56 @@ struct CrossRankSlotView final {
     size_t in_count = 0;
 };
 
-inline auto cross_rank_slot(const PackedCrossRankStorage &storage, size_t rank) -> CrossRankSlotView {
-    const auto &range = storage.ranges[rank];
-    return CrossRankSlotView{.sin_send_indices = storage.sin_send_indices.data() + range.sin_send_offset,
+namespace slot_detail {
+inline auto view_at(const PackedCrossRankStorage &storage, const CrossRankOccupiedSlot &entry, size_t offset)
+    -> CrossRankSlotView {
+    return CrossRankSlotView{.sin_send_indices = storage.sin_send_indices.data() + offset,
                              .sin_recv_phases = &storage.sin_recv_phases,
-                             .phase_offset = range.sin_send_offset,
-                             .sin_send_count = range.sin_send_count,
-                             .in_count = range.in_count};
+                             .phase_offset = offset,
+                             .sin_send_count = entry.sin_send_count,
+                             .in_count = entry.in_count};
+}
+} // namespace slot_detail
+
+// Every occupied slot in ascending order, each with its B/D offset -- the running prefix, which is
+// exactly what the dense layout stored per slot. func(slot_id, view).
+//
+// This is the shape production code should use. It is O(occupied) for the whole sweep rather than
+// O(P), and it never visits a slot with nothing in it: under a dense layout those were visited and
+// skipped, so on a large world most of the loop was the skip.
+template <typename Func>
+auto for_each_occupied_slot(const PackedCrossRankStorage &storage, Func &&func) -> void {
+    size_t offset = 0;
+    for (const auto &entry : storage.occupied) {
+        func(static_cast<size_t>(entry.slot), slot_detail::view_at(storage, entry, offset));
+        offset += entry.sin_send_count;
+    }
+}
+
+// O(1). The self slot is read per rotation pair in the innermost gradient loop, so it cannot pay the
+// search or the prefix walk that an arbitrary slot does. An all-zero view when it carries no traffic.
+inline auto cross_rank_self_slot(const PackedCrossRankStorage &storage) -> CrossRankSlotView {
+    if (storage.self_pos == kNoSelfSlot) {
+        return CrossRankSlotView{.sin_recv_phases = &storage.sin_recv_phases};
+    }
+    return slot_detail::view_at(storage, storage.occupied[storage.self_pos], storage.self_offset);
+}
+
+// Arbitrary slot, and O(occupied): the offset is a prefix over preceding entries, so resolving one
+// slot in isolation walks them. Diagnostic and test use -- a production loop wants
+// for_each_occupied_slot, and the self slot wants cross_rank_self_slot.
+inline auto cross_rank_slot(const PackedCrossRankStorage &storage, size_t rank) -> CrossRankSlotView {
+    size_t offset = 0;
+    for (const auto &entry : storage.occupied) {
+        if (entry.slot == rank) {
+            return slot_detail::view_at(storage, entry, offset);
+        }
+        if (entry.slot > rank) {
+            break;
+        }
+        offset += entry.sin_send_count;
+    }
+    return CrossRankSlotView{.sin_recv_phases = &storage.sin_recv_phases};
 }
 
 inline auto slot_sin_send_index(const CrossRankSlotView &slot, size_t idx) -> size_t {
