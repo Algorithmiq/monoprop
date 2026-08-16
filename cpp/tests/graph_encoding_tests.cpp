@@ -187,3 +187,43 @@ BOOST_AUTO_TEST_CASE(graph_encoding_d_from_b_derivation_both_arms) {
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 0, 0), 10U);
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 0, 4), 22U);
 }
+
+namespace {
+// Storage over `counts.size()` world slots, slot r carrying counts[r] endpoints. Zero means an empty
+// slot: reserved by the dense array, carrying nothing.
+auto slot_partners(const std::vector<size_t> &counts) -> std::vector<CrossRankPartnerData> {
+    std::vector<CrossRankPartnerData> data(counts.size());
+    for (size_t r = 0; r < counts.size(); ++r) {
+        for (size_t k = 0; k < counts[r]; ++k) {
+            data[r].sin_send_indices.push_back(k);
+            data[r].sin_recv_entries.push_back({k, 1});
+        }
+    }
+    return data;
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(graph_encoding_occupied_slots_counts_only_slots_carrying_traffic) {
+    // Zeros at the front, in the interior and at the back -- the three places a scan loses count.
+    const auto storage = detail::build_packed_cross_rank_storage(slot_partners({0, 3, 0, 0, 7, 0}));
+
+    BOOST_CHECK_EQUAL(storage.rank_count(), 6U);
+    BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(storage), 2U);
+    BOOST_CHECK_EQUAL(detail::cross_rank_endpoint_count(storage), 10U);
+    // The ceiling this instrument exists to expose: an occupied slot holds at least one endpoint.
+    BOOST_CHECK_LE(detail::cross_rank_occupied_slots(storage), detail::cross_rank_endpoint_count(storage));
+}
+
+BOOST_AUTO_TEST_CASE(graph_encoding_slot_record_bytes_track_the_world_not_the_traffic) {
+    // Same traffic, four times the world. The record array grows; the payload does not.
+    const auto narrow = detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0}));
+    const auto wide = detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0, 0, 0, 0, 0,
+                                                                             0, 0, 0, 0, 0, 0, 0, 0}));
+
+    BOOST_CHECK_EQUAL(detail::cross_rank_endpoint_count(narrow), detail::cross_rank_endpoint_count(wide));
+    BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(narrow), detail::cross_rank_occupied_slots(wide));
+    BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(narrow), 4U * sizeof(CrossRankPartnerRange));
+    BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(wide), 16U * sizeof(CrossRankPartnerRange));
+    // And the slot records are a slice of cross_rank_bytes, not an addition to it.
+    BOOST_CHECK_LT(detail::cross_rank_slot_record_bytes(wide), detail::cross_rank_storage_bytes(wide));
+}

@@ -98,6 +98,20 @@ inline auto cross_rank_sin_recv_phase(const PackedCrossRankStorage &storage, siz
 
 auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t;
 
+// The slot-proportional slice of cross_rank_storage_bytes: one record per world slot whether or not
+// that slot carries traffic. The remainder (indices and phases) scales with terms crossing, not with
+// the world size, so splitting the two is what makes their growth laws separable in a measurement.
+auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size_t;
+
+// World slots carrying any traffic. Read against rank_count() to get occupancy: low occupancy means a
+// sparse layout pays, high occupancy means only a narrower record would.
+auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t;
+
+// Total cross-rank endpoints in this layer -- the length of the B array, so the traffic itself. It
+// bounds cross_rank_occupied_slots from above (an occupied slot holds at least one endpoint) and,
+// unlike the slot count, does not depend on the world size at all.
+auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t;
+
 auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t;
 
 // Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so
