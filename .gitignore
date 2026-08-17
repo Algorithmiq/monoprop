@@ -177,3 +177,6 @@ benches/results/**
 
 # devcontainer files
 .devcontainer/devcontainer-lock.json
+
+# Useful when running in clusters
+logs/
