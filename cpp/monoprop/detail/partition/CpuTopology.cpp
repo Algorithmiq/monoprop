@@ -80,25 +80,6 @@ auto effective_allowed_cpuset(hwloc_topology_t topo) -> hwloc_cpuset_t {
     return hwloc_bitmap_dup(hwloc_topology_get_allowed_cpuset(topo));
 }
 
-// True when this process may use strictly fewer PUs than the machine has, i.e. something outside
-// the process -- a Slurm cgroup, a taskset, an MPI launcher's binding -- has already carved out a
-// private share. This is the ONLY way to distinguish "our mask is small because it is our slice"
-// from "our mask is the whole node and the caller asked for more cores than exist"; a core-count
-// comparison cannot, and conflating the two either pins nothing (former) or double-books cores on
-// co-located ranks (latter).
-auto topo_is_cpu_confined(hwloc_topology_t topo) -> bool {
-    const hwloc_cpuset_t allowed = effective_allowed_cpuset(topo);
-    if (!allowed) {
-        return false;
-    }
-    const hwloc_const_cpuset_t machine = hwloc_topology_get_allowed_cpuset(topo);
-    /* Strict subset: included in the machine's set and not equal to it. */
-    const bool confined = machine != nullptr && hwloc_bitmap_isincluded(allowed, machine) != 0
-                          && hwloc_bitmap_isequal(allowed, machine) == 0;
-    hwloc_bitmap_free(allowed);
-    return confined;
-}
-
 } // anonymous namespace
 
 /* ── topo_detail::placement_order ─────────────────────────────────────────── */
@@ -237,13 +218,6 @@ auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
     return cores;
 }
 
-/* ── process_is_cpu_confined ───────────────────────────────────────────────── */
-
-auto process_is_cpu_confined() -> bool {
-    const auto topo = get_topology();
-    return topo != nullptr && topo_is_cpu_confined(topo);
-}
-
 /* ── affinity_mask_words ───────────────────────────────────────────────────── */
 
 auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool {
@@ -270,6 +244,35 @@ auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool {
     }
     hwloc_bitmap_free(allowed);
     return representable;
+}
+
+/* ── masks_are_pairwise_disjoint ───────────────────────────────────────────── */
+
+auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool {
+    if (masks == nullptr || words == 0 || n < 2) {
+        return false;
+    }
+    /* An all-zero mask is disjoint from everything, so a bare disjointness test would answer
+     * "private" for a rank that can see no CPU at all. Shared is the safe error. */
+    for (size_t r = 0; r < n; ++r) {
+        bool any = false;
+        for (size_t w = 0; w < words && !any; ++w) {
+            any = masks[(r * words) + w] != 0;
+        }
+        if (!any) {
+            return false;
+        }
+    }
+    for (size_t a = 0; a < n; ++a) {
+        for (size_t b = a + 1; b < n; ++b) {
+            for (size_t w = 0; w < words; ++w) {
+                if ((masks[(a * words) + w] & masks[(b * words) + w]) != 0) {
+                    return false; // two peers share a CPU: not private
+                }
+            }
+        }
+    }
+    return true;
 }
 
 /* ── partition_cpusets ─────────────────────────────────────────────────────── */

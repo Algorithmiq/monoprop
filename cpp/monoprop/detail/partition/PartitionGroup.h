@@ -187,28 +187,29 @@ private:
         if (node_size_ <= 1) {
             return; // nobody to collide with; the normal split already handles group_count == 1
         }
+        constexpr size_t kMaskWords = monoprop::detail::partition::kAffinityMaskWords;
         std::array<uint64_t, kMaskWords> mine{};
         // A mask we cannot represent is "cannot classify", never "private": the fallback stays off.
         const bool ok = monoprop::detail::partition::affinity_mask_words(mine.data(), kMaskWords);
         std::vector<uint64_t> all(kMaskWords * static_cast<size_t>(node_size_), 0);
         MPI_Allgather(mine.data(), kMaskWords, MPI_UINT64_T, all.data(), kMaskWords, MPI_UINT64_T, node);
 
+        // Reduced before the verdict, not after: `ok` is per-rank, and a rank whose mask is too
+        // wide to represent must make EVERY peer decide "not private". A verdict computed from a
+        // buffer some ranks filled and others did not would differ between ranks, and this one
+        // feeds partition_cpusets on all of them.
         int local_ok = ok ? 1 : 0;
         int all_ok = 0;
         MPI_Allreduce(&local_ok, &all_ok, 1, MPI_INT, MPI_MIN, node);
         if (all_ok == 0) {
             return;
         }
-        for (size_t a = 0; a < static_cast<size_t>(node_size_); ++a) {
-            for (size_t b = a + 1; b < static_cast<size_t>(node_size_); ++b) {
-                for (size_t w = 0; w < kMaskWords; ++w) {
-                    if ((all[a * kMaskWords + w] & all[b * kMaskWords + w]) != 0) {
-                        return; // two peers share a CPU: not private
-                    }
-                }
-            }
-        }
-        node_mask_private_ = true;
+        // The rule itself is a free function over the gathered array -- pure bit arithmetic, no
+        // communicator, no hwloc -- so it is reachable from a unit test on any machine. What is
+        // left here is only the exchange.
+        node_mask_private_ = monoprop::detail::partition::masks_are_pairwise_disjoint(all.data(),
+                                                                                      static_cast<size_t>(node_size_),
+                                                                                      kMaskWords);
     }
 #endif
 
@@ -302,8 +303,7 @@ private:
     // its share of the node. Decided in classify_node_masks_(); copied, never re-derived, by the copy
     // ctor, which has no communicator to allgather over.
     bool node_mask_private_ = false;
-    static constexpr size_t kMaskWords = 64; // 4096 CPUs; wider masks are 'cannot classify'
-    std::unique_ptr<mpi::ShmComm> shm_;      // set iff R == 1
+    std::unique_ptr<mpi::ShmComm> shm_; // set iff R == 1
 #ifdef monoprop_ENABLE_MPI
     std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1
 #endif

@@ -90,21 +90,16 @@ auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t gr
 auto enumerate_physical_cores() -> std::vector<PhysicalCore>;
 
 /*!
- * @brief Whether something outside this process has already restricted its usable CPUs.
+ * @brief Number of 64-bit words used to exchange an affinity mask between co-located ranks.
  *
- * True when the calling thread's affinity mask is a STRICT subset of the machine's allowed cpuset,
- * i.e. a Slurm cgroup, a taskset or an MPI launcher binding has restricted this process.
+ * 64 words is 4096 CPUs. A mask needing more is reported as "cannot classify" by
+ * affinity_mask_words(), never as private, so the fallback stays off and the old unplaced
+ * behaviour returns rather than a wrong placement.
  *
- * @warning This is NOT sufficient to decide that the mask is this rank's PRIVATE share. Mask width
- *          cannot distinguish "8 ranks holding 16 cores each" from "8 ranks sharing one 16-core
- *          mask" -- both leave a rank seeing 16 of 128 CPUs. Only comparing the co-located ranks'
- *          masks answers that, which is why partition_cpusets() takes @c mask_is_private from the
- *          caller (PartitionGroup allgathers the masks over its node communicator) rather than
- *          inferring it here.
- *
- * @returns false when hwloc cannot load the topology or the affinity mask is the whole machine.
+ * Declared here, beside the two functions that must agree on it, rather than privately in the
+ * caller: a width that lives next to only one of the two can drift silently.
  */
-auto process_is_cpu_confined() -> bool;
+inline constexpr size_t kAffinityMaskWords = 64;
 
 /*!
  * @brief This process's effective allowed cpuset, as a bit array of @p nwords 64-bit words.
@@ -116,6 +111,30 @@ auto process_is_cpu_confined() -> bool;
  *          more than @p nwords words, which is treated as "cannot classify" and hence not private.
  */
 auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
+
+/*!
+ * @brief Whether @p n masks of @p words words each, laid end to end in @p masks, are pairwise
+ *        disjoint AND none of them is empty.
+ *
+ * This is the whole classification rule, and it is pure bit arithmetic over an already-gathered
+ * array: no communicator, no hwloc, no live hardware. It is a free function precisely so it can be
+ * tested, because the mechanism it implements has regressed once already -- when topology discovery
+ * moved onto hwloc -- and the guard lives in the placement policy rather than in discovery.
+ *
+ * Mask WIDTH cannot substitute for this. "8 ranks holding 16 cores each" and "8 ranks sharing one
+ * 16-core mask" both leave a rank seeing 16 of 128 CPUs, and they need opposite placements: the
+ * first should fill its own mask or nothing is pinned at all, the second must not or every rank
+ * lands on identical cores and their busy-polling collectives starve each other.
+ *
+ * The empty-mask clause is not incidental. An all-zero mask is trivially disjoint from everything,
+ * so a bare disjointness test would answer "private" for a rank that can see no CPU at all --
+ * collapsing group_count in exactly the case where the caller knows least. Shared is the safe
+ * error, so an empty mask is not private.
+ *
+ * @returns false when @p n < 2 (nobody to collide with, and the normal split already handles it),
+ *          when any mask is empty, or when any two masks share a bit.
+ */
+[[nodiscard]] auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool;
 
 /*!
  * @brief Build placement tokens for one MPI rank's partitions.
