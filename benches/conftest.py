@@ -317,6 +317,31 @@ def model_configs(request: pytest.FixtureRequest) -> dict[str, Any]:
     }
 
 
+def _record_placement(comm: Any) -> None:
+    """Record how many of this rank's engine threads are pinned to a single CPU.
+
+    Placement is only observable while the engine's partition threads are ALIVE, which is why
+    this is called from inside an instrumentation hook rather than at configure time. min/max
+    across ranks because a partial failure -- some ranks placed, some not -- is the interesting
+    case, and it is the shape a Slurm cpuset confinement takes. Both reductions run on every
+    rank; only rank 0 keeps the answer.
+
+    This lives at module scope, called from both OpMemory.stop() and record_model_stats, because
+    it used to sit inside OpMemory.stop() alone. The fixed-model benchmarks do not open a memory
+    window, so they recorded no placement at all, and ab_summary.py refused their results --
+    correctly, but for a reason that was an instrumentation gap rather than a bad run. Placement
+    is a property of the run, not of the memory window that happened to observe it.
+    """
+    summary = pinned_thread_summary()
+    placed = summary["single_cpu_threads"]
+    spread = {
+        "single_cpu_threads_min": _reduce_min(comm, placed),
+        "single_cpu_threads_max": _reduce_max(comm, placed),
+    }
+    if _rank() == 0:
+        _RESULTS["meta"]["pinning"] = {**summary, **spread}
+
+
 @pytest.fixture
 def record_model_config() -> Callable[[str, Any], None]:
     """Return ``record(model, config)`` recording a model's resolved config."""
@@ -336,6 +361,14 @@ def _record_model_stats(
     needs exactly this accounting; two copies of it would drift.
     """
     _record("opsize", key, {"terms": _reduce_sum(comm, propagator.size())})
+
+    # Called from here rather than from either caller's body: the propagator is alive at this
+    # point and its partition threads are what the probe counts, and both the per-operation
+    # fixture and the session-scoped graph fixture reach it this way. The fixed-model
+    # benchmarks open no memory window, so before this they recorded no placement at all and
+    # ab_summary.py refused their results -- correctly, but for an instrumentation gap rather
+    # than a bad run.
+    _record_placement(comm)
 
     # Sparse InvertedIndex columns cost a TermIndex (4B) per set bit against ~1-2B per
     # set bit in the rows, so which of the two dominates is what sizing decisions turn on.
@@ -410,18 +443,7 @@ class OpMemory:
         _record("opmempeak", self._key, _spread(self._comm, window.peak_bytes))
         _record("opmembase", self._key, _spread(self._comm, window.baseline_bytes))
 
-        # Placement is only observable while the engine's partition threads are alive,
-        # which is now rather than at configure time. min/max across ranks because a
-        # partial failure -- some ranks placed, some not -- is the interesting case. Both
-        # reductions run on every rank; only rank 0 keeps the answer.
-        summary = pinned_thread_summary()
-        placed = summary["single_cpu_threads"]
-        spread = {
-            "single_cpu_threads_min": _reduce_min(self._comm, placed),
-            "single_cpu_threads_max": _reduce_max(self._comm, placed),
-        }
-        if _rank() == 0:
-            _RESULTS["meta"]["pinning"] = {**summary, **spread}
+        _record_placement(self._comm)
 
         if propagator is None:
             return

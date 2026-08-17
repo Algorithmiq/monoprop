@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from _builders import barriered
+from _builders import barrier_setup, barriered
 
 PARE_THRESHOLD = 1e-10
 INPLACE_LOWER_ATOL = 1e-5
@@ -46,7 +46,10 @@ def test_random_build_graph(
         propagator.build_graph(circuit)
 
     benchmark.pedantic(
-        barriered(build, bench_comm), setup=setup, rounds=bench_rounds, iterations=1
+        barriered(build, bench_comm),
+        setup=barrier_setup(bench_comm, setup),
+        rounds=bench_rounds,
+        iterations=1,
     )
     op_memory.close(last[0])
     record_opsize(last[0])
@@ -83,7 +86,10 @@ def test_random_propagate(
         propagator.propagate(circuit)
 
     benchmark.pedantic(
-        barriered(run, bench_comm), setup=setup, rounds=bench_rounds, iterations=1
+        barriered(run, bench_comm),
+        setup=barrier_setup(bench_comm, setup),
+        rounds=bench_rounds,
+        iterations=1,
     )
     op_memory.close(last[0])
     record_opsize(last[0])
@@ -97,7 +103,12 @@ def test_random_pare(benchmark, built_graph, bench_comm, bench_rounds):
             pare_threshold=PARE_THRESHOLD,
         )
 
-    benchmark.pedantic(barriered(pare, bench_comm), rounds=bench_rounds, iterations=1)
+    benchmark.pedantic(
+        barriered(pare, bench_comm),
+        setup=barrier_setup(bench_comm),
+        rounds=bench_rounds,
+        iterations=1,
+    )
 
 
 def test_random_energy(
@@ -111,9 +122,15 @@ def test_random_energy(
     """
     functional = built_graph.expectation_value_functional()
     op_memory.open()
+
+    # The args ride a setup callable rather than pedantic's args=, because pedantic rejects
+    # both at once and the entry barrier has to live in a setup to stay untimed.
+    def setup():
+        return (random_problem.parameters,), {}
+
     result = benchmark.pedantic(
         barriered(functional, bench_comm),
-        args=(random_problem.parameters,),
+        setup=barrier_setup(bench_comm, setup),
         rounds=bench_rounds,
         iterations=1,
     )
@@ -133,9 +150,13 @@ def test_random_gradient(
     """
     functional = built_graph.expectation_value_and_gradient_functional()
     op_memory.open()
+
+    def setup():
+        return (random_problem.parameters,), {}
+
     _value, gradient = benchmark.pedantic(
         barriered(functional, bench_comm),
-        args=(random_problem.parameters,),
+        setup=barrier_setup(bench_comm, setup),
         rounds=bench_rounds,
         iterations=1,
     )
@@ -155,6 +176,9 @@ def test_random_inplace(benchmark, make_random_propagator, bench_comm, bench_rou
         return propagator.expectation_value()
 
     result = benchmark.pedantic(
-        barriered(run, bench_comm), setup=setup, rounds=bench_rounds, iterations=1
+        barriered(run, bench_comm),
+        setup=barrier_setup(bench_comm, setup),
+        rounds=bench_rounds,
+        iterations=1,
     )
     assert isinstance(result, float)

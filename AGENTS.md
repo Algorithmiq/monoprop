@@ -91,21 +91,6 @@ Key files:
   for the mutating/collecting paths, which run on the partitions' own pinned masters; `sum_partitions_`,
   `fold_partitions_`, `first_partition_` for reads off quiescent partitions) rather than hand-rolling a
   `run_on_all` loop — the declarations record which helper is legal where.
-- **Placement must not divide an already-divided machine.** `enumerate_physical_cores` reports only cores
-  inside the calling thread's affinity mask, so when a launcher has given each co-located rank its own
-  disjoint slice (`srun --cpu-bind=cores`), the slice *is* the rank's share. Passing the node-wide
-  ranks-per-node through as `group_count` then asks for `group_count × n` cores out of a list that only
-  held `n`, `placement_order` correctly refuses, and every rank silently runs unpinned — which also costs
-  the two-level barrier its domains, because `cpuset_domains` derives them from the placement. Measured on
-  Deucalion at 8 ranks × 16 partitions: 437 µs/sync against 15.5 µs/sync placed. `PartitionGroup` therefore
-  allgathers the masks over its node-local communicator and `classify_node_mask` **measures** disjointness;
-  a `NodeMask::PerRank` result collapses `group_count` to 1. Mask *width* cannot substitute for this — "8
-  ranks holding 16 cores each" and "8 ranks sharing one 16-core mask" both leave a rank seeing 16 of 128,
-  and they need opposite placement. Collapse in the wrong direction and every co-located rank pins to the
-  *same* cores, so `Shared` is the default and the safe error. This regressed once already, when topology
-  discovery was rewritten onto hwloc, because the guard lives in the placement policy rather than in
-  discovery: any rework of that layer must re-check it. `cpu_topology_policy_per_rank_slice_starves_without_collapse`
-  pins the mechanism without needing live hardware.
 
 
 ### Environment Management

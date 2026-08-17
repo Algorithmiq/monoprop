@@ -36,7 +36,7 @@ import os
 from typing import Any
 
 import pytest
-from _builders import MODELS, barriered
+from _builders import MODELS, barrier_setup, barriered
 from _memory_cpu import resting_rss_bytes
 
 # `build_graph` EXTENDS the graph rather than replacing it, so a model whose driver re-applies
@@ -93,7 +93,10 @@ def test_model(
         return propagator.expectation_value()
 
     result = benchmark.pedantic(
-        barriered(run, bench_comm), setup=setup, rounds=1, iterations=1
+        barriered(run, bench_comm),
+        setup=barrier_setup(bench_comm, setup),
+        rounds=1,
+        iterations=1,
     )
     assert isinstance(result, float)
 

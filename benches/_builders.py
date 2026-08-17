@@ -50,10 +50,24 @@ Built = tuple[MajoranaPropagator, Circuit]
 
 
 def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
-    """Wrap ``fn`` so all MPI ranks enter and leave the call together.
+    """Wrap ``fn`` so the measured time ends only when every rank has finished.
 
-    The barriers make each rank's measured time reflect the makespan (the slowest
-    rank). A serial run returns ``fn`` unchanged, so there is no overhead.
+    Only the *exit* barrier belongs in the timed region. It is what makes each rank's
+    measurement the makespan -- the slowest rank's finish. Pair this with
+    :func:`barrier_setup`, which performs the entry barrier untimed.
+
+    The entry barrier used to live here, and it was charging every rank's measurement
+    with the skew in the *preceding* setup rather than with any work under test.
+    Measured directly at 8 ranks, that wait was 0.000/0.098/0.059/0.257/0.000/0.136 s
+    across six rounds of ``build_graph`` -- against a ~0.5 s operation. It accounted for
+    roughly 1.44x of the 2.86x spread pytest-benchmark reported on ``build_graph``, and
+    is why the reported remainder (wall minus instrumented layer time) correlated with
+    wall at +0.987 while the actual layer time correlated at +0.176. The engine was
+    steady; the instrument was not. (The residual, ~2.86x/1.44x, is NOT explained by
+    this and remains open -- suspects are pytest-benchmark's own per-round machinery,
+    the ``op_memory`` window, and the ``fresh`` cell running two ops in one process.)
+
+    A serial run returns ``fn`` unchanged, so there is no overhead.
 
     Args:
         fn: The callable to wrap.
@@ -63,12 +77,40 @@ def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
         return fn
 
     def wrapped(*args: object, **kwargs: object) -> _T:
-        comm.Barrier()
         result = fn(*args, **kwargs)
         comm.Barrier()
         return result
 
     return wrapped
+
+
+def barrier_setup(
+    comm: Any | None, setup: Callable[[], _T] | None = None
+) -> Callable[[], _T] | None:
+    """Build a ``pedantic(setup=...)`` callable that leaves the ranks synchronised.
+
+    ``pytest-benchmark``'s ``pedantic`` runs ``setup`` before each round and does not
+    time it, which is exactly where the entry barrier has to go: the ranks still start
+    the timed call together, but nobody's measurement absorbs the wait for the slowest
+    rank to finish setting up.
+
+    Args:
+        comm: An MPI communicator, or ``None`` for a serial run.
+        setup: The round's existing setup, or ``None`` if it has none.
+
+    Returns:
+        A setup callable, or ``None`` when there is nothing to do (serial run with no
+        setup), which ``pedantic`` accepts.
+    """
+    if comm is None or comm.Get_size() == 1:
+        return setup
+
+    def wrapped_setup() -> _T:
+        result = setup() if setup is not None else None
+        comm.Barrier()
+        return result  # type: ignore[return-value]
+
+    return wrapped_setup
 
 
 @dataclass(frozen=True, slots=True)
