@@ -287,8 +287,6 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"total_bytes", b.total_bytes()},
                                              // Diagnostics (not part of total_bytes; see the struct).
                                              {"d_slot_record_bytes", b.slot_record_bytes},
-                                             {"d_recv_cache_bytes", b.recv_cache_bytes},
-                                             {"d_derivative_layout_bytes", b.derivative_layout_bytes},
                                              {"d_layer_cores", b.layer_cores},
                                              {"d_slot_records", b.slot_records},
                                              {"d_occupied_slots", b.occupied_slots},

@@ -60,13 +60,6 @@ auto layer_storage_memory_usage(const LayerCore &storage) -> GraphMemoryBreakdow
     // Diagnostics. The graph does not partition -- its per-layer arrays are indexed by the FLAT world
     // (ranks x partitions), so on a partitioned run these grow with a P the rank count never shows.
     breakdown.slot_record_bytes = detail::cross_rank_slot_record_bytes(storage.cross_rank);
-    // The transpose cache is gone: the recv layout equals the send layout, so there was never
-    // anything to cache. Reported as 0 rather than removed, because it was never inside
-    // total_bytes() -- an A/B has no other way to see resident memory leave.
-    breakdown.recv_cache_bytes = 0;
-    // The derivative layout is no longer retained at all: it is 2x the evolution layout, and its
-    // transpose is 2x the evolution transpose, so both are derived on demand without a collective.
-    breakdown.derivative_layout_bytes = 0;
     breakdown.layer_cores = 1;
     breakdown.slot_records = storage.cross_rank.rank_count();
     breakdown.occupied_slots = detail::cross_rank_occupied_slots(storage.cross_rank);
