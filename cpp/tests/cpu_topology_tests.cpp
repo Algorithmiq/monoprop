@@ -33,6 +33,7 @@
 #include <sched.h>
 #endif
 
+#include "monoprop/detail/EnvConfig.h" // config::get().partition_pinning -- the one licensed empty placement
 #include "monoprop/detail/partition/CpuTopology.h"
 
 namespace partition = monoprop::detail::partition;
@@ -309,11 +310,20 @@ BOOST_AUTO_TEST_CASE(cpu_topology_affinity_mask_covers_enumerated_cores) {
     // machine. affinity_mask_words otherwise has no test caller at all.
     const auto cores = partition::enumerate_physical_cores();
     if (cores.empty()) {
-        return; // no topology (hwloc unavailable); nothing to agree with
+        return; // hwloc loaded no topology at all: there is no second view to agree with.
     }
     std::vector<uint64_t> mine(partition::kAffinityMaskWords, 0);
     if (!partition::affinity_mask_words(mine.data(), mine.size())) {
-        return; // mask too wide to represent, or hwloc unavailable
+        /* NOT a free skip. enumerate_physical_cores just succeeded, so hwloc works here and the
+         * only licensed reason to refuse is the truncation guard: some allowed PU sits past the
+         * exchanged window. Assert that, or a mask function that had simply stopped working would
+         * read as "nothing to test" -- which is the failure mode this whole file exists to close. */
+        int highest = 0;
+        for (const auto &core : cores) {
+            highest = std::max(highest, core.cpu);
+        }
+        BOOST_CHECK_GE(static_cast<size_t>(highest), partition::kAffinityMaskWords * 64);
+        return;
     }
     size_t set_bits = 0;
     for (const uint64_t w : mine) {
@@ -328,60 +338,110 @@ BOOST_AUTO_TEST_CASE(cpu_topology_affinity_mask_covers_enumerated_cores) {
 
 #if defined(__linux__)
 
+namespace {
+
+/* Confine this thread to the first `k` enumerated cores and assert the premise took hold.
+ *
+ * The premise is not free. effective_allowed_cpuset() re-reads hwloc_get_cpubind() on every call,
+ * so a successful sched_setaffinity DOES narrow what enumerate_physical_cores() reports -- but if
+ * it ever stopped doing so, the two cases below would keep asserting, against the UNCONFINED
+ * machine, and keep passing. That is the same defect as an early return, only harder to see, so
+ * the narrowing is checked rather than assumed.
+ *
+ * @returns false when the kernel refused the call (seccomp, a restrictive cgroup), which is the
+ *          one condition here that no assertion can rescue. */
+auto confine_to_first(const std::vector<partition::PhysicalCore> &full, size_t k) -> bool {
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    for (size_t i = 0; i < k; ++i) {
+        CPU_SET(full[i].cpu, &mask);
+    }
+    if (sched_setaffinity(0, sizeof(mask), &mask) != 0) {
+        return false;
+    }
+    BOOST_REQUIRE_EQUAL(partition::enumerate_physical_cores().size(), k);
+    return true;
+}
+
+/* An empty placement is licensed by exactly one thing -- pinning turned off -- and by nothing
+ * else. Spelled as a check so that "placed nothing", the bug this branch fixes, can never be
+ * mistaken for a configuration. */
+auto empty_placement_is_licensed() -> bool {
+    if (monoprop::config::get().partition_pinning) {
+        return false;
+    }
+    BOOST_TEST_MESSAGE("monoprop_PARTITION_PINNING is off; partition_cpusets places nothing");
+    return true;
+}
+
+} // namespace
+
 BOOST_AUTO_TEST_CASE(cpu_topology_per_rank_mask_still_places) {
     const auto full = partition::enumerate_physical_cores();
-    if (full.size() < 2) {
-        return; // need two cores to confine to
+    if (full.empty()) {
+        return; // hwloc loaded no topology: there is no mask to confine to.
     }
+    /* ONE core is enough to exercise the collapse -- the request is group_count x n out of a list
+     * holding n either way. Requiring two would let this pass vacuously on a single-core runner,
+     * which is exactly the property that made the live case it was ported alongside worthless. */
+    const size_t k = std::min<size_t>(full.size(), 2);
 
     const AffinityGuard guard;
-
-    cpu_set_t confined;
-    CPU_ZERO(&confined);
-    CPU_SET(full[0].cpu, &confined);
-    CPU_SET(full[1].cpu, &confined);
-    if (sched_setaffinity(0, sizeof(confined), &confined) != 0) {
-        return; // not permitted here (seccomp, restrictive cgroup); nothing to assert
+    if (!confine_to_first(full, k)) {
+        return; // the kernel refused the affinity call; nothing below is reachable
     }
 
     // n = the whole share, and a group_count as if seven sibling ranks shared the node. This is
     // the configuration `srun --cpu-bind=cores` produces, and without the collapse it places
     // NOTHING: the request is group_count x n cores out of a list holding n.
     const auto sets =
-        partition::partition_cpusets(/*n=*/2, /*group_index=*/3, /*group_count=*/8, /*mask_is_private=*/true);
-    BOOST_REQUIRE_EQUAL(sets.size(), 2u);
+        partition::partition_cpusets(/*n=*/k, /*group_index=*/3, /*group_count=*/8, /*mask_is_private=*/true);
+    if (sets.empty() && empty_placement_is_licensed()) {
+        return;
+    }
+    BOOST_REQUIRE_EQUAL(sets.size(), k);
     for (const auto &set : sets) {
         // Never pin outside the mask the launcher gave us.
-        BOOST_CHECK(set.pu == full[0].cpu || set.pu == full[1].cpu);
+        bool inside = false;
+        for (size_t i = 0; i < k; ++i) {
+            inside = inside || set.pu == full[i].cpu;
+        }
+        BOOST_CHECK(inside);
     }
-    // The two partitions must not land on the same core.
-    BOOST_CHECK(sets[0].pu != sets[1].pu);
+    if (k == 2) {
+        // The two partitions must not land on the same core.
+        BOOST_CHECK(sets[0].pu != sets[1].pu);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(cpu_topology_shared_mask_keeps_co_located_ranks_disjoint) {
     const auto full = partition::enumerate_physical_cores();
-    if (full.size() < 4) {
-        return; // need two cores per rank for two ranks
+    if (full.size() < 2) {
+        return; // two ranks cannot hold disjoint cores when there is only one
     }
+    /* Two cores are enough: one per rank. The ported version asked for four, which a two-physical-
+     * core CI runner does not have -- it would have returned here and reported green. */
+    const size_t per_rank = full.size() >= 4 ? 2 : 1;
+    const size_t shared = 2 * per_rank;
 
     const AffinityGuard guard;
-
-    // A shared mask narrower than the host: four cores that both ranks can see.
-    cpu_set_t shared;
-    CPU_ZERO(&shared);
-    for (size_t i = 0; i < 4; ++i) {
-        CPU_SET(full[i].cpu, &shared);
+    if (!confine_to_first(full, shared)) {
+        return; // the kernel refused the affinity call; nothing below is reachable
     }
-    if (sched_setaffinity(0, sizeof(shared), &shared) != 0) {
+
+    const auto rank0 = partition::partition_cpusets(/*n=*/per_rank,
+                                                    /*group_index=*/0,
+                                                    /*group_count=*/2,
+                                                    /*mask_is_private=*/false);
+    const auto rank1 = partition::partition_cpusets(/*n=*/per_rank,
+                                                    /*group_index=*/1,
+                                                    /*group_count=*/2,
+                                                    /*mask_is_private=*/false);
+    if (rank0.empty() && rank1.empty() && empty_placement_is_licensed()) {
         return;
     }
-
-    const auto rank0 =
-        partition::partition_cpusets(/*n=*/2, /*group_index=*/0, /*group_count=*/2, /*mask_is_private=*/false);
-    const auto rank1 =
-        partition::partition_cpusets(/*n=*/2, /*group_index=*/1, /*group_count=*/2, /*mask_is_private=*/false);
-    BOOST_REQUIRE_EQUAL(rank0.size(), 2u);
-    BOOST_REQUIRE_EQUAL(rank1.size(), 2u);
+    BOOST_REQUIRE_EQUAL(rank0.size(), per_rank);
+    BOOST_REQUIRE_EQUAL(rank1.size(), per_rank);
     for (const auto &a : rank0) {
         for (const auto &b : rank1) {
             // Two ranks sharing a core would have each one's busy-polling collectives starve the
