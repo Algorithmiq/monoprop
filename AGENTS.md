@@ -133,10 +133,14 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
   zeros — get a positive control that is known to emit before concluding anything from silence.
 - **A slow CTest run on an MPI build is `MPI_Init`, not slow tests.** CTest runs each Boost case as
   its own process, so each pays a full `MPI_Init`, which initialises every fabric device present
-  whether or not the process will send a message — 8.8 s against 0.2 s of user CPU on a login node
-  with 8 HCAs. The tell is wall time with no CPU behind it. `monoprop_ENABLE_MPI` builds default to
-  `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`, which skips fabric init for the per-case tests (8.8 s → 1.9 s;
-  suite 34 min → 5.4).
+  whether or not the process will send a message — 8.8 s against 0.2 s of user CPU on a Deucalion
+  *login* node with 8 HCAs. The tell is wall time with no CPU behind it. `monoprop_ENABLE_MPI` builds
+  default to `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`, which skips fabric init for the per-case tests.
+  Size the win on the hardware the gate runs on, not on that login node: on a `dev-x86` compute node
+  `ctest -L serial` costs **0.61 s/case** with the exclusion (208 cases in 126.03 s, job `1828011`)
+  against **2.03 s/case** without it (214 cases in 435.31 s, job `1828023`), a saving of 1.42 s/case.
+  Paired by test name over the 208 cases the two share, the median ratio is **3.42x** and every one
+  of the 208 is faster.
 - **That exclusion is scoped to the `serial` variants and must stay that way.** A per-case launch is
   one process — world size 1, `*_World` cases skip themselves, everything else is `MPI_COMM_SELF` — so
   no transport is used and the fabric can only cost startup time. The multi-rank variants exchange

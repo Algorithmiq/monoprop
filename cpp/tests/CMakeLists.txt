@@ -54,8 +54,11 @@ include(${CMAKE_CURRENT_LIST_DIR}/boost-test.cmake)
 # CTest runs every Boost case as its own process, so each one pays a full MPI_Init --
 # and MPI_Init initialises every fabric device it finds whether or not the process will
 # ever send a message. Measured on a Deucalion login node (8 Mellanox HCAs): 8.8 s per
-# process, against 0.2 s of user CPU, so 224 cases spend over half an hour opening
-# adapters for single-process tests. Excluding the fabric drops that to 1.9 s.
+# process against 0.2 s of user CPU, dropping to 1.9 s once the fabric is excluded. That
+# node is unusually well connected, so it sizes the mechanism, not the saving. On a
+# Deucalion dev-x86 compute node `ctest -L serial` costs 2.03 s per case without the
+# exclusion (job 1828023) and 0.61 s with it (job 1828011) -- a median of 3.42x across
+# the 208 cases the two runs share, faster on every one of them.
 #
 # A per-case launch is ONE process: its world size is 1, the `*_World` cases skip
 # themselves, and every remaining communicator is MPI_COMM_SELF. So the fabric cannot
