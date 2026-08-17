@@ -353,11 +353,11 @@ inline auto finish_cross_rank_evolution_exchange(VecD &op,
 // Snapshot-free self-slot endpoint pass: sin_recv entries k and k+pairs are the two endpoints of one
 // rotation, so reading both (pre-cos recovered from the post-cos slots) before writing either avoids the
 // read-after-write hazard.
-auto apply_self_slot_derivative_paired(VecD &state,
-                                       VecD &op,
-                                       const LayerTraversal &layer,
-                                       size_t my_rank,
-                                       const TrigValues &trig) -> EndpointContrib {
+//
+// Takes no rank: the layer records WHERE its own slot sits at build time, so this no longer searches
+// the slot array for a matching id the way the dense layout had to.
+auto apply_self_slot_derivative_paired(VecD &state, VecD &op, const LayerTraversal &layer, const TrigValues &trig)
+    -> EndpointContrib {
     // O(1): the self slot's position is recorded at build precisely so this loop does not search for it.
     const auto slot = layer.cross_rank_self_slot();
     const size_t self_d_count = slot.sin_send_count;
@@ -459,7 +459,7 @@ auto state_operator_derivative_local(VecD &state,
 
     EndpointContrib ep;
     if (my_rank < R) {
-        ep = apply_self_slot_derivative_paired(state, op, layer, my_rank, trig);
+        ep = apply_self_slot_derivative_paired(state, op, layer, trig);
     }
     const auto remote = finish_cross_rank_derivative_exchange(state, op, layer, snap, trig, in_flight);
     ep = combine_endpoint_contrib(ep, remote);
@@ -478,11 +478,10 @@ auto evolve_step_traversal_impl(VecD &op,
     const double sin_val = std::sin(2 * param);
 
     auto *const op_data = op.data();
-    const int my_rank_int = mpi::rank(comm);
-    const auto my_rank = static_cast<size_t>(my_rank_int);
 
-    // Snapshot my_rank's own sin_send values before the cos pass; runs unconditionally (the remote pack
-    // skips my_rank) so single-rank works.
+    // Snapshot this rank's own sin_send values before the cos pass; runs unconditionally (the remote
+    // pack skips the self slot) so single-rank works. No rank id is read here: the layer records where
+    // its own slot sits, so nothing has to be matched against mpi::rank(comm).
     const auto self_slot = layer.cross_rank_self_slot();
     const size_t self_b_count = self_slot.sin_send_count;
     VecD self_b_snapshot;
