@@ -103,6 +103,19 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
                 partner.sin_send_indices.size(),
                 partner.sin_recv_entries.size()));
         }
+        // P (the in-block) is a boundary WITHIN B, so it cannot point past B's end. Checked for the
+        // same reason as the skew above, and more urgently: Q = P+Q - P is computed in unsigned
+        // width by slot_sin_recv_index, so a P past the end does not produce a negative Q that some
+        // signed comparison would reject, it produces a Q near 2^64 that every index compares less
+        // than -- and every D read then addresses B at in_count + idx, off the end of the array.
+        if (partner.in_count > partner.sin_send_indices.size()) {
+            throw std::logic_error(
+                std::format("Cross-rank slot {} declares an in-block of {} inside {} endpoints; the in-block is a "
+                            "boundary within the endpoint list, not an addition to it.",
+                            rank,
+                            partner.in_count,
+                            partner.sin_send_indices.size()));
+        }
         // The whole point: a slot with no traffic gets no record. Ascending rank order makes `occupied`
         // sorted by construction, which is what lets readers binary-search it and lets the offset be a
         // running prefix rather than a stored field.

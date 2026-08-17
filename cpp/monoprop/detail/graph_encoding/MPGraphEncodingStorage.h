@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -157,6 +158,12 @@ inline auto slot_sin_send_index(const CrossRankSlotView &slot, size_t idx) -> si
 // Invariant B=[in(P)]++[out(Q)], D=[out(Q)]++[in(P)] (P=in_count, Q=sin_send_count-P):
 // D[idx] = (idx<Q) ? B[P+idx] : B[idx-Q]. So D is not stored (saves ~half of cross_rank).
 inline auto slot_sin_recv_index(const CrossRankSlotView &slot, size_t idx) -> size_t {
+    // P <= P+Q is a precondition, enforced in build_packed_cross_rank_storage, and it has to be:
+    // this subtraction is unsigned, so an in_count past the end of B would not go negative, it
+    // would wrap to ~2^64 and send every idx down the (idx < out_count) arm to read B far past its
+    // range. Asserted rather than branched on because it is checked once at build and this runs per
+    // endpoint of the innermost apply.
+    assert(slot.in_count <= slot.sin_send_count && "in-block cannot exceed the slot's endpoint count");
     const size_t out_count = slot.sin_send_count - slot.in_count; // Q
     const size_t sin_send_local = (idx < out_count) ? (slot.in_count + idx) : (idx - out_count);
     return slot_sin_send_index(slot, sin_send_local);

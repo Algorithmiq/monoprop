@@ -308,6 +308,26 @@ BOOST_AUTO_TEST_CASE(graph_encoding_skewed_endpoint_counts_are_refused) {
     BOOST_CHECK_THROW(detail::build_packed_cross_rank_storage(data), std::logic_error);
 }
 
+BOOST_AUTO_TEST_CASE(graph_encoding_an_in_block_past_the_endpoint_list_is_refused) {
+    // in_count is a boundary INSIDE B, and the out-block size is B.size() - in_count in unsigned
+    // width. An in_count past the end therefore does not underflow into a negative some comparison
+    // would reject -- it wraps to ~2^64, every D index takes the (idx < out_count) arm, and each
+    // one reads B at in_count + idx, off the end. Refused where the record is built, so the reader
+    // can subtract without branching.
+    std::vector<CrossRankPartnerData> data(1);
+    data[0].sin_send_indices.push_back(1);
+    data[0].sin_send_indices.push_back(2);
+    data[0].sin_recv_entries.push_back({1, 1});
+    data[0].sin_recv_entries.push_back({2, 1});
+    data[0].in_count = 3; // three inside two
+
+    BOOST_CHECK_THROW(detail::build_packed_cross_rank_storage(data), std::logic_error);
+
+    // The boundary itself is legal: in_count == B.size() is an all-in slot with an empty out-block.
+    data[0].in_count = 2;
+    BOOST_CHECK_NO_THROW(detail::build_packed_cross_rank_storage(data));
+}
+
 BOOST_AUTO_TEST_CASE(graph_encoding_occupied_sweep_matches_the_dense_sweep_it_replaces) {
     // Zeros at the front, interior and back, and a slot whose in_count splits the B list, so the
     // derived offset has somewhere to go wrong.
