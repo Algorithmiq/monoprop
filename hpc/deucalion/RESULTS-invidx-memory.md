@@ -1,5 +1,16 @@
 # Inverted-index memory: `perf/invidx-memory` vs its base
 
+> **This file's headline is superseded — see
+> [RESULTS-invidx-arena-segments.md](RESULTS-invidx-arena-segments.md).**
+> It frames the branch as "1.25× resident memory for ~1.09× time, so repair the regression or drop
+> it", judged against the ≤1.02× bar set below. That dichotomy was an artefact of a **missing
+> measurement**: the time had been bisected per commit for two rounds while the memory never had been,
+> so there was no way to say which commit was worth its time. Once it was measured, the
+> inverted-index commit turned out to be Pareto-dominated on Pauli, the epoch-stamp commit was the
+> best in the branch, one commit saves *nothing* at rest, and a one-file fix inverted the peak-RSS
+> regression from +6.94 to −4.25 B/term. The measurements *in* this file stand; its conclusion does
+> not.
+
 2026-08-15, Deucalion x86. Harness `sbatch/ab-100m.sh`, job `1825647`, summary under
 `$PROJ/runs/ab-100m-invidx-vsmain-N1/AB-SUMMARY.md`.
 
