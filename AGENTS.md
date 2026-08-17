@@ -104,6 +104,28 @@ Key files:
   for the mutating/collecting paths, which run on the partitions' own pinned masters; `sum_partitions_`,
   `fold_partitions_`, `first_partition_` for reads off quiescent partitions) rather than hand-rolling a
   `run_on_all` loop — the declarations record which helper is legal where.
+- **The distributed graph is indexed by the FLAT world**: a `LayerCore`
+  (`cpp/monoprop/detail/graph_encoding/MPGraphEncodingTypes.h`) is held per layer per partition, and
+  its partner index space is `P = mpi_ranks × partitions`, not the rank count. Anything stored per
+  layer per *possible* partner is `O(P)` on each of `P` participants — `O(P²)` across a job — so the
+  rule for this structure is **store per unit of traffic, not per participant**:
+  - `PackedCrossRankStorage` keeps one `CrossRankOccupiedSlot` per world slot that carries traffic,
+    not per slot that could exist. Walk it with `for_each_occupied_slot`, which is `O(occupied)` for
+    the whole sweep and carries each slot's B/D prefix offset with it; `cross_rank_self_slot` is the
+    O(1) path for this rank's own slot, resolved once at build by `resolve_self_slot`.
+  - The all-to-all counts and displacements are not stored. `derive_exchange_layout` fills a
+    `LayerExchangeLayout` in per-thread scratch for the exchange being posted, and the recv layout
+    IS the send layout (the count matrix is symmetric), so there is nothing to transpose and nothing
+    to resolve over the wire. `derive_layer_exchange` in `Evolution.cpp` is the call site.
+  - `mpi::check_exchange_symmetry` (`cpp/monoprop/detail/mpi/Exchange.h`) runs on every exchange.
+    Its width check — the layout must hold exactly one entry per rank — is an unconditional
+    precondition, because MPI reads one count and one displacement per rank whatever the span holds.
+    The symmetry audit behind it is a collective, and is gated at BUILD time by the CMake option
+    `monoprop_CHECK_EXCHANGE_SYMMETRY` (default OFF). A per-rank environment variable must never
+    decide whether a collective runs: ranks that disagree hang the job instead of misreporting.
+  - `cpp/tests/ExchangeLayoutOracle.h` holds the independent reference that derivation is checked
+    against. It is outside the library on purpose — an oracle compiled in beside its subject gets
+    maintained beside it, and then proves nothing.
 
 
 ### Environment Management

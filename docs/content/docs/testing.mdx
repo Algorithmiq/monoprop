@@ -91,6 +91,21 @@ fabric device per case, whether or not the test sends anything. `monoprop_TEST_E
 keep the full component set, since they exchange real messages. Turn it off by adding
 `-Dmonoprop_TEST_EXCLUDE_MPI_FABRIC=OFF` to the `SKBUILD_CMAKE_ARGS` MPI build above.
 
+The distributed exchange derives each layer's recv layout from its send layout
+instead of resolving one over the wire. To audit that derivation against a real
+all-to-all on every exchange, rebuild with the check compiled in and run the MPI
+suite:
+
+```bash
+SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON;-Dmonoprop_CHECK_EXCHANGE_SYMMETRY=ON" \
+    uv sync --all-extras --reinstall-package monoprop --no-cache
+mpiexec -n 4 build/editable/Release/bin/monoprop_unit_tests.x
+```
+
+It is a build option rather than an environment variable because the audit is a
+collective; the option table is in [Building from source](/building). Leave it off
+for timing runs — it reinstates the per-exchange collective the derivation removes.
+
 CTest registers every Boost case individually as a `serial` variant. When the
 build has MPI enabled and a launcher is found, it also registers the whole suite
 once per rank count in `monoprop_MPI_TEST_PROCS`, labelled `mpi` and `mpi-<n>` —

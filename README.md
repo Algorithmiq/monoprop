@@ -107,7 +107,13 @@ uv sync --all-extras -v
 ctest --test-dir build/editable/Release
 ```
 
-Full instructions — prerequisites, MPI options, and running the example
+Every other build switch is a CMake option passed the same way — the 64-bit
+`monoprop_WIDE_TERM_INDEX` build, and the `monoprop_CHECK_EXCHANGE_SYMMETRY`
+diagnostic that audits the distributed exchange layout at the cost of an extra
+collective. They are build-time rather than environment variables so that all
+ranks of a job necessarily agree on them.
+
+Full instructions — prerequisites, the build-option table, and running the example
 executable — are in the [building guide](https://docs.monoprop.algorithmiq.tech/building).
 In particular, from-source builds require `hwloc` and `pkg-config` so CMake can
 locate `hwloc`.
