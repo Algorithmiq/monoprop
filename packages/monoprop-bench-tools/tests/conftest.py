@@ -13,9 +13,6 @@
 # limitations under the License.
 
 """Pytest configuration for the monoprop-bench-tools test suite.
-
-Kept independent of monoprop's own ``tests/conftest.py`` so this package can be
-tested on its own, without the repository around it.
 """
 
 from __future__ import annotations
