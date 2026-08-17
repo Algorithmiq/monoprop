@@ -165,6 +165,27 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - Heavy use of `@parametrize_with_cases` decorators
 - **pytest's fd-level capture hides C++ stderr** (e.g. `COMMPROF`) — rerun with `-s` to see it.
 - **A slow CTest run on an MPI build is `MPI_Init` fabric probing, not slow tests** — see `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
+- **A layout assertion must hold at BOTH `TermIndex` widths, and must not be able to switch itself
+  off.** `monoprop_WIDE_TERM_INDEX` is compiled in exactly one place — a single `wide: "on"` cell in
+  `.github/workflows/test.yml`'s matrix — and `just test-wide` locally. Every other build, including
+  every HPC gate, compiles narrow. So an assertion of the form
+  `sizeof(TermIndex) != sizeof(uint32_t) || <the real check>` is not a guard: its first disjunct is
+  *true* under the wide build, which is the only configuration that could have failed it. Write the
+  layout **rule** instead of a byte count, so there is no arm to disable — see
+  `kOccupiedSlotIdField` and the two `static_assert`s beside `CrossRankOccupiedSlot`
+  (`cpp/monoprop/detail/graph_encoding/MPGraphEncodingTypes.h`), which are `12` narrow and `24` wide
+  from one expression. A `BOOST_CHECK_EQUAL` on the same rule belongs in `cpp/tests/` as well, but it
+  is the weaker of the two: it needs the wide build to be *run*, whereas the `static_assert` fails
+  the compile.
+- **Ledger dictionaries exposed to Python are a measurement contract.** `graph_memory_breakdown()`
+  and `operator_memory_breakdown()` (`src/monoprop/bindings/binder.h`) are read from two builds and
+  subtracted, so a key that appears, disappears, or moves in or out of `total_bytes()` silently turns
+  that subtraction into a comparison of two different quantities — the structs are plain aggregates
+  and the bindings are literal `std::map`s, so nothing on the C++ side notices. Pin the key set
+  *exactly* (not as a superset) and pin `total_bytes()` to the sum of its members;
+  `test_graph_memory_breakdown_keys_and_totals` in `tests/test_monoprop_smoke.py` is the pattern.
+  Prefer keeping a key that has become permanently zero, with a comment saying why, over deleting it
+  — a zero row is the evidence that the memory left.
 
 ## Key Dependencies & Integration
 
