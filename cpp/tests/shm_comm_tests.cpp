@@ -33,7 +33,7 @@ using monoprop::mpi::ShmCommPoisoned;
 
 namespace {
 
-template <class Body>
+template <typename Body>
 auto run_shm(int s, Body body) -> std::vector<std::exception_ptr> {
     ShmComm sh(s);
     return test_utils::run_comm_threads(sh, s, body);
