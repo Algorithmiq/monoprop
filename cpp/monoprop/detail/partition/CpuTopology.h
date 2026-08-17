@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -100,6 +101,16 @@ auto enumerate_physical_cores() -> std::vector<PhysicalCore>;
  * caller: a width that lives next to only one of the two can drift silently.
  */
 inline constexpr size_t kAffinityMaskWords = 64;
+
+/* The agreement between this constant and affinity_mask_words()/masks_are_pairwise_disjoint() is
+ * NOT assertable: both take the width as a runtime `nwords`/`words` argument, so there is no shape
+ * to tie. Declaring it here, as the single definition every caller reads, is the whole fix -- the
+ * previous private copy on PartitionGroup was a second definition that could drift.
+ *
+ * What IS a compile-time constraint is the one the exchange imposes: the width is passed to
+ * MPI_Allgather as an element COUNT, and MPI counts are `int`. */
+static_assert(kAffinityMaskWords > 0 && kAffinityMaskWords <= static_cast<size_t>(INT_MAX),
+              "the affinity-mask width is an MPI_Allgather element count, which is an int");
 
 /*!
  * @brief This process's effective allowed cpuset, as a bit array of @p nwords 64-bit words.
