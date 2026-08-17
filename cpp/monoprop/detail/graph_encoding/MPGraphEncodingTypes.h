@@ -138,8 +138,25 @@ struct CrossRankOccupiedSlot final {
     TermIndex sin_send_count = 0;
     TermIndex in_count = 0;
 };
-static_assert(sizeof(TermIndex) != sizeof(uint32_t) || sizeof(CrossRankOccupiedSlot) == 12,
-              "narrow build: the occupied-slot record is the graph's P coefficient; keep it padding-free.");
+// The layout RULE, and it holds on BOTH widths, because this record is the graph's P coefficient and
+// a silent extra word in it is most of the cost being removed here. Stated as a rule rather than as a
+// byte count deliberately: the previous form was
+//     sizeof(TermIndex) != sizeof(uint32_t) || sizeof(CrossRankOccupiedSlot) == 12
+// whose first disjunct is TRUE under monoprop_WIDE_TERM_INDEX -- so the wide build switched off its
+// own check, and the only other assertion of this size summed the field widths to 20 and would have
+// failed the moment anything compiled it wide.
+//
+// `slot` does not cost sizeof(uint32_t): it occupies a whole TermIndex-alignment slot, and the rest
+// of that slot is padding the alignment forces. Narrow that is 4 + 4 + 4 = 12; wide it is
+// 8 (4 used, 4 padding) + 8 + 8 = 24 -- not the 20 the field widths sum to. Anything larger means a
+// field was added, or reordered into a second hole.
+inline constexpr size_t kOccupiedSlotIdField = std::max(sizeof(uint32_t), alignof(TermIndex));
+static_assert(sizeof(CrossRankOccupiedSlot) == kOccupiedSlotIdField + 2 * sizeof(TermIndex),
+              "the occupied-slot record is the graph's P coefficient: it must carry no padding beyond the "
+              "alignment slot its u32 id already occupies.");
+static_assert(alignof(CrossRankOccupiedSlot) == alignof(TermIndex),
+              "the record aligns to its widest member; if that stops holding the size rule above is "
+              "measuring something else.");
 
 // Sentinel for self_pos: this rank's own slot carries no traffic in this layer.
 inline constexpr size_t kNoSelfSlot = static_cast<size_t>(-1);
