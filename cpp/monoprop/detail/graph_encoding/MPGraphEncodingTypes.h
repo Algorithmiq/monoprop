@@ -47,19 +47,6 @@ namespace monoprop::detail {
 
 auto checked_mpi_int(size_t value, const char *what) -> int;
 
-// Per-rank MPI counts = send_counts[r] * scale, with prefix-sum displacements. send_counts is full-width
-// (size_t) so checked_mpi_int catches the narrowing to MPI's int.
-//
-// The engine no longer calls this: it derives the layout from the slot records instead (see
-// derive_exchange_layout, declared in MPGraphEncodingStorage.h because it needs
-// PackedCrossRankStorage). It is kept deliberately, as the REFERENCE the derivation is tested
-// against -- graph_encoding_derived_layout_matches_the_layout_it_replaces asserts the two agree
-// elementwise. Checking a derivation against an independent construction is worth more than
-// checking it against literals, so this is a test oracle, not dead code. Do not delete it
-// without replacing what it proves.
-auto build_layer_exchange_layout(const std::vector<size_t> &send_counts, int scale, const char *what = "Layer exchange")
-    -> LayerExchangeLayout;
-
 } // namespace monoprop::detail
 
 namespace monoprop {
