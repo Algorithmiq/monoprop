@@ -1,0 +1,493 @@
+diff --git a/cpp/monoprop/detail/EnvConfig.h b/cpp/monoprop/detail/EnvConfig.h
+index 708bd4c..d054a0f 100644
+--- a/cpp/monoprop/detail/EnvConfig.h
++++ b/cpp/monoprop/detail/EnvConfig.h
+@@ -26,6 +26,8 @@
+ //   monoprop_PARTITIONS         int N | "auto" | "off"; parsed where it is used (resolve_partition_count_)
+ //   monoprop_LAYER_PROFILE      bool, default OFF; per-partition layer-build attribution to stderr → layer_profile
+ //   monoprop_LAYER_GAPS         bool, default OFF; column-gap structure of the row order to stderr → layer_gaps
++//   monoprop_INVIDX_BITMAP_PREMIUM  int in SIXTEENTHS, default 16 (= 1.0); how many times a chunk's
++//                                   delta bytes a bitmap may cost and still be chosen → bitmap_premium_16
+ 
+ namespace monoprop::config {
+ 
+@@ -64,6 +66,16 @@ struct Settings {
+     // population sweep -- so a run that wants the gap structure must not be a run anyone quotes a
+     // timing from.
+     bool layer_gaps = false;
++    // The inverted index's container argmin is a pure BYTES rule: take a bitmap only when it is no
++    // larger than the delta stream. But the two fold at very different speeds -- a bitmap chunk is
++    // ~512 word XORs whatever its density, a delta chunk is one branchy read-modify-write per posting
++    // -- so the byte-optimal choice is not the time-optimal one, and the band between the two
++    // crossovers is 30-80x wide in density. This premium is the dial between them, in sixteenths:
++    // 16 is the shipped pure-bytes rule, 32 accepts a bitmap costing 2x the delta bytes, and a large
++    // value approaches main's all-dense index. It is a REPRESENTATION knob only -- every container
++    // holds the same row set and the fold is XOR-associative, so results are bit-identical at any
++    // value (see the comment on combine_columns_block).
++    int bitmap_premium_16 = 16;
+ };
+ 
+ // Parse the environment once; the Settings are cached and shared across TUs.
+@@ -74,6 +86,7 @@ inline auto get() -> const Settings & {
+         s.partition_pinning = detail::parse_flag(std::getenv("monoprop_PARTITION_PINNING"), true);
+         s.layer_profile = detail::parse_flag(std::getenv("monoprop_LAYER_PROFILE"), false);
+         s.layer_gaps = detail::parse_flag(std::getenv("monoprop_LAYER_GAPS"), false);
++        s.bitmap_premium_16 = detail::parse_positive_int(std::getenv("monoprop_INVIDX_BITMAP_PREMIUM")).value_or(16);
+         return s;
+     }();
+     return settings;
+diff --git a/cpp/monoprop/detail/evolution/LayerProfile.h b/cpp/monoprop/detail/evolution/LayerProfile.h
+index 795b779..30ff0d5 100644
+--- a/cpp/monoprop/detail/evolution/LayerProfile.h
++++ b/cpp/monoprop/detail/evolution/LayerProfile.h
+@@ -104,6 +104,43 @@ struct alignas(64) Slot {
+     uint64_t n_miss = 0; // self-resolve misses (deferred inserts)
+     uint64_t query_words = 0;
+ 
++    // `exchange_ns` is not one thing, and every ratio drawn from it so far has been a ratio of a
++    // mixture. HybridComm funnels a rank's 16 partitions through partition 0: four intra-rank
++    // barriers, one MPI_Alltoall of counts, one MPI_Alltoallv of payload, plus per-partition packing
++    // and scattering. A barrier charges ONE partition's extra work to the fifteen that wait for it,
++    // so a mechanism worth ~1 part-s of real work can print as ~15 in this bucket. These four split
++    // it so the difference between "someone is late" and "the wire is slower" stops being a guess:
++    //   comm_sync_ns    -- the four sync() barriers: straggler amplification lives here and only here
++    //   comm_mpi_ns     -- the leader's actual MPI calls; on the 15 peers this stays zero
++    //   comm_pack_ns    -- recv.resize + pack_send_, i.e. the allocation and gather this arm changed
++    //   comm_scatter_ns -- the post-B4 memcpy out of staging
++    // They are nested inside exchange_ns, so they sum to it minus loop overhead, not on top of it.
++    // The first split said 90% of the regression is `comm_sync_ns` with the barrier COUNT identical
++    // (28,270,592 crossings, 16.00 per gate, both arms, both models) -- so each crossing costs more,
++    // 74.2 -> 84.0 us. That is still a mixture, because the four barriers wait for different things:
++    //   B1 -- for the slowest partition's PRE-exchange work (fold/scan/emit/resolve) that gate
++    //   B2 -- for the leader's count Alltoall + staging resize
++    //   B3 -- for the slowest partition's recv.resize + pack_send_
++    //   B4 -- for the leader's MPI_Alltoallv
++    // B2/B4 rising means the leader; B1/B3 rising means per-gate work imbalance, which can grow with
++    // no change in total work at all if the per-gate variance rises and the straggler rotates.
++    uint64_t comm_sync_ns[4] = {};
++    // Leader-only, and therefore nonzero on 8 of 128 partitions -- which is why these look small in
++    // part-seconds and are not: whatever the leader spends here, fifteen peers spend waiting for at
++    // the next barrier, so the funnel multiplies it by 15 (measured 14.9-15.2x, three reps).
++    // `comm_mpi_ns` is the PAYLOAD MPI_Alltoallv only; the counts MPI_Alltoall and the staging
++    // resize are split out because they sit in a different barrier's shadow (B2, not B4) and one of
++    // them is an allocation while the other two are transfers.
++    uint64_t comm_mpi_ns = 0;
++    uint64_t comm_a2a_ns = 0;   // pack_count_matrix_ + MPI_Alltoall of the S*S count matrix
++    uint64_t comm_stage_ns = 0; // size_staging_: the leader's staging-buffer resize
++    uint64_t comm_pack_ns = 0;
++    // Carved out of comm_pack_ns: the per-gate allocation, as opposed to the gather memcpy beside it.
++    // Both arms move identical bytes, so a split here says whether the allocator or the copy moved.
++    uint64_t comm_resize_ns = 0;
++    uint64_t comm_scatter_ns = 0;
++    uint64_t n_sync = 0;
++
+     // Population sample, overwritten each time the sweep runs (last sample wins; the per-sample line
+     // is emitted at sweep time, so the growth curve is in the log even though only the last is here).
+     uint64_t pop_rows = 0;
+@@ -150,7 +187,10 @@ public:
+                          "exchange_s=%.4f incoming_s=%.4f layer_s=%.4f gate_s=%.4f total_s=%.4f "
+                          "anti=%llu foll=%llu emit=%llu "
+                          "atol=%llu reject=%llu push=%llu hit=%llu miss=%llu qbytes=%llu "
+-                         "words=%llu livewords=%llu rehash_s=%.4f rehash=%llu rehashrows=%llu\n",
++                         "words=%llu livewords=%llu rehash_s=%.4f rehash=%llu rehashrows=%llu "
++                         "csync_s=%.4f cmpi_s=%.4f cpack_s=%.4f cscat_s=%.4f nsync=%llu "
++                         "b1_s=%.4f b2_s=%.4f b3_s=%.4f b4_s=%.4f cresize_s=%.4f "
++                         "ca2a_s=%.4f cstage_s=%.4f\n",
+                          p,
+                          ull(s->n_gates),
+                          to_s(s->fold_ns),
+@@ -183,7 +223,20 @@ public:
+                          ull(s->n_live_words),
+                          to_s(s->rehash_ns),
+                          ull(s->n_rehash),
+-                         ull(s->n_rehash_rows));
++                         ull(s->n_rehash_rows),
++                         to_s(s->comm_sync_ns[0] + s->comm_sync_ns[1] + s->comm_sync_ns[2]
++                              + s->comm_sync_ns[3]),
++                         to_s(s->comm_mpi_ns),
++                         to_s(s->comm_pack_ns),
++                         to_s(s->comm_scatter_ns),
++                         ull(s->n_sync),
++                         to_s(s->comm_sync_ns[0]),
++                         to_s(s->comm_sync_ns[1]),
++                         to_s(s->comm_sync_ns[2]),
++                         to_s(s->comm_sync_ns[3]),
++                         to_s(s->comm_resize_ns),
++                         to_s(s->comm_a2a_ns),
++                         to_s(s->comm_stage_ns));
+             ++p;
+         }
+ 
+@@ -332,7 +385,15 @@ auto sample_population(Slot *s, const Store &store, size_t gate_index) -> void {
+ //
+ // What the histogram decides:
+ //   * gap 1 is a run continuation -- the only posting a Run container encodes for free, and the only
+-//     one a delta stream encodes in its narrowest escape;
++//     one a delta stream encodes in its narrowest escape. The *count* of gap-1 postings is not enough
++//     to decide a Run container, and this is the falsifier that has to be checked before writing one:
++//     a run costs a header (~6 B for a start and a length) against ~1 B per posting in the delta
++//     stream, so runs pay for themselves on MEMORY only above length ~6, and a distribution that is
++//     mostly length-2 runs has the header eat the whole win. The run-length histogram below, and the
++//     posting-weighted coverage beside it, are what decide it. Coverage is the quantity that matters
++//     for TIME: a run folds as one word-parallel range flip, so the fraction of postings living in
++//     runs of length >= L is the fraction of the fold that stops being per-posting work.
++
+ //   * sum of floor(log2 gap) is the gap-coded information content of the whole index under this row
+ //     order, while a perfectly clustered order would charge ~0 per posting. Their ratio is the ENTIRE
+ //     headroom available to row reordering, including an optimal one.
+@@ -355,38 +416,129 @@ auto sample_gaps(Slot *s, const Store &store, size_t gate_index, bool force = fa
+     constexpr uint32_t kNoRow = 0xFFFF'FFFFU;
+     constexpr size_t kGapBuckets = 33; // floor(log2(gap)), clamped into [0, 32]
+ 
++    // Rows per inverted-index chunk, which is the unit the container argmin decides over. Taken from
++    // the branch's compile definition when there is one and defaulted otherwise, rather than by
++    // including InvertedIndex.h: this file has to stay byte-identical on both arms, and main's index
++    // has no chunks at all. The row order is identical on both arms, so main reports what the branch's
++    // geometry WOULD do to the same rows -- which makes cross-arm equality the check on this histogram.
++#ifdef monoprop_INVIDX_CHUNK_WORDS
++    constexpr size_t kChunkRows = static_cast<size_t>(monoprop_INVIDX_CHUNK_WORDS) * 64;
++#else
++    constexpr size_t kChunkRows = 512UL * 64;
++#endif
++    // Per-(column, chunk) posting counts, bucketed by bit_width. This is what prices the container
++    // argmin. `choose_tag_` picks Bitmap iff kChunkBitmapBytes <= delta_bytes, i.e. iff a chunk holds
++    // >= 4096 postings of its 32768 rows -- a pure BYTES rule. But the fold costs ~512 word XORs for a
++    // bitmap against ~1 branchy read-modify-write per posting for a delta stream, so the TIME crossover
++    // is near 50-150 postings. Every chunk in between picks delta and folds slower than a bitmap would,
++    // and that band is 30-80x wide. Emitting (chunks, postings) per bucket lets any threshold T be
++    // priced after the fact: chunks at >= T postings cost 4096 B and a word-parallel fold, the rest
++    // cost ~1 B per posting and a per-posting fold. That is the whole memory/time frontier, from one run.
++    constexpr size_t kDensBuckets = 18; // bit_width(postings), 0..17; 32768 rows caps bit_width at 16
++
++    // Run-length buckets: exact for 1..8, then one per power of two. Length 1 is a singleton run, which
++    // is the case a Run container must NOT pay a header for, so it gets its own bucket rather than
++    // being folded in with 2.
++    constexpr size_t kRunBuckets = 24;
++    const auto run_bucket = [](uint32_t len) -> size_t {
++        if (len < 9) {
++            return static_cast<size_t>(len) - 1;
++        }
++        const auto b = static_cast<size_t>(8 + std::bit_width(len) - 4);
++        return b < kRunBuckets ? b : kRunBuckets - 1;
++    };
++
+     std::vector<uint32_t> last(2 * NumModes, kNoRow);
++    // Start row of the run currently open in each column; kNoRow when no posting has been seen yet.
++    std::vector<uint32_t> run_start(2 * NumModes, kNoRow);
+     std::vector<uint64_t> hist(kGapBuckets, 0);
++    // run_hist counts runs by length bucket; run_post sums the POSTINGS those runs cover, so coverage
++    // is exact rather than reconstructed from a bucket midpoint.
++    std::vector<uint64_t> run_hist(kRunBuckets, 0);
++    std::vector<uint64_t> run_post(kRunBuckets, 0);
+     uint64_t postings = 0;
+     uint64_t anchors = 0;
+     uint64_t runs = 0;
+     double log_sum = 0.0;
+ 
++    // Postings the current chunk has seen in each column, flushed at every chunk boundary. Rows are
++    // walked in ascending order, so a chunk is complete the moment the walk leaves it and a single
++    // counter per column suffices -- no (column, chunk) matrix.
++    std::vector<uint32_t> chunk_count(2 * NumModes, 0);
++    std::vector<uint64_t> dens_hist(kDensBuckets, 0);
++    std::vector<uint64_t> dens_post(kDensBuckets, 0);
++    size_t cur_chunk = 0;
++
++    const auto close_run = [&](uint32_t start, uint32_t end) {
++        const uint32_t len = end - start + 1;
++        const size_t b = run_bucket(len);
++        run_hist[b] += 1;
++        run_post[b] += len;
++    };
++    const auto flush_chunk = [&]() {
++        for (size_t c = 0; c < chunk_count.size(); ++c) {
++            const uint32_t m = chunk_count[c];
++            if (m == 0) {
++                continue; // an Empty chunk costs no arena bytes and no fold work
++            }
++            const auto b = static_cast<size_t>(std::bit_width(m) - 1);
++            const size_t bi = b < kDensBuckets ? b : kDensBuckets - 1;
++            dens_hist[bi] += 1;
++            dens_post[bi] += m;
++            chunk_count[c] = 0;
++        }
++    };
++
+     const size_t n = store.size();
+     for (size_t i = 0; i < n; ++i) {
+         const auto row = static_cast<uint32_t>(i);
++        const size_t chunk = i / kChunkRows;
++        if (chunk != cur_chunk) {
++            flush_chunk();
++            cur_chunk = chunk;
++        }
+         store.for_each_position(i, [&](size_t pos) {
+             if (pos >= last.size()) {
+                 last.resize(pos + 1, kNoRow);
++                run_start.resize(pos + 1, kNoRow);
+             }
++            if (pos >= chunk_count.size()) {
++                chunk_count.resize(pos + 1, 0);
++            }
++            ++chunk_count[pos];
+             ++postings;
+             const uint32_t prev = last[pos];
+             last[pos] = row;
+             if (prev == kNoRow) {
+                 ++anchors; // first posting in this column: there is no gap to charge
++                run_start[pos] = row;
+                 return;
+             }
+             const uint32_t gap = row - prev;
+             if (gap == 1) {
+                 ++runs;
+             }
++            else {
++                // The run that ended at `prev` is now closed; `row` opens the next one.
++                close_run(run_start[pos], prev);
++                run_start[pos] = row;
++            }
+             const auto b = static_cast<size_t>(std::bit_width(gap) - 1);
+             hist[b < kGapBuckets ? b : kGapBuckets - 1] += 1;
+             log_sum += static_cast<double>(b);
+         });
+     }
++    // Every column ends with one run still open. Dropping these would bias the histogram toward short
++    // runs by exactly one run per column -- small here, but it is the tail that decides the container.
++    for (size_t pos = 0; pos < last.size(); ++pos) {
++        if (run_start[pos] != kNoRow) {
++            close_run(run_start[pos], last[pos]);
++        }
++    }
++    flush_chunk(); // the final chunk is never left by the walk, so it is never flushed by the loop
+ 
+-    char line[2048];
++    // Wide enough for three histograms of 11-digit counts; gap_hist alone nearly filled the old 2048.
++    char line[4096];
+     int off = std::snprintf(line,
+                             sizeof(line),
+                             "LAYERGAP gate=%zu rows=%zu cols=%zu postings=%llu anchors=%llu runs=%llu "
+@@ -398,13 +550,25 @@ auto sample_gaps(Slot *s, const Store &store, size_t gate_index, bool force = fa
+                             static_cast<unsigned long long>(anchors),
+                             static_cast<unsigned long long>(runs),
+                             log_sum);
+-    for (size_t j = 0; j < kGapBuckets && off > 0 && static_cast<size_t>(off) < sizeof(line); ++j) {
+-        off += std::snprintf(line + off,
+-                             sizeof(line) - static_cast<size_t>(off),
+-                             "%llu%s",
+-                             static_cast<unsigned long long>(hist[j]),
+-                             j + 1 < kGapBuckets ? "," : "");
+-    }
++    const auto emit_hist = [&](const std::vector<uint64_t> &h, const char *label) {
++        if (off > 0 && static_cast<size_t>(off) < sizeof(line)) {
++            off += std::snprintf(line + off, sizeof(line) - static_cast<size_t>(off), "%s", label);
++        }
++        for (size_t j = 0; j < h.size() && off > 0 && static_cast<size_t>(off) < sizeof(line); ++j) {
++            off += std::snprintf(line + off,
++                                 sizeof(line) - static_cast<size_t>(off),
++                                 "%llu%s",
++                                 static_cast<unsigned long long>(h[j]),
++                                 j + 1 < h.size() ? "," : "");
++        }
++    };
++    emit_hist(hist, "");
++    // Buckets 0..7 are exact lengths 1..8; bucket 8+j covers lengths [2^(j+3), 2^(j+4)).
++    emit_hist(run_hist, " run_hist=");
++    emit_hist(run_post, " run_post=");
++    // Bucket b covers non-empty (column, chunk) cells holding [2^b, 2^(b+1)) postings.
++    emit_hist(dens_hist, " dens_hist=");
++    emit_hist(dens_post, " dens_post=");
+     std::fprintf(stderr, "%s\n", line);
+ }
+ 
+diff --git a/cpp/monoprop/detail/mpi/HybridComm.h b/cpp/monoprop/detail/mpi/HybridComm.h
+index 394f9fa..19c307a 100644
+--- a/cpp/monoprop/detail/mpi/HybridComm.h
++++ b/cpp/monoprop/detail/mpi/HybridComm.h
+@@ -29,6 +29,7 @@
+ 
+ #include <mpi.h>
+ 
++#include "monoprop/detail/evolution/LayerProfile.h"
+ #include "monoprop/detail/mpi/CheckedCount.h"
+ #include "monoprop/detail/mpi/Comm.h"
+ #include "monoprop/detail/mpi/PartitionBarrier.h"
+@@ -186,20 +187,26 @@ private:
+         me.send_counts = args.send_counts;
+         me.send_displs = args.send_displs;
+         me.recv_counts = args.recv_counts;
+-        sync(); // B1
++        auto *const prof = ::monoprop::detail::layer_profile::slot();
++        sync_timed_(0); // B1
+ 
+         // B2: partition 0 sizes/reallocates staging; must finish before any partition packs into stage_send_.
+         if (local_partition == 0) {
++            const ::monoprop::detail::layer_profile::ScopedNs t(prof != nullptr ? &prof->comm_stage_ns : nullptr);
+             size_staging_(args.elem);
+         }
+-        sync(); // B2
++        sync_timed_(1); // B2
+ 
+         // B3: each partition packs its own cross-rank blocks into stage_send_ (disjoint writes).
+-        pack_send_(local_partition, args.elem);
+-        sync(); // B3
++        {
++            const ::monoprop::detail::layer_profile::ScopedNs t(prof != nullptr ? &prof->comm_pack_ns : nullptr);
++            pack_send_(local_partition, args.elem);
++        }
++        sync_timed_(2); // B3
+ 
+         // B4: partition 0 runs the single MPI_Alltoallv while peers park at the barrier.
+         if (local_partition == 0) {
++            const ::monoprop::detail::layer_profile::ScopedNs t(prof != nullptr ? &prof->comm_mpi_ns : nullptr);
+             MPI_Alltoallv(stage_send_.data(),
+                           mpi_send_counts_.data(),
+                           mpi_send_displs_.data(),
+@@ -210,10 +217,11 @@ private:
+                           dt,
+                           parent_);
+         }
+-        sync(); // B4
++        sync_timed_(3); // B4
+ 
+         // Scatter each global source's contiguous run from stage_recv_ to recv_displs[g] (all legs, incl.
+         // self-rank, go through staging). Block starts come from scatter_off_: no peer slot is read past B4.
++        const ::monoprop::detail::layer_profile::ScopedNs scat_t(prof != nullptr ? &prof->comm_scatter_ns : nullptr);
+         std::byte *dst = args.recv;
+         const int t = local_partition;
+         for (int a = 0; a < r_; ++a) {
+@@ -245,18 +253,23 @@ private:
+         me.send_counts = args.send_counts;
+         me.send_displs = args.send_displs;
+         // recv_counts is an output here — deliberately not published; the count Alltoall resolves it.
+-        sync(); // B1
++        auto *const prof = ::monoprop::detail::layer_profile::slot();
++        sync_timed_(0); // B1
+ 
+         if (local_partition == 0) {
+-            pack_count_matrix_(&Slot::send_counts);
+-            MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
++            {
++                const ::monoprop::detail::layer_profile::ScopedNs t(prof != nullptr ? &prof->comm_a2a_ns : nullptr);
++                pack_count_matrix_(&Slot::send_counts);
++                MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
++            }
+             // Size staging from counts_recv_: recv of partition t from (rank, su) sits at rank*S*S + t*S + su.
++            const ::monoprop::detail::layer_profile::ScopedNs st(prof != nullptr ? &prof->comm_stage_ns : nullptr);
+             size_staging_impl_(elem, [this](int t, int rank, int su) {
+                 return counts_recv_[(static_cast<size_t>(rank) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
+                                     + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
+             });
+         }
+-        sync(); // B2
++        sync_timed_(1); // B2
+ 
+         const int t = local_partition;
+         long long total = 0;
+@@ -271,12 +284,22 @@ private:
+                 total += c;
+             }
+         }
+-        args.recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
+-
+-        pack_send_(local_partition, elem);
+-        sync(); // B3
++        {
++            // Split, because the two are different suspects: the resize is the per-gate allocation
++            // the branch's heap state could plausibly move, and pack_send_ is a memcpy of bytes that
++            // are identical on both arms. Together they are the only work between B2 and B3.
++            const ::monoprop::detail::layer_profile::ScopedNs pt(prof != nullptr ? &prof->comm_pack_ns : nullptr);
++            {
++                const ::monoprop::detail::layer_profile::ScopedNs rt(
++                    prof != nullptr ? &prof->comm_resize_ns : nullptr);
++                args.recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
++            }
++            pack_send_(local_partition, elem);
++        }
++        sync_timed_(2); // B3
+ 
+         if (local_partition == 0) {
++            const ::monoprop::detail::layer_profile::ScopedNs mt(prof != nullptr ? &prof->comm_mpi_ns : nullptr);
+             MPI_Alltoallv(stage_send_.data(),
+                           mpi_send_counts_.data(),
+                           mpi_send_displs_.data(),
+@@ -287,8 +310,9 @@ private:
+                           dt,
+                           parent_);
+         }
+-        sync(); // B4
++        sync_timed_(3); // B4
+ 
++        const ::monoprop::detail::layer_profile::ScopedNs scat_t(prof != nullptr ? &prof->comm_scatter_ns : nullptr);
+         std::byte *dst = reinterpret_cast<std::byte *>(args.recv.data()); // after the resize: it may reallocate
+         for (int a = 0; a < r_; ++a) {
+             for (int su = 0; su < s_; ++su) {
+@@ -495,6 +519,24 @@ private:
+ 
+     auto sync() -> void { barrier_.sync(); }
+ 
++    // Timed barrier, used only at the sites the layer build's `exchange_ns` brackets, so that
++    // csync + cmpi + cpack + cscat accounts for that scope and nothing else. Untimed `sync()` stays
++    // for the reduction verbs, which run once per layer rather than twice per gate and are not what
++    // any current question is about.
++    // `which` is the barrier's index in the funnel (0=B1 .. 3=B4). They are bucketed separately
++    // because they wait for different things, and the aggregate cannot tell a late leader from a
++    // late peer -- see the comment on Slot::comm_sync_ns.
++    auto sync_timed_(int which) -> void {
++        auto *const prof = ::monoprop::detail::layer_profile::slot();
++        if (prof == nullptr) {
++            barrier_.sync();
++            return;
++        }
++        ++prof->n_sync;
++        const ::monoprop::detail::layer_profile::ScopedNs t(&prof->comm_sync_ns[which]);
++        barrier_.sync();
++    }
++
+     MPI_Comm parent_;
+     int s_;
+     int r_ = 1;
+diff --git a/cpp/monoprop/detail/operator/InvertedIndex.h b/cpp/monoprop/detail/operator/InvertedIndex.h
+index 07f509c..e37d4d8 100644
+--- a/cpp/monoprop/detail/operator/InvertedIndex.h
++++ b/cpp/monoprop/detail/operator/InvertedIndex.h
+@@ -25,6 +25,7 @@
+ #include <vector>
+ 
+ #include "monoprop/TypeAliases.h"
++#include "monoprop/detail/EnvConfig.h"
+ 
+ namespace monoprop::detail {
+ 
+@@ -381,14 +382,28 @@ private:
+         arena_.reserve(std::max(needed, cap + cap / kArenaGrowthDen));
+     }
+ 
+-    // The whole tiering policy: per (column, chunk), take whichever container is smallest. Ties go to the
+-    // faster fold (Bitmap over postings), and the delta stream the tail already built is usually the
+-    // winner, in which case sealing is a memcpy.
++    // The whole tiering policy: per (column, chunk), take whichever container is smallest -- adjusted by
++    // a premium that prices the FOLD, not only the bytes. Ties go to the faster fold (Bitmap over
++    // postings), and the delta stream the tail already built is usually the winner, in which case
++    // sealing is a memcpy.
++    //
++    // Why a premium and not a plain argmin. A chunk is kChunkRows rows and its bitmap is
++    // kChunkBitmapBytes, so the pure-bytes rule takes a bitmap only at density >= 1/8. The folds are
++    // nothing like equal at that point: a bitmap chunk costs ~kChunkWords word XORs whatever its
++    // density and vectorises, while a delta chunk costs one branch-bound read-modify-write per posting
++    // (~3.5 cycles, see xor_column_chunk). The two break even nearer 50-150 postings than 4096, so the
++    // shipped rule sends a 30-80x wide density band to the slower container. `bitmap_premium_16` is
++    // that band's dial, in sixteenths: 16 reproduces the pure-bytes rule exactly.
++    //
++    // Safe to vary: this changes only WHICH container holds a chunk's postings, never which postings.
++    // Every container holds the same row set and the fold is XOR-associative, so results are
++    // bit-identical at any premium -- the determinism contract is untouched.
+     static auto choose_tag_(size_t postings, size_t delta_bytes) -> ChunkTag {
+         if (postings == 0) {
+             return ChunkTag::Empty;
+         }
+-        return kChunkBitmapBytes <= delta_bytes ? ChunkTag::Bitmap : ChunkTag::U8Delta;
++        const auto premium = static_cast<size_t>(config::get().bitmap_premium_16);
++        return kChunkBitmapBytes * 16 <= delta_bytes * premium ? ChunkTag::Bitmap : ChunkTag::U8Delta;
+     }
+ 
+     static auto tag_bytes_(ChunkTag tag, size_t delta_bytes) -> size_t {
