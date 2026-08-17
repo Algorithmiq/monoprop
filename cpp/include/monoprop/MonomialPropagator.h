@@ -266,7 +266,7 @@ public:
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
-    virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
+    auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
     static inline const auto ev_fn = [](const EvalRequest &request,
