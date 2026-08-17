@@ -19,9 +19,6 @@ The reusable half of monoprop's benchmark suite: memory accounting
 (:mod:`monoprop_bench_tools.models`), and the two renderers of a run's artifacts
 (:mod:`monoprop_bench_tools.report`, :mod:`monoprop_bench_tools.bmf`).
 
-The benchmarks themselves are not here; they live in monoprop's repository under
-``benches/``.
-
 Submodules are not imported eagerly, so ``import monoprop_bench_tools`` stays
 cheap and does not require the optional GPU dependencies.
 """
