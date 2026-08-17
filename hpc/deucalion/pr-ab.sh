@@ -11,7 +11,8 @@
 # before any measurement is taken -- which is the point, because a measurement taken on a tree
 # that does not pass its own tests is worse than no measurement.
 #
-# THE BASELINE IS BUILT ONCE AND RUN EVERY TIME. $PROJ/src/ab-baseline-main is a single worktree
+# THE BASELINE IS BUILT ONCE AND RUN EVERY TIME. $BASELINE_TREE (default $PROJ/src/mp-main, the
+# tree hpc/deucalion/baseline.md5 was pinned from) is a single worktree
 # at origin/main, built and gated once, then reused read-only by every PR. That removes N
 # redundant builds and any doubt that two PRs were compared against different baselines; its
 # _core.so md5 is recorded in every artifact, and ab_summary's _check_builds refuses a run whose
@@ -54,6 +55,26 @@ run() {  # side effects that must not happen in dry mode
         "$@"
     fi
 }
+# SUBMIT FROM INSIDE THE TREE, not with --chdir alone. build-worktree.sh and
+# mpi-tests-worktree.sh both begin `cd "${SLURM_SUBMIT_DIR:-$PWD}"`, and this Slurm's man page
+# defines SLURM_SUBMIT_DIR as "the directory from which sbatch was invoked" -- sbatch fills it
+# from getcwd() BEFORE --chdir is applied. So --chdir alone does not reach those scripts: they
+# would cd back to this harness checkout and build/gate IT instead of the port tree, with a job
+# log whose `=== src ===` line reads plausibly either way. Passing both makes the two mechanisms
+# agree, and EXPECT_TREE below makes a future disagreement abort instead of measuring the wrong
+# tree. The class of bug this is: the producer (pr-ab.sh) and the consumer (the sbatch script)
+# naming the same directory two different ways.
+sub_in() {  # $1 directory to submit FROM; rest: sbatch args
+    local dir="$1"; shift
+    if [ "$DRY_RUN" = "1" ]; then
+        printf 'DRY  (cd %s)\n' "$dir" >&2
+        sub --chdir="$dir" "$@"
+    else
+        [ -d "$dir" ] || {
+            echo "refusing: cannot submit from $dir -- no such directory" >&2; exit 1; }
+        ( cd "$dir" && sbatch --parsable --chdir="$dir" "$@" )
+    fi
+}
 
 usage() {
     cat >&2 <<'USAGE'
@@ -83,25 +104,43 @@ USAGE
 if [ "${1:-}" = "--baseline" ]; then
     export MONOPROP_SRC="$PWD"
     source hpc/deucalion/env.sh
-    : "${BASELINE_TREE:=$PROJ/src/ab-baseline-main}"
+    # ONE default, the same one the PR path uses and the one baseline.md5 was pinned from. This
+    # used to default to $PROJ/src/ab-baseline-main while the PR path below defaulted to
+    # $PROJ/src/mp-main, so `--baseline` built a tree that no PR would ever measure against.
+    : "${BASELINE_TREE:=$PROJ/src/mp-main}"
     : "${BASELINE_REF:=origin/main}"
     A="-A $MONOPROP_SLURM_ACCOUNT"
     if [ -d "$BASELINE_TREE" ]; then
         echo "refusing: $BASELINE_TREE exists; remove it to rebuild the baseline" >&2
+        echo "  Its _core.so is PINNED in hpc/deucalion/baseline.md5 and every ratio in the" >&2
+        echo "  campaign is measured against that binary. Rebuilding it voids all of them." >&2
         exit 1
     fi
     run git -C "$PWD" worktree add --detach "$BASELINE_TREE" "$BASELINE_REF"
     run cp -r "$PWD/hpc" "$BASELINE_TREE/hpc"
     run cp -r "$PWD/benches" "$BASELINE_TREE/benches"
-    b=$(sub $A --chdir="$BASELINE_TREE" -J mp-build-baseline \
+    # TAG is the build-dir suffix, and build.sh derives its own from `basename $MONOPROP_SRC`.
+    # Derive it the same way here or the two disagree: ctest-worktree.sh would uv-sync into a
+    # SECOND build directory (a cold rebuild inside a 1:30 walltime budgeted for an incremental
+    # one) and leave mpi-tests-worktree.sh reading the first one's older binary.
+    BASELINE_TAG="$(basename "$BASELINE_TREE")"
+    # ALLOW_BASELINE_REBUILD=1 only here. build.sh and ctest-worktree.sh both refuse to touch a
+    # tree whose installed _core.so hashes to hpc/deucalion/baseline.md5, because one stray
+    # `TREE=$PROJ/src/mp-main sbatch ctest-worktree.sh` re-bases every ratio in the campaign
+    # without changing any version string. THIS mode is the one place that is deliberate: it can
+    # only run when the tree does not exist yet, and a rebuild that happened to reproduce the
+    # pinned bytes exactly must not deadlock it.
+    b=$(sub_in "$BASELINE_TREE" $A -J mp-build-baseline \
+                --export=ALL,EXPECT_TREE="$BASELINE_TREE",ALLOW_BASELINE_REBUILD=1 \
                 "$BASELINE_TREE/hpc/deucalion/sbatch/build-worktree.sh")
     echo "build      $b"
     c=$(sub $A --dependency="afterok:$b" -J mp-ctest-baseline \
-                --export=ALL,TREE="$BASELINE_TREE",TAG=ab-baseline \
+                --export=ALL,TREE="$BASELINE_TREE",TAG="$BASELINE_TAG",ALLOW_BASELINE_REBUILD=1 \
                 "$BASELINE_TREE/hpc/deucalion/sbatch/ctest-worktree.sh")
     echo "ctest      $c  (after $b)"
-    m=$(sub $A --dependency="afterok:$c" -N2 --chdir="$BASELINE_TREE" \
+    m=$(sub_in "$BASELINE_TREE" $A --dependency="afterok:$c" -N2 \
                 -J mp-mpitest-baseline \
+                --export=ALL,EXPECT_TREE="$BASELINE_TREE" \
                 "$BASELINE_TREE/hpc/deucalion/sbatch/mpi-tests-worktree.sh")
     echo "mpi tests  $m  (after $c)"
     echo
@@ -178,39 +217,59 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     # A worktree, not a clone: same object store, so the ref is the ref and there is no
     # fetch to go stale.
     run git -C "$HARNESS" worktree add --detach "$PORT_TREE" "$BRANCH_REF"
-
-    # hpc/ is not on the PR branches and never will be -- PRs carry library code only. It is
-    # copied in so the port tree can run its own gate and its own A/B, and it is copied from
-    # THIS checkout so both arms are driven by one harness revision.
-    run cp -r "$HARNESS/hpc" "$PORT_TREE/hpc"
-    # benches/ likewise comes from one revision on both arms, so the only difference between
-    # them is the compiled extension. A PR that changes benches/ is measured with ITS benches
-    # on both sides; that is PR 3's business and it says so in its own body.
-    if [ "${BENCHES_FROM_PORT:-0}" != "1" ]; then
-        run cp -r "$HARNESS/benches" "$PORT_TREE/benches"
-    fi
-
-    b=$(sub $A --chdir="$PORT_TREE" -J "mp-build-$PR_NAME" \
-                "$PORT_TREE/hpc/deucalion/sbatch/build-worktree.sh")
-    echo "build      $b"
-
-    # The gates. -L serial only: `ctest -L mpi` fails at 2 ranks on main independently
-    # (shm_comm_oversubscribed terminates), so it is run on BOTH arms or not quoted, and it is
-    # not a chain-stopper here.
-    c=$(sub $A --dependency="afterok:$b" -J "mp-ctest-$PR_NAME" \
-                --export=ALL,TREE="$PORT_TREE",TAG="ab-$PR_NAME" \
-                "$PORT_TREE/hpc/deucalion/sbatch/ctest-worktree.sh")
-    echo "ctest      $c  (after $b)"
-
-    m=$(sub $A --dependency="afterok:$c" -N2 --chdir="$PORT_TREE" \
-                -J "mp-mpitest-$PR_NAME" \
-                "$PORT_TREE/hpc/deucalion/sbatch/mpi-tests-worktree.sh")
-    echo "mpi tests  $m  (after $c)"
-    deps="--dependency=afterok:$m"
 else
     [ -x "$PORT_TREE/.venv/bin/python" ] || {
         echo "refusing: SKIP_BUILD=1 but no venv at $PORT_TREE/.venv" >&2; exit 1; }
     echo "build      SKIPPED (reusing $PORT_TREE)"
+fi
+
+# Copied OUTSIDE the SKIP_BUILD branch, deliberately. "Both arms are driven by one harness
+# revision" is the invariant, and under SKIP_BUILD=1 the copies used to be skipped too -- so a
+# reused port tree kept whatever hpc/ and benches/ it had from an earlier run and the two arms
+# were driven by two harness revisions, silently. Re-copying is free (nothing here is compiled).
+#
+# hpc/ is not on the PR branches and never will be -- PRs carry library code only. It is
+# copied in so the port tree can run its own gate and its own A/B.
+run cp -r "$HARNESS/hpc" "$PORT_TREE/hpc"
+# benches/ likewise comes from one revision on both arms, so the only difference between
+# them is the compiled extension. A PR that changes benches/ is measured with ITS benches
+# on both sides; that is PR 3's business and it says so in its own body.
+if [ "${BENCHES_FROM_PORT:-0}" != "1" ]; then
+    run cp -r "$HARNESS/benches" "$PORT_TREE/benches"
+fi
+# Every sbatch below names a file under $PORT_TREE/hpc. Check it exists rather than letting
+# sbatch fail one submission at a time in the middle of a chain.
+[ "$DRY_RUN" = "1" ] || [ -f "$PORT_TREE/hpc/deucalion/sbatch/ab.sh" ] || {
+    echo "refusing: no hpc/deucalion/sbatch/ab.sh under $PORT_TREE -- the harness copy failed" >&2
+    exit 1; }
+
+if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    # TAG is the build-dir suffix. build.sh derives its own from `basename $MONOPROP_SRC`, and
+    # mpi-tests-worktree.sh derives the same, so this MUST be the basename too. It used to be
+    # "ab-$PR_NAME", one segment short of the tree name: ctest-worktree.sh then uv-synced into a
+    # second, empty build directory -- a cold rebuild inside a 1:30 budget sized for an
+    # incremental one -- and reinstalled the venv from it, leaving the mpi gate reading the
+    # first build's tree. Same defect class as the Release-vs-Release-<tag> one.
+    PORT_TAG="$(basename "$PORT_TREE")"
+
+    b=$(sub_in "$PORT_TREE" $A -J "mp-build-$PR_NAME" \
+                --export=ALL,EXPECT_TREE="$PORT_TREE" \
+                "$PORT_TREE/hpc/deucalion/sbatch/build-worktree.sh")
+    echo "build      $b"
+
+    # The gates. ctest-worktree.sh gates -L unit and -L serial; mpi-tests-worktree.sh drives the
+    # MPI cases and the Python suite across four rank/partition layouts.
+    c=$(sub $A --dependency="afterok:$b" -J "mp-ctest-$PR_NAME" \
+                --export=ALL,TREE="$PORT_TREE",TAG="$PORT_TAG" \
+                "$PORT_TREE/hpc/deucalion/sbatch/ctest-worktree.sh")
+    echo "ctest      $c  (after $b)"
+
+    m=$(sub_in "$PORT_TREE" $A --dependency="afterok:$c" -N2 \
+                -J "mp-mpitest-$PR_NAME" \
+                --export=ALL,EXPECT_TREE="$PORT_TREE" \
+                "$PORT_TREE/hpc/deucalion/sbatch/mpi-tests-worktree.sh")
+    echo "mpi tests  $m  (after $c)"
+    deps="--dependency=afterok:$m"
 fi
 
 # ---------------------------------------------------------------- the cells
@@ -233,7 +292,18 @@ submit_ab() {  # $1 label, $2 nodes, $3 env-csv
     export CPU_BIND="${CELL_CPU_BIND:-none}"
     export ALLOW_BOTH_PLACED="${CELL_ALLOW_BOTH:-1}"
     export RANKS_PER_NODE="${CELL_RANKS:-8}" PARTITIONS="${CELL_PARTS:-16}"
-    id=$(sub $A $deps -N"$nodes" --chdir="$PORT_TREE" --export=ALL \
+    # The cell directory ab.sh will create, spelled here the ONE way ab.sh spells it, and
+    # recorded before the job exists. A cell that is cancelled, or whose afterok dependency is
+    # never satisfied, writes nothing at all -- and pr_report.py, which only ever sees what is on
+    # disk, would then produce a clean green report of fewer cells. The manifest is the only
+    # place the intended cell list exists.
+    local cell_dir="ab-${WORKLOAD}${RESULTS_TAG:+-${RESULTS_TAG}}-N${nodes}"
+    if [ "$DRY_RUN" = "1" ]; then
+        printf 'DRY  expect %s\n' "$cell_dir" >&2
+    else
+        printf '%s\n' "$cell_dir" >> "$RESULTS_ROOT/EXPECTED-CELLS"
+    fi
+    id=$(sub_in "$PORT_TREE" $A $deps -N"$nodes" --export=ALL \
             -J "mp-ab-$PR_NAME-$label-N$nodes" \
             "$PORT_TREE/hpc/deucalion/sbatch/ab.sh")
     ab_ids+=("$id")
@@ -287,7 +357,37 @@ if [ -n "$EXTRA_CELLS" ]; then
                     [ "$CELL_WORKLOAD" = "hubbard" ] || CELL_SPEC_OVERRIDE=""
                     ;;
                 "") ;;
-                *) passthru="${passthru:+$passthru,}$kv" ;;
+                # AN ARM-SELECTING KEY MUST FAIL CLOSED. Everything below used to fall into a
+                # catch-all that exported the pair to both arms verbatim -- so `CPUBIND=cores`
+                # or `RANKS_PERNODE=1`, one character off the names above, was exported, read by
+                # nothing, and the cell ran the DEFAULT 8x16 bind=none geometry while its label
+                # and its report claimed the experimental one. That is the shell form of
+                # parse_positive_int capping at 1e6 and then .value_or(default).
+                monoprop_PARTITIONS=* | monoprop_NUM_THREADS=* | MALLOC_ARENA_MAX=* \
+                    | OMP_NUM_THREADS=*)
+                    echo "refusing: cell '$label' sets ${kv%%=*}, which ab.sh derives from" \
+                         "PARTITIONS and stamps into the layout label. Pass PARTITIONS=N" \
+                         "instead, or the cell reports one world size and runs another." >&2
+                    exit 2
+                    ;;
+                # The engine's own knobs, and ab.sh's workload-sizing variables. Anything else
+                # is a typo until someone adds it here on purpose.
+                monoprop_*=* | CUTOFF=* | LOWER_ATOL=* | OBS_TERMS=* | NUM_MODES=* \
+                    | NUM_GENERATORS=* | MODEL_ARGS=* | REPS=*)
+                    passthru="${passthru:+$passthru,}$kv"
+                    ;;
+                *=*)
+                    echo "refusing: cell '$label' sets unknown key '${kv%%=*}'." \
+                         "Cell variables are RANKS_PER_NODE, PARTITIONS, CPU_BIND," \
+                         "ALLOW_BOTH_PLACED, WORKLOAD; pass-through keys are monoprop_*," \
+                         "CUTOFF, LOWER_ATOL, OBS_TERMS, NUM_MODES, NUM_GENERATORS," \
+                         "MODEL_ARGS, REPS." >&2
+                    exit 2
+                    ;;
+                *)
+                    echo "refusing: cell '$label' entry '$kv' is not NAME=value" >&2
+                    exit 2
+                    ;;
             esac
         done
         export CELL_RANKS CELL_PARTS CELL_CPU_BIND CELL_ALLOW_BOTH CELL_WORKLOAD CELL_SPEC_OVERRIDE
@@ -301,10 +401,16 @@ fi
 # ---------------------------------------------------------------- collate
 
 # afterany, not afterok: a cell that fails its own refusals is a RESULT about this PR, and the
-# report must say so rather than silently omit it. pr_report.py exits non-zero if any cell is
-# missing or void, so the chain still ends red.
+# report must say so rather than silently omit it. pr_report.py compares what is on disk against
+# $RESULTS_ROOT/EXPECTED-CELLS (written by submit_ab above, at submit time) and exits non-zero if
+# any cell is missing or void, so the chain still ends red -- for a cell that RAN and refused,
+# and equally for one the scheduler cancelled, which leaves no directory to notice.
+[ "${#ab_ids[@]}" -gt 0 ] || {
+    echo "refusing: no A/B cells were submitted -- GRID is empty and no extra cells parsed." >&2
+    echo "  A report job depending on nothing would run immediately over an empty tree." >&2
+    exit 1; }
 joined=$(IFS=:; echo "${ab_ids[*]}")
-r=$(sub $A --dependency="afterany:$joined" --chdir="$PORT_TREE" \
+r=$(sub_in "$PORT_TREE" $A --dependency="afterany:$joined" \
         -J "mp-report-$PR_NAME" -p dev-x86 -N1 -t 0:20:00 \
         --wrap="'$BASELINE_TREE/.venv/bin/python' '$PORT_TREE/hpc/deucalion/tools/pr_report.py' \
                 --pr '$PR_NAME' --ref '$BRANCH_REF' --out '$RESULTS_ROOT/PR-AB-$PR_NAME.md' \

@@ -32,6 +32,13 @@
 #SBATCH --partition=normal-x86
 #SBATCH --exclusive
 #SBATCH --mem=0
+# Stated, not inherited. Every priority weight on this cluster is zero, so scheduling is FIFO
+# plus aggressive backfill and a tight --time is the single biggest lever on queue wait. 2 h is
+# the MEASURED size for both N=1 and N=2: setup is replicated on every rank, so wall time is
+# dominated by make_random_problem (~53 s per invocation at 6M obs-terms) and barely falls with
+# node count. Relying on the partition default happened to give the same 2 h -- but silently,
+# and OverTimeLimit=0 means a job one second over is killed. A caller's -t overrides this.
+#SBATCH --time=2:00:00
 #SBATCH --output=%x-N%N-%j.out
 #SBATCH --error=%x-N%N-%j.err
 
@@ -40,10 +47,57 @@ set -uo pipefail
 export MONOPROP_SRC="$PWD"
 source hpc/deucalion/env.sh
 
-: "${MAIN_VENV:=$PROJ/src/ab-baseline-main/.venv}"
+# BOTH venvs are required. MAIN_VENV used to default to $PROJ/src/ab-baseline-main/.venv, a
+# path that does not exist and that no other file in this harness names -- so the default could
+# only ever fail, while looking like a supported way to run the script. A variable that selects
+# an ARM must fail closed: name it or do not run.
+: "${MAIN_VENV:?MAIN_VENV must name the baseline venv (pr-ab.sh sets it from BASELINE_TREE)}"
 : "${PORT_VENV:?PORT_VENV must name the venv under test}"
 : "${REPS:=6}"
 : "${RESULTS_TAG:=}"
+
+# ---------------------------------------------------------------- EXTRA_ENV, applied FIRST
+#
+# EXTRA_ENV is `NAME=value` pairs separated by `;`, applied to BOTH arms. It is how a highlight
+# cell reaches an engine knob (monoprop_PROFILE, monoprop_SPIN_BUDGET_US, ...) or a sizing knob
+# (CUTOFF, LOWER_ATOL, OBS_TERMS, NUM_MODES, NUM_GENERATORS) without a second copy of this file.
+# Both arms or neither: setting one side only is a systematic difference between them.
+#
+# APPLIED BEFORE ANYTHING READS THOSE NAMES, and that position is the whole point. This loop used
+# to sit below the geometry block, i.e. AFTER the workload `case` had already resolved
+# `: "${CUTOFF:=10}" "${LOWER_ATOL:=1.25e-05}"` into SIZE_ARGS. A cell carrying `CUTOFF=12` was
+# therefore exported too late to be read by anything: the run printed
+# `=== env : CUTOFF=12 ===` and then `--hubbard-cutoff=10`, measured the DEFAULT 100M rung, and
+# reported it under the label of the experimental one. pr-ab.sh's cell allowlist explicitly
+# admits those five keys, so every size-sweep highlight cell in the campaign would have been a
+# duplicate of the grid cell wearing another name. Same shape as parse_positive_int capping at
+# 1e6 and then .value_or(default): the knob is accepted, ignored, and never says so.
+#
+# It must still NOT be able to reach MALLOC_ARENA_MAX, monoprop_NUM_THREADS, monoprop_PARTITIONS
+# or OMP_NUM_THREADS. Those are DERIVED from PARTITIONS further down and stamped into the layout
+# label, which goes into every filename and every table heading, so a cell setting one of them
+# directly would run one world size and report another. Change PARTITIONS / RANKS_PER_NODE
+# instead: those move the label with them. (Setting WORKLOAD, PARTITIONS, RANKS_PER_NODE, CPU_BIND
+# or CELL_SPEC through EXTRA_ENV is now consistent rather than silent, since everything derived
+# from them is computed below -- pr-ab.sh still routes them as its own variables.)
+if [ -n "${EXTRA_ENV:-}" ]; then
+    IFS=';' read -r -a _extra <<< "$EXTRA_ENV"
+    for kv in "${_extra[@]}"; do
+        [ -z "$kv" ] && continue
+        case "$kv" in
+            monoprop_PARTITIONS=* | monoprop_NUM_THREADS=* | MALLOC_ARENA_MAX=* \
+                | OMP_NUM_THREADS=*)
+                echo "refusing: EXTRA_ENV sets ${kv%%=*}, which this script DERIVES from" \
+                     "PARTITIONS and stamps into the layout label." \
+                     "The cell would run one world size and report another." \
+                     "Pass PARTITIONS=N / RANKS_PER_NODE=N instead." >&2
+                exit 1
+                ;;
+            *=*) export "${kv?}" ;;
+            *) echo "refusing: EXTRA_ENV entry '$kv' is not NAME=value" >&2; exit 1 ;;
+        esac
+    done
+fi
 
 # ---------------------------------------------------------------- the workload
 
@@ -164,20 +218,6 @@ export monoprop_NUM_THREADS="$PARTITIONS"
 # RxS; this makes S true by construction on both arms rather than by coincidence.
 export monoprop_PARTITIONS="$PARTITIONS"
 
-# EXTRA_ENV is `NAME=value` pairs separated by `;`, applied to BOTH arms. It is how a highlight
-# cell reaches a knob (monoprop_PROFILE, monoprop_PARTITIONS) without a second copy of this
-# file. Both arms or neither: setting one side only is a systematic difference between them.
-if [ -n "${EXTRA_ENV:-}" ]; then
-    IFS=';' read -r -a _extra <<< "$EXTRA_ENV"
-    for kv in "${_extra[@]}"; do
-        [ -z "$kv" ] && continue
-        case "$kv" in
-            *=*) export "${kv?}" ;;
-            *) echo "refusing: EXTRA_ENV entry '$kv' is not NAME=value" >&2; exit 1 ;;
-        esac
-    done
-fi
-
 # GNU time, not the shell builtin -- only the former has -v. Identical on both arms or neither.
 if [ -x /usr/bin/time ]; then
     TIME_V="/usr/bin/time -v"
@@ -288,8 +328,32 @@ for rep in $(seq 1 "$REPS"); do
 
             # Assert the instrument fired, at the point of collection: "both arms measured the
             # same" and "nothing emitted" are otherwise the same observation.
+            # BOTH artifacts, checked at the point of collection. A cell that produced neither
+            # is MISSING, not equal: ab_summary pairs on the reps both sides ran, so a silently
+            # absent rep just shrinks the rep count and the table still prints a ratio. Name it
+            # here, in the .out a human reads, while it is still attributable to one srun.
+            # ...and RECORDED, not only echoed. The echo lands in the job's .out, which
+            # ab_summary never reads and pr_report re-derives nothing from: a rep whose srun died
+            # simply shrinks the intersection paired_ratios() takes, and the table then prints a
+            # confident 4/4 that was really 6 reps minus 2. MISSING-ARTIFACTS is the durable
+            # form, in the cell directory, where the collator can see it.
+            for _want in "$RESULTS/time-${LABEL}.json" "$RESULTS/${LABEL}.json"; do
+                [ -s "$_want" ] || {
+                    echo "!! $LABEL produced no $(basename "$_want") --" \
+                        "this rep is MISSING from the pairing, not equal to the other arm"
+                    printf '%s\n' "$(basename "$_want")" >> "$RESULTS/MISSING-ARTIFACTS"
+                }
+            done
+
             if [ -n "${TIME_V:-}" ]; then
-                nrss=$(grep -c "Maximum resident set size" "$OUT" 2>/dev/null || echo 0)
+                # `-a`: these logs carry C++ stderr and have contained NUL bytes, at which point
+                # grep decides the file is binary and reports NOTHING -- indistinguishable here
+                # from `time -v` never running. That has cost measurements before.
+                #
+                # `|| nrss=0` on the ASSIGNMENT, not inside $( ): `grep -c` prints 0 AND exits 1
+                # when it matches nothing, so `$(grep -c ... || echo 0)` captures "0\n0" and the
+                # -ge test below dies with "integer expression expected" instead of reporting.
+                nrss=$(grep -a -c "Maximum resident set size" "$OUT" 2>/dev/null) || nrss=0
                 [ "$nrss" -ge "$NTASKS" ] \
                     || echo "!! time -v: $nrss RSS lines for $NTASKS ranks in $LABEL"
                 awk '/Maximum resident set size/ {kb=$NF; s+=kb; if (kb>m) m=kb; n++}
@@ -321,12 +385,40 @@ echo "=== paired summary ==="
 SUMMARY_ARGS=()
 [ "$ALLOW_BOTH_PLACED" = "1" ] && SUMMARY_ARGS+=(--allow-both-placed)
 
-"$PORT_VENV/bin/python" hpc/deucalion/tools/ab_summary.py "$RESULTS" "${SUMMARY_ARGS[@]}" 2>&1 \
+# Recorded in the cell, because pr_report.py RE-RUNS ab_summary over this directory later and
+# has no other way to know which refusals this cell armed. It used to pass --allow-both-placed
+# unconditionally, so the placement PR's ALLOW_BOTH_PLACED=0 cell -- the one cell in the
+# campaign that exists to catch a mislabelled venv -- had its refusal disarmed again in the
+# report, which is the artifact anyone actually reads.
+: > "$RESULTS/SUMMARY-ARGS"
+for _a in ${SUMMARY_ARGS[@]+"${SUMMARY_ARGS[@]}"}; do
+    printf '%s\n' "$_a" >> "$RESULTS/SUMMARY-ARGS"
+done
+
+[ -f hpc/deucalion/tools/ab_summary.py ] || {
+    echo "!! no hpc/deucalion/tools/ab_summary.py under $PWD -- the harness copy is missing;" \
+         "the cells above are unsummarised, NOT null" >&2
+    exit 1; }
+# Same `${a[@]+"${a[@]}"}` guard as the loop above. `set -u` plus a bare "${a[@]}" on an EMPTY
+# array is an unbound-variable abort on bash before 4.4; this cluster ships 4.4.20 so it happens
+# to be safe today, but the two expansions of one array must not disagree about that.
+"$PORT_VENV/bin/python" hpc/deucalion/tools/ab_summary.py "$RESULTS" \
+    ${SUMMARY_ARGS[@]+"${SUMMARY_ARGS[@]}"} 2>&1 \
     | tee "$RESULTS/AB-SUMMARY.md"
 summary_rc=${PIPESTATUS[0]}
 if [ "$summary_rc" -ne 0 ]; then
     echo "!! ab_summary.py exited $summary_rc: AB-SUMMARY.md is a diagnostic, NOT a result." >&2
     echo "!! Do not read the absence of a difference above as an absence of a difference." >&2
+fi
+
+# A cell that lost artifacts is not a clean cell, however good the table looks. ab_summary cannot
+# see this -- it reports on the reps that ARE there and has no expectation to compare against --
+# so the exit code has to carry it, and MISSING-ARTIFACTS carries it into pr_report.py.
+if [ -s "$RESULTS/MISSING-ARTIFACTS" ]; then
+    _nmiss=$(wc -l < "$RESULTS/MISSING-ARTIFACTS")
+    echo "!! $_nmiss expected artifact(s) never appeared -- see $RESULTS/MISSING-ARTIFACTS." >&2
+    echo "!! The table above is over FEWER reps than were requested, and does not say so." >&2
+    [ "$summary_rc" -eq 0 ] && summary_rc=3
 fi
 
 exit "$summary_rc"

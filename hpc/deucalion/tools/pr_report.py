@@ -27,7 +27,18 @@ never fired" are otherwise the same observation.
 
 WHY IT TAKES DIRECTORIES AND NOT A GLOB. $PROJ/runs is shared. A campaign that collated by
 globbing it once swept another session's A/B into the table and printed a 1.17x 6/6 regression
-that was not its own. Every input is named explicitly.
+that was not its own. Every input is named explicitly -- and a named input that does not exist
+is an abort, because the point of naming them is defeated by silently skipping one.
+
+WHAT IT READS BESIDES THE CELLS.
+
+  <root>/EXPECTED-CELLS      one cell-directory name per line, written by pr-ab.sh at SUBMIT
+                             time. Without it, a cell the scheduler cancelled is simply absent
+                             and the report reads clean; with it, absence is MISSING and fails.
+  <cell>/SUMMARY-ARGS        the ab_summary flags that cell actually ran under, so re-running
+                             ab_summary here reproduces its refusals rather than loosening them.
+  <cell>/MISSING-ARTIFACTS   artifacts an srun failed to write. ab_summary cannot see these: it
+                             pairs on the reps present, so lost reps shrink the count silently.
 """
 
 from __future__ import annotations
@@ -48,11 +59,38 @@ CELL_DIR_RE = re.compile(r"^ab-(?P<workload>[a-z]+)(?:-(?P<tag>.+))?-N(?P<nodes>
 GRID_PREFIX = "grid-"
 
 
-def run_ab_summary(cell: Path, *, allow_both_placed: bool) -> tuple[int, str]:
+def summary_args(cell: Path, *, force_rearm: bool) -> tuple[list[str], str | None]:
+    """Return the ab_summary flags for ``cell``, plus a note when they had to be guessed.
+
+    This tool RE-RUNS ab_summary rather than reading the cell's own AB-SUMMARY.md, so it must
+    reproduce the flags that cell ran under. ab.sh records them in ``SUMMARY-ARGS``. It did not
+    always, and the fallback used to be an unconditional ``--allow-both-placed`` -- which
+    disarmed the both-arms-placed refusal in the report for every cell, including the one cell
+    a placement PR adds precisely to re-arm it. A disarmed refusal reads as a clean run, so when
+    the flags are not recorded the report says so rather than quietly assuming the loose one.
+
+    ``force_rearm`` (``--placement-pr``) applies ONLY where nothing was recorded. A placement PR
+    adds one ``ALLOW_BOTH_PLACED=0`` cell; its other cells are ordinary grid cells that ran with
+    the refusal disarmed on purpose, because both arms placing is the healthy state at layout B.
+    Overriding every cell's recorded flags voided all four cells of a four-cell campaign in
+    test -- a whole-report VOID that says nothing about the PR. Per-cell truth beats a
+    campaign-wide switch, and the cell recorded its own.
+    """
+    recorded = cell / "SUMMARY-ARGS"
+    if recorded.is_file():
+        return [a for a in recorded.read_text().split() if a], None
+    if force_rearm:
+        return [], None
+    return (
+        ["--allow-both-placed"],
+        f"{cell.name}: no `SUMMARY-ARGS` recorded, so the both-arms-placed refusal was "
+        "DISARMED for this cell. Re-run it, or read its own `AB-SUMMARY.md`.",
+    )
+
+
+def run_ab_summary(cell: Path, argv_extra: list[str]) -> tuple[int, str]:
     """Return (exit code, markdown) from ab_summary.py over one cell directory."""
-    argv = [sys.executable, str(HERE / "ab_summary.py"), str(cell)]
-    if allow_both_placed:
-        argv.append("--allow-both-placed")
+    argv = [sys.executable, str(HERE / "ab_summary.py"), str(cell), *argv_extra]
     proc = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
@@ -88,7 +126,100 @@ def cell_core_md5s(cell: Path) -> dict[str, set[str]]:
     return out
 
 
+def check_manifests(roots: list[Path]) -> tuple[list[str], list[str]]:
+    """Return (cells that were submitted and produced nothing, roots with no manifest).
+
+    A CELL THAT NEVER RAN LEAVES NO TRACE, so the expectation has to come from the submitter.
+    pr-ab.sh writes one cell-directory name per line into ``EXPECTED-CELLS`` as it submits.
+    Without it this tool reports on whatever is on disk: a cell the scheduler cancelled, or one
+    whose ``afterok`` dependency was never satisfied, simply vanishes and the report is a clean
+    green report of fewer cells -- while pr-ab.sh's own comment claims "pr_report.py exits
+    non-zero if any cell is missing or void". It does now.
+    """
+    missing: list[str] = []
+    unverified: list[str] = []
+    for root in roots:
+        manifest = root / "EXPECTED-CELLS"
+        if not manifest.is_file():
+            unverified.append(
+                f"{root}: no `EXPECTED-CELLS` manifest, so a cell that never ran cannot be "
+                "distinguished from a cell that was never submitted. Check the count below "
+                "against the cells you actually submitted."
+            )
+            continue
+        missing += [
+            f"{root.name}/{name}: submitted, but produced no directory"
+            for name in (n.strip() for n in manifest.read_text().splitlines())
+            if name and not (root / name).is_dir()
+        ]
+    return missing, unverified
+
+
+def lost_artifacts(cell: Path) -> int:
+    """Return how many artifacts ab.sh recorded as never written for ``cell``.
+
+    ab_summary cannot see these: it pairs on the reps that ARE present, so a cell that lost two
+    of six reps prints a confident 4/4 and never mentions the four that are gone.
+    """
+    lost = cell / "MISSING-ARTIFACTS"
+    return len(lost.read_text().split()) if lost.is_file() else 0
+
+
+def render_cell(
+    cell: Path, label: str, workload: str, nodes: int, *, force_rearm: bool
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Render one cell's section, and the refusals it raises.
+
+    Returns ``(markdown lines, {"void": [...], "md5": [...], "args": [...]})``. A cell is VOID
+    twice over here: once when ab_summary refuses it, and once when ab.sh recorded artifacts an
+    srun never wrote -- those two are different failures and the report says which.
+    """
+    notes: dict[str, list[str]] = {"void": [], "md5": [], "args": []}
+    lines = [f"### `{label}` -- {workload}, N={nodes}", ""]
+
+    # `flags`, not `extra`: this used to rebind the highlight-cell LIST, one name for two
+    # things. It survived only because the `for` target tuple is evaluated once before the loop
+    # body ever runs, i.e. by luck rather than by design.
+    flags, note = summary_args(cell, force_rearm=force_rearm)
+    if note:
+        notes["args"].append(note)
+
+    lost = lost_artifacts(cell)
+    if lost:
+        notes["void"].append(f"{label} / {workload} / N={nodes} ({lost} artifact(s) never written)")
+        lines += [
+            f"> **VOID -- {lost} expected artifact(s) missing. The reps below are a SUBSET "
+            "of the reps requested, and the `agree` count does not know it.**",
+            "",
+        ]
+
+    rc, body = run_ab_summary(cell, flags)
+    if rc != 0:
+        notes["void"].append(f"{label} / {workload} / N={nodes} (ab_summary exit {rc})")
+        lines += [
+            f"> **VOID -- `ab_summary.py` exited {rc}. This is a diagnostic, not a result. "
+            "Do not read the absence of a difference below as an absence of a difference.**",
+            "",
+        ]
+
+    md5s = cell_core_md5s(cell)
+    main_h, port_h = md5s.get("main", set()), md5s.get("port", set())
+    if len(main_h) > 1 or len(port_h) > 1:
+        notes["md5"].append(f"{label}/N{nodes}: an arm served more than one binary")
+    if main_h and main_h == port_h:
+        notes["md5"].append(f"{label}/N{nodes}: both arms share a `_core.so` -- not an A/B")
+    lines += [
+        "    main _core.so: " + ", ".join(sorted(main_h) or ["(unrecorded)"]) + "\n"
+        "    port _core.so: " + ", ".join(sorted(port_h) or ["(unrecorded)"]),
+        "",
+        demote(body).rstrip(),
+        "",
+    ]
+    return lines, notes
+
+
 def main(argv: list[str]) -> int:
+    """Collate every named campaign directory into one report; non-zero if any cell is void."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("roots", nargs="+", type=Path, help="campaign directories, named explicitly")
     ap.add_argument("--pr", required=True)
@@ -101,15 +232,27 @@ def main(argv: list[str]) -> int:
     )
     args = ap.parse_args(argv)
 
+    # A ROOT THAT IS NOT THERE IS AN ABORT, not an empty iteration. `root.iterdir() if
+    # root.is_dir() else []` silently contributed zero cells, so a mistyped or never-created
+    # campaign directory passed alongside a good one produced a clean report of the good one
+    # and exit 0 -- the report's own docstring promises the opposite. Every input is named
+    # explicitly here precisely so that a name that names nothing is an error.
+    for root in args.roots:
+        if not root.is_dir():
+            print(f"refusing: {root} is not a directory", file=sys.stderr)
+            return 2
+
     cells: list[tuple[str, int, str, Path]] = []
     for root in args.roots:
-        for d in sorted(root.iterdir() if root.is_dir() else []):
+        for d in sorted(root.iterdir()):
             m = CELL_DIR_RE.match(d.name)
             if m and d.is_dir():
                 cells.append((m["workload"], int(m["nodes"]), m["tag"] or "", d))
     if not cells:
         print(f"refusing: no ab-*-N* cell directories under {args.roots}", file=sys.stderr)
         return 2
+
+    missing_cells, unverified = check_manifests(args.roots)
 
     lines: list[str] = []
     lines.append(f"# A/B: `{args.pr}` vs `main`")
@@ -129,54 +272,48 @@ def main(argv: list[str]) -> int:
 
     void: list[str] = []
     md5_notes: list[str] = []
+    arg_notes: list[str] = []
     grid = [c for c in cells if c[2].startswith(GRID_PREFIX)]
-    extra = [c for c in cells if not c[2].startswith(GRID_PREFIX)]
+    highlights = [c for c in cells if not c[2].startswith(GRID_PREFIX)]
 
-    for title, group in (("The common grid", grid), ("Highlight cells", extra)):
+    for title, group in (("The common grid", grid), ("Highlight cells", highlights)):
         if not group:
             continue
         lines.append(f"## {title}")
         lines.append("")
         for workload, nodes, tag, d in sorted(group, key=lambda c: (c[2], c[0], c[1])):
-            label = tag or workload
-            lines.append(f"### `{label}` -- {workload}, N={nodes}")
-            lines.append("")
-            rc, body = run_ab_summary(d, allow_both_placed=not args.placement_pr)
-            if rc != 0:
-                void.append(f"{label} / {workload} / N={nodes} (ab_summary exit {rc})")
-                lines.append(
-                    f"> **VOID -- `ab_summary.py` exited {rc}. This is a diagnostic, not a "
-                    "result. Do not read the absence of a difference below as an absence of "
-                    "a difference.**"
-                )
-                lines.append("")
-            md5s = cell_core_md5s(d)
-            main_h, port_h = md5s.get("main", set()), md5s.get("port", set())
-            if len(main_h) > 1 or len(port_h) > 1:
-                md5_notes.append(f"{label}/N{nodes}: an arm served more than one binary")
-            if main_h and main_h == port_h:
-                md5_notes.append(f"{label}/N{nodes}: both arms share a `_core.so` -- not an A/B")
-            lines.append(
-                "    main _core.so: " + ", ".join(sorted(main_h) or ["(unrecorded)"]) + "\n"
-                "    port _core.so: " + ", ".join(sorted(port_h) or ["(unrecorded)"])
+            body, notes = render_cell(
+                d, tag or workload, workload, nodes, force_rearm=args.placement_pr
             )
-            lines.append("")
-            lines.append(demote(body).rstrip())
-            lines.append("")
+            lines += body
+            void += notes["void"]
+            md5_notes += notes["md5"]
+            arg_notes += notes["args"]
 
-    if void or md5_notes:
+    sections = (
+        ("VOID", void),
+        ("MISSING", missing_cells),
+        ("PROVENANCE", md5_notes),
+        ("DISARMED", arg_notes),
+        ("UNVERIFIED", unverified),
+    )
+    if any(items for _, items in sections):
         lines.append("## Refusals")
         lines.append("")
-        for v in void:
-            lines.append(f"- **VOID** {v}")
-        for n in md5_notes:
-            lines.append(f"- **PROVENANCE** {n}")
+        for kind, items in sections:
+            lines += [f"- **{kind}** {item}" for item in items]
         lines.append("")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text("\n".join(lines) + "\n")
-    print(f"wrote {args.out} ({len(cells)} cells, {len(void)} void)")
-    return 1 if (void or md5_notes) else 0
+    print(
+        f"wrote {args.out} ({len(cells)} cells, {len(void)} void, "
+        f"{len(missing_cells)} never ran)"
+    )
+    # `unverified` alone does not fail: a hand-collated directory from before the manifest
+    # existed is still a legitimate input, and the report says so in the text. A cell that WAS
+    # submitted and produced nothing is a definite failure and does fail.
+    return 1 if (void or md5_notes or arg_notes or missing_cells) else 0
 
 
 if __name__ == "__main__":

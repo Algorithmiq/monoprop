@@ -25,6 +25,27 @@ source hpc/deucalion/env.sh
 # in the shared tree either way.
 : "${MONOPROP_BUILD_TAG:=$(basename "$MONOPROP_SRC")}"
 
+# THE PINNED BASELINE IS NOT REBUILDABLE FROM HERE either -- see the same guard in
+# sbatch/ctest-worktree.sh. $PROJ/src/mp-main is an ordinary group-writable worktree; the only
+# thing making it a baseline is that hpc/deucalion/baseline.md5 pins the _core.so it currently
+# holds, and a single `uv sync --reinstall-package` here would re-base every ratio in the
+# campaign while __version__ -- which is written at install time and not rewritten by a rebuild
+# -- kept reporting the same commit. Keyed on the BINARY, so a copy of the baseline under
+# another path is protected too.
+if [ -r hpc/deucalion/baseline.md5 ]; then
+    _pin=$(awk 'NF && $1 !~ /^#/ {print $1; exit}' hpc/deucalion/baseline.md5)
+    mapfile -t _cur < <(ls "$VENV"/lib/python*/site-packages/monoprop/_core*.so 2>/dev/null)
+    if [ -n "$_pin" ] && [ "${#_cur[@]}" -eq 1 ] \
+       && [ "$(md5sum "${_cur[0]}" | cut -d' ' -f1)" = "$_pin" ] \
+       && [ "${ALLOW_BASELINE_REBUILD:-0}" != "1" ]; then
+        echo "refusing: $MONOPROP_SRC holds the PINNED baseline _core.so ($_pin)." >&2
+        echo "  Rebuilding it voids every ratio measured against it, and the version stamp" >&2
+        echo "  will not change to tell you. Re-pin deliberately (ALLOW_BASELINE_REBUILD=1)" >&2
+        echo "  and re-run the PRs already measured." >&2
+        exit 2
+    fi
+fi
+
 echo "=== toolchain ==="
 g++ --version | head -1
 mpirun --version | head -1

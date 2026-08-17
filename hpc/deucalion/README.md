@@ -596,7 +596,9 @@ Order of operations, each step cheap enough to catch the previous one's mistakes
 
 1. `mpi-tests-worktree.sh`, submitted **from inside** each worktree (it too honours
    `SLURM_SUBMIT_DIR` over `--chdir`). Gate on `-L serial` plus the Python suite;
-   `ctest -L mpi` is known to fail at 2 ranks on `main` and is not a signal.
+   `ctest -L mpi` is COUNTED there and stops the chain: the `shm_comm_oversubscribed`
+   abort was the mapping policy, not the branch, and the script exports OpenMPI 5's
+   `PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe`. Check the harness first.
 2. `OBS_TERMS=200000 REPS=1 sbatch -N1 -p dev-x86 ...` — proves the labels, both cells and
    every provenance gate in minutes.
 3. A second rung at `OBS_TERMS=6000000`, also on `dev-x86`. **Two rungs, not one full-size
@@ -629,8 +631,25 @@ recoverable: per-label JSON is written as each cell finishes, so
 void run read as a null result. It refuses when the arms propagated different term counts,
 when neither arm placed a thread (everything ran unpinned), when both did (the baseline
 cannot place at layout B, so a venv is mislabelled — override with `--allow-both-placed`),
-when `MAX_NUM_MODES`/`MALLOC_ARENA_MAX`/thread counts differ across cells, or when
-`--bench-rounds` was not 1. A non-zero exit means the tables are a diagnostic, not a result.
+when `MAX_NUM_MODES`/`MALLOC_ARENA_MAX`/thread counts differ across cells, when an arm ran more
+than one `_core.so` md5 or both arms ran the same one, or when `--bench-rounds` was not 1. A
+non-zero exit means the tables are a diagnostic, not a result.
+
+**What `ab_summary.py` cannot see, and `pr_report.py` therefore checks.** It reports on the reps
+that are *present*, so a rep whose `srun` died just shrinks the intersection and the table prints
+a confident `4/4` over four of six. `ab.sh` records every artifact that never appeared in
+`<cell>/MISSING-ARTIFACTS`, and the flags each cell actually ran under in `<cell>/SUMMARY-ARGS`
+(so re-running `ab_summary` in the report reproduces that cell's refusals instead of loosening
+them). A cell that never ran at all leaves nothing behind, so `pr-ab.sh` writes the intended cell
+list to `<campaign>/EXPECTED-CELLS` at **submit** time; `pr_report.py` reports any listed cell
+with no directory as **MISSING** and exits non-zero. A named campaign directory that does not
+exist is an abort, not an empty iteration.
+
+**The pinned baseline cannot be rebuilt through this harness.** `build.sh` and
+`sbatch/ctest-worktree.sh` both hash the tree's installed `_core.so` before they touch it and
+refuse when it matches `hpc/deucalion/baseline.md5` — keyed on the binary, so a copy of the
+baseline under another path is covered too. `pr-ab.sh --baseline` is the one caller that passes
+`ALLOW_BASELINE_REBUILD=1`, and it still refuses when `$BASELINE_TREE` already exists.
 
 ### Attributing memory per commit
 
@@ -856,8 +875,10 @@ was not covered" must be said rather than implied.
 
 - **`ctest -L serial`** is the gate; `-L unit` is its superset and worth running too so numbers stay
   comparable across a campaign. `sbatch/ctest-worktree.sh` runs both and reports each rc.
-- **`ctest -L mpi` fails on `main` as well** (`shm_comm_oversubscribed` aborts at 2 ranks) and is
-  **not** a signal. Use `sbatch/mpi-tests-worktree.sh`, which drives the MPI cases and the Python
+- **`ctest -L mpi` needs the oversubscribe policy, not a fix.** The `shm_comm_oversubscribed`
+  abort at 2 ranks is the mapping policy; with the knob below set, in a batch allocation, the
+  label passes, and a red there means the harness rather than the branch. It is a counted gate
+  in `sbatch/mpi-tests-worktree.sh`, which drives the MPI cases and the Python
   suite across four rank/partition layouts, or a targeted `mpirun`. That script reads
   `build/editable/Release-<tag>/cpp/tests` (build.sh tags the build dir per arm; the tag defaults to
   the worktree basename) — note the registry is rooted one level down from the build root

@@ -18,11 +18,30 @@
 
 set -uo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
+
+# See build-worktree.sh for the full note. SLURM_SUBMIT_DIR is the directory sbatch was invoked
+# from and --chdir does not change it, so a job submitted with --chdir alone gates the
+# SUBMITTER's checkout -- 208 green C++ cases and 625 green Python cases about the wrong code,
+# which is the most expensive shape of pass there is. EXPECT_TREE turns that into an abort.
+if [ -n "${EXPECT_TREE:-}" ]; then
+    _want=$(readlink -f "$EXPECT_TREE" 2>/dev/null || echo "$EXPECT_TREE")
+    _got=$(readlink -f "$PWD" 2>/dev/null || echo "$PWD")
+    if [ "$_want" != "$_got" ]; then
+        echo "refusing: EXPECT_TREE=$_want but this job is running in $_got." >&2
+        echo "  --chdir and SLURM_SUBMIT_DIR disagree; submit from INSIDE the tree." >&2
+        exit 1
+    fi
+fi
+
 export MONOPROP_SRC="$PWD"
 source hpc/deucalion/env.sh
 
 NODES="${SLURM_JOB_NUM_NODES:-2}"
 rc_total=0
+# WHICH suite failed, not just how many. rc_total counts, and a count cannot distinguish two
+# real regressions from two suites that never ran -- which is exactly how the missing-build-dir
+# bug above read as "2 SUITE(S) FAILED". Every increment names itself here.
+FAILED=()
 
 echo "=== build under test ==="
 echo "branch: $(git rev-parse --abbrev-ref HEAD)  commit: $(git log --oneline -1)"
@@ -56,8 +75,19 @@ CTEST_DIR="build/editable/Release-${MONOPROP_BUILD_TAG}/cpp/tests"
 # oversubscribe knob; the justfile's OMPI_MCA_rmaps_base_oversubscribe is v4 and
 # does nothing here.
 export PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe
-ctest --test-dir "$CTEST_DIR" --output-on-failure -L serial || rc_total=$((rc_total + 1))
-ctest --test-dir "$CTEST_DIR" --output-on-failure -L mpi    || rc_total=$((rc_total + 1))
+ctest --test-dir "$CTEST_DIR" --output-on-failure -L serial \
+    || { rc_total=$((rc_total + 1)); FAILED+=("ctest -L serial"); }
+# COUNTED, and pr-ab.sh chains the A/B on `afterok` of this job, so it IS a chain-stopper.
+#
+# README section 12 and an older comment here both say `ctest -L mpi` "is NOT a signal" because
+# shm_comm_oversubscribed aborts at 2 ranks on main as well. That claim predates the export two
+# lines up: with OpenMPI 5's PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe set, inside a
+# batch allocation, the label has been observed to pass -- the abort was the mapping policy, not
+# the branch. So it stays counted (a gate must not get quieter by accident) and it is NAMED, so
+# a red here can be told apart from a serial one at a glance. Check the harness before the
+# branch: a failure at this label has never yet been the code under test.
+ctest --test-dir "$CTEST_DIR" --output-on-failure -L mpi \
+    || { rc_total=$((rc_total + 1)); FAILED+=("ctest -L mpi (known to fail on main independently -- see README 12)"); }
 
 echo
 echo "############ Python MPI suite across layouts ############"
@@ -82,7 +112,8 @@ for layout in "${LAYOUTS[@]}"; do
     srun --mpi=pmix --ntasks="$NTASKS" --ntasks-per-node="$RPN" \
          --cpus-per-task=$((128 / RPN)) \
          --cpu-bind=cores --distribution=block:block \
-         "$VENV/bin/python" -m pytest tests --with-mpi -q || rc_total=$((rc_total + 1))
+         "$VENV/bin/python" -m pytest tests --with-mpi -q \
+        || { rc_total=$((rc_total + 1)); FAILED+=("pytest --with-mpi at ${RPN}x${S}"); }
 done
 
 echo
@@ -90,5 +121,6 @@ if [ "$rc_total" -eq 0 ]; then
     echo "########## ALL SUITES PASSED ##########"
 else
     echo "########## $rc_total SUITE(S) FAILED ##########"
+    for _f in ${FAILED[@]+"${FAILED[@]}"}; do echo "##   FAILED: $_f"; done
 fi
 exit "$rc_total"

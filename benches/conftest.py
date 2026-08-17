@@ -222,7 +222,7 @@ def _core_md5() -> str:
     the point is to fingerprint the file that was loaded.
     """
     try:
-        path = Path(monoprop._core.__file__)  # noqa: SLF001
+        path = Path(monoprop._core.__file__)
         return hashlib.md5(path.read_bytes()).hexdigest()  # noqa: S324
     except (AttributeError, OSError, TypeError):
         return "unavailable"
