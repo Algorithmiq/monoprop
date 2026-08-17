@@ -14,6 +14,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <limits>
 #include <memory>
 
@@ -84,7 +86,16 @@ BOOST_AUTO_TEST_CASE(cross_rank_partner_range_counts_track_term_index_width) {
     BOOST_CHECK_EQUAL(sizeof(r.in_count), sizeof(TermIndex));
     // One record per OCCUPIED slot, so its width scales the traffic-bounded term, not a P-squared one.
     // The B/D offset is derived rather than stored precisely to keep it this narrow.
-    BOOST_CHECK_EQUAL(sizeof(CrossRankOccupiedSlot), sizeof(uint32_t) + 2 * sizeof(TermIndex));
+    //
+    // The record is {uint32_t slot; TermIndex sin_send_count; TermIndex in_count;}, so the u32 does
+    // NOT cost four bytes: it occupies a whole TermIndex-alignment slot, and the rest of that slot is
+    // padding. Narrow (TermIndex = u32) that is 4 + 4 + 4 = 12; wide (TermIndex = u64) it is
+    // 8 (4 used, 4 padding) + 8 + 8 = 24, not the 20 the field widths sum to. Assert the layout rule
+    // rather than the sum, or this reads as a passing check that is only ever compiled narrow -- the
+    // static_assert next to the struct disables its own wide arm, so nothing else would catch it.
+    constexpr size_t slot_field = std::max(sizeof(uint32_t), alignof(TermIndex));
+    BOOST_CHECK_EQUAL(alignof(CrossRankOccupiedSlot), alignof(TermIndex));
+    BOOST_CHECK_EQUAL(sizeof(CrossRankOccupiedSlot), slot_field + 2 * sizeof(TermIndex));
 }
 
 #if defined(monoprop_WIDE_TERM_INDEX)
