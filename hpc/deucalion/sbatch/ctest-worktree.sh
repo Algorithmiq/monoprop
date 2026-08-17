@@ -156,12 +156,20 @@ cmake --build "$BUILD" -j"$JOBS" || { echo "!! cmake build FAILED"; exit 1; }
 
 echo "=== ctest labels: $(ctest --test-dir "$BUILD" --print-labels 2>/dev/null | tr '\n' ' ') ==="
 # Both gates. `-L serial` is the gate; `-L unit` is its superset and is run too so numbers stay
-# comparable across a campaign. `ctest -L mpi` fails on main as well (shm_comm_oversubscribed aborts at
-# 2 ranks) and is NOT a gate -- the MPI cases are covered by mpi-tests-worktree.sh.
+# comparable across a campaign. `-L mpi` is not run HERE, and the reason is this script, not the
+# branch: the label needs PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe (the OpenMPI 5
+# spelling -- the OpenMPI 4 OMPI_MCA_rmaps_* name is silently ignored) exported inside a real batch
+# allocation, which this script does not do. Without it shm_comm_oversubscribed aborts at 2 ranks,
+# because S = clamp(2*hardware_concurrency, 8, 64) threads per rank cannot be placed. With it the
+# label passes: job 1828158 got x_mpi_2 Passed in 6.36 s. mpi-tests-worktree.sh sets it, runs the
+# label and COUNTS it. An earlier comment here said "-L mpi fails on main as well"; that was wrong,
+# it was conditioned on the missing policy, and it is withdrawn.
 #
-# A slow run here is MPI_Init, not the tests: it initialises every fabric device present, and there are
-# 8 mlx5_* HCAs, which is 8.8 s wall against 0.17 s user PER CASE because ctest runs each Boost case as
-# its own process. The tell is wall time with no CPU behind it.
+# A slow run here is MPI_Init, not the tests: it initialises every fabric device present, PER CASE,
+# because ctest runs each Boost case as its own process. On dev-x86 that is 2.03 s/case unexcluded
+# against 0.61 s/case with monoprop_TEST_EXCLUDE_MPI_FABRIC (jobs 1828023 and 1828011). The much
+# larger 8.8 s/case in section 12 of the README is a LOGIN-node figure and does not apply here. The
+# tell is wall time with no CPU behind it.
 ctest --test-dir "$BUILD" -L unit --output-on-failure
 rc_unit=$?
 echo "=== ctest unit rc=$rc_unit ==="

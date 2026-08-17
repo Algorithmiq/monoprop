@@ -812,12 +812,14 @@ plus `strings <bin> | grep -c <new_test_name>`.
 
 CTest runs **each Boost case as its own process**, so an MPI-enabled build pays a full `MPI_Init` per
 case — and `MPI_Init` initialises **every fabric device present**, whether or not the process will ever
-send a message. There are 8 `mlx5_*` HCAs here, which is **8.8 s wall against 0.17 s user + 0.92 s
-sys** per case: 224 cases = 34 minutes of blocked process.
+send a message. On a **login** node, which carries 8 `mlx5_*` HCAs, that is **8.8 s wall against
+0.17 s user + 0.92 s sys** per case.
 
 **The tell is wall time with no CPU behind it** — `/usr/bin/time -f "user %U sys %S wall %e"` settles it
 in one run. Ruled out by measurement: dynamic linking (28 ms), cold page cache, hostname resolution,
 and the tests themselves (`--list_content`, which runs nothing, cost the same 9.24 s).
+
+Per case, **on a login node** — this is what isolates the component, not what the gate saves:
 
 | exclusions | wall |
 | --- | --- |
@@ -826,18 +828,37 @@ and the tests themselves (`--list_content`, which runs nothing, cost the same 9.
 | `OMPI_MCA_pml=^ucx` | 4.2 s |
 | both | **1.9 s** |
 
+**Do not extrapolate a suite wall from that table.** A compute node is not that node, and the
+uncontrolled cost there is 2.03 s per case, not 8.8 — so the delivered saving is 1.42 s per case, not
+6.9. Multiplying the login-node figure by a case count is where the "34 minute" suite came from; it
+was never run.
+
 **`pml=^ucx` carries most of the win and it HANGS multi-rank runs** — a 2-rank case that passes in
 29 ms hangs indefinitely under it, on pre-branch commits too, so it is component selection rather than
 engine code. Every UCX-restricting variant that reaches ~2 s hangs likewise. So the remedy is
 **scoping, not tuning**: apply the exclusions to the per-case `serial` variants *only*, via a
-`SERIAL_ENVIRONMENT` argument to `discover_tests` in `cpp/tests/boost-test.cmake`. Measured that way
-the suite went 34 min → **6.8 min, 224/224**. Verify the split with `ctest --show-only=json-v1`; the
-number that matters is *mpi cases with exclusions == 0*.
+`SERIAL_ENVIRONMENT` argument to `discover_tests` in `cpp/tests/boost-test.cmake`. Verify the split
+with `ctest --show-only=json-v1`; the number that matters is *mpi cases with exclusions == 0*.
 
-> **Not on `main`, and not on this branch.** `SERIAL_ENVIRONMENT` exists only on
-> `perf/multinode-comm-scaling`. So a CTest run on any other branch still pays the full 8.8 s per case
-> — budget `--time` accordingly (`ctest-worktree.sh` allows 1:30:00 for build + both gates), and do not
-> read a slow suite as a hang.
+**Sized on `dev-x86` compute nodes, which is where the gate runs.** `ctest -L serial` with the
+exclusion is **208 cases in 126.03 s = 0.61 s/case** (job `1828011`, reproduced at 127.33 s in job
+`1828158`); without it, **214 cases in 435.31 s = 2.03 s/case** (job `1828023`, reproduced at 436.91 s
+in job `1828159`). The case counts differ between the two trees, so read the per-case figure: paired by
+test *name* over the 208 cases both runs contain, the median ratio is **3.42x** and all 208 are faster.
+`monoprop_unit_tests.x_mpi_2` is the null control — it receives no exclusion on either side and differs
+by 1.3% (6.36 s against 6.44 s), which bounds how much of the 3.42x could be branch difference rather
+than the fabric.
+
+A **third, independent** tree closes that confound further. Job `1828320`, on `pr/epoch-stamp`
+(commit `1053a19`, a branch off `main` and so without `SERIAL_ENVIRONMENT`), ran `ctest -L serial` at
+**213 cases in 428.83 s = 2.01 s/case**, and `-L unit` at 214 cases in 436.14 s. Two unrelated
+branches carrying no exclusion land at 2.03 and 2.01 s/case; the one carrying it is at 0.61. The
+per-case cost tracks the exclusion, not the branch.
+
+> **Not on `main`.** `SERIAL_ENVIRONMENT` exists only on `perf/multinode-comm-scaling` and
+> `pr/bench-and-test-harness`. So a CTest run on any other branch still pays the unexcluded 2.03 s
+> per case on a compute node — budget `--time` accordingly (`ctest-worktree.sh` allows 1:30:00 for
+> build + both gates), and do not read a slow suite as a hang.
 
 - **Never name a positive component list.** `vader` was renamed `sm` in Open MPI 5, so
   `OMPI_MCA_btl=self,vader` there silently reduces to `self` alone — and it looks fine, because
