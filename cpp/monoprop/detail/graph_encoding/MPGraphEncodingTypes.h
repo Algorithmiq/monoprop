@@ -164,10 +164,10 @@ struct PackedCrossRankStorage final {
     // O(log occupied). Callers walking every partner should use for_each_occupied_slot instead, which
     // is O(occupied) for the whole sweep and carries the offset with it.
     auto find(size_t rank) const -> const CrossRankOccupiedSlot * {
-        const auto it = std::lower_bound(occupied.begin(),
-                                         occupied.end(),
-                                         rank,
-                                         [](const CrossRankOccupiedSlot &e, size_t r) { return e.slot < r; });
+        const auto it =
+            std::lower_bound(occupied.begin(), occupied.end(), rank, [](const CrossRankOccupiedSlot &e, size_t r) {
+                return e.slot < r;
+            });
         return (it == occupied.end() || it->slot != rank) ? nullptr : &*it;
     }
 

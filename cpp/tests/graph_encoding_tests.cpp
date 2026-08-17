@@ -262,8 +262,8 @@ BOOST_AUTO_TEST_CASE(graph_encoding_slot_record_bytes_track_the_traffic_not_the_
     // Same traffic, four times the world. This is the whole claim of the sparse layout: the record
     // array is a function of what is sent, not of how many participants could have been sent to.
     const auto narrow = detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0}));
-    const auto wide = detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0, 0, 0, 0, 0,
-                                                                             0, 0, 0, 0, 0, 0, 0, 0}));
+    const auto wide =
+        detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
 
     BOOST_CHECK_EQUAL(narrow.rank_count(), 4U);
     BOOST_CHECK_EQUAL(wide.rank_count(), 16U);
