@@ -32,11 +32,13 @@ namespace monoprop::mpi {
 //    count and one displacement per rank whatever the caller's span holds, so a layout built for a
 //    differently sized communicator is an out-of-bounds read, and no configuration may skip it.
 //
-// 2. OPT-IN: an audit of the invariant the exchange now rests on -- a layer's recv counts equal its
-//    send counts, so there is no transpose to compute or store (see Evolution.cpp's
-//    derive_layer_exchange). Off unless MONOPROP_CHECK_EXCHANGE_SYMMETRY is set, because ON it costs
-//    exactly the collective the change exists to remove. It IS a collective, so the variable must be
-//    set identically on every rank -- setting it on one rank alone hangs. Read once, at first use.
+// 2. OPT-IN, and opted into at BUILD time: an audit of the invariant the exchange now rests on -- a
+//    layer's recv counts equal its send counts, so there is no transpose to compute or store (see
+//    Evolution.cpp's derive_layer_exchange). Compiled out unless the CMake option
+//    monoprop_CHECK_EXCHANGE_SYMMETRY is ON, because enabled it costs exactly the collective the
+//    change exists to remove. Not an environment variable, and deliberately not one: the audit IS a
+//    collective, so ranks that disagree about whether to run it hang the job rather than
+//    misreporting, and a per-rank variable is exactly how they come to disagree. A binary cannot.
 //    Worth having at all because of how the invariant fails if a future routing change breaks it: a
 //    peer blocks in MPI_Alltoallv against a size nobody sends, which is a hang with no line number.
 //    This turns that into an exception naming the slot.

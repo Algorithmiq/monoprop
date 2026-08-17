@@ -14,7 +14,6 @@
 
 #include "monoprop/detail/mpi/Exchange.h"
 
-#include <cstdlib>
 #include <format>
 #include <print>
 #include <stdexcept>
@@ -139,12 +138,13 @@ auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm)
                         comm_size));
     }
 
-    // One read of the environment, not one per layer. Rank-uniform by assumption: this is a
-    // collective, so a variable set on some ranks and not others hangs rather than misreports.
-    static const bool enabled = std::getenv("MONOPROP_CHECK_EXCHANGE_SYMMETRY") != nullptr;
-    if (!enabled) {
-        return;
-    }
+#ifndef monoprop_CHECK_EXCHANGE_SYMMETRY
+    return; // audit compiled out; see the build option of the same name
+#else
+    // Compiled in or out, never selected at run time: what follows is a collective, and a
+    // per-rank environment variable that one rank reads differently makes the ranks disagree
+    // about whether the collective happens at all -- a job-wide hang, not a wrong number.
+    // A build option cannot disagree between the ranks of one job.
     std::vector<int> recv_counts(static_cast<size_t>(n));
     alltoall_counts(send_counts.data(), recv_counts.data(), n, comm);
     for (int i = 0; i < n; ++i) {
@@ -162,6 +162,7 @@ auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm)
                 received));
         }
     }
+#endif // monoprop_CHECK_EXCHANGE_SYMMETRY
 }
 
 } // namespace monoprop::mpi
