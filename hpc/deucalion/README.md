@@ -859,7 +859,8 @@ was not covered" must be said rather than implied.
 - **`ctest -L mpi` fails on `main` as well** (`shm_comm_oversubscribed` aborts at 2 ranks) and is
   **not** a signal. Use `sbatch/mpi-tests-worktree.sh`, which drives the MPI cases and the Python
   suite across four rank/partition layouts, or a targeted `mpirun`. That script reads
-  `build/editable/Release/cpp/tests` — note the registry is rooted one level down from the build root
+  `build/editable/Release-<tag>/cpp/tests` (build.sh tags the build dir per arm; the tag defaults to
+  the worktree basename) — note the registry is rooted one level down from the build root
   (`enable_testing()` is in `cpp/CMakeLists.txt`), and pointing ctest at the root reports "No tests
   were found!!!" and exits **0**, a silent pass.
 - The MPI variants shell out to `mpiexec` themselves, so they need the batch context and OpenMPI

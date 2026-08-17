@@ -8,7 +8,7 @@
 # MAX_NUM_MODES (1024), JOBS (32).
 #
 # Complements sbatch/mpi-tests-worktree.sh rather than replacing it. That script runs the MPI layouts
-# and the Python suite against `build/editable/Release/cpp/tests`, which only exists when
+# and the Python suite against `build/editable/Release-$TAG/cpp/tests`, which only exists when
 # scikit-build-core has just built the tree and needs no regeneration. This one configures its own
 # tree, so it works on any checkout and after any source edit -- which is what an A/B arm needs before
 # it is measured.

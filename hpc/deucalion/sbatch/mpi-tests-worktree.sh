@@ -34,7 +34,23 @@ echo "############ C++ CTest ############"
 # NOT build/editable/Release -- that has no CTestTestfile.cmake and ctest would
 # report "No tests were found!!!" and exit 0, a silent pass. enable_testing() is
 # called in cpp/CMakeLists.txt, so the registry is rooted one level down.
-CTEST_DIR=build/editable/Release/cpp/tests
+#
+# The `-$MONOPROP_BUILD_TAG` suffix is NOT optional: build.sh tags the build directory per arm
+# (`build/{state}/{build_type}-$TAG`, default tag `basename $MONOPROP_SRC`), so a worktree built by
+# build.sh has build/editable/Release-<tag>, never build/editable/Release. Derive the tag exactly the
+# way build.sh does or the two disagree.
+: "${MONOPROP_BUILD_TAG:=$(basename "$MONOPROP_SRC")}"
+CTEST_DIR="build/editable/Release-${MONOPROP_BUILD_TAG}/cpp/tests"
+# ABORT on a missing registry; never fall through to `ctest --test-dir <nonexistent>`. That prints
+# `Failed to change working directory` to stderr and returns non-zero, which here increments rc_total
+# by exactly as much as a genuine test failure does -- so a job that never ran a single C++ test
+# reports the same `2 SUITE(S) FAILED` as one with two real regressions. A missing build tree means
+# the build never happened or the tag is wrong: that is not a test result, and it must not be
+# reported as one.
+[ -f "$CTEST_DIR/CTestTestfile.cmake" ] || {
+    echo "!! no ctest registry at $CTEST_DIR -- build missing or MONOPROP_BUILD_TAG wrong"
+    exit 1
+}
 # The mpi variants shell out to `mpiexec -n <n>` themselves, so they need the batch
 # context (a 1-task srun step exposes one slot) and the OpenMPI *5* spelling of the
 # oversubscribe knob; the justfile's OMPI_MCA_rmaps_base_oversubscribe is v4 and
