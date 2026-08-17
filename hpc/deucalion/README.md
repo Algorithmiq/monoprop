@@ -19,9 +19,15 @@ Companion files:
 | [RESULTS-scaling.md](RESULTS-scaling.md) | Strong and weak scaling, and the defect that currently stops monoprop scaling across nodes. **Read before planning any multi-node run** |
 | [RESULTS-threading-baseline.md](RESULTS-threading-baseline.md) | The placement/barrier fixes, measured before and after, at 0.8M and 29M terms |
 | [RESULTS-ab-100m.md](RESULTS-ab-100m.md) | Branch vs `main` at **100M terms**, time and memory, 1 and 2 nodes. **The most current numbers here** — and the size at which the placement fix stops paying for itself |
+| [RESULTS-invidx-arena-segments.md](RESULTS-invidx-arena-segments.md) | The per-commit **memory** attribution and the arena-segment fix. Read it for the method as much as the numbers: it is where "state your `P`" was learned |
 | `env.sh` | Module loads and exports; sourced by every build and job script. A **runtime** requirement, not just build-time |
-| `sbatch/` | `build-worktree.sh` (build one checkout), `mpi-tests-worktree.sh` (correctness), `ab-100m.sh` (the time+memory A/B) |
-| `tools/` | `mpi_sanity.py` (smoke-test a fresh venv), `ab_summary.py` (render and gate an A/B run) |
+| `sbatch/` | `build-worktree.sh` (build one checkout), `mpi-tests-worktree.sh` (MPI layouts + Python suite), `ctest-worktree.sh` (gate any checkout in a standalone build tree), `ctest-repeat.sh` (is that failure a rate?), `ab-100m.sh` (the time+memory A/B), `membisect.sh` (per-commit memory + paired time) |
+| `tools/` | `mpi_sanity.py` (smoke-test a fresh venv), `ab_summary.py` (render and gate an A/B run), `terms_calib.py` (how many terms a config actually reaches), `prof_run.py` (the one-model driver), `membisect_summary.py`, `layerprof_summary.py` |
+| `cells/` | Cell definitions for `membisect.sh`: model, expected term count, and the overrides that reach it |
+
+**Sections 11 and 12 are the ones that will save you a day.** They are the traps found in campaign
+use, after the probing that produced sections 1–10 — every item cost a job round-trip or a voided
+measurement, and most of them fail by producing a *plausible wrong number* rather than an error.
 
 ---
 
@@ -30,7 +36,7 @@ Companion files:
 | Partition family | Nodes | CPU | Memory | Network |
 | --- | --- | --- | --- | --- |
 | `arm` | 1632 | Fujitsu A64FX 48-core @ 2.0 GHz | 32 GB HBM2 | ConnectX-6 100 Gb/s |
-| `x86` | 500 | 2× AMD EPYC 7742 64-core @ 2.25 GHz | 256 GB DDR4 | ConnectX-6 100 Gb/s |
+| `x86` | 500 | 2× AMD EPYC 7742 64-core @ 2.25 GHz | 251 GB (234 GiB) DDR4 | ConnectX-6 100 Gb/s |
 | `a100-40` | 17 | 2× EPYC 7742 | 512 GB + 4× A100 40 GB | 2× ConnectX-6 200 Gb/s |
 | `a100-80` | 16 | 2× EPYC 7742 | 512 GB + 4× A100 80 GB | 2× ConnectX-6 200 Gb/s |
 
@@ -46,6 +52,11 @@ NUMA node2 CPU(s):   32-47      NUMA node6 CPU(s):   96-111
 NUMA node3 CPU(s):   48-63      NUMA node7 CPU(s):   112-127
 Mem:                 251 GB total, 240 GB available
 ```
+
+**Quote memory in one unit.** 251 GB total = **234 GiB**, of which ~240 GB = **223 GiB** is available
+to jobs; the vendor's "256 GB" is the nameplate. Campaign sizing in the RESULTS files uses GiB, so
+convert before comparing a `1234 B/term` slope against a node budget — the same number in GB and GiB
+differs by 7%, which is wider than several effects measured here.
 
 **8 NUMA domains of 16 cores each.** This is the single most important number for
 placing MPI ranks: 8 ranks/node × 16 threads is the NUMA-aligned layout, 2×64 is
@@ -342,6 +353,55 @@ srun --mpi=pmix --cpu-bind=none --distribution=block:block ./your_binary
 - [ ] `--time` is tight and honest
 - [ ] output goes to `/projects`, not `$HOME`
 - [ ] no `module purge` anywhere
+- [ ] nothing the job reads lives in `/tmp` — see below
+- [ ] in-job analysis uses a venv python, never `python3`
+
+### Six ways a job script here fails *quietly*
+
+Each of these produces a plausible wrong result rather than an error, which is what makes them
+expensive. They are ordered by how long each one cost.
+
+1. **`/tmp` is node-local, and `sbatch` stages only the batch script — not what it references.** A job
+   whose driver lives in `/tmp` starts perfectly and then fails on every `srun`, in about 14 s each,
+   with `can't open file`. A whole 4-cell job died this way. Copy drivers to `$PROJ/runs/<label>/` and
+   reference them there. Same for anything else a job resolves by path: `nanobind_DIR` under `/tmp`
+   vanishes when a session moves login nodes. And a compute node's `/tmp` is not readable from the
+   login node afterwards, so output there is simply lost.
+2. **`/usr/bin/python3` on the compute nodes is 3.6.8.** No `statistics.fmean`, no `dict |` merge, and
+   `from __future__ import annotations` will not save a script that uses newer syntax. An in-job
+   heredoc using them raises to **stderr**, so a script redirecting only stdout prints its table
+   header and then nothing — which reads exactly like "no data matched". Use `$TREE/.venv/bin/python`.
+3. **`nproc` honours `OMP_NUM_THREADS`**, which `env.sh` pins to 1 for the BLAS pools — so every job
+   logs `cores: 1` while holding a full 128-CPU allocation, and any `-j$(nproc)` builds serially. Use
+   `getconf _NPROCESSORS_ONLN` or Slurm's `AllocCPUS`. C++ `hardware_concurrency()` is unaffected.
+4. **`squeue` / `sacct` can fail to fork under login-node pressure and return *empty* output**, which
+   naively reads as "the job finished". Require a terminal state string from
+   `sacct -j <id> --format=State -X -n` (`COMPLETED`/`FAILED`/`CANCELLED`/`TIMEOUT`/`NODE_FAIL`/`OUT_OF_MEMORY`)
+   and treat empty as *retry*. This has corrupted a run's bookkeeping already.
+5. **`monoprop_BENCH_RESULTS` must exist** or the bench raises `FileNotFoundError` *after* the
+   measurement completes — a good run that reports as a failure. Always `mkdir -p` it first.
+6. **`uv sync --all-extras` prunes pytest out of the venv.** pytest is in a dependency *group*, and
+   `--all-extras` covers extras, so uv prunes to the declared set and the next `python -m pytest`
+   fails with `No module named pytest`, looking like a venv that was never created. Always add
+   `--group test` (or `--all-groups`); recovery costs a full `--no-cache` rebuild.
+
+### `$HOME` and the login node
+
+- **At the inode quota, every write fails with `EDQUOT`** — including an editor's temp file, which
+  surfaces as a confusing tool error rather than "disk full". Recover by deleting regenerable
+  bytecode (`find . -xdev -name '*.pyc' -delete`), never someone's hook cache. The durable fix is to
+  **relocate** caches rather than clear them: `PREK_HOME=$PROJ/caches/prek` is set in `~/.bashrc`, and
+  `.vscode-server` (~15k files, a full copy per client version) is the biggest consumer — check which
+  one is *running* before deleting any.
+- **The login node caps threads at 150** via the cgroup-v1 `pids` controller
+  (`/sys/fs/cgroup/pids/user.slice/user-<uid>.slice/pids.max`), while `ulimit -u` reports 2,061,974
+  and hides it. monoprop's default is one partition per physical core = 128 threads, so a login-node
+  `pytest -m "not mpi"` fails **291 of 609** cases with `Resource temporarily unavailable`, surfacing
+  as a repr that itself raises `RecursionError` — nothing about it points at threads. Run
+  `monoprop_PARTITIONS=4 python -m pytest -m "not mpi"` instead: 609 passed, and 3.5× faster.
+- **There is no `gh` module and no root.** A static release lives at `$PROJ/tools/gh/bin/gh`. It needs
+  its own one-time `gh auth login` (device flow works headless) — `git push` works via VS Code's
+  `GIT_ASKPASS` helper, which `gh` cannot reuse, and there is no credential helper or `GH_TOKEN`.
 
 ---
 
@@ -358,12 +418,15 @@ git worktree add --detach "$PROJ/src/mp-main" origin/main   # baseline arm
 git worktree add --detach "$PROJ/src/mp-port" HEAD          # branch arm
 
 for wt in mp-main mp-port; do
-    cp -r hpc "$PROJ/src/$wt/hpc"                           # hpc/ is gitignored, so a
-    (cd "$PROJ/src/$wt" \                                   # worktree has none of it
-        && sbatch -A "$MONOPROP_SLURM_ACCOUNT" --chdir="$PWD" \
-                  hpc/deucalion/sbatch/build-worktree.sh)
+    cp -r hpc "$PROJ/src/$wt/hpc"
+    (cd "$PROJ/src/$wt" && sbatch -A "$MONOPROP_SLURM_ACCOUNT" --chdir="$PWD" \
+         hpc/deucalion/sbatch/build-worktree.sh)
 done
 ```
+
+The `cp -r hpc` is needed because **`hpc/` lives only on the harness branch**, so a worktree checked
+out from a library branch has none of it. (It is *not* gitignored — an earlier version of this note
+said so, and `git check-ignore hpc/deucalion/README.md` clears it.)
 
 `build-worktree.sh` exports `MONOPROP_SRC="$PWD"` and runs `build.sh`, so each checkout
 builds against its own sources into its own `.venv`. That one line is the whole mechanism
@@ -527,3 +590,243 @@ when neither arm placed a thread (everything ran unpinned), when both did (the b
 cannot place at layout B, so a venv is mislabelled — override with `--allow-both-placed`),
 when `MAX_NUM_MODES`/`MALLOC_ARENA_MAX`/thread counts differ across cells, or when
 `--bench-rounds` was not 1. A non-zero exit means the tables are a diagnostic, not a result.
+
+### Attributing memory per commit
+
+`sbatch/membisect.sh` is the memory counterpart to the time A/B: it runs one fixed model per arm and
+records the structural ledger (`operator_memory_breakdown()`), peak RSS both ways, and elapsed — so
+one job yields per-commit **bytes** and **time** on the same runs.
+
+```bash
+ARMS_FILE=$PROJ/runs/mycampaign/arms RANKS=8 REPS=4 \
+    sbatch -A "$MONOPROP_SLURM_ACCOUNT" --chdir="$PWD" hpc/deucalion/sbatch/membisect.sh
+$VENV/bin/python hpc/deucalion/tools/membisect_summary.py --baseline main $PROJ/runs/membisect-<jobid>
+```
+
+`ARMS_FILE` lines are `<arm> <worktree> [KEY=VAL ...]`; trailing pairs are exported for that arm only,
+which is how one tree supplies several arms differing by an env knob. Cells come from
+`cells/100m.cells` (`CELLS_FILE` to override, `CELLS` to select a subset). `PROFILE=1` adds
+`monoprop_LAYER_PROFILE=1` for the per-phase split, read with `tools/layerprof_summary.py`.
+
+### Reading a measurement here
+
+Five rules that each exist because a table was believed and was wrong.
+
+1. **State the `P`, and confirm a defect at the `P` where it was observed.** `R × S` is one flat world,
+   and results do not transfer across it. R=8 understated one commit's time cost by **3×** on one
+   model, and a peak-RSS regression measured at +7 B/term at R=8 **did not exist at R=1 at all** — so a
+   job run at the convenient `P` measured a fix in a regime without the bug. R=1 is the primary *time*
+   attribution surface (8.6× the probe volume, ~2× rather than ~20× barrier shadow, ±0.5% reps); R=8 is
+   the shipping configuration. Neither substitutes for the other. Note also that phase *shares* are a
+   function of `P` rather than of the code, so an optimisation must not be judged on a share measured
+   at one `P`.
+2. **Divide per rep, then take the median — never the ratio of two medians.** The arms of one rep run
+   back to back on the same node, so a node-state swing cancels in the quotient. Ratio-of-medians once
+   printed 6× noise as a clean `0.95x (flat)`. Report an `agree` count as the sign test: 3/3 is
+   p=0.25, 4/4 is **p=0.125** (the best four reps can do), 6/6 is p=0.031 — and don't run a 6-rep A/B
+   for a sub-2% expected effect. When reps disagree, check whether the odd one is a bad **arm** or a
+   bad **denominator**: a baseline rep that moved makes every arm disagree at once.
+3. **Collate from an explicit directory list, never a glob.** `$PROJ/runs` is shared by every
+   concurrent session on the account. A `models-*` glob swept another branch's A/B into a campaign
+   table and printed a **1.17× 6/6 regression that was not ours**; the tell was a ledger column of
+   exactly 1.00×. Check the point count against the cells you actually submitted.
+4. **The ledger's slack fields are virtual.** `d_terms_slack_bytes` and `d_invidx_arena_slack_bytes`
+   are `capacity() − size()` — never faulted in. `total_bytes` counts them, resident memory does not,
+   so read the TOUCHED column. Reading `total_bytes` made a commit that saves *nothing* at rest look
+   like a campaign's biggest win. The converse trap is real too: a monolithic `std::vector` grown
+   geometrically leaves only a small slack residue but produces a **copy transient** several times
+   larger, which only peak RSS sees. Read the event, not the residue.
+5. **Prove a knob moved a counter before believing the arm.** `parse_positive_int`
+   (`detail/EnvConfig.h`) rejects values above `1'000'000` and then does `.value_or(<default>)`, so an
+   out-of-range knob silently runs the *shipped* behaviour and two "different" arms come back
+   byte-identical. `membisect.sh` refuses such an arm at preflight; there is no diagnostic in the
+   engine. More generally: `two points are not a trend` — report points, hypothesise, and commit to a
+   mechanism only after a falsifying point survives.
+
+**Sizing a cell: `lower_atol` is the size knob, not `cutoff`.** At each model's default
+`lower_atol=1e-4` both nominal size axes are *saturated* — hubbard reads 1,887,255 terms at both c10
+and c11, and `num_sites` 60 and 90 are identical — so a sweep over them is a flat line that looks like
+a null result. Terms scale as ~`atol^-1.9`. The 100M rungs are **hubbard c10 / 1.25e-5 = 96,981,051**
+and **pauli c14 / 5e-5 = 91,273,861**; see `cells/100m.cells` and `tools/terms_calib.py`. Size a
+`build_graph` cell from `graph_vmhwm_mib`, never from the propagate figure: `propagate` releases each
+layer as it contracts it while `steps × build_graph` retains all of them, and hubbard's 29 Trotter
+steps propagate 23.9M terms in 1.7 GiB but build the graph in more than 229 GiB.
+
+---
+
+## 11. Build identity and provenance
+
+**The single most expensive class of mistake here.** Every item below is a way of measuring a binary
+that is not the one you think, and each fails silently.
+
+### An arm is its installed `_core.so` md5, and nothing else
+
+Two identifiers look like they would work. Both are stale, and they fail **together**:
+
+- **`monoprop.__version__` reports HEAD for every arm.** monoprop installs *editable*: every venv's
+  `_editable_skbc_monoprop.pth` resolves the Python layer to the same live source tree, so
+  `__version__` reads whatever HEAD is. A control venv built two commits earlier advertised the very
+  change it was controlling for.
+- **The dist-info stamp is written at install time and never rewritten by a later `cmake` rebuild.** An
+  arm installed at one commit, rebuilt through three more, still advertised the original string — the
+  same string as the baseline.
+
+This cost a whole measurement wave: `ab_summary.py`'s provenance guard keyed on the version, saw one
+string on both sides, and refused five cells that were provably distinct binaries. Hash instead:
+
+```bash
+# what the interpreter will actually load -- site-packages holds a COPY, not a view
+python -c 'from monoprop import _core; print(_core.__file__)'
+```
+
+Two rules on the hash itself:
+
+- **Assert exactly one match, never `find … | head -1`.** scipy ships
+  `optimize/_highspy/_core.cpython-*.so`, and both arms install the same scipy — a loose glob has made
+  two genuinely different arms compare byte-identical, a false negative in exactly the direction the
+  check exists to catch. `build.sh`, `membisect.sh` and `ctest-worktree.sh` all do this.
+- **A build script must not be able to fail in the checking.** `build.sh` hashes the *file* rather than
+  importing it: an import needs `foss/2025b` loaded or it dies on `CXXABI_1.3.15 not found` against the
+  system libstdc++, and under `set -e` that would make a successful build report failure.
+
+### A `ninja` rebuild does not reach the venv
+
+`cmake --build build/editable/Release` relinks the build tree's `_core.so` and `libmonoprop.so`.
+Python loads **neither**. `site-packages/monoprop/` holds *copies* of both, placed there at `uv sync`
+time, and they do not update when ninja runs.
+
+This cost a job: a probe was added, rebuilt, and the sbatch gated on
+`strings <build-dir .so> | grep <symbol>` — which passed. Every stage then reported "no probe files",
+reading exactly like "no cross-rank traffic happened". The job had run the previous day's binary
+throughout. A gate on the build dir proves the *compiler* ran, not that the measured thing contains
+the change.
+
+- After `cmake --build`, copy **both** artifacts into site-packages or re-run
+  `uv sync --reinstall-package monoprop`. Copying only `_core.so` leaves engine changes behind — most
+  of the C++ is in `libmonoprop.so`.
+- Back up the site-packages pair before overwriting if a measured arm depends on it, or the campaign's
+  binary is gone.
+- **`strings … | grep -q` under `set -o pipefail` reports FAILURE on a match** — `-q` exits early,
+  `strings` takes SIGPIPE, and the pipeline status is the failure. Use `grep -c`.
+
+### One build dir per worktree, or concurrent jobs corrupt each other
+
+`pyproject.toml` sets `build-dir = "build/{state}/{build_type}"`, and **neither placeholder encodes the
+cmake defines or the venv** — so every configuration in a worktree shares one directory. Two jobs
+submitted together raced on it: 3 of 4 arms died with `configure_file: No such file or directory`, and
+ctest then ran against the half-written tree and reported a meaningless **262/262 passed**.
+
+The venv is not the isolation boundary it looks like: `UV_PROJECT_ENVIRONMENT` separates where the
+wheel is *installed*; the compile happens in the shared tree either way. So pass a per-arm build dir —
+`build.sh` now does this via `MONOPROP_BUILD_TAG`, and `ctest-worktree.sh` via `TAG`. Never edit the
+shipped default. Then three defences, because one is not enough: per-arm build dir; a guard that
+aborts if another job is already building this worktree; and **check the build rc and abort** — never
+fall through to ctest on a failed build.
+
+### Rebuilding the editable tree in place
+
+`cmake --build build/editable/Release` **cannot reconfigure** that tree: its cache pins the
+build-isolation interpreter to a scikit-build-core temp dir that no longer exists, so ninja fails
+regenerating `build.ninja`, and the `skbuild-*` presets inherit the failure because they only adopt the
+tree and set no cache variables. `CMakeLists.txt` globs with `CONFIGURE_DEPENDS`, so the tree cannot
+skip regeneration either.
+
+Use `sbatch/ctest-worktree.sh`, which configures its own tree with the three defines that a plain
+`cmake -S . -B` does not supply (`Python_EXECUTABLE`, `SKBUILD_PROJECT_VERSION_FULL`, `nanobind_DIR` —
+see the script's comments for why each fails late without it). If you must repair the editable tree
+itself, `uv pip install nanobind` into `.venv` first and reconfigure **after** any `uv sync`, which
+re-poisons `Python_EXECUTABLE` with a fresh ephemeral path — then *assert* `monoprop_ENABLE_MPI` and
+`MAX_NUM_MODES` afterwards, because a test binary silently built without MPI passes while testing
+something else.
+
+Do not assume in either direction whether `uv sync` rebuilt the C++ test binary — it sometimes does.
+The binary is at `build/editable/Release/bin/`, **not** `cpp/tests/`; checking the wrong path produced
+a bogus "no test binary" abort. Verify with evidence: `ninja -n <target>` reporting `no work to do`,
+plus `strings <bin> | grep -c <new_test_name>`.
+
+---
+
+## 12. Testing on this cluster
+
+### A slow CTest run is `MPI_Init`, not the tests
+
+CTest runs **each Boost case as its own process**, so an MPI-enabled build pays a full `MPI_Init` per
+case — and `MPI_Init` initialises **every fabric device present**, whether or not the process will ever
+send a message. There are 8 `mlx5_*` HCAs here, which is **8.8 s wall against 0.17 s user + 0.92 s
+sys** per case: 224 cases = 34 minutes of blocked process.
+
+**The tell is wall time with no CPU behind it** — `/usr/bin/time -f "user %U sys %S wall %e"` settles it
+in one run. Ruled out by measurement: dynamic linking (28 ms), cold page cache, hostname resolution,
+and the tests themselves (`--list_content`, which runs nothing, cost the same 9.24 s).
+
+| exclusions | wall |
+| --- | --- |
+| none | 8.8 s |
+| `OMPI_MCA_btl=^openib,ofi,uct` | 6.4 s |
+| `OMPI_MCA_pml=^ucx` | 4.2 s |
+| both | **1.9 s** |
+
+**`pml=^ucx` carries most of the win and it HANGS multi-rank runs** — a 2-rank case that passes in
+29 ms hangs indefinitely under it, on pre-branch commits too, so it is component selection rather than
+engine code. Every UCX-restricting variant that reaches ~2 s hangs likewise. So the remedy is
+**scoping, not tuning**: apply the exclusions to the per-case `serial` variants *only*, via a
+`SERIAL_ENVIRONMENT` argument to `discover_tests` in `cpp/tests/boost-test.cmake`. Measured that way
+the suite went 34 min → **6.8 min, 224/224**. Verify the split with `ctest --show-only=json-v1`; the
+number that matters is *mpi cases with exclusions == 0*.
+
+> **Not on `main`, and not on this branch.** `SERIAL_ENVIRONMENT` exists only on
+> `perf/multinode-comm-scaling`. So a CTest run on any other branch still pays the full 8.8 s per case
+> — budget `--time` accordingly (`ctest-worktree.sh` allows 1:30:00 for build + both gates), and do not
+> read a slow suite as a hang.
+
+- **Never name a positive component list.** `vader` was renamed `sm` in Open MPI 5, so
+  `OMPI_MCA_btl=self,vader` there silently reduces to `self` alone — and it looks fine, because
+  single-process cases need no transport. `ompi_info --param btl vader` returning **0 lines** is the
+  check. Unknown `OMPI_MCA_*` variables are ignored by other MPIs, so this is inert under MPICH.
+- **CMake trap when attaching env:** the `ENVIRONMENT` test property takes ONE value holding every
+  `VAR=value`, and separators must be **escaped** semicolons. A plain `"${list}"` flattens (a CMake
+  list *is* a semicolon-joined string), so entries after the first are read as property names — it
+  configures cleanly and silently drops them.
+- `mpirun` binds each rank to **one core** by default, so a whole-suite multi-rank ctest entry runs the
+  engine on one core per rank.
+
+### One failure is not a rate
+
+At least one case asserts on **allocator behaviour** rather than on library behaviour:
+`lazy_fold_survives_operator_growth` requires a reallocated buffer to land at a *new* address, and
+malloc is entitled to hand the freed block straight back.
+
+In one job the **same binary** failed it under `ctest -L serial` and passed it under `ctest -L unit`.
+A controlled rerun — 60 reps × 3 trees, plus 8 on the login node — came back **180/180**. So the rate
+is under ~1/190, the case is genuinely flaky, and the failure was **not attributable** to the patch
+under test. Establish the rate before letting a single failure void a build:
+
+```bash
+CASES=<case> BUILDS="<build-dir> [more]" REPS=60 \
+    sbatch -A "$MONOPROP_SLURM_ACCOUNT" --chdir="$PWD" hpc/deucalion/sbatch/ctest-repeat.sh
+```
+
+A zero-failure sweep is an **upper bound** on the rate, not proof of determinism — quote it as "0 of
+N". And note what such a sweep cannot do alone: a pre-patch baseline needs a build tree, and a
+worktree holding only `build/editable` has no `CTestTestfile.cmake` for ctest to read, so "the baseline
+was not covered" must be said rather than implied.
+
+### Which gates count
+
+- **`ctest -L serial`** is the gate; `-L unit` is its superset and worth running too so numbers stay
+  comparable across a campaign. `sbatch/ctest-worktree.sh` runs both and reports each rc.
+- **`ctest -L mpi` fails on `main` as well** (`shm_comm_oversubscribed` aborts at 2 ranks) and is
+  **not** a signal. Use `sbatch/mpi-tests-worktree.sh`, which drives the MPI cases and the Python
+  suite across four rank/partition layouts, or a targeted `mpirun`. That script reads
+  `build/editable/Release/cpp/tests` — note the registry is rooted one level down from the build root
+  (`enable_testing()` is in `cpp/CMakeLists.txt`), and pointing ctest at the root reports "No tests
+  were found!!!" and exits **0**, a silent pass.
+- The MPI variants shell out to `mpiexec` themselves, so they need the batch context and OpenMPI
+  **5**'s spelling of the oversubscribe knob: `PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe`.
+  The justfile's `OMPI_MCA_rmaps_base_oversubscribe` is the v4 name and does nothing here.
+- **`-s` is load-bearing under pytest.** Capture is fd-level and the engine writes `COMMPROF` /
+  `LAYERPROF` straight to fd 2 from a static destructor, so without it a live instrument looks exactly
+  like one that never fired. `tools/prof_run.py` sidesteps this by not being a pytest test at all.
+- **Deleting a test can delete coverage silently.** "It no longer compiles" is not "it is no longer
+  needed", and a surviving assertion can be vacuous (`-0.0 == 0.0` is true). Mutation-test a ported
+  test: break the thing it covers and confirm it goes red.

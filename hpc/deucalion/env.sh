@@ -149,8 +149,13 @@ export UV_NO_BINARY_PACKAGE=mpi4py
 export MPICC="$(command -v mpicc)"
 
 # cpp/tests/CMakeLists.txt pulls msgpack-cxx via CPM (a git clone from GitHub).
-# Compute nodes cannot reach GitHub, so this cache must be warmed from a login
-# node before any compute-node build.
+#
+# CORRECTED: an earlier comment here claimed compute nodes cannot reach GitHub and that this cache
+# therefore had to be warmed from a login node first. That is wrong, and it contradicted two other
+# measured statements in this repo (README.md section 7 and build.sh's header): compute nodes here have
+# full outbound internet -- GitHub, PyPI and the internal sn02 mirror all return 200 from dev-x86.
+# The cache is a speed and quota optimisation, not a prerequisite. It is deliberately NOT split by
+# architecture: these are git checkouts of sources, which are architecture-neutral.
 export CPM_SOURCE_CACHE="$PROJ/caches/cpm"
 
 export VENV="$MONOPROP_SRC/.venv"

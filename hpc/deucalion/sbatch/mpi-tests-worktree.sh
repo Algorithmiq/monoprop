@@ -45,8 +45,17 @@ ctest --test-dir "$CTEST_DIR" --output-on-failure -L mpi    || rc_total=$((rc_to
 
 echo
 echo "############ Python MPI suite across layouts ############"
-# (ranks-per-node, partitions-per-rank). ranks_per_node * S <= 128 or PartitionGroup
-# silently disables pinning entirely.
+# (ranks-per-node, partitions-per-rank).
+#
+# CORRECTED: an earlier comment here gave the pinning condition as
+# `ranks_per_node * S <= 128`. That is not the test. Under --cpu-bind=cores the grant is the
+# RANK'S OWN mask, so pinning turns off when `S > cpus-per-task` -- a rank dividing its
+# already-confined mask a second time. Getting this wrong was a real bug: layouts B and C ran
+# unpinned with barrier_groups=0, at 437 vs 15.5 us/sync. See README section 10 rule 3.
+#
+# --cpu-bind=cores is kept below deliberately: this is a CORRECTNESS suite, where unpinned ranks
+# still test the same code paths. Any MEASUREMENT must use --cpu-bind=none instead, unless the
+# branch under test carries the per-rank-slice fix.
 LAYOUTS=("1 1" "1 16" "2 8" "8 16")
 for layout in "${LAYOUTS[@]}"; do
     read -r RPN S <<<"$layout"
