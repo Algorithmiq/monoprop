@@ -1,0 +1,25 @@
+# Cell definitions for membisect.sh: <cell> <model> <expected-terms> [field=value ...]
+#
+# `lower_atol` is the size knob, NOT `cutoff`. At each model's own default lower_atol=1e-4 both
+# nominal size axes are SATURATED and a sweep over them measures nothing: hubbard reads 1,887,255
+# terms at both c10 and c11, and num_sites 60 and 90 are identical. Terms scale as ~atol^-1.9, so
+# the tolerance is the only axis that reaches 100M. Calibrated 2026-08-15 at 1 rank x 16 partitions
+# by reading propagator.size() after `steps x propagate`; re-derive with tools/terms_calib.py.
+#
+# hubbard c10: 1e-4 -> 1,887,255 | 5e-5 -> 7,156,480 | 2.5e-5 -> 26,607,878 | 1.25e-5 -> 96,981,051
+# pauli   c14: 1e-4 -> 30,992,523 | 5e-5 -> 91,273,861 | 2.5e-5 -> 253,933,183
+#
+# The expected-terms column is asserted to +/-10% per run. These scripts first ran at 1.9M instead of
+# 97M because a plausible-looking config landed two decades below the cell it was named after, and
+# nothing complained.
+#
+# hubbard's observable_site is a LATTICE POSITION, not a constant: sweeping num_sites without scaling
+# it slides the observable off-centre and changes the light cone. 46/60 is the ratio used here.
+#
+# Sizing warning for the `graph` op: `propagate` releases each layer as it contracts it, while
+# `steps x build_graph` RETAINS all of them. Hubbard's 29 Trotter steps propagate 23.9M terms in
+# 1.7 GiB and build the graph in more than 229 GiB. Size a graph cell from terms_calib.py's
+# graph_vmhwm_mib, never from the propagate figure.
+
+hub hubbard 96981051 cutoff=10 num_sites=60 observable_site=46 lower_atol=1.25e-05
+pau pauli    91273861 cutoff=14 num_layers=20 lower_atol=5e-05
