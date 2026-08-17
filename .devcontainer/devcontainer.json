@@ -10,6 +10,9 @@
   "securityOpt": [
     "seccomp=unconfined"
   ],
+  "runArgs": [
+    "--shm-size=1g"
+  ],
   "remoteUser": "vscode",
   "customizations": {
     "vscode": {

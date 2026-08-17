@@ -14,7 +14,7 @@
 
 #pragma once
 
-// Umbrella header for build_layer<NumModes>(); the implementation lives in the sibling layer_build/ headers.
+// Umbrella header for build_layer(); the implementation lives in the sibling layer_build/ headers.
 // Pivot split: M and its partner M⊕G differ in every column of G including the pivot (G's lowest set
 // column), so exactly one of the pair carries it — leader (pivot clear) vs follower (pivot set). Visiting
 // leaders then the still-unmatched followers touches each pair once, no sort and no dedup.

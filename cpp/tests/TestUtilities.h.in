@@ -32,6 +32,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "TestData.h"
+#include "TestPropagator.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
@@ -87,21 +88,20 @@ struct SimulatorConfig {
 };
 
 template <size_t NumModes>
-inline auto build_simulator(const CaseData& data, const SimulatorConfig& cfg = {}) -> MonomialPropagator<NumModes> {
+inline auto build_simulator(const CaseData& data, const SimulatorConfig& cfg = {}) -> MonomialPropagator {
     const auto cutoff = static_cast<unsigned int>(2 * NumModes);
-    return MonomialPropagator<NumModes>(data.hamiltonian,
-                                        cutoff,
-                                        data.initial_state,
-                                        cfg.schrodinger_cutoff,
-                                        cfg.comm,
-                                        cfg.atol,
-                                        cfg.upper_atol,
-                                        cfg.cutoff_type,
-                                        cfg.basis_change);
+    return make_propagator<NumModes>(data.hamiltonian,
+                                     cutoff,
+                                     data.initial_state,
+                                     cfg.schrodinger_cutoff,
+                                     cfg.comm,
+                                     cfg.atol,
+                                     cfg.upper_atol,
+                                     cfg.cutoff_type,
+                                     cfg.basis_change);
 }
 
-template <size_t NumModes>
-inline auto evaluate_expval(MonomialPropagator<NumModes>& sim, const CaseData& data, bool pare) -> double {
+inline auto evaluate_expval(MonomialPropagator& sim, const CaseData& data, bool pare) -> double {
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
     auto expval_fn = sim.expectation_value_functional(pare_threshold);

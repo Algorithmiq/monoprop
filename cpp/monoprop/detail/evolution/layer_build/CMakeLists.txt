@@ -9,4 +9,5 @@ target_sources(
         "FusedApply.h"
         "Resolve.h"
         "Scan.h"
+        "TermProduct.h"
 )

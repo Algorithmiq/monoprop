@@ -124,7 +124,7 @@ sdist.exclude = [
   ".prettierignore",
   "cspell.json",
 ]
-sdist.include = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py"]
+sdist.include = ["src/monoprop/_version.py"]
 build.verbose = true
 build.tool-args = ["-j2"]
 # Default to a single build job for Python bindings; CI and one-off builds can
@@ -167,10 +167,10 @@ required_plugins = ["pytest-cases", "pytest-datadir", "pytest-mpi"]
 source = ["src/monoprop"]
 branch = true
 relative_files = true
-omit = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py"]
+omit = ["src/monoprop/_version.py"]
 
 [tool.coverage.report]
-omit = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py"]
+omit = ["src/monoprop/_version.py"]
 exclude_also = [
   '\.\.\.',
   "def __repr__",

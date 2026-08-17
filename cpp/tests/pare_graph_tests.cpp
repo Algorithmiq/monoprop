@@ -36,16 +36,13 @@ constexpr size_t kNumModes = 8;
 // Mirrors the streaming provider the pare functional uses: fold the operator's inverted index,
 // truncated to each layer's scaled_count.
 template <size_t NumModes>
-auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_index, const LayerTraversal &layer)
-    -> CosMask {
-    Monomial<NumModes> gen{};
+auto recompute_cos(const monoprop::detail::InvertedIndex &inverted_index, const LayerTraversal &layer) -> CosMask {
+    Bitset gen(2 * NumModes);
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
-    const auto combined = monoprop::detail::make_fold_cache<NumModes>(inverted_index,
-                                                                      gen,
-                                                                      layer.scaled_count(),
-                                                                      monoprop::Basis::Majorana);
-    return monoprop::detail::fold_to_cos_mask<NumModes>(combined);
+    const auto combined =
+        monoprop::detail::make_fold_cache(inverted_index, gen, layer.scaled_count(), monoprop::Basis::Majorana);
+    return monoprop::detail::fold_to_cos_mask(combined);
 }
 
 } // namespace

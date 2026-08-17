@@ -118,10 +118,13 @@ locate `hwloc`.
 uv run python -m pytest -m "not mpi"   # Python tests (serial)
 just test-mpi                          # Python + C++ tests under MPI
 just test-wide                         # Python + C++ unit tests with a 64-bit TermIndex
+just test-sparse-rows                  # Python tests with the support-form row backend forced
 ```
 
-See the [testing guide](https://docs.monoprop.algorithmiq.tech/testing)
-for the with/without-MPI details and the rank matrix.
+`ctest` runs every C++ case twice, once per row backend — the second pass carries
+the `sparse-rows` label. See the
+[testing guide](https://docs.algorithmiq.fi/monoprop/docs/testing) for that, the
+with/without-MPI details, and the rank matrix.
 
 ## Development environment
 

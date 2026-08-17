@@ -1,3 +1,5 @@
+target_sources(monoprop-objs PRIVATE MonomialPropagator.cpp)
+
 target_sources(
   monoprop
   PUBLIC
@@ -5,5 +7,4 @@ target_sources(
       TYPE HEADERS
       FILES
         "MonomialPropagatorCommon.h"
-        "MonomialPropagator.inl"
 )

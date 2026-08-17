@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <vector>
 
 #include "monoprop/Bitset.h"
 #include "monoprop/TypeAliases.h"
@@ -34,9 +35,8 @@
 
 namespace monoprop {
 
-template <size_t NumModes>
-[[nodiscard]] inline constexpr auto pauli_even_mask() -> Monomial<NumModes> {
-    return even_bits<2 * NumModes, LSb0>();
+[[nodiscard]] inline auto pauli_even_mask(size_t num_bits) -> Bitset {
+    return even_bits<LSb0>(num_bits);
 }
 
 namespace detail {
@@ -51,11 +51,15 @@ struct PauliUv {
 
 // The pair-swap involution J: swap the two physical bits of every qubit pair (u <-> v). Stays inside
 // each word -- pairs are {2m, 2m+1}, so there is no cross-word carry.
-template <size_t NumModes>
-[[nodiscard]] auto pair_swap(const Monomial<NumModes> &p) -> Monomial<NumModes> {
-    constexpr auto e_mask = pauli_even_mask<NumModes>();
-    Monomial<NumModes> result;
-    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
+// e_mask/result build from p.size()/p.num_words() (instance calls), not the qualified
+// decltype(p)::size() other functions in this file use: p is only constrained MonomialLike, and a
+// caller may hand this a plain Bitset (e.g. from a ^ b), whose width is data and so has no static
+// size() to qualify-call.
+[[nodiscard]] auto pair_swap(const MonomialLike auto &p) -> std::remove_cvref_t<decltype(p)> {
+    const auto &e_mask = cached_even_bits<LSb0>(p.size());
+    Bitset result(p.size());
+    const size_t nw = p.num_words();
+    for (size_t w = 0; w < nw; ++w) {
         const uint64_t word = p.word(w);
         const uint64_t e = e_mask.word(w);
         result.data()[w] = ((word & e) << 1) | ((word >> 1) & e);
@@ -64,11 +68,11 @@ template <size_t NumModes>
 }
 
 // A Y letter has v=1, u=0.
-template <size_t NumModes>
-[[nodiscard]] auto pauli_y_count(const Monomial<NumModes> &p) -> size_t {
-    constexpr auto e_mask = pauli_even_mask<NumModes>();
+[[nodiscard]] auto pauli_y_count(const MonomialLike auto &p) -> size_t {
+    const auto &e_mask = cached_even_bits<LSb0>(p.size());
     size_t y = 0;
-    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
+    const size_t nw = p.num_words();
+    for (size_t w = 0; w < nw; ++w) {
         const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
         y += static_cast<size_t>(std::popcount(v & ~u));
     }
@@ -77,9 +81,8 @@ template <size_t NumModes>
 
 // Whether two Pauli strings anticommute (symplectic inner product is odd):
 // P.parity_and(pair_swap(G)) == (x_P . z_G + z_P . x_G) mod 2.
-template <size_t NumModes>
-[[nodiscard]] auto pauli_anticommutes(const Monomial<NumModes> &p, const Monomial<NumModes> &g) -> bool {
-    return p.parity_and(pair_swap<NumModes>(g));
+[[nodiscard]] auto pauli_anticommutes(const MonomialLike auto &p, const auto &g) -> bool {
+    return p.parity_and(pair_swap(g));
 }
 
 namespace detail {
@@ -91,21 +94,28 @@ namespace detail {
 
 // Per-generator context for the hot emit-sign kernel: nz_words lets pauli_rotation_sign() skip words
 // outside G's support.
-template <size_t NumModes>
+//
+// nz_words is a vector, not the std::array<size_t, num_words()> it was: with no compile-time width there
+// is no bound to size an array by. It holds at most num_words() entries and is built once per layer,
+// so the allocation is per layer while the reads are per term -- the same trade the retained LazyFold
+// already makes for its columns.
 struct PauliGenContext final {
-    Monomial<NumModes> gen{};
+    Bitset gen{};
     size_t g_y = 0;
-    std::array<size_t, Monomial<NumModes>::num_words()> nz_words{};
+    std::vector<size_t> nz_words{};
     size_t nz_count = 0;
+    Bitset e_mask{}; // held here so the hot sign kernel never rebuilds it per term
 };
 
 // Call once per layer, not per term.
-template <size_t NumModes>
-[[nodiscard]] auto make_pauli_gen_context(const Monomial<NumModes> &gen) -> PauliGenContext<NumModes> {
-    PauliGenContext<NumModes> ctx;
+auto make_pauli_gen_context(const MonomialLike auto &gen) -> PauliGenContext {
+    PauliGenContext ctx;
+    const size_t nw = gen.num_words();
     ctx.gen = gen;
-    ctx.g_y = pauli_y_count<NumModes>(gen);
-    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
+    ctx.e_mask = pauli_even_mask(gen.size());
+    ctx.g_y = pauli_y_count(gen);
+    ctx.nz_words.resize(nw);
+    for (size_t w = 0; w < nw; ++w) {
         if (gen.word(w) != 0) {
             ctx.nz_words[ctx.nz_count++] = w;
         }
@@ -118,11 +128,12 @@ template <size_t NumModes>
 // raw product sign, so the emit site needs no extra negation (pinned by pauli_algebra_tests.cpp).
 // Loops only over gen's nonzero words (elsewhere mono/new_mono Y counts cancel and x_gen = 0). Exponent
 // e = g_y + Σ_w(yMono - yNew) + 2·Σ_w(v_mono & x_gen); raw sign = (e mod 4 == 1 ? +1 : -1), negated here.
-template <size_t NumModes>
-[[gnu::always_inline]] inline auto pauli_rotation_sign(const PauliGenContext<NumModes> &ctx,
-                                                       const Monomial<NumModes> &mono,
-                                                       const Monomial<NumModes> &new_mono) -> int {
-    constexpr auto e_mask = pauli_even_mask<NumModes>();
+[[gnu::always_inline]] inline auto pauli_rotation_sign(const auto &ctx,
+                                                       const MonomialLike auto &mono,
+                                                       const auto &new_mono) -> int {
+    // From the context, not rebuilt: this runs once per emitted rotation, and since Stage 2b a mask
+    // is a runtime-width object construction rather than the compile-time constant it used to be.
+    const auto &e_mask = ctx.e_mask;
     long delta = static_cast<long>(ctx.g_y);
     long cross = 0;
     for (size_t k = 0; k < ctx.nz_count; ++k) {
@@ -141,8 +152,7 @@ template <size_t NumModes>
 
 // Diagonal element <b|P|b> = (-1)^{|Z ∩ occupied|} of a Z-only Pauli against the initial product
 // state. Only meaningful where is_paired holds; for a non-diagonal Pauli <b|P|b> = 0.
-template <size_t NumModes>
-[[nodiscard]] auto pauli_state_phase(const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
+[[nodiscard]] auto pauli_state_phase(const MonomialLike auto &mono, const auto &state_mask) -> double {
     return (mono.count_and(state_mask) & 1) ? -1.0 : 1.0;
 }
 

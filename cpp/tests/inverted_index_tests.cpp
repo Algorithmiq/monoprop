@@ -25,17 +25,18 @@
 
 // Internals of the even-parity scan inverted index: the tiered column store, the lazily-built
 // per-row parity(|M|) bitmap, and the fill order. Rows are read through the backend-agnostic
-// for_each_row_position accessor, so a plain std::vector<Monomial<N>> stands in for the store.
+// for_each_row_position accessor, so a plain MonomialList stands in for the store.
 
 using namespace monoprop;
 using namespace monoprop::detail;
 
 namespace {
 constexpr size_t N = 32; // 2N = 64 majorana columns
-using Sc = InvertedIndex<N>;
-using MSet = Monomial<N>;
+using Sc = InvertedIndex;
+constexpr size_t kCols = 2 * N; // InvertedIndex is runtime-sized: one column per bit position
+using MSet = Bitset;
 MSet bs(const VecZ &r) {
-    return indices_to_bitset<N>(r);
+    return indices_to_bitset(r, kCols);
 }
 // indices_to_bitset maps mode m to bit 2N-1-m; columns are indexed by raw bit position.
 constexpr size_t col_of(size_t mode) {
@@ -69,7 +70,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
         bs({5}),
         bs({4, 5, 6, 7}),
     };
-    Sc sc;
+    Sc sc(kCols);
     sc.rebuild(op);
     BOOST_TEST(sc.rows() == op.size());
 
@@ -102,9 +103,9 @@ BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
         else {
             pos.push_back(2); // mode 2 set in 118 rows -> DENSE (keeps every row non-empty)
         }
-        op.push_back(indices_to_bitset<N>(pos));
+        op.push_back(indices_to_bitset(pos, kCols));
     }
-    Sc sc;
+    Sc sc(kCols);
     sc.rebuild(op);
     BOOST_TEST(sc.rows() == kR);
     BOOST_TEST(sc.column_is_dense(col_of(0)));  // 10/128 >= 1/64
@@ -117,15 +118,16 @@ BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
 // combine_columns_block's lower_bound relies on.
 BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
     constexpr size_t M = 64; // 2M = 128 columns
-    using ScW = InvertedIndex<M>;
+    using ScW = InvertedIndex;
+    constexpr size_t kColsW = 2 * M;
     constexpr size_t kR = 16'385; // large operator, many sparse columns
-    std::vector<Monomial<M>> op;
+    MonomialList op;
     op.reserve(kR);
     for (size_t i = 0; i < kR; ++i) {
         // One mode per row over 128 columns: 128 hits each, and 128*64 < 16385, so all stay sparse.
-        op.push_back(indices_to_bitset<M>({i % 128}));
+        op.push_back(indices_to_bitset({i % 128}, kColsW));
     }
-    ScW sc;
+    ScW sc(kColsW);
     sc.rebuild(op);
     BOOST_TEST(sc.rows() == kR);
 
@@ -167,10 +169,10 @@ BOOST_AUTO_TEST_CASE(inverted_index_append_rows_matches_rebuild) {
         op.push_back(bs(pos));
     }
 
-    Sc full;
+    Sc full(kCols);
     full.rebuild(op);
 
-    Sc inc;
+    Sc inc(kCols);
     inc.rebuild(std::vector<MSet>(op.begin(), op.begin() + 64));
     // Force the lazy parity bitmap to exist before the append, which is the branch that extends it.
     static_cast<void>(inc.row_parity_words());
@@ -178,7 +180,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_append_rows_matches_rebuild) {
     inc.append_rows(op, 164, kR - 164);
 
     BOOST_REQUIRE_EQUAL(inc.rows(), full.rows());
-    for (size_t c = 0; c < Sc::kNumColumns; ++c) {
+    for (size_t c = 0; c < full.num_columns(); ++c) {
         BOOST_TEST_CONTEXT("column " << c) {
             BOOST_TEST(rows_of(inc, c) == rows_of(full, c), boost::test_tools::per_element());
         }
@@ -224,7 +226,7 @@ BOOST_AUTO_TEST_CASE(combine_columns_block_folds_dense_and_sparse_identically) {
         }
         op.push_back(bs(pos));
     }
-    Sc sc;
+    Sc sc(kCols);
     sc.rebuild(op);
     BOOST_REQUIRE(sc.column_is_dense(col_of(0)));
     BOOST_REQUIRE(sc.column_is_dense(col_of(1)));
@@ -242,21 +244,50 @@ BOOST_AUTO_TEST_CASE(combine_columns_block_folds_dense_and_sparse_identically) {
     }
 
     std::vector<uint64_t> whole(words, 0xdeadbeefULL); // pre-dirtied: the kernel seeds, never accumulates
-    combine_columns_block<N>(sc, cols, whole.data(), 0, words);
+    combine_columns_block(sc, cols, whole.data(), 0, words);
     BOOST_TEST(whole == expected, boost::test_tools::per_element());
 
     std::vector<uint64_t> pieced(words, 0xdeadbeefULL);
     for (size_t w = 0; w < words; ++w) {
-        combine_columns_block<N>(sc, cols, pieced.data() + w, w, w + 1);
+        combine_columns_block(sc, cols, pieced.data() + w, w, w + 1);
     }
     BOOST_TEST(pieced == expected, boost::test_tools::per_element());
 
     // Sparse-only column list: no dense column to memcpy from, so this is the memset seed path.
     const size_t sparse_col = col_of(2);
     std::vector<uint64_t> sparse_fold(words, 0xdeadbeefULL);
-    combine_columns_block<N>(sc, std::span<const size_t>(&sparse_col, 1), sparse_fold.data(), 0, words);
+    combine_columns_block(sc, std::span<const size_t>(&sparse_col, 1), sparse_fold.data(), 0, words);
     std::vector<uint64_t> sparse_expected(words, 0);
     sparse_expected[5 >> 6] |= uint64_t{1} << (5 & 63U);
     sparse_expected[200 >> 6] |= uint64_t{1} << (200 & 63U);
     BOOST_TEST(sparse_fold == sparse_expected, boost::test_tools::per_element());
+}
+
+// The column vector is the index's only width-driven cost, and the width sweep behind Stage 6 step 2
+// reads it off memory_bytes(), so it has to be inside that number rather than alongside it: an empty
+// index over a wide register holds one Column per bit position and no payload at all.
+BOOST_AUTO_TEST_CASE(inverted_index_memory_counts_the_column_vector) {
+    constexpr size_t kWideCols = 4096;
+    Sc wide(kWideCols);
+    BOOST_TEST(wide.columns_bytes() >= kWideCols * sizeof(Sc::Column));
+    // No rows yet, so the column vector is the whole of it.
+    BOOST_TEST(wide.memory_bytes() == wide.columns_bytes());
+    const auto tiers = wide.tier_memory_bytes();
+    BOOST_TEST(tiers[0] == 0U);
+    BOOST_TEST(tiers[1] == 0U);
+
+    Sc narrow(kWideCols / 4);
+    BOOST_TEST(narrow.columns_bytes() * 4 == wide.columns_bytes());
+
+    // With payload, memory_bytes() is the columns plus both tiers -- nothing double-counted, nothing
+    // left out (row_parity_ is unbuilt here, and is the only other term).
+    MonomialList op;
+    for (size_t r = 0; r < 200; ++r) {
+        op.push_back(indices_to_bitset({r % 7, 3}, kWideCols));
+    }
+    Sc filled(kWideCols);
+    filled.rebuild(op);
+    const auto filled_tiers = filled.tier_memory_bytes();
+    BOOST_TEST(filled.memory_bytes() == filled.columns_bytes() + filled_tiers[0] + filled_tiers[1]);
+    BOOST_TEST(filled_tiers[0] + filled_tiers[1] > 0U);
 }

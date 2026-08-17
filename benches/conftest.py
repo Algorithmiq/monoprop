@@ -146,6 +146,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         group.addoption(f"--{name}", type=int, default=default, help=help_text)
 
     models = parser.getgroup("monoprop-models", "monoprop fixed-model overrides")
+    # One round is enough for the memory and term-count stats, which are deterministic, but it yields
+    # no spread for the timing -- and these models are expensive enough that a single sample can sit
+    # well off the median. Raise this when a timing difference is the point of the run.
+    models.addoption(
+        "--model-rounds",
+        type=int,
+        default=1,
+        help="Rounds per fixed model; each rebuilds the model first. >1 gives a median and stddev "
+        "(default: 1).",
+    )
     for model, (config_cls, _builder, _steps) in MODELS.items():
         for field in fields(config_cls):
             models.addoption(
@@ -230,6 +240,12 @@ def bench_comm() -> Any:
 def bench_rounds(request: pytest.FixtureRequest) -> int:
     """Return the fixed round count for the random benchmarks."""
     return int(request.config.getoption("--bench-rounds"))
+
+
+@pytest.fixture(scope="session")
+def model_rounds(request: pytest.FixtureRequest) -> int:
+    """Return the round count for the fixed-model benchmarks."""
+    return int(request.config.getoption("--model-rounds"))
 
 
 @pytest.fixture(scope="session")

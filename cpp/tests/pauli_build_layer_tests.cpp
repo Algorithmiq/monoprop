@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "PauliTestOracle.h"
+#include "TestPropagator.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/algebra/PauliAlgebra.h"
@@ -64,30 +65,30 @@ auto build_pauli_sim(const std::map<std::string, double> &obs,
                      unsigned int cutoff,
                      std::optional<unsigned int> schrodinger_cutoff = std::nullopt,
                      const VecZ &initial_state = {},
-                     std::optional<double> lower_atol = std::nullopt) -> MonomialPropagator<N> {
+                     std::optional<double> lower_atol = std::nullopt) -> MonomialPropagator {
     OperatorDict init;
     for (const auto &[p, c] : obs) {
         init[slots_of_string(p)] = cd(c, 0.0);
     }
-    return MonomialPropagator<N>(init,
-                                 cutoff,
-                                 initial_state,
-                                 schrodinger_cutoff,
-                                 MPI_COMM_SELF,
-                                 lower_atol,
-                                 std::nullopt,
-                                 CutoffType::Support,
-                                 std::nullopt,
-                                 N,
-                                 Basis::Pauli);
+    return test_utils::make_propagator<N>(init,
+                                          cutoff,
+                                          initial_state,
+                                          schrodinger_cutoff,
+                                          MPI_COMM_SELF,
+                                          lower_atol,
+                                          std::nullopt,
+                                          CutoffType::Support,
+                                          std::nullopt,
+                                          N,
+                                          Basis::Pauli);
 }
 
 template <size_t N>
-auto dense_operator(MonomialPropagator<N> &mp) -> std::vector<cd> {
+auto dense_operator(MonomialPropagator &mp) -> std::vector<cd> {
     const size_t d = size_t{1} << N;
     std::vector<cd> m(d * d, cd(0, 0));
     const auto &coeffs = mp.mp_op().get_operator();
-    mp.indexing().for_each([&](const Monomial<N> &mono, size_t idx) {
+    mp.for_each_term([&](const auto &mono, size_t idx) {
         if (idx >= coeffs.size()) {
             return;
         }
@@ -234,23 +235,23 @@ auto build_jw_sim(const std::map<std::string, double> &obs,
                   unsigned int cutoff,
                   std::optional<unsigned int> schrodinger_cutoff = std::nullopt,
                   const VecZ &initial_state = {},
-                  std::optional<double> lower_atol = std::nullopt) -> MonomialPropagator<N> {
+                  std::optional<double> lower_atol = std::nullopt) -> MonomialPropagator {
     OperatorDict init;
     for (const auto &[p, c] : obs) {
         const auto [idx, jw] = pauli_to_fermi_full(p);
         init[idx] = jw * cd(c, 0.0);
     }
-    return MonomialPropagator<N>(init,
-                                 cutoff,
-                                 initial_state,
-                                 schrodinger_cutoff,
-                                 MPI_COMM_SELF,
-                                 lower_atol,
-                                 std::nullopt,
-                                 CutoffType::Support,
-                                 jw_basis_indices<N>(N),
-                                 N,
-                                 Basis::Majorana);
+    return test_utils::make_propagator<N>(init,
+                                          cutoff,
+                                          initial_state,
+                                          schrodinger_cutoff,
+                                          MPI_COMM_SELF,
+                                          lower_atol,
+                                          std::nullopt,
+                                          CutoffType::Support,
+                                          jw_basis_indices<N>(N),
+                                          N,
+                                          Basis::Majorana);
 }
 
 } // namespace
@@ -310,7 +311,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_dense_matrix_ground_truth) {
 // Heisenberg ⟨b|O_evolved|b⟩ against the initial state, after a contract-immediately propagate:
 // core + Σ state·op.
 template <size_t N>
-auto heisenberg_expval(MonomialPropagator<N> &sim) -> double {
+auto heisenberg_expval(MonomialPropagator &sim) -> double {
     const VecD st = sim.mp_op().materialize_state();
     const auto &op = sim.mp_op().get_operator();
     double s = 0.0;
@@ -403,11 +404,11 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
         BOOST_TEST_REQUIRE(layers.size() == 1U);
         const VecZ &cos_inds = std::get<0>(layers[0]);
         std::set<size_t> got(cos_inds.begin(), cos_inds.end());
-        const auto Gb = indices_to_bitset<N>(slots_of_string("XII"));
+        const auto Gb = indices_to_bitset(slots_of_string("XII"), 2 * N);
         std::set<size_t> expected;
         (void)mp.mp_op().get_operator(); // materialize the store size
-        mp.indexing().for_each([&](const Monomial<N> &mono, size_t idx) {
-            if (pauli_anticommutes<N>(mono, Gb)) {
+        mp.for_each_term([&](const auto &mono, size_t idx) {
+            if (pauli_anticommutes(mono, Gb)) {
                 expected.insert(idx);
             }
         });

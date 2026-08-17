@@ -34,9 +34,7 @@ namespace monoprop::detail {
 // served. Columns are stored in two tiers, bit-identical to all-dense: dense (density ≥
 // 1/kPromoteDensityInv) full-height uint64 vectors; sparse an ascending set-row list scatter-expanded at
 // scan time. Promotion is one-way (the operator is append-only).
-template <size_t NumModes>
 struct InvertedIndex {
-    static constexpr size_t kNumColumns = Monomial<NumModes>::size();
     static constexpr size_t kPromoteDensityInv = 64;
 
     struct Column {
@@ -47,8 +45,16 @@ struct InvertedIndex {
         bool is_dense = false;
     };
 
-    std::array<Column, kNumColumns> cols{};
+    // One column per bit position of a monomial, so the count is the storage bit width. Runtime-sized
+    // -- the column count is the operator's bit width, which is data.
+    std::vector<Column> cols;
     size_t row_count = 0;
+
+    // num_columns must be the *storage* bit width (2 * storage modes), matching the monomials whose
+    // positions fill_rows() scatters -- for_each_row_position indexes cols[bit] unchecked.
+    explicit InvertedIndex(size_t num_columns) : cols(num_columns) {}
+
+    [[nodiscard]] auto num_columns() const -> size_t { return cols.size(); }
 
     // Parity of |M| per row, packed 1 bit/row: bit r = popcount(row r) & 1. Built on first use and only
     // by odd-|G| generators, so even-parity workloads never allocate it.
@@ -114,7 +120,7 @@ struct InvertedIndex {
         for (size_t row_idx = base; row_idx < new_total_rows; ++row_idx) {
             const size_t w = row_idx >> 6U;
             const uint64_t row_bit = uint64_t{1} << (row_idx & 63U);
-            for_each_row_position<NumModes>(op, row_idx, [this, w, row_bit, row_idx](size_t bit) {
+            for_each_row_position(op, row_idx, [this, w, row_bit, row_idx](size_t bit) {
                 Column &col = cols[bit];
                 if (col.is_dense) {
                     col.words[w] |= row_bit;
@@ -124,7 +130,7 @@ struct InvertedIndex {
                 }
             });
         }
-        for (size_t c = 0; c < kNumColumns; ++c) {
+        for (size_t c = 0; c < cols.size(); ++c) {
             Column &col = cols[c];
             if (!col.is_dense && col.set_rows.size() * kPromoteDensityInv >= row_count) {
                 promote_to_dense(c);
@@ -152,12 +158,11 @@ struct InvertedIndex {
 
         // Count per-column set bits first and decide tiers from the final density, so the fill never has
         // to promote.
-        using Counts = std::array<size_t, kNumColumns>;
-        Counts counts{};
+        auto counts = std::vector<size_t>(cols.size(), 0);
         for (size_t row_idx = 0; row_idx < size; ++row_idx) {
-            for_each_row_position<NumModes>(op, row_idx, [&counts](size_t bit) { ++counts[bit]; });
+            for_each_row_position(op, row_idx, [&counts](size_t bit) { ++counts[bit]; });
         }
-        for (size_t c = 0; c < kNumColumns; ++c) {
+        for (size_t c = 0; c < cols.size(); ++c) {
             const size_t count = counts[c];
             Column &col = cols[c];
             if (count * kPromoteDensityInv >= size) {
@@ -185,15 +190,20 @@ struct InvertedIndex {
             row_parity_.resize((row_count + 63) / 64, 0);
             for (size_t j = 0; j < n; ++j) {
                 const size_t r = base + j;
-                if (row_popcount<NumModes>(op, r) & 1U) {
+                if (row_popcount(op, r) & 1U) {
                     row_parity_[r >> 6] |= (uint64_t{1} << (r & 63));
                 }
             }
         }
     }
 
+    // The column vector itself is counted, not just the payload it points at: it is one Column per bit
+    // position, so it is the only term here that grows with the mode count rather than with the operator,
+    // and an accounting that omitted it could not answer whether the index is what caps a wide run.
+    auto columns_bytes() const -> size_t { return cols.capacity() * sizeof(Column); }
+
     auto memory_bytes() const -> size_t {
-        size_t total = 0;
+        size_t total = columns_bytes();
         for (const auto &col : cols) {
             total += col.words.capacity() * sizeof(uint64_t);
             total += col.set_rows.capacity() * sizeof(TermIndex);
@@ -202,7 +212,8 @@ struct InvertedIndex {
         return total;
     }
 
-    // Diagnostic tier split of memory_bytes(): {dense_bytes, sparse_bytes, dense_columns}.
+    // Diagnostic tier split of memory_bytes(): {dense_bytes, sparse_bytes, dense_columns}. The
+    // width-driven remainder is columns_bytes() plus the row-parity bitmap.
     auto tier_memory_bytes() const -> std::array<size_t, 3> {
         std::array<size_t, 3> out{0, 0, 0};
         for (const auto &col : cols) {
@@ -236,8 +247,10 @@ inline auto pivot_column_block_scratch() -> std::vector<uint64_t> & {
 // XOR a generator's inverted-index columns for fold words [bb, be) into blk[0 .. be-bb): dense columns
 // XOR their words directly, sparse columns lower_bound to the block's row range. XOR associativity means
 // any block decomposition reproduces the full-width fold bit-for-bit.
-template <size_t NumModes>
-[[gnu::always_inline]] inline auto combine_columns_block(const InvertedIndex<NumModes> &sc,
+// `sc` stays a deduced `auto`: InvertedIndex is no longer a template, but the parameter is also bound
+// by the fold-cache tests to a stand-in with the same column accessors, so naming the type here would
+// narrow it for no gain.
+[[gnu::always_inline]] inline auto combine_columns_block(const auto &sc,
                                                          std::span<const size_t> cols,
                                                          uint64_t *blk,
                                                          size_t bb,

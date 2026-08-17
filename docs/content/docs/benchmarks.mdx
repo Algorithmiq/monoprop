@@ -370,8 +370,7 @@ uv run python run_scaling.py --output results/scaling.jsonl --timeout 300 \
   --threads monoprop=56 juliapp=28
 ```
 
-Two build notes: 324 qubits needs a `monoprop` mode tier at least that large
-(`-Dmonoprop_MAX_NUM_MODES=352`, since tiers come in 32-mode blocks), and the Julia engine here
+One build note: the Julia engine here
 needs the dev branch — `Pkg.add(url="https://github.com/SparqleSim/PauliPropagation.jl",
 rev="dev")` — while the fixed-size `run_model.jl` above is fine on the pinned v0.7.3.
 
@@ -439,6 +438,15 @@ aborts if MPI is missing; extra args are forwarded to `mpiexec` (as root, add
 - `test_model[hubbard]` — 120-qubit Fermi-Hubbard, 29-step Trotter.
 - `test_model[pauli]` — 127-qubit Pauli-basis kicked-Ising, 20 layers.
 
+| Option | Meaning | Default |
+|---|---|---|
+| `--model-rounds` | rounds per model; each rebuilds the model first | 1 |
+
+The default of one round records the memory and term-count statistics, which are deterministic, but
+gives no spread for the timing. Pass `--model-rounds 5` or more whenever a timing *difference* is the
+point of the run — a single sample on these models can sit well off the median, and comparing two
+one-sample runs will read noise as signal.
+
 Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`);
 `just bench --help` lists all.
 
@@ -447,6 +455,13 @@ Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`)
 Each run writes `results/time-<label>.json` (pytest-benchmark) and
 `<label>.json` (everything else); `report.py` merges all labels into
 `results/REPORT.md`.
+
+The random benchmarks are reported per physical picture, since their size comes from the CLI and is
+shared by every label. The fixed models get a **Fixed models** section instead, one table each, because
+each model carries its own mode count: term count, time, **cost per term**, peak and resting RSS, and
+monoprop's own operator accounting with its **bytes per term**. The two per-term figures are the ones to
+compare across widths — the models grow their term count with their mode count, so the totals beside
+them are not comparable on their own.
 
 ### Continuous benchmarking
 

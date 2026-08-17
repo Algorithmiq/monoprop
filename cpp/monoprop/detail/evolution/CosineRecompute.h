@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -39,10 +40,16 @@
 
 namespace monoprop::detail {
 
-// Reconstruct a layer's generator Monomial from the raw words stored on its LayerCore.
-template <size_t NumModes>
-inline auto generator_from_words(const std::vector<uint64_t> &gw) -> Monomial<NumModes> {
-    Monomial<NumModes> gen{};
+// Reconstruct a layer's generator from the raw words stored on its LayerCore.
+//
+// num_bits is passed rather than recovered as gw.size() * 64: the stored words are the generator's word
+// count, which does not pin down its bit width -- a width that is not a whole multiple of 64 rounds up
+// to the same word count, and the round trip would silently widen it (Bitset carries the used bits of
+// the last word, so `size()` and the top-bit mask would both come back wrong). The caller has the real
+// width in hand; the operator the generator is applied against is the one that defines it.
+inline auto generator_from_words(const std::vector<uint64_t> &gw, size_t num_bits) -> Bitset {
+    Bitset gen(num_bits);
+    assert(gw.size() == gen.num_words() && "generator words must match the operator's storage width");
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
     return gen;
 }
@@ -61,15 +68,14 @@ struct FoldMask {
     uint64_t last_mask = ~uint64_t{0};
 };
 
-template <size_t NumModes>
-inline auto make_fold_mask(const InvertedIndex<NumModes> &sc,
-                           const Monomial<NumModes> &gen,
+inline auto make_fold_mask(const auto &sc,
+                           const MonomialLike auto &gen,
                            uint64_t scaled_count,
                            Basis basis = Basis::Majorana) -> FoldMask {
     FoldMask s;
     // Pauli folds J(G) and never needs the odd-|G| parity correction (see Scan.h); Majorana applies it
     // when |G| is odd. Truncation bounds are basis-independent.
-    s.g_odd = algebra_fold_needs_odd_correction<NumModes>(basis, gen);
+    s.g_odd = algebra_fold_needs_odd_correction(basis, gen);
     const size_t full = sc.words();
     s.mask_words = std::min(full, static_cast<size_t>((scaled_count + 63) / 64));
     s.last_word = (s.mask_words == 0) ? 0 : s.mask_words - 1;
@@ -79,7 +85,8 @@ inline auto make_fold_mask(const InvertedIndex<NumModes> &sc,
 
 // A layer's cosine fold materialised into one buffer. Backs the pare materializer and the
 // recompute-equivalence test oracle.
-template <size_t NumModes>
+// No width parameter: every member is a byte/word count or a heap buffer, and none was ever sized by
+// one. It was templated only because its producer was.
 struct FoldCache {
     std::vector<uint64_t> combined; // the generator's columns XOR-combined over [0, fold.mask_words)
     FoldMask fold;
@@ -89,31 +96,26 @@ struct FoldCache {
 };
 
 // The odd-|G| row-parity words for a fold, or nullptr when the correction does not apply.
-template <size_t NumModes>
-inline auto fold_row_parity(const InvertedIndex<NumModes> &sc, const FoldMask &f) -> const uint64_t * {
+inline auto fold_row_parity(const auto &sc, const FoldMask &f) -> const uint64_t * {
     return f.g_odd ? sc.row_parity_words() : nullptr;
 }
 
-template <size_t NumModes>
-auto make_fold_cache(const InvertedIndex<NumModes> &sc,
-                     const Monomial<NumModes> &gen,
-                     uint64_t scaled_count,
-                     Basis basis) -> FoldCache<NumModes> {
-    FoldCache<NumModes> p;
-    p.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
-    p.row_parity = fold_row_parity<NumModes>(sc, p.fold);
+auto make_fold_cache(const auto &sc, const MonomialLike auto &gen, uint64_t scaled_count, Basis basis) -> FoldCache {
+    FoldCache p;
+    p.fold = make_fold_mask(sc, gen, scaled_count, basis);
+    p.row_parity = fold_row_parity(sc, p.fold);
     // generator_words stores the real G; re-derive the fold generator (J(G) for Pauli) as the scan did.
-    const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);
-    const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
+    const auto fold_gen = algebra_fold_generator(basis, gen);
+    const auto gen_columns = build_even_parity_generator_columns(fold_gen);
 
     // One combine over [0, mask_words): words >= mask_words are never read, so dropping them is exact.
     p.combined.resize(p.fold.mask_words); // combine_columns_block zero-fills
     if (p.fold.mask_words != 0) {
-        combine_columns_block<NumModes>(sc,
-                                        {gen_columns.indices.data(), gen_columns.count},
-                                        p.combined.data(),
-                                        0,
-                                        p.fold.mask_words);
+        combine_columns_block(sc,
+                              {gen_columns.indices.data(), gen_columns.count},
+                              p.combined.data(),
+                              0,
+                              p.fold.mask_words);
     }
     return p;
 }
@@ -134,8 +136,7 @@ auto make_fold_cache(const InvertedIndex<NumModes> &sc,
     return bits;
 }
 
-template <size_t NumModes>
-[[gnu::always_inline]] inline auto fold_word(const FoldCache<NumModes> &p, size_t wi) -> uint64_t {
+[[gnu::always_inline]] inline auto fold_word(const auto &p, size_t wi) -> uint64_t {
     return apply_fold_mask(p.combined[wi], wi, p.fold, p.row_parity);
 }
 
@@ -150,30 +151,25 @@ template <typename BitOp>
 
 // Metadata to recompute a layer's cosine fold on the fly, with no per-layer cos buffer.
 //
-// `columns` is heap-sized to |G| (typically 2-4) rather than reusing EvenParityGeneratorColumns' fixed
-// std::array<size_t, 2*NumModes>: a LazyFold is retained per graph layer, 4 KB each at NumModes=256.
-template <size_t NumModes>
+// `columns` is heap-sized to |G| (typically 2-4): a LazyFold is retained per graph layer, and sizing it
+// by the register width instead would have cost 4 KB each at 256 modes. Carries no width parameter, for
+// the same reason as FoldCache.
 struct LazyFold {
     std::vector<size_t> columns;
     FoldMask fold;
 };
 
-template <size_t NumModes>
-auto make_lazy_fold(const InvertedIndex<NumModes> &sc,
-                    const Monomial<NumModes> &gen,
-                    uint64_t scaled_count,
-                    Basis basis) -> LazyFold<NumModes> {
-    LazyFold<NumModes> r;
-    r.fold = make_fold_mask<NumModes>(sc, gen, scaled_count, basis);
-    const auto fold_gen = algebra_fold_generator<NumModes>(basis, gen);
-    const auto columns = build_even_parity_generator_columns<NumModes>(fold_gen);
+auto make_lazy_fold(const auto &sc, const MonomialLike auto &gen, uint64_t scaled_count, Basis basis) -> LazyFold {
+    LazyFold r;
+    r.fold = make_fold_mask(sc, gen, scaled_count, basis);
+    const auto fold_gen = algebra_fold_generator(basis, gen);
+    const auto columns = build_even_parity_generator_columns(fold_gen);
     r.columns.assign(columns.indices.begin(), columns.indices.begin() + columns.count);
     return r;
 }
 
 // The recompute analogue of fold_word, over a freshly-built block word (bb = the block's first fold word).
-template <size_t NumModes>
-[[gnu::always_inline]] inline auto recipe_fold_word(const LazyFold<NumModes> &r,
+[[gnu::always_inline]] inline auto recipe_fold_word(const auto &r,
                                                     const uint64_t *blk,
                                                     size_t bb,
                                                     size_t wi,
@@ -181,39 +177,32 @@ template <size_t NumModes>
     return apply_fold_mask(blk[wi - bb], wi, r.fold, row_parity);
 }
 
-template <size_t NumModes>
-auto scale_cos_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, double *coeff, double cos_val)
-    -> void {
+auto scale_cos_lazy(const auto &sc, const auto &r, double *coeff, double cos_val) -> void {
     const size_t mask_words = r.fold.mask_words;
-    const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
+    const uint64_t *row_parity = fold_row_parity(sc, r.fold);
     std::vector<uint64_t> &blk = column_block_scratch();
     for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
-        combine_columns_block<NumModes>(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
+        combine_columns_block(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
         for (size_t wi = bb; wi < be; ++wi) {
-            for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
+            for_each_cos_index(wi * 64, recipe_fold_word(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
                 coeff[i] *= cos_val;
             });
         }
     }
 }
 
-template <size_t NumModes>
-auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
-                         const LazyFold<NumModes> &r,
-                         double *state,
-                         double *ham,
-                         double cos_val,
-                         double sec_val) -> double {
+auto accumulate_cos_lazy(const auto &sc, const auto &r, double *state, double *ham, double cos_val, double sec_val)
+    -> double {
     const size_t mask_words = r.fold.mask_words;
-    const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
+    const uint64_t *row_parity = fold_row_parity(sc, r.fold);
     double loc = 0.0;
     std::vector<uint64_t> &blk = column_block_scratch();
     for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
-        combine_columns_block<NumModes>(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
+        combine_columns_block(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
         for (size_t wi = bb; wi < be; ++wi) {
-            for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
+            for_each_cos_index(wi * 64, recipe_fold_word(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
                 loc += state[i] * ham[i];
                 ham[i] *= sec_val;
                 state[i] *= cos_val;
@@ -245,11 +234,10 @@ inline auto accumulate_cos_mask(double *state, double *ham, const CosMask &cos, 
     return loc;
 }
 
-template <size_t NumModes>
-inline auto fold_to_cos_mask(const FoldCache<NumModes> &p) -> CosMask {
+inline auto fold_to_cos_mask(const auto &p) -> CosMask {
     CosMask c;
     for (size_t wi = 0; wi < p.fold.mask_words; ++wi) {
-        const uint64_t b = fold_word<NumModes>(p, wi);
+        const uint64_t b = fold_word(p, wi);
         if (b) {
             c.blocks.emplace_back(wi * 64, b);
             c.total_count += static_cast<size_t>(std::popcount(b));
@@ -258,20 +246,18 @@ inline auto fold_to_cos_mask(const FoldCache<NumModes> &p) -> CosMask {
     return c;
 }
 // Cos-index count without materialising the blocks; for diagnostics (graph_size).
-template <size_t NumModes>
-inline auto fold_popcount(const FoldCache<NumModes> &p) -> size_t {
+inline auto fold_popcount(const auto &p) -> size_t {
     size_t total = 0;
     for (size_t wi = 0; wi < p.fold.mask_words; ++wi) {
-        total += static_cast<size_t>(std::popcount(fold_word<NumModes>(p, wi)));
+        total += static_cast<size_t>(std::popcount(fold_word(p, wi)));
     }
     return total;
 }
 
-template <size_t NumModes>
-inline auto fold_to_indices(const FoldCache<NumModes> &p) -> VecZ {
+inline auto fold_to_indices(const auto &p) -> VecZ {
     VecZ inds;
     for (size_t wi = 0; wi < p.fold.mask_words; ++wi) {
-        for_each_cos_index(wi * 64, fold_word<NumModes>(p, wi), [&](size_t i) { inds.push_back(i); });
+        for_each_cos_index(wi * 64, fold_word(p, wi), [&](size_t i) { inds.push_back(i); });
     }
     return inds;
 }

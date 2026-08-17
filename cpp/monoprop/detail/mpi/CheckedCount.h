@@ -44,8 +44,8 @@ inline auto checked_mpi_count(long long value, const char *what = "Aggregate MPI
     return static_cast<int>(value);
 }
 
-// A buffer size is not int-bounded to begin with: a per-peer payload is kWords<NumModes> + 1 elements
-// per term, so a single wide-mode query round reaches INT_MAX well inside the term space
+// A buffer size is not int-bounded to begin with: a per-peer payload is one monomial's words plus a
+// phase word per term, so a single wide-mode query round reaches INT_MAX well inside the term space
 // monoprop_WIDE_TERM_INDEX advertises. Kept separate from the `long long` overload so a size_t above
 // LLONG_MAX cannot sign-flip on the way into the check.
 inline auto checked_mpi_count(size_t value, const char *what = "MPI count") -> int {

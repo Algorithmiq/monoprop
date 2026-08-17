@@ -60,14 +60,14 @@ inline auto slots_of_string(const std::string &p) -> VecZ {
 }
 
 template <size_t NumModes>
-auto native_bitset(const std::string &p) -> Monomial<NumModes> {
-    return indices_to_bitset<NumModes>(slots_of_string(p));
+auto native_bitset(const std::string &p) -> Bitset {
+    return indices_to_bitset(slots_of_string(p), 2 * NumModes);
 }
 
 // Decode the single-qubit letter of qubit q from a native-encoded bitset
 // (MSb0 physical mapping): slot 2q is the x-plane bit, slot 2q+1 the z-plane bit.
 template <size_t NumModes>
-auto letter_from_bitset(const Monomial<NumModes> &mono, size_t q) -> char {
+auto letter_from_bitset(const Bitset &mono, size_t q) -> char {
     const bool u = mono.test(2 * NumModes - 1 - 2 * q); // slot 2q
     const bool v = mono.test(2 * NumModes - 2 - 2 * q); // slot 2q+1
     if (!u && !v) {
@@ -116,15 +116,17 @@ inline auto pauli_to_fermi_indices(const std::string &pauli) -> VecZ {
 }
 
 template <size_t NumModes>
-auto jw_bitset(const std::string &p) -> Monomial<NumModes> {
-    return indices_to_bitset<NumModes>(pauli_to_fermi_indices(p));
+auto jw_bitset(const std::string &p) -> Bitset {
+    return indices_to_bitset(pauli_to_fermi_indices(p), 2 * NumModes);
 }
 
 // jordan_wigner_basis_change(n) as a full-width (2*NumModes) basis so
 // change_basis can index it by slot.
 template <size_t NumModes>
-auto jw_basis(size_t n) -> MonomialList<NumModes> {
-    MonomialList<NumModes> basis(2 * NumModes);
+auto jw_basis(size_t n) -> MonomialList {
+    // The fill value carries the width: a sized MonomialList would otherwise hold width-0 bitsets, and
+    // the slots past 2*n are never assigned below yet still reach change_basis's XOR.
+    MonomialList basis(2 * NumModes, Bitset(2 * NumModes));
     for (size_t i = 0; i < n; ++i) {
         VecZ z_str;
         for (size_t z = 0; z < 2 * i; ++z) {
@@ -134,8 +136,8 @@ auto jw_basis(size_t n) -> MonomialList<NumModes> {
         even_vec.push_back(2 * i);
         VecZ odd_vec = z_str;
         odd_vec.push_back(2 * i + 1);
-        basis[2 * i] = indices_to_bitset<NumModes>(even_vec);
-        basis[2 * i + 1] = indices_to_bitset<NumModes>(odd_vec);
+        basis[2 * i] = indices_to_bitset(even_vec, 2 * NumModes);
+        basis[2 * i + 1] = indices_to_bitset(odd_vec, 2 * NumModes);
     }
     return basis;
 }

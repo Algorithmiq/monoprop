@@ -19,7 +19,6 @@ from __future__ import annotations
 import importlib.util
 
 from ._core import (
-    MAX_NUM_MODES,
     __build_type__,
     __compiler_flags__,
     __variant__,
@@ -44,7 +43,6 @@ from .pauli_propagator import PauliPropagator
 from .utils import jordan_wigner_basis_change
 
 __all__ = [
-    "MAX_NUM_MODES",
     "Circuit",
     "ExpGate",
     "FermiOperator",

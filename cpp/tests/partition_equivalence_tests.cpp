@@ -41,19 +41,19 @@ constexpr size_t kNumModes = 8;
 constexpr unsigned int kCutoff = 4;
 
 auto majorana_sim(const CaseData &data, size_t partitions, std::optional<double> lower_atol = std::nullopt)
-    -> MonomialPropagator<kNumModes> {
-    return MonomialPropagator<kNumModes>(data.hamiltonian,
-                                         kCutoff,
-                                         data.initial_state,
-                                         std::nullopt,
-                                         MPI_COMM_SELF,
-                                         lower_atol,
-                                         std::nullopt,
-                                         CutoffType::Length,
-                                         std::nullopt,
-                                         kNumModes,
-                                         Basis::Majorana,
-                                         partitions);
+    -> MonomialPropagator {
+    return test_utils::make_propagator<kNumModes>(data.hamiltonian,
+                                                  kCutoff,
+                                                  data.initial_state,
+                                                  std::nullopt,
+                                                  MPI_COMM_SELF,
+                                                  lower_atol,
+                                                  std::nullopt,
+                                                  CutoffType::Length,
+                                                  std::nullopt,
+                                                  kNumModes,
+                                                  Basis::Majorana,
+                                                  partitions);
 }
 
 BOOST_AUTO_TEST_CASE(partition_majorana_energy_matches_across_partition_counts) {
@@ -155,7 +155,7 @@ BOOST_AUTO_TEST_CASE(partition_raw_accessors_reject_a_facade) {
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     BOOST_CHECK_THROW(static_cast<void>(sim.graph()), std::runtime_error);
     BOOST_CHECK_THROW(static_cast<void>(sim.mp_op()), std::runtime_error);
-    BOOST_CHECK_THROW(static_cast<void>(sim.indexing()), std::runtime_error);
+    BOOST_CHECK_THROW(static_cast<void>(sim.num_local_terms()), std::runtime_error);
     BOOST_CHECK_THROW(static_cast<void>(sim.graph_data()), std::runtime_error);
 
     auto solo = majorana_sim(data, 1);
@@ -174,18 +174,18 @@ BOOST_AUTO_TEST_CASE(partition_setters_reach_every_partition) {
     const auto data = load_case_data<kLihModes>("lih_fermionic_spin_exact.msgpack");
 
     auto build = [&](unsigned int cutoff, unsigned int updated_cutoff) {
-        MonomialPropagator<kLihModes> sim(data.hamiltonian,
-                                          cutoff,
-                                          data.initial_state,
-                                          std::nullopt,
-                                          MPI_COMM_SELF,
-                                          std::nullopt,
-                                          std::nullopt,
-                                          CutoffType::Length,
-                                          std::nullopt,
-                                          kLihModes,
-                                          Basis::Majorana,
-                                          /*partitions=*/4);
+        auto sim = test_utils::make_propagator<kLihModes>(data.hamiltonian,
+                                                          cutoff,
+                                                          data.initial_state,
+                                                          std::nullopt,
+                                                          MPI_COMM_SELF,
+                                                          std::nullopt,
+                                                          std::nullopt,
+                                                          CutoffType::Length,
+                                                          std::nullopt,
+                                                          kLihModes,
+                                                          Basis::Majorana,
+                                                          /*partitions=*/4);
         if (cutoff != updated_cutoff) {
             sim.update_cutoff(updated_cutoff);
             BOOST_CHECK_EQUAL(sim.cutoff(), updated_cutoff);
@@ -207,7 +207,7 @@ BOOST_AUTO_TEST_CASE(partition_deep_copy_matches) {
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const double e = sim.expectation_value(data.parameters);
 
-    MonomialPropagator<kNumModes> copy(sim); // clones the partition group (fresh threads + ShmComm)
+    MonomialPropagator copy(sim); // clones the partition group (fresh threads + ShmComm)
     const double e_copy = copy.expectation_value(data.parameters);
     BOOST_CHECK_EQUAL(e, e_copy);
     BOOST_CHECK_EQUAL(sim.size(), copy.size());
@@ -215,23 +215,23 @@ BOOST_AUTO_TEST_CASE(partition_deep_copy_matches) {
 
 constexpr size_t kNq = 6;
 
-auto pauli_sim(const std::map<std::string, double> &obs, size_t partitions) -> MonomialPropagator<kNq> {
+auto pauli_sim(const std::map<std::string, double> &obs, size_t partitions) -> MonomialPropagator {
     OperatorDict init;
     for (const auto &[p, c] : obs) {
         init[slots_of_string(p)] = std::complex<double>(c, 0.0);
     }
-    return MonomialPropagator<kNq>(init,
-                                   /*cutoff=*/kNq,
-                                   /*initial_state=*/{},
-                                   std::nullopt,
-                                   MPI_COMM_SELF,
-                                   /*lower_atol=*/1e-12,
-                                   std::nullopt,
-                                   CutoffType::Support,
-                                   std::nullopt,
-                                   kNq,
-                                   Basis::Pauli,
-                                   partitions);
+    return test_utils::make_propagator<kNq>(init,
+                                            /*cutoff=*/kNq,
+                                            /*initial_state=*/{},
+                                            std::nullopt,
+                                            MPI_COMM_SELF,
+                                            /*lower_atol=*/1e-12,
+                                            std::nullopt,
+                                            CutoffType::Support,
+                                            std::nullopt,
+                                            kNq,
+                                            Basis::Pauli,
+                                            partitions);
 }
 
 auto run_pauli_energy(size_t partitions) -> std::pair<double, size_t> {
@@ -283,35 +283,35 @@ BOOST_AUTO_TEST_CASE(partition_pauli_energy_matches_across_partition_counts) {
 BOOST_AUTO_TEST_CASE(partition_factory_exception_propagates_without_terminate) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     // logical_num_modes = 0 is rejected by each partition's own constructor, on its own master thread.
-    BOOST_CHECK_THROW(MonomialPropagator<kNumModes>(data.hamiltonian,
-                                                    kCutoff,
-                                                    data.initial_state,
-                                                    std::nullopt,
-                                                    MPI_COMM_SELF,
-                                                    std::nullopt,
-                                                    std::nullopt,
-                                                    CutoffType::Length,
-                                                    std::nullopt,
-                                                    /*logical_num_modes=*/0,
-                                                    Basis::Majorana,
-                                                    /*partitions=*/4),
+    BOOST_CHECK_THROW(test_utils::make_propagator<kNumModes>(data.hamiltonian,
+                                                             kCutoff,
+                                                             data.initial_state,
+                                                             std::nullopt,
+                                                             MPI_COMM_SELF,
+                                                             std::nullopt,
+                                                             std::nullopt,
+                                                             CutoffType::Length,
+                                                             std::nullopt,
+                                                             /*logical_num_modes=*/0,
+                                                             Basis::Majorana,
+                                                             /*partitions=*/4),
                       std::runtime_error);
 
     // An out-of-range operator index takes the same path, and the group stays usable afterwards.
     auto bad_op = data.hamiltonian;
     bad_op[VecZ{2 * kNumModes}] = std::complex<double>(1.0, 0.0);
-    BOOST_CHECK_THROW(MonomialPropagator<kNumModes>(bad_op,
-                                                    kCutoff,
-                                                    data.initial_state,
-                                                    std::nullopt,
-                                                    MPI_COMM_SELF,
-                                                    std::nullopt,
-                                                    std::nullopt,
-                                                    CutoffType::Length,
-                                                    std::nullopt,
-                                                    kNumModes,
-                                                    Basis::Majorana,
-                                                    /*partitions=*/4),
+    BOOST_CHECK_THROW(test_utils::make_propagator<kNumModes>(bad_op,
+                                                             kCutoff,
+                                                             data.initial_state,
+                                                             std::nullopt,
+                                                             MPI_COMM_SELF,
+                                                             std::nullopt,
+                                                             std::nullopt,
+                                                             CutoffType::Length,
+                                                             std::nullopt,
+                                                             kNumModes,
+                                                             Basis::Majorana,
+                                                             /*partitions=*/4),
                       std::runtime_error);
     BOOST_CHECK_NO_THROW(majorana_sim(data, 4));
 }
