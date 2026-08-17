@@ -219,9 +219,8 @@ jobs:
         uses: pypa/gh-action-pypi-publish@v1.14.2
 
   upload_pypi_bench_tools:
-    # Separate from `upload_pypi` because it is a separate PyPI project: it needs its own
-    # trusted-publisher entry (this workflow, the `pypi` environment), and a failure here
-    # must not hold back the library's own release.
+    # Separate from `upload_pypi` because it is a separate PyPI project, with its own
+    # trusted-publisher entry
     name: Upload monoprop-bench-tools to PyPI
     needs: build-bench-tools
     if: github.event_name == 'release' && github.event.action == 'published'
