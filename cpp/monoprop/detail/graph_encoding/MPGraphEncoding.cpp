@@ -46,25 +46,6 @@ auto checked_world_slot(size_t rank) -> uint32_t {
     return static_cast<uint32_t>(rank);
 }
 
-auto build_layer_exchange_layout(const std::vector<size_t> &send_counts, int scale, const char *what)
-    -> LayerExchangeLayout {
-    const std::string count_label = std::format("{} count", what);
-    const std::string displacement_label = std::format("{} displacement", what);
-
-    LayerExchangeLayout layout;
-    layout.counts.resize(send_counts.size());
-    layout.displs.resize(send_counts.size());
-    size_t total = 0;
-    for (size_t r = 0; r < send_counts.size(); ++r) {
-        const size_t count = static_cast<size_t>(scale) * send_counts[r];
-        layout.counts[r] = checked_mpi_int(count, count_label.c_str());
-        layout.displs[r] = checked_mpi_int(total, displacement_label.c_str());
-        total += count;
-    }
-    layout.total_count = total;
-    return layout;
-}
-
 auto checked_term_index(size_t value, const char *what) -> TermIndex {
     if (value > static_cast<size_t>(std::numeric_limits<TermIndex>::max())) {
         throw std::overflow_error(

@@ -22,9 +22,12 @@
 #include <stdexcept>
 #include <vector>
 
+#include "ExchangeLayoutOracle.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 
 using namespace monoprop;
+
+using exchange_layout_oracle::build_layer_exchange_layout;
 
 BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_push_index_coalesces_within_word) {
     CosineWordBuilder b;
@@ -120,12 +123,12 @@ BOOST_AUTO_TEST_CASE(graph_encoding_packed_phase_at_reads_int8_values) {
 BOOST_AUTO_TEST_CASE(graph_encoding_exchange_layout_scale_and_displacements) {
     const std::vector<size_t> send_counts = {3, 0, 5};
 
-    const auto s1 = detail::build_layer_exchange_layout(send_counts, /*scale=*/1);
+    const auto s1 = build_layer_exchange_layout(send_counts, /*scale=*/1);
     BOOST_CHECK((s1.counts == std::vector<int>{3, 0, 5}));
     BOOST_CHECK((s1.displs == std::vector<int>{0, 3, 3})); // prefix sum: 0, 0+3, 3+0
     BOOST_CHECK_EQUAL(s1.total_count, 8U);
 
-    const auto s2 = detail::build_layer_exchange_layout(send_counts, /*scale=*/2);
+    const auto s2 = build_layer_exchange_layout(send_counts, /*scale=*/2);
     BOOST_CHECK((s2.counts == std::vector<int>{6, 0, 10}));
     BOOST_CHECK((s2.displs == std::vector<int>{0, 6, 6}));
     BOOST_CHECK_EQUAL(s2.total_count, 16U);
@@ -135,8 +138,9 @@ BOOST_AUTO_TEST_CASE(graph_encoding_exchange_layout_scale_and_displacements) {
 
 // The layout is no longer stored, so the claim under test is EQUIVALENCE: what the exchange
 // derives at the call site must equal, elementwise, what the retained copy used to hold. Asserted
-// against build_layer_exchange_layout rather than against hand-written literals, so the two cannot
-// drift apart in the same direction.
+// against the oracle in ExchangeLayoutOracle.h rather than against hand-written literals, so the
+// two cannot drift apart in the same direction -- which is also why the oracle is not in the
+// library: one that shipped beside the derivation would be edited beside it too.
 namespace {
 
 auto slot_partners(const std::vector<size_t> &sin_send_counts) -> std::vector<CrossRankPartnerData> {
@@ -162,7 +166,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_derived_layout_matches_the_layout_it_replace
         expected_counts[my_rank] = 0;
 
         for (const int scale : {1, 2}) {
-            const auto reference = detail::build_layer_exchange_layout(expected_counts, scale);
+            const auto reference = build_layer_exchange_layout(expected_counts, scale);
             LayerExchangeLayout derived;
             detail::derive_exchange_layout(storage, my_rank, scale, derived);
 
