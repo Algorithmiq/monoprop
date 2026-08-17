@@ -112,7 +112,9 @@ struct CrossRankPartnerData {
     // Default-init: every element is overwritten before any read.
     DefaultInitVector<size_t> sin_send_indices;
     DefaultInitVector<std::pair<size_t, int>> sin_recv_entries;
-    // Size of the in-block (P).
+    // Size of the in-block (P). A boundary within sin_send_indices, so P <= sin_send_indices.size();
+    // build_packed_cross_rank_storage refuses anything else, because the out-block size is derived
+    // as P+Q - P in unsigned width and would otherwise wrap instead of going negative.
     size_t in_count = 0;
 };
 
