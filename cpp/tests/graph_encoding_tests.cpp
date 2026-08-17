@@ -132,8 +132,6 @@ BOOST_AUTO_TEST_CASE(graph_encoding_exchange_layout_scale_and_displacements) {
     BOOST_CHECK((s2.counts == std::vector<int>{6, 0, 10}));
     BOOST_CHECK((s2.displs == std::vector<int>{0, 6, 6}));
     BOOST_CHECK_EQUAL(s2.total_count, 16U);
-
-    BOOST_CHECK_GT(detail::layer_exchange_layout_storage_bytes(s1), 0U);
 }
 
 // The layout is no longer stored, so the claim under test is EQUIVALENCE: what the exchange

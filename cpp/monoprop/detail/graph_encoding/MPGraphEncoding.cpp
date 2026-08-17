@@ -190,11 +190,6 @@ auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t 
     return count;
 }
 
-
-auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t {
-    return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
-}
-
 auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
                             size_t my_rank,
                             int scale,

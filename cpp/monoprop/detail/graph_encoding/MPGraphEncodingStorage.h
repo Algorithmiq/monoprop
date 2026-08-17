@@ -210,8 +210,6 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
                             LayerExchangeLayout &out,
                             const char *what = "Layer exchange") -> void;
 
-auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t;
-
 // Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so
 // MPI_Alltoallv skips it (replay does a local copy).
 auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
