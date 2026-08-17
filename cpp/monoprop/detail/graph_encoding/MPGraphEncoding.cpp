@@ -225,8 +225,7 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
         if (slot == my_rank) {
             return; // excluded from the transfer and handled locally, as the stored layout did
         }
-        out.counts[slot] =
-            checked_mpi_int(static_cast<size_t>(scale) * view.sin_send_count, count_label.c_str());
+        out.counts[slot] = checked_mpi_int(static_cast<size_t>(scale) * view.sin_send_count, count_label.c_str());
     });
 
     // The prefix sum stays dense: MPI_Alltoallv wants a displacement for every rank, and an empty

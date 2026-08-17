@@ -106,10 +106,8 @@ auto layer_exchange_participates(const mpi::Comm &comm) -> bool {
 // every layer (see check_exchange_symmetry). A campaign at world 32 and 256 compared 550M slots
 // with no mismatch. The call below is unconditional in every build even so, because it also
 // enforces the layout's width against the communicator, which is a precondition and not an audit.
-auto derive_layer_exchange(const LayerTraversal &layer,
-                           const mpi::Comm &comm,
-                           int scale,
-                           FlatExchangeBuffers &buffers) -> void {
+auto derive_layer_exchange(const LayerTraversal &layer, const mpi::Comm &comm, int scale, FlatExchangeBuffers &buffers)
+    -> void {
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
     const char *what = scale == 1 ? "Layer exchange" : "Layer derivative exchange";
     detail::derive_exchange_layout(layer.cross_rank(), my_rank, scale, buffers.layout, what);
