@@ -96,14 +96,6 @@ cache-keys = [
 ]
 
 
-# One lockfile for monoprop and the tooling it releases alongside itself, so a
-# `uv sync` cannot leave the two at incompatible versions.
-#
-# `packages/bench-third-party` is deliberately excluded. It pins a narrower
-# `requires-python`, a git dependency, and CUDA-specific `cupy` / `cuquantum`
-# wheels that exist only for linux-x86_64; folding those into this lock would
-# constrain (and frequently break) resolution for everyone who only wants to
-# build monoprop. It stays a standalone uv project with its own lockfile.
 [tool.uv.workspace]
 members = ["packages/*"]
 exclude = ["packages/bench-third-party"]
