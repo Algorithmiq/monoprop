@@ -122,23 +122,28 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm)
 }
 
 auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm) -> void {
-    // One read of the environment, not one per layer. Rank-uniform by assumption: this is a
-    // collective, so a variable set on some ranks and not others hangs rather than misreports.
-    static const bool enabled = std::getenv("MONOPROP_CHECK_EXCHANGE_SYMMETRY") != nullptr;
-    if (!enabled) {
-        return;
-    }
     const auto n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);
-    // alltoall_counts moves comm_size ints each way regardless of `n`, so a send vector that is not
-    // exactly one entry per rank reads and writes out of bounds — reachable because layouts outlive
-    // propagator copies and pare rebuilds.
+    // Above the gate deliberately: the width of the layout is a PRECONDITION of posting the
+    // exchange at all, not part of the optional symmetry audit below, so it must hold on every
+    // build and every path. MPI_Alltoallv reads comm_size counts and comm_size displacements
+    // regardless of `n`, so begin_flat_exchange hands it a short array and the library reads off
+    // the end — undefined behaviour where an exception belongs. Reachable because layouts outlive
+    // propagator copies and pare rebuilds: a graph built for one communicator can be replayed on
+    // another of a different size.
     if (n != comm_size) {
         throw CollectiveArgumentError(
             std::format("Exchange layout has {} send counts but the communicator has {} ranks — a graph built for one "
                         "communicator cannot be replayed on another of a different size.",
                         n,
                         comm_size));
+    }
+
+    // One read of the environment, not one per layer. Rank-uniform by assumption: this is a
+    // collective, so a variable set on some ranks and not others hangs rather than misreports.
+    static const bool enabled = std::getenv("MONOPROP_CHECK_EXCHANGE_SYMMETRY") != nullptr;
+    if (!enabled) {
+        return;
     }
     std::vector<int> recv_counts(static_cast<size_t>(n));
     alltoall_counts(send_counts.data(), recv_counts.data(), n, comm);
