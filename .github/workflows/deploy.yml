@@ -126,9 +126,6 @@ jobs:
           path: dist/*.tar.gz
 
   build-bench-tools:
-    # `monoprop-bench-tools` is pure Python and versioned off the same git tags, so it
-    # rides this workflow rather than one of its own. It needs no cibuildwheel matrix:
-    # one sdist and one universal wheel cover every platform.
     name: Build monoprop-bench-tools
     needs: check-pr-changes
     if: ${{ github.event_name != 'pull_request' || needs.check-pr-changes.outputs.should-run == 'true' }}
