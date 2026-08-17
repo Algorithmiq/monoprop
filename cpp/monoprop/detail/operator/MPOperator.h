@@ -28,6 +28,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
+#include "monoprop/ValuePtr.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
@@ -60,9 +61,10 @@ public:
 
 template <size_t NumModes>
 struct MPOperator {
-    // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
-    // itself cheaply movable). Always non-null.
-    std::unique_ptr<OperatorIndex<NumModes>> store = std::make_unique<OperatorIndex<NumModes>>();
+    // The store is non-copyable/non-movable, so it is heap-owned (keeping MPOperator itself cheaply
+    // movable); value_ptr clones it through OperatorIndex::clone(), which is what lets MPOperator declare
+    // no special member of its own. Always non-null.
+    value_ptr<OperatorIndex<NumModes>> store = make_value<OperatorIndex<NumModes>>();
     VecD op_coeffs = {};
     // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
     // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are
@@ -79,21 +81,8 @@ struct MPOperator {
     Basis basis = Basis::Majorana;
     mutable std::optional<InvertedIndex<NumModes>> inverted_index_ = std::nullopt;
 
-    MPOperator() noexcept = default;
-    MPOperator(MPOperator &&) noexcept = default;
-    MPOperator &operator=(MPOperator &&) noexcept = default;
-
-    MPOperator(const MPOperator &other)
-        : store(other.store->clone()),
-          op_coeffs(other.op_coeffs),
-          state_rows_(other.state_rows_),
-          state_vals_(other.state_vals_),
-          state_scored_rows_(other.state_scored_rows_),
-          state_coeffs(other.state_coeffs),
-          init_op_map(other.init_op_map),
-          initial_state(other.initial_state),
-          basis(other.basis),
-          inverted_index_(other.inverted_index_) {}
+    // Rule of Zero: every special member is implicit, so a member added above is copied and moved without
+    // an edit here. Copying deep-copies the store; moving steals it.
 
     auto size() const -> size_t { return store->size(); }
 

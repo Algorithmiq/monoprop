@@ -133,9 +133,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                                   basis,
                                                                   /*partitions=*/1);
         };
-        partition_group_ = std::make_unique<detail::partition::PartitionGroup<NumModes>>(static_cast<int>(n_partitions),
-                                                                                         factory,
-                                                                                         comm);
+        partition_group_ =
+            make_value<detail::partition::PartitionGroup<NumModes>>(static_cast<int>(n_partitions), factory, comm);
         return;
     }
 
@@ -166,7 +165,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     const size_t expected_local_terms = std::max<size_t>(1, op.size() / std::max<size_t>(1, num_ranks));
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
-    mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
+    mp_op_.store = make_value<detail::OperatorIndex<NumModes>>(packed_inline_width_());
     mp_op_.store->reserve(expected_local_terms);
     // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
     mp_op_.inverted_index_.reset();
@@ -186,30 +185,6 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
 
     initialize_operator_caches_();
 }
-
-template <size_t NumModes>
-MonomialPropagator<NumModes>::~MonomialPropagator() = default;
-
-template <size_t NumModes>
-MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other)
-    : schrodinger_(other.schrodinger_),
-      comm_(other.comm_),
-      cutoff_fn_(other.cutoff_fn_),
-      mp_op_(other.mp_op_),
-      graph_(other.graph_),
-      matched_scratch_(other.matched_scratch_),
-      cutoff_(other.cutoff_),
-      lower_atol_(other.lower_atol_),
-      upper_atol_(other.upper_atol_),
-      core_term_(other.core_term_),
-      initial_operator_epoch_(other.initial_operator_epoch_),
-      logical_num_modes_(other.logical_num_modes_),
-      cutoff_type_(other.cutoff_type_),
-      basis_change_(other.basis_change_),
-      basis_(other.basis_),
-      partition_group_(other.partition_group_
-                           ? std::make_unique<detail::partition::PartitionGroup<NumModes>>(*other.partition_group_)
-                           : nullptr) {}
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t {

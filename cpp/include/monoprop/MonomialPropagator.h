@@ -39,6 +39,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 #include "monoprop/Validation.h"
+#include "monoprop/ValuePtr.h"
 #include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -54,8 +55,7 @@ class PartitionGroup;
 } // namespace detail
 
 /// A propagator setting is out of range, or inconsistent with another setting.
-// Covers a crossed atol pair and a logical width outside [1, NumModes]; also thrown from
-// MonomialPropagatorImpl.h
+// Covers a crossed atol pair and a logical width outside [1, NumModes].
 class PropagatorConfigError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -82,14 +82,6 @@ public:
                        size_t logical_num_modes = NumModes,
                        Basis basis = Basis::Majorana,
                        size_t partitions = 0);
-
-    /// Out-of-line because partition_group_ is a unique_ptr to an incomplete type here.
-    virtual ~MonomialPropagator();
-
-    /// Deep copy: clones the operator store, shares the immutable graph cores, and clones the whole
-    /// partition group on a facade. The virtual destructor suppresses implicit moves, so a "move" deep-copies.
-    MonomialPropagator(const MonomialPropagator &other);
-    auto operator=(const MonomialPropagator &) -> MonomialPropagator & = delete;
 
     static constexpr auto num_modes{NumModes};
     static constexpr auto storage_num_modes{NumModes};
@@ -322,7 +314,7 @@ private:
 
     // Intra-process partition runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a partition facade
     // whose own mp_op_/graph_ are unused and every method fans out to the S partition propagators.
-    std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
+    value_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
     // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
     friend class detail::partition::PartitionGroup<NumModes>;
 
