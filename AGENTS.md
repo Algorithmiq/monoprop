@@ -108,9 +108,9 @@ Key files:
   inside the calling thread's affinity mask, so when a launcher has given each co-located rank its own
   disjoint slice (`srun --cpu-bind=cores`), the slice *is* the rank's share. Passing the node-wide
   ranks-per-node through as `group_count` then asks for `group_count × n` cores out of a list that only
-  held `n`, `placement_order` correctly refuses, and every rank silently runs unpinned — which also costs
-  every rank silently runs unpinned. Measured on Deucalion at 8 ranks × 16 partitions: `--cpu-bind=cores`
-  and `--cpu-bind=threads` both leave **0** threads pinned per rank, against 16 under `--cpu-bind=none`.
+  held `n`, `placement_order` correctly refuses, and every rank silently runs unpinned. Measured on Deucalion
+  at 8 ranks × 16 partitions: `--cpu-bind=cores` and `--cpu-bind=threads` both leave **0** threads pinned per
+  rank, against 16 under `--cpu-bind=none`.
   `PartitionGroup::classify_node_masks_` therefore allgathers the raw affinity masks over its node-local
   communicator and `masks_are_pairwise_disjoint` **measures** disjointness; a private result passes
   `mask_is_private` to `partition_cpusets`, which collapses `group_count` to 1. Mask *width* cannot
