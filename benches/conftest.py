@@ -31,6 +31,7 @@ the slowest rank, and only rank 0 writes results.
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import os
 import socket
@@ -207,6 +208,26 @@ def _thp_setting() -> str:
         return "?"
 
 
+def _core_md5() -> str:
+    """Return the md5 of the extension module this run actually imported.
+
+    ``__version__`` is a git describe of the WORKTREE, stamped into the dist-info when the
+    package was installed; a later ``cmake --build`` plus a copy of the .so into the venv
+    does not rewrite it. So an arm can advertise the commit it was first installed at while
+    serving a binary from three commits later -- which is exactly how two genuinely different
+    arms came to report one version and get refused as "the same build".
+
+    The hash is the only thing that identifies a BUILD. Hash whatever ``_core`` resolved to,
+    not a path reconstructed from the source tree: site-packages holds its own copies, and
+    the point is to fingerprint the file that was loaded.
+    """
+    try:
+        path = Path(monoprop._core.__file__)  # noqa: SLF001
+        return hashlib.md5(path.read_bytes()).hexdigest()  # noqa: S324
+    except (AttributeError, OSError, TypeError):
+        return "unavailable"
+
+
 def _meta() -> dict[str, Any]:
     """Return this run's configuration metadata for the report.
 
@@ -224,6 +245,7 @@ def _meta() -> dict[str, Any]:
         "cpu_count_physical": psutil.cpu_count(logical=False),
         "hostname": socket.gethostname(),
         "monoprop_version": monoprop.__version__,
+        "monoprop_core_md5": _core_md5(),
         "monoprop_variant": monoprop.__variant__,
         "monoprop_compiler_flags": monoprop.__compiler_flags__,
         "monoprop_max_num_modes": monoprop.MAX_NUM_MODES,

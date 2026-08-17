@@ -42,52 +42,54 @@ ACCT="${MONOPROP_SLURM_ACCOUNT:?set MONOPROP_SLURM_ACCOUNT (see hpc/deucalion/en
 SRC="$MONOPROP_SRC"
 cd "$SRC" || exit 1
 
-# cell <tag> <nodes> <time> <ranks-per-node> <MODEL=..> [MODEL_ARGS=..]
+# cell <tag> <nodes> <time> <ranks-per-node> <WORKLOAD=..> [MODEL_ARGS=..]
+# WORKLOAD, not MODEL: ab.sh took over from models-ab.sh and drives the random
+# problem under the same name, so the axis is the workload rather than the model.
 cell () {
     local tag="$1" nodes="$2" time="$3" rpn="$4"; shift 4
     echo "-> $tag  N=$nodes t=$time rpn=$rpn  $*"
     env "$@" RANKS_PER_NODE="$rpn" RESULTS_TAG="$tag" REPS="${REPS:-6}" \
         sbatch --account="$ACCT" -N "$nodes" -t "$time" \
                --job-name="mpc-$tag" --chdir="$SRC" \
-               hpc/deucalion/sbatch/models-ab.sh
+               hpc/deucalion/sbatch/ab.sh
 }
 
 case "$WAVE" in
     wave1)  # the two anchors, plus the cheap rungs that cost almost nothing to have early
-        cell hub-c10-anchor 1 3:30:00 8 MODEL=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05
-        cell pau-c14-anchor 1 3:30:00 8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05
-        cell hub-c6 1 1:30:00 8 MODEL=hubbard CUTOFF=6 LOWER_ATOL=1.25e-05
-        cell pau-c10 1 1:00:00 8 MODEL=pauli CUTOFF=10 LOWER_ATOL=5e-05
-        cell pau-c12 1 1:30:00 8 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05
-        cell pau-l5 1 1:00:00 8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 \
+        cell hub-c10-anchor 1 3:30:00 8 WORKLOAD=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05
+        cell pau-c14-anchor 1 3:30:00 8 WORKLOAD=pauli CUTOFF=14 LOWER_ATOL=5e-05
+        cell hub-c6 1 1:30:00 8 WORKLOAD=hubbard CUTOFF=6 LOWER_ATOL=1.25e-05
+        cell pau-c10 1 1:00:00 8 WORKLOAD=pauli CUTOFF=10 LOWER_ATOL=5e-05
+        cell pau-c12 1 1:30:00 8 WORKLOAD=pauli CUTOFF=12 LOWER_ATOL=5e-05
+        cell pau-l5 1 1:00:00 8 WORKLOAD=pauli CUTOFF=14 LOWER_ATOL=5e-05 \
              MODEL_ARGS=--pauli-num-layers=5
         ;;
     wave2)  # the remaining sweep points, sized from wave1's measured wall time
-        cell hub-c8 1 3:00:00 8 MODEL=hubbard CUTOFF=8 LOWER_ATOL=1.25e-05
-        cell hub-s20 1 3:00:00 8 MODEL=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05 \
+        cell hub-c8 1 3:00:00 8 WORKLOAD=hubbard CUTOFF=8 LOWER_ATOL=1.25e-05
+        cell hub-s20 1 3:00:00 8 WORKLOAD=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05 \
              "MODEL_ARGS=--hubbard-num-sites=20 --hubbard-observable-site=15"
-        cell hub-s30 1 3:00:00 8 MODEL=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05 \
+        cell hub-s30 1 3:00:00 8 WORKLOAD=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05 \
              "MODEL_ARGS=--hubbard-num-sites=30 --hubbard-observable-site=23"
-        cell pau-l10 1 3:00:00 8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05 \
+        cell pau-l10 1 3:00:00 8 WORKLOAD=pauli CUTOFF=14 LOWER_ATOL=5e-05 \
              MODEL_ARGS=--pauli-num-layers=10
         ;;
     ranks)  # rank scaling at the anchors. Wall time is roughly flat in N -- setup is
             # replicated per rank and barely falls with node count -- so the limit does not
             # shrink as the node count grows.
-        cell hub-c10-N2 2 3:30:00 8 MODEL=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05
-        cell hub-c10-N4 4 3:30:00 8 MODEL=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05
-        cell pau-c14-N2 2 3:30:00 8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05
-        cell pau-c14-N4 4 3:30:00 8 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05
+        cell hub-c10-N2 2 3:30:00 8 WORKLOAD=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05
+        cell hub-c10-N4 4 3:30:00 8 WORKLOAD=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05
+        cell pau-c14-N2 2 3:30:00 8 WORKLOAD=pauli CUTOFF=14 LOWER_ATOL=5e-05
+        cell pau-c14-N4 4 3:30:00 8 WORKLOAD=pauli CUTOFF=14 LOWER_ATOL=5e-05
         ;;
     serial)  # "non-MPI": the MPI build at ONE rank x 16 partitions. This is NOT a build
              # without MPI -- conftest still imports mpi4py and bench_comm is COMM_WORLD at
              # size 1 -- and it uses 16 of the node's 128 cores, so it is not comparable
              # with the 8x16 cells. The limits are the measured 1x16 propagate times above
              # with about 2x margin, NOT 8x the 8x16 limit: see the note in the header.
-        cell hub-c10-serial 1 2:30:00 1 MODEL=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05
-        cell pau-c14-serial 1 2:30:00 1 MODEL=pauli CUTOFF=14 LOWER_ATOL=5e-05
-        cell hub-c6-serial 1 1:30:00 1 MODEL=hubbard CUTOFF=6 LOWER_ATOL=1.25e-05
-        cell pau-c12-serial 1 1:00:00 1 MODEL=pauli CUTOFF=12 LOWER_ATOL=5e-05
+        cell hub-c10-serial 1 2:30:00 1 WORKLOAD=hubbard CUTOFF=10 LOWER_ATOL=1.25e-05
+        cell pau-c14-serial 1 2:30:00 1 WORKLOAD=pauli CUTOFF=14 LOWER_ATOL=5e-05
+        cell hub-c6-serial 1 1:30:00 1 WORKLOAD=hubbard CUTOFF=6 LOWER_ATOL=1.25e-05
+        cell pau-c12-serial 1 1:00:00 1 WORKLOAD=pauli CUTOFF=12 LOWER_ATOL=5e-05
         ;;
     *)
         echo "unknown wave: $WAVE" >&2

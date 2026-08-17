@@ -1,0 +1,11 @@
+# The md5 of the shared baseline's _core.so. pr-ab.sh refuses to submit if the binary at
+# $BASELINE_TREE no longer hashes to this, because a rebuilt baseline silently re-bases every
+# ratio in the campaign and __version__ cannot catch it: the dist-info stamp is written at
+# install time and a later `cmake --build` plus a copy into the venv does not rewrite it, so
+# the stamp goes stale exactly when the binary changes.
+#
+# Re-pin deliberately, and re-run every PR already measured against the old one.
+#
+# Pinned 2026-08-17 from $PROJ/src/mp-main, a detached worktree at origin/main 6abd839,
+# built 2026-08-15 15:59, reporting version 0.8.1.dev37+g6abd839e6.
+f73d17f264e62f52987591dea0c79b50

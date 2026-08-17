@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Paired time+memory summary for ab-100m.sh.
+"""Paired time+memory summary for ab.sh.
 
 Reads the two artifacts an interleaved run drops per cell -- pytest-benchmark's
 `time-<label>.json` and the suite's own `<label>.json` -- and reports, per node count and
@@ -23,7 +23,7 @@ The headline ratio is the median of the PER-REP PAIRED ratios, not the ratio of 
 sides' medians. The two arms of a rep run back to back on the same node, so a node-state
 swing hits both and cancels in the quotient; taking medians per side first throws that
 pairing away and lets a swing that touched only one arm survive into the result. The
-pairing is the entire reason ab-100m.sh interleaves, and computing the ratio the obvious
+pairing is the entire reason ab.sh interleaves, and computing the ratio the obvious
 way spends it for nothing.
 
 `agree` -- how many reps point the same way as their median -- is reported next to every
@@ -41,6 +41,7 @@ otherwise print as a clean table full of meaningless ratios.
 from __future__ import annotations
 
 import json
+import math
 import re
 import statistics
 import sys
@@ -52,8 +53,8 @@ from pathlib import Path
 # Anchored on the layout's own shape rather than a greedy `.+`: with the group appended, a
 # greedy layout group swallows "B_8x16_fresh" and every cell lands in its own table.
 #
-# The model segment is optional so the random-problem runs (ab-100m.sh) keep parsing
-# unchanged; models-ab.sh emits it, and it becomes part of the table key. Without it every
+# The workload segment is optional so pre-ab.sh runs keep parsing unchanged; ab.sh always
+# emits it, and it becomes part of the table key. Without it every
 # model in a campaign directory collates into one table and the ratios average across
 # workloads that are not comparable.
 LABEL_RE = re.compile(
@@ -218,6 +219,37 @@ def agreement(ratios: list[float]) -> tuple[float | None, int, int]:
     return med, same, len(ratios)
 
 
+def sign_p(ratios: list[float]) -> float | None:
+    """Two-sided sign-test p for "the arms differ in direction at all".
+
+    Reported next to `agree` because the bare count invites over-reading, and did: a 4-rep
+    run showing 4/4 was called solid here, when 4/4 is the *best attainable* outcome at that
+    rep count and still only reaches p=0.125. **No four-rep run can be significant by sign
+    alone.** Three separate 100M runs each landed at p=0.13-0.18 on `propagate` at N=1;
+    only pooling their 17 paired observations (15/17 slower, p=0.002) established it.
+
+    The test deliberately throws away magnitude, so it is a floor rather than the whole
+    story: several reps agreeing at a consistent, large ratio carry information this does
+    not see. Use it to know when a count is doing less work than it appears to, not as the
+    sole verdict.
+    """
+    if not ratios:
+        return None
+    n = len(ratios)
+    k = max(sum(1 for r in ratios if r > 1.0), sum(1 for r in ratios if r <= 1.0))
+    return min(1.0, 2 * sum(math.comb(n, i) for i in range(k, n + 1)) / 2**n)
+
+
+def fmt_agree(agree: int, compared: int, ratios: list[float]) -> str:
+    """Render the agreement count with its sign-test p, e.g. ``7/9 p=.18``."""
+    if not compared:
+        return "-"
+    p = sign_p(ratios)
+    return f"{agree}/{compared}" + (
+        "" if p is None else f" p={p:.2f}".replace("0.", ".")
+    )
+
+
 def fmt_ms(seconds: float | None) -> str:
     """Render seconds as milliseconds, or a dash."""
     return "-" if seconds is None else f"{seconds * 1e3:.1f}"
@@ -293,7 +325,8 @@ def emit_table(
                 ),
             }
         main, port = stats["main"], stats["port"]
-        time_ratio, agree, compared = agreement(paired_ratios(by_side, op, "min"))
+        tratios = paired_ratios(by_side, op, "min")
+        time_ratio, agree, compared = agreement(tratios)
         mem_ratio = None
         if min(main["dmem"] or 0, port["dmem"] or 0) >= MEM_FLOOR:
             mem_ratio = ratio_of(port["dmem"], main["dmem"])
@@ -303,7 +336,7 @@ def emit_table(
         sizes = [s["bytes"] for s in (main, port) if s["bytes"] is not None]
         print(
             f"| {short_op(op)} | {fmt_ms(main['median'])} | {fmt_ms(port['median'])} "
-            f"| {verdict(time_ratio)} | {agree}/{compared} "
+            f"| {verdict(time_ratio)} | {fmt_agree(agree, compared, tratios)} "
             f"| {fmt_ms(main['min'])} | {fmt_ms(port['min'])} "
             f"| {fmt_gib(main['dmem'])} | {fmt_gib(port['dmem'])} "
             f"| {verdict(mem_ratio)} | {fmt_gib(max(sizes) if sizes else None)} "
@@ -319,7 +352,7 @@ def emit_table(
         # would flag every null result as unresolved and drown the real ones. Require the
         # spread to be wider than the effects being claimed: reps landing in 0.93..1.01
         # agree that nothing happened, while 0.41..2.44 agree on nothing at all.
-        ratios = paired_ratios(by_side, op, "min")
+        ratios = tratios
         spread = max(ratios) / min(ratios) if ratios and min(ratios) > 0 else 1.0
         if compared and agree < compared and spread > REGRESS + 0.15:
             flagged.append(
@@ -329,7 +362,7 @@ def emit_table(
             )
 
         for name, ratio, extra in (
-            ("time", time_ratio, f"paired, {agree}/{compared} reps agree"),
+            ("time", time_ratio, f"paired, {fmt_agree(agree, compared, tratios)} reps agree"),
             ("memory", mem_ratio, "peak above the operation's own floor"),
         ):
             if (
@@ -453,6 +486,77 @@ def _check_environment(cells: dict[str, Cell]) -> list[str]:
     return refusals
 
 
+def _check_builds(cells: dict[str, Cell]) -> list[str]:
+    """Refuse when the two arms are not actually two different builds.
+
+    The version was recorded but never asserted on, so an A/B that pointed both arms at the
+    same venv -- or at two checkouts of the same commit -- printed a full table of 1.00x and
+    called it flat. That is the most expensive way to fail here, because the output looks
+    exactly like a real negative result. ab.sh's PORT_VENV is required and is a DIFFERENT
+    branch's worktree, so getting this wrong takes only forgetting to pass it.
+
+    Absent is not a refusal. Only present-and-equal is: an arm can legitimately record nothing
+    (an older build with no such field), and refusing on absence would refuse the very
+    baseline comparisons this tool exists for.
+
+    Identity is the .so's md5, NOT ``__version__``. The version is a git describe of the
+    worktree stamped into the dist-info at install time; a later ``cmake --build`` and copy
+    into the venv does not rewrite it. So an arm can advertise the commit it was installed at
+    while serving a binary from several commits later. Keying on the version refused a run
+    whose two arms were provably distinct (different md5s, and a 3.17x graph-memory gap that
+    one binary cannot produce), and it would equally have PASSED two arms that shared a .so
+    across differing checkouts. The hash catches both directions; the version catches neither.
+
+    Versions are still reported, as a checkout-level breadcrumb. They are never refused on
+    when hashes are available. When no arm records a hash (artifacts older than this field),
+    fall back to the version -- a weak check is better than none, and absence is not a refusal.
+    """
+    refusals: list[str] = []
+    md5s: dict[str, set[str]] = {}
+    versions: dict[str, set[str]] = {}
+    for side in ("main", "port"):
+        metas = [
+            cell.results["meta"]
+            for cell in cells.values()
+            if cell.side == side and cell.results.get("meta")
+        ]
+        versions[side] = {str(m["monoprop_version"]) for m in metas if m.get("monoprop_version")}
+        md5s[side] = {
+            str(m["monoprop_core_md5"])
+            for m in metas
+            if m.get("monoprop_core_md5") and m["monoprop_core_md5"] != "unavailable"
+        }
+        print(f"- {side} version: {sorted(versions[side])}")
+        print(f"- {side} _core.so md5: {sorted(md5s[side]) or ['not recorded']}")
+        if len(md5s[side]) > 1:
+            refusals.append(
+                f"{side} arm ran {len(md5s[side])} different binaries across its reps: "
+                f"{sorted(md5s[side])} -- the arm was rebuilt mid-campaign"
+            )
+
+    if md5s["main"] and md5s["port"]:
+        shared = md5s["main"] & md5s["port"]
+        if shared:
+            refusals.append(
+                f"both arms ran the same binary (md5 {sorted(shared)}); there is nothing being "
+                "compared. Pass PORT_VENV explicitly -- its default points at another branch's "
+                "worktree."
+            )
+        elif versions["main"] & versions["port"]:
+            print(
+                "- note: the arms share a version string but differ in md5 -- an editable "
+                "install's stamp is stale, not its binary. Identity is the hash."
+            )
+    elif versions["main"] and versions["port"] and (versions["main"] & versions["port"]):
+        # No hashes recorded anywhere: pre-md5 artifacts, so the weak check is all there is.
+        refusals.append(
+            f"both arms report one version ({sorted(versions['main'] & versions['port'])}) and "
+            "neither records a binary hash, so they cannot be told apart. Re-run: the harness "
+            "now records _core.so's md5."
+        )
+    return refusals
+
+
 def check_provenance(cells: dict[str, Cell], *, allow_both_placed: bool) -> list[str]:
     """Return the reasons this run's tables must not be read as a result."""
     print("## Provenance\n")
@@ -460,6 +564,7 @@ def check_provenance(cells: dict[str, Cell], *, allow_both_placed: bool) -> list
         *_check_terms(cells),
         *_check_placement(cells, allow_both_placed=allow_both_placed),
         *_check_environment(cells),
+        *_check_builds(cells),
     ]
     print()
     return refusals

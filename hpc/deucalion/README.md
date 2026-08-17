@@ -537,19 +537,60 @@ srun --mpi=pmix --cpu-bind=none --distribution=block:block \
   written straight to fd 2 from a transport destructor, so without it a live instrument
   looks like one that never fired.
 
-### The 100M-term A/B
+### One command per PR
 
 ```bash
-sbatch -N1 -A "$MONOPROP_SLURM_ACCOUNT" -t 3:30:00 --chdir="$PWD" hpc/deucalion/sbatch/ab-100m.sh
-sbatch -N2 -A "$MONOPROP_SLURM_ACCOUNT" -t 3:00:00 --chdir="$PWD" hpc/deucalion/sbatch/ab-100m.sh
+DRY_RUN=1 hpc/deucalion/pr-ab.sh profiling perf/layer-profile   # print the chain, submit nothing
+hpc/deucalion/pr-ab.sh profiling perf/layer-profile
 ```
 
-Runs both builds in **one** allocation, order flipped every `(rep, cell)`, and reports
-time and memory per operation for `build_graph`, `propagate`, `energy`, `gradient`.
-Knobs: `MAIN_VENV` (`$PROJ/src/mp-main/.venv`), `PORT_VENV` (`$PROJ/src/mp-port/.venv`),
-`REPS` (4), `RESULTS_TAG`, `OBS_TERMS` (24000000), `NUM_MODES` (250),
-`RANKS_PER_NODE` (8), `PARTITIONS` (16). `benches/` comes from `$PWD` for both arms, so
-only the compiled extension differs.
+`pr-ab.sh` is a login-node submitter, not a job. It creates `$PROJ/src/ab-<pr>-port` at the
+ref, copies `hpc/` and `benches/` in from this checkout, then submits build → `ctest -L serial`
+→ `pytest --with-mpi` → the A/B cells → `pr_report.py`, chained with `--dependency=afterok`
+so a red gate stops everything before a measurement is taken. Output is one
+`$PROJ/runs/pr-<pr>/PR-AB-<pr>.md` in a format identical across every PR.
+
+**Always dry-run first.** Running this file to read its own help once submitted a real
+four-job chain and left a worktree behind.
+
+The **common grid** is the same in every PR: `hubbard` c10/1.25e-5 (~97M terms, `propagate`
+only — its graph path retains 29 layer-sets and exceeds a 242 GiB node) and `pauli` c14/5e-5
+(~91M terms, all four operations), layout B 8×16, N=1 and N=2, 6 interleaved reps.
+Highlight cells are added per PR as `label|ENV=v,ENV=v|-N1 -N2`:
+
+```bash
+EXTRA_CELLS='bind-cores|CPU_BIND=cores,ALLOW_BOTH_PLACED=0|-N1' \
+    hpc/deucalion/pr-ab.sh placement pr/partition-cgroup-placement
+```
+
+`RANKS_PER_NODE`, `PARTITIONS`, `CPU_BIND`, `ALLOW_BOTH_PLACED` and `WORKLOAD` are pulled out
+of that list and passed as `ab.sh`'s own variables, because each changes the label or a
+refusal; anything else is exported to **both** arms.
+
+**The baseline is built once and run every time.** `BASELINE_TREE` defaults to
+`$PROJ/src/mp-main` and is pinned by its `_core.so` md5 in `hpc/deucalion/baseline.md5`;
+`pr-ab.sh` refuses to submit if that binary moved, because a rebuilt baseline silently
+re-bases every ratio in the campaign and `__version__` cannot catch it. The baseline is still
+**re-run, interleaved, inside every allocation** — sharing the measurement rather than the
+build would put per-allocation drift entirely on one side.
+
+### The A/B driver itself
+
+```bash
+WORKLOAD=hubbard PORT_VENV=... sbatch -N1 -A "$MONOPROP_SLURM_ACCOUNT" -t 3:30:00 \
+    --chdir="$PWD" hpc/deucalion/sbatch/ab.sh
+```
+
+`ab.sh` replaces `ab-100m.sh` and `models-ab.sh`, which were one protocol driving two bench
+files; keeping two copies is how their summaries drifted into two formats. It runs both builds
+in **one** allocation, order flipped every `(rep, cell)`, and reports time and memory per
+operation for `build_graph`, `propagate`, `energy`, `gradient`.
+Knobs: `WORKLOAD` (`hubbard`|`pauli`|`random`), `MAIN_VENV`, `PORT_VENV` (required),
+`REPS` (6), `RESULTS_ROOT`, `RESULTS_TAG`, `CELL_SPEC`, `EXTRA_ENV`, `CPU_BIND` (`none`),
+`ALLOW_BOTH_PLACED` (1), `RANKS_PER_NODE` (8), `PARTITIONS` (16). `benches/` comes from `$PWD`
+for both arms, so only the compiled extension differs, and `monoprop_PARTITIONS` is exported
+explicitly rather than left to the engine's auto path — that path reads the visible core count,
+which is exactly what `--cpu-bind` and the placement fix perturb.
 
 Order of operations, each step cheap enough to catch the previous one's mistakes:
 
