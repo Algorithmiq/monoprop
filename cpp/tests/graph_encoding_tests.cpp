@@ -208,7 +208,11 @@ BOOST_AUTO_TEST_CASE(graph_encoding_a_zero_traffic_slot_still_gets_a_valid_displ
 BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_overflow_throws) {
     // A count that fits int at 1x but not at 2x. build_layer_storage_unified derives the 2x layout
     // eagerly, so the throw lands in build_graph and not inside the gradient collective window,
-    // where peers are already blocked in resolve_recv's count round -- a hang, not an error.
+    // where the peers of a rank that threw are already blocked in the layer's MPI_Ialltoallv against
+    // a size nobody will now send -- a hang, not an error. (This used to name resolve_recv's count
+    // round; that round is gone. The recv layout is the send layout, so no counts are exchanged and
+    // the peers block one call later, in the payload transfer itself. The reason the throw has to
+    // happen at build time is unchanged.)
     const size_t just_over_half = static_cast<size_t>(std::numeric_limits<int>::max()) / 2 + 1;
     const auto storage = detail::build_packed_cross_rank_storage(slot_partners({just_over_half}));
 
