@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pytest configuration for the monoprop-bench-tools test suite.
-"""
+"""Pytest configuration for the monoprop-bench-tools test suite."""
 
 from __future__ import annotations
 
@@ -23,7 +22,7 @@ import pytest
 
 try:
     from mpi4py import MPI
-except ImportError:  # pragma: no cover - exercised in non-MPI environments
+except ImportError:
     MPI = None
 
 
