@@ -101,9 +101,11 @@ auto layer_exchange_participates(const mpi::Comm &comm) -> bool {
 // Scaling is applied once, here, rather than to a scale-1 result: every rank multiplies by the
 // same literal, so the equality survives it.
 //
-// Verified end to end rather than reasoned about alone: with MONOPROP_CHECK_EXCHANGE_SYMMETRY set
-// the derived counts are checked against a real alltoall on every layer (see
-// check_exchange_symmetry). A campaign at world 32 and 256 compared 550M slots with no mismatch.
+// Verified end to end rather than reasoned about alone: in a build configured with
+// -Dmonoprop_CHECK_EXCHANGE_SYMMETRY=ON the derived counts are checked against a real alltoall on
+// every layer (see check_exchange_symmetry). A campaign at world 32 and 256 compared 550M slots
+// with no mismatch. The call below is unconditional in every build even so, because it also
+// enforces the layout's width against the communicator, which is a precondition and not an audit.
 auto derive_layer_exchange(const LayerTraversal &layer,
                            const mpi::Comm &comm,
                            int scale,
