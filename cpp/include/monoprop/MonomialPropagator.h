@@ -43,6 +43,7 @@
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/picture/Picture.h"
 
 namespace monoprop {
 namespace detail {
@@ -54,8 +55,7 @@ class PartitionGroup;
 } // namespace detail
 
 /// A propagator setting is out of range, or inconsistent with another setting.
-// Covers a crossed atol pair and a logical width outside [1, NumModes]; also thrown from
-// MonomialPropagatorImpl.h
+// Covers a crossed atol pair and a logical width outside [1, NumModes].
 class PropagatorConfigError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -70,10 +70,11 @@ public:
 template <size_t NumModes>
 class MonomialPropagator {
 public:
+    /// `picture` selects Heisenberg or Schrodinger; only the Schrodinger arm carries a state cutoff.
     MonomialPropagator(const OperatorDict &initial_operator,
                        unsigned int cutoff,
                        const VecZ &initial_state,
-                       std::optional<unsigned int> schrodinger_cutoff,
+                       const PictureSpec &picture,
                        mpi::Comm comm,
                        std::optional<double> lower_atol = std::nullopt,
                        std::optional<double> upper_atol = std::nullopt,
@@ -84,10 +85,10 @@ public:
                        size_t partitions = 0);
 
     /// Out-of-line because partition_group_ is a unique_ptr to an incomplete type here.
-    virtual ~MonomialPropagator();
+    ~MonomialPropagator();
 
     /// Deep copy: clones the operator store, shares the immutable graph cores, and clones the whole
-    /// partition group on a facade. The virtual destructor suppresses implicit moves, so a "move" deep-copies.
+    /// partition group on a facade. Declaring it suppresses the implicit moves, so a "move" deep-copies.
     MonomialPropagator(const MonomialPropagator &other);
     auto operator=(const MonomialPropagator &) -> MonomialPropagator & = delete;
 
@@ -210,7 +211,9 @@ public:
         });
     }
 
-    auto schrodinger() const -> bool { return schrodinger_; }
+    auto picture() const -> Picture { return picture_; }
+
+    auto schrodinger() const -> bool { return picture_ == Picture::Schrodinger; }
 
     auto basis() const -> Basis { return basis_; }
 
@@ -274,7 +277,9 @@ public:
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
-    virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
+    auto update_initial_operator(const OperatorDict &op_dict) -> void {
+        with_picture(picture_, [&]<typename P>() { this->template apply_initial_operator_<P>(op_dict); });
+    }
 
 protected:
     static inline const auto ev_fn = [](const EvalRequest &request,
@@ -288,10 +293,11 @@ protected:
 
     /// Distribute op_dict across ranks and apply this rank's share; returns its new (terms, coeffs)
     /// so caches can refresh.
+    template <typename P>
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
 
-    bool schrodinger_;
-    mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions
+    Picture picture_; // immutable after construction: no path switches the picture mid-simulation
+    mpi::Comm comm_;  // real MPI across nodes, or an in-process comm across partitions
     CutoffFn<NumModes> cutoff_fn_;
     detail::MPOperator<NumModes> mp_op_;
     MPGraph graph_;
@@ -397,25 +403,33 @@ private:
     auto validate_cutoff_config_(CutoffType cutoff_type, const std::optional<std::vector<VecZ>> &basis_change) const
         -> void;
 
+    // Everything below takes the picture as a policy type P, never as a runtime value: each public entry
+    // point binds it once with with_picture(), and the whole private layer is then written against one
+    // picture at a time. Nothing here re-tests which picture it is in.
+
+    template <typename P>
     auto initialize_operator_caches_() -> void;
 
-    auto current_picture_coeffs_() -> const VecD &;
-
+    // Grow `coeffs` to the operator's current term count, filling from the picture's live vector.
+    template <typename P>
     auto extend_coeffs_from_current_picture_if_needed_(VecD &coeffs) -> void;
 
+    template <typename P>
     auto evolve_mode_build_graph_(const std::vector<VecZ> &majoranas,
                                   const VecZ &parameter_mapping,
                                   const VecD &gen_coeffs,
                                   const VecZ &gate_indices,
                                   std::optional<size_t> only_rotate_len_k) -> void;
 
-    // Returns {build_angle, apply_angle}; apply is the build angle, negated in Schrödinger.
-    auto gate_angle_(const VecD &mapped_params, size_t i, size_t majoranas_size) const -> std::pair<double, double> {
-        const size_t idx = schrodinger_ ? i : majoranas_size - 1 - i;
-        const double build_angle = mapped_params[idx];
-        return {build_angle, schrodinger_ ? -build_angle : build_angle};
+    // Returns {build_angle, apply_angle}; apply is the build angle, negated in Schrödinger. `slot` is the
+    // optimizer-order slot run_gate_loop_ resolved for this step -- the one place the order rule lives.
+    template <typename P>
+    static auto gate_angle_(const VecD &mapped_params, size_t slot) -> std::pair<double, double> {
+        const double build_angle = mapped_params[slot];
+        return {build_angle, P::apply_sign * build_angle};
     }
 
+    template <typename P>
     auto evolve_mode_graph_with_coeffs_(const std::vector<VecZ> &majoranas,
                                         const VecZ &parameter_mapping,
                                         const VecD &gen_coeffs,
@@ -424,17 +438,23 @@ private:
                                         const VecD &operator_coeffs,
                                         std::optional<size_t> only_rotate_len_k) -> void;
 
+    // build_layer resolves the same policy for its fused sink, so the cosine sweep and the apply agree.
+    template <typename P>
     auto evolve_mode_contract_immediately_(const std::vector<VecZ> &majoranas,
                                            const VecZ &parameter_mapping,
                                            const VecD &gen_coeffs,
                                            const VecD &parameters,
                                            std::optional<size_t> only_rotate_len_k) -> void;
 
-    template <typename EvolutionFunc>
+    // Walks the gates in simulation order, calling evolution_func(generator, only_rotate_len_k, slot).
+    // `slot` is the optimizer-order index the step consumes; resolving it here is what keeps the picture's
+    // traversal direction in a single place.
+    template <typename P, typename EvolutionFunc>
     auto run_gate_loop_(const std::vector<VecZ> &majoranas,
                         std::optional<size_t> only_rotate_len_k,
                         EvolutionFunc evolution_func) -> void;
 
+    template <typename P>
     auto propagate_one_(const VecZ &gen_vec,
                         std::optional<size_t> only_rotate_len_k,
                         std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
@@ -445,6 +465,7 @@ private:
 
     // fused_scale_coeffs (ContractImmediately only): the picture's mutable coeff vector for the uncapped
     // fused cos sweep; the taken decision is reported via fused_scale so the apply matches. See build_layer.
+    template <typename P>
     auto build_evolve_result_(const VecZ &gen_vec,
                               std::optional<size_t> only_rotate_len_k,
                               std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
@@ -454,7 +475,11 @@ private:
                               VecD *fused_scale_coeffs = nullptr,
                               bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
 
-    template <typename Fn,
+    template <typename P>
+    auto contract_partially_(const VecD &parameters, bool inplace) -> VecD;
+
+    template <typename P,
+              typename Fn,
               typename R = std::invoke_result_t<Fn, const EvalRequest &, mpi::Comm, const detail::CosCallbacks &>>
     auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
 

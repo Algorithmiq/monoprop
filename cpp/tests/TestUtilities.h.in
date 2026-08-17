@@ -77,8 +77,13 @@ inline auto load_case_data(const std::string& filename) -> CaseData {
     return load_case(data_path);
 }
 
+inline auto picture_label(const PictureSpec& picture) -> std::string {
+    const auto* state = std::get_if<Schrodinger>(&picture);
+    return state ? std::format("schrodinger({})", state->state_cutoff) : "heisenberg";
+}
+
 struct SimulatorConfig {
-    std::optional<unsigned int> schrodinger_cutoff = std::nullopt;
+    PictureSpec picture = Heisenberg{};
     MPI_Comm comm = MPI_COMM_SELF;
     std::optional<double> atol = std::nullopt;
     std::optional<double> upper_atol = std::nullopt;
@@ -92,7 +97,7 @@ inline auto build_simulator(const CaseData& data, const SimulatorConfig& cfg = {
     return MonomialPropagator<NumModes>(data.hamiltonian,
                                         cutoff,
                                         data.initial_state,
-                                        cfg.schrodinger_cutoff,
+                                        cfg.picture,
                                         cfg.comm,
                                         cfg.atol,
                                         cfg.upper_atol,
@@ -130,8 +135,7 @@ inline auto test_evolve_build_graph(const CaseData& data, const SimulatorConfig&
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
     auto expval_fn = mp.expectation_value_functional(pare_threshold);
     double expval = expval_fn(data.parameters);
-    BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare << " sch_cutoff="
-                                  << (cfg.schrodinger_cutoff ? std::to_string(*cfg.schrodinger_cutoff) : "none")) {
+    BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare << " picture=" << picture_label(cfg.picture)) {
         check_expval_close("Expectation Value Build Graph", expval, exact_expval);
     }
 }
@@ -149,15 +153,14 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
     auto expval_fn = mp.expectation_value_functional(pare_threshold);
     double expval = expval_fn(data.parameters);
-    BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare << " sch_cutoff="
-                                  << (cfg.schrodinger_cutoff ? std::to_string(*cfg.schrodinger_cutoff) : "none")) {
+    BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare << " picture=" << picture_label(cfg.picture)) {
         check_expval_close("Expectation Value Build Graph with coeffs", expval, exact_expval);
     }
 }
 
 // As above, but split across two build_graph calls so the second one lands on an already non-empty
 // graph -- the only path that reaches build_graph's contract_partially() seeding branch. Schrodinger
-// only, so `cfg.schrodinger_cutoff` must be set: a Heisenberg build consumes each call back-to-front,
+// only, so `cfg.picture` must hold a Schrodinger: a Heisenberg build consumes each call back-to-front,
 // so a forward split is not equivalent to one call. Each call's `parameters` covers the prefix its own
 // mapping reaches, which is what the seeding guard demands of the second call.
 template <size_t n_modes>
@@ -223,10 +226,11 @@ struct LihFixture {
 inline constexpr std::array<bool, 2> ds_pare_values{false, true};
 inline constexpr std::array<bool, 2> ds_schrodinger_enabled{false, true};
 
-inline auto make_schrodinger_cutoff(bool enabled, int cutoff, int offset = 2) -> std::optional<int> {
+// The Schrodinger arm needs a looser state cutoff than the structural one to match Heisenberg.
+inline auto make_picture(bool enabled, unsigned int cutoff, unsigned int offset = 2) -> PictureSpec {
     if (!enabled) {
-        return std::nullopt;
+        return Heisenberg{};
     }
-    return cutoff + offset;
+    return Schrodinger{cutoff + offset};
 }
 } // namespace test_utils

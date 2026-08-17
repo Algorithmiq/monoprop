@@ -71,9 +71,11 @@ BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg_atol, Exampl
 // Schrödinger: fresh inserts are born after the sweep with a nonzero coeff, so the apply's insert arm
 // must fold the gate's cos into those slots itself.
 BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger, ExampleDataFix) {
-    check_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes}, "schrodinger");
+    check_agreement(data, SimulatorConfig{.picture = Schrodinger{2 * n_modes}}, "schrodinger");
 }
 
 BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger_atol, ExampleDataFix) {
-    check_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes, .atol = 1e-10}, "schrodinger atol=1e-10");
+    check_agreement(data,
+                    SimulatorConfig{.picture = Schrodinger{2 * n_modes}, .atol = 1e-10},
+                    "schrodinger atol=1e-10");
 }

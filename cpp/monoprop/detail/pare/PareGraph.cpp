@@ -103,7 +103,7 @@ auto mark_cross_rank_endpoints_kept(const LayerTraversal &layer, size_t my_rank,
 auto pare_graph(const MPGraph &graph,
                 const VecZ &nonzero_inds,
                 size_t local_index_count,
-                bool schrodinger,
+                Picture picture,
                 mpi::Comm comm,
                 const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
     const size_t num_layers = graph.layers();
@@ -122,7 +122,7 @@ auto pare_graph(const MPGraph &graph,
     // mark_cross_rank_endpoints_kept), so nodes_to_keep stays consistent across ranks with no exchange.
     // Cross-rank lists are never pruned; the keep-set only has to be right so cos pruning stays exact.
     for (size_t iter = 0; iter < num_layers; ++iter) {
-        const size_t layer_idx = schrodinger ? iter : (num_layers - 1 - iter);
+        const size_t layer_idx = picture == Picture::Schrodinger ? iter : (num_layers - 1 - iter);
         const auto &layer = graph.get_layer(layer_idx);
         const auto lt = layer.traversal();
 
@@ -135,7 +135,7 @@ auto pare_graph(const MPGraph &graph,
         layers[layer_idx] = preserves ? Layer(layer.shared_core()) : Layer(layer.shared_core(), std::move(filtered));
     }
 
-    return MPGraph(graph.is_schrodinger(), std::move(layers));
+    return MPGraph(graph.picture(), std::move(layers));
 }
 
 } // namespace monoprop

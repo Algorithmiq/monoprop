@@ -35,7 +35,7 @@ auto make_sim() -> MonomialPropagator<kModes> {
     return MonomialPropagator<kModes>(ham,
                                       2 * kModes,
                                       initial_state,
-                                      std::nullopt,
+                                      Heisenberg{},
                                       MPI_COMM_SELF,
                                       std::nullopt,
                                       std::nullopt,

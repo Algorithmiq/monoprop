@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "monoprop/core/Picture.h"
 #include "monoprop/detail/graph/MPGraphLayers.h"
 #include "monoprop/detail/graph/MPGraphViews.h"
 #include "monoprop/monopropExport.h"
@@ -33,7 +34,7 @@ private:
     using LayerIterator = std::vector<Layer>::iterator;
     using ConstLayerIterator = std::vector<Layer>::const_iterator;
 
-    bool schrodinger_;
+    Picture picture_;
     std::vector<Layer> layers_;
     size_t front_offset_ = 0;
 
@@ -53,7 +54,10 @@ private:
 
     auto active_end_iterator() const -> ConstLayerIterator { return layers_.end(); }
 
-    auto append_position() -> LayerIterator { return schrodinger_ ? active_begin_iterator() : active_end_iterator(); }
+    // Schrödinger prepends: it consumes the circuit front-to-back, so the newest gate is the earliest layer.
+    auto append_position() -> LayerIterator {
+        return is_schrodinger() ? active_begin_iterator() : active_end_iterator();
+    }
 
     auto append_layer(Layer layer) -> void { layers_.emplace(append_position(), std::move(layer)); }
 
@@ -65,11 +69,9 @@ private:
     }
 
 public:
-    explicit MPGraph(bool schrodinger) : schrodinger_(schrodinger) {}
+    explicit MPGraph(Picture picture) : picture_(picture) {}
 
-    explicit MPGraph(bool schrodinger, std::vector<Layer> layers)
-        : schrodinger_(schrodinger),
-          layers_(std::move(layers)) {}
+    explicit MPGraph(Picture picture, std::vector<Layer> layers) : picture_(picture), layers_(std::move(layers)) {}
 
     /// Gate info (param_index, gen_coeff, gate_index) is written onto `storage` here while it is still
     /// mutable, before it is frozen into the Layer's shared const core.
@@ -100,7 +102,9 @@ public:
     /// Non-owning replay view over the active layers, in build order.
     auto replay_view() const -> MPGraphView { return {layers_, active_begin_index(), layers(), false}; }
 
-    auto is_schrodinger() const -> bool { return schrodinger_; }
+    auto picture() const -> Picture { return picture_; }
+
+    auto is_schrodinger() const -> bool { return picture_ == Picture::Schrodinger; }
 
     /// A normally-built layer stores no cosine set, so the companion cosine-index count cannot come from
     /// the graph: only the operator's inverted index can supply it.

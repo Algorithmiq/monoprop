@@ -196,11 +196,8 @@ BOOST_DATA_TEST_CASE_F(ExampleDataFix,
                        bdata::make(ds_pare_values) ^ bdata::make(ds_schrodinger_enabled),
                        pare,
                        sch_enabled) {
-    const auto schrodinger_cutoff = make_schrodinger_cutoff(sch_enabled, cutoff);
     SimulatorConfig cfg{
-        .schrodinger_cutoff = schrodinger_cutoff
-                                  ? std::optional<unsigned int>(*schrodinger_cutoff)
-                                  : std::nullopt,
+        .picture = make_picture(sch_enabled, cutoff),
         .cutoff_type = cutoff_type,
         .basis_change = basis_change,
     };

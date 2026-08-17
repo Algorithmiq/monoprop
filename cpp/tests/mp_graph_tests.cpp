@@ -29,7 +29,7 @@ using test_utils::graph_with_gates;
 using test_utils::layer_with_gate;
 
 BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_heisenberg_prefix_no_contract) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 5); // layers_ = [0,1,2,3,4]
+    auto graph = graph_with_gates(Picture::Heisenberg, 5); // layers_ = [0,1,2,3,4]
     auto sliced = graph.slice_graph(3, /*contract=*/false);
 
     BOOST_REQUIRE_EQUAL(sliced.layers(), 3U);
@@ -43,7 +43,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_heisenberg_prefix_no_contract) {
 
 BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_schrodinger_contract_newest_first_copy_and_resize) {
     // Schrödinger stores newest-first: appending gates 0..4 gives layers_ = [4,3,2,1,0].
-    auto graph = graph_with_gates(/*schrodinger=*/true, 5);
+    auto graph = graph_with_gates(Picture::Schrodinger, 5);
     auto sliced = graph.slice_graph(2, /*contract=*/true);
 
     // sliced = layers_[active_end-1-i] = layers_[4], layers_[3] = gates 0, 1 (oldest-first).
@@ -59,7 +59,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_schrodinger_contract_newest_first_copy
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_key_clamped_to_size) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 3);
+    auto graph = graph_with_gates(Picture::Heisenberg, 3);
     auto sliced = graph.slice_graph(100, /*contract=*/false);
     BOOST_CHECK_EQUAL(sliced.layers(), 3U);
 }
@@ -67,7 +67,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_key_clamped_to_size) {
 // The maybe_compact_layers arms below are reached through Heisenberg slice_graph(contract=true).
 
 BOOST_AUTO_TEST_CASE(mp_graph_contract_clear_arm_when_prefix_covers_all) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 5);
+    auto graph = graph_with_gates(Picture::Heisenberg, 5);
     (void)graph.slice_graph(5, /*contract=*/true); // front_offset == size -> clear
     BOOST_CHECK_EQUAL(graph.layers(), 0U);
     // Graph is still usable after a full clear.
@@ -77,7 +77,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_contract_clear_arm_when_prefix_covers_all) {
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_contract_noop_arm_keeps_dead_prefix_lazy) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 100);
+    auto graph = graph_with_gates(Picture::Heisenberg, 100);
     (void)graph.slice_graph(3, /*contract=*/true); // front_offset 3 < 4096 -> no physical compaction
     BOOST_REQUIRE_EQUAL(graph.layers(), 97U);
     BOOST_CHECK_EQUAL(graph.get_layer_traversal(0).gate_index(), 3U);
@@ -86,7 +86,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_contract_noop_arm_keeps_dead_prefix_lazy) {
 
 BOOST_AUTO_TEST_CASE(mp_graph_contract_erase_arm_above_threshold) {
     // The erase arm fires only when front_offset >= 4096 AND 2*front_offset >= size.
-    auto graph = graph_with_gates(/*schrodinger=*/false, 8200);
+    auto graph = graph_with_gates(Picture::Heisenberg, 8200);
     auto sliced = graph.slice_graph(4100, /*contract=*/true);
     BOOST_CHECK_EQUAL(sliced.layers(), 4100U);
     BOOST_CHECK_EQUAL(sliced.get_layer_traversal(0).gate_index(), 0U);
@@ -97,7 +97,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_contract_erase_arm_above_threshold) {
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_slice_view_heisenberg_forward_window) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 5);
+    auto graph = graph_with_gates(Picture::Heisenberg, 5);
     auto view = graph.slice_view(3);
     BOOST_REQUIRE_EQUAL(view.layers(), 3U);
     BOOST_CHECK_EQUAL(view.get_layer_traversal(0).gate_index(), 0U);
@@ -108,7 +108,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_slice_view_heisenberg_forward_window) {
 BOOST_AUTO_TEST_CASE(mp_graph_slice_view_schrodinger_reversed_window) {
     // layers_ = [4,3,2,1,0]; slice_view(3) uses base=active_end-3=2, reverse=true.
     // get_layer_traversal(i) -> layers_[2 + (3-1-i)] -> gates 0,1,2 in replay order.
-    auto graph = graph_with_gates(/*schrodinger=*/true, 5);
+    auto graph = graph_with_gates(Picture::Schrodinger, 5);
     auto view = graph.slice_view(3);
     BOOST_REQUIRE_EQUAL(view.layers(), 3U);
     BOOST_CHECK_EQUAL(view.get_layer_traversal(0).gate_index(), 0U);
@@ -133,7 +133,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_view_reverse_flag_flips_index_mapping) {
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_get_layer_out_of_range_throws) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 3);
+    auto graph = graph_with_gates(Picture::Heisenberg, 3);
     BOOST_CHECK_NO_THROW((void)graph.get_layer(2));
     BOOST_CHECK_THROW((void)graph.get_layer(3), std::out_of_range);
     // const overload takes the same guard.

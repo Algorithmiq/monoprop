@@ -40,7 +40,7 @@ auto build_zero_cutoff_full_rescue(const CaseData& data, MPI_Comm comm) -> Monom
     return MonomialPropagator<NumModes>(data.hamiltonian,
                                         /*cutoff=*/0U,
                                         data.initial_state,
-                                        /*schrodinger_cutoff=*/std::nullopt,
+                                        /*picture=*/Heisenberg{},
                                         comm,
                                         /*atol=*/std::nullopt,
                                         /*upper_atol=*/std::optional<double>{0.0},

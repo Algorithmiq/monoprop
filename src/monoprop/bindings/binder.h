@@ -72,10 +72,14 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
            size_t logical_num_modes,
            const std::string &basis,
            size_t partitions) {
+            // Python keeps the historical "a cutoff selects Schrodinger" spelling; the engine wants the
+            // choice as a variant, so it is resolved here, at the boundary.
+            const PictureSpec picture = schrodinger_cutoff.has_value() ? PictureSpec{Schrodinger{*schrodinger_cutoff}}
+                                                                       : PictureSpec{Heisenberg{}};
             new (t) MonomialPropagator<NumModes>(initial_operator,
                                                  cutoff,
                                                  initial_state,
-                                                 schrodinger_cutoff,
+                                                 picture,
                                                  get_mpi_comm(py_comm),
                                                  lower_atol,
                                                  upper_atol,

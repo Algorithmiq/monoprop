@@ -264,9 +264,9 @@ BOOST_AUTO_TEST_CASE(sparse_energy_matches_the_dense_gradient_value_bit_exactly)
     constexpr size_t kNumModes = 8;
     const auto data = test_utils::load_case_data<kNumModes>("random_exact.msgpack");
 
-    for (const auto schrodinger_cutoff : {std::optional<unsigned int>{}, std::optional<unsigned int>{4}}) {
-        BOOST_TEST_CONTEXT("schrodinger_cutoff = " << (schrodinger_cutoff ? "4" : "none")) {
-            test_utils::SimulatorConfig cfg{.schrodinger_cutoff = schrodinger_cutoff, .comm = MPI_COMM_SELF};
+    for (const PictureSpec picture : {PictureSpec{Heisenberg{}}, PictureSpec{Schrodinger{4U}}}) {
+        BOOST_TEST_CONTEXT("picture = " << test_utils::picture_label(picture)) {
+            test_utils::SimulatorConfig cfg{.picture = picture, .comm = MPI_COMM_SELF};
             auto sim = test_utils::build_simulator<kNumModes>(data, cfg);
             sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
@@ -291,7 +291,7 @@ BOOST_AUTO_TEST_CASE(interleaved_gradients_do_not_share_scratch_state) {
 
     auto build = [&data](unsigned int cutoff) {
         auto sim =
-            MonomialPropagator<kNumModes>(data.hamiltonian, cutoff, data.initial_state, std::nullopt, MPI_COMM_SELF);
+            MonomialPropagator<kNumModes>(data.hamiltonian, cutoff, data.initial_state, Heisenberg{}, MPI_COMM_SELF);
         sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
         return sim;
     };

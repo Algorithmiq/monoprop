@@ -67,6 +67,14 @@ Key files:
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
   templated on the algebra policy and bound to a runtime `Basis` once, via `with_algebra`.
+- **`Picture` / the picture policy** (`cpp/monoprop/core/Picture.h`, `cpp/monoprop/picture/Picture.h`): the two
+  simulation pictures are sibling models (`HeisenbergPicture`, `SchrodingerPicture`), built the same way as the
+  algebras. Each states one picture's whole rule set — gate traversal direction, applied-angle sign,
+  `map_params` phase, the live coefficient vector, the contraction partner — so no `if (schrodinger)` is
+  written twice. Cold sites reach a policy through the `picture_*()` helpers; the fused
+  `ContractSink`/`apply_fused_contract` pair takes the policy as a template parameter, bound once inside
+  `build_layer`. The picture is fixed at construction: the constructor takes a
+  `PictureSpec = std::variant<Heisenberg, Schrodinger>`, so only a Schrodinger run carries a state cutoff.
 - **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
   propagators, one hash partition each. Every method that fans out must use the private partition
   vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`

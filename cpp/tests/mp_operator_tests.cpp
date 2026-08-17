@@ -182,7 +182,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pau
     dict[VecZ{0, 2}] = cd(1.5, 0.0); // present in store -> row coeff
     dict[VecZ{4, 6}] = cd(2.5, 0.0); // in init_op_map -> stays pending
 
-    const auto grad = op.update_initial_operator(dict, /*schrodinger=*/false);
+    const auto grad = op.update_initial_operator(dict, Picture::Heisenberg);
     BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), 1U);
     BOOST_CHECK_EQUAL(op.op_coeffs[0], encode_pauli_coeff(cd(1.5, 0.0))); // Pauli encode path
     BOOST_CHECK(op.init_op_map.find(indices_to_bitset<8>({4, 6})) != op.init_op_map.end());
@@ -195,7 +195,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_rejects_abse
 
     OperatorDict dict;
     dict[VecZ{1, 3, 5}] = cd(1.0, 0.0); // absent from both store and init_op_map
-    BOOST_CHECK_THROW(op.update_initial_operator(dict, /*schrodinger=*/false), std::runtime_error);
+    BOOST_CHECK_THROW(op.update_initial_operator(dict, Picture::Heisenberg), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_absent_term) {
@@ -204,7 +204,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_abse
     OperatorDict dict;
     const auto fresh = indices_to_bitset<8>({1, 3, 5});
     dict[VecZ{1, 3, 5}] = cd(4.0, 0.0);
-    op.update_initial_operator(dict, /*schrodinger=*/true);
+    op.update_initial_operator(dict, Picture::Schrodinger);
     BOOST_CHECK(op.init_op_map.find(fresh) != op.init_op_map.end());
 }
 
@@ -216,7 +216,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identit
 
     OperatorDict dict;
     dict[VecZ{}] = cd(2.75, 0.0);
-    op.update_initial_operator(dict, /*schrodinger=*/false);
+    op.update_initial_operator(dict, Picture::Heisenberg);
     BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), 1U);
     BOOST_CHECK_EQUAL(op.op_coeffs[0], algebra_encode_coeff<8>(Basis::Majorana, cd(2.75, 0.0), identity));
     BOOST_CHECK_EQUAL(op.op_coeffs[0], 2.75);
