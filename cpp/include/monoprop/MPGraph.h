@@ -96,6 +96,12 @@ public:
         append_layer(Layer(std::move(storage)));
     }
 
+    /// Drop every layer. The graph stays usable, and a later append() starts from an empty store.
+    auto clear() -> void {
+        layers_.clear();
+        front_offset_ = 0;
+    }
+
     /// Slice the graph at `key` (the number of earliest operations to include); `contract` also removes
     /// the sliced part from this graph.
     // Layers come back in application order, earliest first, which matches this class's storage order only
@@ -115,6 +121,12 @@ public:
 
     /// Non-owning replay view over the active layers, in stored (descending optimizer-slot) order.
     auto replay_view() const -> MPGraphView { return {layers_, active_begin_index(), layers(), false}; }
+
+    /// The active layers in the order this graph's own build walked them, which is the order a
+    /// contraction must replay them in.
+    // Not replay_view(): a contraction drives the live coefficient vector, so it follows the simulation
+    // direction, where the picture-free evaluation order is always the stored one.
+    auto contraction_view() const -> MPGraphView;
 
     /// Carried so a derived graph (a slice, a pared copy) keeps its source's layer order.
     auto growth() const -> LayerGrowth { return growth_; }

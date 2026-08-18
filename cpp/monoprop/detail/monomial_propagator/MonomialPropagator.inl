@@ -1077,23 +1077,18 @@ auto MonomialPropagator<NumModes>::contract_partially_(const VecD &parameters, b
         return P::live_coeffs(mp_op_);
     }
 
-    const size_t num_majoranas = parameter_mapping.size();
     // The pictures differ in three values only: the source vector, the (phase, reverse) map_params pair,
     // and the slot that receives an inplace result. Everything else -- and the order of every flop -- is shared.
     const VecD &source = P::live_coeffs(mp_op_);
     const auto mapped_params =
         map_params(parameters, parameter_mapping, gen_coeffs, P::contract_phase, P::contract_reverse);
 
-    // Inplace slicing produces an owned MPGraph that must be bound to a named local before viewing
-    // (never view a temporary); slice_view() views this graph's still-live layers directly.
-    VecD evolved;
+    VecD evolved = evolve_operator_with_recompute_(VecD(source), graph_.contraction_view(), mapped_params);
     if (inplace) {
-        const MPGraph sliced = graph_.slice_graph(num_majoranas, true);
-        evolved = evolve_operator_with_recompute_(VecD(source), sliced.replay_view(), mapped_params);
+        // Drained only after the evolution: the cosine callbacks hold pointers into the layers' stored cos
+        // sets, and they die inside evolve_operator_with_recompute_.
         P::live_coeffs_slot(mp_op_) = evolved;
-    }
-    else {
-        evolved = evolve_operator_with_recompute_(VecD(source), graph_.slice_view(num_majoranas), mapped_params);
+        graph_.clear();
     }
     return evolved;
 }

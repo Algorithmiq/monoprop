@@ -86,6 +86,12 @@ auto MPGraph::slice_graph(size_t key, bool contract) -> MPGraph {
     return MPGraph(growth_, std::move(sliced_layers));
 }
 
+auto MPGraph::contraction_view() const -> MPGraphView {
+    // One window, two directions: active_end_index() - layers() is active_begin_index(), so only the
+    // reverse flag distinguishes the growth ends.
+    return {layers_, active_begin_index(), layers(), grows_at_front()};
+}
+
 auto MPGraph::slice_view(size_t key) const -> MPGraphView {
     const auto k = std::min(key, layers());
     // The window sits at the oldest end and is walked away from it, so the view yields the earliest

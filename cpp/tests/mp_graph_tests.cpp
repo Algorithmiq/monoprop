@@ -118,6 +118,53 @@ BOOST_AUTO_TEST_CASE(mp_graph_slice_view_growth_front_reversed_window) {
     BOOST_CHECK_EQUAL(view.get_layer_traversal(2).gate_index(), 2U);
 }
 
+// replay_view() is the evaluation order: stored order, so the growth end shows through it.
+BOOST_AUTO_TEST_CASE(mp_graph_replay_view_is_stored_order) {
+    auto back = graph_with_gates(LayerGrowth::Back, 4);   // layers_ = [0,1,2,3]
+    auto front = graph_with_gates(LayerGrowth::Front, 4); // layers_ = [3,2,1,0]
+    const auto back_view = back.replay_view();
+    const auto front_view = front.replay_view();
+    for (std::size_t i = 0; i < 4; ++i) {
+        BOOST_CHECK_EQUAL(back_view.get_layer_traversal(i).gate_index(), i);
+        BOOST_CHECK_EQUAL(front_view.get_layer_traversal(i).gate_index(), 3U - i);
+    }
+}
+
+// contraction_view() is the build order, so it yields the same sequence under either growth end. That
+// equality is the point: a contraction replays the circuit the way the build walked it.
+BOOST_AUTO_TEST_CASE(mp_graph_contraction_view_is_build_order_under_either_growth) {
+    auto back = graph_with_gates(LayerGrowth::Back, 4);
+    auto front = graph_with_gates(LayerGrowth::Front, 4);
+    const auto back_view = back.contraction_view();
+    const auto front_view = front.contraction_view();
+    BOOST_REQUIRE_EQUAL(back_view.layers(), 4U);
+    BOOST_REQUIRE_EQUAL(front_view.layers(), 4U);
+    for (std::size_t i = 0; i < 4; ++i) {
+        BOOST_CHECK_EQUAL(back_view.get_layer_traversal(i).gate_index(), i);
+        BOOST_CHECK_EQUAL(front_view.get_layer_traversal(i).gate_index(), i);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(mp_graph_clear_empties_and_leaves_the_graph_usable) {
+    auto graph = graph_with_gates(LayerGrowth::Front, 5);
+    graph.clear();
+    BOOST_REQUIRE_EQUAL(graph.layers(), 0U);
+    graph.append(std::make_shared<LayerCore>(), 0, 0.0, /*gate_index=*/7);
+    BOOST_REQUIRE_EQUAL(graph.layers(), 1U);
+    BOOST_CHECK_EQUAL(graph.get_layer_traversal(0).gate_index(), 7U);
+}
+
+// clear() must also drop the dead front prefix a contracting slice leaves behind.
+BOOST_AUTO_TEST_CASE(mp_graph_clear_resets_the_dead_front_prefix) {
+    auto graph = graph_with_gates(LayerGrowth::Back, 100);
+    (void)graph.slice_graph(3, /*contract=*/true); // front_offset 3, below the compaction threshold
+    graph.clear();
+    BOOST_REQUIRE_EQUAL(graph.layers(), 0U);
+    graph.append(std::make_shared<LayerCore>(), 0, 0.0, /*gate_index=*/11);
+    BOOST_REQUIRE_EQUAL(graph.layers(), 1U);
+    BOOST_CHECK_EQUAL(graph.get_layer_traversal(0).gate_index(), 11U);
+}
+
 BOOST_AUTO_TEST_CASE(mp_graph_view_reverse_flag_flips_index_mapping) {
     std::vector<Layer> layers;
     for (std::size_t g = 10; g < 14; ++g) {
