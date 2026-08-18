@@ -86,9 +86,7 @@ public:
         // share a line and the Phase P0 publish becomes a false-sharing storm across S cores. At P=256
         // a row is exactly 1 KiB and the padding costs nothing; at other P it does.
         counts_stride_ = round_up_(p, kIntsPerLine);
-        assert(counts_stride_ * sizeof(int) % kLineBytes == 0);
         rows_stride_ = round_up_(2 * static_cast<size_t>(r_), kLongsPerLine);
-        assert(rows_stride_ * sizeof(long long) % kLineBytes == 0);
         // Over-allocated by one line each so the base pointer can be advanced to a line boundary:
         // std::vector's allocator guarantees alignof(T), not 64, and a padded stride only keeps rows
         // apart once row 0 starts on a line of its own.
@@ -96,6 +94,13 @@ public:
         counts_matrix_ = align_to_line_(counts_matrix_store_.data());
         rows_store_.assign(static_cast<size_t>(s_) * rows_stride_ + kLongsPerLine, 0LL);
         rows_ = align_to_line_(rows_store_.data());
+        // The realignment is what could be wrong, not the padding: `stride % kLineBytes == 0` is a
+        // property of round_up_. Both hold by arithmetic too -- Release sets -DNDEBUG.
+        assert(reinterpret_cast<uintptr_t>(counts_matrix_) % kLineBytes == 0);
+        assert(reinterpret_cast<uintptr_t>(rows_) % kLineBytes == 0);
+        assert(counts_matrix_ + static_cast<size_t>(s_) * counts_stride_
+               <= counts_matrix_store_.data() + counts_matrix_store_.size());
+        assert(rows_ + static_cast<size_t>(s_) * rows_stride_ <= rows_store_.data() + rows_store_.size());
     }
 
     HybridComm(const HybridComm &) = delete;
@@ -211,8 +216,13 @@ private:
         me.send_displs = args.send_displs;
         // Phase P0, BEFORE B1: each partition publishes its own count row and its per-rank row totals,
         // reading only its own arguments. No peer state is touched, so this needs no barrier of its own
-        // and the verb still costs exactly 4. This is where the R*S*S cross-partition traffic is paid —
-        // by the owners, on their own cores, in parallel. See publish_send_rows_ for the lifetime rule.
+        // and the verb still costs exactly 4.
+        //
+        // Do not overstate it: partition 0 still sweeps every partition's row in B1→B2, so the volume
+        // it pulls across cores is unchanged at S rows x P ints. What changed is the access pattern
+        // (three strided passes over S separate arrays become sequential sweeps of one matrix) and the
+        // row TOTALS, which are the only part genuinely moved onto the owners, at O(R*S).
+        // See publish_send_rows_ for the lifetime rule.
         publish_send_rows_(local_partition, args.send_counts);
         publish_recv_rows_(local_partition, args.recv_counts);
         sync(); // B1
@@ -540,8 +550,10 @@ private:
         }
     }
 
-    /* Partition 0's send-side staging sizing, between B1 and B2. Every pass here is CONTIGUOUS and
-     * touches no peer argument array: the strided cross-partition reads were paid in Phase P0.
+    /* Partition 0's send-side staging sizing, between B1 and B2. Both passes are CONTIGUOUS: they
+     * sweep counts_matrix_ row by row instead of striding across S separate argument arrays. This is
+     * still another thread's memory — the rows were written by their owners in Phase P0 — so the
+     * cross-core volume is the same; it is the pattern and the pass count that improved.
      *
      * BIT-IDENTITY. The staging BLOCK ORDER is unchanged — within the message to rank b, destination
      * partition t's region comes first in ascending t, and inside it the source partitions u ascend.
