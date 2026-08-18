@@ -369,9 +369,19 @@ def _record_placement(comm: Any) -> None:
     """
     summary = pinned_thread_summary()
     placed = summary["single_cpu_threads"]
+    # affinity_cpus is reduced for the same reason single_cpu_threads is: it is the width of
+    # THIS rank's cpuset, and the case worth catching is the uneven one. Without the reduction
+    # `summary` carries rank 0's mask width alone, so a cgroup that confined rank 0 and left the
+    # rest of the node wide open would report as a clean confinement. That matters now that a
+    # campaign can declare expect=neither, whose whole content is "the launcher confined the
+    # ranks and the engine correctly added nothing on top" -- checked against rank 0 only, that
+    # assertion is decorative.
+    mask = summary["affinity_cpus"]
     spread = {
         "single_cpu_threads_min": _reduce_min(comm, placed),
         "single_cpu_threads_max": _reduce_max(comm, placed),
+        "affinity_cpus_min": _reduce_min(comm, mask),
+        "affinity_cpus_max": _reduce_max(comm, mask),
     }
     # Gather per-rank pinned CPU ids to rank 0 (collective call; every rank must participate)
     pinned_cpus_by_rank = _gather_lists(comm, summary["pinned_cpus"])
