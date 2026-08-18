@@ -31,6 +31,33 @@ The repository ships a [DevContainer](https://containers.dev/) with all of the
 above pre-configured; opening the folder in VS Code and rebuilding the container is
 the quickest route to a working environment.
 
+## Building with Nix
+
+The repository is also a [Nix flake](https://wiki.nixos.org/wiki/Flakes):
+
+| Command | What it gives you |
+| --- | --- |
+| `nix develop` | a shell with every prerequisite above, plus `uv`, `just` and Node.js |
+| `nix build .#monoprop` | the Python package, built without MPI |
+| `nix build .#monoprop-mpi` | the same package with `monoprop_ENABLE_MPI=ON` |
+| `nix run` | a Python interpreter with `monoprop` importable |
+
+Inside `nix develop` the `uv sync` and `just` workflows below apply unchanged. The
+shell sets two variables that only matter on NixOS: `UV_PYTHON_PREFERENCE=only-system`,
+because uv's managed interpreters expect a loader NixOS does not provide, and
+`LD_LIBRARY_PATH`, so that manylinux wheels can resolve `libstdc++`.
+
+The packaged build deviates from the `uv` build in three places, all in
+`nix/monoprop.nix`:
+
+- the C++ unit tests are disabled, because they resolve msgpack-cxx through a git
+  fetch that the build sandbox denies — build them from the dev shell instead;
+- `monoprop_ENABLE_ARCH_FLAGS` is off, since a store path may be substituted onto a
+  machine other than the one that built it; pass
+  `.override { enableArchFlags = true; }` for a native build;
+- the version is pinned, because setuptools-scm cannot read git metadata inside the
+  sandbox; bump it alongside the release tag.
+
 ## Building the Python bindings
 
 `uv` creates a virtual environment, installs the Python dependencies, and

@@ -176,3 +176,8 @@ benches/results/**
 
 # devcontainer files
 .devcontainer/devcontainer-lock.json
+
+# nix build symlinks and direnv state
+/result
+/result-*
+.direnv/
