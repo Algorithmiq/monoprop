@@ -103,6 +103,19 @@ def _reduce_min(comm: Any, value: int) -> int:
     return value
 
 
+def _gather_lists(comm: Any, values: list[int]) -> list[list[int]]:
+    """Gather per-rank CPU-id lists to rank 0. Collective; non-root ranks return empty list.
+
+    Used to record which CPUs each rank's threads were pinned to, enabling diagnosis of
+    partial failures (some ranks placed, some not). All ranks call this unconditionally
+    to participate in the collective; only rank 0 keeps the gathered result.
+    """
+    if comm is None or comm.Get_size() == 1:
+        return [values]
+    gathered = comm.gather(values, root=0)
+    return gathered if gathered is not None else []
+
+
 def _spread(comm: Any, value: int) -> dict[str, int]:
     """Reduce one per-rank number to the pair a footprint has to be read as.
 
@@ -345,8 +358,8 @@ def _record_placement(comm: Any) -> None:
     Placement is only observable while the engine's partition threads are ALIVE, which is why
     this is called from inside an instrumentation hook rather than at configure time. min/max
     across ranks because a partial failure -- some ranks placed, some not -- is the interesting
-    case, and it is the shape a Slurm cpuset confinement takes. Both reductions run on every
-    rank; only rank 0 keeps the answer.
+    case, and it is the shape a Slurm cpuset confinement takes. All reductions and the gather
+    run on every rank; only rank 0 keeps the answer.
 
     This lives at module scope, called from both OpMemory.stop() and record_model_stats, because
     it used to sit inside OpMemory.stop() alone. The fixed-model benchmarks do not open a memory
@@ -360,8 +373,14 @@ def _record_placement(comm: Any) -> None:
         "single_cpu_threads_min": _reduce_min(comm, placed),
         "single_cpu_threads_max": _reduce_max(comm, placed),
     }
+    # Gather per-rank pinned CPU ids to rank 0 (collective call; every rank must participate)
+    pinned_cpus_by_rank = _gather_lists(comm, summary["pinned_cpus"])
     if _rank() == 0:
-        _RESULTS["meta"]["pinning"] = {**summary, **spread}
+        _RESULTS["meta"]["pinning"] = {
+            **summary,
+            **spread,
+            "pinned_cpus_by_rank": pinned_cpus_by_rank,
+        }
 
 
 @pytest.fixture

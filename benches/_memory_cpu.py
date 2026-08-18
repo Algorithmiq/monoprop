@@ -136,7 +136,7 @@ def _parse_cpu_list(spec: str) -> set[int]:
     return cpus
 
 
-def pinned_thread_summary() -> dict[str, int]:
+def pinned_thread_summary() -> dict[str, int | list[int]]:
     """Return how many of this process's threads are bound to a single CPU.
 
     Reads ``Cpus_allowed_list`` for every thread under ``/proc/self/task``. A thread the
@@ -151,16 +151,20 @@ def pinned_thread_summary() -> dict[str, int]:
     Returns:
         ``threads``, ``single_cpu_threads``, ``distinct_pinned_cpus`` (how many different
         CPUs those threads occupy -- equal to ``single_cpu_threads`` iff no two threads
-        landed on the same core), and ``affinity_cpus`` (the process mask's width). All
-        zero where ``/proc`` is unavailable.
+        landed on the same core), ``affinity_cpus`` (the process mask's width), and
+        ``pinned_cpus`` (sorted list of CPU ids that single-pinned threads occupy). All
+        numeric values zero and ``pinned_cpus`` empty where ``/proc`` is unavailable.
     """
     try:
         tasks = list(Path("/proc/self/task").iterdir())
     except OSError:  # pragma: no cover - non-Linux or restricted /proc
-        return dict.fromkeys(
-            ("threads", "single_cpu_threads", "distinct_pinned_cpus", "affinity_cpus"),
-            0,
-        )
+        return {
+            "threads": 0,
+            "single_cpu_threads": 0,
+            "distinct_pinned_cpus": 0,
+            "affinity_cpus": 0,
+            "pinned_cpus": [],
+        }
 
     threads = 0
     pinned: set[int] = set()
@@ -183,6 +187,7 @@ def pinned_thread_summary() -> dict[str, int]:
         "single_cpu_threads": single,
         "distinct_pinned_cpus": len(pinned),
         "affinity_cpus": len(os.sched_getaffinity(0)),
+        "pinned_cpus": sorted(pinned),
     }
 
 
