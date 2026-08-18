@@ -20,8 +20,8 @@
 
 #include "monoprop/MPGraph.h"
 
-// gate_index is only a distinguishable tag for asserting slice/view ordering; the rest of a LayerCore
-// is left empty.
+// gate_index is only a distinguishable tag for asserting layer ordering; the rest of a LayerCore is left
+// empty.
 namespace test_utils {
 
 inline auto core_with_gate(std::size_t gate_index) -> std::shared_ptr<monoprop::LayerCore> {

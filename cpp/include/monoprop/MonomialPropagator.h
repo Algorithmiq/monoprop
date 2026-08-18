@@ -211,8 +211,6 @@ public:
         });
     }
 
-    auto picture() const -> Picture { return picture_; }
-
     auto schrodinger() const -> bool { return picture_ == Picture::Schrodinger; }
 
     auto basis() const -> Basis { return basis_; }
@@ -277,9 +275,7 @@ public:
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
-    auto update_initial_operator(const OperatorDict &op_dict) -> void {
-        with_picture(picture_, [&]<typename P>() { this->template apply_initial_operator_<P>(op_dict); });
-    }
+    auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
     static inline const auto ev_fn = [](const EvalRequest &request,
@@ -293,7 +289,6 @@ protected:
 
     /// Distribute op_dict across ranks and apply this rank's share; returns its new (terms, coeffs)
     /// so caches can refresh.
-    template <typename P>
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
 
     Picture picture_; // immutable after construction: no path switches the picture mid-simulation
@@ -403,9 +398,9 @@ private:
     auto validate_cutoff_config_(CutoffType cutoff_type, const std::optional<std::vector<VecZ>> &basis_change) const
         -> void;
 
-    // Everything below takes the picture as a policy type P, never as a runtime value: each public entry
-    // point binds it once with with_picture(), and the whole private layer is then written against one
-    // picture at a time. Nothing here re-tests which picture it is in.
+    // Each public entry point binds the picture once with with_picture(), and everything below that has a
+    // picture rule of its own takes it as the policy type P. Nothing here re-tests which picture it is in;
+    // the few members that carry no rule read picture_ only to forward it to a runtime-valued callee.
 
     template <typename P>
     auto initialize_operator_caches_() -> void;
@@ -435,7 +430,7 @@ private:
                                         const VecD &gen_coeffs,
                                         const VecZ &gate_indices,
                                         const VecD &parameters,
-                                        const VecD &operator_coeffs,
+                                        VecD operator_coeffs, // by value: the caller's seed is dead after the call
                                         std::optional<size_t> only_rotate_len_k) -> void;
 
     // build_layer resolves the same policy for its fused sink, so the cosine sweep and the apply agree.
@@ -454,7 +449,6 @@ private:
                         std::optional<size_t> only_rotate_len_k,
                         EvolutionFunc evolution_func) -> void;
 
-    template <typename P>
     auto propagate_one_(const VecZ &gen_vec,
                         std::optional<size_t> only_rotate_len_k,
                         std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
@@ -465,7 +459,6 @@ private:
 
     // fused_scale_coeffs (ContractImmediately only): the picture's mutable coeff vector for the uncapped
     // fused cos sweep; the taken decision is reported via fused_scale so the apply matches. See build_layer.
-    template <typename P>
     auto build_evolve_result_(const VecZ &gen_vec,
                               std::optional<size_t> only_rotate_len_k,
                               std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,

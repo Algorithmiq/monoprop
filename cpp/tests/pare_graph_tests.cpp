@@ -106,7 +106,7 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
     }
 
     // Heisenberg's sweep: the simulator built above is a Heisenberg one.
-    auto pared = pare_graph(graph, seed, local_index_count, MPI_COMM_SELF, provider, PareSweep::FromOutput);
+    auto pared = pare_graph(graph, seed, local_index_count, MPI_COMM_SELF, provider);
     BOOST_REQUIRE_EQUAL(pared.layers(), graph.layers());
 
     size_t pruned_count = 0;

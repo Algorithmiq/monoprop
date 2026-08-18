@@ -19,7 +19,6 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
-#include "monoprop/picture/Picture.h"
 
 namespace monoprop::detail {
 

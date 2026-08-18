@@ -18,7 +18,6 @@
 #include <span>
 #include <stdexcept>
 #include <utility>
-#include <vector>
 
 #include <format>
 #include <print>
@@ -32,6 +31,28 @@ class LayerIndexOutOfRange : public std::out_of_range {
 public:
     using std::out_of_range::out_of_range;
 };
+
+/// The optimizer slot of stored layer `layer_idx` in an `n`-layer graph.
+// Its own inverse, so the slot-to-layer direction calls it too. The one spelling of MPGraph's storage
+// invariant: every conversion between store order and optimizer order goes through it. It lives here,
+// below MPGraph, so the views over a graph reach the same spelling the graph itself uses.
+constexpr auto slot_of_layer(size_t layer_idx, size_t n) -> size_t {
+    return n - 1 - layer_idx;
+}
+
+static_assert(slot_of_layer(0, 4) == 3);
+static_assert(slot_of_layer(slot_of_layer(1, 4), 4) == 1);
+
+// The store offset of layer `layer_idx` in a `count`-layer store. `reverse` means the store runs against
+// layer order, so layer 0 is its last element. A graph and the views over it both index through here, which
+// is what keeps them agreeing on the mapping and on the diagnostic.
+inline auto checked_layer_offset(size_t layer_idx, size_t count, bool reverse) -> size_t {
+    if (layer_idx >= count) {
+        throw LayerIndexOutOfRange(std::format("Layer {} is out of range (layers={})", layer_idx, count));
+    }
+
+    return reverse ? slot_of_layer(layer_idx, count) : layer_idx;
+}
 
 // One rank's own graph memory only.
 struct GraphMemoryBreakdown final {
@@ -75,19 +96,13 @@ public:
 
     auto layers() const -> size_t { return layers_.size(); }
 
-    auto get_layer(size_t layer_idx) const -> const Layer & { return layers_[checked_layer_offset(layer_idx)]; }
+    auto get_layer(size_t layer_idx) const -> const Layer & {
+        return layers_[checked_layer_offset(layer_idx, layers_.size(), reverse_)];
+    }
 
     auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
 
 private:
-    auto checked_layer_offset(size_t layer_idx) const -> size_t {
-        if (layer_idx >= layers_.size()) {
-            throw LayerIndexOutOfRange(std::format("Layer {} is out of range (layers={})", layer_idx, layers_.size()));
-        }
-
-        return reverse_ ? layers_.size() - 1 - layer_idx : layer_idx;
-    }
-
     std::span<const Layer> layers_;
     bool reverse_ = false;
 };

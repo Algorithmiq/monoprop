@@ -16,8 +16,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <format>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -34,16 +32,6 @@ enum class ArrivalOrder : uint8_t {
     DescendingSlot, ///< each arriving gate takes a lower slot than the last
     AscendingSlot,  ///< each arriving gate takes a higher slot than the last
 };
-
-/// The optimizer slot of stored layer `layer_idx` in an `n`-layer graph.
-// Its own inverse, so the slot-to-layer direction calls it too. The one spelling of MPGraph's storage
-// invariant: every conversion between store order and optimizer order goes through it.
-constexpr auto slot_of_layer(size_t layer_idx, size_t n) -> size_t {
-    return n - 1 - layer_idx;
-}
-
-static_assert(slot_of_layer(0, 4) == 3);
-static_assert(slot_of_layer(slot_of_layer(1, 4), 4) == 1);
 
 /// Ordered per-rank record of the evolution circuit, one Layer per generator.
 // LAYER INDICES ARE IN DESCENDING OPTIMIZER-SLOT ORDER under either arrival order: layer i is optimizer
@@ -64,14 +52,7 @@ private:
     auto reverse_indexing_() const -> bool { return arrival_ == ArrivalOrder::AscendingSlot; }
 
     auto stored_offset_(size_t layer_idx) const -> size_t {
-        check_layer_index_(layer_idx);
-        return reverse_indexing_() ? slot_of_layer(layer_idx, layers_.size()) : layer_idx;
-    }
-
-    auto check_layer_index_(size_t layer_idx) const -> void {
-        if (layer_idx >= layers()) {
-            throw LayerIndexOutOfRange(std::format("Layer {} is out of range (layers={})", layer_idx, layers()));
-        }
+        return checked_layer_offset(layer_idx, layers_.size(), reverse_indexing_());
     }
 
 public:
@@ -86,7 +67,7 @@ public:
         storage->param_index = param_index;
         storage->gen_coeff = gen_coeff;
         storage->gate_index = gate_index;
-        layers_.push_back(Layer(std::move(storage)));
+        layers_.emplace_back(std::move(storage));
     }
 
     /// Swap in a rebuilt layer, addressed the same way get_layer() addresses it.
@@ -102,6 +83,19 @@ public:
     auto get_layer(size_t layer_idx) const -> const Layer& { return layers_[stored_offset_(layer_idx)]; }
 
     auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
+
+    /// The layer that step `step` of an unbuild traversal addresses -- the reverse of the order this graph's
+    /// own build walked, so step 0 is the last gate the build applied.
+    // Picture-free, and that is a derivation rather than a coincidence: whichever way the build ran, the
+    // last arrival is the last gate applied. A reachability sweep seeded on the result of the whole
+    // evolution (pare_graph) therefore always walks this way, because reachability propagates backwards
+    // from a result through the circuit that produced it.
+    // Arrival step -> layer is the inverse of layer -> store offset, and slot_of_layer is its own inverse,
+    // so this is stored_offset_'s map with the flag negated. Walking it from 0 walks the store backwards
+    // under either arrival order.
+    auto layer_of_unbuild_step(size_t step) const -> size_t {
+        return checked_layer_offset(step, layers_.size(), !reverse_indexing_());
+    }
 
     /// Non-owning replay view over the layers, in layer (descending optimizer-slot) order.
     auto replay_view() const -> MPGraphView { return {layers_, reverse_indexing_()}; }

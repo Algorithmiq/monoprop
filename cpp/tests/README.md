@@ -96,8 +96,9 @@ name and cannot address suite-nested cases, tests use flat
   coalescer, checked_* overflow guards, packed-phase storage + int8 read,
   build_layer_exchange_layout, and both arms of the D-from-B derivation).
 - **Graph / paring**: `pare_graph_tests.cpp`, `mpi_pare.cpp`,
-  `mp_graph_tests.cpp` (MPGraph slice_graph/slice_view transforms, the
-  front_offset lazy-compaction arms, MPGraphView reverse mapping + OOB throw).
+  `mp_graph_tests.cpp` (MPGraph layer indexing under either arrival order,
+  replay_view/contraction_view, replace_layer, clear, MPGraphView reverse
+  mapping + OOB throw).
 - **Transports / distribution**: `shm_comm_tests.cpp`, `hybrid_comm_tests.cpp`
   (MPI-only), `partition_equivalence_tests.cpp`,
   `mpi_distributed_layer_equivalence.cpp`, `mpi_fresh_insert_equivalence.cpp`

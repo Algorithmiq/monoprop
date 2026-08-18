@@ -24,7 +24,6 @@
 #include "monoprop/MPGraph.h"
 
 using namespace monoprop;
-using test_utils::core_with_gate;
 using test_utils::graph_with_gates;
 using test_utils::layer_with_gate;
 
@@ -82,6 +81,21 @@ BOOST_AUTO_TEST_CASE(mp_graph_replace_layer_addresses_the_same_layer_as_get_laye
         BOOST_CHECK_NE(graph.get_layer_traversal(2).gate_index(), 99U);
         BOOST_CHECK_EQUAL(graph.layers(), 4U);
     }
+}
+
+// The equality across arrival orders is the point, and it is what let pare_graph drop its sweep argument:
+// unbuild step 0 is the last gate the build applied under either order, so the sweep needs no picture.
+BOOST_AUTO_TEST_CASE(mp_graph_unbuild_step_is_newest_arrival_first_under_either_arrival) {
+    auto descending = graph_with_gates(ArrivalOrder::DescendingSlot, 4);
+    auto ascending = graph_with_gates(ArrivalOrder::AscendingSlot, 4);
+    for (std::size_t step = 0; step < 4; ++step) {
+        const auto d = descending.get_layer_traversal(descending.layer_of_unbuild_step(step)).gate_index();
+        const auto a = ascending.get_layer_traversal(ascending.layer_of_unbuild_step(step)).gate_index();
+        BOOST_CHECK_EQUAL(d, 3U - step);
+        BOOST_CHECK_EQUAL(a, 3U - step);
+    }
+    BOOST_CHECK_THROW((void)descending.layer_of_unbuild_step(4), std::out_of_range);
+    BOOST_CHECK_THROW((void)ascending.layer_of_unbuild_step(4), std::out_of_range);
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_clear_empties_and_leaves_the_graph_usable) {

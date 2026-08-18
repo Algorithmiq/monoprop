@@ -348,7 +348,6 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
 }
 
 template <size_t NumModes>
-template <typename P>
 auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &op_dict)
     -> std::pair<MonomialList<NumModes>, VecD> {
     ++initial_operator_epoch_;
@@ -373,7 +372,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
         }
     }
 
-    return mp_op_.update_initial_operator(new_op, P::picture);
+    return mp_op_.update_initial_operator(new_op, picture_);
 }
 
 template <size_t NumModes>
@@ -535,13 +534,13 @@ auto MonomialPropagator<NumModes>::evolve_mode_build_graph_(const std::vector<Ve
                       [this, &parameter_mapping, &gen_coeffs, &gate_indices](const VecZ &mono,
                                                                              std::optional<size_t> rot_len,
                                                                              size_t slot) {
-                          this->template propagate_one_<P>(mono,
-                                                           rot_len,
-                                                           std::nullopt,
-                                                           std::nullopt,
-                                                           parameter_mapping[slot],
-                                                           gen_coeffs[slot],
-                                                           gate_indices[slot]);
+                          this->propagate_one_(mono,
+                                               rot_len,
+                                               std::nullopt,
+                                               std::nullopt,
+                                               parameter_mapping[slot],
+                                               gen_coeffs[slot],
+                                               gate_indices[slot]);
                       });
 }
 
@@ -552,10 +551,10 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
                                                                   const VecD &gen_coeffs,
                                                                   const VecZ &gate_indices,
                                                                   const VecD &parameters,
-                                                                  const VecD &operator_coeffs,
+                                                                  VecD operator_coeffs,
                                                                   std::optional<size_t> only_rotate_len_k) -> void {
     auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0);
-    auto coeffs = operator_coeffs;
+    auto coeffs = std::move(operator_coeffs);
 
     run_gate_loop_<P>(
         majoranas,
@@ -566,8 +565,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
             const auto [build_angle, apply_angle] = gate_angle_<P>(mapped_params, slot);
             // The cos word list is not persisted on the layer; the builder moves it out transiently.
             auto cos = std::make_shared<CosMask>();
-            auto storage =
-                this->template build_evolve_result_<P>(mono, rot_len, std::cref(coeffs), build_angle, cos.get());
+            auto storage = this->build_evolve_result_(mono, rot_len, std::cref(coeffs), build_angle, cos.get());
             graph_.append(storage, parameter_mapping[slot], gen_coeffs[slot], gate_indices[slot]);
 
             this->template extend_coeffs_from_current_picture_if_needed_<P>(coeffs);
@@ -599,17 +597,15 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
                           CosMask cos;
                           detail::FusedContract fc;
                           bool fused_scale = false;
-                          this->template build_evolve_result_<P>(mono,
-                                                                 rot_len,
-                                                                 std::cref(*op_coeffs),
-                                                                 build_angle,
-                                                                 &cos,
-                                                                 &fc,
-                                                                 op_coeffs,
-                                                                 &fused_scale);
+                          this->build_evolve_result_(mono,
+                                                     rot_len,
+                                                     std::cref(*op_coeffs),
+                                                     build_angle,
+                                                     &cos,
+                                                     &fc,
+                                                     op_coeffs,
+                                                     &fused_scale);
                           this->template extend_coeffs_from_current_picture_if_needed_<P>(*op_coeffs);
-                          // build_layer resolves P again from the same Picture value for its sink; the fused cosine
-                          // sweep and this apply must agree.
                           detail::apply_fused_contract<P>(fc, *op_coeffs, cos, apply_angle, fused_scale);
                       });
 }
@@ -686,7 +682,7 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                                          gen_coeffs,
                                                          local_gates,
                                                          *parameters,
-                                                         seed,
+                                                         std::move(seed),
                                                          only_rotate_len_k);
     });
 }
@@ -740,7 +736,6 @@ auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &major
 }
 
 template <size_t NumModes>
-template <typename P>
 auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                                         std::optional<size_t> only_rotate_len_k,
                                                         std::optional<std::reference_wrapper<const VecD>> coeffs,
@@ -766,14 +761,13 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                          comm_,
                                          out_cos,
                                          fused_contract,
-                                         P::picture,
+                                         picture_,
                                          fused_scale_coeffs,
                                          fused_scale,
                                          basis_);
 }
 
 template <size_t NumModes>
-template <typename P>
 auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
                                                   std::optional<size_t> only_rotate_len_k,
                                                   std::optional<std::reference_wrapper<const VecD>> coeffs,
@@ -781,10 +775,7 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
                                                   size_t param_index,
                                                   double gen_coeff,
                                                   size_t gate_index) -> void {
-    graph_.append(this->template build_evolve_result_<P>(gen_vec, only_rotate_len_k, coeffs, param),
-                  param_index,
-                  gen_coeff,
-                  gate_index);
+    graph_.append(build_evolve_result_(gen_vec, only_rotate_len_k, coeffs, param), param_index, gen_coeff, gate_index);
 }
 
 template <size_t NumModes>
@@ -964,8 +955,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
         };
         // Threshold the picture's driving vector: the Hamiltonian in Schrödinger, the state otherwise.
         const auto [keep, count] = P::pare_seed(state, op, *pare_threshold);
-        graph =
-            std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, comm_, full_cos_of_layer, P::pare_sweep));
+        graph = std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, comm_, full_cos_of_layer));
     }
     else {
         graph = std::shared_ptr<const MPGraph>(std::shared_ptr<const void>{}, &graph_);
@@ -1079,9 +1069,10 @@ auto MonomialPropagator<NumModes>::contract_partially_(const VecD &parameters, b
 
     // The pictures differ in three values only: the source vector, the (phase, reverse) map_params pair,
     // and the slot that receives an inplace result. Everything else -- and the order of every flop -- is shared.
+    // The phase is apply_sign because this replays the very angles the build applied.
     const VecD &source = P::live_coeffs(mp_op_);
     const auto mapped_params =
-        map_params(parameters, parameter_mapping, gen_coeffs, P::contract_phase, P::contract_reverse);
+        map_params(parameters, parameter_mapping, gen_coeffs, P::apply_sign, P::contract_reverse);
 
     VecD evolved = evolve_operator_with_recompute_(VecD(source), graph_.contraction_view(), mapped_params);
     if (inplace) {

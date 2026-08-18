@@ -42,17 +42,18 @@ namespace monoprop {
 
 struct HeisenbergPicture {
     static constexpr Picture picture = Picture::Heisenberg;
-    static constexpr bool is_schrodinger = false;
+    static constexpr bool is_schrodinger = (picture == Picture::Schrodinger);
 
     // Simulation step i consumes optimizer slot n-1-i: the observable walks the circuit backwards.
-    static auto gate_slot(size_t i, size_t n) -> size_t { return n - 1 - i; }
+    static auto gate_slot(size_t i, size_t n) -> size_t { return slot_of_layer(i, n); }
     // gate_slot's slope, as MPGraph needs it.
     static constexpr ArrivalOrder arrival_order = ArrivalOrder::DescendingSlot;
     static constexpr double apply_sign = 1.0; // the applied angle is the build angle
 
-    // map_params() arguments for contract_partially: forward phase, written in reverse.
-    static constexpr double contract_phase = 1.0;
-    static constexpr bool contract_reverse = true;
+    // contract_partially replays the build's steps in build order, so its params are indexed by step while
+    // parameter_mapping is indexed by slot. map_params must therefore invert gate_slot, which is a reversal
+    // exactly when gate_slot is not the identity -- that is, exactly when the slots descend.
+    static constexpr bool contract_reverse = (arrival_order == ArrivalOrder::DescendingSlot);
 
     // The live vector the gates mutate, and the slot it lives in.
     template <size_t NumModes>
@@ -82,8 +83,6 @@ struct HeisenbergPicture {
     static auto pare_seed(const EvalState &state, const VecD & /*op*/, double threshold) -> std::pair<VecZ, size_t> {
         return {state.indices_above(threshold), state.length()};
     }
-    // The state contracts against the evolved operator, so the seed sits at the replay's output end.
-    static constexpr PareSweep pare_sweep = PareSweep::FromOutput;
 
     // A perf hint, never a correctness constraint: overflow spills losslessly. The bound is already in
     // physical slots (CutoffEvaluator::max_slot_bound), so nothing to scale. NumModes is explicit
@@ -102,7 +101,7 @@ struct HeisenbergPicture {
 
 struct SchrodingerPicture {
     static constexpr Picture picture = Picture::Schrodinger;
-    static constexpr bool is_schrodinger = true;
+    static constexpr bool is_schrodinger = (picture == Picture::Schrodinger);
 
     // Simulation step i consumes optimizer slot i: the state walks the circuit front-to-back.
     static auto gate_slot(size_t i, size_t /*n*/) -> size_t { return i; }
@@ -110,8 +109,7 @@ struct SchrodingerPicture {
     static constexpr ArrivalOrder arrival_order = ArrivalOrder::AscendingSlot;
     static constexpr double apply_sign = -1.0; // the applied angle is the negated build angle
 
-    static constexpr double contract_phase = -1.0;
-    static constexpr bool contract_reverse = false;
+    static constexpr bool contract_reverse = (arrival_order == ArrivalOrder::DescendingSlot);
 
     // The dense state IS the live evolved vector here, so it is both the source and the slot.
     template <size_t NumModes>
@@ -137,8 +135,6 @@ struct SchrodingerPicture {
     static auto pare_seed(const EvalState & /*state*/, const VecD &op, double threshold) -> std::pair<VecZ, size_t> {
         return {indices_above(op, threshold), op.size()};
     }
-    // `op` is what the replay evolves, so the seed sits at the replay's input end.
-    static constexpr PareSweep pare_sweep = PareSweep::FromInput;
 
     // The state's monomials come from generate_paired_op(), not from cutoff_fn_, so the cutoff carries
     // no structural bound on them.
@@ -154,10 +150,8 @@ concept PicturePolicy = requires {
     { P::picture } -> std::convertible_to<Picture>;
     { P::is_schrodinger } -> std::convertible_to<bool>;
     { P::apply_sign } -> std::convertible_to<double>;
-    { P::contract_phase } -> std::convertible_to<double>;
     { P::contract_reverse } -> std::convertible_to<bool>;
     { P::arrival_order } -> std::convertible_to<ArrivalOrder>;
-    { P::pare_sweep } -> std::convertible_to<PareSweep>;
 };
 
 static_assert(PicturePolicy<HeisenbergPicture>);
