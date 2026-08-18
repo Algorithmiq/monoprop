@@ -15,26 +15,46 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include "monoprop/core/Picture.h"
 #include "monoprop/detail/graph/MPGraphLayers.h"
 #include "monoprop/detail/graph/MPGraphViews.h"
 #include "monoprop/monopropExport.h"
 
 namespace monoprop {
 
+/// Which end of the layer store a newly appended gate attaches to.
+// The graph needs this one bit and nothing more about the simulation: it does not name a picture, because
+// the layer order it maintains is the same in both (see MPGraph). The two pictures assign optimizer slots
+// to arriving gates in opposite directions, and that is all this distinguishes.
+enum class LayerGrowth : uint8_t {
+    Back,  ///< a new gate takes the lowest optimizer slot, so it attaches at the back
+    Front, ///< a new gate takes the highest optimizer slot, so it attaches at the front
+};
+
 /// Ordered per-rank record of the evolution circuit, one Layer per generator.
+// A graph built by append() stores its layers in DESCENDING optimizer-slot order under both growth ends:
+// active layer i is optimizer slot layers()-1-i. That mapping is load-bearing outside this class, not just
+// a local convention -- MPFunctions' prepare_evolved_operator hard-codes fill_mapped_params(..., reverse=
+// true), its gradient loop hard-codes `count-1-i`, and MonomialPropagator::graph_gate_arrays_ hard-codes
+// the same mapping. All three can stay free of any picture only because append_layer() normalizes the two
+// arrival orders into this one storage order, so changing the storage order means changing all three with
+// it.
+//
+// slice_graph() is the one exception: its result is ordered for replay, which coincides with the mapping
+// above only for LayerGrowth::Back. Slices are for replay_view() and must not be fed to anything that
+// reconstructs optimizer order.
 class monoprop_EXPORT MPGraph {
 private:
     using LayerIterator = std::vector<Layer>::iterator;
     using ConstLayerIterator = std::vector<Layer>::const_iterator;
 
-    Picture picture_;
+    LayerGrowth growth_;
     std::vector<Layer> layers_;
     size_t front_offset_ = 0;
 
@@ -54,9 +74,12 @@ private:
 
     auto active_end_iterator() const -> ConstLayerIterator { return layers_.end(); }
 
-    // Schrödinger prepends: it consumes the circuit front-to-back, so the newest gate is the earliest layer.
+    // The growth end and the oldest end are opposite: the first gate appended sits at whichever end new
+    // layers do not take. Every ordering-sensitive member below asks the question in this one spelling.
+    auto grows_at_front() const -> bool { return growth_ == LayerGrowth::Front; }
+
     auto append_position() -> LayerIterator {
-        return is_schrodinger() ? active_begin_iterator() : active_end_iterator();
+        return grows_at_front() ? active_begin_iterator() : active_end_iterator();
     }
 
     auto append_layer(Layer layer) -> void { layers_.emplace(append_position(), std::move(layer)); }
@@ -69,9 +92,9 @@ private:
     }
 
 public:
-    explicit MPGraph(Picture picture) : picture_(picture) {}
+    explicit MPGraph(LayerGrowth growth) : growth_(growth) {}
 
-    explicit MPGraph(Picture picture, std::vector<Layer> layers) : picture_(picture), layers_(std::move(layers)) {}
+    explicit MPGraph(LayerGrowth growth, std::vector<Layer> layers) : growth_(growth), layers_(std::move(layers)) {}
 
     /// Gate info (param_index, gen_coeff, gate_index) is written onto `storage` here while it is still
     /// mutable, before it is frozen into the Layer's shared const core.
@@ -87,6 +110,7 @@ public:
 
     /// Slice the graph at `key` (the number of earliest operations to include); `contract` also removes
     /// the sliced part from this graph.
+    // Layers come back in application order, earliest first -- see the note on this class.
     auto slice_graph(size_t key, bool contract = false) -> MPGraph;
 
     auto slice_view(size_t key) const -> MPGraphView;
@@ -102,9 +126,8 @@ public:
     /// Non-owning replay view over the active layers, in build order.
     auto replay_view() const -> MPGraphView { return {layers_, active_begin_index(), layers(), false}; }
 
-    auto picture() const -> Picture { return picture_; }
-
-    auto is_schrodinger() const -> bool { return picture_ == Picture::Schrodinger; }
+    /// Carried so a derived graph (a slice, a pared copy) keeps its source's layer order.
+    auto growth() const -> LayerGrowth { return growth_; }
 
     /// A normally-built layer stores no cosine set, so the companion cosine-index count cannot come from
     /// the graph: only the operator's inverted index can supply it.

@@ -34,9 +34,9 @@ inline auto layer_with_gate(std::size_t gate_index) -> monoprop::Layer {
     return monoprop::Layer(core_with_gate(gate_index));
 }
 
-// Built via append() so layer ordering (Heisenberg back-append, Schrödinger front-insert) is production's.
-inline auto graph_with_gates(monoprop::Picture picture, std::size_t n) -> monoprop::MPGraph {
-    monoprop::MPGraph graph(picture);
+// Built via append() so the layer ordering is production's for the growth end under test.
+inline auto graph_with_gates(monoprop::LayerGrowth growth, std::size_t n) -> monoprop::MPGraph {
+    monoprop::MPGraph graph(growth);
     for (std::size_t i = 0; i < n; ++i) {
         graph.append(std::make_shared<monoprop::LayerCore>(), /*param_index=*/0, /*gen_coeff=*/0.0, /*gate_index=*/i);
     }

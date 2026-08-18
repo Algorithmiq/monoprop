@@ -86,7 +86,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     : picture_{kind_of(picture)},
       comm_{comm},
       mp_op_{},
-      graph_(picture_),
+      graph_(layer_growth_of(picture_)),
       cutoff_{cutoff},
       lower_atol_{lower_atol},
       upper_atol_{upper_atol},
@@ -965,7 +965,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
         };
         // Threshold the picture's driving vector: the Hamiltonian in Schrödinger, the state otherwise.
         const auto [keep, count] = P::pare_seed(state, op, *pare_threshold);
-        graph = std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, P::picture, comm_, full_cos_of_layer));
+        graph = std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, comm_, full_cos_of_layer));
     }
     else {
         graph = std::shared_ptr<const MPGraph>(std::shared_ptr<const void>{}, &graph_);

@@ -62,7 +62,7 @@ auto MPGraph::slice_graph(size_t key, bool contract) -> MPGraph {
     const auto k = std::min(key, layers());
     sliced_layers.reserve(k);
 
-    if (is_schrodinger()) {
+    if (grows_at_front()) {
         const size_t active_end = active_end_index();
         for (size_t i = 0; i < k; ++i) {
             sliced_layers.push_back(layers_[active_end - 1 - i]);
@@ -84,12 +84,14 @@ auto MPGraph::slice_graph(size_t key, bool contract) -> MPGraph {
         }
     }
 
-    return MPGraph(picture_, std::move(sliced_layers));
+    return MPGraph(growth_, std::move(sliced_layers));
 }
 
 auto MPGraph::slice_view(size_t key) const -> MPGraphView {
     const auto k = std::min(key, layers());
-    if (is_schrodinger()) {
+    // Oldest end at the back: the window is the tail, walked back-to-front so the view still yields the
+    // earliest operation first.
+    if (grows_at_front()) {
         return {layers_, active_end_index() - k, k, true};
     }
     return {layers_, active_begin_index(), k, false};

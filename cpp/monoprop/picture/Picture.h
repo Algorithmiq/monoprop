@@ -152,6 +152,13 @@ concept PicturePolicy = requires {
 static_assert(PicturePolicy<HeisenbergPicture>);
 static_assert(PicturePolicy<SchrodingerPicture>);
 
+// The only place a picture becomes a graph layer order. MPGraph deliberately knows nothing about pictures,
+// and the translation belongs on this side: Heisenberg gives each arriving gate a lower optimizer slot than
+// the last, Schrödinger a higher one.
+inline auto layer_growth_of(Picture picture) -> LayerGrowth {
+    return picture == Picture::Schrodinger ? LayerGrowth::Front : LayerGrowth::Back;
+}
+
 // The one runtime->policy branch, taken once per public call. decltype(auto), not auto, so a policy that
 // hands back a reference into the operator does not decay to a copy; both arms must then deduce the same
 // type.

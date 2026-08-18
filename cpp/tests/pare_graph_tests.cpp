@@ -105,7 +105,7 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
         seed.push_back(i);
     }
 
-    auto pared = pare_graph(graph, seed, local_index_count, Picture::Heisenberg, MPI_COMM_SELF, provider);
+    auto pared = pare_graph(graph, seed, local_index_count, MPI_COMM_SELF, provider);
     BOOST_REQUIRE_EQUAL(pared.layers(), graph.layers());
 
     size_t pruned_count = 0;
