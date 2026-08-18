@@ -1,5 +1,5 @@
 {
-  description = "monoprop: Majorana and Pauli propagation";
+  description = "monoprop: because your operators deserve to propagate at escape velocity.";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -16,13 +16,7 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-
-        # Pinned rather than taken from `pkgs.python3` so that a nixpkgs bump of
-        # the default interpreter cannot silently change the ABI of the wheel.
         python = pkgs.python312;
-
-        # nixpkgs still ships 1.0.2; `[build-system] requires` asks for 1.0.3.
-        # Drop this once nixpkgs catches up.
         scikit-build-core = python.pkgs.scikit-build-core.overridePythonAttrs (_: rec {
           version = "1.0.3";
           src = pkgs.fetchPypi {
