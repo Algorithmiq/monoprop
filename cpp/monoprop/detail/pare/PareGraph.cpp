@@ -116,7 +116,9 @@ auto pare_graph(const MPGraph &graph,
         }
     }
 
-    std::vector<Layer> layers(num_layers);
+    // Copied, not default-built: a fresh std::vector<Layer>(num_layers) allocates a LayerCore per layer
+    // that the sweep then overwrites, and the copy keeps the source's arrival order for free.
+    MPGraph pared = graph;
 
     // Single backward sweep, entirely rank-local: every cross-rank endpoint is force-kept (see
     // mark_cross_rank_endpoints_kept), so nodes_to_keep stays consistent across ranks with no exchange.
@@ -134,10 +136,11 @@ auto pare_graph(const MPGraph &graph,
         const CosMask full = full_cos_of_layer(layer_idx);
         auto [filtered, preserves] = filter_layer_cosine_data(full, nodes_to_keep);
 
-        layers[layer_idx] = preserves ? Layer(layer.shared_core()) : Layer(layer.shared_core(), std::move(filtered));
+        pared.replace_layer(layer_idx,
+                            preserves ? Layer(layer.shared_core()) : Layer(layer.shared_core(), std::move(filtered)));
     }
 
-    return MPGraph(graph.growth(), std::move(layers));
+    return pared;
 }
 
 } // namespace monoprop

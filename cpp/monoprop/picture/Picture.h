@@ -46,8 +46,8 @@ struct HeisenbergPicture {
 
     // Simulation step i consumes optimizer slot n-1-i: the observable walks the circuit backwards.
     static auto gate_slot(size_t i, size_t n) -> size_t { return n - 1 - i; }
-    // gate_slot's slope, as MPGraph needs it: descending, so each arriving gate takes a lower slot.
-    static constexpr LayerGrowth layer_growth = LayerGrowth::Back;
+    // gate_slot's slope, as MPGraph needs it.
+    static constexpr ArrivalOrder arrival_order = ArrivalOrder::DescendingSlot;
     static constexpr double apply_sign = 1.0; // the applied angle is the build angle
 
     // map_params() arguments for contract_partially: forward phase, written in reverse.
@@ -106,8 +106,8 @@ struct SchrodingerPicture {
 
     // Simulation step i consumes optimizer slot i: the state walks the circuit front-to-back.
     static auto gate_slot(size_t i, size_t /*n*/) -> size_t { return i; }
-    // gate_slot's slope, as MPGraph needs it: ascending, so each arriving gate takes a higher slot.
-    static constexpr LayerGrowth layer_growth = LayerGrowth::Front;
+    // gate_slot's slope, as MPGraph needs it.
+    static constexpr ArrivalOrder arrival_order = ArrivalOrder::AscendingSlot;
     static constexpr double apply_sign = -1.0; // the applied angle is the negated build angle
 
     static constexpr double contract_phase = -1.0;
@@ -156,7 +156,7 @@ concept PicturePolicy = requires {
     { P::apply_sign } -> std::convertible_to<double>;
     { P::contract_phase } -> std::convertible_to<double>;
     { P::contract_reverse } -> std::convertible_to<bool>;
-    { P::layer_growth } -> std::convertible_to<LayerGrowth>;
+    { P::arrival_order } -> std::convertible_to<ArrivalOrder>;
     { P::pare_sweep } -> std::convertible_to<PareSweep>;
 };
 

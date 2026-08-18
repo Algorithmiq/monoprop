@@ -86,7 +86,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     : picture_{kind_of(picture)},
       comm_{comm},
       mp_op_{},
-      graph_(with_picture(picture_, []<typename P>() { return P::layer_growth; })),
+      graph_(with_picture(picture_, []<typename P>() { return P::arrival_order; })),
       cutoff_{cutoff},
       lower_atol_{lower_atol},
       upper_atol_{upper_atol},
