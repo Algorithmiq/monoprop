@@ -19,10 +19,30 @@ vendoring the repository's `benches/` directory.
 pip install monoprop-bench-tools
 ```
 
-`monoprop_bench_tools.memory.gpu` additionally needs a CuPy build matching your
-CUDA toolkit (e.g. `cupy-cuda12x`). It is not declared as a dependency — those
-wheels are large and pinned to one CUDA version and one architecture — and
-without it the module reports `Method.UNAVAILABLE` rather than failing to import.
+### GPU support
+
+`monoprop_bench_tools.memory.gpu` needs [CuPy](https://cupy.dev/), and only
+CuPy. Install the build that matches your CUDA toolkit:
+
+```bash
+pip install cupy-cuda12x   # CUDA 12.x
+pip install cupy-cuda13x   # CUDA 13.x
+```
+
+On a machine without a system CUDA toolkit, ask for the bundled one:
+
+```bash
+pip install "cupy-cuda12x[ctk]"
+```
+
+CuPy is not declared as an extra. The two builds ship the same top-level `cupy`
+package, so a resolver that is free to pick both installs one over the other and
+you silently get a CuPy built against the wrong runtime; the wheels are also
+large (~145 MB) and exist for Linux and Windows only. Picking one yourself is
+the only way to be sure which runtime you measure against.
+
+Without CuPy the module still imports, and every reading reports
+`Method.UNAVAILABLE` instead of a figure you might mistake for a real one.
 
 ## Use
 

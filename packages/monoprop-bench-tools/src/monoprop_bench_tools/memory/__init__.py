@@ -17,8 +17,9 @@
 Two backends with a deliberately parallel surface --
 :mod:`monoprop_bench_tools.memory.cpu` for the host (kernel ``VmHWM``) and
 :mod:`monoprop_bench_tools.memory.gpu` for the device (CUDA memory-pool
-counters). Neither is re-exported here: the choice of backend is the caller's,
-and importing the GPU one is what pulls in the optional ``gpu`` extra.
+counters). Neither is re-exported here: importing a submodule runs this file
+first, so a re-export would drag the GPU backend into every CPU-only import, and
+the two backends share vocabulary that would collide in one namespace.
 """
 
 from __future__ import annotations

@@ -323,8 +323,8 @@ flake8-annotations.allow-star-arg-any = true
 # the report renderer writes to stdout by design (T201) and the MPI communicator
 # type is unavoidably dynamic (ANN401).
 "packages/monoprop-bench-tools/src/**" = ["ANN401", "T201"]
-# cupy is an optional, GPU-only extra, so it is imported inside the functions
-# that need it (PLC0415).
+# cupy is an undeclared, GPU-only dependency, so it is imported inside the
+# functions that need it (PLC0415).
 "packages/monoprop-bench-tools/src/monoprop_bench_tools/memory/gpu.py" = ["PLC0415"]
 
 [tool.ruff.lint.pycodestyle]
