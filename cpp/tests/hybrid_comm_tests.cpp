@@ -37,7 +37,7 @@ using monoprop::mpi::HybridComm;
 
 namespace {
 
-template <class Body>
+template <typename Body>
 auto run_hybrid(int s, Body body) -> std::vector<std::exception_ptr> {
     HybridComm hyb(MPI_COMM_WORLD, s);
     return test_utils::run_comm_threads(hyb, s, body);

@@ -48,7 +48,7 @@ template <class>
 inline constexpr bool unsupported_mpi_datatype_v = false;
 } // namespace detail
 
-template <class T>
+template <typename T>
 struct datatype {
     static inline auto get() -> MPI_Datatype {
         if constexpr (std::is_same_v<T, int>) {
@@ -90,7 +90,7 @@ inline auto finalize() -> void {}
 auto rank(const Comm &comm) -> int;
 auto size(const Comm &comm) -> int;
 
-template <class T>
+template <typename T>
 inline auto allreduce_sum(T local_val, Comm comm) -> T {
     if (comm.kind == Comm::Kind::Shm) {
         return comm.shm->allreduce_sum<T>(comm.shm_rank, local_val);
@@ -115,7 +115,7 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm)
 // In-flight variable-size all-to-all owning its buffers + layout, so several can be in flight.
 // recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a
 // no-op on the synchronous Shm / single-process paths) and unpacks by source.
-template <class T>
+template <typename T>
 struct PendingAlltoallv {
     int num_ranks = 0;
     std::vector<int> send_counts;
@@ -148,7 +148,7 @@ struct PendingAlltoallv {
 // skip_self: do not send the self slot (the caller handles self inline) — self send/recv = 0.
 // known_recv_counts: recv counts already known (e.g. the transpose of the query counts), so skip the
 // count exchange. The self slot is also zeroed when skip_self is set.
-template <class T>
+template <typename T>
 inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                             Comm comm,
                             bool skip_self = false,
