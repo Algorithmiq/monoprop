@@ -29,10 +29,29 @@
 //     (see the bit-identity comment above size_staging_send_ in HybridComm.h). So the wire format is
 //     the same and there is no mixed-version interop hazard between ranks.
 //
-// What the old cases could NOT pin is the tiling itself: in every one of them a partition sends the
-// same length to every destination, so the send-count matrix is constant along each row and a table
-// transposed in (dest, source) tiles the buffer just as validly. The two pairwise-count cases below
-// exist for that, and to reach HybridComm::alltoallv, which no case in this file drove at all.
+// What the old cases could NOT pin is the indexing of the two DERIVED per-destination aggregates the
+// change introduces: col_sum_ (the column sums W) on the send side and recv_col_ on the recv side.
+// Neither existed before -- the old code carried one running cursor over the raw counts and never
+// formed a per-destination total. In every old case a partition sends the same length to every
+// destination, and that makes both aggregates CONSTANT along the very index a slip would scramble:
+// col_sum_[g] is the same value for every g, and recv_col_[a*S+t] depends only on a. A wrong index
+// then reads the right value. Modelled over 8 geometries with R, S in [1, 4]: a transposed or dropped
+// destination index on either aggregate is caught in 0 of 8 geometries by the old count patterns, and
+// in 6 of 8 (send side) and 4 of 8 (recv side) by the pairwise counts below.
+//
+// Two things the pairwise cases do NOT add, recorded so nobody re-derives them the hard way:
+//
+//   * A CONSISTENTLY (dest, source)-transposed staging layout is a genuinely valid alternative tiling.
+//     It mismatches 0 blocks at every geometry and every count pattern tried, old or new, and no
+//     black-box test can distinguish it at any count pattern. Only the bit-identity comment above
+//     size_staging_send_ pins that choice.
+//   * A send-side-ONLY transposition is caught by the old uniform cases at least as well as by the new
+//     ones (63 of 81 blocks wrong at R=3, S=3, against 46-48 for the pairwise pattern). So is a flat
+//     index built as t*R+b instead of b*S+t, when it is the STORE index that slips: 6 of the 9
+//     destination bases move even under uniform counts. That slip is invisible only when it is the
+//     col_sum_ READ index that slips, which is the first case above.
+//
+// The two cases below also reach HybridComm::alltoallv, which no case in this file drove at all.
 
 #include <boost/test/unit_test.hpp>
 
@@ -313,9 +332,11 @@ auto pair_tag(int g, int d, int j) -> int {
 //     instead; the caller-supplied-recv-layout path is reached only through Engine.h's response round
 //     (begin_alltoallv with known recv counts) and so only end to end, by
 //     mpi_distributed_layer_equivalence, where a wrong staging offset arrives as a wrong answer.
-//   * Its count matrix varies along both indices, which pins the staging tiling. The per-source-
-//     constant counts used above cannot: under them a (dest, source)-transposed offset table still
-//     delivers every byte to the right place.
+//   * Its count matrix varies along BOTH indices, which is what pins the indexing of col_sum_ and
+//     recv_col_, the two derived per-destination aggregates this change introduces. Under the
+//     per-source-constant counts every case above uses, both aggregates are constant along the index a
+//     slip would scramble, so a mis-indexed read returns the right value anyway. It does NOT pin the
+//     tiling: see the file header for what is and is not distinguishable, with counts.
 BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_pairwise_counts) {
     if (world_size() < 2) {
         return;
@@ -325,7 +346,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_pairwise_counts) {
     for (const int S : {1, 2, 3}) {
         const int P = R * S;
         std::atomic<int> failures{0};
-        std::atomic<int> checks{0};
+        std::atomic<int> payload_checks{0};
         auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
             Comm c = Comm::make_hybrid(&hyb, u);
             const int g = monoprop::mpi::rank(c);
@@ -362,7 +383,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_pairwise_counts) {
                 for (int src = 0; src < P; ++src) {
                     const int m = rc[static_cast<size_t>(src)];
                     for (int j = 0; j < m; ++j) {
-                        checks.fetch_add(1);
+                        payload_checks.fetch_add(1);
                         if (recv[static_cast<size_t>(rd[static_cast<size_t>(src)] + j)] != pair_tag(src, g, j)) {
                             failures.fetch_add(1);
                         }
@@ -374,8 +395,9 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_pairwise_counts) {
             BOOST_CHECK(e == nullptr);
         }
         // Not decoration: a case whose assertions sit inside count-dependent loops can reach none of
-        // them and still pass. This says how many actually ran.
-        BOOST_CHECK_GT(checks.load(), 0);
+        // them and still pass. This counts the PAYLOAD comparisons specifically -- the ones that would
+        // vanish if every count came back zero -- rather than any assertion at all.
+        BOOST_CHECK_GT(payload_checks.load(), 0);
         BOOST_CHECK_EQUAL(failures.load(), 0);
     }
 }
@@ -393,7 +415,11 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_pairwise_counts) {
     for (const int S : {1, 2, 3}) {
         const int P = R * S;
         std::atomic<int> failures{0};
-        std::atomic<int> checks{0};
+        // Two counters, not one: the layout checks below run once per source unconditionally, so a
+        // single combined counter would be satisfied by P * rounds even if every resolved count came
+        // back zero and not one payload element were ever examined.
+        std::atomic<int> layout_checks{0};
+        std::atomic<int> payload_checks{0};
         auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
             Comm c = Comm::make_hybrid(&hyb, u);
             const int g = monoprop::mpi::rank(c);
@@ -424,19 +450,19 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_pairwise_counts) {
                 int total = 0;
                 for (int src = 0; src < P; ++src) {
                     const int m = pair_count(src, g, round);
-                    checks.fetch_add(1);
+                    layout_checks.fetch_add(1);
                     if (rc[static_cast<size_t>(src)] != m || rd[static_cast<size_t>(src)] != total) {
                         failures.fetch_add(1);
                     }
                     for (int j = 0; j < m; ++j) {
-                        checks.fetch_add(1);
+                        payload_checks.fetch_add(1);
                         if (recv[static_cast<size_t>(total + j)] != pair_tag(src, g, j)) {
                             failures.fetch_add(1);
                         }
                     }
                     total += m;
                 }
-                checks.fetch_add(1);
+                layout_checks.fetch_add(1);
                 if (static_cast<int>(recv.size()) != total) {
                     failures.fetch_add(1);
                 }
@@ -445,7 +471,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_pairwise_counts) {
         for (const auto &e : errs) {
             BOOST_CHECK(e == nullptr);
         }
-        BOOST_CHECK_GT(checks.load(), 0);
+        BOOST_CHECK_GT(layout_checks.load(), 0);
+        BOOST_CHECK_GT(payload_checks.load(), 0);
         BOOST_CHECK_EQUAL(failures.load(), 0);
     }
 }
