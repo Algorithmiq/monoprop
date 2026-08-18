@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -64,15 +65,37 @@ public:
                                             "mpi::init / mpi4py requests SERIALIZED or MULTIPLE.");
         }
         // Size all (R,S)-fixed scratch once so per-call paths never allocate; staging grows on demand.
+        // That contract is live: every array touched inside a barriered window, including the Phase P0
+        // publish rows and the two staging scratch vectors, is sized here and only here.
         const size_t rss = static_cast<size_t>(r_) * static_cast<size_t>(s_) * static_cast<size_t>(s_);
+        const size_t p = static_cast<size_t>(r_) * static_cast<size_t>(s_);
         counts_send_.resize(rss);
         counts_recv_.resize(rss);
         mpi_send_counts_.resize(static_cast<size_t>(r_));
         mpi_recv_counts_.resize(static_cast<size_t>(r_));
         mpi_send_displs_.resize(static_cast<size_t>(r_));
         mpi_recv_displs_.resize(static_cast<size_t>(r_));
-        pack_off_.resize(rss);
-        scatter_off_.resize(rss);
+        pack_off_.resize(static_cast<size_t>(s_) * p); // same S*R*S elements as before, indexed (u, g)
+        base_send_.resize(p);
+        base_recv_.resize(p);
+        col_sum_.resize(p);
+        recv_col_.resize(p);
+        run_.resize(p);
+        // Row u of counts_matrix_ is written ONLY by partition u, concurrently with every other row, so
+        // the row stride is rounded up to a whole number of 64-byte lines: without that, two partitions
+        // share a line and the Phase P0 publish becomes a false-sharing storm across S cores. At P=256
+        // a row is exactly 1 KiB and the padding costs nothing; at other P it does.
+        counts_stride_ = round_up_(p, kIntsPerLine);
+        assert(counts_stride_ * sizeof(int) % kLineBytes == 0);
+        rows_stride_ = round_up_(2 * static_cast<size_t>(r_), kLongsPerLine);
+        assert(rows_stride_ * sizeof(long long) % kLineBytes == 0);
+        // Over-allocated by one line each so the base pointer can be advanced to a line boundary:
+        // std::vector's allocator guarantees alignof(T), not 64, and a padded stride only keeps rows
+        // apart once row 0 starts on a line of its own.
+        counts_matrix_store_.assign(static_cast<size_t>(s_) * counts_stride_ + kIntsPerLine, 0);
+        counts_matrix_ = align_to_line_(counts_matrix_store_.data());
+        rows_store_.assign(static_cast<size_t>(s_) * rows_stride_ + kLongsPerLine, 0LL);
+        rows_ = align_to_line_(rows_store_.data());
     }
 
     HybridComm(const HybridComm &) = delete;
@@ -122,12 +145,13 @@ public:
     auto reset() -> void { barrier_.reset(); }
 
 private:
+    // No count pointer is published here any more: counts travel through counts_matrix_ / rows_, which
+    // each partition fills from its own arguments in Phase P0. What is left is read only by the owning
+    // partition itself (pack_send_) or by partition 0 inside a barriered window (the reductions).
     struct alignas(64) Slot {
         const std::byte *ptr = nullptr; // byte view of this partition's send buffer; null until published
-        const int *counts = nullptr;
         const int *send_counts = nullptr;
         const int *send_displs = nullptr;
-        const int *recv_counts = nullptr;
         const double *vec = nullptr;
         double f64 = 0.0;
         uint64_t u64 = 0;
@@ -156,11 +180,12 @@ private:
 
     // recv_counts[g] = amount global partition g sends to this partition. 2 barriers + one S*S-int MPI_Alltoall.
     auto alltoall_counts_impl_(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
-        const size_t u = static_cast<size_t>(local_partition);
-        slots_[u].counts = send_counts;
+        // Phase P0, before the first barrier: this partition copies its own count row into the shared
+        // matrix, reading only its own argument. See publish_counts_row_ for why that needs no barrier.
+        publish_counts_row_(local_partition, send_counts);
         sync();
         if (local_partition == 0) {
-            pack_count_matrix_(&Slot::counts);
+            pack_count_matrix_();
             MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
         }
         sync();
@@ -168,14 +193,13 @@ private:
         const int t = local_partition;
         for (int a = 0; a < r_; ++a) {
             for (int su = 0; su < s_; ++su) {
-                const size_t idx = (static_cast<size_t>(a) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
-                                   + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su);
-                recv_counts[a * s_ + su] = counts_recv_[idx];
+                recv_counts[a * s_ + su] = counts_recv_[counts_idx_(a, t, su)];
             }
         }
         // No trailing barrier: past the last sync only counts_recv_ is read, and partition 0 cannot rewrite
         // it until a future call's second barrier — unreachable until every extractor here has arrived.
-        // send_counts was consumed before the last sync, so peers may free/reuse it on return.
+        // send_counts was consumed before the FIRST sync now (Phase P0 copies it), so peers may free or
+        // reuse it on return, as before but sooner.
     }
 
     // Flat variable all-to-all over caller-owned buffers; see AlltoallvArgs for the conventions.
@@ -185,12 +209,19 @@ private:
         me.ptr = args.send;
         me.send_counts = args.send_counts;
         me.send_displs = args.send_displs;
-        me.recv_counts = args.recv_counts;
+        // Phase P0, BEFORE B1: each partition publishes its own count row and its per-rank row totals,
+        // reading only its own arguments. No peer state is touched, so this needs no barrier of its own
+        // and the verb still costs exactly 4. This is where the R*S*S cross-partition traffic is paid —
+        // by the owners, on their own cores, in parallel. See publish_send_rows_ for the lifetime rule.
+        publish_send_rows_(local_partition, args.send_counts);
+        publish_recv_rows_(local_partition, args.recv_counts);
         sync(); // B1
 
         // B2: partition 0 sizes/reallocates staging; must finish before any partition packs into stage_send_.
         if (local_partition == 0) {
-            size_staging_(args.elem);
+            size_staging_send_(args.elem);
+            fill_recv_col_from_rows_();
+            size_staging_recv_(args.elem);
         }
         sync(); // B2
 
@@ -213,21 +244,29 @@ private:
         sync(); // B4
 
         // Scatter each global source's contiguous run from stage_recv_ to recv_displs[g] (all legs, incl.
-        // self-rank, go through staging). Block starts come from scatter_off_: no peer slot is read past B4.
+        // self-rank, go through staging). There is no R*S*S scatter table any more: the old one held a
+        // prefix over su at fixed (a, t), computed on partition 0 out of partition t's OWN published
+        // recv row — work that never needed to be on partition 0 at all. This loop already walks (a, su)
+        // in exactly the order those offsets accumulate, so `cur` re-derives them for free from the
+        // per-(rank, partition) base and this partition's own counts. No peer slot is read past B4.
         std::byte *dst = args.recv;
         const int t = local_partition;
         for (int a = 0; a < r_; ++a) {
+            size_t cur = base_recv_[static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t)];
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
                 const int cnt = args.recv_counts[g];
                 if (cnt != 0) {
                     std::memcpy(dst + static_cast<size_t>(args.recv_displs[g]) * args.elem,
-                                stage_recv_.data() + scatter_off_[block_idx_(a, t, su)] * args.elem,
+                                stage_recv_.data() + cur * args.elem,
                                 static_cast<size_t>(cnt) * args.elem);
                 }
+                cur += static_cast<size_t>(cnt);
             }
         }
-        // No trailing barrier (see alltoall_counts_impl_): past B4 only stage_recv_/scatter_off_/own buffers.
+        // No trailing barrier (see alltoall_counts_impl_): past B4 only stage_recv_/base_recv_/own buffers.
+        // base_recv_ is rewritten only in a later verb's B1→B2 window, which no partition can reach until
+        // every partition — including one still scattering here — has arrived at that verb's B1.
     }
 
     // Fused count-resolve + payload alltoallv: folds the standalone count exchange into this verb's
@@ -244,17 +283,21 @@ private:
         me.ptr = reinterpret_cast<const std::byte *>(args.send);
         me.send_counts = args.send_counts;
         me.send_displs = args.send_displs;
-        // recv_counts is an output here — deliberately not published; the count Alltoall resolves it.
+        // Phase P0, BEFORE B1: the send half only. This verb cannot publish recv rows, because its recv
+        // counts do not exist until the count MPI_Alltoall has run on partition 0 in the B1→B2 window;
+        // that side is served by fill_recv_col_from_counts_recv_ instead.
+        publish_send_rows_(local_partition, args.send_counts);
         sync(); // B1
 
         if (local_partition == 0) {
-            pack_count_matrix_(&Slot::send_counts);
+            pack_count_matrix_();
             MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
-            // Size staging from counts_recv_: recv of partition t from (rank, su) sits at rank*S*S + t*S + su.
-            size_staging_impl_(elem, [this](int t, int rank, int su) {
-                return counts_recv_[(static_cast<size_t>(rank) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
-                                    + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
-            });
+            size_staging_send_(elem);
+            // Size the recv side from counts_recv_, which partition 0 now holds in full: recv of
+            // partition t from (rank a, su) sits at a*S*S + t*S + su, so the S entries this needs per
+            // (a, t) are one contiguous run.
+            fill_recv_col_from_counts_recv_();
+            size_staging_recv_(elem);
         }
         sync(); // B2
 
@@ -263,9 +306,7 @@ private:
         for (int a = 0; a < r_; ++a) {
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
-                const int c =
-                    counts_recv_[(static_cast<size_t>(a) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
-                                 + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
+                const int c = counts_recv_[counts_idx_(a, t, su)];
                 args.recv_counts[g] = c;
                 args.recv_displs[g] = checked_mpi_count(total, "Recv displacement");
                 total += c;
@@ -290,15 +331,19 @@ private:
         sync(); // B4
 
         std::byte *dst = reinterpret_cast<std::byte *>(args.recv.data()); // after the resize: it may reallocate
+        // Same running-cursor scatter as alltoallv_impl_; see the comment there for why the R*S*S
+        // scatter table is gone.
         for (int a = 0; a < r_; ++a) {
+            size_t cur = base_recv_[static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t)];
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
                 const int cnt = args.recv_counts[g];
                 if (cnt != 0) {
                     std::memcpy(dst + static_cast<size_t>(args.recv_displs[g]) * elem,
-                                stage_recv_.data() + scatter_off_[block_idx_(a, t, su)] * elem,
+                                stage_recv_.data() + cur * elem,
                                 static_cast<size_t>(cnt) * elem);
                 }
+                cur += static_cast<size_t>(cnt);
             }
         }
         // No trailing barrier: same discipline as alltoallv_impl_.
@@ -372,25 +417,117 @@ private:
         // No trailing barrier: red_vec_ is rewritten only inside a future verb's barriered phases.
     }
 
-    // Flat index of the (rank, dest partition, source partition) block in the R*S*S offset/count tables.
-    auto block_idx_(int b, int t, int u) const -> size_t {
-        return (static_cast<size_t>(b) * static_cast<size_t>(s_) + static_cast<size_t>(t)) * static_cast<size_t>(s_)
-               + static_cast<size_t>(u);
+    static constexpr size_t kLineBytes = 64;
+    static constexpr size_t kIntsPerLine = kLineBytes / sizeof(int);
+    static constexpr size_t kLongsPerLine = kLineBytes / sizeof(long long);
+
+    static auto round_up_(size_t n, size_t m) -> size_t { return ((n + m - 1) / m) * m; }
+
+    // Advance a vector's data pointer to the next 64-byte boundary. The gap is a whole number of T,
+    // because the allocator hands back storage at least alignof(T)-aligned and 64 is a multiple of
+    // sizeof(T) for both element types used here; the caller over-allocates one line to pay for it.
+    template <typename T>
+    static auto align_to_line_(T *p) -> T * {
+        static_assert(kLineBytes % sizeof(T) == 0);
+        const auto addr = reinterpret_cast<uintptr_t>(p);
+        const size_t pad = (kLineBytes - static_cast<size_t>(addr % kLineBytes)) % kLineBytes;
+        return p + pad / sizeof(T);
     }
 
-    // Pack the S*S count matrix per dest rank into counts_send_, dest-partition-major (t) then
-    // source-partition-minor (su), ready for the one S*S-int MPI_Alltoall. `counts` selects which slot
-    // field to read, the only difference between the standalone count exchange (Slot::counts) and the
-    // fused resolve (Slot::send_counts).
-    //
-    // Partition 0 only, and only inside a barriered window: it reads every peer partition's published
-    // count pointer. Every element of counts_send_ is written here and MPI_Alltoall fills counts_recv_
-    // fully, so neither buffer is pre-zeroed.
-    auto pack_count_matrix_(const int *Slot::*counts) -> void {
+    // Flat index of the (rank, dest partition, source partition) entry in the R*S*S count matrices the
+    // counts MPI_Alltoall exchanges. This is that message's WIRE layout and nothing else. The payload
+    // offset table no longer has this shape, which is why there are two indexers below rather than one
+    // `block_idx_` meaning different things at different call sites.
+    auto counts_idx_(int b, int t, int su) const -> size_t {
+        return (static_cast<size_t>(b) * static_cast<size_t>(s_) + static_cast<size_t>(t)) * static_cast<size_t>(s_)
+               + static_cast<size_t>(su);
+    }
+
+    // Flat index into the [S x P] payload offset table: row u holds source partition u's own staging
+    // start for each global destination g, so pack_send_ sweeps it contiguously instead of striding by S.
+    auto pack_idx_(int u, int g) const -> size_t {
+        return static_cast<size_t>(u) * static_cast<size_t>(r_) * static_cast<size_t>(s_) + static_cast<size_t>(g);
+    }
+
+    // Partition u's own line-aligned rows of the two Phase P0 tables.
+    auto counts_row_(int u) -> int * { return counts_matrix_ + static_cast<size_t>(u) * counts_stride_; }
+    auto row_send_(int u) -> long long * { return rows_ + static_cast<size_t>(u) * rows_stride_; }
+    auto row_recv_(int u) -> long long * { return row_send_(u) + r_; }
+
+    /* Phase P0 — what a partition publishes BEFORE the verb's first barrier.
+     *
+     * Each partition writes only its OWN row of counts_matrix_ / rows_, from its own arguments. No
+     * partition reads another's state here, so the phase needs no barrier and the verbs stay at 4. It
+     * exists to move the R*S*S strided cross-partition read off partition 0: what used to be one thread
+     * dereferencing a different thread's array on every iteration is now S owner-local walks running in
+     * parallel, each touching only memory it just wrote.
+     *
+     * LIFETIME — this invariant must survive future edits or the next change silently breaks it. A fast
+     * peer may enter verb k+1's Phase P0 while a slow peer is still in verb k's post-B4 tail, so the
+     * write of row u for verb k+1 races the tail of verb k unless something orders them. It is ordered:
+     * the ONLY reader of counts_matrix_ / rows_ is partition 0, and it reads them strictly inside the
+     * B1→B2 window. Partition 0 cannot leave B2 of verb k until every partition has arrived at B2, so
+     * its verb-k reads are complete before ANY partition passes B2 of verb k; and a peer cannot reach
+     * verb k+1's Phase P0 without first passing the LAST barrier of verb k (B4 for the payload verbs, B2
+     * for the count exchange), hence B2 of verb k. The rewrite therefore
+     * strictly follows the read. This is the same argument alltoall_counts_impl_ makes for counts_recv_
+     * at the end of its own window, pushed one verb further out.
+     *
+     * Row u is written only by partition u, and the row strides are padded to whole cache lines
+     * (see the constructor), so concurrent publishes neither race nor false-share.
+     */
+    auto publish_counts_row_(int local_partition, const int *send_counts) -> void {
+        std::memcpy(counts_row_(local_partition),
+                    send_counts,
+                    static_cast<size_t>(r_) * static_cast<size_t>(s_) * sizeof(int));
+    }
+
+    // Phase P0 for the payload verbs: the count row plus this partition's per-destination-rank totals.
+    // row_send_(u)[b] is exactly the quantity the old size_staging_impl_ re-derived on partition 0 by
+    // striding across every peer's send_counts, and is all partition 0 needs to size the MPI messages.
+    // long long, not int: it sums up to S int counts, and only the per-rank total is int-checked.
+    auto publish_send_rows_(int local_partition, const int *send_counts) -> void {
+        publish_counts_row_(local_partition, send_counts);
+        long long *rs = row_send_(local_partition);
         for (int b = 0; b < r_; ++b) {
+            long long sum = 0;
             for (int t = 0; t < s_; ++t) {
-                for (int su = 0; su < s_; ++su) {
-                    counts_send_[block_idx_(b, t, su)] = (slots_[static_cast<size_t>(su)].*counts)[b * s_ + t];
+                sum += send_counts[b * s_ + t];
+            }
+            rs[b] = sum;
+        }
+    }
+
+    // The recv half, for the verb whose recv counts are a caller input. With S == 1 this and the send
+    // half degenerate to 2*R adds and one memcpy, with partition 0 being the only partition.
+    auto publish_recv_rows_(int local_partition, const int *recv_counts) -> void {
+        long long *rr = row_recv_(local_partition);
+        for (int a = 0; a < r_; ++a) {
+            long long sum = 0;
+            for (int su = 0; su < s_; ++su) {
+                sum += recv_counts[a * s_ + su];
+            }
+            rr[a] = sum;
+        }
+    }
+
+    // Transpose the published count rows into counts_send_, dest-partition-major (t) then
+    // source-partition-minor (su), ready for the one S*S-int MPI_Alltoall. Partition 0 only, and only
+    // inside a barriered window.
+    //
+    // Source partition OUTER, so the read side streams one partition's contiguous P-int row at a time
+    // out of counts_matrix_ and the strided side is the write into counts_send_ — this rank's own
+    // freshly-touched buffer. The old form had it the other way round: a dependent load into a
+    // different thread's array on each of the R*S*S iterations.
+    //
+    // Every element of counts_send_ is written here and MPI_Alltoall fills counts_recv_ fully, so
+    // neither buffer is pre-zeroed.
+    auto pack_count_matrix_() -> void {
+        for (int su = 0; su < s_; ++su) {
+            const int *row = counts_row_(su);
+            for (int b = 0; b < r_; ++b) {
+                for (int t = 0; t < s_; ++t) {
+                    counts_send_[counts_idx_(b, t, su)] = row[b * s_ + t];
                 }
             }
         }
@@ -403,63 +540,134 @@ private:
         }
     }
 
-    // Partition 0 only; recv counts come from partition t's published recv_counts.
-    auto size_staging_(size_t elem) -> void {
-        size_staging_impl_(elem, [this](int t, int rank, int su) {
-            return slots_[static_cast<size_t>(t)].recv_counts[rank * s_ + su];
-        });
-    }
-
-    // recv_count(t, rank, su) yields the count partition t on this rank receives from (rank, source partition su).
-    template <typename RecvCountFn>
-    auto size_staging_impl_(size_t elem, RecvCountFn recv_count) -> void {
+    /* Partition 0's send-side staging sizing, between B1 and B2. Every pass here is CONTIGUOUS and
+     * touches no peer argument array: the strided cross-partition reads were paid in Phase P0.
+     *
+     * BIT-IDENTITY. The staging BLOCK ORDER is unchanged — within the message to rank b, destination
+     * partition t's region comes first in ascending t, and inside it the source partitions u ascend.
+     * Only the way a block start is computed changes. The old code carried one running cursor:
+     *
+     *     cur = mpi_send_displs_[b]; for t: for u: pack_off_(b,t,u) = cur; cur += c[u][b*S+t];
+     *
+     * and the new code splits that same recurrence into a per-destination base and a per-source offset:
+     *
+     *     W[g]           = sum_u c[u][g]                                   (pass A, u outer)
+     *     base_send_[g]  = mpi_send_displs_[b] + sum_{t'<t} W[b*S+t']       for g = b*S + t
+     *     pack_off_(u,g) = base_send_[g] + sum_{u'<u} c[u'][g]             (pass B, u outer)
+     *
+     * These are elementwise EQUAL, not merely equivalent. W[b*S+t] is exactly the total the old inner
+     * u-loop accumulated before it moved on to t+1, so base_send_[b*S+t] is the value `cur` held when
+     * the old loop entered that t; and sum_{u'<u} c[u'][g] is what it had added by the time it reached
+     * u. Every changed quantity is an integer prefix sum reassociated over an exact operation, and no
+     * floating-point accumulation order anywhere in the transport is touched, so the bytes on the wire
+     * — and every reduction fed from them — stay bit-identical at fixed (R, S).
+     */
+    auto size_staging_send_(size_t elem) -> void {
+        const size_t p = static_cast<size_t>(r_) * static_cast<size_t>(s_);
+        // checked_mpi_count moves from one whole-rank accumulator to S per-partition subtotals; the
+        // messages it raises are unchanged, so the same failure still names itself the same way.
         for (int b = 0; b < r_; ++b) {
             long long send_sum = 0;
-            long long recv_sum = 0;
-            for (int t = 0; t < s_; ++t) {
-                for (int su = 0; su < s_; ++su) {
-                    send_sum += slots_[static_cast<size_t>(su)].send_counts[b * s_ + t];
-                    recv_sum += recv_count(t, b, su);
-                }
+            for (int u = 0; u < s_; ++u) {
+                send_sum += row_send_(u)[b];
             }
             mpi_send_counts_[static_cast<size_t>(b)] = checked_mpi_count(send_sum, "Per-rank send count");
-            mpi_recv_counts_[static_cast<size_t>(b)] = checked_mpi_count(recv_sum, "Per-rank recv count");
         }
         long long send_running = 0;
-        long long recv_running = 0;
         for (int b = 0; b < r_; ++b) {
             mpi_send_displs_[static_cast<size_t>(b)] = checked_mpi_count(send_running, "Send displacement");
-            mpi_recv_displs_[static_cast<size_t>(b)] = checked_mpi_count(recv_running, "Recv displacement");
             send_running += mpi_send_counts_[static_cast<size_t>(b)];
-            recv_running += mpi_recv_counts_[static_cast<size_t>(b)];
         }
         const size_t total_send = static_cast<size_t>(checked_mpi_count(send_running, "Total send count"));
-        const size_t total_recv = static_cast<size_t>(checked_mpi_count(recv_running, "Total recv count"));
-        // Grow-only, no zero-fill: pack_send_'s blocks tile [0, total_send) exactly and MPI_Alltoallv
-        // fills every live byte of stage_recv_, so stale bytes past a prior high-water mark are never read.
-        grow_(stage_send_, total_send * elem);
-        grow_(stage_recv_, total_recv * elem);
-        // Precompute each (rank b, dest partition t, source partition u) block start in elements, dest-major/
-        // source-minor to match staging: pack/scatter become O(1) lookups that read no peer slot past B4
-        // (re-summing peer count matrices instead would be O(R*S^3)).
+        // Pass A: the column sums W, u OUTER and g INNER, so both the count row and the accumulator are
+        // swept in address order and the loop vectorises.
+        std::fill(col_sum_.begin(), col_sum_.end(), 0LL);
+        for (int u = 0; u < s_; ++u) {
+            const int *row = counts_row_(u);
+            for (size_t g = 0; g < p; ++g) {
+                col_sum_[g] += row[g];
+            }
+        }
         for (int b = 0; b < r_; ++b) {
             size_t cur = static_cast<size_t>(mpi_send_displs_[static_cast<size_t>(b)]);
             for (int t = 0; t < s_; ++t) {
-                for (int u = 0; u < s_; ++u) {
-                    pack_off_[block_idx_(b, t, u)] = cur;
-                    cur += static_cast<size_t>(slots_[static_cast<size_t>(u)].send_counts[b * s_ + t]);
-                }
+                const size_t g = static_cast<size_t>(b) * static_cast<size_t>(s_) + static_cast<size_t>(t);
+                base_send_[g] = cur;
+                cur += static_cast<size_t>(col_sum_[g]);
             }
         }
+        // Pass B: the exclusive prefix over source partitions, u OUTER again.
+        std::fill(run_.begin(), run_.end(), 0LL);
+        for (int u = 0; u < s_; ++u) {
+            const int *row = counts_row_(u);
+            size_t *off = pack_off_.data() + pack_idx_(u, 0);
+            for (size_t g = 0; g < p; ++g) {
+                off[g] = base_send_[g] + static_cast<size_t>(run_[g]);
+                run_[g] += row[g];
+            }
+        }
+        // Grow-only, no zero-fill: pack_send_'s blocks tile [0, total_send) exactly, so stale bytes past
+        // a prior high-water mark are never read.
+        grow_(stage_send_, total_send * elem);
+    }
+
+    // recv_col_[a*S + t] = the total partition t on this rank receives from rank a. For the payload verb
+    // that is exactly the row every partition published in Phase P0; the R*S reads here are strided
+    // across partitions, but R*S is 256 at layout A where the removed term was R*S*S = 32768.
+    auto fill_recv_col_from_rows_() -> void {
+        for (int a = 0; a < r_; ++a) {
+            for (int t = 0; t < s_; ++t) {
+                recv_col_[static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t)] = row_recv_(t)[a];
+            }
+        }
+    }
+
+    // The same vector for the fused resolve verb, where partition 0 holds every recv count itself:
+    // counts_recv_(a, t, .) is a contiguous run of S ints, so this is a block sum rather than the old
+    // strided per-(t, su) closure call.
+    auto fill_recv_col_from_counts_recv_() -> void {
+        for (int a = 0; a < r_; ++a) {
+            for (int t = 0; t < s_; ++t) {
+                const int *blk = counts_recv_.data() + counts_idx_(a, t, 0);
+                long long sum = 0;
+                for (int su = 0; su < s_; ++su) {
+                    sum += blk[su];
+                }
+                recv_col_[static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t)] = sum;
+            }
+        }
+    }
+
+    /* Partition 0's recv-side staging sizing, from recv_col_. There is no R*S*S scatter table any more.
+     * The old scatter_off_(a, t, su) was a prefix over su at fixed (a, t) — a prefix over partition t's
+     * OWN published recv row — so it never needed to be computed on partition 0 at all. Only the
+     * per-(rank, partition) base survives here; the post-B4 loop walks (a, su) in exactly the order
+     * those offsets accumulate and re-derives the rest locally.
+     */
+    auto size_staging_recv_(size_t elem) -> void {
+        for (int a = 0; a < r_; ++a) {
+            long long recv_sum = 0;
+            for (int t = 0; t < s_; ++t) {
+                recv_sum += recv_col_[static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t)];
+            }
+            mpi_recv_counts_[static_cast<size_t>(a)] = checked_mpi_count(recv_sum, "Per-rank recv count");
+        }
+        long long recv_running = 0;
+        for (int a = 0; a < r_; ++a) {
+            mpi_recv_displs_[static_cast<size_t>(a)] = checked_mpi_count(recv_running, "Recv displacement");
+            recv_running += mpi_recv_counts_[static_cast<size_t>(a)];
+        }
+        const size_t total_recv = static_cast<size_t>(checked_mpi_count(recv_running, "Total recv count"));
         for (int a = 0; a < r_; ++a) {
             size_t cur = static_cast<size_t>(mpi_recv_displs_[static_cast<size_t>(a)]);
             for (int t = 0; t < s_; ++t) {
-                for (int su = 0; su < s_; ++su) {
-                    scatter_off_[block_idx_(a, t, su)] = cur;
-                    cur += static_cast<size_t>(recv_count(t, a, su));
-                }
+                const size_t g = static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t);
+                base_recv_[g] = cur;
+                cur += static_cast<size_t>(recv_col_[g]);
             }
         }
+        // MPI_Alltoallv fills every live byte of stage_recv_, so this grow is likewise fill-free.
+        grow_(stage_recv_, total_recv * elem);
     }
 
     auto pack_send_(int local_partition, size_t elem) -> void {
@@ -469,14 +677,16 @@ private:
         const std::byte *src = slots_[static_cast<size_t>(u)].ptr;
         const int *my_send_counts = slots_[static_cast<size_t>(u)].send_counts;
         const int *my_send_displs = slots_[static_cast<size_t>(u)].send_displs;
-        for (int b = 0; b < r_; ++b) {
-            for (int t = 0; t < s_; ++t) {
-                const int cnt = my_send_counts[b * s_ + t];
-                if (cnt != 0) {
-                    std::memcpy(stage_send_.data() + pack_off_[block_idx_(b, t, u)] * elem,
-                                src + static_cast<size_t>(my_send_displs[b * s_ + t]) * elem,
-                                static_cast<size_t>(cnt) * elem);
-                }
+        // One flat sweep over g = b*S + t: the same (b, t) visiting order the two-level loop had, but the
+        // offset row is now contiguous in g where pack_off_[block_idx_(b, t, u)] strode by S.
+        const size_t *off = pack_off_.data() + pack_idx_(u, 0);
+        const int p = r_ * s_;
+        for (int g = 0; g < p; ++g) {
+            const int cnt = my_send_counts[g];
+            if (cnt != 0) {
+                std::memcpy(stage_send_.data() + off[g] * elem,
+                            src + static_cast<size_t>(my_send_displs[g]) * elem,
+                            static_cast<size_t>(cnt) * elem);
             }
         }
     }
@@ -501,7 +711,9 @@ private:
     int mpi_rank_ = 0;
     std::vector<Slot> slots_;
 
-    // Partition-0-managed shared state (written by partition 0, read by all between barriers).
+    // Partition-0-managed shared state (written by partition 0, read by all between barriers). The two
+    // Phase P0 tables at the end of this block are the exception: each partition owns and writes its own
+    // row of those, and partition 0 only reads them.
     // S*S per rank, the counts alltoall.
     std::vector<int> counts_send_;
     std::vector<int> counts_recv_;
@@ -510,9 +722,32 @@ private:
     std::vector<int> mpi_send_displs_;
     std::vector<int> mpi_recv_counts_;
     std::vector<int> mpi_recv_displs_;
-    // [R*S*S] block starts (elements) in the staging buffers.
+    // [S x P] payload block starts (elements) in stage_send_: row u is source partition u's own starts,
+    // one per global destination g. Same element count as the old [R*S*S] table, transposed so that the
+    // row a partition reads is contiguous. There is no scatter-side table: see size_staging_recv_.
     std::vector<size_t> pack_off_;
-    std::vector<size_t> scatter_off_;
+    // [P] staging bases. base_send_[b*S + t] starts destination partition (b, t)'s region of the message
+    // to rank b; base_recv_[a*S + t] starts local partition t's region of the message from rank a.
+    std::vector<size_t> base_send_;
+    std::vector<size_t> base_recv_;
+    // Partition-0 scratch for the two contiguous staging passes and the recv-side totals. Members, not
+    // locals: the constructor's no-per-call-allocation contract covers these too. long long throughout,
+    // because each entry sums up to S int counts and only the per-rank totals are int-checked.
+    std::vector<long long> col_sum_;
+    std::vector<long long> run_;
+    std::vector<long long> recv_col_;
+    // [S x counts_stride_] send-count matrix: row u is written ONLY by partition u, in Phase P0, and read
+    // ONLY by partition 0 in the B1→B2 window. The stride is padded and the base realigned so that no two
+    // partitions' rows share a 64-byte line; the ctor asserts the padding. See publish_counts_row_ for
+    // the lifetime argument that makes the pre-barrier write safe.
+    std::vector<int> counts_matrix_store_;
+    int *counts_matrix_ = nullptr;
+    size_t counts_stride_ = 0;
+    // [S x rows_stride_] per-partition per-rank totals, row u = row_send_(u)[0..R) then row_recv_(u)[0..R),
+    // under the same ownership, padding and lifetime rules as counts_matrix_.
+    std::vector<long long> rows_store_;
+    long long *rows_ = nullptr;
+    size_t rows_stride_ = 0;
     // Aggregated MPI payload staging, HWM-sized.
     std::vector<std::byte> stage_send_;
     std::vector<std::byte> stage_recv_;
