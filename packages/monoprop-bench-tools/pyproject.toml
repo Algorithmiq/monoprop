@@ -60,15 +60,6 @@ filterwarnings = ["error"]
 testpaths = ["tests"]
 
 
-# The GPU high-water mark reads CUDA memory-pool counters, so it needs a CUDA
-# build of CuPy. That is deliberately not an extra: the wheels are large and
-# pinned to one CUDA version and one architecture, and declaring them here would
-# pull them into the lockfile of every workspace that depends on this package.
-# Install the CuPy build that matches your toolkit yourself; without it
-# `monoprop_bench_tools.memory.gpu` reports `Method.UNAVAILABLE` rather than
-# failing to import.
-
-
 # `monoprop` is a workspace member during development, but the published
 # distribution resolves it from PyPI like any other dependency.
 [tool.uv.sources]
