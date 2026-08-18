@@ -124,7 +124,7 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
 // Resolver rank (any cross-rank sink): for each query from sender s, look up M' locally; found → answer
 // with its index/value, absent → insert it in the same round (the resolver is the sole inserter of
 // cross-rank absent terms). Matched-follower marks stay here so both sinks mark byte-identically.
-template <size_t NumModes, class Sink>
+template <size_t NumModes, typename Sink>
 auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                       MPOperator<NumModes> &op,
                       size_t rank_count,
@@ -161,7 +161,7 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
 
 // Querier rank (any cross-rank sink): fold each resolver response into a querier-side record. The self/
 // local rank was already resolved inline, so it is skipped here. inc_r[r][q] answers query q from rank r.
-template <size_t NumModes, class Sink>
+template <size_t NumModes, typename Sink>
 auto process_responses(const std::vector<std::vector<typename Sink::Response>> &inc_r,
                        const std::vector<std::vector<size_t>> &src_idx,
                        const std::vector<VecZ> &queries, // serialized query buffers (for phase recovery)

@@ -294,7 +294,7 @@ struct ContractSink {
 };
 
 // Owns build_layer's machinery over a compile-time Sink policy. combined_size = the pre-layer operator size.
-template <size_t NumModes, class Sink>
+template <size_t NumModes, typename Sink>
 struct LayerBuildEngine {
     struct DeferredSelfMiss {
         Monomial<NumModes> mono;
@@ -560,7 +560,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
 
     FusedScanResult fused = [&] {
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
-        return with_algebra<NumModes>(basis, [&]<class A>() {
+        return with_algebra<NumModes>(basis, [&]<typename A>() {
             return fused_find_and_collect<NumModes, A>(local_op,
                                                        gen,
                                                        cut_eval,
@@ -589,7 +589,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
     }
     fused.cos_blocks = std::vector<CosMask>{};
 
-    auto run = [&]<class Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
+    auto run = [&]<typename Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
         LayerBuildEngine<NumModes, Sink> eng(local_op,
                                              comm,
                                              R,

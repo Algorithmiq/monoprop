@@ -89,7 +89,7 @@ public:
     // Fused count-resolve + payload all-to-all in one round (2 syncs vs 4). Same contiguous
     // ascending-source ordering as alltoallv, which the query/response positional pairing depends on.
     // See AlltoallvResolveArgs for the lifetime and element-offset contract.
-    template <class T>
+    template <typename T>
     auto alltoallv_resolve(int rank, const AlltoallvResolveArgs<T> &args) -> void {
         Slot &me = slots_[static_cast<size_t>(rank)];
         // Typed here but byte-addressed in the slot: peers scatter by (displ, count) in elements and
@@ -121,7 +121,7 @@ public:
         sync(); // B2: peers finished reading our send buffer before the caller may reuse it
     }
 
-    template <class T>
+    template <typename T>
     auto allreduce_sum(int rank, T local_val) -> T {
         Slot &me = slots_[static_cast<size_t>(rank)];
         if constexpr (std::is_floating_point_v<T>) {
