@@ -28,7 +28,7 @@ using test_utils::core_with_gate;
 using test_utils::graph_with_gates;
 using test_utils::layer_with_gate;
 
-// LayerGrowth::Back is the Heisenberg order: gate 0 arrives first and stays at the front.
+// LayerGrowth::Back is the Heisenberg order.
 BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_growth_back_prefix_no_contract) {
     auto graph = graph_with_gates(LayerGrowth::Back, 5); // layers_ = [0,1,2,3,4]
     auto sliced = graph.slice_graph(3, /*contract=*/false);

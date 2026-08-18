@@ -86,7 +86,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     : picture_{kind_of(picture)},
       comm_{comm},
       mp_op_{},
-      graph_(layer_growth_of(picture_)),
+      graph_(with_picture(picture_, []<typename P>() { return P::layer_growth; })),
       cutoff_{cutoff},
       lower_atol_{lower_atol},
       upper_atol_{upper_atol},
@@ -871,7 +871,7 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
     const size_t count = graph_.layers();
     VecZ parameter_mapping(count);
     VecD gen_coeffs(count);
-    // Layers store gate info in simulation order; the evaluation machinery expects optimizer order (the reverse).
+    // Layers are stored in descending optimizer-slot order (see MPGraph), so slot layers()-1-i is layer i.
     for (size_t layer = 0; layer < count; ++layer) {
         const auto traversal = graph_.get_layer_traversal(layer);
         const size_t optimizer_index = count - 1 - layer;

@@ -123,7 +123,7 @@ auto pare_graph(const MPGraph &graph,
     for (size_t iter = 0; iter < num_layers; ++iter) {
         // Backward means last-applied first, which is the growth end: new layers attach where the
         // circuit's latest operations are.
-        const size_t layer_idx = graph.growth() == LayerGrowth::Front ? iter : (num_layers - 1 - iter);
+        const size_t layer_idx = graph.grows_at_front() ? iter : (num_layers - 1 - iter);
         const auto &layer = graph.get_layer(layer_idx);
         const auto lt = layer.traversal();
 

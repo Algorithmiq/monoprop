@@ -29,26 +29,18 @@
 namespace monoprop {
 
 /// Which end of the layer store a newly appended gate attaches to.
-// The graph needs this one bit and nothing more about the simulation: it does not name a picture, because
-// the layer order it maintains is the same in both (see MPGraph). The two pictures assign optimizer slots
-// to arriving gates in opposite directions, and that is all this distinguishes.
+// This one bit is all the graph needs to know about the simulation that drives it.
 enum class LayerGrowth : uint8_t {
     Back,  ///< a new gate takes the lowest optimizer slot, so it attaches at the back
     Front, ///< a new gate takes the highest optimizer slot, so it attaches at the front
 };
 
 /// Ordered per-rank record of the evolution circuit, one Layer per generator.
-// A graph built by append() stores its layers in DESCENDING optimizer-slot order under both growth ends:
-// active layer i is optimizer slot layers()-1-i. That mapping is load-bearing outside this class, not just
-// a local convention -- MPFunctions' prepare_evolved_operator hard-codes fill_mapped_params(..., reverse=
-// true), its gradient loop hard-codes `count-1-i`, and MonomialPropagator::graph_gate_arrays_ hard-codes
-// the same mapping. All three can stay free of any picture only because append_layer() normalizes the two
-// arrival orders into this one storage order, so changing the storage order means changing all three with
-// it.
-//
-// slice_graph() is the one exception: its result is ordered for replay, which coincides with the mapping
-// above only for LayerGrowth::Back. Slices are for replay_view() and must not be fed to anything that
-// reconstructs optimizer order.
+// A graph built by append() stores its layers in DESCENDING optimizer-slot order under either growth end:
+// active layer i is optimizer slot layers()-1-i. append_layer() normalizes the two arrival orders into that
+// one storage order, which is what lets everything reconstructing optimizer order from a graph -- the
+// evolved-operator setup and the gradient loop in MPFunctions, MonomialPropagator::graph_gate_arrays_ -- do
+// it without knowing which growth end this graph has. Changing the storage order means changing those too.
 class monoprop_EXPORT MPGraph {
 private:
     using LayerIterator = std::vector<Layer>::iterator;
@@ -73,10 +65,6 @@ private:
     }
 
     auto active_end_iterator() const -> ConstLayerIterator { return layers_.end(); }
-
-    // The growth end and the oldest end are opposite: the first gate appended sits at whichever end new
-    // layers do not take. Every ordering-sensitive member below asks the question in this one spelling.
-    auto grows_at_front() const -> bool { return growth_ == LayerGrowth::Front; }
 
     auto append_position() -> LayerIterator {
         return grows_at_front() ? active_begin_iterator() : active_end_iterator();
@@ -110,7 +98,9 @@ public:
 
     /// Slice the graph at `key` (the number of earliest operations to include); `contract` also removes
     /// the sliced part from this graph.
-    // Layers come back in application order, earliest first -- see the note on this class.
+    // Layers come back in application order, earliest first, which matches this class's storage order only
+    // for LayerGrowth::Back. A slice is for replay_view() and must not be fed to anything that
+    // reconstructs optimizer order from it.
     auto slice_graph(size_t key, bool contract = false) -> MPGraph;
 
     auto slice_view(size_t key) const -> MPGraphView;
@@ -123,11 +113,16 @@ public:
 
     auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
 
-    /// Non-owning replay view over the active layers, in build order.
+    /// Non-owning replay view over the active layers, in stored (descending optimizer-slot) order.
     auto replay_view() const -> MPGraphView { return {layers_, active_begin_index(), layers(), false}; }
 
     /// Carried so a derived graph (a slice, a pared copy) keeps its source's layer order.
     auto growth() const -> LayerGrowth { return growth_; }
+
+    /// Whether new layers attach at the front, so the oldest operation is at the back.
+    // The one spelling of the growth question: every ordering-sensitive site, here and in pare_graph, asks
+    // it this way rather than comparing enumerators.
+    auto grows_at_front() const -> bool { return growth_ == LayerGrowth::Front; }
 
     /// A normally-built layer stores no cosine set, so the companion cosine-index count cannot come from
     /// the graph: only the operator's inverted index can supply it.

@@ -31,6 +31,7 @@
 #include <utility>
 
 #include "monoprop/MPFunctions.h"
+#include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/AlgebraCommon.h"
 #include "monoprop/core/Monomial.h"
@@ -45,6 +46,8 @@ struct HeisenbergPicture {
 
     // Simulation step i consumes optimizer slot n-1-i: the observable walks the circuit backwards.
     static auto gate_slot(size_t i, size_t n) -> size_t { return n - 1 - i; }
+    // gate_slot's slope, as MPGraph needs it: descending, so each arriving gate takes a lower slot.
+    static constexpr LayerGrowth layer_growth = LayerGrowth::Back;
     static constexpr double apply_sign = 1.0; // the applied angle is the build angle
 
     // map_params() arguments for contract_partially: forward phase, written in reverse.
@@ -101,6 +104,8 @@ struct SchrodingerPicture {
 
     // Simulation step i consumes optimizer slot i: the state walks the circuit front-to-back.
     static auto gate_slot(size_t i, size_t /*n*/) -> size_t { return i; }
+    // gate_slot's slope, as MPGraph needs it: ascending, so each arriving gate takes a higher slot.
+    static constexpr LayerGrowth layer_growth = LayerGrowth::Front;
     static constexpr double apply_sign = -1.0; // the applied angle is the negated build angle
 
     static constexpr double contract_phase = -1.0;
@@ -147,17 +152,11 @@ concept PicturePolicy = requires {
     { P::apply_sign } -> std::convertible_to<double>;
     { P::contract_phase } -> std::convertible_to<double>;
     { P::contract_reverse } -> std::convertible_to<bool>;
+    { P::layer_growth } -> std::convertible_to<LayerGrowth>;
 };
 
 static_assert(PicturePolicy<HeisenbergPicture>);
 static_assert(PicturePolicy<SchrodingerPicture>);
-
-// The only place a picture becomes a graph layer order. MPGraph deliberately knows nothing about pictures,
-// and the translation belongs on this side: Heisenberg gives each arriving gate a lower optimizer slot than
-// the last, Schrödinger a higher one.
-inline auto layer_growth_of(Picture picture) -> LayerGrowth {
-    return picture == Picture::Schrodinger ? LayerGrowth::Front : LayerGrowth::Back;
-}
 
 // The one runtime->policy branch, taken once per public call. decltype(auto), not auto, so a policy that
 // hands back a reference into the operator does not decay to a copy; both arms must then deduce the same

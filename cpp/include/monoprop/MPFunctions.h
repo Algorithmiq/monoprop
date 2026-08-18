@@ -107,7 +107,6 @@ monoprop_EXPORT auto ev_and_grad(const EvalRequest &request,
                                  const detail::CosCallbacks &cos = {}) -> std::pair<double, VecD>;
 
 /// Prune `graph` to the subgraph reaching `nonzero_inds`; `full_cos_of_layer(i)` supplies layer i's full cosine set.
-// The sweep direction comes from graph.growth(); there is no picture argument to disagree with it.
 monoprop_EXPORT auto pare_graph(const MPGraph &graph,
                                 const VecZ &nonzero_inds,
                                 size_t local_index_count,

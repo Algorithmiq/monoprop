@@ -78,9 +78,9 @@ Key files:
   `with_algebra` scan above it would instantiate four times per mode width instead of two. The picture is
   fixed at construction: the constructor takes a `PictureSpec = std::variant<Heisenberg, Schrodinger>`, so
   only a Schrodinger run carries a state cutoff. `MPGraph` deliberately knows no picture — it takes a
-  graph-local `LayerGrowth` saying which end a new layer attaches to, and `layer_growth_of` in
-  `picture/Picture.h` is the only translation. The graph's layer order itself is picture-independent and
-  load-bearing beyond the class; `MPGraph`'s own comment records which three call sites depend on it.
+  graph-local `LayerGrowth` saying which end a new layer attaches to, and each policy carries its own
+  `layer_growth` beside `gate_slot`. The graph's layer order itself is picture-independent and load-bearing
+  beyond the class; `MPGraph`'s own comment records what depends on it.
 - **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
   propagators, one hash partition each. Every method that fans out must use the private partition
   vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`

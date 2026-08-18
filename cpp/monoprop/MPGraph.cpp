@@ -63,13 +63,12 @@ auto MPGraph::slice_graph(size_t key, bool contract) -> MPGraph {
     sliced_layers.reserve(k);
 
     if (grows_at_front()) {
-        const size_t active_end = active_end_index();
-        for (size_t i = 0; i < k; ++i) {
-            sliced_layers.push_back(layers_[active_end - 1 - i]);
-        }
+        // Oldest end at the back, so the slice is the tail read backwards; active_end_index() is
+        // layers_.size(), which is what makes rbegin() the right starting point.
+        sliced_layers.insert(sliced_layers.end(), layers_.rbegin(), layers_.rbegin() + static_cast<std::ptrdiff_t>(k));
 
         if (contract && k != 0) {
-            layers_.resize(active_end - k);
+            layers_.resize(active_end_index() - k);
         }
     }
     else {
@@ -89,12 +88,10 @@ auto MPGraph::slice_graph(size_t key, bool contract) -> MPGraph {
 
 auto MPGraph::slice_view(size_t key) const -> MPGraphView {
     const auto k = std::min(key, layers());
-    // Oldest end at the back: the window is the tail, walked back-to-front so the view still yields the
-    // earliest operation first.
-    if (grows_at_front()) {
-        return {layers_, active_end_index() - k, k, true};
-    }
-    return {layers_, active_begin_index(), k, false};
+    // The window sits at the oldest end and is walked away from it, so the view yields the earliest
+    // operation first either way -- which makes the reverse flag exactly the growth predicate.
+    const bool front = grows_at_front();
+    return {layers_, front ? active_end_index() - k : active_begin_index(), k, front};
 }
 
 auto MPGraph::total_cycles() const -> size_t {
