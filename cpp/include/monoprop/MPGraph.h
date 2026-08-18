@@ -37,46 +37,25 @@ enum class LayerGrowth : uint8_t {
 
 /// Ordered per-rank record of the evolution circuit, one Layer per generator.
 // A graph built by append() stores its layers in DESCENDING optimizer-slot order under either growth end:
-// active layer i is optimizer slot layers()-1-i. append_layer() normalizes the two arrival orders into that
-// one storage order, which is what lets everything reconstructing optimizer order from a graph -- the
+// layer i is optimizer slot layers()-1-i. append_layer() normalizes the two arrival orders into that one
+// storage order, which is what lets everything reconstructing optimizer order from a graph -- the
 // evolved-operator setup and the gradient loop in MPFunctions, MonomialPropagator::graph_gate_arrays_ -- do
 // it without knowing which growth end this graph has. Changing the storage order means changing those too.
 class monoprop_EXPORT MPGraph {
 private:
-    using LayerIterator = std::vector<Layer>::iterator;
-    using ConstLayerIterator = std::vector<Layer>::const_iterator;
-
     LayerGrowth growth_;
     std::vector<Layer> layers_;
-    size_t front_offset_ = 0;
 
-    auto active_begin_index() const -> size_t { return front_offset_; }
-
-    auto active_end_index() const -> size_t { return layers_.size(); }
-
-    auto active_begin_iterator() -> LayerIterator {
-        return layers_.begin() + static_cast<std::ptrdiff_t>(active_begin_index());
-    }
-
-    auto active_end_iterator() -> LayerIterator { return layers_.end(); }
-
-    auto active_begin_iterator() const -> ConstLayerIterator {
-        return layers_.begin() + static_cast<std::ptrdiff_t>(active_begin_index());
-    }
-
-    auto active_end_iterator() const -> ConstLayerIterator { return layers_.end(); }
-
-    auto append_position() -> LayerIterator {
-        return grows_at_front() ? active_begin_iterator() : active_end_iterator();
+    auto append_position() -> std::vector<Layer>::iterator {
+        return grows_at_front() ? layers_.begin() : layers_.end();
     }
 
     auto append_layer(Layer layer) -> void { layers_.emplace(append_position(), std::move(layer)); }
 
-    auto checked_layer_offset(size_t layer_idx) const -> size_t {
+    auto check_layer_index_(size_t layer_idx) const -> void {
         if (layer_idx >= layers()) {
             throw LayerIndexOutOfRange(std::format("Layer {} is out of range (layers={})", layer_idx, layers()));
         }
-        return active_begin_index() + layer_idx;
     }
 
 public:
@@ -97,38 +76,32 @@ public:
     }
 
     /// Drop every layer. The graph stays usable, and a later append() starts from an empty store.
-    auto clear() -> void {
-        layers_.clear();
-        front_offset_ = 0;
+    auto clear() -> void { layers_.clear(); }
+
+    auto layers() const -> size_t { return layers_.size(); }
+
+    auto get_layer(size_t layer_idx) -> Layer& {
+        check_layer_index_(layer_idx);
+        return layers_[layer_idx];
     }
 
-    /// Slice the graph at `key` (the number of earliest operations to include); `contract` also removes
-    /// the sliced part from this graph.
-    // Layers come back in application order, earliest first, which matches this class's storage order only
-    // for LayerGrowth::Back. A slice is for replay_view() and must not be fed to anything that
-    // reconstructs optimizer order from it.
-    auto slice_graph(size_t key, bool contract = false) -> MPGraph;
-
-    auto slice_view(size_t key) const -> MPGraphView;
-
-    auto layers() const -> size_t { return active_end_index() - active_begin_index(); }
-
-    auto get_layer(size_t layer_idx) -> Layer& { return layers_[checked_layer_offset(layer_idx)]; }
-
-    auto get_layer(size_t layer_idx) const -> const Layer& { return layers_[checked_layer_offset(layer_idx)]; }
+    auto get_layer(size_t layer_idx) const -> const Layer& {
+        check_layer_index_(layer_idx);
+        return layers_[layer_idx];
+    }
 
     auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
 
-    /// Non-owning replay view over the active layers, in stored (descending optimizer-slot) order.
-    auto replay_view() const -> MPGraphView { return {layers_, active_begin_index(), layers(), false}; }
+    /// Non-owning replay view over the layers, in stored (descending optimizer-slot) order.
+    auto replay_view() const -> MPGraphView { return {layers_, 0, layers(), false}; }
 
-    /// The active layers in the order this graph's own build walked them, which is the order a
-    /// contraction must replay them in.
+    /// The layers in the order this graph's own build walked them, which is the order a contraction must
+    /// replay them in.
     // Not replay_view(): a contraction drives the live coefficient vector, so it follows the simulation
     // direction, where the picture-free evaluation order is always the stored one.
-    auto contraction_view() const -> MPGraphView;
+    auto contraction_view() const -> MPGraphView { return {layers_, 0, layers(), grows_at_front()}; }
 
-    /// Carried so a derived graph (a slice, a pared copy) keeps its source's layer order.
+    /// Carried so a pared copy keeps its source's layer order.
     auto growth() const -> LayerGrowth { return growth_; }
 
     /// Whether new layers attach at the front, so the oldest operation is at the back.
