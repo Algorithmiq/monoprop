@@ -26,9 +26,9 @@
 #include <format>
 #include <print>
 
+#include "monoprop/Indirect.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
-#include "monoprop/ValuePtr.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
@@ -61,10 +61,9 @@ public:
 
 template <size_t NumModes>
 struct MPOperator {
-    // The store is non-copyable/non-movable, so it is heap-owned (keeping MPOperator itself cheaply
-    // movable); value_ptr clones it through OperatorIndex::clone(), which is what lets MPOperator declare
-    // no special member of its own. Always non-null.
-    value_ptr<OperatorIndex<NumModes>> store = make_value<OperatorIndex<NumModes>>();
+    // The store is non-movable, so it is heap-owned (keeping MPOperator itself cheaply movable).
+    // indirect copy-constructs an independent index, letting MPOperator declare no special members.
+    indirect<OperatorIndex<NumModes>> store{std::in_place};
     VecD op_coeffs = {};
     // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
     // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are

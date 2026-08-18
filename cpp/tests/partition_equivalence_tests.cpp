@@ -207,10 +207,26 @@ BOOST_AUTO_TEST_CASE(partition_deep_copy_matches) {
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const double e = sim.expectation_value(data.parameters);
 
-    MonomialPropagator<kNumModes> copy(sim); // clones the partition group (fresh threads + ShmComm)
+    MonomialPropagator<kNumModes> copy(sim); // copies the partition group (fresh threads + ShmComm)
     const double e_copy = copy.expectation_value(data.parameters);
     BOOST_CHECK_EQUAL(e, e_copy);
     BOOST_CHECK_EQUAL(sim.size(), copy.size());
+}
+
+BOOST_AUTO_TEST_CASE(partition_copy_assignment_handles_optional_engagement) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    auto partitioned = majorana_sim(data, 4);
+    partitioned.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    const double expected = partitioned.expectation_value(data.parameters);
+
+    auto single = majorana_sim(data, 1);
+    single = partitioned;
+    BOOST_CHECK_EQUAL(single.expectation_value(data.parameters), expected);
+    BOOST_CHECK_EQUAL(single.size(), partitioned.size());
+
+    auto ordinary = majorana_sim(data, 1);
+    single = ordinary;
+    BOOST_CHECK_EQUAL(single.size(), ordinary.size());
 }
 
 constexpr size_t kNq = 6;

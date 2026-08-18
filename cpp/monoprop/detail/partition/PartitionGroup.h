@@ -154,7 +154,7 @@ private:
     }
 
     // Under an MPI parent, find how many ranks share this host and which we are, so each co-located rank
-    // pins to a disjoint core block (see partition_cpusets). Collective over `parent`; clones copy the result.
+    // pins to a disjoint core block (see partition_cpusets). Collective over `parent`; copies reuse the result.
     auto discover_node_peers_() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {

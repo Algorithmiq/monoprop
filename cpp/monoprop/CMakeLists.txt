@@ -87,11 +87,11 @@ target_sources(
       TYPE HEADERS
       FILES
         "${PROJECT_SOURCE_DIR}/cpp/monoprop/Bitset.h"
+        "${PROJECT_SOURCE_DIR}/cpp/monoprop/Indirect.h"
         "${PROJECT_SOURCE_DIR}/cpp/monoprop/MPGraphEncoding.h"
         "${PROJECT_SOURCE_DIR}/cpp/monoprop/TypeAliases.h"
         "${PROJECT_SOURCE_DIR}/cpp/monoprop/Utilities.h"
         "${PROJECT_SOURCE_DIR}/cpp/monoprop/Validation.h"
-        "${PROJECT_SOURCE_DIR}/cpp/monoprop/ValuePtr.h"
 )
 
 target_compile_definitions(

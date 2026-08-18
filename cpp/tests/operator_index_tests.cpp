@@ -42,10 +42,11 @@ constexpr size_t N = 32;
 using Store = OperatorIndex<N>;
 using MSet = Monomial<N>;
 
-// Owners hold the store by unique_ptr and share stable pointers into it, so it must stay
-// non-copyable and non-movable; clone() is the only deep copy.
+// Owners share stable pointers into the store. Copy construction performs a controlled deep rebuild,
+// while assignment and moves remain forbidden because they could invalidate those pointers.
 static_assert(!std::is_move_constructible_v<Store>, "OperatorIndex must remain non-movable");
-static_assert(!std::is_copy_constructible_v<Store>, "OperatorIndex must remain non-copyable");
+static_assert(std::is_copy_constructible_v<Store>, "OperatorIndex must support deep copy construction");
+static_assert(!std::is_copy_assignable_v<Store>, "OperatorIndex must remain non-copy-assignable");
 
 MSet bs(const VecZ &r) {
     return indices_to_bitset<N>(r);
@@ -108,42 +109,42 @@ BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
     BOOST_TEST(*f == 50u);
 }
 
-BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
+BOOST_AUTO_TEST_CASE(copy_is_deep_and_independent) {
     Store a(4); // non-default width must carry over
     a.push_back(bs({0, 3, 5}));
     a.emplace(bs({0, 3, 5}), 0);
     a.push_back(bs({1, 2}));
     a.emplace(bs({1, 2}), 1);
 
-    auto b = a.clone();
-    BOOST_TEST(b->size() == 2u);
-    BOOST_TEST((b->row(0) == bs({0, 3, 5})));
-    auto f = b->find(bs({1, 2}));
+    Store b(a);
+    BOOST_TEST(b.size() == 2u);
+    BOOST_TEST((b.row(0) == bs({0, 3, 5})));
+    auto f = b.find(bs({1, 2}));
     BOOST_TEST(f.has_value());
     BOOST_TEST(*f == 1u);
 
     a.push_back(bs({6, 7}));
     a.emplace(bs({6, 7}), 2);
-    BOOST_TEST(b->size() == 2u);
-    BOOST_TEST(!b->find(bs({6, 7})).has_value());
+    BOOST_TEST(b.size() == 2u);
+    BOOST_TEST(!b.find(bs({6, 7})).has_value());
 
-    // If the clone still referenced the source's rows, this find would read a->row(0) (now {8,9})
+    // If the copy still referenced the source's rows, this find would read a.row(0) (now {8,9})
     // and fail.
     a.set(0, bs({8, 9}));
-    auto g = b->find(bs({0, 3, 5}));
+    auto g = b.find(bs({0, 3, 5}));
     BOOST_TEST(g.has_value());
     BOOST_TEST(*g == 0u);
 }
 
-BOOST_AUTO_TEST_CASE(clone_preserves_overflow_rows) {
+BOOST_AUTO_TEST_CASE(copy_preserves_overflow_rows) {
     Store a(2); // width 2; a 3-position row overflows losslessly
     a.push_back(bs({0, 1, 2}));
     a.emplace(bs({0, 1, 2}), 0);
 
-    auto b = a.clone();
-    BOOST_TEST(b->popcount(0) == 3u);
-    BOOST_TEST((b->row(0) == bs({0, 1, 2})));
-    BOOST_TEST(*b->find(bs({0, 1, 2})) == 0u);
+    Store b(a);
+    BOOST_TEST(b.popcount(0) == 3u);
+    BOOST_TEST((b.row(0) == bs({0, 1, 2})));
+    BOOST_TEST(*b.find(bs({0, 1, 2})) == 0u);
 }
 
 // find_batch (the group-prefetch pipelined lookup) must be semantically identical to n independent

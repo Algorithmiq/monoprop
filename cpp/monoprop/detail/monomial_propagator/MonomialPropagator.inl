@@ -133,8 +133,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                                   basis,
                                                                   /*partitions=*/1);
         };
-        partition_group_ =
-            make_value<detail::partition::PartitionGroup<NumModes>>(static_cast<int>(n_partitions), factory, comm);
+        partition_group_.emplace(std::in_place, static_cast<int>(n_partitions), factory, comm);
         return;
     }
 
@@ -165,7 +164,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     const size_t expected_local_terms = std::max<size_t>(1, op.size() / std::max<size_t>(1, num_ranks));
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
-    mp_op_.store = make_value<detail::OperatorIndex<NumModes>>(packed_inline_width_());
+    mp_op_.store = indirect<detail::OperatorIndex<NumModes>>(std::in_place, packed_inline_width_());
     mp_op_.store->reserve(expected_local_terms);
     // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
     mp_op_.inverted_index_.reset();
@@ -226,13 +225,13 @@ auto MonomialPropagator<NumModes>::resolve_partition_count_(size_t requested, mp
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void {
-    partition_group_->run_on_all([&](int r) { fn(partition_group_->partition(r)); });
+    (**partition_group_).run_on_all([&](int r) { fn((**partition_group_).partition(r)); });
 }
 
 template <size_t NumModes>
 template <typename Fn, typename R>
 auto MonomialPropagator<NumModes>::map_partitions_(Fn fn) -> std::vector<R> {
-    return detail::partition::map_partitions(*partition_group_, fn);
+    return detail::partition::map_partitions(**partition_group_, fn);
 }
 
 template <size_t NumModes>
@@ -255,8 +254,8 @@ template <size_t NumModes>
 template <typename Proj, typename Accumulate, typename R>
 auto MonomialPropagator<NumModes>::fold_partitions_(Proj proj, Accumulate accumulate) const -> R {
     R total{};
-    for (int r = 0; r < partition_group_->partition_count(); ++r) {
-        accumulate(total, proj(partition_group_->partition(r)));
+    for (int r = 0; r < (**partition_group_).partition_count(); ++r) {
+        accumulate(total, proj((**partition_group_).partition(r)));
     }
     return total;
 }
@@ -269,7 +268,7 @@ auto MonomialPropagator<NumModes>::sum_partitions_(Proj proj) const -> R {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::first_partition_() const -> const MonomialPropagator & {
-    return partition_group_->partition(0);
+    return (**partition_group_).partition(0);
 }
 
 template <size_t NumModes>
@@ -982,7 +981,7 @@ auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<do
         // raw pointer, so the returned callable must not outlive this propagator.
         auto fns = std::make_shared<std::vector<std::function<double(const VecD &)>>>(
             map_partitions_([&](MonomialPropagator &s) { return s.expectation_value_functional(pare_threshold); }));
-        auto *grp = partition_group_.get();
+        auto *grp = std::addressof(**partition_group_);
         return [grp, fns](const VecD &params) -> double {
             return detail::partition::collect_on_all(*grp,
                                                      [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];
@@ -997,7 +996,7 @@ auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional(std
     if (partition_group_) {
         auto fns = std::make_shared<std::vector<std::function<std::pair<double, VecD>(const VecD &)>>>(map_partitions_(
             [&](MonomialPropagator &s) { return s.expectation_value_and_gradient_functional(pare_threshold); }));
-        auto *grp = partition_group_.get();
+        auto *grp = std::addressof(**partition_group_);
         return [grp, fns](const VecD &params) -> std::pair<double, VecD> {
             return detail::partition::collect_on_all(*grp,
                                                      [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];

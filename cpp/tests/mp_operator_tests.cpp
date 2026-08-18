@@ -272,12 +272,12 @@ BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_pre
     BOOST_CHECK_GT(after.inverted_index_bytes, 0U); // present arm
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {
+BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_copies_store_and_coeffs) {
     auto op = build_indexed_op({indices_to_bitset<8>({0, 1}), indices_to_bitset<8>({2, 3})});
     op.initial_state = {0};
     (void)op.sparse_state();
 
-    detail::MPOperator<8> copy(op); // deep copy via clone()
+    detail::MPOperator<8> copy(op);
     BOOST_CHECK_EQUAL(copy.size(), op.size());
     BOOST_CHECK_EQUAL(copy.state_scored_rows_, op.state_scored_rows_);
     BOOST_CHECK(copy.state_rows_ == op.state_rows_);

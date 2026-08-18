@@ -22,14 +22,14 @@
 #include "monoprop/detail/mpi/MPICompat.h"
 
 // Copy-constructing a simulator must produce a fully independent deep copy -- the mechanism behind
-// Python __deepcopy__. The operator store is non-copyable, so the copy rebuilds it via clone() and
-// find()/indexing() have to work on the copy's own rows. The MPI communicator handle is shared.
+// Python __deepcopy__. The operator-store copy rebuilds its index, so find()/indexing() have to work
+// on the copy's own rows. The MPI communicator handle is shared.
 
 using namespace test_utils;
 using namespace monoprop;
 
 // The simulator declares no special member (the Rule of Zero), so the compiler supplies all six: the
-// value_ptr members carry the deep copy. Moving is a real move here -- nothing user-declared suppresses it
+// indirect members carry the deep copy. Moving is a real move here -- nothing user-declared suppresses it
 // any more -- so these four assertions are what keeps a later hand-written special member from silently
 // turning a move back into a deep copy.
 static_assert(std::is_copy_constructible_v<MonomialPropagator<8>>, "simulator must be copyable");
@@ -115,7 +115,7 @@ BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_index_valid, ExampleDataFix) 
 }
 
 // Copy assignment came with the Rule of Zero: nothing declares it, so the compiler supplies it, and the
-// value_ptr members make it as deep as construction. The source must survive it intact.
+// indirect members make it as deep as construction. The source must survive it intact.
 BOOST_FIXTURE_TEST_CASE(copy_assigned_simulator_is_an_independent_deep_copy, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto sim = build_simulator<n_modes>(data, cfg);
@@ -126,7 +126,7 @@ BOOST_FIXTURE_TEST_CASE(copy_assigned_simulator_is_an_independent_deep_copy, Exa
 
     target = sim;
     BOOST_REQUIRE(target.graph_layers() == sim.graph_layers());
-    BOOST_CHECK(&target.indexing() != &sim.indexing()); // cloned, not shared
+    BOOST_CHECK(&target.indexing() != &sim.indexing()); // copied, not shared
 
     const double e_sim = sim.expectation_value_functional()(data.parameters);
     const double e_target = target.expectation_value_functional()(data.parameters);
