@@ -93,13 +93,13 @@ public:
     auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
 
     /// Non-owning replay view over the layers, in stored (descending optimizer-slot) order.
-    auto replay_view() const -> MPGraphView { return {layers_, 0, layers(), false}; }
+    auto replay_view() const -> MPGraphView { return {layers_, false}; }
 
     /// The layers in the order this graph's own build walked them, which is the order a contraction must
     /// replay them in.
     // Not replay_view(): a contraction drives the live coefficient vector, so it follows the simulation
     // direction, where the picture-free evaluation order is always the stored one.
-    auto contraction_view() const -> MPGraphView { return {layers_, 0, layers(), grows_at_front()}; }
+    auto contraction_view() const -> MPGraphView { return {layers_, grows_at_front()}; }
 
     /// Carried so a pared copy keeps its source's layer order.
     auto growth() const -> LayerGrowth { return growth_; }

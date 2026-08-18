@@ -15,6 +15,7 @@
 #pragma once
 
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -56,34 +57,38 @@ struct GraphMemoryBreakdown final {
     }
 };
 
-// `reverse` traverses the window newest-first (Schrödinger replay order). Non-owning — the layer vector
-// must outlive the view.
+// A bounds-checked, optionally reversed index space over a window of layers. `reverse` traverses it
+// newest-first. Non-owning: the layer storage must outlive the view.
+//
+// Not a std::ranges adaptor, and not iterable, for three reasons:
+//  - Index i addresses three parallel things at once -- the layer, params[i] in evolve_operator(), and
+//    the recipe cache in build_cos_callbacks(). ev_and_grad() passes a computed index, not an iteration
+//    step. The consumers need an index space, not a sequence.
+//  - One type must serve both directions. views::counted(...) and views::reverse(views::counted(...))
+//    are different types, and std::ranges::any_view is C++26.
+//  - The type appears in the exported signatures of ev(), ev_and_grad(), evolve_operator() and
+//    state_operator_derivative_local(). A ranges adaptor would put a library-version-dependent
+//    template soup into their mangled names.
 class MPGraphView {
 public:
-    MPGraphView(const std::vector<Layer> &layers, size_t base, size_t count, bool reverse)
-        : layers_(&layers),
-          base_(base),
-          count_(count),
-          reverse_(reverse) {}
+    MPGraphView(std::span<const Layer> layers, bool reverse) : layers_(layers), reverse_(reverse) {}
 
-    auto layers() const -> size_t { return count_; }
+    auto layers() const -> size_t { return layers_.size(); }
 
-    auto get_layer(size_t layer_idx) const -> const Layer & { return (*layers_)[checked_layer_offset(layer_idx)]; }
+    auto get_layer(size_t layer_idx) const -> const Layer & { return layers_[checked_layer_offset(layer_idx)]; }
 
     auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
 
 private:
     auto checked_layer_offset(size_t layer_idx) const -> size_t {
-        if (layer_idx >= count_) {
-            throw LayerIndexOutOfRange(std::format("Layer {} is out of range (layers={})", layer_idx, count_));
+        if (layer_idx >= layers_.size()) {
+            throw LayerIndexOutOfRange(std::format("Layer {} is out of range (layers={})", layer_idx, layers_.size()));
         }
 
-        return base_ + (reverse_ ? count_ - 1 - layer_idx : layer_idx);
+        return reverse_ ? layers_.size() - 1 - layer_idx : layer_idx;
     }
 
-    const std::vector<Layer> *layers_ = nullptr;
-    size_t base_ = 0;
-    size_t count_ = 0;
+    std::span<const Layer> layers_;
     bool reverse_ = false;
 };
 

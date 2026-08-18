@@ -70,8 +70,8 @@ BOOST_AUTO_TEST_CASE(mp_graph_view_reverse_flag_flips_index_mapping) {
         layers.push_back(layer_with_gate(g)); // [10,11,12,13]
     }
 
-    const MPGraphView fwd(layers, /*base=*/0, /*count=*/4, /*reverse=*/false);
-    const MPGraphView rev(layers, /*base=*/0, /*count=*/4, /*reverse=*/true);
+    const MPGraphView fwd(layers, /*reverse=*/false);
+    const MPGraphView rev(layers, /*reverse=*/true);
     for (std::size_t i = 0; i < 4; ++i) {
         BOOST_CHECK_EQUAL(fwd.get_layer_traversal(i).gate_index(), 10U + i);
         BOOST_CHECK_EQUAL(rev.get_layer_traversal(i).gate_index(), 13U - i);
