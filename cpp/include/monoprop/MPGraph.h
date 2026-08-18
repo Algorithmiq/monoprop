@@ -35,6 +35,16 @@ enum class LayerGrowth : uint8_t {
     Front, ///< a new gate takes the highest optimizer slot, so it attaches at the front
 };
 
+/// The optimizer slot of stored layer `layer_idx` in an `n`-layer graph.
+// Its own inverse, so the slot-to-layer direction calls it too. The one spelling of MPGraph's storage
+// invariant: every conversion between store order and optimizer order goes through it.
+constexpr auto slot_of_layer(size_t layer_idx, size_t n) -> size_t {
+    return n - 1 - layer_idx;
+}
+
+static_assert(slot_of_layer(0, 4) == 3);
+static_assert(slot_of_layer(slot_of_layer(1, 4), 4) == 1);
+
 /// Ordered per-rank record of the evolution circuit, one Layer per generator.
 // A graph built by append() stores its layers in DESCENDING optimizer-slot order under either growth end:
 // layer i is optimizer slot layers()-1-i. append_layer() normalizes the two arrival orders into that one

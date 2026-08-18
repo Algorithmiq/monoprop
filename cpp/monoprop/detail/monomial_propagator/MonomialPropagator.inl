@@ -845,7 +845,7 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
     if (parameter_mapping.size() == count) {
         // Per-layer mapping in optimizer order.
         for (size_t layer = 0; layer < count; ++layer) {
-            relabel(layer, parameter_mapping[count - 1 - layer]);
+            relabel(layer, parameter_mapping[slot_of_layer(layer, count)]);
         }
     }
     else if (parameter_mapping.size() == gates) {
@@ -871,10 +871,9 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
     const size_t count = graph_.layers();
     VecZ parameter_mapping(count);
     VecD gen_coeffs(count);
-    // Layers are stored in descending optimizer-slot order (see MPGraph), so slot layers()-1-i is layer i.
     for (size_t layer = 0; layer < count; ++layer) {
         const auto traversal = graph_.get_layer_traversal(layer);
-        const size_t optimizer_index = count - 1 - layer;
+        const size_t optimizer_index = slot_of_layer(layer, count);
         parameter_mapping[optimizer_index] = traversal.param_index();
         gen_coeffs[optimizer_index] = traversal.gen_coeff();
     }
