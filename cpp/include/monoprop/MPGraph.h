@@ -56,6 +56,10 @@ private:
     LayerGrowth growth_;
     std::vector<Layer> layers_;
 
+    // The one spelling of the growth question: the ordering-sensitive members ask it this way rather
+    // than comparing enumerators.
+    auto grows_at_front() const -> bool { return growth_ == LayerGrowth::Front; }
+
     auto append_position() -> std::vector<Layer>::iterator {
         return grows_at_front() ? layers_.begin() : layers_.end();
     }
@@ -113,11 +117,6 @@ public:
 
     /// Carried so a pared copy keeps its source's layer order.
     auto growth() const -> LayerGrowth { return growth_; }
-
-    /// Whether new layers attach at the front, so the oldest operation is at the back.
-    // The one spelling of the growth question: every ordering-sensitive site, here and in pare_graph, asks
-    // it this way rather than comparing enumerators.
-    auto grows_at_front() const -> bool { return growth_ == LayerGrowth::Front; }
 
     /// A normally-built layer stores no cosine set, so the companion cosine-index count cannot come from
     /// the graph: only the operator's inverted index can supply it.

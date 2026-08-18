@@ -104,7 +104,8 @@ auto pare_graph(const MPGraph &graph,
                 const VecZ &nonzero_inds,
                 size_t local_index_count,
                 mpi::Comm comm,
-                const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
+                const std::function<CosMask(size_t)> &full_cos_of_layer,
+                PareSweep sweep) -> MPGraph {
     const size_t num_layers = graph.layers();
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
 
@@ -121,9 +122,9 @@ auto pare_graph(const MPGraph &graph,
     // mark_cross_rank_endpoints_kept), so nodes_to_keep stays consistent across ranks with no exchange.
     // Cross-rank lists are never pruned; the keep-set only has to be right so cos pruning stays exact.
     for (size_t iter = 0; iter < num_layers; ++iter) {
-        // Backward means last-applied first, which is the growth end: new layers attach where the
-        // circuit's latest operations are.
-        const size_t layer_idx = graph.grows_at_front() ? iter : (num_layers - 1 - iter);
+        // The sweep walks away from the seed end, so reachability reaches every kept node before the
+        // cosine filter runs on the layer that produced it.
+        const size_t layer_idx = (sweep == PareSweep::FromInput) ? iter : slot_of_layer(iter, num_layers);
         const auto &layer = graph.get_layer(layer_idx);
         const auto lt = layer.traversal();
 

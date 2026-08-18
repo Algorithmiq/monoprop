@@ -70,8 +70,8 @@ Key files:
 - **`Picture` / the picture policy** (`cpp/monoprop/core/Picture.h`, `cpp/monoprop/picture/Picture.h`): the two
   simulation pictures are sibling models (`HeisenbergPicture`, `SchrodingerPicture`), built the same way as the
   algebras. Each states one picture's whole rule set — gate traversal direction, applied-angle sign,
-  `map_params` phase, the live coefficient vector, the contraction partner — so no `if (schrodinger)` is
-  written twice. Every public entry point of `MonomialPropagator` binds the policy once with `with_picture`;
+  `map_params` phase, the live coefficient vector, the contraction partner, the end its paring sweep starts
+  from — so no `if (schrodinger)` is written twice. Every public entry point of `MonomialPropagator` binds the policy once with `with_picture`;
   its whole private layer is templated on that policy and never re-tests which picture it is in, so there is
   no runtime-dispatching helper layer. The fused `ContractSink`/`apply_fused_contract` pair likewise takes
   the policy as a template parameter, bound once inside `build_layer` — at the sink only, or the

@@ -82,6 +82,8 @@ struct HeisenbergPicture {
     static auto pare_seed(const EvalState &state, const VecD & /*op*/, double threshold) -> std::pair<VecZ, size_t> {
         return {state.indices_above(threshold), state.length()};
     }
+    // The state contracts against the evolved operator, so the seed sits at the replay's output end.
+    static constexpr PareSweep pare_sweep = PareSweep::FromOutput;
 
     // A perf hint, never a correctness constraint: overflow spills losslessly. The bound is already in
     // physical slots (CutoffEvaluator::max_slot_bound), so nothing to scale. NumModes is explicit
@@ -135,6 +137,8 @@ struct SchrodingerPicture {
     static auto pare_seed(const EvalState & /*state*/, const VecD &op, double threshold) -> std::pair<VecZ, size_t> {
         return {indices_above(op, threshold), op.size()};
     }
+    // `op` is what the replay evolves, so the seed sits at the replay's input end.
+    static constexpr PareSweep pare_sweep = PareSweep::FromInput;
 
     // The state's monomials come from generate_paired_op(), not from cutoff_fn_, so the cutoff carries
     // no structural bound on them.
@@ -153,6 +157,7 @@ concept PicturePolicy = requires {
     { P::contract_phase } -> std::convertible_to<double>;
     { P::contract_reverse } -> std::convertible_to<bool>;
     { P::layer_growth } -> std::convertible_to<LayerGrowth>;
+    { P::pare_sweep } -> std::convertible_to<PareSweep>;
 };
 
 static_assert(PicturePolicy<HeisenbergPicture>);

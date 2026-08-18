@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <span>
 #include <utility>
@@ -106,10 +107,19 @@ monoprop_EXPORT auto ev_and_grad(const EvalRequest &request,
                                  mpi::Comm comm = MPI_COMM_WORLD,
                                  const detail::CosCallbacks &cos = {}) -> std::pair<double, VecD>;
 
+/// Which end of the replay holds the paring seed, so which end the reachability sweep starts from.
+// Not the graph's layer order: it is a property of the seed vector, and the two only happen to agree
+// because each picture's build direction and its seed vector do.
+enum class PareSweep : uint8_t {
+    FromOutput, ///< the seed contracts against the replay's last layer (a Heisenberg state)
+    FromInput,  ///< the seed enters at the replay's first layer (a Schrödinger operator)
+};
+
 /// Prune `graph` to the subgraph reaching `nonzero_inds`; `full_cos_of_layer(i)` supplies layer i's full cosine set.
 monoprop_EXPORT auto pare_graph(const MPGraph &graph,
                                 const VecZ &nonzero_inds,
                                 size_t local_index_count,
                                 mpi::Comm comm,
-                                const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph;
+                                const std::function<CosMask(size_t)> &full_cos_of_layer,
+                                PareSweep sweep) -> MPGraph;
 } // namespace monoprop

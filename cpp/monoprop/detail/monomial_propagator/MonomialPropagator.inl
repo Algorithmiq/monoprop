@@ -964,7 +964,8 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
         };
         // Threshold the picture's driving vector: the Hamiltonian in Schrödinger, the state otherwise.
         const auto [keep, count] = P::pare_seed(state, op, *pare_threshold);
-        graph = std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, comm_, full_cos_of_layer));
+        graph =
+            std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, comm_, full_cos_of_layer, P::pare_sweep));
     }
     else {
         graph = std::shared_ptr<const MPGraph>(std::shared_ptr<const void>{}, &graph_);
