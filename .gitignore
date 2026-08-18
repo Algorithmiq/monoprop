@@ -187,3 +187,8 @@ packages/bench-third-party/*.png
 packages/bench-third-party/*/*.png
 packages/bench-third-party/pauli_prop/pauli_scaling.md
 packages/bench-third-party/pauli_prop/pauli_speedup.md
+
+# nix build symlinks and direnv state
+/result
+/result-*
+.direnv/

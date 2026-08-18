@@ -127,6 +127,11 @@ LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.
 just build-docs  # Build documentation
 ```
 
+Nix users get the same toolchain with `nix develop`. The flake (`flake.nix` plus
+`nix/`) also exposes `packages.monoprop{,-mpi}` and a `nix run` app; the packaged
+build disables the C++ unit tests and arch flags, and its `version` is pinned by
+hand because setuptools-scm cannot read git metadata in the build sandbox.
+
 
 ### Template Metaprogramming
 
