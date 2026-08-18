@@ -35,6 +35,14 @@ dependencies = [
 ]
 
 
+[project.optional-dependencies]
+# Deliberately not declared as a `[tool.uv] conflicts` pair: that would make
+# `uv sync --all-extras` fail for the whole workspace, and asking for both is
+# already nonsense (they ship the same top-level `cupy` package).
+gpu-cuda12 = ["cupy-cuda12x>=13"]
+gpu-cuda13 = ["cupy-cuda13x>=14"]
+
+
 [project.urls]
 Homepage = "https://github.com/Algorithmiq/monoprop"
 "Bug Tracker" = "https://github.com/Algorithmiq/monoprop/issues"
