@@ -128,7 +128,7 @@ static_assert(Algebra<PauliAlgebra<1>>);
 
 // The single runtime->policy branch: the hot backbone passes a generic lambda and is then fully
 // specialized on the chosen algebra. Both arms must return the same type.
-template <size_t NumModes, class F>
+template <size_t NumModes, typename F>
 auto with_algebra(Basis basis, F &&f) {
     if (basis == Basis::Pauli) {
         return std::forward<F>(f).template operator()<PauliAlgebra<NumModes>>();
@@ -140,24 +140,24 @@ auto with_algebra(Basis basis, F &&f) {
 
 template <size_t NumModes>
 auto algebra_fold_generator(Basis basis, const Monomial<NumModes> &gen) -> Monomial<NumModes> {
-    return with_algebra<NumModes>(basis, [&]<class A>() { return A::fold_generator(gen); });
+    return with_algebra<NumModes>(basis, [&]<typename A>() { return A::fold_generator(gen); });
 }
 template <size_t NumModes>
 auto algebra_fold_needs_odd_correction(Basis basis, const Monomial<NumModes> &gen) -> bool {
-    return with_algebra<NumModes>(basis, [&]<class A>() { return A::fold_needs_odd_correction(gen); });
+    return with_algebra<NumModes>(basis, [&]<typename A>() { return A::fold_needs_odd_correction(gen); });
 }
 template <size_t NumModes>
 auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const Monomial<NumModes> &mono) -> double {
-    return with_algebra<NumModes>(basis, [&]<class A>() { return A::encode_coeff(coeff, mono); });
+    return with_algebra<NumModes>(basis, [&]<typename A>() { return A::encode_coeff(coeff, mono); });
 }
 template <size_t NumModes>
 auto algebra_decode_coeff(Basis basis, const std::complex<double> &coeff, const Monomial<NumModes> &mono)
     -> std::complex<double> {
-    return with_algebra<NumModes>(basis, [&]<class A>() { return A::decode_coeff(coeff, mono); });
+    return with_algebra<NumModes>(basis, [&]<typename A>() { return A::decode_coeff(coeff, mono); });
 }
 template <size_t NumModes>
 auto algebra_state_phase(Basis basis, const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
-    return with_algebra<NumModes>(basis, [&]<class A>() { return A::state_phase(mono, state_mask); });
+    return with_algebra<NumModes>(basis, [&]<typename A>() { return A::state_phase(mono, state_mask); });
 }
 
 // Score each fully-paired term's diagonal element against the initial product state, emitting
@@ -169,7 +169,7 @@ auto algebra_score_state(Basis basis,
                          const VecZ &initial_state,
                          const Rows &store,
                          Sink &&sink) -> void {
-    with_algebra<NumModes>(basis, [&]<class A>() {
+    with_algebra<NumModes>(basis, [&]<typename A>() {
         const auto state_mask = initial_state_mask<NumModes>(initial_state);
         for (size_t i = 0; i < paired_inds.size(); ++i) {
             const auto &row = materialize_row<NumModes>(store, paired_inds[i]);
