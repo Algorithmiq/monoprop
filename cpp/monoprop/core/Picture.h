@@ -14,8 +14,6 @@
 
 #pragma once
 
-// Deliberately dependency-free: MonomialPropagator.h carries a Picture in its signatures, and MPOperator.h
-// in a parameter. The behaviour behind each value lives in picture/Picture.h.
 
 #include <cstdint>
 #include <variant>

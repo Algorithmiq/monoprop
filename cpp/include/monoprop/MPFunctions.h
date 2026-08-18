@@ -107,8 +107,6 @@ monoprop_EXPORT auto ev_and_grad(const EvalRequest &request,
                                  const detail::CosCallbacks &cos = {}) -> std::pair<double, VecD>;
 
 /// Prune `graph` to the subgraph reaching `nonzero_inds`; `full_cos_of_layer(i)` supplies layer i's full cosine set.
-// Takes no sweep direction: the seed is the result of the whole evolution under either picture, so the
-// sweep is always the graph's own build reversed. MPGraph::layer_of_unbuild_step is that order.
 monoprop_EXPORT auto pare_graph(const MPGraph &graph,
                                 const VecZ &nonzero_inds,
                                 size_t local_index_count,
