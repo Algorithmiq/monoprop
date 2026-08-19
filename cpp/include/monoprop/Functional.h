@@ -102,8 +102,13 @@ public:
     // and each child plan then checks its own partition's, on that partition's master thread. Only the
     // single-partition shape has an operator to run the layout backstop against.
     auto validate(const VecD &params) const -> void {
-        const auto *local = std::get_if<Local>(&shape_);
-        validate_functional_state({.propagator_alive = control_->propagator_alive.load(),
+        // Aliveness is settled here rather than left to validate_functional_state: the layout backstop
+        // reads the propagator's operator, and every argument is evaluated before the callee runs, so a
+        // dead propagator has to drop out of the argument list itself. The control block is shared, so it
+        // stays readable after the propagator is gone -- nothing else the plan holds does.
+        const bool alive = control_->propagator_alive.load();
+        const auto *local = alive ? std::get_if<Local>(&shape_) : nullptr;
+        validate_functional_state({.propagator_alive = alive,
                                    .current_revision = control_->structure_revision.load(),
                                    .expected_revision = expected_revision_,
                                    .operator_layout_unchanged = local == nullptr || operator_layout_unchanged(*local),
