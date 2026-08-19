@@ -114,8 +114,8 @@ provider = "scikit_build_core.metadata.setuptools_scm"
 minimum-version = "build-system.requires"
 # setuptools-style build caching in a local directory
 build-dir = "build/{state}/{build_type}"
-# build stable ABI wheels for CPython 3.12+
-wheel.py-api = "cp312"
+# build stable ABI wheels for CPython 3.10
+wheel.py-api = "cp310"
 logging.level = "INFO"
 # read CMake version from CMakeLists.txt
 cmake.version = "CMakeLists.txt"
@@ -370,7 +370,7 @@ reportMatchNotExhaustive = "information"
 [tool.cibuildwheel]
 build-frontend = "uv"
 build-verbosity = 1
-build = ["cp311-*", "cp312-*", "cp313-*", "cp314-*"]
+build = ["cp311"]
 skip = ["*-musllinux_*"]
 test-command = "python -m pytest {package}/tests"
 test-groups = ["test"]
