@@ -56,9 +56,8 @@ public:
         VecD op;                ///< un-evolved operator coefficients, copied out of the propagator
         VecZ parameter_mapping; ///< optimizer order: which parameter drives graph layer i
         VecD gen_coeffs;        ///< optimizer order, parallel to parameter_mapping
-        // One owning handle either way: pare hands back a heap-owned MPGraph the plan must keep alive
-        // (`cos` holds pointers into its layers' stored cos); non-pare aliases the propagator's graph_
-        // through a shared_ptr with an empty owner block, so it stays live only while the propagator does.
+        // Always owned, never a view on the propagator's graph_: `cos` holds a raw CosMask pointer per
+        // layer, and only layers the plan owns are safe from a later append, slice or compaction.
         std::shared_ptr<const MPGraph> graph;
         // The folds keep raw column pointers into the propagator's inverted index, so this plan must not
         // outlive the propagator either.
