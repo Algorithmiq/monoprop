@@ -133,6 +133,13 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 
 ### Testing Structure
 
+- `cpp/tests/functional_validity.cpp` is the **mutation table**: one row per public mutating method of
+  `MonomialPropagator`, recording what a functional built *before* that mutator ran does when called
+  *after* it — throw, or answer from its own snapshot. `MonomialPropagator::num_mutating_methods` pins
+  the roster and the table `static_assert`s against it, so adding a mutator means bumping that
+  constant and adding a row (the build fails until you do).
+  `tests/test_parameter_validation.py::TestFunctionalValidityTable` mirrors the same rows through the
+  Python front end, over `monoprop_PARTITIONS=off` and `=auto`.
 - `tests/cases.py`: Parametrized test cases using `pytest-cases`; `load_problem()` loads a `tests/data/*.msgpack` fixture directly into the public API (`MonomialCircuit` + `MonomialOperator`). C++ tests use the equivalent `test_utils::load_case()` in `cpp/tests/TestData.h`
 - Fixture msgpack schema is documented in `tests/data/README.md`
 - Tests validate against exact solutions for small systems
@@ -161,6 +168,9 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 7. Add Python bindings in `src/monoprop/bindings/binder.h`
 8. Regenerate bindings with `tools/generate-binders.py`
 9. Test with both C++ and Python tests
+10. If the new method mutates a `MonomialPropagator`, bump
+    `MonomialPropagator::num_mutating_methods` and add its row to the mutation table (see "Testing
+    Structure"): a mutator with no row leaves its effect on a live functional unrecorded.
 
 ## Documentation Maintenance Policy
 

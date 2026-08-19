@@ -18,7 +18,13 @@ from __future__ import annotations
 
 import pytest
 
-from monoprop import Circuit, ExpGate, MajoranaPropagator, PauliPropagator
+from monoprop import (
+    Circuit,
+    ExpGate,
+    MajoranaPropagator,
+    PauliPropagator,
+    jordan_wigner_basis_change,
+)
 from monoprop.majorana import MajoranaOperator
 from monoprop.pauli import PauliOperator
 
@@ -198,6 +204,279 @@ class TestGraphAndParameterValidation:
         rebuilt = getattr(mp, functional_name)()(parameters)
         rebuilt_expval = rebuilt[0] if isinstance(rebuilt, tuple) else rebuilt
         assert rebuilt_expval == pytest.approx(mp.expval(parameters))
+
+
+class TestFunctionalValidityTable:
+    """What each public mutator does to a functional built before it ran.
+
+    The Python mirror of ``cpp/tests/functional_validity.cpp``: same rows, same expectations, run
+    over both partition settings. The build-time coverage gate lives on the C++ side
+    (``MonomialPropagator::num_mutating_methods``); here the roster is asserted as data.
+    """
+
+    _MODES = 2
+    _CUTOFF = 4
+    _PARAMS = (0.3, 0.7)
+    _PARE_THRESHOLD = 1e-12
+
+    # One gate per Hamiltonian term, and the terms carry different weights, so the answer is not
+    # symmetric under swapping the two angles -- which is what makes the parameter_mapping row bite.
+    @staticmethod
+    def _generator(index):
+        return MajoranaOperator({(index,): 1.0}, num_modes=2)
+
+    @classmethod
+    def _base_circuit(cls):
+        return Circuit(
+            (ExpGate(cls._generator(0)), ExpGate(cls._generator(2))),
+            cls._MODES,
+            cls._PARAMS,
+        )
+
+    @classmethod
+    def _propagator(cls, comm, *, schrodinger, with_graph):
+        mp = MajoranaPropagator(
+            MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=cls._MODES),
+            [0, 1],
+            cutoff=cls._CUTOFF,
+            schrodinger_cutoff=cls._CUTOFF if schrodinger else None,
+            comm=comm,
+        )
+        if with_graph:
+            mp.build_graph(cls._base_circuit())
+        return mp
+
+    # The mutators, one per public mutating method.
+    @classmethod
+    def _mutate_build_graph(cls, mp):
+        mp.build_graph(Circuit((ExpGate(cls._generator(1)),), cls._MODES, (0.4,)))
+
+    @classmethod
+    def _mutate_propagate(cls, mp):
+        mp.propagate(Circuit((ExpGate(cls._generator(0)),), cls._MODES, (0.4,)))
+
+    @classmethod
+    def _mutate_contract_partially(cls, mp):
+        mp.contract_partially(list(cls._PARAMS), inplace=True)
+
+    @classmethod
+    def _mutate_update_initial_operator(cls, mp):
+        mp.update_initial_operator(
+            MajoranaOperator({(0, 1): 2.75j, (2, 3): 0.5j}, num_modes=cls._MODES)
+        )
+
+    @staticmethod
+    def _mutate_parameter_mapping(mp):
+        mp.parameter_mapping = [1, 0]
+
+    @staticmethod
+    def _mutate_cutoff(mp):
+        mp.cutoff = 2
+
+    @staticmethod
+    def _mutate_cutoff_type(mp):
+        mp.cutoff_type = "length"
+
+    @classmethod
+    def _mutate_basis_change(cls, mp):
+        # No front-end setter; the engine property is the only way in (see tests/test_basis.py).
+        mp._simulator.basis_change = jordan_wigner_basis_change(cls._MODES)
+
+    @staticmethod
+    def _mutate_lower_atol(mp):
+        mp.lower_atol = 1e-12
+
+    @staticmethod
+    def _mutate_upper_atol(mp):
+        mp.upper_atol = 1e-3
+
+    # (method, mutator, needs_empty_graph, exact, pared, rationale). "stale" = the call must throw,
+    # "answers" = it must return exactly what it returned before the mutation.
+    ROWS = (
+        (
+            "build_graph",
+            "_mutate_build_graph",
+            False,
+            "stale",
+            "answers",
+            "DEFECT (fixed in stage 2): the pared plan owns its layers, so its layer count cannot "
+            "move and the live-graph check never fires.",
+        ),
+        (
+            "propagate",
+            "_mutate_propagate",
+            True,
+            "answers",
+            "answers",
+            "DEFECT (fixed in stage 2): propagate() leaves the layer count at zero and does not "
+            "touch the epoch, so neither check sees the re-evolved operator.",
+        ),
+        (
+            "contract_partially",
+            "_mutate_contract_partially",
+            False,
+            "stale",
+            "answers",
+            "DEFECT (fixed in stage 2): as build_graph, the pared plan's layer count is fixed.",
+        ),
+        (
+            "update_initial_operator",
+            "_mutate_update_initial_operator",
+            False,
+            "stale",
+            "stale",
+            "The epoch check fires. Stage 4 turns this into a weight refresh, except for a pared "
+            "Schrodinger plan.",
+        ),
+        (
+            "parameter_mapping",
+            "_mutate_parameter_mapping",
+            False,
+            "answers",
+            "answers",
+            "DEFECT (fixed in stage 2): relabelling is in place, so the layer count and the epoch "
+            "both hold and the plan keeps replaying the old labels.",
+        ),
+        (
+            "cutoff",
+            "_mutate_cutoff",
+            False,
+            "answers",
+            "answers",
+            "Intended: a cutoff gates the next build and changes nothing the plan holds.",
+        ),
+        (
+            "cutoff_type",
+            "_mutate_cutoff_type",
+            False,
+            "answers",
+            "answers",
+            "Intended: as cutoff.",
+        ),
+        (
+            "basis_change",
+            "_mutate_basis_change",
+            False,
+            "answers",
+            "answers",
+            "Intended: as cutoff.",
+        ),
+        (
+            "lower_atol",
+            "_mutate_lower_atol",
+            False,
+            "answers",
+            "answers",
+            "Intended: as cutoff.",
+        ),
+        (
+            "upper_atol",
+            "_mutate_upper_atol",
+            False,
+            "answers",
+            "answers",
+            "Intended: as cutoff.",
+        ),
+    )
+
+    def test_table_covers_every_public_mutator(self):
+        assert {row[0] for row in self.ROWS} == {
+            "build_graph",
+            "propagate",
+            "contract_partially",
+            "update_initial_operator",
+            "parameter_mapping",
+            "cutoff",
+            "cutoff_type",
+            "basis_change",
+            "lower_atol",
+            "upper_atol",
+        }
+
+    @pytest.mark.parametrize("row", ROWS, ids=[row[0] for row in ROWS])
+    @pytest.mark.parametrize("partitions", ["off", "auto"])
+    @pytest.mark.parametrize("pared", [False, True], ids=["exact", "pared"])
+    @pytest.mark.parametrize(
+        "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
+    )
+    @pytest.mark.parametrize(
+        "functional_name",
+        [
+            "expectation_value_functional",
+            "expectation_value_and_gradient_functional",
+        ],
+    )
+    def test_mutator_effect_on_live_functional(
+        self,
+        monkeypatch,
+        serial_comm,
+        functional_name,
+        schrodinger,
+        pared,
+        partitions,
+        row,
+    ):
+        method, mutator, needs_empty_graph, exact, pared_outcome, rationale = row
+        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+
+        mp = self._propagator(
+            serial_comm, schrodinger=schrodinger, with_graph=not needs_empty_graph
+        )
+        parameters = [] if needs_empty_graph else list(self._PARAMS)
+        threshold = self._PARE_THRESHOLD if pared else None
+        functional = getattr(mp, functional_name)(threshold)
+
+        def call():
+            result = functional(parameters)
+            return result[0] if isinstance(result, tuple) else result
+
+        before = call()
+        getattr(self, mutator)(mp)
+
+        expected = pared_outcome if pared else exact
+        if expected == "stale":
+            with pytest.raises(RuntimeError, match=r"MP object has been modified"):
+                call()
+        else:
+            assert call() == pytest.approx(before), f"{method}: {rationale}"
+
+    @pytest.mark.parametrize("partitions", ["off", "auto"])
+    def test_parameter_mapping_silently_desynchronises_functional(
+        self, monkeypatch, serial_comm, partitions
+    ):
+        """Defect 2, made falsifiable: the relabel moves the propagator's own answer while the
+        functional built before it keeps returning the old one. Stage 2 makes the call throw.
+        """
+        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
+        functional = mp.expectation_value_functional()
+        parameters = list(self._PARAMS)
+        before = functional(parameters)
+
+        self._mutate_parameter_mapping(mp)
+
+        assert mp.expval(parameters) != pytest.approx(before)
+        assert functional(parameters) == pytest.approx(before)
+
+    @pytest.mark.parametrize("partitions", ["off", "auto"])
+    def test_pared_functional_silently_survives_build_graph(
+        self, monkeypatch, serial_comm, partitions
+    ):
+        """Defect 1, made falsifiable: appending a layer moves the propagator's own answer while a
+        pared functional, whose owned layer count cannot change, keeps returning the old one.
+        """
+        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
+        functional = mp.expectation_value_functional(self._PARE_THRESHOLD)
+        parameters = list(self._PARAMS)
+        before = functional(parameters)
+
+        self._mutate_build_graph(mp)
+
+        # The appended gate claims a fresh angle, so the propagator's own axis is now three long
+        # while the functional still answers for the two-gate circuit it was built against.
+        assert mp.expval([*parameters, 0.4]) != pytest.approx(before)
+        assert functional(parameters) == pytest.approx(before)
 
 
 class TestEvolvedOperatorBothPictures:
