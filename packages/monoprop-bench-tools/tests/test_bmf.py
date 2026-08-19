@@ -97,6 +97,29 @@ def test_operator_metrics_are_grouped_per_picture_and_model(tmp_path: Path) -> N
     assert result["operator[hubbard]"] == {"terms": {"value": 12.0}}
 
 
+def test_operator_metrics_skip_node_id_keyed_entries(tmp_path: Path) -> None:
+    build_graph = "bench_random.py::test_random_build_graph[heisenberg]"
+    _write(
+        tmp_path,
+        opsize={"heisenberg": {"terms": 12}, build_graph: {"terms": 34}},
+        memrest={"heisenberg": 4096, build_graph: 8192},
+    )
+    result = bmf.build_bmf(tmp_path, "ci")
+
+    # record_opsize keys by node id for a private A/B harness; Bencher's history keys
+    # on the name forever, so those entries must not reach it under any name at all.
+    assert set(result) == {_ENERGY, "operator[heisenberg]"}
+    assert result == {
+        _ENERGY: {
+            "latency": {"value": 0.5e9, "lower_value": 0.49e9, "upper_value": 0.51e9}
+        },
+        "operator[heisenberg]": {
+            "terms": {"value": 12.0},
+            "resting-memory": {"value": 4096.0},
+        },
+    }
+
+
 def test_missing_sections_are_skipped(tmp_path: Path) -> None:
     _write(tmp_path)
 

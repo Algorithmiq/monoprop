@@ -57,6 +57,10 @@ _NS_PER_S = 1e9
 # describe a built operator rather than one timed call.
 _OPERATOR = "operator"
 
+# ``opsize``/``memrest`` are also keyed by pytest node id (``::``, as report.py reads
+# them) for a private A/B harness; those are not operators, so they are skipped here.
+_NODE_ID_SEP = "::"
+
 Metric = dict[str, float]
 Bmf = dict[str, dict[str, Metric]]
 
@@ -123,10 +127,12 @@ def build_bmf(results_dir: Path, label: str) -> Bmf:
         measure(benchmark, "peak-memory", peak)
 
     for key, size in results.get("opsize", {}).items():
-        measure(f"{_OPERATOR}[{key}]", "terms", size["terms"])
+        if _NODE_ID_SEP not in key:
+            measure(f"{_OPERATOR}[{key}]", "terms", size["terms"])
 
     for key, resting in results.get("memrest", {}).items():
-        measure(f"{_OPERATOR}[{key}]", "resting-memory", resting)
+        if _NODE_ID_SEP not in key:
+            measure(f"{_OPERATOR}[{key}]", "resting-memory", resting)
 
     return bmf
 
