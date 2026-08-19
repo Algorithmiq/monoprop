@@ -216,6 +216,18 @@ BOOST_AUTO_TEST_CASE(my_basic_check) {
 }
 ```
 
+#### The mutation table
+
+`cpp/tests/functional_validity.cpp` records, for every public method that mutates a
+`MonomialPropagator`, what a functional built before that call does when called after it: throw
+("stale"), or answer from its own snapshot ("answers"). Each row is asserted for the value and the
+gradient functional, with and without a pare threshold, in both pictures.
+
+The roster is pinned by `MonomialPropagator::num_mutating_methods`, and the table `static_assert`s
+its row count against it — so adding a mutating method means bumping that constant, which breaks the
+build until the new method gets a row. `tests/test_parameter_validation.py::TestFunctionalValidityTable`
+mirrors the same rows through the Python front end, over both `monoprop_PARTITIONS=off` and `=auto`.
+
 #### Data-driven test using reference fixtures
 
 Use the `ExampleDataFix` fixture class from `TestUtilities.h` to load the same msgpack data as Python tests, and `BOOST_DATA_TEST_CASE_F` to parametrize over it:

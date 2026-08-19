@@ -99,6 +99,14 @@ public:
     static constexpr auto num_modes{NumModes};
     static constexpr auto storage_num_modes{NumModes};
 
+    /// How many public methods mutate this propagator, and so may invalidate a live functional.
+    // cpp/tests/functional_validity.cpp static_asserts that its table has a row for each, so bumping
+    // this when adding a mutator breaks that build until the new method's effect on a functional is
+    // recorded. The roster: build_graph, propagate, contract_partially, update_initial_operator,
+    // set_parameter_mapping, update_cutoff, update_cutoff_type, update_basis_change,
+    // update_lower_atol, update_upper_atol.
+    static constexpr size_t num_mutating_methods{10};
+
     auto logical_num_modes() const -> size_t { return logical_num_modes_; }
 
     /// Term count on this rank (allreduce for global).
