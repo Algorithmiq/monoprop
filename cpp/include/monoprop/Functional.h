@@ -49,11 +49,13 @@ class FunctionalPlan {
 public:
     /// A single-partition propagator's snapshot: one replay of its graph against its operator.
     struct Local {
-        double core_term{0.0}; ///< the identity term, added to the summed expectation value
+        // The weights this plan was built over, and the fallback when the propagator has published no
+        // newer set. The same object the control block holds, not a copy of it, so the pointers compare
+        // equal until a re-weight publishes -- which is how a call sees that it has weights to follow.
+        std::shared_ptr<const OperatorWeights> weights;
         // Owns its rows and snapshots the term count: the operator's sparse rows grow by push_back as
-        // terms are appended, so a view would both dangle and outrun `op`.
+        // terms are appended, so a view would both dangle and outrun the weights' `op`.
         EvalState state;        ///< the contraction partner, sparse (Heisenberg) or dense (Schrodinger)
-        VecD op;                ///< un-evolved operator coefficients, copied out of the propagator
         VecZ parameter_mapping; ///< optimizer order: which parameter drives graph layer i
         VecD gen_coeffs;        ///< optimizer order, parallel to parameter_mapping
         // Always owned, never a view on the propagator's graph_: `cos` holds a raw CosMask pointer per
@@ -71,6 +73,12 @@ public:
         const MPOperator<NumModes> *mp_op{nullptr};
         const OperatorIndex<NumModes> *op_store{nullptr};
         size_t inverted_index_rows{0};
+
+        // Whether `graph`'s keep-set was thresholded from the operator coefficients, which is Schrodinger
+        // with a pare threshold and nothing else. Such a plan cannot follow a re-weight: the new
+        // coefficients select a different keep-set. Heisenberg pares the state, which a re-weight leaves
+        // alone, so it follows exactly.
+        bool pared_from_operator{false};
     };
 
     /// A partition facade's snapshot: one child plan per partition, replayed together.
@@ -128,9 +136,11 @@ public:
             })[0];
         }
         const auto &local = std::get<Local>(shape_);
-        return fn(EvalRequest{.e_core = local.core_term,
+        // Held for the whole call: `weights` is what keeps the vector `request.op` refers to alive.
+        const auto weights = resolve_weights(local);
+        return fn(EvalRequest{.e_core = weights->core_term,
                               .state = local.state,
-                              .op = local.op,
+                              .op = weights->op,
                               .parameter_mapping = local.parameter_mapping,
                               .gen_coeffs = local.gen_coeffs,
                               .graph = local.graph->replay_view(),
@@ -140,6 +150,26 @@ public:
     }
 
 private:
+    // The weights this call evaluates against: the propagator's live set, which a re-weight replaces
+    // between two calls. One load, so `op` and `core_term` cannot come from two publications.
+    //
+    // A functional is therefore a live view of the weights, not a frozen number: the same parameters give
+    // the new answer after a re-weight. Everything else a re-weight cannot leave intact -- a store row it
+    // would have to add, a graph it would have to re-pare -- either throws in
+    // MPOperator::update_initial_operator or is caught by validate_weight_refresh.
+    auto resolve_weights(const Local &local) const -> std::shared_ptr<const OperatorWeights> {
+        auto published = control_->weights.load();
+        // Null cannot happen -- make_plan_ publishes -- and identity means no re-weight since this plan
+        // was built. Either way `local.weights` is the current set, so there is nothing to check.
+        if (published == nullptr || published == local.weights) {
+            return local.weights;
+        }
+        validate_weight_refresh({.weights_revision = published->structure_revision,
+                                 .expected_revision = expected_revision_,
+                                 .pared_from_operator = local.pared_from_operator});
+        return published;
+    }
+
     // Read straight off the borrowed operator, never through inverted_index(): that accessor rebuilds a
     // stale index, which is a write, and a plan must not write to its propagator.
     static auto operator_layout_unchanged(const Local &local) -> bool {
@@ -160,6 +190,11 @@ private:
 /// Built by MonomialPropagator::expectation_value_functional(). It borrows from the propagator that
 /// made it (see detail::FunctionalPlan), so it must not outlive it, and a structural change to the
 /// propagator makes a call throw rather than answer.
+///
+/// A re-weight is not a structural change: the functional follows the propagator's current
+/// initial-operator weights, so two calls with the same parameters give two answers across a
+/// MonomialPropagator::update_initial_operator(). Build the functional again after the last re-weight
+/// to freeze a value.
 template <size_t NumModes>
 class ExpectationValueFunctional {
 public:
@@ -184,7 +219,8 @@ private:
 };
 
 /// As ExpectationValueFunctional, plus the gradient from the same backward pass:
-/// `fn(parameters) -> (value, gradient)`, the gradient in parameter-axis order.
+/// `fn(parameters) -> (value, gradient)`, the gradient in parameter-axis order. It follows the
+/// initial-operator weights on the same terms.
 template <size_t NumModes>
 class ExpectationValueAndGradientFunctional {
 public:

@@ -52,6 +52,15 @@ struct FunctionalState {
 
 monoprop_EXPORT auto validate_functional_state(const FunctionalState &state) -> void;
 
+/// The inputs to the check that a functional may follow a newer set of initial-operator weights.
+struct WeightRefresh {
+    size_t weights_revision;  ///< the structure revision the newer weights were published at
+    size_t expected_revision; ///< the revision the functional was built at
+    bool pared_from_operator; ///< the functional's keep-set was thresholded from the operator itself
+};
+
+monoprop_EXPORT auto validate_weight_refresh(const WeightRefresh &refresh) -> void;
+
 // only_rotate_len_k is optional; when set it must satisfy 0 < k <= max_k.
 monoprop_EXPORT auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void;
 

@@ -329,13 +329,24 @@ private:
 
     // Record that what a plan replays has moved. `site` must be a string literal: plans read it after
     // this propagator is gone. A mutation that is rejected outright must not bump -- it changed nothing,
-    // so it must not invalidate anything. A mutation that can fail part-way bumps before it starts
+    // so it must not invalidate anything. A mutation that can fail part-way bumps on the failure path
     // instead: invalidating a functional that did not need it costs a rebuild, answering from a snapshot
     // of a half-written operator costs a wrong number.
     auto bump_structure_(const char *site) -> void {
         functional_control_->last_structural_change.store(site);
         functional_control_->structure_revision.fetch_add(1);
     }
+
+    // Hand the current initial-operator weights to every functional over this propagator, as one
+    // immutable set stamped with the revision it belongs to. Called on a re-weight, which is what makes a
+    // functional follow it, and never on a facade -- a facade holds no terms, and its partitions publish
+    // their own on their own masters.
+    auto publish_weights_() -> std::shared_ptr<const detail::OperatorWeights>;
+
+    // The weight set a new plan is built over: the published one when it still belongs to this revision,
+    // a fresh publication otherwise. Reusing matters -- a plan detects a re-weight by comparing pointers,
+    // so republishing an identical set would read as one.
+    auto weights_for_plan_() -> std::shared_ptr<const detail::OperatorWeights>;
 
     // A facade's own graph_/mp_op_ are never populated, so handing them out would return plausible-looking
     // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.

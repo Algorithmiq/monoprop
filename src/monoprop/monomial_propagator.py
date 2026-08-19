@@ -382,9 +382,15 @@ class MonomialPropagator(ABC, Generic[T_op]):
     ) -> Callable[..., float]:
         """Return a reusable callable computing the expectation value from parameters.
 
-        The callable is built against the graph and initial-operator coefficients present now, so
-        mutating either -- [build_graph][], [contract_partially][], [update_initial_operator][] --
-        invalidates it; build a new one after such a call.
+        The callable is built against the graph present now, so a structural change to it --
+        [build_graph][], [propagate][], [contract_partially][] with ``inplace=True``, or a new
+        [parameter_mapping][] -- invalidates the callable; build a new one after such a call.
+
+        A re-weight is not a structural change: the callable follows the propagator's current
+        initial-operator coefficients, so an [update_initial_operator][] leaves it valid and it
+        answers for the new weights. The price is that it is a live view of those weights rather
+        than a frozen number -- two calls with the same parameters give two answers across a
+        re-weight. Build the callable again after the last re-weight to freeze a value.
 
         Args:
             pare_threshold: Edge-retention cutoff for this functional's masked plan: edges
@@ -395,8 +401,11 @@ class MonomialPropagator(ABC, Generic[T_op]):
             A callable ``fn(parameters=None) -> float``.
 
         Raises:
-            RuntimeError: From the returned callable, if the propagator was mutated after this
-                functional was created.
+            RuntimeError: From the returned callable, if the propagator was structurally mutated
+                after this functional was created, or if it was re-weighted and this functional
+                cannot follow the new weights -- which is the Schrodinger picture with a
+                ``pare_threshold``, whose pared graph was selected from the very coefficients the
+                re-weight replaced.
         """
         fn = self._simulator.expectation_value_functional(pare_threshold)
         return lambda parameters=None: fn(self._bind(parameters))
@@ -407,7 +416,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
         """Return a reusable callable computing (expectation value, gradient).
 
         Like [expectation_value_functional][], but one backward pass also yields the gradient. It is
-        invalidated by the same mutations.
+        invalidated by the same mutations, and follows the initial-operator weights on the same
+        terms: value and gradient both answer for the current coefficients.
 
         Args:
             pare_threshold: See [expectation_value_functional][].
@@ -416,8 +426,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
             A callable ``fn(parameters=None) -> (float, np.ndarray)``, gradient in parameter order.
 
         Raises:
-            RuntimeError: From the returned callable, if the propagator was mutated after this
-                functional was created.
+            RuntimeError: From the returned callable, on the same conditions as
+                [expectation_value_functional][].
         """
         fn = self._simulator.expectation_value_and_gradient_functional(pare_threshold)
 
@@ -541,8 +551,15 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Each concrete front-end implements this over its own operator type, encoding the terms into
         the engine's raw index tuples.
 
-        Functionals hold the coefficients they were built with, so any created earlier are
-        invalidated -- they raise instead of answering for the replaced operator.
+        Functionals created earlier stay valid and follow the new coefficients: a re-weight moves no
+        structure, so there is nothing for them to be stale about. They are therefore a live view of
+        the weights -- two calls with the same parameters give two answers across this call. The one
+        exception is a functional built in the Schrodinger picture with a ``pare_threshold``: its
+        pared graph was selected from the coefficients this call replaces, so it raises instead of
+        following them.
+
+        A rejected re-weight invalidates them, since this call can fail with the core term already
+        written: they raise rather than answer for weights the propagator disagrees with.
 
         Args:
             new_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
