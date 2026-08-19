@@ -73,25 +73,23 @@ public:
     explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
           stride_(1 + inline_width_) {}
-    OperatorIndex(const OperatorIndex &) = delete;
+    // Copying rebuilds the keyless index so every slot resolves against this object's row storage.
+    OperatorIndex(const OperatorIndex &src)
+        : rows_(src.rows_),
+          size_(src.size_),
+          inline_width_(src.inline_width_),
+          stride_(src.stride_),
+          overflow_(src.overflow_) {
+        reserve_index(src.table_.count);
+        for (const Slot &e : src.table_.slots) {
+            if (e.idx != kEmptySlot) {
+                insert_slot_(e.idx, e.h);
+            }
+        }
+    }
     OperatorIndex &operator=(const OperatorIndex &) = delete;
     OperatorIndex(OperatorIndex &&) = delete;
     OperatorIndex &operator=(OperatorIndex &&) = delete;
-
-    // Called only on an idle store, so it needs no synchronization.
-    [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
-        auto out = std::make_unique<OperatorIndex>(inline_width_);
-        out->rows_ = rows_;
-        out->size_ = size_;
-        out->overflow_ = overflow_;
-        out->reserve_index(table_.count);
-        for (const Slot &e : table_.slots) {
-            if (e.idx != kEmptySlot) {
-                out->insert_slot_(e.idx, e.h);
-            }
-        }
-        return out;
-    }
 
     [[nodiscard]] auto size() const -> size_t { return size_; }
 
@@ -355,7 +353,7 @@ private:
     auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
 
     // Insert (idx, h) into the table with no duplicate probe — callers on this path insert provably distinct
-    // keys (⊕G-injective miss batches, clone re-insertion).
+    // keys (⊕G-injective miss batches, copy-constructor re-insertion).
     auto insert_slot_(TermIndex idx, uint32_t h) -> void {
         table_.rehash_if_needed();
         size_t s = spread(h) & table_.mask;

@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "monoprop/Evolution.h"
+#include "monoprop/Indirect.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"
@@ -54,8 +55,7 @@ class PartitionGroup;
 } // namespace detail
 
 /// A propagator setting is out of range, or inconsistent with another setting.
-// Covers a crossed atol pair and a logical width outside [1, NumModes]; also thrown from
-// MonomialPropagatorImpl.h
+// Covers a crossed atol pair and a logical width outside [1, NumModes].
 class PropagatorConfigError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -82,14 +82,6 @@ public:
                        size_t logical_num_modes = NumModes,
                        Basis basis = Basis::Majorana,
                        size_t partitions = 0);
-
-    /// Out-of-line because partition_group_ is a unique_ptr to an incomplete type here.
-    virtual ~MonomialPropagator();
-
-    /// Deep copy: clones the operator store, shares the immutable graph cores, and clones the whole
-    /// partition group on a facade. The virtual destructor suppresses implicit moves, so a "move" deep-copies.
-    MonomialPropagator(const MonomialPropagator &other);
-    auto operator=(const MonomialPropagator &) -> MonomialPropagator & = delete;
 
     static constexpr auto num_modes{NumModes};
     static constexpr auto storage_num_modes{NumModes};
@@ -274,7 +266,7 @@ public:
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
-    virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
+    auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
     static inline const auto ev_fn = [](const EvalRequest &request,
@@ -322,8 +314,8 @@ private:
 
     // Intra-process partition runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a partition facade
     // whose own mp_op_/graph_ are unused and every method fans out to the S partition propagators.
-    std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
-    // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
+    std::optional<indirect<detail::partition::PartitionGroup<NumModes>>> partition_group_;
+    // PartitionGroup rebinds a copied partition's comm_ to its own transport during a deep copy.
     friend class detail::partition::PartitionGroup<NumModes>;
 
     // A facade's own graph_/mp_op_ are never populated, so handing them out would return plausible-looking

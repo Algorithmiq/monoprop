@@ -24,6 +24,12 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - Python docstrings use Google style, and are rendered into the docs site by `just gen-api` — keep
   them accurate.
 - In prose docs (`docs/content/docs/**.mdx`) and Python docstrings, link to API symbols with the mkdocstrings-style `[Symbol][]` reference (or `[Display][fully.qualified.path]`) — never hard-code `/api/...` URLs. Do not backtick the name in the `[Symbol][]` form. See `docs/content/docs/documenting.mdx`.
+- Keep classes on the Rule of Zero: declare no destructor, copy or move member. A member that needs a
+  deep copy because it is heap-owned goes in `indirect<T>` (`cpp/monoprop/Indirect.h`), the project's
+  allocator-free C++23 subset of C++26 `std::indirect`. Its pointee must be copy-constructible; copying
+  creates an independent pointee and moving transfers ownership. Use `std::optional<indirect<T>>` when
+  absence is a domain state. `T` may be incomplete where the member is declared, but any holder special
+  member that constructs, copies, or destroys it must be defined where `T` is complete.
 - C++ comments: bare `//` for one-line comments, `/* */` for block comments.
 - Add Doxygen Qt-style documentation on all declarations in header files.
   Put documentation after members in enums, structs, classes.

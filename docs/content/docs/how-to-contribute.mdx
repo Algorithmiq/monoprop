@@ -43,6 +43,25 @@ To run all pre-commit checks manually:
 prek run --all
 ```
 
+## C++ ownership
+
+Keep owning classes on the Rule of Zero. Use `monoprop::indirect<T>` from
+`monoprop/Indirect.h` for a heap-owned value that must be copied deeply, and use
+`std::optional<monoprop::indirect<T>>` when absence is part of the domain model.
+The pointee must be copy-constructible. Copying the wrapper constructs an
+independent pointee; moving it transfers the allocation and leaves the source
+valueless.
+
+`T` may be forward-declared where `indirect<T>` is named. As with C++26
+`std::indirect`, however, operations that construct, copy, or destroy the pointee
+require `T` to be complete. For an opaque member, declare the holder's special
+members in its header and default them in the implementation file after the
+pointee definition.
+
+This C++23 subset intentionally omits allocator support, comparisons, hashing,
+value assignment, pointer adoption, and initializer-list overloads. Its copy
+assignment replaces the allocation and does not preserve the pointee's address.
+
 ## Documentation
 
 Building the documentation locally requires [npm](https://docs.npmjs.com/), the Node.js package manager. Once npm is available, you can run:

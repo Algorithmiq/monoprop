@@ -165,6 +165,12 @@ All contributions require accepting the Individual CLA through CLA Assistant.
 If you are contributing on behalf of your employer, contact
 [cla@algorithmiq.fi](mailto:cla@algorithmiq.fi) to arrange a Corporate CLA.
 
+C++ classes use Rule-of-Zero ownership. A heap-owned value member should use the
+project's C++23 `monoprop::indirect<T>` vocabulary type; use
+`std::optional<monoprop::indirect<T>>` when the member can be absent. See the
+[contributor guide](https://docs.monoprop.algorithmiq.tech/how-to-contribute#c-ownership)
+for its opaque-type and completeness rules.
+
 ## Documentation
 
 The documentation is built with [Fumadocs](https://fumadocs.dev/) and hosted at
