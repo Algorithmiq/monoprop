@@ -67,7 +67,10 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
              "Expectation value at the given variational parameters")
         .def_prop_ro("num_params",
                      &ExpectationValueFunctional<NumModes>::num_params,
-                     "Parameter-axis length this functional was built against");
+                     "Parameter-axis length this functional was built against")
+        .def_prop_ro("follows_weights",
+                     &ExpectationValueFunctional<NumModes>::follows_weights,
+                     "Whether a call after update_initial_operator() answers for the new weights");
 
     auto grad_name = std::format("ExpectationValueAndGradientFunctional{:03d}", NumModes);
     nb::class_<ExpectationValueAndGradientFunctional<NumModes>>(mod, grad_name.c_str())
@@ -77,7 +80,10 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
              "(expectation value, gradient) at the given variational parameters")
         .def_prop_ro("num_params",
                      &ExpectationValueAndGradientFunctional<NumModes>::num_params,
-                     "Parameter-axis length this functional was built against");
+                     "Parameter-axis length this functional was built against")
+        .def_prop_ro("follows_weights",
+                     &ExpectationValueAndGradientFunctional<NumModes>::follows_weights,
+                     "Whether a call after update_initial_operator() answers for the new weights");
 
     cls.def(
         "__init__",

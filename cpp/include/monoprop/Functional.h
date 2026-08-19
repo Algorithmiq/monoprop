@@ -104,6 +104,16 @@ public:
     /// The parameter-axis length the plan was built against; a call must supply exactly this many.
     auto num_params() const -> size_t { return num_params_; }
 
+    /// Whether a call after a re-weight answers for the new coefficients, rather than throwing.
+    auto follows_weights() const -> bool {
+        if (const auto *fanout = std::get_if<Fanout>(&shape_)) {
+            // Every child was built in the same picture at the same threshold, so one child answers for
+            // all of them. Reading an immutable child field needs no fan-out.
+            return fanout->partitions.empty() || fanout->partitions.front()->follows_weights();
+        }
+        return !std::get<Local>(shape_).pared_from_operator;
+    }
+
     /// Throw unless `params` fits and the propagator still holds what the plan replays.
     // A facade checks its own control block here -- the group it fans out over belongs to the facade --
     // and each child plan then checks its own partition's, on that partition's master thread. Only the
@@ -201,6 +211,10 @@ public:
     /// The parameter-axis length this functional was built against.
     auto num_params() const -> size_t { return plan_->num_params(); }
 
+    /// True unless a MonomialPropagator::update_initial_operator() makes a call throw: the contract as
+    /// this object holds it, so a caller need not re-derive it from picture and pare threshold.
+    auto follows_weights() const -> bool { return plan_->follows_weights(); }
+
     auto operator()(const VecD &parameters) const -> double {
         return plan_->evaluate(
             [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> double {
@@ -226,6 +240,10 @@ class ExpectationValueAndGradientFunctional {
 public:
     /// The parameter-axis length this functional was built against.
     auto num_params() const -> size_t { return plan_->num_params(); }
+
+    /// True unless a MonomialPropagator::update_initial_operator() makes a call throw: the contract as
+    /// this object holds it, so a caller need not re-derive it from picture and pare threshold.
+    auto follows_weights() const -> bool { return plan_->follows_weights(); }
 
     auto operator()(const VecD &parameters) const -> std::pair<double, VecD> {
         return plan_->evaluate(

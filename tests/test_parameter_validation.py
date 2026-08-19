@@ -512,6 +512,31 @@ class TestFunctionalValidityTable:
             functional(parameters)
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            "expectation_value_functional",
+            "expectation_value_and_gradient_functional",
+        ],
+    )
+    def test_bound_functional_reports_whether_it_follows_weights(
+        self, monkeypatch, serial_comm, factory, partitions
+    ):
+        """The contract read off the object: only a Schrodinger plan pared against the operator's own
+        coefficients refuses to follow a re-weight.
+        """
+        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+        for schrodinger in (False, True):
+            mp = self._propagator(serial_comm, schrodinger=schrodinger, with_graph=True)
+            for threshold in (None, self._PARE_THRESHOLD):
+                follows = not (schrodinger and threshold is not None)
+                engine = getattr(mp._simulator, factory)(threshold)
+                assert engine.follows_weights is follows
+                # The front end wraps the engine functional in a callable, which has to carry the
+                # rule through: the engine object is not part of the public surface.
+                assert getattr(mp, factory)(threshold).follows_weights is follows
+
+    @pytest.mark.parametrize("partitions", ["off", "auto"])
     @pytest.mark.parametrize("pared", [False, True], ids=["exact", "pared"])
     @pytest.mark.parametrize(
         "functional_name",
