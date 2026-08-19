@@ -370,7 +370,7 @@ reportMatchNotExhaustive = "information"
 [tool.cibuildwheel]
 build-frontend = "uv"
 build-verbosity = 1
-build = ["cp311"]
+build = ["cp311-*"]
 skip = ["*-musllinux_*"]
 test-command = "python -m pytest {package}/tests"
 test-groups = ["test"]
