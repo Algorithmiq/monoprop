@@ -117,7 +117,7 @@ auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
  * @param mask_is_private  True only when the co-located ranks' affinity masks have been measured
  *                     pairwise DISJOINT (PartitionGroup::classify_node_masks_), so this mask is our share.
  * @returns Vector of @p n CpuSet tokens, or empty when @c monoprop_PARTITION_PINNING is disabled,
- *          hwloc is unavailable, or not even @p n distinct cores are visible to this process.
+ *          hwloc is unavailable, or fewer than @p group_count x @p n cores are visible (@p n when private).
  *
  * @note Under @p mask_is_private the group split is skipped: our share is already this rank's alone.
  */
