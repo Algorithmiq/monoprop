@@ -36,9 +36,7 @@ def test_random_build_graph(
     def setup():
         built = make_random_propagator()
         last[:] = [built[0]]
-        # Opened here rather than around pedantic() so the window covers the timed call
-        # and not the propagator construction, which dwarfs it.
-        op_memory.open()
+        op_memory.open()  # inside setup, so the window excludes the construction
         return (built,), {}
 
     def build(built):
@@ -65,13 +63,10 @@ def test_random_propagate(
 ):
     """Benchmark in-place evolution alone, with no expectation value and no graph.
 
-    Separate from ``test_random_inplace``, which fuses ``propagate`` with an expectation
-    value and truncates at a coefficient threshold: neither is wrong, but neither isolates
-    the propagation. This one leaves ``lower_atol`` at the propagator default so it carries
-    the same operator as ``test_random_build_graph`` and the two are comparable.
-
-    A fresh propagator per round because ``propagate`` refuses to run on an instance that
-    already holds a graph.
+    Isolates the propagation that ``test_random_inplace`` fuses with an expectation value and
+    a truncation. ``lower_atol`` stays at the propagator default, so this carries the same
+    operator as ``test_random_build_graph`` and the two are comparable. A fresh propagator per
+    round, because ``propagate`` refuses an instance that holds a graph.
     """
     last = []
 
@@ -116,15 +111,14 @@ def test_random_energy(
 ):
     """Benchmark evaluating the expectation-value functional.
 
-    The functional is built outside the timed region on purpose: ``expectation_value()``
-    rebuilds it on every call, which copies the whole operator, so timing that would time
-    the copy rather than the evaluation.
+    The functional is built outside the timed region: ``expectation_value()`` rebuilds it per
+    call, copying the whole operator, so timing that would time the copy.
     """
     functional = built_graph.expectation_value_functional()
     op_memory.open()
 
-    # The args ride a setup callable rather than pedantic's args=, because pedantic rejects
-    # both at once and the entry barrier has to live in a setup to stay untimed.
+    # The args ride a setup callable because pedantic rejects args= and setup= together, and
+    # the entry barrier has to live in a setup to stay untimed.
     def setup():
         return (random_problem.parameters,), {}
 
@@ -134,8 +128,8 @@ def test_random_energy(
         rounds=bench_rounds,
         iterations=1,
     )
-    # Small, and legitimately so: the graph this walks is already resident, so the delta is
-    # scratch only. Read it next to opbytes.graph or it looks like the operation is free.
+    # Legitimately small: the graph is already resident, so the delta is scratch only.
+    # Read it next to opbytes.graph or the operation looks free.
     op_memory.close(built_graph)
     assert isinstance(result, float)
 
@@ -146,7 +140,7 @@ def test_random_gradient(
     """Benchmark evaluating the expectation-value-and-gradient functional.
 
     Contains the whole energy forward pass -- there is no API for the reverse pass alone --
-    so read this against ``test_random_energy`` rather than as a standalone cost.
+    so read it against ``test_random_energy``, not as a standalone cost.
     """
     functional = built_graph.expectation_value_and_gradient_functional()
     op_memory.open()

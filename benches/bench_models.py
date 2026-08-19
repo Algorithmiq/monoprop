@@ -19,16 +19,13 @@ circuit, at fixed sizes. The registry (config class, builder, steps-per-run) liv
 in :data:`monoprop_bench_tools.models.MODELS`; each config field is overridable via
 ``--<model>-<field>``.
 
-``test_model`` is the original fused in-place run (propagate + expectation value) and is
-kept as-is: it is a tracked Bencher series, and renaming or replacing it would orphan its
-history. The four operations beside it split that work the way ``bench_random.py`` splits
-the random problem, so build_graph, propagate, energy and gradient each get their own time
-and their own ``op_memory`` window.
+``test_model`` is the original fused run (propagate + expectation value), kept as-is because
+it is a tracked Bencher series. Beside it, build_graph, propagate, energy and gradient each
+get their own time and ``op_memory`` window.
 
-The two groups do not belong in one process. ``build_graph`` and ``propagate`` each hold
-their own operator, while ``energy`` and ``gradient`` share the one :func:`model_graph`
-builds; running all four together holds two operators per rank and does not fit a node at
-the sizes this is used at. Select one group at a time (``-k "build_graph or propagate"``).
+Select one group at a time (``-k "build_graph or propagate"``): ``build_graph`` and
+``propagate`` each hold their own operator while ``energy`` and ``gradient`` share the one
+:func:`model_graph` builds, and all four together do not fit a node at these sizes.
 """
 
 from __future__ import annotations
@@ -40,17 +37,10 @@ import pytest
 from monoprop_bench_tools.memory.cpu import resting_rss_bytes
 from monoprop_bench_tools.models import MODELS, barrier_setup, barriered
 
-# `build_graph` EXTENDS the graph rather than replacing it, so a model whose driver re-applies
-# its circuit holds every step's layer-set at once where `propagate` holds one. Measured on
-# hubbard at 1 rank x 16 partitions, lower_atol=1e-4: `propagate` finishes 1,887,255 terms in
-# 379 MiB, and `build_graph` on the identical config exceeds a 242 GiB node. That operator is
-# ~110 MB at the measured 58 B/term, so it is the retained graph -- and it does not shrink
-# with rank count, since 1, 2 and 4 nodes all died the same way.
-#
-# So the three graph-holding benchmarks skip above this step count rather than OOM the machine
-# of whoever runs `just bench`, which (unlike `just bench-ci`) does not pass -m "not slow".
-# The limit is 2 and not 1 because a 2-step hubbard reaching 278M terms fits in 15.4 GiB --
-# two steps is measured to work, not assumed. Pauli's step count is 1 and is unaffected.
+# `build_graph` extends the graph, so a driver that re-applies its circuit retains one
+# layer-set per step: 3 steps of hubbard exceed a 242 GiB node where 2 fit in 15.4 GiB.
+# Skipping beats OOM-killing the machine of whoever runs `just bench`, which does not
+# pass -m "not slow". Pauli's step count is 1 and is unaffected.
 MAX_GRAPH_STEPS = 2
 
 
@@ -119,10 +109,8 @@ def test_model_build_graph(
 ):
     """Benchmark building a fixed model's propagation graph, from a fresh propagator.
 
-    ``steps`` successive ``build_graph`` calls, because Hubbard's circuit is one Trotter step
-    the driver re-applies: fewer would build a shorter graph than ``test_model_propagate``
-    evolves, and the two would not be comparable. Pauli's step count is 1, so the same code
-    attributes per-call cost 29x against 1x between the two models for free.
+    ``steps`` successive calls, because Hubbard's circuit is one Trotter step the driver
+    re-applies: fewer would build a shorter graph than ``test_model_propagate`` evolves.
     """
     _config_cls, build_fn, steps_fn = MODELS[model]
     config = model_configs[model]
@@ -135,9 +123,7 @@ def test_model_build_graph(
     def setup():
         built = build_fn(config, comm=bench_comm)
         last[:] = [built[0]]
-        # Opened here rather than around pedantic() so the window covers the timed call
-        # and not the propagator construction, which dwarfs it.
-        op_memory.open()
+        op_memory.open()  # inside setup, so the window excludes the construction
         return (built, steps), {}
 
     def build(built, n_steps):
@@ -166,9 +152,8 @@ def test_model_propagate(
 ):
     """Benchmark a fixed model's in-place evolution alone -- no expectation value, no graph.
 
-    Separate from :func:`test_model`, which fuses the same evolution with an expectation
-    value: neither is wrong, but only this one isolates the propagation. A fresh propagator
-    per round because ``propagate`` refuses to run on an instance that already holds a graph.
+    Isolates the propagation that :func:`test_model` fuses with an expectation value. A fresh
+    propagator per round, because ``propagate`` refuses an instance that holds a graph.
     """
     _config_cls, build_fn, steps_fn = MODELS[model]
     config = model_configs[model]
@@ -202,9 +187,8 @@ def test_model_energy(
 ):
     """Benchmark evaluating a fixed model's expectation-value functional.
 
-    The functional is built outside the timed region on purpose: ``expectation_value()``
-    rebuilds it on every call, which copies the whole operator, so timing that would time the
-    copy rather than the evaluation.
+    The functional is built outside the timed region: ``expectation_value()`` rebuilds it per
+    call, copying the whole operator, so timing that would time the copy.
     """
     skip_if_graph_will_not_fit(model, MODELS[model][2](model_configs[model]))
     propagator, parameters = model_graph(model)
@@ -216,8 +200,8 @@ def test_model_energy(
         rounds=bench_rounds,
         iterations=1,
     )
-    # Small, and legitimately so: the graph this walks is already resident, so the delta is
-    # scratch only. Read it next to opbytes.graph or it looks like the operation is free.
+    # Legitimately small: the graph is already resident, so the delta is scratch only.
+    # Read it next to opbytes.graph or the operation looks free.
     op_memory.close(propagator)
     assert isinstance(result, float)
 
@@ -230,7 +214,7 @@ def test_model_gradient(
     """Benchmark evaluating a fixed model's expectation-value-and-gradient functional.
 
     Contains the whole energy forward pass -- there is no API for the reverse pass alone --
-    so read this against :func:`test_model_energy` rather than as a standalone cost.
+    so read it against :func:`test_model_energy`, not as a standalone cost.
     """
     skip_if_graph_will_not_fit(model, MODELS[model][2](model_configs[model]))
     propagator, parameters = model_graph(model)

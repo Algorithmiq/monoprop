@@ -139,14 +139,10 @@ def _parse_cpu_list(spec: str) -> set[int]:
 def pinned_thread_summary() -> dict[str, int | list[int]]:
     """Return how many of this process's threads are bound to a single CPU.
 
-    Reads ``Cpus_allowed_list`` for every thread under ``/proc/self/task``. A thread the
-    engine has placed sees exactly one CPU; an unplaced one sees the whole rank mask.
-
-    This is deliberately independent of the engine: the alternative signal, the ``pinned=``
-    field of a ``COMMPROF`` line, only exists on builds that have ``monoprop_COMM_PROFILE``,
-    so it cannot be compared across a version boundary that added it. Without a
-    build-agnostic probe, "the other build is much faster" and "placement silently failed
-    on one arm, so the run is void" are the same observation.
+    Reads ``Cpus_allowed_list`` for every thread under ``/proc/self/task``: a placed thread
+    sees exactly one CPU, an unplaced one sees the whole rank mask. Deliberately independent
+    of the engine, whose own ``pinned=`` field exists only on profiling builds and so cannot
+    be compared across the version boundary that added it.
 
     Returns:
         ``threads``, ``single_cpu_threads``, ``distinct_pinned_cpus`` (how many different
@@ -243,9 +239,8 @@ class HighWaterMark:
     def start(self) -> Self:
         """Open the window explicitly (same as ``__enter__``).
 
-        Exists because a ``pytest-benchmark`` pedantic run cannot be wrapped in a ``with``:
-        the window has to open inside the benchmark's ``setup`` and close after
-        ``pedantic()`` returns.
+        A ``pedantic`` run cannot be wrapped in a ``with``: the window opens inside the
+        benchmark's ``setup`` and closes after ``pedantic()`` returns.
         """
         return self.__enter__()
 

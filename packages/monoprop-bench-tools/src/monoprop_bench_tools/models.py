@@ -52,20 +52,10 @@ Built = tuple[MajoranaPropagator, Circuit]
 def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
     """Wrap ``fn`` so the measured time ends only when every rank has finished.
 
-    Only the *exit* barrier belongs in the timed region. It is what makes each rank's
-    measurement the makespan -- the slowest rank's finish. Pair this with
-    :func:`barrier_setup`, which performs the entry barrier untimed.
-
-    The entry barrier used to live here, and it was charging every rank's measurement
-    with the skew in the *preceding* setup rather than with any work under test.
-    Measured directly at 8 ranks, that wait was 0.000/0.098/0.059/0.257/0.000/0.136 s
-    across six rounds of ``build_graph`` -- against a ~0.5 s operation. It accounted for
-    roughly 1.44x of the 2.86x spread pytest-benchmark reported on ``build_graph``, and
-    is why the reported remainder (wall minus instrumented layer time) correlated with
-    wall at +0.987 while the actual layer time correlated at +0.176. The engine was
-    steady; the instrument was not. (The residual, ~2.86x/1.44x, is NOT explained by
-    this and remains open -- suspects are pytest-benchmark's own per-round machinery,
-    the ``op_memory`` window, and the ``fresh`` cell running two ops in one process.)
+    Only the *exit* barrier belongs in the timed region: it is what makes each rank's
+    measurement the makespan. The entry barrier goes in :func:`barrier_setup`, which runs
+    it untimed -- charged here instead, it billed every measurement for the skew in the
+    preceding setup, which at 8 ranks reached half a ~0.5 s operation.
 
     A serial run returns ``fn`` unchanged, so there is no overhead.
 
@@ -89,18 +79,10 @@ def barrier_setup(
 ) -> Callable[[], _T] | None:
     """Build a ``pedantic(setup=...)`` callable that leaves the ranks synchronised.
 
-    ``pytest-benchmark``'s ``pedantic`` runs ``setup`` before each round and does not
-    time it, which is exactly where the entry barrier has to go: the ranks still start
-    the timed call together, but nobody's measurement absorbs the wait for the slowest
-    rank to finish setting up.
-
-    Args:
-        comm: An MPI communicator, or ``None`` for a serial run.
-        setup: The round's existing setup, or ``None`` if it has none.
-
-    Returns:
-        A setup callable, or ``None`` when there is nothing to do (serial run with no
-        setup), which ``pedantic`` accepts.
+    ``pedantic`` runs ``setup`` untimed before each round, which is where the entry barrier
+    belongs: the ranks start the timed call together, but no measurement absorbs the wait
+    for the slowest rank to set up. Returns ``setup`` unchanged on a serial run, ``None``
+    included -- ``pedantic`` accepts both.
     """
     if comm is None or comm.Get_size() == 1:
         return setup
@@ -175,12 +157,10 @@ def _random_majorana_operator(
 ) -> MajoranaOperator:
     """Build a :class:`MajoranaOperator` directly from already-canonical terms.
 
-    ``MajoranaOperator.__init__`` re-derives each term's sign through
-    ``Majorana.from_unsorted`` and accumulates into a second dict. That is required in
-    general, but :func:`_random_terms` already returns sorted, distinct-index, pairwise
-    distinct monomials, so the canonicalization is a no-op that costs a full duplicate of
-    a 24M-entry mapping plus one ``Majorana`` object per term. Bypassing it is what keeps
-    the 100M-term working point inside a node's memory.
+    ``MajoranaOperator.__init__`` re-derives each term's sign and accumulates into a second
+    dict. :func:`_random_terms` already returns sorted, distinct-index monomials, so that
+    duplicates a 24M-entry mapping to no effect -- enough to put the 100M-term working point
+    over a node's memory.
     """
     operator = MajoranaOperator.__new__(MajoranaOperator)
     operator.num_modes = num_modes

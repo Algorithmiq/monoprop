@@ -21,10 +21,9 @@ if(NOT _monoprop_mpiexec_numproc_flag)
   set(_monoprop_mpiexec_numproc_flag "-n")
 endif()
 
-# SERIAL_ENVIRONMENT holds VAR=value entries applied to the per-case `serial` variants ONLY,
-# never to the MPI ones. The two groups differ in a way that matters for MPI: a per-case launch is
-# one process, so its world size is 1 and no inter-process transport is ever used, whereas the MPI
-# variants exchange real messages and need every component the fabric offers.
+# SERIAL_ENVIRONMENT holds VAR=value entries for the per-case `serial` variants ONLY: those are
+# single-process and use no transport, while the MPI variants exchange real messages and need
+# every component the fabric offers.
 function(discover_tests TARGET)
   cmake_parse_arguments(
     ""

@@ -106,12 +106,7 @@ def _reduce_min(comm: Any, value: int) -> int:
 
 
 def _gather_lists(comm: Any, values: list[int]) -> list[list[int]]:
-    """Gather per-rank CPU-id lists to rank 0. Collective; non-root ranks return empty list.
-
-    Used to record which CPUs each rank's threads were pinned to, enabling diagnosis of
-    partial failures (some ranks placed, some not). All ranks call this unconditionally
-    to participate in the collective; only rank 0 keeps the gathered result.
-    """
+    """Gather per-rank CPU-id lists to rank 0. Collective; off root returns ``[]``."""
     if comm is None or comm.Get_size() == 1:
         return [values]
     gathered = comm.gather(values, root=0)
@@ -119,11 +114,7 @@ def _gather_lists(comm: Any, values: list[int]) -> list[list[int]]:
 
 
 def _spread(comm: Any, value: int) -> dict[str, int]:
-    """Reduce one per-rank number to the pair a footprint has to be read as.
-
-    ``sum`` bounds the job; ``max`` is the rank that decides whether a node has the
-    memory, since ranks are symmetric and a node holds several of them.
-    """
+    """Reduce a per-rank number to ``sum`` (bounds the job) and ``max`` (bounds a node)."""
     return {"sum": _reduce_sum(comm, value), "max": _reduce_max(comm, value)}
 
 
@@ -148,13 +139,11 @@ _RESULTS: dict[str, Any] = {
     "membase": {},  # fixed model -> resting RSS bytes before the model is built
     "configs": {},  # fixed model -> config dataclass fields
     "opmem": {},  # fixed model -> per-field operator memory split (bytes)
-    # Per-operation memory, measured over the timed call only (see ``op_memory``). Each
-    # is {"sum": over ranks, "max": worst rank} -- ``max`` times the ranks per node is the
-    # node footprint, which is what decides whether a size fits; ``sum`` is the job bound.
-    "opmemdelta": {},  # node id -> peak ABOVE the operation's own floor: its incremental cost
-    "opmempeak": {},  # node id -> peak including everything already resident
-    "opmembase": {},  # node id -> the floor itself, without which the other two cannot be read
-    "opbytes": {},  # node id -> {"operator": n, "graph": n} from the engine's own accounting
+    # Per-operation memory over the timed call only (see ``OpMemory``), each {"sum", "max"}.
+    "opmemdelta": {},  # node id -> peak above the operation's own floor
+    "opmempeak": {},  # node id -> peak including what was already resident
+    "opmembase": {},  # node id -> that floor, needed to read the other two
+    "opbytes": {},  # node id -> {"operator": n, "graph": n}, the engine's own accounting
     "opmembreak": {},  # node id -> per-field operator memory split (bytes)
 }
 
@@ -197,11 +186,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--bench-pss-sampler",
         action="store_true",
         default=False,
-        help=(
-            "Sample per-rank PSS to record the job's peak-of-sum footprint. Off by "
-            "default: the sampler perturbs runs whose address space is more than a few "
-            "GiB (see the record_memory fixture)."
-        ),
+        help="Sample per-rank PSS; off by default, it perturbs runs above a few GiB.",
     )
 
     models = parser.getgroup("monoprop-models", "monoprop fixed-model overrides")
@@ -215,26 +200,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             )
 
 
-def _thp_setting() -> str:
-    """Return the node's transparent-hugepage mode, or ``"?"``."""
-    try:
-        return Path("/sys/kernel/mm/transparent_hugepage/enabled").read_text().strip()
-    except OSError:  # pragma: no cover - not Linux, or no THP
-        return "?"
-
-
 def _core_md5() -> str:
-    """Return the md5 of the extension module this run actually imported.
+    """Return the md5 of the extension module this run imported.
 
-    ``__version__`` is a git describe of the WORKTREE, stamped into the dist-info when the
-    package was installed; a later ``cmake --build`` plus a copy of the .so into the venv
-    does not rewrite it. So an arm can advertise the commit it was first installed at while
-    serving a binary from three commits later -- which is exactly how two genuinely different
-    arms came to report one version and get refused as "the same build".
-
-    The hash is the only thing that identifies a BUILD. Hash whatever ``_core`` resolved to,
-    not a path reconstructed from the source tree: site-packages holds its own copies, and
-    the point is to fingerprint the file that was loaded.
+    ``__version__`` is stamped at install time and a later ``cmake --build`` does not
+    rewrite it, so it cannot tell two builds apart. Hash what ``_core`` resolved to, not
+    a path rebuilt from the source tree: site-packages holds its own copies.
     """
     try:
         path = Path(monoprop._core.__file__)
@@ -244,14 +215,7 @@ def _core_md5() -> str:
 
 
 def _meta() -> dict[str, Any]:
-    """Return this run's configuration metadata for the report.
-
-    Beyond identifying the build, this carries the two things an A/B summary has to check
-    before it is allowed to believe a difference: whether the engine actually placed its
-    threads (``pinning``), and whether the allocator was configured the same way on both
-    sides (``malloc_arena_max`` -- glibc opens per-thread arenas, so an unplaced build can
-    show a purely allocator-driven RSS difference that has nothing to do with the code).
-    """
+    """Return this run's configuration metadata for the report."""
     return {
         "label": os.environ.get("monoprop_BENCH_LABEL", "?"),  # noqa: SIM112
         "ranks": _size(),
@@ -266,10 +230,7 @@ def _meta() -> dict[str, Any]:
         "monoprop_max_num_modes": monoprop.MAX_NUM_MODES,
         "malloc_arena_max": os.environ.get("MALLOC_ARENA_MAX", "default"),
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS", "default"),
-        "transparent_hugepage": _thp_setting(),
-        # Filled in after the first timed call, not here: at configure time no propagator
-        # exists, so the engine has not spawned the partition threads whose placement this
-        # is meant to observe, and probing now would report "nothing pinned" on every build.
+        # Filled after the first timed call: no propagator exists yet, so no threads to read.
         "pinning": {},
     }
 
@@ -355,29 +316,15 @@ def model_configs(request: pytest.FixtureRequest) -> dict[str, Any]:
 
 
 def _record_placement(comm: Any) -> None:
-    """Record how many of this rank's engine threads are pinned to a single CPU.
+    """Record this rank's engine thread placement, reduced over ranks.
 
-    Placement is only observable while the engine's partition threads are ALIVE, which is why
-    this is called from inside an instrumentation hook rather than at configure time. min/max
-    across ranks because a partial failure -- some ranks placed, some not -- is the interesting
-    case, and it is the shape a Slurm cpuset confinement takes. All reductions and the gather
-    run on every rank; only rank 0 keeps the answer.
-
-    This lives at module scope, called from both OpMemory.stop() and record_model_stats, because
-    it used to sit inside OpMemory.stop() alone. The fixed-model benchmarks do not open a memory
-    window, so they recorded no placement at all, and ab_summary.py refused their results --
-    correctly, but for a reason that was an instrumentation gap rather than a bad run. Placement
-    is a property of the run, not of the memory window that happened to observe it.
+    Only observable while the partition threads are alive, hence the call from an
+    instrumentation hook rather than from :func:`_meta`. Reduced min/max because a partial
+    failure -- some ranks placed, some not -- is the shape a cpuset confinement takes and is
+    invisible in rank 0's view alone. Every rank must enter the reductions and the gather.
     """
     summary = pinned_thread_summary()
     placed = summary["single_cpu_threads"]
-    # affinity_cpus is reduced for the same reason single_cpu_threads is: it is the width of
-    # THIS rank's cpuset, and the case worth catching is the uneven one. Without the reduction
-    # `summary` carries rank 0's mask width alone, so a cgroup that confined rank 0 and left the
-    # rest of the node wide open would report as a clean confinement. That matters now that a
-    # campaign can declare expect=neither, whose whole content is "the launcher confined the
-    # ranks and the engine correctly added nothing on top" -- checked against rank 0 only, that
-    # assertion is decorative.
     mask = summary["affinity_cpus"]
     spread = {
         "single_cpu_threads_min": _reduce_min(comm, placed),
@@ -385,7 +332,6 @@ def _record_placement(comm: Any) -> None:
         "affinity_cpus_min": _reduce_min(comm, mask),
         "affinity_cpus_max": _reduce_max(comm, mask),
     }
-    # Gather per-rank pinned CPU ids to rank 0 (collective call; every rank must participate)
     pinned_cpus_by_rank = _gather_lists(comm, summary["pinned_cpus"])
     if _rank() == 0:
         _RESULTS["meta"]["pinning"] = {
@@ -410,17 +356,11 @@ def _record_model_stats(
 ) -> None:
     """Record term count, operator memory breakdown and footprint under ``key``.
 
-    Module-level rather than fixture-local because :func:`model_graph` is session-scoped and
-    needs exactly this accounting; two copies of it would drift.
+    Module-level because :func:`model_graph` is session-scoped and needs the same accounting.
     """
     _record("opsize", key, {"terms": _reduce_sum(comm, propagator.size())})
 
-    # Called from here rather than from either caller's body: the propagator is alive at this
-    # point and its partition threads are what the probe counts, and both the per-operation
-    # fixture and the session-scoped graph fixture reach it this way. The fixed-model
-    # benchmarks open no memory window, so before this they recorded no placement at all and
-    # ab_summary.py refused their results -- correctly, but for an instrumentation gap rather
-    # than a bad run.
+    # Called here because the propagator is alive: its threads are what the probe counts.
     _record_placement(comm)
 
     # Sparse InvertedIndex columns cost a TermIndex (4B) per set bit against ~1-2B per
@@ -458,16 +398,13 @@ def record_model_stats(bench_comm: Any) -> Callable[..., None]:
 class OpMemory:
     """Records one benchmarked operation's memory over the timed call alone.
 
-    The autouse :func:`record_memory` window spans the whole test, which for a benchmark
-    with a ``setup`` means it is dominated by building the problem rather than by running
-    the operation. This one is opened from inside ``setup`` (or immediately before
-    ``pedantic``) and closed as soon as it returns, so ``delta`` is the operation's own
-    incremental cost.
+    The autouse :func:`record_memory` window spans the whole test, so for a benchmark with
+    a ``setup`` it measures the construction transient. This one opens inside ``setup`` and
+    closes when ``pedantic`` returns, so ``delta`` is the operation's own cost.
 
-    ``settle=False`` deliberately: settling runs ``gc.collect()`` over every tracked object
-    (~100M of them at the 24M-term working point) and ``malloc_trim`` over a multi-GiB
-    heap. That is seconds of work immediately beside a timed region. Skipping it costs a
-    slightly higher floor, which ``opmembase`` reports.
+    ``settle=False`` deliberately: settling is seconds of ``gc.collect()`` and
+    ``malloc_trim`` beside a timed region. The cost is a higher floor, reported as
+    ``opmembase``.
     """
 
     def __init__(self, key: str, comm: Any) -> None:
@@ -484,8 +421,7 @@ class OpMemory:
     def close(self, propagator: Any = None) -> None:
         """Close the window and record it, plus ``propagator``'s exact byte counts.
 
-        Collective (every reduction is), so every rank must call this the same number of
-        times. Off rank 0 nothing is stored, but the reductions still have to happen.
+        Collective, so every rank must call this the same number of times.
         """
         if self._window is None:
             return
@@ -529,8 +465,7 @@ def op_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[OpMem
     """Return this test's :class:`OpMemory` recorder, keyed as the timing report keys it."""
     recorder = OpMemory(request.node.nodeid.split("/")[-1], bench_comm)
     yield recorder
-    # A test that raised before closing would otherwise leave the window open and desync
-    # the collectives; closing without a propagator records the memory and no byte counts.
+    # A test that raised before closing would leave the window open and desync the collectives.
     recorder.close()
 
 
@@ -540,12 +475,9 @@ def record_opsize(
 ) -> Callable[[Any], None]:
     """Return ``record(propagator)`` storing the propagator's global term count.
 
-    Keyed exactly as the timing report keys the same benchmark, so the two join.
-
-    The graph-backed benchmarks get this from :func:`built_graph`, but the ones that build
-    their own propagator had no term count at all -- and it is the number an A/B has to
-    compare across arms before believing any ratio, since two arms that propagated
-    different numbers of terms did different work.
+    Keyed as the timing report keys the same benchmark, so the two join. Two arms that
+    propagated different numbers of terms did different work, so an A/B compares this
+    before believing any ratio.
     """
     key = request.node.nodeid.split("/")[-1]
 
@@ -560,22 +492,17 @@ def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[N
     """Record each benchmark's whole-test peak physical-memory footprint.
 
     ``memhwm``
-        The kernel's exact peak RSS (:class:`HighWaterMark`) summed over ranks, across the
-        **whole test including its ``setup``**. For a benchmark that builds a problem in
-        ``setup`` this is the construction transient, not the operation -- which makes it
-        the number that predicts an out-of-memory kill, and the wrong number for comparing
-        operations. Use ``opmemdelta`` (see :class:`OpMemory`) for the latter.
+        Exact peak RSS (:class:`HighWaterMark`) summed over ranks, spanning the whole test
+        **including its ``setup``** -- so it predicts an OOM kill but is the wrong number
+        for comparing operations. Use ``opmemdelta`` (:class:`OpMemory`) for that.
     ``mem``
-        The peak-of-sum of the sampled per-rank PSS timelines. Opt-in via
-        ``--bench-pss-sampler`` and **off by default**: ``/proc/self/smaps_rollup`` costs a
-        full page-table walk under ``mmap_lock``, so above a few GiB the sampler both slows
-        the thing it measures and contends with the engine's own threads. Its sample count
-        also scales with how long the GIL is held, so in an A/B the faster side is sampled
-        less and reports a lower peak -- a confound, not just a lower bound.
+        Peak-of-sum of the sampled per-rank PSS timelines. Opt-in via
+        ``--bench-pss-sampler``: ``smaps_rollup`` costs a page-table walk under
+        ``mmap_lock``, and its sample count scales with how long the GIL is held, so in an
+        A/B the faster side is sampled less and reports a lower peak.
 
-    Both are footprints, not deltas: they include structures already resident when the
-    operation starts (e.g. the shared :func:`built_graph`). The gather is collective, but
-    only rank 0 records.
+    Both are footprints, not deltas: they include what was already resident (e.g. the shared
+    :func:`built_graph`). The gather is collective; only rank 0 records.
     """
     sample_pss = request.config.getoption("--bench-pss-sampler")
     with HighWaterMark() as window:
@@ -617,11 +544,8 @@ def random_problem(request: pytest.FixtureRequest) -> RandomProblem:
         cutoff=opt("--cutoff"),
         seed=opt("--seed"),
     )
-    # The observable is a dict of tuples, so at the sizes this suite is used for it is tens
-    # of millions of GC-tracked objects that live until the session ends and can never
-    # become garbage. Freezing moves them to the permanent generation, so the collections
-    # run by every later HighWaterMark stop traversing them -- otherwise settling the
-    # process costs seconds per benchmark and grows with the problem.
+    # Tens of millions of GC-tracked tuples that live until the session ends: freezing them
+    # keeps every later HighWaterMark's gc.collect() from traversing them.
     gc.freeze()
     return problem
 
@@ -682,15 +606,14 @@ def model_graph(
 ) -> Callable[[str], tuple[Any, list[float]]]:
     """Return ``get(model)`` giving a fixed model's built graph and its parameter vector.
 
-    The fixed-model analogue of :func:`built_graph`: session-scoped and cached per model, so
-    the graph-backed benchmarks (``energy``, ``gradient``) share one build instead of each
-    paying for it. A factory rather than a parametrized fixture because the benchmarks select
-    their model with ``@pytest.mark.parametrize``, which a session-scoped fixture cannot see.
+    The fixed-model analogue of :func:`built_graph`: session-scoped and cached per model so
+    ``energy`` and ``gradient`` share one build. A factory rather than a parametrized fixture
+    because the benchmarks select their model with ``@pytest.mark.parametrize``, which a
+    session-scoped fixture cannot see.
 
-    Hubbard's circuit is a single Trotter step that the driver re-applies ``trotter_steps``
-    times, so the graph takes that many successive ``build_graph`` calls and the parameter
-    vector is the circuit's own repeated to match -- ``build_graph`` extends the parameter
-    axis on each call. Pauli's circuit already holds every layer, so its step count is 1.
+    Hubbard's circuit is one Trotter step the driver re-applies, so the graph takes ``steps``
+    successive ``build_graph`` calls -- each extends the parameter axis, so the parameter
+    vector is the circuit's repeated to match. Pauli holds every layer already, so steps is 1.
     """
     cache: dict[str, tuple[Any, list[float]]] = {}
 
@@ -703,20 +626,14 @@ def model_graph(
             for _ in range(steps):
                 propagator.build_graph(circuit)
             parameters = list(circuit.parameters) * steps
-            # A mismatch here would silently benchmark a different graph than the one the
-            # build_graph and propagate cells measured.
+            # A mismatch benchmarks a different graph than the build_graph cell measured.
             assert len(parameters) == propagator.n_parameters
 
-            # The graph cell runs no test that calls record_model_config, so without this the
-            # cutoff and system size the cell was run at are absent from its results file --
-            # and the campaign is a sweep over exactly those.
+            # No test in this cell calls record_model_config, so the cutoff and system size
+            # it ran at would otherwise be absent from the results file.
             _record("configs", model, asdict(config))
             _record_model_stats(bench_comm, model, propagator)
-            # Same reason as random_problem: at these term counts the model's observable and
-            # circuit are millions of GC-tracked objects that live until the session ends and
-            # can never become garbage, so freezing keeps every later HighWaterMark's
-            # collection from traversing them.
-            gc.freeze()
+            gc.freeze()  # same reason as random_problem
             cache[model] = (propagator, parameters)
         return cache[model]
 
