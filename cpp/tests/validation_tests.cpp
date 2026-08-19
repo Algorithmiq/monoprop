@@ -17,6 +17,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <stdexcept>
+#include <string_view>
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Validation.h"
@@ -56,9 +57,30 @@ BOOST_AUTO_TEST_CASE(validation_functional_call) {
     BOOST_CHECK_THROW(validate_functional_call(VecD{0.1}, 2), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(validation_expected_graph_layers) {
-    BOOST_CHECK_NO_THROW(validate_expected_graph_layers(3, 3));
-    BOOST_CHECK_THROW(validate_expected_graph_layers(4, 3), std::runtime_error);
+BOOST_AUTO_TEST_CASE(validation_functional_state) {
+    const FunctionalState healthy{.propagator_alive = true,
+                                  .current_revision = 3,
+                                  .expected_revision = 3,
+                                  .operator_layout_unchanged = true,
+                                  .last_structural_change = nullptr};
+    BOOST_CHECK_NO_THROW(validate_functional_state(healthy));
+
+    auto destroyed = healthy;
+    destroyed.propagator_alive = false;
+    BOOST_CHECK_THROW(validate_functional_state(destroyed), std::runtime_error);
+
+    // The revision names the mutation that moved the structure, so the message can point at it.
+    auto mutated = healthy;
+    mutated.current_revision = 4;
+    mutated.last_structural_change = "build_graph()";
+    BOOST_CHECK_EXCEPTION(validate_functional_state(mutated), std::runtime_error, [](const auto &e) {
+        return std::string_view(e.what()).find("build_graph()") != std::string_view::npos;
+    });
+
+    // The backstop: the operator moved without a revision bump.
+    auto rebuilt = healthy;
+    rebuilt.operator_layout_unchanged = false;
+    BOOST_CHECK_THROW(validate_functional_state(rebuilt), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(validation_only_rotate_len_k) {

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <vector>
 
@@ -38,11 +39,18 @@ monoprop_EXPORT auto validate_parameters_length(const VecD &params, const VecZ &
 
 monoprop_EXPORT auto validate_functional_call(const VecD &parameters, size_t expected_num_params) -> void;
 
-// The graph must still have the layer count the functional was built against.
-monoprop_EXPORT auto validate_expected_graph_layers(size_t current_layers, size_t expected_layers) -> void;
+/// What a functional must be able to say about its propagator before it reads anything it borrowed.
+// Assembled from detail::FunctionalControl plus, for a single-partition plan, two facts derived from the
+// operator itself. The derived pair is the backstop: it holds even for a mutation that forgot to bump.
+struct FunctionalState {
+    bool propagator_alive;              ///< false once ~MonomialPropagator has run
+    size_t current_revision;            ///< the propagator's structure revision now
+    size_t expected_revision;           ///< the revision the functional was built at
+    bool operator_layout_unchanged;     ///< the borrowed inverted index still spans the same store and rows
+    const char *last_structural_change; ///< the method that last bumped the revision, or nullptr
+};
 
-// The initial operator must not have been re-weighted since the functional snapshotted its coefficients.
-monoprop_EXPORT auto validate_expected_initial_operator(size_t current_epoch, size_t expected_epoch) -> void;
+monoprop_EXPORT auto validate_functional_state(const FunctionalState &state) -> void;
 
 // only_rotate_len_k is optional; when set it must satisfy 0 < k <= max_k.
 monoprop_EXPORT auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void;

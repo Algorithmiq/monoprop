@@ -309,10 +309,6 @@ private:
     std::optional<double> lower_atol_, upper_atol_;
     double core_term_{0.0};
 
-    // Bumped by every initial-operator re-weight. A functional snapshots the operator coefficients, so
-    // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
-    size_t initial_operator_epoch_{0};
-
     size_t logical_num_modes_{NumModes};
 
     CutoffType cutoff_type_;
@@ -326,6 +322,20 @@ private:
     std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
     // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
     friend class detail::partition::PartitionGroup<NumModes>;
+
+    // Shared with every functional plan this propagator makes: they read it, only this propagator writes
+    // it. A copy gets its own block, because a copy carries no functionals.
+    std::shared_ptr<detail::FunctionalControl> functional_control_{std::make_shared<detail::FunctionalControl>()};
+
+    // Record that what a plan replays has moved. `site` must be a string literal: plans read it after
+    // this propagator is gone. A mutation that is rejected outright must not bump -- it changed nothing,
+    // so it must not invalidate anything. A mutation that can fail part-way bumps before it starts
+    // instead: invalidating a functional that did not need it costs a rebuild, answering from a snapshot
+    // of a half-written operator costs a wrong number.
+    auto bump_structure_(const char *site) -> void {
+        functional_control_->last_structural_change.store(site);
+        functional_control_->structure_revision.fetch_add(1);
+    }
 
     // A facade's own graph_/mp_op_ are never populated, so handing them out would return plausible-looking
     // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.

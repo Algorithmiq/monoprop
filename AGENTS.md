@@ -102,6 +102,15 @@ Key files:
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
   templated on the algebra policy and bound to a runtime `Basis` once, via `with_algebra`.
+- **`detail::FunctionalControl`** (`cpp/monoprop/detail/functional/Control.h`): the validity block a
+  propagator shares with every functional plan it makes — a structure revision, an alive flag, and the
+  name of the last structural change. A plan borrows from its propagator, so this is how it answers "is
+  the propagator still there, and does it still hold what I replay?" without dereferencing it. **Every
+  new mutating method must call `bump_structure_("its_name()")`** once the mutation has committed (a
+  rejected mutation must not bump); the settings that only gate the next build — the atols, the cutoff,
+  the cutoff type, the basis change — deliberately do not. A plan additionally re-derives the operator's
+  store pointer and inverted-index row count as a backstop, so a missing bump reports staleness instead
+  of folding a rebuilt index.
 - **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
   propagators, one hash partition each. Every method that fans out must use the private partition
   vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`
@@ -176,9 +185,10 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 7. Add Python bindings in `src/monoprop/bindings/binder.h`
 8. Regenerate bindings with `tools/generate-binders.py`
 9. Test with both C++ and Python tests
-10. If the new method mutates a `MonomialPropagator`, bump
-    `MonomialPropagator::num_mutating_methods` and add its row to the mutation table (see "Testing
-    Structure"): a mutator with no row leaves its effect on a live functional unrecorded.
+10. If the new method mutates a `MonomialPropagator`: call `bump_structure_` from it (see
+    `detail::FunctionalControl`), bump `MonomialPropagator::num_mutating_methods`, and add its row to
+    the mutation table (see "Testing Structure"). A mutator with no row leaves its effect on a live
+    functional unrecorded.
 
 ## Documentation Maintenance Policy
 
