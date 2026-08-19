@@ -333,3 +333,15 @@ BOOST_AUTO_TEST_CASE(pared_functional_silently_survives_build_graph) {
     BOOST_TEST(prop.expectation_value(kBaseParams) != before);
     BOOST_TEST(call(kBaseParams) == before, tt::tolerance(1e-12));
 }
+
+// The functional objects report the axis they were built against, so a caller can size its parameter
+// vector without going back to the propagator.
+BOOST_AUTO_TEST_CASE(functional_reports_its_parameter_axis) {
+    auto prop = make_propagator(/*schrodinger=*/false);
+    BOOST_TEST(prop.expectation_value_functional().num_params() == 0U);
+
+    build_base_graph(prop);
+    BOOST_TEST(prop.expectation_value_functional().num_params() == kBaseParams.size());
+    BOOST_TEST(prop.expectation_value_and_gradient_functional().num_params() == kBaseParams.size());
+    BOOST_TEST(prop.expectation_value_functional(kPareThreshold).num_params() == kBaseParams.size());
+}

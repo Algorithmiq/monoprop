@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "monoprop/Evolution.h"
+#include "monoprop/Functional.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"
@@ -272,11 +273,12 @@ public:
     auto expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD>;
 
     /// `pare_threshold` is the edge-retention cutoff for a masked plan; nullopt keeps the exact graph.
+    /// The result borrows from this propagator, so it must not outlive it.
     auto expectation_value_functional(std::optional<double> pare_threshold = std::nullopt)
-        -> std::function<double(const VecD &)>;
+        -> ExpectationValueFunctional<NumModes>;
 
     auto expectation_value_and_gradient_functional(std::optional<double> pare_threshold = std::nullopt)
-        -> std::function<std::pair<double, VecD>(const VecD &)>;
+        -> ExpectationValueAndGradientFunctional<NumModes>;
 
     /// Contract the graph into the operator (Heisenberg) or state (Schrodinger). `inplace` consumes the
     /// graph and updates internal state; otherwise nothing is mutated. Core term excluded either way.
@@ -298,15 +300,6 @@ protected:
         return std::make_unique<MonomialPropagator<NumModes>>(*this);
     }
 
-    static inline const auto ev_fn = [](const EvalRequest &request,
-                                        mpi::Comm comm,
-                                        const detail::CosCallbacks &cos) -> double { return ev(request, comm, cos); };
-
-    static inline const auto ev_and_grad_fn =
-        [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> std::pair<double, VecD> {
-        return ev_and_grad(request, comm, cos);
-    };
-
     /// Distribute op_dict across ranks and apply this rank's share; returns its new (terms, coeffs)
     /// so caches can refresh.
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
@@ -322,46 +315,6 @@ protected:
     // A perf hint, never a correctness constraint: overflow spills losslessly. Sized to the cutoff's
     // structural position bound when it has one.
     auto packed_inline_width_() const -> size_t;
-
-    // `requested` 0 ⇒ env/auto. Returns 1 for the ordinary single-partition path.
-    static auto resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t;
-
-    // Partition fan-out vocabulary. Every one of these is facade-only: partition_group_ != nullptr is a precondition.
-    //
-    // `for_each_partition_` / `map_partitions_` / `concat_partitions_` dispatch to the partitions' own pinned master
-    // threads, which is mandatory for anything that touches partition state: the partitions trade over an
-    // in-process comm and their collectives are barrier-synced, so all S must run together.
-    // `fold_partitions_` / `sum_partitions_` / `first_partition_` instead read quiescent partitions straight from the
-    // facade thread, which is safe precisely because they mutate nothing.
-
-    auto for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void;
-
-    // One result per partition, in partition order.
-    template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
-    auto map_partitions_(Fn fn) -> std::vector<R>;
-
-    // Concatenated in partition order. The partitions are disjoint, so the result enumerates the whole
-    // operator (deterministic for a fixed partition count).
-    template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
-    auto concat_partitions_(Fn fn) -> R;
-
-    // Sequential fold of `proj(partition)`; `accumulate(total, value)` combines.
-    template <typename Proj, typename Accumulate, typename R = std::invoke_result_t<Proj &, const MonomialPropagator &>>
-    auto fold_partitions_(Proj proj, Accumulate accumulate) const -> R;
-
-    // fold_partitions_ for the additive breakdowns: the fields sum over the disjoint hash partitions.
-    template <typename Proj, typename R = std::invoke_result_t<Proj &, const MonomialPropagator &>>
-    auto sum_partitions_(Proj proj) const -> R;
-
-    // Partition 0 for values that are not partitioned: the graph structure and gate info are identical on
-    // every partition, the core (identity) term is replicated on all of them, and an allreduced scalar is
-    // already global on each. Anything hash-partitioned must go through sum_/concat_partitions_ instead.
-    auto first_partition_() const -> const MonomialPropagator &;
-
-    auto is_partition_facade() const -> bool { return static_cast<bool>(partition_group_); }
-
-    template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
-    auto map_partitions_indexed_(Fn fn) -> std::vector<R>;
 
 private:
     unsigned int cutoff_;
@@ -481,9 +434,9 @@ private:
                               VecD *fused_scale_coeffs = nullptr,
                               bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
 
-    template <typename Fn,
-              typename R = std::invoke_result_t<Fn, const EvalRequest &, mpi::Comm, const detail::CosCallbacks &>>
-    auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
+    // One plan serves both functional kinds: it holds the snapshot and the validity checks, not the
+    // choice of what to compute. On a facade it holds one child plan per partition.
+    auto make_plan_(std::optional<double> pare_threshold) -> std::shared_ptr<const detail::FunctionalPlan<NumModes>>;
 
     // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the layers' gate info.
     auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;

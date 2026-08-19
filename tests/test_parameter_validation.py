@@ -441,6 +441,22 @@ class TestFunctionalValidityTable:
             assert call() == pytest.approx(before), f"{method}: {rationale}"
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            "expectation_value_functional",
+            "expectation_value_and_gradient_functional",
+        ],
+    )
+    def test_bound_functional_reports_its_parameter_axis(
+        self, monkeypatch, serial_comm, factory, partitions
+    ):
+        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
+        functional = getattr(mp._simulator, factory)(None)
+        assert functional.num_params == len(self._PARAMS)
+
+    @pytest.mark.parametrize("partitions", ["off", "auto"])
     def test_parameter_mapping_silently_desynchronises_functional(
         self, monkeypatch, serial_comm, partitions
     ):
