@@ -83,6 +83,24 @@ BOOST_AUTO_TEST_CASE(validation_functional_state) {
     BOOST_CHECK_THROW(validate_functional_state(rebuilt), std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(validation_weight_refresh) {
+    const WeightRefresh followable{.weights_revision = 3, .expected_revision = 3, .pared_from_operator = false};
+    BOOST_CHECK_NO_THROW(validate_weight_refresh(followable));
+
+    // The keep-set came from the coefficients the re-weight replaced, so replaying it would answer for a
+    // paring nobody asked for.
+    auto pared_from_op = followable;
+    pared_from_op.pared_from_operator = true;
+    BOOST_CHECK_EXCEPTION(validate_weight_refresh(pared_from_op), std::runtime_error, [](const auto &e) {
+        return std::string_view(e.what()).find("cannot follow the new weights") != std::string_view::npos;
+    });
+
+    // The backstop: weights from another revision reached a functional whose own revision still matches.
+    auto other_revision = followable;
+    other_revision.weights_revision = 2;
+    BOOST_CHECK_THROW(validate_weight_refresh(other_revision), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(validation_only_rotate_len_k) {
     BOOST_CHECK_NO_THROW(validate_only_rotate_len_k_(std::nullopt, 8));
     BOOST_CHECK_NO_THROW(validate_only_rotate_len_k_(8u, 8));

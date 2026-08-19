@@ -221,8 +221,9 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         base method, which takes the engine's raw symplectic-slot keys, this accepts qubit Pauli
         terms and encodes them via
         [get_local_operator][monoprop.pauli.PauliOperator.get_local_operator]. Functionals created
-        earlier are invalidated; see
-        [update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator].
+        earlier follow the new coefficients rather than being invalidated; see
+        [update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator]
+        for the exception and the price.
 
         Args:
             new_operator: A [PauliOperator][monoprop.pauli.PauliOperator] whose terms replace the

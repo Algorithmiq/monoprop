@@ -169,7 +169,7 @@ class TestGraphAndParameterValidation:
             "expectation_value_and_gradient_functional",
         ],
     )
-    def test_functional_invalidated_after_initial_operator_update(
+    def test_functional_follows_initial_operator_update(
         self,
         serial_comm,
         propagator_cls,
@@ -192,18 +192,21 @@ class TestGraphAndParameterValidation:
         )
         functional = getattr(mp, functional_name)()
         parameters = [0.3, 0.7]
-        functional(parameters)
+
+        def call(fn):
+            result = fn(parameters)
+            return result[0] if isinstance(result, tuple) else result
+
+        before = call(functional)
 
         mp.update_initial_operator(updated_operator)
 
-        # The functional snapshotted the old coefficients, so it must reject the call rather than
-        # keep answering for the operator the propagator no longer holds.
-        with pytest.raises(RuntimeError, match=r"MP object has been modified"):
-            functional(parameters)
-
-        rebuilt = getattr(mp, functional_name)()(parameters)
-        rebuilt_expval = rebuilt[0] if isinstance(rebuilt, tuple) else rebuilt
-        assert rebuilt_expval == pytest.approx(mp.expval(parameters))
+        # A re-weight moves no structure, so the functional built before it follows the new
+        # coefficients instead of refusing the call: it now answers what the propagator answers.
+        after = call(functional)
+        assert after != pytest.approx(before)
+        assert after == pytest.approx(mp.expval(parameters))
+        assert after == call(getattr(mp, functional_name)())
 
 
 class TestFunctionalValidityTable:
@@ -234,9 +237,11 @@ class TestFunctionalValidityTable:
         )
 
     @classmethod
-    def _propagator(cls, comm, *, schrodinger, with_graph):
+    def _propagator(cls, comm, *, schrodinger, with_graph, first_weight=1.0):
         mp = MajoranaPropagator(
-            MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=cls._MODES),
+            MajoranaOperator(
+                {(0, 1): first_weight * 1j, (2, 3): 0.5j}, num_modes=cls._MODES
+            ),
             [0, 1],
             cutoff=cls._CUTOFF,
             schrodinger_cutoff=cls._CUTOFF if schrodinger else None,
@@ -290,13 +295,16 @@ class TestFunctionalValidityTable:
     def _mutate_upper_atol(mp):
         mp.upper_atol = 1e-3
 
-    # (method, mutator, needs_empty_graph, exact, pared, rationale). "stale" = the call must throw,
-    # "answers" = it must return exactly what it returned before the mutation.
+    # (method, mutator, needs_empty_graph, exact, pared, pared_schrodinger, rationale).
+    # "stale" = the call must throw that the propagator moved, "answers" = it must return exactly what
+    # it returned before the mutation, "refreshes" = it must return what a functional built after the
+    # mutation returns, "refuses-refresh" = it must throw that it cannot follow the new weights.
     ROWS = (
         (
             "build_graph",
             "_mutate_build_graph",
             False,
+            "stale",
             "stale",
             "stale",
             "Appending a layer moves the structure revision, which a pared plan reads as readily as "
@@ -308,6 +316,7 @@ class TestFunctionalValidityTable:
             True,
             "stale",
             "stale",
+            "stale",
             "Re-evolves the operator in place. It leaves the layer count at zero, which is why a "
             "layer count was never enough to see it.",
         ),
@@ -317,21 +326,25 @@ class TestFunctionalValidityTable:
             False,
             "stale",
             "stale",
+            "stale",
             "Consumes the folded layers and rewrites the coefficients. Only inplace=True bumps.",
         ),
         (
             "update_initial_operator",
             "_mutate_update_initial_operator",
             False,
-            "stale",
-            "stale",
-            "A re-weight bumps the revision. Stage 4 turns this into a weight refresh, except for "
-            "a pared Schrodinger plan.",
+            "refreshes",
+            "refreshes",
+            "refuses-refresh",
+            "A re-weight moves no structure, so the functional follows the new coefficients -- "
+            "unless its keep-set was thresholded from those very coefficients, which is "
+            "Schrodinger with a pare threshold.",
         ),
         (
             "parameter_mapping",
             "_mutate_parameter_mapping",
             False,
+            "stale",
             "stale",
             "stale",
             "Relabels the layers in place, which changes neither the layer count nor the operator -- "
@@ -343,12 +356,14 @@ class TestFunctionalValidityTable:
             False,
             "answers",
             "answers",
+            "answers",
             "Intended: a cutoff gates the next build and changes nothing the plan holds.",
         ),
         (
             "cutoff_type",
             "_mutate_cutoff_type",
             False,
+            "answers",
             "answers",
             "answers",
             "Intended: as cutoff.",
@@ -359,6 +374,7 @@ class TestFunctionalValidityTable:
             False,
             "answers",
             "answers",
+            "answers",
             "Intended: as cutoff.",
         ),
         (
@@ -367,12 +383,14 @@ class TestFunctionalValidityTable:
             False,
             "answers",
             "answers",
+            "answers",
             "Intended: as cutoff.",
         ),
         (
             "upper_atol",
             "_mutate_upper_atol",
             False,
+            "answers",
             "answers",
             "answers",
             "Intended: as cutoff.",
@@ -416,7 +434,15 @@ class TestFunctionalValidityTable:
         partitions,
         row,
     ):
-        method, mutator, needs_empty_graph, exact, pared_outcome, rationale = row
+        (
+            method,
+            mutator,
+            needs_empty_graph,
+            exact,
+            pared_outcome,
+            pared_schrodinger,
+            rationale,
+        ) = row
         monkeypatch.setenv("monoprop_PARTITIONS", partitions)
 
         mp = self._propagator(
@@ -426,19 +452,29 @@ class TestFunctionalValidityTable:
         threshold = self._PARE_THRESHOLD if pared else None
         functional = getattr(mp, functional_name)(threshold)
 
-        def call():
-            result = functional(parameters)
+        def call(fn=None):
+            result = (fn or functional)(parameters)
             return result[0] if isinstance(result, tuple) else result
 
         before = call()
         getattr(self, mutator)(mp)
 
-        expected = pared_outcome if pared else exact
+        expected = exact
+        if pared:
+            expected = pared_schrodinger if schrodinger else pared_outcome
+        context = f"{method}: {rationale}"
         if expected == "stale":
             with pytest.raises(RuntimeError, match=r"MP object has been modified"):
                 call()
+        elif expected == "refuses-refresh":
+            with pytest.raises(RuntimeError, match=r"cannot follow the new weights"):
+                call()
+        elif expected == "refreshes":
+            after = call()
+            assert after == call(getattr(mp, functional_name)(threshold)), context
+            assert after != pytest.approx(before), context
         else:
-            assert call() == pytest.approx(before), f"{method}: {rationale}"
+            assert call() == pytest.approx(before), context
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
     @pytest.mark.parametrize(
@@ -474,6 +510,65 @@ class TestFunctionalValidityTable:
         assert mp.expval(parameters) != pytest.approx(before)
         with pytest.raises(RuntimeError, match=r"set_parameter_mapping"):
             functional(parameters)
+
+    @pytest.mark.parametrize("partitions", ["off", "auto"])
+    @pytest.mark.parametrize("pared", [False, True], ids=["exact", "pared"])
+    @pytest.mark.parametrize(
+        "functional_name",
+        [
+            "expectation_value_functional",
+            "expectation_value_and_gradient_functional",
+        ],
+    )
+    def test_reweighted_functional_matches_a_fresh_propagator(
+        self, monkeypatch, serial_comm, functional_name, pared, partitions
+    ):
+        """The refresh at full precision: a re-weighted propagator's functional must answer what a
+        propagator built with those coefficients answers, to the last bit. Both run the same
+        arithmetic over the same store order, so there is no rounding to hide behind.
+        """
+        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+        threshold = self._PARE_THRESHOLD if pared else None
+        parameters = list(self._PARAMS)
+
+        def value(result):
+            return result[0] if isinstance(result, tuple) else result
+
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
+        functional = getattr(mp, functional_name)(threshold)
+        before = value(functional(parameters))
+        self._mutate_update_initial_operator(mp)
+
+        fresh = self._propagator(
+            serial_comm, schrodinger=False, with_graph=True, first_weight=2.75
+        )
+        expected = value(getattr(fresh, functional_name)(threshold)(parameters))
+
+        after = value(functional(parameters))
+        assert after == expected
+        assert after != pytest.approx(before)
+
+    @pytest.mark.parametrize("partitions", ["off", "auto"])
+    def test_pared_schrodinger_functional_refuses_to_follow_a_reweight(
+        self, monkeypatch, serial_comm, partitions
+    ):
+        """Schrodinger thresholds its keep-set from the operator coefficients, so new coefficients
+        select a different keep-set: the plan says so rather than replaying a paring nobody asked
+        for. The unpared functional over the same propagator follows the re-weight, which is what
+        makes the refusal the paring's and not the picture's.
+        """
+        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+        mp = self._propagator(serial_comm, schrodinger=True, with_graph=True)
+        parameters = list(self._PARAMS)
+        pared = mp.expectation_value_functional(self._PARE_THRESHOLD)
+        exact = mp.expectation_value_functional()
+        pared(parameters)
+
+        self._mutate_update_initial_operator(mp)
+
+        with pytest.raises(RuntimeError, match=r"cannot follow the new weights"):
+            pared(parameters)
+        assert exact(parameters) == pytest.approx(mp.expval(parameters))
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
     def test_pared_functional_is_invalidated_by_build_graph(

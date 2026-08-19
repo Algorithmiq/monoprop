@@ -364,31 +364,66 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &op_dict)
     -> std::pair<MonomialList<NumModes>, VecD> {
-    // Up front, not at the end: the distribution loop below can throw part-way (a rejected term, an
-    // out-of-range index) with core_term_ already written, and a facade can have some partitions applied.
-    bump_structure_("update_initial_operator()");
-    if (partition_group_) {
-        // The facade holds no local terms of its own, so the return is empty.
-        for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
-        return {};
-    }
-    const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
-    const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
-
-    OperatorDict new_op;
-    for (const auto &[ind, coeff] : op_dict) {
-        const auto mono = indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
-        if (ind.empty()) { // Core term, store in all
-            core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
-            continue;
+    try {
+        if (partition_group_) {
+            // The facade holds no local terms of its own, so the return is empty. Each partition publishes
+            // its own weights on its own master, which is what its children's functionals read.
+            for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
+            return {};
         }
-        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
-            const auto mono_indices = bitset_to_indices<NumModes>(mono);
-            new_op[mono_indices] = coeff;
-        }
-    }
+        const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
+        const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
 
-    return mp_op_.update_initial_operator(new_op, schrodinger_);
+        OperatorDict new_op;
+        for (const auto &[ind, coeff] : op_dict) {
+            const auto mono = indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
+            if (ind.empty()) { // Core term, store in all
+                core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
+                continue;
+            }
+            if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+                const auto mono_indices = bitset_to_indices<NumModes>(mono);
+                new_op[mono_indices] = coeff;
+            }
+        }
+
+        // No revision bump: a re-weight leaves the store, the inverted index and the graph where they are,
+        // so a live functional follows the new coefficients instead of going stale. Publication comes after
+        // the commit, so a functional never sees half of one.
+        auto applied = mp_op_.update_initial_operator(new_op, schrodinger_);
+        publish_weights_();
+        return applied;
+    }
+    catch (...) {
+        // A part-applied re-weight is not one a functional may follow: the loop above can throw with
+        // core_term_ already written, and a facade can have applied some partitions. Nothing was published,
+        // so the bump is what stops a functional answering from weights the propagator disagrees with.
+        bump_structure_("update_initial_operator()");
+        throw;
+    }
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::publish_weights_() -> std::shared_ptr<const detail::OperatorWeights> {
+    // get_operator() merges the pending init_op_map terms and so is a write: legal here, on the
+    // propagator's own thread, and never from a plan.
+    auto weights = std::make_shared<const detail::OperatorWeights>(
+        detail::OperatorWeights{.op = mp_op_.get_operator(),
+                                .core_term = core_term_,
+                                .structure_revision = functional_control_->structure_revision.load()});
+    functional_control_->weights.store(weights);
+    return weights;
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::weights_for_plan_() -> std::shared_ptr<const detail::OperatorWeights> {
+    // A publication stamped with the current revision is still current: every mutation that can move the
+    // coefficients bumps, and a re-weight republishes.
+    if (auto published = functional_control_->weights.load();
+        published != nullptr && published->structure_revision == functional_control_->structure_revision.load()) {
+        return published;
+    }
+    return publish_weights_();
 }
 
 template <size_t NumModes>
@@ -970,14 +1005,17 @@ auto MonomialPropagator<NumModes>::make_plan_(std::optional<double> pare_thresho
         const auto sparse = mp_op_.sparse_state();
         return EvalState::sparse(num_terms, sparse.rows, sparse.values);
     }();
-    local.op = mp_op_.get_operator();
-    local.core_term = this->core_term();
+    local.weights = weights_for_plan_();
     local.comm = comm_;
 
     const auto &inverted_index = mp_op_.inverted_index();
     local.mp_op = &mp_op_;
     local.op_store = mp_op_.store.get();
     local.inverted_index_rows = inverted_index.rows();
+
+    // Only this combination pares against the coefficients a re-weight replaces, so only it must refuse to
+    // follow one.
+    local.pared_from_operator = schrodinger_ && pare_threshold.has_value();
 
     // The plan always owns its layers, so `cos` -- which holds a raw CosMask pointer per layer -- points
     // into layers no later append_layer, slice_graph or maybe_compact_layers can move or free. The copy is
@@ -992,9 +1030,9 @@ auto MonomialPropagator<NumModes>::make_plan_(std::optional<double> pare_thresho
             return detail::fold_to_cos_mask<NumModes>(combined);
         };
         // Threshold the picture's driving vector: the Hamiltonian in Schrödinger, the state otherwise.
-        const auto keep =
-            schrodinger_ ? indices_above(local.op, *pare_threshold) : local.state.indices_above(*pare_threshold);
-        const auto count = schrodinger_ ? local.op.size() : local.state.length();
+        const auto keep = schrodinger_ ? indices_above(local.weights->op, *pare_threshold)
+                                       : local.state.indices_above(*pare_threshold);
+        const auto count = schrodinger_ ? local.weights->op.size() : local.state.length();
         local.graph =
             std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, schrodinger_, comm_, full_cos_of_layer));
     }

@@ -122,6 +122,28 @@ auto validate_functional_state(const FunctionalState &state) -> void {
     }
 }
 
+auto validate_weight_refresh(const WeightRefresh &refresh) -> void {
+    // A pared plan holds the layers pare_graph kept, and Schrodinger thresholds that keep-set from the
+    // operator coefficients themselves -- so new coefficients would need a different keep-set, and
+    // replaying this one would silently answer for a paring nobody asked for. Heisenberg thresholds the
+    // state, which a re-weight does not touch, so it follows exactly.
+    if (refresh.pared_from_operator) {
+        throw StaleFunctionalGraph("MP object has been modified since the functional was created: the "
+                                   "initial operator was re-weighted, and this functional pares its graph "
+                                   "against the operator coefficients (a Schrodinger picture functional "
+                                   "with a pare_threshold), so it cannot follow the new weights. Create a "
+                                   "new functional.");
+    }
+    // Unreachable while every structural mutation bumps and every publication carries the revision it
+    // was made at: a functional whose revision still matches the propagator's cannot see weights from
+    // another revision. Kept as the backstop for the day one of those two stops being true.
+    if (refresh.weights_revision != refresh.expected_revision) {
+        throw StaleFunctionalGraph("MP object has been modified since the functional was created: the "
+                                   "initial-operator weights it reads belong to a different graph. Create "
+                                   "a new functional.");
+    }
+}
+
 auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void {
     if (!only_rotate_len_k.has_value()) {
         return;

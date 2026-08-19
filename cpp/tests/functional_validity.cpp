@@ -14,8 +14,7 @@
 
 // What each public mutator does to a functional that was built before it ran. The table is the
 // contract: one row per mutating method, asserted for the value and the gradient functional, with
-// and without a pare threshold, in both pictures. A cell that says Answers and carries a defect note
-// records behaviour that is wrong today and is fixed by the stage the note names.
+// and without a pare threshold, in both pictures.
 
 #include <boost/test/unit_test.hpp>
 
@@ -52,6 +51,27 @@ const std::vector<VecZ> kBaseGates{VecZ{0}, VecZ{2}};
 auto make_propagator(bool schrodinger, size_t partitions = 1) -> Prop {
     OperatorDict initial_ham;
     initial_ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
+    initial_ham[VecZ{2, 3}] = std::complex<double>{0.0, 0.5};
+    const auto cutoff = static_cast<unsigned int>(2 * kNumModes);
+    return Prop(initial_ham,
+                cutoff,
+                VecZ{0, 1},
+                schrodinger ? std::optional<unsigned int>{cutoff} : std::nullopt,
+                MPI_COMM_SELF,
+                std::nullopt,
+                std::nullopt,
+                CutoffType::Support,
+                std::nullopt,
+                kNumModes,
+                Basis::Majorana,
+                partitions);
+}
+
+// The same propagator, built with the coefficients mutate_update_initial_operator() writes. A re-weight
+// must leave a functional answering exactly what this propagator's answers.
+auto make_reweighted_propagator(bool schrodinger, size_t partitions = 1) -> Prop {
+    OperatorDict initial_ham;
+    initial_ham[VecZ{0, 1}] = std::complex<double>{0.0, 2.75};
     initial_ham[VecZ{2, 3}] = std::complex<double>{0.0, 0.5};
     const auto cutoff = static_cast<unsigned int>(2 * kNumModes);
     return Prop(initial_ham,
@@ -122,16 +142,19 @@ auto mutate_update_upper_atol(Prop &prop) -> void {
 
 // What calling the pre-built functional does after the row's mutator ran.
 enum class Outcome : std::uint8_t {
-    Stale,   // throws, reporting the propagator moved under the functional
-    Answers, // returns, and returns exactly what it returned before the mutation
+    Stale,          // throws, reporting the propagator moved under the functional
+    Answers,        // returns, and returns exactly what it returned before the mutation
+    Refreshes,      // returns, and now returns what a functional built after the mutation returns
+    RefusesRefresh, // throws, reporting weights it cannot follow rather than a moved structure
 };
 
 struct MutatorRow {
     std::string_view method;    // the public method this row covers
     void (*apply)(Prop &);      //
     bool needs_empty_graph;     // build the functional with no graph, so the mutator is accepted
-    Outcome exact;              // pare_threshold == nullopt
-    Outcome pared;              // pare_threshold == kPareThreshold
+    Outcome exact;              // pare_threshold == nullopt, in either picture
+    Outcome pared;              // pare_threshold == kPareThreshold, Heisenberg
+    Outcome pared_schrodinger;  // pare_threshold == kPareThreshold, Schrodinger: pares from `op`
     std::string_view rationale; //
 };
 
@@ -141,6 +164,7 @@ constexpr std::array kMutatorTable{
                .needs_empty_graph = false,
                .exact = Outcome::Stale,
                .pared = Outcome::Stale,
+               .pared_schrodinger = Outcome::Stale,
                .rationale = "Appending a layer moves the structure revision, which a pared plan reads as "
                             "readily as an exact one."},
     MutatorRow{.method = "propagate",
@@ -148,6 +172,7 @@ constexpr std::array kMutatorTable{
                .needs_empty_graph = true,
                .exact = Outcome::Stale,
                .pared = Outcome::Stale,
+               .pared_schrodinger = Outcome::Stale,
                .rationale = "Re-evolves the operator in place. It leaves the layer count at zero, which is "
                             "why a layer count was never enough to see it."},
     MutatorRow{.method = "contract_partially",
@@ -155,20 +180,24 @@ constexpr std::array kMutatorTable{
                .needs_empty_graph = false,
                .exact = Outcome::Stale,
                .pared = Outcome::Stale,
+               .pared_schrodinger = Outcome::Stale,
                .rationale = "Consumes the folded layers and rewrites the coefficients. Only inplace=true "
                             "bumps; see contract_partially_out_of_place_keeps_functional_valid."},
     MutatorRow{.method = "update_initial_operator",
                .apply = &mutate_update_initial_operator,
                .needs_empty_graph = false,
-               .exact = Outcome::Stale,
-               .pared = Outcome::Stale,
-               .rationale = "A re-weight bumps the revision. Stage 4 turns this into a weight refresh, "
-                            "except for a pared Schrodinger plan."},
+               .exact = Outcome::Refreshes,
+               .pared = Outcome::Refreshes,
+               .pared_schrodinger = Outcome::RefusesRefresh,
+               .rationale = "A re-weight moves no structure, so the functional follows the new "
+                            "coefficients -- unless its keep-set was thresholded from those very "
+                            "coefficients, which is Schrodinger with a pare threshold."},
     MutatorRow{.method = "set_parameter_mapping",
                .apply = &mutate_set_parameter_mapping,
                .needs_empty_graph = false,
                .exact = Outcome::Stale,
                .pared = Outcome::Stale,
+               .pared_schrodinger = Outcome::Stale,
                .rationale = "Relabels the layers in place, which changes neither the layer count nor the "
                             "operator -- the revision is the only thing that sees it."},
     MutatorRow{.method = "update_cutoff",
@@ -176,30 +205,35 @@ constexpr std::array kMutatorTable{
                .needs_empty_graph = false,
                .exact = Outcome::Answers,
                .pared = Outcome::Answers,
+               .pared_schrodinger = Outcome::Answers,
                .rationale = "Intended: a cutoff gates the next build and changes nothing the plan holds."},
     MutatorRow{.method = "update_cutoff_type",
                .apply = &mutate_update_cutoff_type,
                .needs_empty_graph = false,
                .exact = Outcome::Answers,
                .pared = Outcome::Answers,
+               .pared_schrodinger = Outcome::Answers,
                .rationale = "Intended: as update_cutoff."},
     MutatorRow{.method = "update_basis_change",
                .apply = &mutate_update_basis_change,
                .needs_empty_graph = false,
                .exact = Outcome::Answers,
                .pared = Outcome::Answers,
+               .pared_schrodinger = Outcome::Answers,
                .rationale = "Intended: as update_cutoff."},
     MutatorRow{.method = "update_lower_atol",
                .apply = &mutate_update_lower_atol,
                .needs_empty_graph = false,
                .exact = Outcome::Answers,
                .pared = Outcome::Answers,
+               .pared_schrodinger = Outcome::Answers,
                .rationale = "Intended: as update_cutoff."},
     MutatorRow{.method = "update_upper_atol",
                .apply = &mutate_update_upper_atol,
                .needs_empty_graph = false,
                .exact = Outcome::Answers,
                .pared = Outcome::Answers,
+               .pared_schrodinger = Outcome::Answers,
                .rationale = "Intended: as update_cutoff."},
 };
 
@@ -232,6 +266,13 @@ auto make_call(Prop &prop, bool gradient, std::optional<double> pare_threshold) 
     return [fn = std::move(fn)](const VecD &params) { return fn(params); };
 }
 
+auto expected_outcome(const MutatorRow &row, bool schrodinger, std::optional<double> pare_threshold) -> Outcome {
+    if (!pare_threshold.has_value()) {
+        return row.exact;
+    }
+    return schrodinger ? row.pared_schrodinger : row.pared;
+}
+
 auto run_row(const MutatorRow &row, bool schrodinger, bool gradient, std::optional<double> pare_threshold) -> void {
     auto prop = make_propagator(schrodinger);
     if (!row.needs_empty_graph) {
@@ -244,18 +285,36 @@ auto run_row(const MutatorRow &row, bool schrodinger, bool gradient, std::option
 
     row.apply(prop);
 
-    const auto expected = pare_threshold.has_value() ? row.pared : row.exact;
-    if (expected == Outcome::Stale) {
-        BOOST_CHECK_EXCEPTION(call(params), std::runtime_error, [](const std::runtime_error &e) {
-            BOOST_TEST_INFO("message: " << e.what());
-            return std::string_view(e.what()).find("MP object has been modified") != std::string_view::npos;
-        });
-        return;
+    switch (expected_outcome(row, schrodinger, pare_threshold)) {
+        case Outcome::Stale:
+            BOOST_CHECK_EXCEPTION(call(params), std::runtime_error, [](const std::runtime_error &e) {
+                BOOST_TEST_INFO("message: " << e.what());
+                return std::string_view(e.what()).find("MP object has been modified") != std::string_view::npos;
+            });
+            return;
+        case Outcome::RefusesRefresh:
+            BOOST_CHECK_EXCEPTION(call(params), std::runtime_error, [](const std::runtime_error &e) {
+                BOOST_TEST_INFO("message: " << e.what());
+                return std::string_view(e.what()).find("cannot follow the new weights") != std::string_view::npos;
+            });
+            return;
+        case Outcome::Answers: {
+            // The plan replays its own snapshot, so the number cannot have moved.
+            double after = 0.0;
+            BOOST_REQUIRE_NO_THROW(after = call(params));
+            BOOST_TEST(after == before, tt::tolerance(1e-12));
+            return;
+        }
+        case Outcome::Refreshes: {
+            // The plan reads the propagator's live weights, so it must now agree exactly with a functional
+            // built after the mutation -- and disagree with what it answered before it.
+            double after = 0.0;
+            BOOST_REQUIRE_NO_THROW(after = call(params));
+            BOOST_TEST(after == make_call(prop, gradient, pare_threshold)(params));
+            BOOST_TEST(after != before);
+            return;
+        }
     }
-    // Answers: the plan replays its own snapshot, so the number cannot have moved.
-    double after = 0.0;
-    BOOST_REQUIRE_NO_THROW(after = call(params));
-    BOOST_TEST(after == before, tt::tolerance(1e-12));
 }
 
 auto run_table(bool schrodinger, std::optional<double> pare_threshold) -> void {
@@ -395,4 +454,113 @@ BOOST_AUTO_TEST_CASE(fanned_out_functional_is_invalidated_by_build_graph) {
     BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, [](const std::runtime_error &e) {
         return std::string_view(e.what()).find("build_graph()") != std::string_view::npos;
     });
+}
+
+// The refresh, end to end and at full precision: a re-weighted propagator's functional must answer what
+// a propagator built with those coefficients answers, to the last bit. The two run the same arithmetic
+// over the same store order, so anything less than equality means the refresh reached a different
+// vector -- there is no rounding to hide behind here.
+namespace {
+
+auto check_refresh_matches_fresh_propagator(bool gradient, std::optional<double> pare_threshold, size_t partitions)
+    -> void {
+    auto reweighted = make_propagator(/*schrodinger=*/false, partitions);
+    build_base_graph(reweighted);
+    auto call = make_call(reweighted, gradient, pare_threshold);
+    const double before = call(kBaseParams);
+    mutate_update_initial_operator(reweighted);
+
+    auto fresh = make_reweighted_propagator(/*schrodinger=*/false, partitions);
+    build_base_graph(fresh);
+
+    BOOST_TEST(call(kBaseParams) == make_call(fresh, gradient, pare_threshold)(kBaseParams));
+    BOOST_TEST(call(kBaseParams) != before);
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(reweighted_functional_matches_a_fresh_propagator) {
+    for (const bool gradient : {false, true}) {
+        for (const auto pare_threshold : {std::optional<double>{}, std::optional<double>{kPareThreshold}}) {
+            for (const size_t partitions : {1U, 2U}) {
+                BOOST_TEST_CONTEXT("gradient=" << gradient << " pared=" << pare_threshold.has_value()
+                                               << " partitions=" << partitions) {
+                    check_refresh_matches_fresh_propagator(gradient, pare_threshold, partitions);
+                }
+            }
+        }
+    }
+}
+
+// The gradient follows the weights too, component by component: a re-weight scales what the backward
+// pass carries, so a value-only check would pass on a gradient that stayed behind.
+BOOST_AUTO_TEST_CASE(reweighted_gradient_matches_a_fresh_propagator) {
+    auto reweighted = make_propagator(/*schrodinger=*/false);
+    build_base_graph(reweighted);
+    auto fn = reweighted.expectation_value_and_gradient_functional(std::nullopt);
+    const auto before = fn(kBaseParams);
+    mutate_update_initial_operator(reweighted);
+
+    auto fresh = make_reweighted_propagator(/*schrodinger=*/false);
+    build_base_graph(fresh);
+    const auto expected = fresh.expectation_value_and_gradient_functional(std::nullopt)(kBaseParams);
+
+    const auto after = fn(kBaseParams);
+    BOOST_TEST(after.second == expected.second, tt::per_element());
+    BOOST_CHECK(after.second != before.second);
+}
+
+// Invariant 4: Schrodinger thresholds its keep-set from the operator coefficients, so new coefficients
+// select a different keep-set and the plan cannot replay this one. It says so rather than answering for a
+// paring nobody asked for. Heisenberg thresholds the state, which a re-weight leaves alone.
+BOOST_AUTO_TEST_CASE(pared_schrodinger_functional_refuses_to_follow_a_reweight) {
+    auto prop = make_propagator(/*schrodinger=*/true);
+    build_base_graph(prop);
+    auto call = make_call(prop, /*gradient=*/false, kPareThreshold);
+    BOOST_CHECK_NO_THROW(call(kBaseParams));
+
+    mutate_update_initial_operator(prop);
+
+    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, [](const std::runtime_error &e) {
+        const std::string_view what(e.what());
+        BOOST_TEST_INFO("message: " << what);
+        return what.find("pares its graph") != std::string_view::npos
+               && what.find("cannot follow the new weights") != std::string_view::npos;
+    });
+    // The unpared plan over the same propagator follows the re-weight, so the refusal is the paring's and
+    // not the picture's.
+    BOOST_CHECK_NO_THROW(make_call(prop, /*gradient=*/false, std::nullopt)(kBaseParams));
+}
+
+// A rejected re-weight is not a refresh: MPOperator::update_initial_operator throws for a term the
+// operator does not hold, and core_term_ may already carry the new value by then. A functional must
+// report that rather than answer from weights the propagator disagrees with.
+BOOST_AUTO_TEST_CASE(a_failed_reweight_invalidates_the_functional) {
+    auto prop = make_propagator(/*schrodinger=*/false);
+    build_base_graph(prop);
+    auto call = make_call(prop, /*gradient=*/false, std::nullopt);
+    BOOST_CHECK_NO_THROW(call(kBaseParams));
+
+    OperatorDict unknown_term;
+    unknown_term[VecZ{0, 2}] = std::complex<double>{0.0, 1.0};
+    BOOST_CHECK_THROW(prop.update_initial_operator(unknown_term), std::runtime_error);
+
+    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, [](const std::runtime_error &e) {
+        return std::string_view(e.what()).find("update_initial_operator()") != std::string_view::npos;
+    });
+}
+
+// Building a second functional must not look like a re-weight to the first: both are built over the one
+// published weight set, so the pared Schrodinger plan -- the only one that refuses to follow a new set --
+// keeps answering.
+BOOST_AUTO_TEST_CASE(building_another_functional_is_not_a_reweight) {
+    auto prop = make_propagator(/*schrodinger=*/true);
+    build_base_graph(prop);
+    auto call = make_call(prop, /*gradient=*/false, kPareThreshold);
+    const double before = call(kBaseParams);
+
+    auto other = make_call(prop, /*gradient=*/true, std::nullopt);
+    BOOST_CHECK_NO_THROW(other(kBaseParams));
+
+    BOOST_TEST(call(kBaseParams) == before);
 }
