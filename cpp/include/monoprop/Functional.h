@@ -26,7 +26,9 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Validation.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
+#include "monoprop/detail/functional/Control.h"
 #include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/partition/PartitionGroup.h"
 
 namespace monoprop {
@@ -63,11 +65,13 @@ public:
         CosCallbacks cos;
         mpi::Comm comm{}; ///< real MPI across nodes, or the in-process comm across partitions
 
-        // Validity, checked before every replay. `initial_operator_epoch` is aliased rather than copied
-        // because the check needs the propagator's live counter, as `graph->layers()` needs its live graph.
-        const size_t *initial_operator_epoch{nullptr};
-        size_t expected_initial_operator_epoch{0};
-        size_t expected_graph_layers{0};
+        // The operator-layout backstop. `mp_op` is borrowed and read only after the alive flag says the
+        // propagator is still there; the other two are what the borrowed inverted index was built over.
+        // Compared before any use of that index, so a mutation that forgot its revision bump still
+        // reports staleness rather than folding a rebuilt index through a pointer to the old one.
+        const MPOperator<NumModes> *mp_op{nullptr};
+        const OperatorIndex<NumModes> *op_store{nullptr};
+        size_t inverted_index_rows{0};
     };
 
     /// A partition facade's snapshot: one child plan per partition, replayed together.
@@ -77,30 +81,41 @@ public:
         std::vector<std::shared_ptr<const FunctionalPlan>> partitions; ///< in partition order
     };
 
-    FunctionalPlan(size_t num_params, Local local) : num_params_(num_params), shape_(std::move(local)) {}
+    /// `control` is the propagator's own block; the plan pins the revision it is built at.
+    FunctionalPlan(size_t num_params, std::shared_ptr<const FunctionalControl> control, Local local)
+        : num_params_(num_params),
+          control_(std::move(control)),
+          expected_revision_(control_->structure_revision.load()),
+          shape_(std::move(local)) {}
 
-    FunctionalPlan(size_t num_params, Fanout fanout) : num_params_(num_params), shape_(std::move(fanout)) {}
+    FunctionalPlan(size_t num_params, std::shared_ptr<const FunctionalControl> control, Fanout fanout)
+        : num_params_(num_params),
+          control_(std::move(control)),
+          expected_revision_(control_->structure_revision.load()),
+          shape_(std::move(fanout)) {}
 
     /// The parameter-axis length the plan was built against; a call must supply exactly this many.
     auto num_params() const -> size_t { return num_params_; }
 
     /// Throw unless `params` fits and the propagator still holds what the plan replays.
-    // A facade validates nothing here: the state each check reads lives on the partitions, so each child
-    // plan checks itself on its own master thread, inside evaluate().
+    // A facade checks its own control block here -- the group it fans out over belongs to the facade --
+    // and each child plan then checks its own partition's, on that partition's master thread. Only the
+    // single-partition shape has an operator to run the layout backstop against.
     auto validate(const VecD &params) const -> void {
         const auto *local = std::get_if<Local>(&shape_);
-        if (local == nullptr) {
-            return;
-        }
-        validate_expected_initial_operator(*local->initial_operator_epoch, local->expected_initial_operator_epoch);
+        validate_functional_state({.propagator_alive = control_->propagator_alive.load(),
+                                   .current_revision = control_->structure_revision.load(),
+                                   .expected_revision = expected_revision_,
+                                   .operator_layout_unchanged = local == nullptr || operator_layout_unchanged(*local),
+                                   .last_structural_change = control_->last_structural_change.load()});
         validate_functional_call(params, num_params_);
-        validate_expected_graph_layers(local->graph->layers(), local->expected_graph_layers);
     }
 
     /// Replay the snapshot: `fn(request, comm, cos)` locally, or partition 0's answer on a facade.
     template <typename Fn,
               typename R = std::invoke_result_t<Fn &, const EvalRequest &, mpi::Comm, const CosCallbacks &>>
     auto evaluate(Fn &&fn, const VecD &params) const -> R {
+        validate(params);
         if (const auto *fanout = std::get_if<Fanout>(&shape_)) {
             // Each partition allreduces internally, so partition 0 already carries the global answer.
             // The fan-out must reach every master: the partitions' collectives are barrier-synced.
@@ -108,7 +123,6 @@ public:
                 return fanout->partitions[static_cast<size_t>(r)]->evaluate(fn, params);
             })[0];
         }
-        validate(params);
         const auto &local = std::get<Local>(shape_);
         return fn(EvalRequest{.e_core = local.core_term,
                               .state = local.state,
@@ -122,7 +136,16 @@ public:
     }
 
 private:
+    // Read straight off the borrowed operator, never through inverted_index(): that accessor rebuilds a
+    // stale index, which is a write, and a plan must not write to its propagator.
+    static auto operator_layout_unchanged(const Local &local) -> bool {
+        return local.mp_op->store.get() == local.op_store && local.mp_op->inverted_index_.has_value()
+               && local.mp_op->inverted_index_->rows() == local.inverted_index_rows;
+    }
+
     size_t num_params_{0};
+    std::shared_ptr<const FunctionalControl> control_;
+    size_t expected_revision_{0};
     std::variant<Local, Fanout> shape_;
 };
 

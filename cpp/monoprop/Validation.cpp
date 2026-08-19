@@ -99,20 +99,26 @@ auto validate_functional_call(const VecD &parameters, size_t expected_num_params
     }
 }
 
-auto validate_expected_graph_layers(size_t current_layers, size_t expected_layers) -> void {
-    if (current_layers != expected_layers) {
-        throw StaleFunctionalGraph(std::format("MP object has been modified since the functional was created. "
-                                               "Previous number of graph layers was {} and now is {}.",
-                                               expected_layers,
-                                               current_layers));
+auto validate_functional_state(const FunctionalState &state) -> void {
+    // Aliveness first: every other handle a functional holds points into the propagator, so there is
+    // nothing else it may legally read once this is false.
+    if (!state.propagator_alive) {
+        throw StaleFunctionalGraph("The propagator this functional was built from has been destroyed. "
+                                   "A functional reads the propagator's operator index directly, so it "
+                                   "cannot outlive it; keep the propagator alive, or build the functional "
+                                   "again from a live one.");
     }
-}
-
-auto validate_expected_initial_operator(size_t current_epoch, size_t expected_epoch) -> void {
-    if (current_epoch != expected_epoch) {
-        throw StaleFunctionalGraph("MP object has been modified since the functional was created. "
-                                   "The initial operator was re-weighted, so the coefficients the functional "
-                                   "snapshotted are stale; create a new functional.");
+    if (state.current_revision != state.expected_revision) {
+        throw StaleFunctionalGraph(std::format(
+            "MP object has been modified since the functional was created: {} changed the "
+            "graph or operator the functional replays. Create a new functional.",
+            state.last_structural_change != nullptr ? state.last_structural_change : "a structural mutation"));
+    }
+    // No bump, but the operator moved anyway: some mutation is missing its bump_structure_ call. Report
+    // it as staleness rather than read a rebuilt inverted index through a pointer to the old one.
+    if (!state.operator_layout_unchanged) {
+        throw StaleFunctionalGraph("MP object has been modified since the functional was created: the "
+                                   "operator index it reads was rebuilt or grown. Create a new functional.");
     }
 }
 

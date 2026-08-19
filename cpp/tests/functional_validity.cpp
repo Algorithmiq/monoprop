@@ -23,6 +23,7 @@
 #include <complex>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -47,7 +48,8 @@ const VecD kBaseParams{0.3, 0.7};
 // symmetric under swapping the two angles -- which is what makes the set_parameter_mapping row bite.
 const std::vector<VecZ> kBaseGates{VecZ{0}, VecZ{2}};
 
-auto make_propagator(bool schrodinger) -> Prop {
+// `partitions` is passed explicitly, so it wins over the suite-wide monoprop_PARTITIONS=off.
+auto make_propagator(bool schrodinger, size_t partitions = 1) -> Prop {
     OperatorDict initial_ham;
     initial_ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
     initial_ham[VecZ{2, 3}] = std::complex<double>{0.0, 0.5};
@@ -60,7 +62,10 @@ auto make_propagator(bool schrodinger) -> Prop {
                 std::nullopt,
                 std::nullopt,
                 CutoffType::Support,
-                std::nullopt);
+                std::nullopt,
+                kNumModes,
+                Basis::Majorana,
+                partitions);
 }
 
 auto build_base_graph(Prop &prop) -> void {
@@ -135,36 +140,37 @@ constexpr std::array kMutatorTable{
                .apply = &mutate_build_graph,
                .needs_empty_graph = false,
                .exact = Outcome::Stale,
-               .pared = Outcome::Answers,
-               .rationale = "DEFECT (fixed in stage 2): the pared plan owns its layers, so its layer "
-                            "count cannot move and the live-graph check never fires."},
+               .pared = Outcome::Stale,
+               .rationale = "Appending a layer moves the structure revision, which a pared plan reads as "
+                            "readily as an exact one."},
     MutatorRow{.method = "propagate",
                .apply = &mutate_propagate,
                .needs_empty_graph = true,
-               .exact = Outcome::Answers,
-               .pared = Outcome::Answers,
-               .rationale = "DEFECT (fixed in stage 2): propagate() leaves the layer count at zero and "
-                            "does not touch the epoch, so neither check sees the re-evolved operator."},
+               .exact = Outcome::Stale,
+               .pared = Outcome::Stale,
+               .rationale = "Re-evolves the operator in place. It leaves the layer count at zero, which is "
+                            "why a layer count was never enough to see it."},
     MutatorRow{.method = "contract_partially",
                .apply = &mutate_contract_partially,
                .needs_empty_graph = false,
                .exact = Outcome::Stale,
-               .pared = Outcome::Answers,
-               .rationale = "DEFECT (fixed in stage 2): as build_graph, the pared plan's layer count is fixed."},
+               .pared = Outcome::Stale,
+               .rationale = "Consumes the folded layers and rewrites the coefficients. Only inplace=true "
+                            "bumps; see contract_partially_out_of_place_keeps_functional_valid."},
     MutatorRow{.method = "update_initial_operator",
                .apply = &mutate_update_initial_operator,
                .needs_empty_graph = false,
                .exact = Outcome::Stale,
                .pared = Outcome::Stale,
-               .rationale = "The epoch check fires. Stage 4 turns this into a weight refresh, except for "
-                            "a pared Schrodinger plan."},
+               .rationale = "A re-weight bumps the revision. Stage 4 turns this into a weight refresh, "
+                            "except for a pared Schrodinger plan."},
     MutatorRow{.method = "set_parameter_mapping",
                .apply = &mutate_set_parameter_mapping,
                .needs_empty_graph = false,
-               .exact = Outcome::Answers,
-               .pared = Outcome::Answers,
-               .rationale = "DEFECT (fixed in stage 2): relabelling is in place, so the layer count and "
-                            "the epoch both hold and the plan keeps replaying the old labels."},
+               .exact = Outcome::Stale,
+               .pared = Outcome::Stale,
+               .rationale = "Relabels the layers in place, which changes neither the layer count nor the "
+                            "operator -- the revision is the only thing that sees it."},
     MutatorRow{.method = "update_cutoff",
                .apply = &mutate_update_cutoff,
                .needs_empty_graph = false,
@@ -306,11 +312,11 @@ BOOST_AUTO_TEST_CASE(propagate_on_non_empty_graph_leaves_functional_valid) {
     BOOST_TEST(call(kBaseParams) == before, tt::tolerance(1e-12));
 }
 
-// The two Answers-with-a-defect rows above only say the number did not move. These two say why that
-// is wrong: the propagator's own answer *did* move, so the functional is now reporting a circuit
-// nobody asked about. Stage 2 turns both calls into throws.
+// The two rows those tests cover used to answer instead of throwing, each returning a number for a
+// circuit nobody had asked about any more. These say so directly: the propagator's own answer moves,
+// and the functional refuses rather than following it half way.
 
-BOOST_AUTO_TEST_CASE(set_parameter_mapping_silently_desynchronises_functional) {
+BOOST_AUTO_TEST_CASE(set_parameter_mapping_invalidates_functional_it_desynchronises) {
     auto prop = make_propagator(/*schrodinger=*/false);
     build_base_graph(prop);
     auto call = make_call(prop, /*gradient=*/false, std::nullopt);
@@ -319,10 +325,10 @@ BOOST_AUTO_TEST_CASE(set_parameter_mapping_silently_desynchronises_functional) {
     mutate_set_parameter_mapping(prop);
 
     BOOST_TEST(prop.expectation_value(kBaseParams) != before);
-    BOOST_TEST(call(kBaseParams) == before, tt::tolerance(1e-12));
+    BOOST_CHECK_THROW(call(kBaseParams), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(pared_functional_silently_survives_build_graph) {
+BOOST_AUTO_TEST_CASE(pared_functional_is_invalidated_by_build_graph) {
     auto prop = make_propagator(/*schrodinger=*/false);
     build_base_graph(prop);
     auto call = make_call(prop, /*gradient=*/false, kPareThreshold);
@@ -331,7 +337,22 @@ BOOST_AUTO_TEST_CASE(pared_functional_silently_survives_build_graph) {
     mutate_build_graph(prop);
 
     BOOST_TEST(prop.expectation_value(kBaseParams) != before);
-    BOOST_TEST(call(kBaseParams) == before, tt::tolerance(1e-12));
+    BOOST_CHECK_THROW(call(kBaseParams), std::runtime_error);
+}
+
+// A functional reads its propagator's operator index directly, so it cannot outlive it. The control
+// block records the destruction, which is the only thing left to read once the handles are dangling.
+BOOST_AUTO_TEST_CASE(functional_reports_a_destroyed_propagator) {
+    auto prop = std::make_unique<Prop>(make_propagator(/*schrodinger=*/false));
+    build_base_graph(*prop);
+    auto call = make_call(*prop, /*gradient=*/false, std::nullopt);
+    BOOST_CHECK_NO_THROW(call(kBaseParams));
+
+    prop.reset();
+
+    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, [](const std::runtime_error &e) {
+        return std::string_view(e.what()).find("has been destroyed") != std::string_view::npos;
+    });
 }
 
 // The functional objects report the axis they were built against, so a caller can size its parameter
@@ -344,4 +365,34 @@ BOOST_AUTO_TEST_CASE(functional_reports_its_parameter_axis) {
     BOOST_TEST(prop.expectation_value_functional().num_params() == kBaseParams.size());
     BOOST_TEST(prop.expectation_value_and_gradient_functional().num_params() == kBaseParams.size());
     BOOST_TEST(prop.expectation_value_functional(kPareThreshold).num_params() == kBaseParams.size());
+}
+
+// A facade's plan holds the partition group by raw pointer, so it needs the facade's own control block:
+// the children cannot report a destruction that takes their group with it.
+BOOST_AUTO_TEST_CASE(fanned_out_functional_reports_a_destroyed_facade) {
+    auto facade = std::make_unique<Prop>(make_propagator(/*schrodinger=*/false, /*partitions=*/2));
+    build_base_graph(*facade);
+    auto call = make_call(*facade, /*gradient=*/false, std::nullopt);
+    BOOST_CHECK_NO_THROW(call(kBaseParams));
+
+    facade.reset();
+
+    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, [](const std::runtime_error &e) {
+        return std::string_view(e.what()).find("has been destroyed") != std::string_view::npos;
+    });
+}
+
+// The facade bumps its own revision as it fans a mutation out, so the error is reported on the calling
+// thread rather than surfacing out of a partition's collective.
+BOOST_AUTO_TEST_CASE(fanned_out_functional_is_invalidated_by_build_graph) {
+    auto facade = make_propagator(/*schrodinger=*/false, /*partitions=*/2);
+    build_base_graph(facade);
+    auto call = make_call(facade, /*gradient=*/false, std::nullopt);
+    BOOST_CHECK_NO_THROW(call(kBaseParams));
+
+    mutate_build_graph(facade);
+
+    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, [](const std::runtime_error &e) {
+        return std::string_view(e.what()).find("build_graph()") != std::string_view::npos;
+    });
 }

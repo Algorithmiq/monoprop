@@ -298,26 +298,26 @@ class TestFunctionalValidityTable:
             "_mutate_build_graph",
             False,
             "stale",
-            "answers",
-            "DEFECT (fixed in stage 2): the pared plan owns its layers, so its layer count cannot "
-            "move and the live-graph check never fires.",
+            "stale",
+            "Appending a layer moves the structure revision, which a pared plan reads as readily as "
+            "an exact one.",
         ),
         (
             "propagate",
             "_mutate_propagate",
             True,
-            "answers",
-            "answers",
-            "DEFECT (fixed in stage 2): propagate() leaves the layer count at zero and does not "
-            "touch the epoch, so neither check sees the re-evolved operator.",
+            "stale",
+            "stale",
+            "Re-evolves the operator in place. It leaves the layer count at zero, which is why a "
+            "layer count was never enough to see it.",
         ),
         (
             "contract_partially",
             "_mutate_contract_partially",
             False,
             "stale",
-            "answers",
-            "DEFECT (fixed in stage 2): as build_graph, the pared plan's layer count is fixed.",
+            "stale",
+            "Consumes the folded layers and rewrites the coefficients. Only inplace=True bumps.",
         ),
         (
             "update_initial_operator",
@@ -325,17 +325,17 @@ class TestFunctionalValidityTable:
             False,
             "stale",
             "stale",
-            "The epoch check fires. Stage 4 turns this into a weight refresh, except for a pared "
-            "Schrodinger plan.",
+            "A re-weight bumps the revision. Stage 4 turns this into a weight refresh, except for "
+            "a pared Schrodinger plan.",
         ),
         (
             "parameter_mapping",
             "_mutate_parameter_mapping",
             False,
-            "answers",
-            "answers",
-            "DEFECT (fixed in stage 2): relabelling is in place, so the layer count and the epoch "
-            "both hold and the plan keeps replaying the old labels.",
+            "stale",
+            "stale",
+            "Relabels the layers in place, which changes neither the layer count nor the operator -- "
+            "the revision is the only thing that sees it.",
         ),
         (
             "cutoff",
@@ -457,11 +457,11 @@ class TestFunctionalValidityTable:
         assert functional.num_params == len(self._PARAMS)
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
-    def test_parameter_mapping_silently_desynchronises_functional(
+    def test_parameter_mapping_invalidates_functional_it_desynchronises(
         self, monkeypatch, serial_comm, partitions
     ):
-        """Defect 2, made falsifiable: the relabel moves the propagator's own answer while the
-        functional built before it keeps returning the old one. Stage 2 makes the call throw.
+        """The relabel moves the propagator's own answer, and the functional refuses rather than
+        following it half way -- it used to keep returning the pre-relabel number.
         """
         monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
@@ -472,14 +472,15 @@ class TestFunctionalValidityTable:
         self._mutate_parameter_mapping(mp)
 
         assert mp.expval(parameters) != pytest.approx(before)
-        assert functional(parameters) == pytest.approx(before)
+        with pytest.raises(RuntimeError, match=r"set_parameter_mapping"):
+            functional(parameters)
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
-    def test_pared_functional_silently_survives_build_graph(
+    def test_pared_functional_is_invalidated_by_build_graph(
         self, monkeypatch, serial_comm, partitions
     ):
-        """Defect 1, made falsifiable: appending a layer moves the propagator's own answer while a
-        pared functional, whose owned layer count cannot change, keeps returning the old one.
+        """A pared plan owns its layers, so its layer count cannot move; the structure revision is
+        what sees the appended layer.
         """
         monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
@@ -489,10 +490,10 @@ class TestFunctionalValidityTable:
 
         self._mutate_build_graph(mp)
 
-        # The appended gate claims a fresh angle, so the propagator's own axis is now three long
-        # while the functional still answers for the two-gate circuit it was built against.
+        # The appended gate claims a fresh angle, so the propagator's own axis is now three long.
         assert mp.expval([*parameters, 0.4]) != pytest.approx(before)
-        assert functional(parameters) == pytest.approx(before)
+        with pytest.raises(RuntimeError, match=r"build_graph"):
+            functional(parameters)
 
 
 class TestEvolvedOperatorBothPictures:
