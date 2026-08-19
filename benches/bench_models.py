@@ -119,7 +119,10 @@ def test_model_build_graph(
             propagator.build_graph(circuit)
 
     benchmark.pedantic(
-        barriered(build, bench_comm), setup=setup, rounds=bench_rounds, iterations=1
+        barriered(build, bench_comm),
+        setup=barrier_setup(bench_comm, setup),
+        rounds=bench_rounds,
+        iterations=1,
     )
     op_memory.close(last[0])
     record_opsize(last[0])
@@ -157,7 +160,10 @@ def test_model_propagate(
             propagator.propagate(circuit)
 
     benchmark.pedantic(
-        barriered(run, bench_comm), setup=setup, rounds=bench_rounds, iterations=1
+        barriered(run, bench_comm),
+        setup=barrier_setup(bench_comm, setup),
+        rounds=bench_rounds,
+        iterations=1,
     )
     op_memory.close(last[0])
     record_opsize(last[0])
@@ -176,6 +182,7 @@ def test_model_energy(
     result = benchmark.pedantic(
         barriered(functional, bench_comm),
         args=(parameters,),
+        setup=barrier_setup(bench_comm),
         rounds=bench_rounds,
         iterations=1,
     )
@@ -196,6 +203,7 @@ def test_model_gradient(
     _value, gradient = benchmark.pedantic(
         barriered(functional, bench_comm),
         args=(parameters,),
+        setup=barrier_setup(bench_comm),
         rounds=bench_rounds,
         iterations=1,
     )
