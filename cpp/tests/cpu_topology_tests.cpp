@@ -49,6 +49,21 @@ struct AffinityGuard {
 #endif
 };
 
+namespace {
+
+/* An empty placement is licensed by exactly one thing -- pinning turned off -- and by nothing
+ * else. Spelled as a check so that "placed nothing", the bug this branch fixes, can never be
+ * mistaken for a configuration. */
+auto empty_placement_is_licensed() -> bool {
+    if (monoprop::config::get().partition_pinning) {
+        return false;
+    }
+    BOOST_TEST_MESSAGE("monoprop_PARTITION_PINNING is off; partition_cpusets places nothing");
+    return true;
+}
+
+} // namespace
+
 /* ── Live smoke tests ─────────────────────────────────────────────────────── */
 
 BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
@@ -64,7 +79,7 @@ BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
         // guard restores affinity on scope exit
     }
     // When topology discovery succeeds, a non-empty core list must produce a non-empty placement.
-    if (!cores.empty()) {
+    if (!cores.empty() && !(one.empty() && empty_placement_is_licensed())) {
         BOOST_CHECK_EQUAL(one.size(), 1u);
     }
 
@@ -118,6 +133,9 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
                                                            /*group_index=*/1,
                                                            /*group_count=*/2,
                                                            /*mask_is_private=*/true);
+    if (private_mask.empty() && empty_placement_is_licensed()) {
+        return;
+    }
     BOOST_REQUIRE_EQUAL(private_mask.size(), cores.size());
     std::set<int> placed;
     for (const auto &set : private_mask) {
@@ -239,6 +257,24 @@ BOOST_AUTO_TEST_CASE(cpu_topology_policy_per_rank_slice_starves_without_collapse
     BOOST_CHECK_EQUAL(collapsed[1], 7);
 }
 
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_private_mask_collapses_even_when_the_split_would_fit) {
+    // 4 cores over 2 L3 domains: 2 ranks x 2 partitions fits exactly, so the collapse here is not a
+    // fallback after a refusal -- it changes which cores a private-mask rank is given.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 1}, {4, 0}, {6, 1}};
+
+    // Rank 1's share under the split: domain 1 only.
+    const auto split = placement_order(cores, 2, /*group_index=*/1, /*group_count=*/2);
+    BOOST_REQUIRE_EQUAL(split.size(), 2u);
+    BOOST_CHECK_EQUAL(split[0], 2);
+    BOOST_CHECK_EQUAL(split[1], 6);
+
+    // What mask_is_private now passes instead: the head of this rank's own interleave over both domains.
+    const auto collapsed = placement_order(cores, 2, /*group_index=*/0, /*group_count=*/1);
+    BOOST_REQUIRE_EQUAL(collapsed.size(), 2u);
+    BOOST_CHECK_EQUAL(collapsed[0], 0);
+    BOOST_CHECK_EQUAL(collapsed[1], 2);
+}
+
 namespace {
 
 /* Build the flat [n * words] array masks_are_pairwise_disjoint reads, from a list of PU-index
@@ -318,11 +354,18 @@ BOOST_AUTO_TEST_CASE(cpu_topology_affinity_mask_covers_enumerated_cores) {
          * only licensed reason to refuse is the truncation guard: some allowed PU sits past the
          * exchanged window. Assert that, or a mask function that had simply stopped working would
          * read as "nothing to test" -- which is the failure mode this whole file exists to close. */
-        int highest = 0;
-        for (const auto &core : cores) {
-            highest = std::max(highest, core.cpu);
+        // Refusal keys on the HIGHEST allowed PU while core.cpu is the LOWEST sibling of each core,
+        // so a re-read through a wider window is the only sound witness.
+        std::vector<uint64_t> wide(partition::kAffinityMaskWords * 64, 0);
+        BOOST_REQUIRE(partition::affinity_mask_words(wide.data(), wide.size()));
+        size_t highest = 0;
+        for (size_t w = wide.size(); w-- > 0;) {
+            if (wide[w] != 0) {
+                highest = (w * 64) + static_cast<size_t>(63 - __builtin_clzll(wide[w]));
+                break;
+            }
         }
-        BOOST_CHECK_GE(static_cast<size_t>(highest), partition::kAffinityMaskWords * 64);
+        BOOST_CHECK_GE(highest, partition::kAffinityMaskWords * 64);
         return;
     }
     size_t set_bits = 0;
@@ -360,17 +403,6 @@ auto confine_to_first(const std::vector<partition::PhysicalCore> &full, size_t k
         return false;
     }
     BOOST_REQUIRE_EQUAL(partition::enumerate_physical_cores().size(), k);
-    return true;
-}
-
-/* An empty placement is licensed by exactly one thing -- pinning turned off -- and by nothing
- * else. Spelled as a check so that "placed nothing", the bug this branch fixes, can never be
- * mistaken for a configuration. */
-auto empty_placement_is_licensed() -> bool {
-    if (monoprop::config::get().partition_pinning) {
-        return false;
-    }
-    BOOST_TEST_MESSAGE("monoprop_PARTITION_PINNING is off; partition_cpusets places nothing");
     return true;
 }
 
