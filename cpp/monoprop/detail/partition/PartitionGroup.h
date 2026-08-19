@@ -189,21 +189,10 @@ private:
         }
         constexpr size_t kMaskWords = monoprop::detail::partition::kAffinityMaskWords;
         std::array<uint64_t, kMaskWords> mine{};
-        // A mask we cannot represent is "cannot classify", never "private": the fallback stays off.
-        const bool ok = monoprop::detail::partition::affinity_mask_words(mine.data(), kMaskWords);
+        // Refusal zeroes `mine` and an all-zero row is never private, so no reduction of the verdict is needed.
+        monoprop::detail::partition::affinity_mask_words(mine.data(), kMaskWords);
         std::vector<uint64_t> all(kMaskWords * static_cast<size_t>(node_size_), 0);
         MPI_Allgather(mine.data(), kMaskWords, MPI_UINT64_T, all.data(), kMaskWords, MPI_UINT64_T, node);
-
-        // Reduced before the verdict, not after: `ok` is per-rank, and a rank whose mask is too
-        // wide to represent must make EVERY peer decide "not private". A verdict computed from a
-        // buffer some ranks filled and others did not would differ between ranks, and this one
-        // feeds partition_cpusets on all of them.
-        int local_ok = ok ? 1 : 0;
-        int all_ok = 0;
-        MPI_Allreduce(&local_ok, &all_ok, 1, MPI_INT, MPI_MIN, node);
-        if (all_ok == 0) {
-            return;
-        }
         // The rule itself is a free function over the gathered array -- pure bit arithmetic, no
         // communicator, no hwloc -- so it is reachable from a unit test on any machine. What is
         // left here is only the exchange.

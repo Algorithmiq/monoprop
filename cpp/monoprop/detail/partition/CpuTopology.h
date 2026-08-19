@@ -164,13 +164,7 @@ auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
  * @returns Vector of @p n CpuSet tokens, or empty when @c monoprop_PARTITION_PINNING is disabled,
  *          hwloc is unavailable, or not even @p n distinct cores are visible to this process.
  *
- * @note With @p mask_is_private, @p group_index / @p group_count are ignored once the normal split
- *       has failed: the batch system has already partitioned the node (Slurm with per-rank cgroups),
- *       so subdividing our own share a second time asks for @p group_count × more cores than exist
- *       and places nothing at all. Disjointness is what makes ignoring them safe. Without it, a set
- *       of ranks SHARING one narrow mask would every one of them collapse onto the same cores --
- *       worse than not pinning, since each rank's busy-polling collectives would then starve the
- *       others' barrier spins.
+ * @note Under @p mask_is_private the group split is skipped: our share is already this rank's alone.
  */
 auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1, bool mask_is_private = false)
     -> std::vector<CpuSet>;

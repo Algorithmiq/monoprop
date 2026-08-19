@@ -283,40 +283,12 @@ auto partition_cpusets(size_t n, size_t group_index, size_t group_count, bool ma
     }
     const auto cores = enumerate_physical_cores();
 
-    /* Do not partition a node the batch system has already partitioned.
-     *
-     * enumerate_physical_cores() reports only the cores in THIS process's affinity mask. Under a
-     * resource manager that hands each rank its own cpuset -- Slurm with cgroups does, which is the
-     * configuration every benchmark here runs in -- that mask is already this rank's exclusive
-     * share, so `cores` IS our slice and not the node. Splitting it again by group_count asks for
-     * group_count x more cores than exist; placement_order correctly refuses and returns {}, so
-     * NOTHING is pinned, on every rank, silently -- pin_this_thread ignores bind errors by design.
-     * Measured signature: 8 ranks x 16 partitions with affinity_cpus=16 per rank gave
-     * distinct_pinned_cpus=0 and voided the run.
-     *
-     * The disjointness this function exists to guarantee still holds there: the cgroups are
-     * disjoint by construction, so placing within our own mask cannot collide with a co-located
-     * rank. When the mask is the whole node the condition is false and co-located ranks are
-     * separated here exactly as before.
-     *
-     * The discriminator CANNOT be a core count, and cannot be confinement either.
-     * `cores.size() < group_count * n` is equally the signature of a genuine oversubscription on an
-     * unconfined node. And "our mask is narrower than the machine" cannot tell "8 ranks holding 16
-     * cores each" from "8 ranks SHARING one 16-core mask" -- both leave a rank seeing 16 of 128.
-     * Collapsing in the shared case points every co-located rank at the same cores, which is worse
-     * than not pinning: each rank's busy-polling collectives then starve the others' barrier spins.
-     * Only comparing the co-located ranks' masks answers it, so the caller establishes
-     * `mask_is_private` by allgathering them (PartitionGroup::discover_node_peers_) and we do not
-     * guess here.
-     *
-     * This is also a FALLBACK rather than a replacement: when the mask is wide enough to hold all
-     * group_count groups the normal split still runs and still separates co-located ranks. So the
-     * new arm can only ever turn "nothing pinned" into "something pinned"; it cannot take a working
-     * placement away. */
-    auto order = topo_detail::placement_order(cores, n, group_index, group_count);
-    if (order.empty() && group_count > 1 && mask_is_private) {
-        order = topo_detail::placement_order(cores, n, /*group_index=*/0, /*group_count=*/1);
+    // A private mask IS this rank's share: the launcher already separated co-located ranks.
+    if (mask_is_private) {
+        group_index = 0;
+        group_count = 1;
     }
+    const auto order = topo_detail::placement_order(cores, n, group_index, group_count);
 
     std::vector<CpuSet> sets(order.size());
     for (size_t i = 0; i < order.size(); ++i) {
