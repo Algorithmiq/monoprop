@@ -38,7 +38,7 @@ test:
 # Pass RANKS as either a single integer or a semicolon-separated list (e.g. "1;2;4").
 
 test-mpi RANKS='':
-    uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v
+    uv sync --all-extras --group workspace-test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v
     export OMPI_MCA_rmaps_base_oversubscribe="1"; \
     ranks="${1:-${monoprop_MPI_TEST_PROCS:-2}}"; \
     for r in ${ranks//;/ }; \
@@ -54,14 +54,14 @@ test-mpi RANKS='':
 # guards them from bit-rotting. Serial is enough to exercise those branches.
 
 test-wide:
-    uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_WIDE_TERM_INDEX=ON"
+    uv sync --all-extras --group workspace-test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_WIDE_TERM_INDEX=ON"
     uv run --no-sync python -m pytest -m "not mpi"
     ctest --test-dir build/editable/Release --output-on-failure
 
 # Report code coverage.
 
 code-coverage:
-    uv sync --no-progress --group test --all-extras --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.build-type=Coverage" -v
+    uv sync --no-progress --group workspace-test --all-extras --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.build-type=Coverage" -v
 
     # run python tests
     uv run --no-sync python -m pytest --cov=src/monoprop --cov-report=lcov:python-coverage.info
@@ -131,7 +131,7 @@ bench LABEL *ARGS:
     monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
         uv run --no-sync python -m pytest benches -o filterwarnings=default \
         --benchmark-json="{{ bench_results }}/time-$label.json" "$@"
-    uv run --no-sync python benches/report.py "{{ bench_results }}"
+    uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 
 # Needs an MPI build (`just bench-build-mpi`) -- a non-MPI build is rejected by the
 # preflight. Extra args are passed to mpiexec for pinning (and, as root, add
@@ -148,7 +148,7 @@ bench-mpi LABEL RANKS *MPIARGS:
         -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS "$@" \
         python -m pytest benches -o filterwarnings=default \
         --benchmark-json="{{ bench_results }}/time-$label.json"
-    uv run --no-sync python benches/report.py "{{ bench_results }}"
+    uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 
 # A plain `just bench` uses `--no-sync`, so this MPI build survives until the next
 # explicit `uv sync` / rebuild.
@@ -165,7 +165,7 @@ bench-smoke:
         uv run --no-sync python -m pytest benches -o filterwarnings=default \
         --benchmark-json="{{ bench_results }}/time-smoke.json" \
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16
-    uv run --no-sync python benches/report.py "{{ bench_results }}"
+    uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 
 # Deliberately keeps the `bench` default sizes rather than inventing a second set
 # to keep in sync: they run in well under a minute yet leave the heavier
@@ -187,7 +187,7 @@ bench-ci LABEL:
 
 # Emit LABEL's results as Bencher Metric Format JSON.
 bench-bmf LABEL:
-    uv run --no-sync python benches/bmf.py "{{ bench_results }}" "$1"
+    uv run --no-sync monoprop-bench-bmf "{{ bench_results }}" "$1"
 
 # Execute the tutorial notebooks and convert them to Markdown. Notebook
 

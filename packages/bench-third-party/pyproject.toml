@@ -1,0 +1,35 @@
+[project]
+name = "monoprop-bench-third-party"
+version = "0.1.0"
+description = "Cross-engine benchmark scripts comparing monoprop against other propagation libraries"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "monoprop",
+    "monoprop-bench-tools",
+    "qiskit==2.5.0",
+    "tqdm==4.68.3",
+    "ppvm==0.1.0",
+    "pauli-prop==0.2.0",
+    "cuquantum-python-cu12==26.6.0",
+    "cupy-cuda12x[ctk]==14.1.1",
+    "psutil>=7.2",
+    "matplotlib>=3.11",
+]
+
+# Deliberately NOT a member of the repository's uv workspace (see the `exclude`
+# in the root pyproject.toml): the pins above are narrower than monoprop's own
+# and the CUDA wheels are linux-x86_64 only, so this project keeps its own
+# lockfile and its own environment. Both monoprop packages are consumed from the
+# checkout, so a comparison always measures the working tree.
+[tool.uv]
+python-preference = "only-managed"
+
+# Scripts run from their own directory (`uv run python pauli_prop/run_one.py`),
+# so sibling modules are imported as top-level names rather than as a package.
+[tool.ruff.lint.per-file-ignores]
+"**/*.py" = ["INP001"]
+
+[tool.uv.sources]
+monoprop = { path = "../..", editable = true }
+monoprop-bench-tools = { path = "../monoprop-bench-tools", editable = true }
+ppvm = { git = "https://github.com/QuEraComputing/ppvm.git", subdirectory = "ppvm-python", rev = "2570637b145949aadc085871400fdac9322fff54" }

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the benchmark memory primitives (``benches/_memory_cpu.py``).
+"""Unit tests for the host-memory primitives.
 
 Two behaviours are pinned. The per-test peak under MPI is the *peak-of-sum* (the largest
 footprint that actually coexisted across ranks), not the sum of per-rank lifetime peaks,
@@ -26,7 +26,7 @@ import gc
 import resource
 
 import pytest
-from _memory_cpu import (
+from monoprop_bench_tools.memory.cpu import (
     HighWaterMark,
     PssSampler,
     heap_trim,
