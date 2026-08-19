@@ -34,8 +34,10 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import socket
 from dataclasses import asdict, fields
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -160,6 +162,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 def _meta() -> dict[str, Any]:
     """Return this run's configuration metadata for the report."""
+    try:
+        nanobind_backend_version = version("nanobind-backend")
+    except PackageNotFoundError:
+        nanobind_backend_version = "not installed"
+
     return {
         "label": os.environ.get("monoprop_BENCH_LABEL", "?"),  # noqa: SIM112
         "ranks": _size(),
@@ -170,6 +177,9 @@ def _meta() -> dict[str, Any]:
         "monoprop_version": monoprop.__version__,
         "monoprop_variant": monoprop.__variant__,
         "monoprop_compiler_flags": monoprop.__compiler_flags__,
+        "python_version": platform.python_version(),
+        "nanobind_version": monoprop.__nanobind_version__,
+        "nanobind_backend_version": nanobind_backend_version,
     }
 
 
