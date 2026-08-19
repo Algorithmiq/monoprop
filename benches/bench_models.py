@@ -31,7 +31,7 @@ import pytest
 from monoprop_bench_tools.memory.cpu import resting_rss_bytes
 from monoprop_bench_tools.models import MODELS, barrier_setup, barriered
 
-# Not a free knob: the benchmark grid is calibrated on this value.
+# `build_graph` extends the graph, so a driver that re-applies its circuit retains one layer-set per step
 MAX_GRAPH_STEPS = 2
 
 
