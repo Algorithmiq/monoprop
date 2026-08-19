@@ -125,7 +125,8 @@ def test_model_build_graph(
         iterations=1,
     )
     op_memory.close(last[0])
-    record_opsize(last[0])
+    assert record_opsize(last[0]) > 0
+    assert last[0].graph_layers > 0
 
 
 @pytest.mark.slow
@@ -166,7 +167,7 @@ def test_model_propagate(
         iterations=1,
     )
     op_memory.close(last[0])
-    record_opsize(last[0])
+    assert record_opsize(last[0]) > 0
 
 
 @pytest.mark.slow

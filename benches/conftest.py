@@ -426,12 +426,14 @@ def op_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[OpMem
 @pytest.fixture
 def record_opsize(
     request: pytest.FixtureRequest, bench_comm: Any
-) -> Callable[[Any], None]:
-    """Return ``record(propagator)`` storing the propagator's global term count."""
+) -> Callable[[Any], int]:
+    """Return ``record(propagator)`` storing and returning the global term count."""
     key = request.node.nodeid.split("/")[-1]
 
-    def _do(propagator: Any) -> None:
-        _record("opsize", key, {"terms": _reduce_sum(bench_comm, propagator.size())})
+    def _do(propagator: Any) -> int:
+        terms = _reduce_sum(bench_comm, propagator.size())
+        _record("opsize", key, {"terms": terms})
+        return terms
 
     return _do
 
