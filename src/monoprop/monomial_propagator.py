@@ -398,7 +398,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 accuracy for speed. ``None`` (default) disables paring.
 
         Returns:
-            A callable ``fn(parameters=None) -> float``.
+            A callable ``fn(parameters=None) -> float``, carrying the rule above as a
+            ``follows_weights`` attribute.
 
         Raises:
             RuntimeError: From the returned callable, if the propagator was structurally mutated
@@ -408,7 +409,14 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 re-weight replaced.
         """
         fn = self._simulator.expectation_value_functional(pare_threshold)
-        return lambda parameters=None: fn(self._bind(parameters))
+
+        def _call(parameters: ParameterValues = None) -> float:
+            return fn(self._bind(parameters))
+
+        # Carried through to the caller's object rather than left on the engine functional, which is
+        # not part of the public surface.
+        _call.follows_weights = fn.follows_weights  # type: ignore[attr-defined]
+        return _call
 
     def expectation_value_and_gradient_functional(
         self, pare_threshold: float | None = None
@@ -423,7 +431,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
             pare_threshold: See [expectation_value_functional][].
 
         Returns:
-            A callable ``fn(parameters=None) -> (float, np.ndarray)``, gradient in parameter order.
+            A callable ``fn(parameters=None) -> (float, np.ndarray)``, gradient in parameter order,
+            carrying a ``follows_weights`` attribute as [expectation_value_functional][] does.
 
         Raises:
             RuntimeError: From the returned callable, on the same conditions as
@@ -431,10 +440,11 @@ class MonomialPropagator(ABC, Generic[T_op]):
         """
         fn = self._simulator.expectation_value_and_gradient_functional(pare_threshold)
 
-        def _call(parameters=None):  # noqa: ANN001, ANN202
+        def _call(parameters: ParameterValues = None) -> tuple[float, np.ndarray]:
             value, grad = fn(self._bind(parameters))
             return value, np.asarray(grad, dtype=np.float64)
 
+        _call.follows_weights = fn.follows_weights  # type: ignore[attr-defined]
         return _call
 
     def expval(

@@ -47,15 +47,36 @@ expval, grad = expval_grad_fn(parameters)
 
 Shorter aliases are also available: `sim.expval_functional()` and `sim.expval_and_grad_functional()`.
 
-A functional is built against the graph and initial-operator coefficients present when it is
-created, so mutating either —
-[build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph],
-[contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially],
-[update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator] —
-invalidates it: calling it afterwards raises `RuntimeError` rather than returning a value for state
-the propagator no longer holds. Build a new functional after such a call. The direct
-[expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value] path always
-reflects the current operator.
+A functional is built against the graph present when it is created, and it reads through to the
+propagator it came from, which it keeps alive for as long as you hold it. A structural change to that
+graph invalidates the functional: calling it afterwards raises `RuntimeError` rather than returning a
+value for a circuit the propagator no longer holds. Build a new functional after such a call. The
+direct [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value] path
+always reflects the current propagator.
+
+A re-weight is the one mutation a functional survives:
+[update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator]
+leaves the graph, the operator's terms and their index where they are, so a live functional follows
+the new coefficients. The price is that a functional is a *live view* of those coefficients — two
+calls with the same parameters give two answers across a re-weight. Build the functional again after
+the last re-weight if you need a frozen value. Each functional carries the rule as a
+`follows_weights` attribute, so a caller holding one need not re-derive it from the picture and the
+threshold.
+
+This is what every public mutating method does to a functional built before it ran:
+
+| Method | A call afterwards |
+| --- | --- |
+| [build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] | raises |
+| [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] | raises |
+| [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially] with `inplace=True` | raises |
+| [parameter_mapping][monoprop.monomial_propagator.MonomialPropagator.parameter_mapping] | raises |
+| [update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator] | answers for the new coefficients — except in the Schrödinger picture with a `pare_threshold`, where it raises, because the pared graph was selected from the coefficients the re-weight replaced |
+| a rejected `update_initial_operator` | raises: the call can fail with the core term already written |
+| `cutoff`, `cutoff_type`, `basis_change`, `lower_atol`, `upper_atol` | answers, unchanged: these gate the next build and touch nothing a functional replays |
+| `contract_partially` with `inplace=False` | answers, unchanged: it mutates nothing |
+
+The table is executable — see [the mutation table](/testing#the-mutation-table).
 
 Both functionals accept an optional `pare_threshold` — see *Paring* below.
 

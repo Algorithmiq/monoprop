@@ -78,7 +78,11 @@ Key files:
   single-partition shape and the facade shape, so both paths have one public type, and the value and the
   gradient functional over one snapshot share one plan. A functional borrows from its propagator (the
   inverted index always, the graph unless pared), so it must not outlive it; the bindings pin that with
-  `nb::keep_alive<0, 1>`.
+  `nb::keep_alive<0, 1>`. It does **not** snapshot the initial-operator weights: it reads the
+  `detail::OperatorWeights` set the propagator has published, so it follows an
+  `update_initial_operator` instead of going stale — the one exception being a Schrödinger plan with a
+  `pare_threshold`, whose keep-set came from the coefficients the re-weight replaced, which throws
+  (`follows_weights` reports which case an object is).
 - `src/monoprop/bindings/binder.h`: hand-written binding template; `tools/generate-*.py` generate the
   per-mode-width `bindings.cpp` and `_dispatch.py` from it (do not hand-edit the generated files).
   Both generators take the 32-mode storage-block rule from `tools/_binding_layout.py` — they must
@@ -110,7 +114,11 @@ Key files:
   rejected mutation must not bump); the settings that only gate the next build — the atols, the cutoff,
   the cutoff type, the basis change — deliberately do not. A plan additionally re-derives the operator's
   store pointer and inverted-index row count as a backstop, so a missing bump reports staleness instead
-  of folding a rebuilt index.
+  of folding a rebuilt index. The block also carries the published `OperatorWeights`: a re-weight
+  publishes a new set rather than bumping, which is what lets a live functional follow it, and bumps only
+  if it fails part-way. Publishing runs on the propagator's own thread (a facade publishes through
+  `for_each_partition_`), and a plan reads the set once per call so `op` and `core_term` cannot come from
+  two publications.
 - **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
   propagators, one hash partition each. Every method that fans out must use the private partition
   vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`

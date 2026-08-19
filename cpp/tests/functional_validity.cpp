@@ -426,6 +426,23 @@ BOOST_AUTO_TEST_CASE(functional_reports_its_parameter_axis) {
     BOOST_TEST(prop.expectation_value_functional(kPareThreshold).num_params() == kBaseParams.size());
 }
 
+// The contract read off the object, for callers that hold a functional and not the propagator: only a
+// Schrodinger plan pared against the operator's own coefficients refuses to follow a re-weight.
+BOOST_AUTO_TEST_CASE(functional_reports_whether_it_follows_the_weights) {
+    for (const bool schrodinger : {false, true}) {
+        auto prop = make_propagator(schrodinger);
+        build_base_graph(prop);
+        BOOST_TEST(prop.expectation_value_functional().follows_weights());
+        BOOST_TEST(prop.expectation_value_and_gradient_functional().follows_weights());
+        BOOST_TEST(prop.expectation_value_functional(kPareThreshold).follows_weights() == !schrodinger);
+    }
+    // A facade answers for its partitions, which were all built the same way.
+    auto facade = make_propagator(/*schrodinger=*/true, /*partitions=*/2);
+    build_base_graph(facade);
+    BOOST_TEST(facade.expectation_value_functional().follows_weights());
+    BOOST_TEST(!facade.expectation_value_functional(kPareThreshold).follows_weights());
+}
+
 // A facade's plan holds the partition group by raw pointer, so it needs the facade's own control block:
 // the children cannot report a destruction that takes their group with it.
 BOOST_AUTO_TEST_CASE(fanned_out_functional_reports_a_destroyed_facade) {
