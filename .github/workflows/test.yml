@@ -93,7 +93,7 @@ jobs:
 
       - name: Install package
         run: |
-          uv sync --no-progress --group test --all-extras -v
+          uv sync --no-progress --group workspace-test --all-extras -v
 
       - name: Python environment information
         run: |

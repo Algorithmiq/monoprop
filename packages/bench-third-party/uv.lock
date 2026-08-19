@@ -1538,53 +1538,64 @@ requires-dist = [
     { name = "mpi4py", marker = "extra == 'mpi'", specifier = ">=4.1.0" },
     { name = "msgpack", specifier = ">=1.0.0" },
     { name = "numpy", specifier = ">=2" },
-    { name = "openfermion", marker = "extra == 'openfermion'" },
-    { name = "pyscf", marker = "extra == 'pyscf'" },
     { name = "qiskit", marker = "extra == 'qiskit'", specifier = ">=2.0.0" },
 ]
-provides-extras = ["mpi", "qiskit", "openfermion", "pyscf"]
+provides-extras = ["mpi", "qiskit"]
 
 [package.metadata.requires-dev]
 bench = [
+    { name = "monoprop-bench-tools", editable = "../monoprop-bench-tools" },
     { name = "psutil", specifier = ">=7.2" },
-    { name = "pytest", specifier = ">=8.2.2,<8.3" },
+    { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-benchmark", specifier = ">=5" },
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi", specifier = ">=0.6" },
     { name = "tabulate", specifier = ">=0.9" },
 ]
 dev = [
-    { name = "coverage" },
-    { name = "gcovr" },
     { name = "prek", specifier = ">=0.4" },
     { name = "ruff", specifier = "==0.15.20" },
 ]
 docs = [
     { name = "ipykernel" },
     { name = "matplotlib" },
-    { name = "monoprop", extras = ["qiskit", "openfermion", "pyscf"] },
     { name = "nbconvert" },
     { name = "pylatexenc" },
+    { name = "pyscf" },
     { name = "pytest-markdown-docs" },
+    { name = "qiskit", specifier = ">=2.0.0" },
 ]
 interactive = [
     { name = "ipykernel" },
     { name = "matplotlib" },
-    { name = "monoprop", extras = ["qiskit", "openfermion", "pyscf"] },
     { name = "pylatexenc" },
+    { name = "pyscf" },
+    { name = "qiskit", specifier = ">=2.0.0" },
 ]
 test = [
     { name = "psutil", specifier = ">=7.2" },
-    { name = "pytest", specifier = ">=8.2.2,<8.3" },
+    { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-datadir" },
+    { name = "pytest-mpi", specifier = ">=0.6" },
+    { name = "tabulate", specifier = ">=0.9" },
+]
+workspace-test = [
+    { name = "monoprop-bench-tools", editable = "../monoprop-bench-tools" },
+    { name = "psutil", specifier = ">=7.2" },
+    { name = "pytest", specifier = ">=8.2.2,<9.1" },
+    { name = "pytest-cases", specifier = ">=3.8.6,<4" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi", specifier = ">=0.6" },
     { name = "tabulate", specifier = ">=0.9" },
 ]
 
 [[package]]
-name = "monoprop-benchmarks"
+name = "monoprop-bench-third-party"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
@@ -1592,6 +1603,7 @@ dependencies = [
     { name = "cuquantum-python-cu12" },
     { name = "matplotlib" },
     { name = "monoprop" },
+    { name = "monoprop-bench-tools" },
     { name = "pauli-prop" },
     { name = "ppvm" },
     { name = "psutil" },
@@ -1605,12 +1617,34 @@ requires-dist = [
     { name = "cuquantum-python-cu12", specifier = "==26.6.0" },
     { name = "matplotlib", specifier = ">=3.11" },
     { name = "monoprop", editable = "../../" },
+    { name = "monoprop-bench-tools", editable = "../monoprop-bench-tools" },
     { name = "pauli-prop", specifier = "==0.2.0" },
     { name = "ppvm", git = "https://github.com/QuEraComputing/ppvm.git?subdirectory=ppvm-python&rev=2570637b145949aadc085871400fdac9322fff54" },
     { name = "psutil", specifier = ">=7.2" },
     { name = "qiskit", specifier = "==2.5.0" },
     { name = "tqdm", specifier = "==4.68.3" },
 ]
+
+[[package]]
+name = "monoprop-bench-tools"
+source = { editable = "../monoprop-bench-tools" }
+dependencies = [
+    { name = "monoprop" },
+    { name = "numpy" },
+    { name = "psutil" },
+    { name = "tabulate" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "monoprop", editable = "../../" },
+    { name = "numpy", specifier = ">=2" },
+    { name = "psutil", specifier = ">=7.2" },
+    { name = "tabulate", specifier = ">=0.9" },
+]
+
+[package.metadata.requires-dev]
+test = [{ name = "pytest", specifier = ">=8.2.2,<9.1" }]
 
 [[package]]
 name = "more-itertools"
@@ -2751,6 +2785,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/21/40/9499fb076b819b479bffad35afd34e84a93c86f117fb5431dab211adff4f/stim-1.16.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:66dbc6532169df84d127ceede353b15445e845a94aa008c5d0a4062b51cc2b02", size = 1902498, upload-time = "2026-05-22T05:41:43.564Z" },
     { url = "https://files.pythonhosted.org/packages/dd/d1/6a9bca80b6ffe0fc4a3b0375ac18ff9fb1e815d152691332e55d1a9e5fa2/stim-1.16.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f22a009bad1e7816aeb70bdeafb6789e4840710da070f69cde91e2ac6cf1e800", size = 5307953, upload-time = "2026-05-22T05:41:45.32Z" },
     { url = "https://files.pythonhosted.org/packages/d7/15/db7f4b80a0903e0962f5d824ca8cb5a962836399bd45fda59961782ebb20/stim-1.16.0-cp313-cp313-win_amd64.whl", hash = "sha256:55231457b5897b0ef798059aae01d9e8247fc8b2089e8a27f9f4bb13b0342af2", size = 2760785, upload-time = "2026-05-22T05:41:47.156Z" },
+]
+
+[[package]]
+name = "tabulate"
+version = "0.10.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/58/8c37dea7bbf769b20d58e7ace7e5edfe65b849442b00ffcdd56be88697c6/tabulate-0.10.0.tar.gz", hash = "sha256:e2cfde8f79420f6deeffdeda9aaec3b6bc5abce947655d17ac662b126e48a60d", size = 91754, upload-time = "2026-03-04T18:55:34.402Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl", hash = "sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3", size = 39814, upload-time = "2026-03-04T18:55:31.284Z" },
 ]
 
 [[package]]

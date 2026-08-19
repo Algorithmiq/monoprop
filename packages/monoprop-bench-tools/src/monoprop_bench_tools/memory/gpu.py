@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Device-memory measurement, the GPU counterpart of ``benches/_memory_cpu.py``.
+"""Device-memory measurement, the GPU counterpart of :mod:`monoprop_bench_tools.memory.cpu`.
 
 The host metric works because the kernel maintains ``VmHWM`` on every RSS increase: a
 peak, thus accounting for transients as well. This module looks for the
@@ -175,7 +175,7 @@ _peak_hook_class.cached = None
 class DeviceHighWaterMark:
     """Peak device memory over the enclosed block.
 
-    Mirrors :class:`_memory_cpu.HighWaterMark`: synchronizes on entry and exit so the reading
+    Mirrors :class:`monoprop_bench_tools.memory.cpu.HighWaterMark`: synchronizes on entry and exit so the reading
     covers completed work, and exposes the same ``peak``/``baseline``/``delta`` vocabulary.
 
     ``exact`` is ``True`` under both the ``async-pool`` and ``hook`` strategies: the first
@@ -186,6 +186,7 @@ class DeviceHighWaterMark:
     """
 
     def __init__(self) -> None:
+        """Prepare a window. The strategy is only chosen on entry, not here."""
         self._pool = _async_pool()
         self._hook: Any = None
         self.method = UNAVAILABLE
@@ -194,6 +195,7 @@ class DeviceHighWaterMark:
         self.exact = False
 
     def __enter__(self) -> Self:
+        """Synchronize, pick the strongest available strategy, and take the baseline."""
         device_synchronize()
         if self._pool is not None and reset_peak_device_bytes(self._pool):
             self.exact = True
@@ -238,6 +240,7 @@ class DeviceHighWaterMark:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        """Synchronize and read the peak back for the chosen strategy. Exceptions propagate."""
         device_synchronize()
         if self.method == ASYNC_POOL and self._pool is not None:
             observed = _pool_attr(self._pool, "cudaMemPoolAttrUsedMemHigh")

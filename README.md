@@ -115,6 +115,7 @@ locate `hwloc`.
 ## Running the tests
 
 ```bash
+uv sync --all-groups --all-extras -v    # installs the workspace, incl. the bench tooling
 uv run python -m pytest -m "not mpi"   # Python tests (serial)
 just test-mpi                          # Python + C++ tests under MPI
 just test-wide                         # Python + C++ unit tests with a 64-bit TermIndex
@@ -122,6 +123,18 @@ just test-wide                         # Python + C++ unit tests with a 64-bit T
 
 See the [testing guide](https://docs.monoprop.algorithmiq.tech/testing)
 for the with/without-MPI details and the rank matrix.
+
+## Repository layout
+
+The repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/):
+
+- the root is `monoprop` itself (`src/monoprop`, `cpp/`);
+- `packages/monoprop-bench-tools` is the reusable benchmark harness — peak-memory
+  measurement, the benchmarked model builders, and the result renderers — published
+  separately so scripts and notebooks can depend on it without the repository;
+- `packages/bench-third-party` holds the cross-engine comparison scripts. It has
+  CUDA-specific pins, so it is a standalone uv project with its own lockfile;
+- `benches/` is monoprop's own benchmark suite, which uses the tooling above.
 
 ## Development environment
 

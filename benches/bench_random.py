@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from _builders import barriered
+from monoprop_bench_tools.models import barriered
 
 PARE_THRESHOLD = 1e-10
 INPLACE_LOWER_ATOL = 1e-5

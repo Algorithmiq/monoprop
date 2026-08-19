@@ -138,8 +138,9 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# setuptools_scm
+# setuptools_scm / hatch-vcs
 src/*/_version.py
+packages/*/src/*/_version.py
 
 
 # ruff
@@ -181,3 +182,5 @@ benches/results/**
 /result
 /result-*
 .direnv/
+# Useful when running in clusters
+logs/

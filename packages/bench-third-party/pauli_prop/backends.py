@@ -24,20 +24,14 @@ that: `run_model.py` plots the series, `run_one.py` reduces it to totals.
 
 from __future__ import annotations
 
-import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import numpy as np
 from model import Settings, grid_edges, observable, pauli_rotations, step_circuit
-
-# The repository's own benchmark suite owns the memory instrumentation; this directory is a
-# separate uv project, so reach it by path rather than by dependency.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from _memory_cpu import HighWaterMark  # noqa: E402
-from _memory_gpu import DeviceHighWaterMark  # noqa: E402
+from monoprop_bench_tools.memory.cpu import HighWaterMark
+from monoprop_bench_tools.memory.gpu import DeviceHighWaterMark
 
 # cuPauliProp sizes its workspace as a fraction of the card, so this is a confounder for
 # any device-memory figure: raise it and the library may hold more without needing more.
@@ -51,8 +45,9 @@ HOST_MEMORY_METRIC = "peak process RSS over the step (kernel VmHWM)"
 # What a backend reports about its *own* footprint, where it reports anything. Reference
 # only: these are not commensurable with each other (one counts an operator, another an
 # object graph, another device memory), so they must never be compared across backends.
-# The GPU backend sets its own string at run time -- see `_memory_gpu.DEVICE_MEMORY_METRICS`,
-# which depends on the allocator actually in use.
+# The GPU backend sets its own string at run time -- see
+# `monoprop_bench_tools.memory.gpu.DEVICE_MEMORY_METRICS`, which depends on the allocator
+# actually in use.
 OPERATOR_MEMORY_METRICS = {
     "monoprop": "operator memory (reported by the library)",
     "PauliPropagation.jl": "Base.summarysize of the Pauli sum",
