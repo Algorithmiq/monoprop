@@ -368,9 +368,9 @@ reportMatchNotExhaustive = "information"
 
 
 [tool.cibuildwheel]
+build = "cp3??-*"
 build-frontend = "uv"
 build-verbosity = 1
-build = ["cp311-*"]
 skip = ["*-musllinux_*"]
 test-command = "python -m pytest {package}/tests"
 test-groups = ["test"]
