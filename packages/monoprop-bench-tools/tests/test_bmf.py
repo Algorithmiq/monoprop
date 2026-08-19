@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the Bencher Metric Format exporter (``benches/bmf.py``)."""
+"""Unit tests for the Bencher Metric Format exporter."""
 
 from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
 
-import bmf
 import pytest
+from monoprop_bench_tools import bmf
 
 if TYPE_CHECKING:
     from pathlib import Path

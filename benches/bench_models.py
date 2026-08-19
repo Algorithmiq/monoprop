@@ -16,7 +16,8 @@
 
 The 120-qubit Fermi-Hubbard trajectory and the 127-qubit Pauli-basis kicked-Ising
 circuit, at fixed sizes. The registry (config class, builder, steps-per-run) lives
-in ``_builders.MODELS``; each config field is overridable via ``--<model>-<field>``.
+in :data:`monoprop_bench_tools.models.MODELS`; each config field is overridable via
+``--<model>-<field>``.
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from _builders import MODELS, barriered
-from _memory_cpu import resting_rss_bytes
+from monoprop_bench_tools.memory.cpu import resting_rss_bytes
+from monoprop_bench_tools.models import MODELS, barriered
 
 
 @pytest.mark.slow

@@ -19,7 +19,6 @@ import json
 import os
 import platform
 import resource
-import sys
 from pathlib import Path
 from time import perf_counter
 
@@ -27,11 +26,7 @@ import monoprop
 import numpy as np
 from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.fermi import FermiOperator
-
-# The repository's own benchmark suite owns the memory instrumentation; this directory is a
-# separate uv project, so reach it by path rather than by dependency.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from _memory_cpu import HighWaterMark  # noqa: E402
+from monoprop_bench_tools.memory.cpu import HighWaterMark
 
 
 def mode(site, spin):

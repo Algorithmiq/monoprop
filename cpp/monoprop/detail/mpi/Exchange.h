@@ -74,7 +74,7 @@ private:
 // Never skipped on zero total: all ranks must participate or the collective deadlocks. Non-blocking
 // (MPI_Ialltoallv) in an MPI build (the Ticket completes it); non-MPI build does a per-rank self-copy
 // (recv layout == send layout).
-template <class T>
+template <typename T>
 inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks, Comm comm) -> Ticket {
     // The in-process transports address the buffers as raw bytes; MPI_Ialltoallv below still takes the
     // typed pointers plus a datatype. Offsets stay in elements on both paths.

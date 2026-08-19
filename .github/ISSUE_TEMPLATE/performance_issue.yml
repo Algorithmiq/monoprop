@@ -73,7 +73,7 @@ body:
       description: |
         Please run the monoprop benchmark suite on the same machine and paste the output here.
         ```
-        uv run python -m pytest benches/ --benchmark-only
+        uv sync --group bench && just bench-smoke
         ```
       placeholder: Paste benchmark output here
     validations:

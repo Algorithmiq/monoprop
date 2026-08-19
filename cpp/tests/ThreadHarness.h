@@ -22,7 +22,7 @@ namespace test_utils {
 
 // Body exceptions are captured per-rank and returned for the caller to check: Boost.Test assertions
 // are only safe on the main thread.
-template <class Comm, class Body>
+template <typename Comm, typename Body>
 auto run_comm_threads(Comm &comm, int s, Body body) -> std::vector<std::exception_ptr> {
     std::vector<std::exception_ptr> errs(static_cast<size_t>(s));
     std::vector<std::thread> threads;
