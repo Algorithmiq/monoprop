@@ -236,8 +236,7 @@ auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool {
     if (!allowed) {
         return false;
     }
-    /* Anything above the window we can exchange is reported as "cannot classify" rather than
-     * silently truncated: a truncated mask could compare disjoint against a peer it overlaps. */
+    // Refused rather than truncated: a truncated mask could compare disjoint against a peer it overlaps.
     const int last = hwloc_bitmap_last(allowed);
     const bool representable = last >= 0 && static_cast<size_t>(last) < nwords * 64;
     if (representable) {
@@ -255,8 +254,7 @@ auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) 
     if (masks == nullptr || words == 0 || n < 2) {
         return false;
     }
-    /* An all-zero mask is disjoint from everything, so a bare disjointness test would answer
-     * "private" for a rank that can see no CPU at all. Shared is the safe error. */
+    // An all-zero mask is disjoint from everything, so empty is rejected before the pairwise test.
     for (size_t r = 0; r < n; ++r) {
         bool any = false;
         for (size_t w = 0; w < words && !any; ++w) {

@@ -173,15 +173,7 @@ private:
     }
 
 #ifdef monoprop_ENABLE_MPI
-    // Decide whether each co-located rank owns a PRIVATE share of the node's CPUs, by exchanging the
-    // actual affinity masks and testing them for pairwise disjointness.
-    //
-    // This cannot be inferred locally. A rank seeing 16 of the machine's 128 CPUs is equally "Slurm
-    // gave me my own 16" and "eight of us share the same 16", and the two want opposite placements:
-    // the first should fill its own mask (otherwise nothing is pinned at all), the second must not
-    // (or every rank lands on identical cores and their busy-polling collectives starve each other).
-    // Only the peers' masks separate them, and this is the one place that already has a node-local
-    // communicator open. One allgather of 512 B per rank, once per group construction.
+    // A rank seeing 16 of 128 CPUs is equally "my own 16" and "eight of us share these 16": only the masks tell.
     auto classify_node_masks_(MPI_Comm node) -> void {
         node_mask_private_ = false;
         if (node_size_ <= 1) {
@@ -193,9 +185,6 @@ private:
         monoprop::detail::partition::affinity_mask_words(mine.data(), kMaskWords);
         std::vector<uint64_t> all(kMaskWords * static_cast<size_t>(node_size_), 0);
         MPI_Allgather(mine.data(), kMaskWords, MPI_UINT64_T, all.data(), kMaskWords, MPI_UINT64_T, node);
-        // The rule itself is a free function over the gathered array -- pure bit arithmetic, no
-        // communicator, no hwloc -- so it is reachable from a unit test on any machine. What is
-        // left here is only the exchange.
         node_mask_private_ = monoprop::detail::partition::masks_are_pairwise_disjoint(all.data(),
                                                                                       static_cast<size_t>(node_size_),
                                                                                       kMaskWords);
@@ -285,13 +274,10 @@ private:
     }
 
     int n_;
-    mpi::Comm parent_;  // enclosing communicator (size R) — decides the transport
-    int node_rank_ = 0; // this rank's index among the ranks sharing the host
-    int node_size_ = 1; // how many parent ranks share the host (1 unless MPI R>1)
-    // True only when the co-located ranks' affinity masks are pairwise disjoint, i.e. each rank owns
-    // its share of the node. Decided in classify_node_masks_(); copied, never re-derived, by the copy
-    // ctor, which has no communicator to allgather over.
-    bool node_mask_private_ = false;
+    mpi::Comm parent_;                  // enclosing communicator (size R) — decides the transport
+    int node_rank_ = 0;                 // this rank's index among the ranks sharing the host
+    int node_size_ = 1;                 // how many parent ranks share the host (1 unless MPI R>1)
+    bool node_mask_private_ = false;    // set by classify_node_masks_; copied, never re-derived, by the copy ctor
     std::unique_ptr<mpi::ShmComm> shm_; // set iff R == 1
 #ifdef monoprop_ENABLE_MPI
     std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1

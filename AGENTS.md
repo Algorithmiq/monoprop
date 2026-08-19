@@ -104,31 +104,6 @@ Key files:
   for the mutating/collecting paths, which run on the partitions' own pinned masters; `sum_partitions_`,
   `fold_partitions_`, `first_partition_` for reads off quiescent partitions) rather than hand-rolling a
   `run_on_all` loop — the declarations record which helper is legal where.
-- **Placement must not divide an already-divided machine.** `enumerate_physical_cores` reports only cores
-  inside the calling thread's affinity mask, so when a launcher has given each co-located rank its own
-  disjoint slice (`srun --cpu-bind=cores`), the slice *is* the rank's share. Passing the node-wide
-  ranks-per-node through as `group_count` then asks for `group_count × n` cores out of a list that only
-  held `n`, `placement_order` correctly refuses, and every rank silently runs unpinned. Measured on Deucalion
-  at 8 ranks × 16 partitions: `--cpu-bind=cores` and `--cpu-bind=threads` both leave **0** threads pinned per
-  rank, against 16 under `--cpu-bind=none`.
-  `PartitionGroup::classify_node_masks_` therefore allgathers the raw affinity masks over its node-local
-  communicator and `masks_are_pairwise_disjoint` **measures** disjointness; a private result passes
-  `mask_is_private` to `partition_cpusets`, which collapses `group_count` to 1. Mask *width* cannot
-  substitute for this — "8 ranks holding 16 cores each" and "8 ranks sharing one 16-core mask" both leave a
-  rank seeing 16 of 128, and they need opposite placement. Collapse in the wrong direction and every
-  co-located rank pins to the *same* cores, so **not private** is the default and the safe error; an empty
-  mask is not private either, since an all-zero mask is trivially disjoint from everything. This regressed
-  once already, when topology discovery was rewritten onto hwloc, because the guard lives in the placement
-  policy rather than in discovery: any rework of that layer must re-check it.
-  `cpu_topology_policy_per_rank_slice_starves_without_collapse` and `cpu_topology_masks_*` pin the mechanism
-  without needing live hardware.
-- **This is a correctness-of-measurement fix before it is a speed fix.** Unplaced ranks read as a slow code
-  path and have voided four A/B jobs, so every measurement is more trustworthy with it in. But at 99.4M
-  terms, 8×16, the branch carrying it is flat or worse on three of four operations — restoring placement
-  does not make that size faster. Do not quote a µs/sync figure across scales: `barrier_per_sync_us` is
-  peers idling while partition 0 is inside MPI, so it grows with the work waited *for* (15–22 µs at 0.8M
-  terms, 274–604 µs at 99M) and two such numbers from different sizes share no axis. Nor does pinning
-  reduce run-to-run variance: re-measured with 16 threads pinned per rank, spreads went 1.6–2.6× → 1.3–4.6×.
 
 
 ### Environment Management
