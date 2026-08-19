@@ -85,24 +85,11 @@ A 64-bit `TermIndex` build is the only configuration that compiles the
 just test-wide   # rebuilds via uv sync with monoprop_WIDE_TERM_INDEX=ON, then runs CTest
 ```
 
-Because CTest runs each case as its own process (see below), an MPI-enabled build pays a
-full `MPI_Init` per case — and `MPI_Init` initialises every fabric device it finds whether
-or not the process will ever send a message. It looks like slow tests, but it is wall time
-with no CPU behind it. So MPI builds default to `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`, which
-skips fabric init for the per-case tests; the saving scales with how many adapters the
-machine has, and was measured at 3.4x per case on a well-connected compute node.
-
-The exclusion applies **only** to the per-case `serial` variants, which are single-process:
-their world size is 1, the `*_World` cases skip themselves, and every other communicator is
-`MPI_COMM_SELF`, so no transport is used and the fabric can only cost startup time. The
-multi-rank variants keep the full component set, because they exchange real messages. Set
-the option to `OFF` to put the per-case tests back on the fabric too:
-
-```bash
-uv sync --all-extras -v --reinstall-package monoprop --no-cache \
-    --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" \
-    --config-settings-package="monoprop:cmake.define.monoprop_TEST_EXCLUDE_MPI_FABRIC=OFF"
-```
+CTest runs each Boost case as its own process, so an MPI build's `MPI_Init` probes every
+fabric device per case, whether or not the test sends anything. `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`
+(default) skips that probe for the single-process `serial` variants only; multi-rank variants
+keep the full component set, since they exchange real messages. Turn it off by adding
+`-Dmonoprop_TEST_EXCLUDE_MPI_FABRIC=OFF` to the `SKBUILD_CMAKE_ARGS` MPI build above.
 
 CTest registers every Boost case individually as a `serial` variant. When the
 build has MPI enabled and a launcher is found, it also registers the whole suite

@@ -50,14 +50,9 @@ Built = tuple[MajoranaPropagator, Circuit]
 
 
 def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
-    """Wrap ``fn`` so the measured time ends only when every rank has finished.
+    """Wrap ``fn`` in the timed *exit* barrier, making each measurement the makespan.
 
-    Only the *exit* barrier belongs in the timed region: it is what makes each rank's
-    measurement the makespan. The entry barrier goes in :func:`barrier_setup`, which runs
-    it untimed -- charged here instead, it billed every measurement for the skew in the
-    preceding setup, which at 8 ranks reached half a ~0.5 s operation.
-
-    A serial run returns ``fn`` unchanged, so there is no overhead.
+    The entry barrier lives untimed in :func:`barrier_setup`. Serial runs return ``fn``.
 
     Args:
         fn: The callable to wrap.
@@ -77,13 +72,7 @@ def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
 def barrier_setup(
     comm: Any | None, setup: Callable[[], _T] | None = None
 ) -> Callable[[], _T] | None:
-    """Build a ``pedantic(setup=...)`` callable that leaves the ranks synchronised.
-
-    ``pedantic`` runs ``setup`` untimed before each round, which is where the entry barrier
-    belongs: the ranks start the timed call together, but no measurement absorbs the wait
-    for the slowest rank to set up. Returns ``setup`` unchanged on a serial run, ``None``
-    included -- ``pedantic`` accepts both.
-    """
+    """Untimed *entry* barrier for ``pedantic(setup=...)``; serial runs return ``setup``, ``None`` included."""
     if comm is None or comm.Get_size() == 1:
         return setup
 
@@ -155,12 +144,9 @@ def _random_majorana_operator(
     coefficients: list[float],
     num_modes: int,
 ) -> MajoranaOperator:
-    """Build a :class:`MajoranaOperator` directly from already-canonical terms.
+    """Build a :class:`MajoranaOperator` from already-canonical :func:`_random_terms` output.
 
-    ``MajoranaOperator.__init__`` re-derives each term's sign and accumulates into a second
-    dict. :func:`_random_terms` already returns sorted, distinct-index monomials, so that
-    duplicates a 24M-entry mapping to no effect -- enough to put the 100M-term working point
-    over a node's memory.
+    Bypasses ``__init__``, whose sign re-derivation duplicates the whole term mapping.
     """
     operator = MajoranaOperator.__new__(MajoranaOperator)
     operator.num_modes = num_modes

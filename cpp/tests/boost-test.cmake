@@ -21,9 +21,7 @@ if(NOT _monoprop_mpiexec_numproc_flag)
   set(_monoprop_mpiexec_numproc_flag "-n")
 endif()
 
-# SERIAL_ENVIRONMENT holds VAR=value entries for the per-case `serial` variants ONLY: those are
-# single-process and use no transport, while the MPI variants exchange real messages and need
-# every component the fabric offers.
+# SERIAL_ENVIRONMENT: VAR=value entries applied to the per-case `serial` variants only.
 function(discover_tests TARGET)
   cmake_parse_arguments(
     ""

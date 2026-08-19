@@ -61,13 +61,7 @@ def test_random_propagate(
     op_memory,
     record_opsize,
 ):
-    """Benchmark in-place evolution alone, with no expectation value and no graph.
-
-    Isolates the propagation that ``test_random_inplace`` fuses with an expectation value and
-    a truncation. ``lower_atol`` stays at the propagator default, so this carries the same
-    operator as ``test_random_build_graph`` and the two are comparable. A fresh propagator per
-    round, because ``propagate`` refuses an instance that holds a graph.
-    """
+    """Benchmark in-place evolution alone, with no expectation value and no graph."""
     last = []
 
     def setup():
@@ -109,16 +103,11 @@ def test_random_pare(benchmark, built_graph, bench_comm, bench_rounds):
 def test_random_energy(
     benchmark, built_graph, random_problem, bench_comm, bench_rounds, op_memory
 ):
-    """Benchmark evaluating the expectation-value functional.
-
-    The functional is built outside the timed region: ``expectation_value()`` rebuilds it per
-    call, copying the whole operator, so timing that would time the copy.
-    """
+    """Benchmark evaluating the expectation-value functional."""
     functional = built_graph.expectation_value_functional()
     op_memory.open()
 
-    # The args ride a setup callable because pedantic rejects args= and setup= together, and
-    # the entry barrier has to live in a setup to stay untimed.
+    # The entry barrier must stay untimed, so it lives in a setup, and a setup that returns args forbids args=.
     def setup():
         return (random_problem.parameters,), {}
 
@@ -128,8 +117,6 @@ def test_random_energy(
         rounds=bench_rounds,
         iterations=1,
     )
-    # Legitimately small: the graph is already resident, so the delta is scratch only.
-    # Read it next to opbytes.graph or the operation looks free.
     op_memory.close(built_graph)
     assert isinstance(result, float)
 
@@ -137,11 +124,7 @@ def test_random_energy(
 def test_random_gradient(
     benchmark, built_graph, random_problem, bench_comm, bench_rounds, op_memory
 ):
-    """Benchmark evaluating the expectation-value-and-gradient functional.
-
-    Contains the whole energy forward pass -- there is no API for the reverse pass alone --
-    so read it against ``test_random_energy``, not as a standalone cost.
-    """
+    """Benchmark evaluating the expectation-value-and-gradient functional."""
     functional = built_graph.expectation_value_and_gradient_functional()
     op_memory.open()
 

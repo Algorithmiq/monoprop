@@ -137,20 +137,7 @@ def _parse_cpu_list(spec: str) -> set[int]:
 
 
 def pinned_thread_summary() -> dict[str, int | list[int]]:
-    """Return how many of this process's threads are bound to a single CPU.
-
-    Reads ``Cpus_allowed_list`` for every thread under ``/proc/self/task``: a placed thread
-    sees exactly one CPU, an unplaced one sees the whole rank mask. Deliberately independent
-    of the engine, whose own ``pinned=`` field exists only on profiling builds and so cannot
-    be compared across the version boundary that added it.
-
-    Returns:
-        ``threads``, ``single_cpu_threads``, ``distinct_pinned_cpus`` (how many different
-        CPUs those threads occupy -- equal to ``single_cpu_threads`` iff no two threads
-        landed on the same core), ``affinity_cpus`` (the process mask's width), and
-        ``pinned_cpus`` (sorted list of CPU ids that single-pinned threads occupy). All
-        numeric values zero and ``pinned_cpus`` empty where ``/proc`` is unavailable.
-    """
+    """Count this rank's own threads bound to a single CPU; all-zero means ``/proc`` was unreadable, not unpinned."""
     try:
         tasks = list(Path("/proc/self/task").iterdir())
     except OSError:  # pragma: no cover - non-Linux or restricted /proc
@@ -237,11 +224,7 @@ class HighWaterMark:
         self.peak_bytes = max(self.baseline_bytes, observed)
 
     def start(self) -> Self:
-        """Open the window explicitly (same as ``__enter__``).
-
-        A ``pedantic`` run cannot be wrapped in a ``with``: the window opens inside the
-        benchmark's ``setup`` and closes after ``pedantic()`` returns.
-        """
+        """Open the window explicitly; a ``pedantic`` run cannot be wrapped in a ``with``."""
         return self.__enter__()
 
     def stop(self) -> None:

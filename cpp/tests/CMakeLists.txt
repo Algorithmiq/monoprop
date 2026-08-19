@@ -51,18 +51,12 @@ target_link_libraries(
 
 include(${CMAKE_CURRENT_LIST_DIR}/boost-test.cmake)
 
-# CTest runs every Boost case as its own process, so each pays a full MPI_Init -- which
-# initialises every fabric device present even though a single-process test never sends a
-# message. Measured on a compute node: 2.03 s per case without the exclusion, 0.61 s with it.
-#
-# A per-case launch is ONE process (world size 1, `*_World` cases skip themselves, every
-# other communicator is MPI_COMM_SELF), so the fabric can only cost startup time. The MPI
-# variants exchange real messages and MUST keep the full component set -- `OMPI_MCA_pml=^ucx`
-# hangs a 2-rank run indefinitely -- hence SERIAL_ENVIRONMENT rather than a global setting.
-#
-# Exclusions (`^`), never a positive component list: `vader` became `sm` in Open MPI 5, so
-# naming a component breaks on the next machine. Unknown OMPI_MCA_* variables are ignored by
-# other MPIs, so this is inert under MPICH.
+# Every Boost case is its own process, so single-process tests still pay MPI_Init's full
+# fabric probe. Serial variants have world size 1 and touch only MPI_COMM_SELF, so skipping
+# the probe is safe for them -- MPI variants exchange real messages and must keep the full
+# component set (OMPI_MCA_pml=^ucx hangs a multi-rank run), hence SERIAL_ENVIRONMENT rather
+# than a global setting.
+# Exclusions (^), not a positive list: component names (e.g. vader/sm) vary across versions.
 option(
   monoprop_TEST_EXCLUDE_MPI_FABRIC
   "Skip fabric init in the single-process (serial) test variants to cut MPI_Init cost"

@@ -19,13 +19,7 @@ circuit, at fixed sizes. The registry (config class, builder, steps-per-run) liv
 in :data:`monoprop_bench_tools.models.MODELS`; each config field is overridable via
 ``--<model>-<field>``.
 
-``test_model`` is the original fused run (propagate + expectation value), kept as-is because
-it is a tracked Bencher series. Beside it, build_graph, propagate, energy and gradient each
-get their own time and ``op_memory`` window.
-
-Select one group at a time (``-k "build_graph or propagate"``): ``build_graph`` and
-``propagate`` each hold their own operator while ``energy`` and ``gradient`` share the one
-:func:`model_graph` builds, and all four together do not fit a node at these sizes.
+Run one group per pytest process: build_graph/propagate and energy/gradient do not fit a node together.
 """
 
 from __future__ import annotations
@@ -37,10 +31,7 @@ import pytest
 from monoprop_bench_tools.memory.cpu import resting_rss_bytes
 from monoprop_bench_tools.models import MODELS, barrier_setup, barriered
 
-# `build_graph` extends the graph, so a driver that re-applies its circuit retains one
-# layer-set per step: 3 steps of hubbard exceed a 242 GiB node where 2 fit in 15.4 GiB.
-# Skipping beats OOM-killing the machine of whoever runs `just bench`, which does not
-# pass -m "not slow". Pauli's step count is 1 and is unaffected.
+# Not a free knob: the benchmark grid is calibrated on this value.
 MAX_GRAPH_STEPS = 2
 
 
@@ -107,11 +98,7 @@ def test_model_build_graph(
     op_memory,
     record_opsize,
 ):
-    """Benchmark building a fixed model's propagation graph, from a fresh propagator.
-
-    ``steps`` successive calls, because Hubbard's circuit is one Trotter step the driver
-    re-applies: fewer would build a shorter graph than ``test_model_propagate`` evolves.
-    """
+    """Benchmark building a fixed model's propagation graph, from a fresh propagator."""
     _config_cls, build_fn, steps_fn = MODELS[model]
     config = model_configs[model]
     steps = steps_fn(config)
@@ -150,11 +137,7 @@ def test_model_propagate(
     op_memory,
     record_opsize,
 ):
-    """Benchmark a fixed model's in-place evolution alone -- no expectation value, no graph.
-
-    Isolates the propagation that :func:`test_model` fuses with an expectation value. A fresh
-    propagator per round, because ``propagate`` refuses an instance that holds a graph.
-    """
+    """Benchmark a fixed model's in-place evolution alone -- no expectation value, no graph."""
     _config_cls, build_fn, steps_fn = MODELS[model]
     config = model_configs[model]
     steps = steps_fn(config)
@@ -185,11 +168,7 @@ def test_model_propagate(
 def test_model_energy(
     benchmark, model_graph, model, model_configs, bench_comm, bench_rounds, op_memory
 ):
-    """Benchmark evaluating a fixed model's expectation-value functional.
-
-    The functional is built outside the timed region: ``expectation_value()`` rebuilds it per
-    call, copying the whole operator, so timing that would time the copy.
-    """
+    """Benchmark evaluating a fixed model's expectation-value functional."""
     skip_if_graph_will_not_fit(model, MODELS[model][2](model_configs[model]))
     propagator, parameters = model_graph(model)
     functional = propagator.expectation_value_functional()
@@ -200,8 +179,6 @@ def test_model_energy(
         rounds=bench_rounds,
         iterations=1,
     )
-    # Legitimately small: the graph is already resident, so the delta is scratch only.
-    # Read it next to opbytes.graph or the operation looks free.
     op_memory.close(propagator)
     assert isinstance(result, float)
 
@@ -211,11 +188,7 @@ def test_model_energy(
 def test_model_gradient(
     benchmark, model_graph, model, model_configs, bench_comm, bench_rounds, op_memory
 ):
-    """Benchmark evaluating a fixed model's expectation-value-and-gradient functional.
-
-    Contains the whole energy forward pass -- there is no API for the reverse pass alone --
-    so read it against :func:`test_model_energy`, not as a standalone cost.
-    """
+    """Benchmark evaluating a fixed model's expectation-value-and-gradient functional."""
     skip_if_graph_will_not_fit(model, MODELS[model][2](model_configs[model]))
     propagator, parameters = model_graph(model)
     functional = propagator.expectation_value_and_gradient_functional()

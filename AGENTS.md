@@ -84,15 +84,10 @@ Key files:
   change to the recorded sections has to land on both sides of the package boundary. Benchmark
   names are Bencher's history key, so renaming or moving a `bench_*` test orphans its tracked
   series.
-- **`benchmark.pedantic`'s `setup=` runs outside the timed region but not outside the *live* one.**
-  It builds round *k+1*'s arguments before releasing round *k*'s, so any `rounds > 1` holds two
-  problems at once and roughly doubles peak memory — pin `--bench-rounds=1` at sizes where that
-  matters. For the same reason `record_memory`, which spans `setup`, measures the construction
-  transient; per-operation cost comes from the `op_memory` fixture.
-- **`PssSampler` reads `/proc/self/smaps_rollup`, which costs a page-table walk under `mmap_lock`.**
-  Above a few GiB it perturbs the run it measures, and it samples only when the GIL is released, so
-  the faster side of an A/B is sampled less and reports a *lower* peak. Opt-in
-  (`--bench-pss-sampler`) for that reason; quote `HighWaterMark`, which is exact.
+- **`rounds > 1` overlaps two rounds' live memory** (`setup=` runs before the prior round's
+  teardown) — pin `--bench-rounds=1`; `record_memory` measures that construction transient,
+  not per-op cost (use `op_memory`).
+- **Peak memory is `HighWaterMark`, not sampled PSS** — exact, unlike `/proc/self/smaps_rollup`.
 
 ### Core abstractions (the propagation backbone)
 
@@ -146,13 +141,8 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - Fixture msgpack schema is documented in `tests/data/README.md`
 - Tests validate against exact solutions for small systems
 - Heavy use of `@parametrize_with_cases` decorators
-- **pytest's default capture is fd-level**, so it hides C++ diagnostics: it replaces fd 2 per test
-  and discards the buffer when the test passes, while the engine writes straight to fd 2 (the
-  `COMMPROF` line comes out of a transport destructor). Reading those under pytest requires `-s`.
-- **A slow CTest run on an MPI build is `MPI_Init`, not slow tests** — the tell is wall time with no
-  CPU behind it. `monoprop_ENABLE_MPI` builds default to `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`,
-  which is scoped to the single-process `serial` variants and must stay that way. Rationale and the
-  measured saving are in the comment above the option in `cpp/tests/CMakeLists.txt`.
+- **pytest's fd-level capture hides C++ stderr** (e.g. `COMMPROF`) — rerun with `-s` to see it.
+- **A slow CTest run on an MPI build is `MPI_Init` fabric probing, not slow tests** — see `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
 
 ## Key Dependencies & Integration
 
@@ -192,9 +182,7 @@ When changing behavior, APIs, build/test workflows, paths, or developer conventi
 - Check `build/*/compile_commands.json` for compilation flags
 - Use `rm -rf build` to clear environment-specific builds
 - Verify `monoprop_MAX_NUM_MODES` matches your use case (default: 250)
-- **`uv sync` does not relink the C++ test binary** — it installs only the wheel, and
-  `bin/monoprop_unit_tests.x` is not a wheel target, so an edited test can leave a stale binary that
-  passes or reports `no test cases matching filter`. Check its mtime against the source's. To iterate
-  on C++ tests, configure a standalone tree; recipe in `docs/content/docs/building.mdx`.
+- **`uv sync` does not relink `bin/monoprop_unit_tests.x`** — check its mtime against the
+  source's; recipe for a standalone C++ build tree in `docs/content/docs/building.mdx`.
 
 This is a sophisticated scientific computing project requiring careful attention to template instantiation, build system configuration, and the C++/Python boundary.
