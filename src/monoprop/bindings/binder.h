@@ -57,6 +57,28 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
     auto name = std::format("MonomialPropagator{:03d}", NumModes);
     auto cls = nb::class_<MonomialPropagator<NumModes>>(mod, name.c_str());
 
+    // The functional objects. Opaque and non-constructible from Python: the only way to one is the
+    // matching factory below, which keep_alive-pins the propagator it borrows from.
+    auto ev_name = std::format("ExpectationValueFunctional{:03d}", NumModes);
+    nb::class_<ExpectationValueFunctional<NumModes>>(mod, ev_name.c_str())
+        .def("__call__",
+             &ExpectationValueFunctional<NumModes>::operator(),
+             "parameters"_a,
+             "Expectation value at the given variational parameters")
+        .def_prop_ro("num_params",
+                     &ExpectationValueFunctional<NumModes>::num_params,
+                     "Parameter-axis length this functional was built against");
+
+    auto grad_name = std::format("ExpectationValueAndGradientFunctional{:03d}", NumModes);
+    nb::class_<ExpectationValueAndGradientFunctional<NumModes>>(mod, grad_name.c_str())
+        .def("__call__",
+             &ExpectationValueAndGradientFunctional<NumModes>::operator(),
+             "parameters"_a,
+             "(expectation value, gradient) at the given variational parameters")
+        .def_prop_ro("num_params",
+                     &ExpectationValueAndGradientFunctional<NumModes>::num_params,
+                     "Parameter-axis length this functional was built against");
+
     cls.def(
         "__init__",
         [](MonomialPropagator<NumModes> *t,
@@ -134,14 +156,18 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "parameters"_a,
             "Expectation value and its gradient at the given variational parameters");
 
+    // keep_alive<0, 1>: the functional borrows this propagator's inverted index and, without a pare
+    // threshold, its graph, so the propagator must outlive it. Python has no other way to know.
     cls.def("expectation_value_functional",
             &MonomialPropagator<NumModes>::expectation_value_functional,
             "pare_threshold"_a = std::nullopt,
+            nb::keep_alive<0, 1>(),
             "Reusable callable giving the expectation value from parameters; None keeps the exact graph");
 
     cls.def("expectation_value_and_gradient_functional",
             &MonomialPropagator<NumModes>::expectation_value_and_gradient_functional,
             "pare_threshold"_a = std::nullopt,
+            nb::keep_alive<0, 1>(),
             "Reusable callable giving (expectation value, gradient) from parameters; None keeps the exact graph");
 
     cls.def("contract_partially",

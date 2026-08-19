@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "monoprop/Evolution.h"
+#include "monoprop/Functional.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"
@@ -263,11 +264,12 @@ public:
     auto expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD>;
 
     /// `pare_threshold` is the edge-retention cutoff for a masked plan; nullopt keeps the exact graph.
+    /// The result borrows from this propagator, so it must not outlive it.
     auto expectation_value_functional(std::optional<double> pare_threshold = std::nullopt)
-        -> std::function<double(const VecD &)>;
+        -> ExpectationValueFunctional<NumModes>;
 
     auto expectation_value_and_gradient_functional(std::optional<double> pare_threshold = std::nullopt)
-        -> std::function<std::pair<double, VecD>(const VecD &)>;
+        -> ExpectationValueAndGradientFunctional<NumModes>;
 
     /// Contract the graph into the operator (Heisenberg) or state (Schrodinger). `inplace` consumes the
     /// graph and updates internal state; otherwise nothing is mutated. Core term excluded either way.
@@ -285,15 +287,6 @@ public:
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
-    static inline const auto ev_fn = [](const EvalRequest &request,
-                                        mpi::Comm comm,
-                                        const detail::CosCallbacks &cos) -> double { return ev(request, comm, cos); };
-
-    static inline const auto ev_and_grad_fn =
-        [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> std::pair<double, VecD> {
-        return ev_and_grad(request, comm, cos);
-    };
-
     /// Distribute op_dict across ranks and apply this rank's share; returns its new (terms, coeffs)
     /// so caches can refresh.
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
@@ -462,9 +455,9 @@ private:
                               VecD *fused_scale_coeffs = nullptr,
                               bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
 
-    template <typename Fn,
-              typename R = std::invoke_result_t<Fn, const EvalRequest &, mpi::Comm, const detail::CosCallbacks &>>
-    auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
+    // One plan serves both functional kinds: it holds the snapshot and the validity checks, not the
+    // choice of what to compute. On a facade it holds one child plan per partition.
+    auto make_plan_(std::optional<double> pare_threshold) -> std::shared_ptr<const detail::FunctionalPlan<NumModes>>;
 
     // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the layers' gate info.
     auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;

@@ -71,6 +71,14 @@ Key files:
 - `cpp/include/monoprop/MonomialPropagator.h`: the single templated C++ engine `MonomialPropagator<NumModes>`
   (the Majorana/Pauli choice is a runtime `Basis`, not a separate class). Its `only_rotate_len_k`
   arguments use `std::optional<size_t>`; `std::nullopt` means no gate-application length cap.
+- `cpp/include/monoprop/Functional.h`: the two functional objects,
+  `ExpectationValueFunctional<NumModes>` and `ExpectationValueAndGradientFunctional<NumModes>`. Each is
+  a handle on one shared `detail::FunctionalPlan<NumModes>` — the propagator snapshot a call replays,
+  plus the checks that say the snapshot is still that propagator's. The plan's `std::variant` carries the
+  single-partition shape and the facade shape, so both paths have one public type, and the value and the
+  gradient functional over one snapshot share one plan. A functional borrows from its propagator (the
+  inverted index always, the graph unless pared), so it must not outlive it; the bindings pin that with
+  `nb::keep_alive<0, 1>`.
 - `src/monoprop/bindings/binder.h`: hand-written binding template; `tools/generate-*.py` generate the
   per-mode-width `bindings.cpp` and `_dispatch.py` from it (do not hand-edit the generated files).
   Both generators take the 32-mode storage-block rule from `tools/_binding_layout.py` — they must

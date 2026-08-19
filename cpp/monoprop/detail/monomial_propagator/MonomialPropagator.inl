@@ -916,40 +916,48 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
 }
 
 template <size_t NumModes>
-template <typename Fn, typename R>
-auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<double> pare_threshold)
-    -> std::function<R(const VecD &)> {
+auto MonomialPropagator<NumModes>::make_plan_(std::optional<double> pare_threshold)
+    -> std::shared_ptr<const detail::FunctionalPlan<NumModes>> {
+    using Plan = detail::FunctionalPlan<NumModes>;
+
+    if (partition_group_) {
+        // One fan-out for both functional kinds: the plan holds the snapshot, not the choice of what to
+        // compute. The children are built on the partitions' own masters, where their state lives.
+        typename Plan::Fanout fanout;
+        fanout.group = partition_group_.get();
+        fanout.partitions = map_partitions_([&](MonomialPropagator &s) { return s.make_plan_(pare_threshold); });
+        // graph_gate_arrays_() reads partition 0: the graph structure and gate info are identical on
+        // every partition. A facade validates nothing itself (see FunctionalPlan::validate).
+        return std::make_shared<const Plan>(expected_num_params(graph_gate_arrays_().first), std::move(fanout));
+    }
+
+    typename Plan::Local local;
+
     auto gate_arrays = graph_gate_arrays_();
-    auto parameter_mapping = std::move(gate_arrays.first);
-    auto gen_coeffs = std::move(gate_arrays.second);
-    const auto num_params = expected_num_params(parameter_mapping);
+    local.parameter_mapping = std::move(gate_arrays.first);
+    local.gen_coeffs = std::move(gate_arrays.second);
+    const auto num_params = expected_num_params(local.parameter_mapping);
 
     // Nothing here needs a dense state: energy only dots it against the evolved operator, and the gradient
     // scatters it into its own thread-local scratch before back-evolving. So Heisenberg hands over just the
     // sparse scores; Schrödinger's state is the live evolved vector, snapshotted whole.
-    // EvalState owns its rows and snapshots the term count -- a later append push_backs onto the operator's
-    // sparse rows, which would both dangle a view and outrun the `op` captured below.
     const auto num_terms = mp_op_.size();
-    auto state = [&] {
+    local.state = [&] {
         if (schrodinger_) {
             return EvalState::dense(mp_op_.dense_state());
         }
         const auto sparse = mp_op_.sparse_state();
         return EvalState::sparse(num_terms, sparse.rows, sparse.values);
     }();
-    VecD op = mp_op_.get_operator();
-    const auto core_term = this->core_term();
-    const auto comm = comm_;
+    local.op = mp_op_.get_operator();
+    local.core_term = this->core_term();
+    local.comm = comm_;
 
-    const auto expected_layers = graph_layers();
-    // Aliased rather than copied: the check below needs the live counter, like graph->layers().
-    const auto *epoch = &initial_operator_epoch_;
-    const auto expected_epoch = initial_operator_epoch_;
+    local.expected_graph_layers = graph_layers();
+    local.initial_operator_epoch = &initial_operator_epoch_;
+    local.expected_initial_operator_epoch = initial_operator_epoch_;
     const auto &inverted_index = mp_op_.inverted_index();
 
-    // One owning handle either way: pare hands back a heap-owned MPGraph the functional must keep alive
-    // (build_cos_callbacks holds pointers into its layers' stored cos); non-pare aliases graph_.
-    std::shared_ptr<const MPGraph> graph;
     if (pare_threshold.has_value()) {
         auto full_cos_of_layer = [this, &inverted_index](size_t i) -> CosMask {
             const auto layer = graph_.get_layer_traversal(i);
@@ -958,77 +966,31 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
             return detail::fold_to_cos_mask<NumModes>(combined);
         };
         // Threshold the picture's driving vector: the Hamiltonian in Schrödinger, the state otherwise.
-        const auto keep = schrodinger_ ? indices_above(op, *pare_threshold) : state.indices_above(*pare_threshold);
-        const auto count = schrodinger_ ? op.size() : state.length();
-        graph =
+        const auto keep =
+            schrodinger_ ? indices_above(local.op, *pare_threshold) : local.state.indices_above(*pare_threshold);
+        const auto count = schrodinger_ ? local.op.size() : local.state.length();
+        local.graph =
             std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, schrodinger_, comm_, full_cos_of_layer));
     }
     else {
-        graph = std::shared_ptr<const MPGraph>(std::shared_ptr<const void>{}, &graph_);
+        local.graph = std::shared_ptr<const MPGraph>(std::shared_ptr<const void>{}, &graph_);
     }
 
-    // The folds keep raw column pointers into this propagator's inverted index, so the returned callable
-    // must not outlive the propagator.
-    auto cos = build_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), basis_);
+    local.cos = build_cos_callbacks<NumModes>(inverted_index, local.graph->replay_view(), basis_);
 
-    return [func = std::move(func),
-            core_term,
-            state = std::move(state),
-            op = std::move(op),
-            graph = std::move(graph),
-            parameter_mapping,
-            gen_coeffs,
-            num_params,
-            epoch,
-            expected_epoch,
-            expected_layers,
-            cos = std::move(cos),
-            comm](const VecD &params) -> R {
-        validate_expected_initial_operator(*epoch, expected_epoch);
-        validate_functional_call(params, num_params);
-        validate_expected_graph_layers(graph->layers(), expected_layers);
-        return func(EvalRequest{.e_core = core_term,
-                                .state = state,
-                                .op = op,
-                                .parameter_mapping = parameter_mapping,
-                                .gen_coeffs = gen_coeffs,
-                                .graph = graph->replay_view(),
-                                .params = params},
-                    comm,
-                    cos);
-    };
+    return std::make_shared<const Plan>(num_params, std::move(local));
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<double> pare_threshold)
-    -> std::function<double(const VecD &)> {
-    if (partition_group_) {
-        // Each partition allreduces internally, so partition 0 is the global value. The group is captured by
-        // raw pointer, so the returned callable must not outlive this propagator.
-        auto fns = std::make_shared<std::vector<std::function<double(const VecD &)>>>(
-            map_partitions_([&](MonomialPropagator &s) { return s.expectation_value_functional(pare_threshold); }));
-        auto *grp = partition_group_.get();
-        return [grp, fns](const VecD &params) -> double {
-            return detail::partition::collect_on_all(*grp,
-                                                     [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];
-        };
-    }
-    return make_functional_(ev_fn, pare_threshold);
+    -> ExpectationValueFunctional<NumModes> {
+    return ExpectationValueFunctional<NumModes>(make_plan_(pare_threshold));
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional(std::optional<double> pare_threshold)
-    -> std::function<std::pair<double, VecD>(const VecD &)> {
-    if (partition_group_) {
-        auto fns = std::make_shared<std::vector<std::function<std::pair<double, VecD>(const VecD &)>>>(map_partitions_(
-            [&](MonomialPropagator &s) { return s.expectation_value_and_gradient_functional(pare_threshold); }));
-        auto *grp = partition_group_.get();
-        return [grp, fns](const VecD &params) -> std::pair<double, VecD> {
-            return detail::partition::collect_on_all(*grp,
-                                                     [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];
-        };
-    }
-    return make_functional_(ev_and_grad_fn, pare_threshold);
+    -> ExpectationValueAndGradientFunctional<NumModes> {
+    return ExpectationValueAndGradientFunctional<NumModes>(make_plan_(pare_threshold));
 }
 
 template <size_t NumModes>
