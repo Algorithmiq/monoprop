@@ -20,8 +20,10 @@ The random benchmarks take their sizes from CLI options, e.g.::
 
 Non-timing results accumulate in ``_RESULTS`` and are written at session end to
 ``results/<label>.json`` (rank 0 only); pytest-benchmark writes timings to
-``time-<label>.json``; ``report.py`` merges them. Recording is on only when the
-``just bench`` recipe exports ``monoprop_BENCH_LABEL`` / ``monoprop_BENCH_RESULTS``.
+``time-<label>.json``. This module is the writer of that artifact schema; the
+readers are :mod:`monoprop_bench_tools.report` and :mod:`monoprop_bench_tools.bmf`,
+so a change to ``_RESULTS`` has to land in both places. Recording is on only when
+the ``just bench`` recipe exports ``monoprop_BENCH_LABEL`` / ``monoprop_BENCH_RESULTS``.
 
 The ``bench_comm`` fixture yields ``MPI.COMM_WORLD`` when ``mpi4py`` is available
 (``None`` otherwise). Operations are barrier-wrapped so the timed cost reflects
@@ -41,18 +43,18 @@ from typing import TYPE_CHECKING, Any
 
 import psutil
 import pytest
-from _builders import (
-    MODELS,
-    RandomProblem,
-    build_random_propagator,
-    make_random_problem,
-)
-from _memory_cpu import (
+from monoprop_bench_tools.memory.cpu import (
     HighWaterMark,
     PssSampler,
     merge_peak_of_sum,
     pinned_thread_summary,
     resting_rss_bytes,
+)
+from monoprop_bench_tools.models import (
+    MODELS,
+    RandomProblem,
+    build_random_propagator,
+    make_random_problem,
 )
 
 import monoprop
@@ -60,7 +62,7 @@ import monoprop
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from _builders import Built
+    from monoprop_bench_tools.models import Built
 
     from monoprop import MajoranaPropagator
 

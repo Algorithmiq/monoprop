@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the benchmark report builder (``benches/report.py``).
+"""Unit tests for the benchmark report builder.
 
 Each run contributes two artifacts to the results directory: ``time-<label>.json``
 (pytest-benchmark timings) and ``<label>.json`` (everything else, keyed by section).
@@ -24,7 +24,7 @@ import json
 import re
 from typing import TYPE_CHECKING
 
-import report
+from monoprop_bench_tools import report
 
 if TYPE_CHECKING:
     from pathlib import Path

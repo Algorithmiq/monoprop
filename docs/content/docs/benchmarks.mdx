@@ -12,9 +12,13 @@ Majorana and Pauli propagation engines. The benchmark suite includes memory and 
 performance metrics, providing insights into the efficiency of different
 propagation engines.
 
-You can find the benchmark scripts in the [`benches/third_party`](https://github.com/Algorithmiq/monoprop/tree/main/benches/third_party) directory.
+You can find the benchmark scripts in the [`packages/bench-third-party`](https://github.com/Algorithmiq/monoprop/tree/main/packages/bench-third-party) directory.
 The scripts are designed to be run in a controlled environment,
 ensuring fair comparisons between different engines.
+
+That directory is a standalone `uv` project with its own lockfile, not a member of
+the repository's workspace: it pins CUDA-specific wheels and a narrower Python
+range than `monoprop` itself, so it is kept out of the main resolution.
 
 
 ### Majorana Propagation
@@ -59,7 +63,7 @@ The end-to-end workflow is:
 
 ```bash
 # Navigate to this directory
-cd benches/third_party
+cd packages/bench-third-party
 
 # Create the venv and install all Python dependencies (including monoprop itself, in editable mode)
 uv sync
@@ -208,7 +212,7 @@ per-step term budget tracks `cutoff`/`lower_atol` indirectly through monoprop ra
 
 ```bash
 # Navigate to this directory
-cd benches/third_party
+cd packages/bench-third-party
 
 # Create the venv and install all Python dependencies (including monoprop itself, in editable mode)
 uv sync
@@ -359,7 +363,7 @@ both plotting scripts print that provenance beside the numbers.
 #### Running it
 
 ```bash
-cd benches/third_party/pauli_prop
+cd packages/bench-third-party/pauli_prop
 
 # Redraw both figures from the committed ladder — seconds, no propagation
 uv run python plot_scaling.py scaling_results.jsonl
@@ -397,7 +401,7 @@ just bench serial --num-modes 64 --bench-rounds 10
 
 monoprop_NUM_THREADS=10 just bench serial-t10  # cap the partition count
 
-uv run --group bench python benches/report.py  # rebuild report, no re-run
+uv run --group bench monoprop-bench-report benches/results  # rebuild report, no re-run
 ```
 
 ### MPI
@@ -445,7 +449,7 @@ Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`)
 ### Output
 
 Each run writes `results/time-<label>.json` (pytest-benchmark) and
-`<label>.json` (everything else); `report.py` merges all labels into
+`<label>.json` (everything else); `monoprop-bench-report` merges all labels into
 `results/REPORT.md`.
 
 ### Continuous benchmarking
@@ -461,7 +465,7 @@ just bench-ci ci-linux          # the default sizes, more rounds, no slow models
 just bench-bmf ci-linux         # the same results as Bencher Metric Format JSON
 ```
 
-`bmf.py` merges both artifacts into one report because Bencher accepts a single
+`monoprop-bench-bmf` merges both artifacts into one report because Bencher accepts a single
 adapter per upload — the stock `python_pytest` adapter would keep the timings
 and drop the memory and operator metrics. Four measures are tracked:
 

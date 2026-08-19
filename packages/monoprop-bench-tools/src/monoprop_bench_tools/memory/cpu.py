@@ -211,12 +211,20 @@ class HighWaterMark:
     """
 
     def __init__(self, *, settle: bool = True) -> None:
+        """Prepare a window.
+
+        Args:
+            settle: Whether to settle the process (``gc.collect()`` + ``malloc_trim``)
+                before taking the baseline. Pass ``False`` only when the caller has
+                already settled and the extra pause would perturb the measurement.
+        """
         self._settle = settle
         self.baseline_bytes = 0
         self.peak_bytes = 0
         self.exact = False
 
     def __enter__(self) -> Self:
+        """Take the baseline and reset the kernel's peak-RSS window to it."""
         self.baseline_bytes = resting_rss_bytes() if self._settle else rss_bytes()
         self.exact = reset_peak_rss()
         self.peak_bytes = self.baseline_bytes
@@ -228,6 +236,7 @@ class HighWaterMark:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        """Read the peak back, never below the baseline. Exceptions propagate."""
         observed = peak_rss_bytes() if self.exact else rss_bytes()
         self.peak_bytes = max(self.baseline_bytes, observed)
 
@@ -276,6 +285,12 @@ class PssSampler:
     """
 
     def __init__(self, interval: float = SAMPLE_INTERVAL_S) -> None:
+        """Prepare a sampler.
+
+        Args:
+            interval: Seconds between samples. Shorter closes the gap to the true peak
+                at the cost of perturbing the timed thread more often.
+        """
         self._interval = interval
         self._samples: list[tuple[float, int]] = []
         self._stop = threading.Event()
@@ -287,6 +302,7 @@ class PssSampler:
             self._stop.wait(self._interval)
 
     def __enter__(self) -> Self:
+        """Record one sample, then start sampling in the background."""
         self._samples.append((time.time(), pss_bytes()))
         self._thread.start()
         return self
@@ -297,6 +313,7 @@ class PssSampler:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        """Stop the thread, join it, and record a final sample. Exceptions propagate."""
         self._stop.set()
         self._thread.join()
         self._samples.append((time.time(), pss_bytes()))

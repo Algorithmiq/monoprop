@@ -16,7 +16,8 @@
 
 The 120-qubit Fermi-Hubbard trajectory and the 127-qubit Pauli-basis kicked-Ising
 circuit, at fixed sizes. The registry (config class, builder, steps-per-run) lives
-in ``_builders.MODELS``; each config field is overridable via ``--<model>-<field>``.
+in :data:`monoprop_bench_tools.models.MODELS`; each config field is overridable via
+``--<model>-<field>``.
 
 ``test_model`` is the original fused in-place run (propagate + expectation value) and is
 kept as-is: it is a tracked Bencher series, and renaming or replacing it would orphan its
@@ -36,8 +37,8 @@ import os
 from typing import Any
 
 import pytest
-from _builders import MODELS, barrier_setup, barriered
-from _memory_cpu import resting_rss_bytes
+from monoprop_bench_tools.memory.cpu import resting_rss_bytes
+from monoprop_bench_tools.models import MODELS, barrier_setup, barriered
 
 # `build_graph` EXTENDS the graph rather than replacing it, so a model whose driver re-applies
 # its circuit holds every step's layer-set at once where `propagate` holds one. Measured on
