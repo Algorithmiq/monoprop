@@ -1,9 +1,10 @@
 [build-system]
 requires = [
-  "nanobind>=2.13.0,<3",
+  "mpi4py>=4.1.0",
+  "nanobind-backend>=1.0.0.dev1",
+  "nanobind>=3.0.0.dev1",
   "scikit-build-core>=1.0.3,<2",
   "setuptools-scm>=8",
-  "mpi4py>=4.1.0",
 ]
 build-backend = "scikit_build_core.build"
 
@@ -37,7 +38,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dynamic = ["version"]
-dependencies = ["numpy>=2", "msgpack>=1.0.0"]
+dependencies = ["msgpack>=1.0.0", "nanobind-backend>=1.0.0.dev1", "numpy>=2"]
 
 
 [project.urls]
@@ -325,7 +326,9 @@ flake8-annotations.allow-star-arg-any = true
 "packages/monoprop-bench-tools/src/**" = ["ANN401", "T201"]
 # cupy comes from an optional, GPU-only extra, so it is imported inside the
 # functions that need it (PLC0415).
-"packages/monoprop-bench-tools/src/monoprop_bench_tools/memory/gpu.py" = ["PLC0415"]
+"packages/monoprop-bench-tools/src/monoprop_bench_tools/memory/gpu.py" = [
+  "PLC0415",
+]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,
