@@ -202,11 +202,11 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         [](MonomialPropagator<NumModes> &self, const VecD &parameters, double atol) -> nb::dict {
             nb::dict py_result;
             for (const auto &[indices, coeff] : self.evolved_operator_terms(parameters, atol)) {
-                nb::list key;
+                nb::tuple_builder key(indices.size());
                 for (const auto &i : indices) {
-                    key.append(i);
+                    key.put(i);
                 }
-                py_result[nb::tuple(key)] = coeff;
+                py_result[key.commit()] = coeff;
             }
 
             if (!self.schrodinger() && std::abs(self.core_term()) >= atol) {
