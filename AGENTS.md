@@ -86,17 +86,13 @@ Key files:
   series.
 - **`benchmark.pedantic`'s `setup=` runs outside the timed region but not outside the *live* one.**
   It builds round *k+1*'s arguments before releasing round *k*'s, so any `rounds > 1` holds two
-  problems at once and roughly doubles peak memory. At sizes where that matters, pin
-  `--bench-rounds=1` and get repetition from the job that launches pytest, not from the round count.
-  For the same reason the autouse `record_memory` window — which spans `setup` — measures the
-  construction transient rather than the operation; per-operation cost comes from the `op_memory`
-  fixture, whose window covers only the timed call.
-- **`monoprop_bench_tools.memory.cpu.PssSampler` reads `/proc/self/smaps_rollup`, whose cost is
-  O(address space) and which takes `mmap_lock`.** Above a few GiB it perturbs the run it is measuring and
-  contends with the engine's own threads, and because it only samples when the GIL is released, the
-  faster side of an A/B is sampled less and reports a *lower* peak. It is opt-in
-  (`--bench-pss-sampler`) for that reason; `HighWaterMark` is exact, needs no thread, and is what to
-  quote.
+  problems at once and roughly doubles peak memory — pin `--bench-rounds=1` at sizes where that
+  matters. For the same reason `record_memory`, which spans `setup`, measures the construction
+  transient; per-operation cost comes from the `op_memory` fixture.
+- **`PssSampler` reads `/proc/self/smaps_rollup`, which costs a page-table walk under `mmap_lock`.**
+  Above a few GiB it perturbs the run it measures, and it samples only when the GIL is released, so
+  the faster side of an A/B is sampled less and reports a *lower* peak. Opt-in
+  (`--bench-pss-sampler`) for that reason; quote `HighWaterMark`, which is exact.
 
 ### Core abstractions (the propagation backbone)
 
@@ -150,33 +146,13 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - Fixture msgpack schema is documented in `tests/data/README.md`
 - Tests validate against exact solutions for small systems
 - Heavy use of `@parametrize_with_cases` decorators
-- **pytest's default capture is fd-level**, so it hides C++ diagnostics: it replaces fd 2 for each
-  test and discards the buffer when the test passes, while the engine writes straight to fd 2 (the
-  `COMMPROF` line from `monoprop_COMM_PROFILE` comes out of a transport destructor). Reading those
-  under pytest requires `-s`; the `just bench` recipes pass it for this reason.
-- **Assert the count of what an instrument should emit, at the point of collection.** "The two arms
-  measured the same" and "the instrument never fired" are otherwise the same observation, and that
-  reads as a result rather than a failure. For the same reason, never diagnose by comparing two
-  zeros — get a positive control that is known to emit before concluding anything from silence.
-- **A slow CTest run on an MPI build is `MPI_Init`, not slow tests.** CTest runs each Boost case as
-  its own process, so each pays a full `MPI_Init`, which initialises every fabric device present
-  whether or not the process will send a message — 8.8 s against 0.2 s of user CPU on a Deucalion
-  *login* node with 8 HCAs. The tell is wall time with no CPU behind it. `monoprop_ENABLE_MPI` builds
-  default to `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`, which skips fabric init for the per-case tests.
-  Size the win on the hardware the gate runs on, not on that login node: on a `dev-x86` compute node
-  `ctest -L serial` costs **0.61 s/case** with the exclusion (208 cases in 126.03 s, job `1828011`)
-  against **2.03 s/case** without it (214 cases in 435.31 s, job `1828023`), a saving of 1.42 s/case.
-  Paired by test name over the 208 cases the two share, the median ratio is **3.42x** and every one
-  of the 208 is faster.
-- **That exclusion is scoped to the `serial` variants and must stay that way.** A per-case launch is
-  one process — world size 1, `*_World` cases skip themselves, everything else is `MPI_COMM_SELF` — so
-  no transport is used and the fabric can only cost startup time. The multi-rank variants exchange
-  real messages: `OMPI_MCA_pml=^ucx` makes a 2-rank run of the suite hang indefinitely on a case that
-  otherwise passes in 29 ms, on `main` as well, so it is component selection rather than engine code.
-  `discover_tests`' `SERIAL_ENVIRONMENT` argument exists for exactly this split.
-- Use exclusions (`^…`), never a positive component list — naming a component that must exist breaks
-  on the next machine, since `vader` became `sm` in Open MPI 5 and `OMPI_MCA_btl=self,vader` there
-  silently reduces to `self` alone.
+- **pytest's default capture is fd-level**, so it hides C++ diagnostics: it replaces fd 2 per test
+  and discards the buffer when the test passes, while the engine writes straight to fd 2 (the
+  `COMMPROF` line comes out of a transport destructor). Reading those under pytest requires `-s`.
+- **A slow CTest run on an MPI build is `MPI_Init`, not slow tests** — the tell is wall time with no
+  CPU behind it. `monoprop_ENABLE_MPI` builds default to `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`,
+  which is scoped to the single-process `serial` variants and must stay that way. Rationale and the
+  measured saving are in the comment above the option in `cpp/tests/CMakeLists.txt`.
 
 ## Key Dependencies & Integration
 
@@ -216,15 +192,9 @@ When changing behavior, APIs, build/test workflows, paths, or developer conventi
 - Check `build/*/compile_commands.json` for compilation flags
 - Use `rm -rf build` to clear environment-specific builds
 - Verify `monoprop_MAX_NUM_MODES` matches your use case (default: 250)
-- **`uv sync` does not relink the C++ test binary.** It builds in a temporary directory and installs
-  only the wheel, and `bin/monoprop_unit_tests.x` is not a wheel target — so an edited test can leave
-  a stale binary that passes, or that reports `no test cases matching filter` for a case you just
-  wrote. Compare the binary's mtime against the source's before trusting either outcome.
-- **The editable tree cannot be reconfigured in place**: its cache pins the build-isolation
-  interpreter scikit-build-core created and deleted, so `cmake --build build/editable/<type>` fails
-  regenerating `build.ninja`, and the `skbuild-*` presets inherit that because they only adopt the
-  tree. To iterate on C++ tests, configure a standalone tree with an explicit `-Dnanobind_DIR=…`
-  (nanobind is a build-isolation-only dependency, absent from `.venv`) — recipe in
-  `docs/content/docs/building.mdx`.
+- **`uv sync` does not relink the C++ test binary** — it installs only the wheel, and
+  `bin/monoprop_unit_tests.x` is not a wheel target, so an edited test can leave a stale binary that
+  passes or reports `no test cases matching filter`. Check its mtime against the source's. To iterate
+  on C++ tests, configure a standalone tree; recipe in `docs/content/docs/building.mdx`.
 
 This is a sophisticated scientific computing project requiring careful attention to template instantiation, build system configuration, and the C++/Python boundary.

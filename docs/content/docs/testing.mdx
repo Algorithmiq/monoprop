@@ -87,14 +87,10 @@ just test-wide   # rebuilds via uv sync with monoprop_WIDE_TERM_INDEX=ON, then r
 
 Because CTest runs each case as its own process (see below), an MPI-enabled build pays a
 full `MPI_Init` per case — and `MPI_Init` initialises every fabric device it finds whether
-or not the process will ever send a message. On one login node with eight host adapters that
-is 8.8 s per process against 0.2 s of user CPU: it looks like slow tests, but it is wall
-time with no CPU behind it. So MPI builds default to
-`monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`, which skips fabric init for the per-case tests. What
-that is worth scales with how many adapters the machine has, so read it per case rather than
-as a suite wall: on a Deucalion `dev-x86` compute node the exclusion takes `ctest -L serial`
-from 2.03 s per case to 0.61 s (435.31 s over 214 cases against 126.03 s over 208), a median
-of 3.42x over the cases the two runs share.
+or not the process will ever send a message. It looks like slow tests, but it is wall time
+with no CPU behind it. So MPI builds default to `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`, which
+skips fabric init for the per-case tests; the saving scales with how many adapters the
+machine has, and was measured at 3.4x per case on a well-connected compute node.
 
 The exclusion applies **only** to the per-case `serial` variants, which are single-process:
 their world size is 1, the `*_World` cases skip themselves, and every other communicator is
