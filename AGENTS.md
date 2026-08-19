@@ -19,7 +19,7 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
     - `test`: adding/refactoring tests, *i.e.* improving code coverage. **No** functional changes.
     - `chore`: "boring" tasks, *i.e.* updating dependency pins in `pyproject.toml`. **No** functional changes.
 - If you make a commit, add a trailer: `Assisted-by: <harness>:<model>`, where `<harness>` is the current agent harness (like ClaudeCode), and `<model>` is the AI model (like claude-opus-4.8). You don't need to add a coauthored-by when you have this.
-- PR titles must adhere to the same conventional commits format.
+- PR titles must adhere to the same conventional commits format. PR text should follow the PR template in the `.github` folder.
 - Prefix PR descriptions and comments on PRs with the line ":robot: _AI text below_ :robot:" to indicate you are an agent speaking on a user's behalf.
 - Python docstrings use Google style, and are rendered into the docs site by `just gen-api` — keep
   them accurate.

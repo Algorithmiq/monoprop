@@ -206,6 +206,7 @@ doctest-py:
 
 doctest-docs:
     {{ docs_uv }} python -m pytest --markdown-docs docs/content/docs --ignore=docs/content/docs/tutorials --ignore=docs/content/docs/api
+    {{ docs_uv }} python -m pytest --markdown-docs README.md
 
 # Build the static documentation site into `docs/out`.
 build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
