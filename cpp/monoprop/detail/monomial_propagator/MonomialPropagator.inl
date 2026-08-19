@@ -979,6 +979,11 @@ auto MonomialPropagator<NumModes>::make_plan_(std::optional<double> pare_thresho
     local.op_store = mp_op_.store.get();
     local.inverted_index_rows = inverted_index.rows();
 
+    // The plan always owns its layers, so `cos` -- which holds a raw CosMask pointer per layer -- points
+    // into layers no later append_layer, slice_graph or maybe_compact_layers can move or free. The copy is
+    // cheap: a Layer is a shared_ptr to an immutable core plus an optional CosMask, and MPGraph::append
+    // never stores a cosine set, so copying a normally-built graph is one pointer copy per layer. Only a
+    // pared graph carries masks, and pare_graph builds those into an owned graph anyway.
     if (pare_threshold.has_value()) {
         auto full_cos_of_layer = [this, &inverted_index](size_t i) -> CosMask {
             const auto layer = graph_.get_layer_traversal(i);
@@ -994,7 +999,12 @@ auto MonomialPropagator<NumModes>::make_plan_(std::optional<double> pare_thresho
             std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, schrodinger_, comm_, full_cos_of_layer));
     }
     else {
-        local.graph = std::shared_ptr<const MPGraph>(std::shared_ptr<const void>{}, &graph_);
+        std::vector<Layer> owned;
+        owned.reserve(graph_.layers());
+        for (size_t i = 0; i < graph_.layers(); ++i) {
+            owned.push_back(graph_.get_layer(i));
+        }
+        local.graph = std::make_shared<const MPGraph>(graph_.is_schrodinger(), std::move(owned));
     }
 
     local.cos = build_cos_callbacks<NumModes>(inverted_index, local.graph->replay_view(), basis_);
