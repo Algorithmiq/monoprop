@@ -15,7 +15,10 @@
 #include "monoprop/detail/partition/CpuTopology.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <map>
+#include <mutex>
+#include <print>
 #include <vector>
 
 #include <hwloc.h>
@@ -88,7 +91,7 @@ namespace topo_detail {
 
 auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t group_index, size_t group_count)
     -> std::vector<int> {
-    if (cores.empty() || group_count * n > cores.size()) {
+    if (cores.empty() || group_count == 0 || group_count * n > cores.size()) {
         return {};
     }
 
@@ -289,6 +292,19 @@ auto partition_cpusets(size_t n, size_t group_index, size_t group_count, bool ma
         group_count = 1;
     }
     const auto order = topo_detail::placement_order(cores, n, group_index, group_count);
+
+    if (order.empty()) {
+        static std::once_flag warned;
+        std::call_once(warned, [&] {
+            std::print(stderr,
+                       "monoprop: partition pinning requested but not possible "
+                       "({} cores visible, {} groups x {} partitions); threads run unpinned.\n",
+                       cores.size(),
+                       group_count,
+                       n);
+            std::fflush(stderr);
+        });
+    }
 
     std::vector<CpuSet> sets(order.size());
     for (size_t i = 0; i < order.size(); ++i) {
