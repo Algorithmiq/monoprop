@@ -140,6 +140,105 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  gcc-asan-ubsan:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: GCC ASan+LSan+UBSan
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    env:
+      SKBUILD_CMAKE_BUILD_TYPE: "AsanUbsan"
+      SKBUILD_CMAKE_DEFINE: "CMAKE_CXX_COMPILER=g++-14;monoprop_GCC_SANITIZER=asan-ubsan"
+      ASAN_OPTIONS: "detect_leaks=1:leak_check_at_exit=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=2:check_initialization_order=1:strict_string_checks=1:halt_on_error=1"
+      LSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/lsan-python.supp"
+      UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-14 libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          uv sync --no-progress --group workspace-test --all-extras -v
+
+      - name: Resolve GCC ASan runtime
+        run: |
+          echo "ASAN_RUNTIME=$(g++-14 -print-file-name=libasan.so)" >> "$GITHUB_ENV"
+
+      - name: Run C++ unit tests
+        run: |
+          ctest --test-dir build/editable/AsanUbsan --output-on-failure
+
+      - name: Run Python tests
+        env:
+          LD_PRELOAD: ${{ env.ASAN_RUNTIME }}
+        run: |
+          uv run pytest -r aR --durations=50 --durations-min=5.0
+
+  gcc-tsan:
+    # in combination with the PR types selection, this top-level if statement
+    # skips running the workflow for Draft PRs
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+
+    name: GCC ThreadSanitizer
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    env:
+      SKBUILD_CMAKE_BUILD_TYPE: "Tsan"
+      SKBUILD_CMAKE_DEFINE: "CMAKE_CXX_COMPILER=g++-14;monoprop_GCC_SANITIZER=tsan"
+      TSAN_OPTIONS: "halt_on_error=1:history_size=4"
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-14 libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          uv sync --no-progress --group workspace-test --all-extras -v
+
+      - name: Resolve GCC TSan runtime
+        run: |
+          echo "TSAN_RUNTIME=$(g++-14 -print-file-name=libtsan.so)" >> "$GITHUB_ENV"
+
+      - name: Run C++ partition and ShmComm tests
+        run: |
+          ctest --test-dir build/editable/Tsan --output-on-failure -R "(partition_|shm_comm_)"
+
+      - name: Run Python partition smoke tests
+        env:
+          LD_PRELOAD: ${{ env.TSAN_RUNTIME }}
+          monoprop_PARTITIONS: "4"
+        run: |
+          .venv/bin/python -m pytest tests/test_monoprop_smoke.py -v
+
   sonarqube-analysis:
     # in combination with the PR types selection, this top-level if statement
     # skips running the workflow for Draft PRs

@@ -43,6 +43,7 @@ target_include_directories(
 target_link_libraries(
   monoprop_unit_tests.x
   PRIVATE
+    monoprop-sanitizers
     monoprop-objs
     Boost::unit_test_framework
     msgpack-cxx

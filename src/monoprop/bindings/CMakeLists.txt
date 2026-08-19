@@ -121,7 +121,25 @@ target_include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(_core PRIVATE monoprop-objs)
+target_link_libraries(
+  _core
+  PRIVATE
+    monoprop-objs
+    monoprop-sanitizers
+)
+
+if(monoprop_GCC_SANITIZER STREQUAL "asan-ubsan")
+  # nanobind's dict caster intentionally walks CPython internals that GCC UBSan
+  # treats as out-of-bounds in generated wrapper TUs; keep full UBSan on first-party
+  # engine code and disable UBSan only on the generated nanobind wrapper sources.
+  set_source_files_properties(
+    "${CMAKE_CURRENT_BINARY_DIR}/bindings.cpp"
+    ${_bind_cpps}
+    PROPERTIES
+      COMPILE_OPTIONS
+        "-fno-sanitize=undefined"
+  )
+endif()
 
 # generate dispatch function module
 install(

@@ -107,6 +107,15 @@ uv sync --all-extras -v
 ctest --test-dir build/editable/Release
 ```
 
+GCC sanitizer build (the QA sanitizer profile):
+
+```bash
+SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan \
+SKBUILD_CMAKE_DEFINE="CMAKE_CXX_COMPILER=g++-14;monoprop_GCC_SANITIZER=asan-ubsan" \
+uv sync --group workspace-test --all-extras -v
+ctest --test-dir build/editable/AsanUbsan --output-on-failure
+```
+
 Full instructions — prerequisites, MPI options, and running the example
 executable — are in the [building guide](https://docs.monoprop.algorithmiq.tech/building).
 In particular, from-source builds require `hwloc` and `pkg-config` so CMake can

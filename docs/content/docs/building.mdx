@@ -110,6 +110,23 @@ uv sync --all-extras -v --config-settings=cmake.build-type=Debug
 ctest --test-dir build/editable/Debug
 ```
 
+### GCC sanitizer trees
+
+The QA workflow uses two explicit GCC sanitizer profiles, configured with
+`monoprop_GCC_SANITIZER`:
+
+```bash
+SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan \
+SKBUILD_CMAKE_DEFINE="CMAKE_CXX_COMPILER=g++-14;monoprop_GCC_SANITIZER=asan-ubsan" \
+uv sync --group workspace-test --all-extras -v
+ctest --test-dir build/editable/AsanUbsan --output-on-failure
+
+SKBUILD_CMAKE_BUILD_TYPE=Tsan \
+SKBUILD_CMAKE_DEFINE="CMAKE_CXX_COMPILER=g++-14;monoprop_GCC_SANITIZER=tsan" \
+uv sync --group workspace-test --all-extras -v
+ctest --test-dir build/editable/Tsan --output-on-failure
+```
+
 ### Related workflows
 
 - Use `just test-wide` for the 64-bit `monoprop_WIDE_TERM_INDEX` configuration.

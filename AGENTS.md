@@ -109,6 +109,7 @@ We also use [`just`](https://github.com/casey/just) for task automation.
 ```bash
 uv sync --all-groups --all-extras -v  # Build & install (workspace-wide)
 uv run pytest  # Run tests (monoprop's suite + the workspace members' suites)
+SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan SKBUILD_CMAKE_DEFINE="CMAKE_CXX_COMPILER=g++-14;monoprop_GCC_SANITIZER=asan-ubsan" uv sync --group workspace-test --all-extras -v
 just build-docs  # Build documentation
 ```
 

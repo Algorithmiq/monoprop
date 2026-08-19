@@ -75,6 +75,7 @@ if(monoprop_ENABLE_MPI)
 endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
+include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/Sanitizers.cmake)
 
 # report on compiler flags in use
 message(STATUS "Configuring a ${CMAKE_BUILD_TYPE} build")
@@ -96,6 +97,7 @@ message(
   "   Project defaults       : ${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION} ${monoprop_CXX_FLAGS}"
 )
 message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
+message(STATUS "   GCC sanitizer profile  : ${monoprop_GCC_SANITIZER}")
 
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
 message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")

@@ -47,6 +47,7 @@ target_include_directories(
 target_link_libraries(
   monoprop-objs
   PUBLIC
+    monoprop-sanitizers
     Boost::boost
     Threads::Threads
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
@@ -107,6 +108,7 @@ target_link_libraries(
     Threads::Threads
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
   PRIVATE
+    monoprop-sanitizers
     PkgConfig::HWLOC
 )
 
