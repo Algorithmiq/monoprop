@@ -1,8 +1,16 @@
 @import 'tailwindcss';
 @import 'fumadocs-ui/css/neutral.css';
 @import 'fumadocs-ui/css/preset.css';
-/* Styling for the generated Python API reference components (PyFunction, …). */
-@import 'fumadocs-python/preset.css';
+
+/*
+ * Kind badges on the generated Python API reference cards (see
+ * `src/components/py.tsx`). The `fdpy-` prefix and these two hues are inherited
+ * from fumadocs-python's stylesheet, which the components used to come from.
+ */
+@theme inline {
+  --color-fdpy-func: oklch(79.2% 0.209 151.711);
+  --color-fdpy-attribute: oklch(74% 0.238 322.16);
+}
 
 /*
  * Algorithmiq brand accents (algorithmiq.fi).
