@@ -1,7 +1,15 @@
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import * as Py from 'fumadocs-python/components';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from 'fumadocs-ui/components/ui/collapsible';
+import { buttonVariants } from 'fumadocs-ui/components/ui/button';
+import { ChevronRight } from 'lucide-react';
+import { cn } from '@/lib/cn';
 import type { MDXComponents } from 'mdx/types';
-import type { ComponentProps, ImgHTMLAttributes, ReactElement } from 'react';
+import type { ComponentProps, ImgHTMLAttributes, ReactElement, ReactNode } from 'react';
 
 // The tutorial pages embed matplotlib figures as raw `<img src="data:…">` tags
 // with no intrinsic dimensions. fumadocs' default `img` wraps Next.js' `Image`,
@@ -35,6 +43,21 @@ function anchored<P extends { name?: string }>(Component: (props: P) => ReactEle
 const PyFunction = anchored(Py.PyFunction as (props: ComponentProps<typeof Py.PyFunction>) => ReactElement);
 const PyAttribute = anchored(Py.PyAttribute as (props: ComponentProps<typeof Py.PyAttribute>) => ReactElement);
 
+// Replaces `Py.PySourceCode` from fumadocs-python which is bugged.
+function PySourceCode({ children }: { children?: ReactNode }) {
+  return (
+    <Collapsible className="my-6">
+      <CollapsibleTrigger
+        className={cn(buttonVariants({ color: 'secondary', size: 'sm', className: 'group' }))}
+      >
+        Source Code
+        <ChevronRight className="size-3.5 text-fd-muted-foreground group-data-[state=open]:rotate-90" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="prose-no-margin">{children}</CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
@@ -42,6 +65,7 @@ export function getMDXComponents(components?: MDXComponents) {
     ...Py,
     PyFunction,
     PyAttribute,
+    PySourceCode,
     img: Img,
     ...components,
   } satisfies MDXComponents;
