@@ -278,14 +278,14 @@ auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) 
 
 /* ── partition_cpusets ─────────────────────────────────────────────────────── */
 
-auto partition_cpusets(size_t n, size_t group_index, size_t group_count, bool mask_is_private) -> std::vector<CpuSet> {
+auto partition_cpusets(size_t n, size_t group_index, size_t group_count, NodeMask mask) -> std::vector<CpuSet> {
     if (!config::get().partition_pinning) {
         return {};
     }
     const auto cores = enumerate_physical_cores();
 
     // A private mask IS this rank's share: the launcher already separated co-located ranks.
-    if (mask_is_private) {
+    if (mask == NodeMask::PerRank) {
         group_index = 0;
         group_count = 1;
     }

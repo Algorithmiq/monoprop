@@ -112,13 +112,13 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
     const auto shared_mask = partition::partition_cpusets(/*n=*/cores.size(),
                                                           /*group_index=*/1,
                                                           /*group_count=*/2,
-                                                          /*mask_is_private=*/false);
+                                                          partition::NodeMask::Shared);
     BOOST_CHECK(shared_mask.empty());
 
     const auto private_mask = partition::partition_cpusets(/*n=*/cores.size(),
                                                            /*group_index=*/1,
                                                            /*group_count=*/2,
-                                                           /*mask_is_private=*/true);
+                                                           partition::NodeMask::PerRank);
     if (private_mask.empty() && empty_placement_is_licensed()) {
         return;
     }
@@ -221,7 +221,7 @@ BOOST_AUTO_TEST_CASE(cpu_topology_policy_per_rank_slice_starves_without_collapse
 
     BOOST_CHECK(placement_order(slice, 2, /*group_index=*/3, /*group_count=*/8).empty());
 
-    // Collapsed to a single group -- what mask_is_private does -- the same slice places fully.
+    // Collapsed to a single group -- what NodeMask::PerRank does -- the same slice places fully.
     const auto collapsed = placement_order(slice, 2, /*group_index=*/0, /*group_count=*/1);
     BOOST_REQUIRE_EQUAL(collapsed.size(), 2u);
     BOOST_CHECK_EQUAL(collapsed[0], 6);
@@ -237,7 +237,7 @@ BOOST_AUTO_TEST_CASE(cpu_topology_policy_private_mask_collapses_even_when_the_sp
     BOOST_CHECK_EQUAL(split[0], 2);
     BOOST_CHECK_EQUAL(split[1], 6);
 
-    // What mask_is_private now passes: the head of this rank's own interleave over both domains.
+    // What NodeMask::PerRank now passes: the head of this rank's own interleave over both domains.
     const auto collapsed = placement_order(cores, 2, /*group_index=*/0, /*group_count=*/1);
     BOOST_REQUIRE_EQUAL(collapsed.size(), 2u);
     BOOST_CHECK_EQUAL(collapsed[0], 0);
@@ -366,7 +366,7 @@ BOOST_AUTO_TEST_CASE(cpu_topology_per_rank_mask_still_places) {
 
     // What `srun --cpu-bind=cores` produces: our whole share, told there are eight sibling ranks.
     const auto sets =
-        partition::partition_cpusets(/*n=*/k, /*group_index=*/3, /*group_count=*/8, /*mask_is_private=*/true);
+        partition::partition_cpusets(/*n=*/k, /*group_index=*/3, /*group_count=*/8, partition::NodeMask::PerRank);
     if (sets.empty() && empty_placement_is_licensed()) {
         return;
     }
@@ -401,11 +401,11 @@ BOOST_AUTO_TEST_CASE(cpu_topology_shared_mask_keeps_co_located_ranks_disjoint) {
     const auto rank0 = partition::partition_cpusets(/*n=*/per_rank,
                                                     /*group_index=*/0,
                                                     /*group_count=*/2,
-                                                    /*mask_is_private=*/false);
+                                                    partition::NodeMask::Shared);
     const auto rank1 = partition::partition_cpusets(/*n=*/per_rank,
                                                     /*group_index=*/1,
                                                     /*group_count=*/2,
-                                                    /*mask_is_private=*/false);
+                                                    partition::NodeMask::Shared);
     if (rank0.empty() && rank1.empty() && empty_placement_is_licensed()) {
         return;
     }
