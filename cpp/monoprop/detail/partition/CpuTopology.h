@@ -24,7 +24,9 @@
 
 #pragma once
 
+#include <climits>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "monoprop/detail/EnvConfig.h"
@@ -88,6 +90,23 @@ auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t gr
  */
 auto enumerate_physical_cores() -> std::vector<PhysicalCore>;
 
+//! Affinity-mask exchange width, in 64-bit words. A mask needing more is "cannot classify", never private.
+inline constexpr size_t kAffinityMaskWords = 64;
+
+static_assert(kAffinityMaskWords > 0 && kAffinityMaskWords <= static_cast<size_t>(INT_MAX),
+              "the affinity-mask width is an MPI_Allgather element count, which is an int");
+
+//! This process's allowed cpuset as @p nwords 64-bit words; false with @p out zeroed when it does not fit.
+auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
+
+/*! @brief Whether the @p n masks of @p words words laid end to end in @p masks are pairwise disjoint.
+ *  False for @p n < 2 and for any empty mask: all-zero is disjoint from everything, and shared is the safe error.
+ */
+[[nodiscard]] auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool;
+
+//! Whether the launcher has already handed this rank a private slice of the node, or the node's CPUs are shared.
+enum class NodeMask { Shared, PerRank };
+
 /*!
  * @brief Build placement tokens for one MPI rank's partitions.
  *
@@ -98,10 +117,15 @@ auto enumerate_physical_cores() -> std::vector<PhysicalCore>;
  * @param n            Number of partitions to place.
  * @param group_index  This rank's 0-based index among the co-located ranks on the host.
  * @param group_count  Total number of co-located ranks on the host.
+ * @param mask         NodeMask::PerRank only when the co-located ranks' affinity masks have been measured
+ *                     pairwise DISJOINT (PartitionGroup::classify_node_masks_), so this mask is our share.
  * @returns Vector of @p n CpuSet tokens, or empty when @c monoprop_PARTITION_PINNING is disabled,
- *          hwloc is unavailable, or the host cannot provide @p group_count × @p n distinct cores.
+ *          hwloc is unavailable, or fewer than @p group_count x @p n cores are visible (@p n under PerRank).
+ *
+ * @note Under NodeMask::PerRank the group split is skipped: our share is already this rank's alone.
  */
-auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1) -> std::vector<CpuSet>;
+auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1, NodeMask mask = NodeMask::Shared)
+    -> std::vector<CpuSet>;
 
 /*!
  * @brief Bind the calling thread to the PU identified by @p set.

@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <set>
 #include <vector>
 
@@ -32,6 +33,7 @@
 #include <sched.h>
 #endif
 
+#include "monoprop/detail/EnvConfig.h" // config::get().partition_pinning -- the one licensed empty placement
 #include "monoprop/detail/partition/CpuTopology.h"
 
 namespace partition = monoprop::detail::partition;
@@ -46,6 +48,19 @@ struct AffinityGuard {
     ~AffinityGuard() { sched_setaffinity(0, sizeof(saved_), &saved_); }
 #endif
 };
+
+namespace {
+
+// An empty placement is licensed by pinning being off and by nothing else; "placed nothing" is the bug.
+auto empty_placement_is_licensed() -> bool {
+    if (monoprop::config::get().partition_pinning) {
+        return false;
+    }
+    BOOST_TEST_MESSAGE("monoprop_PARTITION_PINNING is off; partition_cpusets places nothing");
+    return true;
+}
+
+} // namespace
 
 /* ── Live smoke tests ─────────────────────────────────────────────────────── */
 
@@ -62,7 +77,7 @@ BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
         // guard restores affinity on scope exit
     }
     // When topology discovery succeeds, a non-empty core list must produce a non-empty placement.
-    if (!cores.empty()) {
+    if (!cores.empty() && !(one.empty() && empty_placement_is_licensed())) {
         BOOST_CHECK_EQUAL(one.size(), 1u);
     }
 
@@ -93,9 +108,33 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
     // invariant (one rank's busy-polling collectives cannot starve the other's barrier spins).
     BOOST_CHECK(rank0.front().pu != rank1.front().pu);
 
-    // Oversubscription: 2 ranks × cores.size() partitions > total physical cores.
-    const auto past_end = partition::partition_cpusets(/*n=*/cores.size(), /*group_index=*/1, /*group_count=*/2);
-    BOOST_CHECK(past_end.empty());
+    // Both arms passed explicitly so neither depends on the host: refuse the shared one, fill the private.
+    const auto shared_mask = partition::partition_cpusets(/*n=*/cores.size(),
+                                                          /*group_index=*/1,
+                                                          /*group_count=*/2,
+                                                          partition::NodeMask::Shared);
+    BOOST_CHECK(shared_mask.empty());
+
+    const auto private_mask = partition::partition_cpusets(/*n=*/cores.size(),
+                                                           /*group_index=*/1,
+                                                           /*group_count=*/2,
+                                                           partition::NodeMask::PerRank);
+    if (private_mask.empty() && empty_placement_is_licensed()) {
+        return;
+    }
+    BOOST_REQUIRE_EQUAL(private_mask.size(), cores.size());
+    std::set<int> placed;
+    for (const auto &set : private_mask) {
+        placed.insert(set.pu);
+    }
+    BOOST_CHECK_EQUAL(placed.size(), cores.size());
+    std::set<int> visible;
+    for (const auto &core : cores) {
+        visible.insert(core.cpu);
+    }
+    for (const int pu : placed) {
+        BOOST_CHECK(visible.count(pu) == 1);
+    }
 }
 
 /* ── Policy unit tests (deterministic, no hwloc or live hardware) ─────────── */
@@ -173,3 +212,211 @@ BOOST_AUTO_TEST_CASE(cpu_topology_policy_uneven_domains) {
     BOOST_CHECK_EQUAL(order[1], 2);
     BOOST_CHECK_EQUAL(order[2], 4);
 }
+
+/* ── The cgroup-placement classification ──────────────────────────────────── */
+
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_per_rank_slice_starves_without_collapse) {
+    // One rank's slice under `srun --cpu-bind=cores`: 2 cores of a 16-core host, one L3 domain.
+    const std::vector<partition::PhysicalCore> slice = {{6, 0}, {7, 0}};
+
+    BOOST_CHECK(placement_order(slice, 2, /*group_index=*/3, /*group_count=*/8).empty());
+
+    // Collapsed to a single group -- what NodeMask::PerRank does -- the same slice places fully.
+    const auto collapsed = placement_order(slice, 2, /*group_index=*/0, /*group_count=*/1);
+    BOOST_REQUIRE_EQUAL(collapsed.size(), 2u);
+    BOOST_CHECK_EQUAL(collapsed[0], 6);
+    BOOST_CHECK_EQUAL(collapsed[1], 7);
+}
+
+BOOST_AUTO_TEST_CASE(cpu_topology_policy_private_mask_collapses_even_when_the_split_would_fit) {
+    // 2 ranks x 2 partitions fits these 4 cores, so the collapse is not a fallback: it moves rank 1's cores.
+    const std::vector<partition::PhysicalCore> cores = {{0, 0}, {2, 1}, {4, 0}, {6, 1}};
+
+    const auto split = placement_order(cores, 2, /*group_index=*/1, /*group_count=*/2);
+    BOOST_REQUIRE_EQUAL(split.size(), 2u);
+    BOOST_CHECK_EQUAL(split[0], 2);
+    BOOST_CHECK_EQUAL(split[1], 6);
+
+    // What NodeMask::PerRank now passes: the head of this rank's own interleave over both domains.
+    const auto collapsed = placement_order(cores, 2, /*group_index=*/0, /*group_count=*/1);
+    BOOST_REQUIRE_EQUAL(collapsed.size(), 2u);
+    BOOST_CHECK_EQUAL(collapsed[0], 0);
+    BOOST_CHECK_EQUAL(collapsed[1], 2);
+}
+
+namespace {
+
+// The flat [n * words] array MPI_Allgather leaves behind, built from per-rank PU-index lists.
+auto packed_masks(const std::vector<std::vector<size_t>> &pus, size_t words) -> std::vector<uint64_t> {
+    std::vector<uint64_t> out(pus.size() * words, 0);
+    for (size_t r = 0; r < pus.size(); ++r) {
+        for (const size_t pu : pus[r]) {
+            out[(r * words) + (pu / 64)] |= uint64_t{1} << (pu % 64);
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(cpu_topology_masks_disjoint_vs_identical) {
+    constexpr size_t kWords = partition::kAffinityMaskWords;
+
+    const auto disjoint = packed_masks({{0, 1}, {2, 3}}, kWords);
+    BOOST_CHECK(partition::masks_are_pairwise_disjoint(disjoint.data(), 2, kWords));
+
+    const auto identical = packed_masks({{0, 1}, {0, 1}}, kWords);
+    BOOST_CHECK(!partition::masks_are_pairwise_disjoint(identical.data(), 2, kWords));
+
+    // Partial overlap: "not private" is conservative, since collapsing points every rank at the same cores.
+    const auto partial = packed_masks({{0, 1}, {1, 2}}, kWords);
+    BOOST_CHECK(!partition::masks_are_pairwise_disjoint(partial.data(), 2, kWords));
+
+    // An unreadable mask arrives empty and must not be read as "disjoint from everything".
+    const auto with_empty = packed_masks({{0, 1}, {}}, kWords);
+    BOOST_CHECK(!partition::masks_are_pairwise_disjoint(with_empty.data(), 2, kWords));
+
+    const auto lone = packed_masks({{0, 1}}, kWords);
+    BOOST_CHECK(!partition::masks_are_pairwise_disjoint(lone.data(), 1, kWords));
+
+    const auto four_ok = packed_masks({{0}, {1}, {2}, {3}}, kWords);
+    BOOST_CHECK(partition::masks_are_pairwise_disjoint(four_ok.data(), 4, kWords));
+    const auto four_bad = packed_masks({{0}, {1}, {2}, {1}}, kWords);
+    BOOST_CHECK(!partition::masks_are_pairwise_disjoint(four_bad.data(), 4, kWords));
+}
+
+BOOST_AUTO_TEST_CASE(cpu_topology_masks_span_word_boundaries) {
+    constexpr size_t kWords = partition::kAffinityMaskWords;
+
+    // A per-word comparison that forgot to loop would answer from word 0 alone.
+    const auto low_high = packed_masks({{5}, {200}}, kWords);
+    BOOST_CHECK(partition::masks_are_pairwise_disjoint(low_high.data(), 2, kWords));
+
+    const auto both_high = packed_masks({{200}, {200}}, kWords);
+    BOOST_CHECK(!partition::masks_are_pairwise_disjoint(both_high.data(), 2, kWords));
+
+    const auto late_overlap = packed_masks({{1, 3000}, {2, 3000}}, kWords);
+    BOOST_CHECK(!partition::masks_are_pairwise_disjoint(late_overlap.data(), 2, kWords));
+}
+
+BOOST_AUTO_TEST_CASE(cpu_topology_affinity_mask_covers_enumerated_cores) {
+    // The only check that the mask EXCHANGED and the cores PLACED come from one view of the machine.
+    const auto cores = partition::enumerate_physical_cores();
+    if (cores.empty()) {
+        return; // hwloc loaded no topology at all: there is no second view to agree with.
+    }
+    std::vector<uint64_t> mine(partition::kAffinityMaskWords, 0);
+    if (!partition::affinity_mask_words(mine.data(), mine.size())) {
+        // Not a skip: refusal keys on the HIGHEST allowed PU, and core.cpu is each core's LOWEST sibling.
+        std::vector<uint64_t> wide(partition::kAffinityMaskWords * 64, 0);
+        BOOST_REQUIRE(partition::affinity_mask_words(wide.data(), wide.size()));
+        size_t highest = 0;
+        for (size_t w = wide.size(); w-- > 0;) {
+            if (wide[w] != 0) {
+                highest = (w * 64) + static_cast<size_t>(63 - __builtin_clzll(wide[w]));
+                break;
+            }
+        }
+        BOOST_CHECK_GE(highest, partition::kAffinityMaskWords * 64);
+        return;
+    }
+    size_t set_bits = 0;
+    for (const uint64_t w : mine) {
+        set_bits += static_cast<size_t>(__builtin_popcountll(w));
+    }
+    BOOST_CHECK(set_bits > 0u);
+    for (const auto &core : cores) {
+        const auto pu = static_cast<size_t>(core.cpu);
+        BOOST_CHECK((mine[pu / 64] >> (pu % 64)) & 1U);
+    }
+}
+
+#if defined(__linux__)
+
+namespace {
+
+// Confine to the first `k` cores, asserting the narrowing took hold; false only if the kernel refused.
+auto confine_to_first(const std::vector<partition::PhysicalCore> &full, size_t k) -> bool {
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    for (size_t i = 0; i < k; ++i) {
+        CPU_SET(full[i].cpu, &mask);
+    }
+    if (sched_setaffinity(0, sizeof(mask), &mask) != 0) {
+        return false;
+    }
+    BOOST_REQUIRE_EQUAL(partition::enumerate_physical_cores().size(), k);
+    return true;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(cpu_topology_per_rank_mask_still_places) {
+    const auto full = partition::enumerate_physical_cores();
+    if (full.empty()) {
+        return; // hwloc loaded no topology: there is no mask to confine to.
+    }
+    // ONE core exercises the collapse, so a single-core runner does not turn this into a free pass.
+    const size_t k = std::min<size_t>(full.size(), 2);
+
+    const AffinityGuard guard;
+    if (!confine_to_first(full, k)) {
+        return; // the kernel refused the affinity call; nothing below is reachable
+    }
+
+    // What `srun --cpu-bind=cores` produces: our whole share, told there are eight sibling ranks.
+    const auto sets =
+        partition::partition_cpusets(/*n=*/k, /*group_index=*/3, /*group_count=*/8, partition::NodeMask::PerRank);
+    if (sets.empty() && empty_placement_is_licensed()) {
+        return;
+    }
+    BOOST_REQUIRE_EQUAL(sets.size(), k);
+    for (const auto &set : sets) {
+        // Never pin outside the mask the launcher gave us.
+        bool inside = false;
+        for (size_t i = 0; i < k; ++i) {
+            inside = inside || set.pu == full[i].cpu;
+        }
+        BOOST_CHECK(inside);
+    }
+    if (k == 2) {
+        BOOST_CHECK(sets[0].pu != sets[1].pu);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(cpu_topology_shared_mask_keeps_co_located_ranks_disjoint) {
+    const auto full = partition::enumerate_physical_cores();
+    if (full.size() < 2) {
+        return; // two ranks cannot hold disjoint cores when there is only one
+    }
+    // Two cores, one per rank: a two-physical-core CI runner cannot supply the four the port asked for.
+    const size_t per_rank = full.size() >= 4 ? 2 : 1;
+    const size_t shared = 2 * per_rank;
+
+    const AffinityGuard guard;
+    if (!confine_to_first(full, shared)) {
+        return; // the kernel refused the affinity call; nothing below is reachable
+    }
+
+    const auto rank0 = partition::partition_cpusets(/*n=*/per_rank,
+                                                    /*group_index=*/0,
+                                                    /*group_count=*/2,
+                                                    partition::NodeMask::Shared);
+    const auto rank1 = partition::partition_cpusets(/*n=*/per_rank,
+                                                    /*group_index=*/1,
+                                                    /*group_count=*/2,
+                                                    partition::NodeMask::Shared);
+    if (rank0.empty() && rank1.empty() && empty_placement_is_licensed()) {
+        return;
+    }
+    BOOST_REQUIRE_EQUAL(rank0.size(), per_rank);
+    BOOST_REQUIRE_EQUAL(rank1.size(), per_rank);
+    for (const auto &a : rank0) {
+        for (const auto &b : rank1) {
+            // Two ranks on one core starve each other: busy-polling collectives against barrier spins.
+            BOOST_CHECK(a.pu != b.pu);
+        }
+    }
+}
+
+#endif // __linux__
