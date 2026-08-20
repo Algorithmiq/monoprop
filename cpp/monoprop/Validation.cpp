@@ -20,21 +20,19 @@
 
 namespace monoprop {
 
-// Every validate_* precondition on a caller-supplied argument reports through this one type.
+// Invalid caller input reports through this type.
 class ValidationError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
-// The propagator was mutated after a functional captured what it replays: a rebuilt graph leaves the
-// functional's parameter mapping describing a graph that is gone, a re-weight leaves its snapshotted
-// operator coefficients stale.
+// A functional no longer matches its propagator.
 class StaleFunctionalGraph : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
-// Declared in Validation.h and used across translation units, so internal linkage does not apply.
+// Exported validators below have external linkage.
 // NOLINTBEGIN(misc-use-internal-linkage)
 
 namespace {

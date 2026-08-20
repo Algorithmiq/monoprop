@@ -38,57 +38,43 @@ class MonomialPropagator;
 
 namespace detail {
 
-/// One propagator snapshot a functional replays, plus the checks that say the snapshot is still that
-/// propagator's own.
-///
-/// Immutable once built and held by `shared_ptr<const>`, so one plan backs either functional kind: it
-/// holds the snapshot, not the choice of what to compute. Every field is either owned or, where the
-/// comment says so, borrowed from the propagator — which is why a functional must not outlive it.
+/// Immutable, shared functional replay plan.
+/// Borrowed fields require the functional to outlive neither its propagator nor its partitions.
 template <size_t NumModes>
 class FunctionalPlan {
 public:
     /// A single-partition propagator's snapshot: one replay of its graph against its operator.
     struct Local {
-        // The weights this plan was built over, and the fallback when the propagator has published no
-        // newer set. The same object the control block holds, not a copy of it, so the pointers compare
-        // equal until a re-weight publishes -- which is how a call sees that it has weights to follow.
+        // Build-time weights; also used until a re-weight publishes new weights.
         std::shared_ptr<const OperatorWeights> weights;
-        // Owns its rows and snapshots the term count: the operator's sparse rows grow by push_back as
-        // terms are appended, so a view would both dangle and outrun the weights' `op`.
+        // Owned snapshot: operator rows can grow, but `op` cannot.
         EvalState state;        ///< the contraction partner, sparse (Heisenberg) or dense (Schrodinger)
         VecZ parameter_mapping; ///< optimizer order: which parameter drives graph layer i
         VecD gen_coeffs;        ///< optimizer order, parallel to parameter_mapping
-        // Always owned, never a view on the propagator's graph_: `cos` holds a raw CosMask pointer per
-        // layer, and only layers the plan owns are safe from a later append, slice or compaction.
+        // Owned because `cos` holds raw pointers into graph layers.
         std::shared_ptr<const MPGraph> graph;
-        // The folds keep raw column pointers into the propagator's inverted index, so this plan must not
-        // outlive the propagator either.
+        // `cos` borrows columns from the propagator's inverted index.
         CosCallbacks cos;
         mpi::Comm comm{}; ///< real MPI across nodes, or the in-process comm across partitions
 
-        // The operator-layout backstop. `mp_op` is borrowed and read only after the alive flag says the
-        // propagator is still there; the other two are what the borrowed inverted index was built over.
-        // Compared before any use of that index, so a mutation that forgot its revision bump still
-        // reports staleness rather than folding a rebuilt index through a pointer to the old one.
+        // Borrowed operator and inverted-index identity check.
+        // This catches a missing revision bump before the stale index is used.
         const MPOperator<NumModes> *mp_op{nullptr};
         const OperatorIndex<NumModes> *op_store{nullptr};
         size_t inverted_index_rows{0};
 
-        // Whether `graph`'s keep-set was thresholded from the operator coefficients, which is Schrodinger
-        // with a pare threshold and nothing else. Such a plan cannot follow a re-weight: the new
-        // coefficients select a different keep-set. Heisenberg pares the state, which a re-weight leaves
-        // alone, so it follows exactly.
+        // A coefficient-pared Schrodinger graph cannot follow a re-weight.
         bool pared_from_operator{false};
     };
 
     /// A partition facade's snapshot: one child plan per partition, replayed together.
     struct Fanout {
-        // Borrowed, like every other field: the group belongs to the facade propagator.
+        // Borrowed from the facade propagator.
         partition::PartitionGroup<NumModes> *group{nullptr};
         std::vector<std::shared_ptr<const FunctionalPlan>> partitions; ///< in partition order
     };
 
-    /// `control` is the propagator's own block; the plan pins the revision it is built at.
+    /// Pins the propagator control block and its current revision.
     FunctionalPlan(size_t num_params, std::shared_ptr<const FunctionalControl> control, Local local)
         : num_params_(num_params),
           control_(std::move(control)),
@@ -101,28 +87,22 @@ public:
           expected_revision_(control_->structure_revision.load()),
           shape_(std::move(fanout)) {}
 
-    /// The parameter-axis length the plan was built against; a call must supply exactly this many.
+    /// Required parameter-axis length.
     auto num_params() const -> size_t { return num_params_; }
 
-    /// Whether a call after a re-weight answers for the new coefficients, rather than throwing.
+    /// Whether calls may follow re-weighted coefficients.
     auto follows_weights() const -> bool {
         if (const auto *fanout = std::get_if<Fanout>(&shape_)) {
-            // Every child was built in the same picture at the same threshold, so one child answers for
-            // all of them. Reading an immutable child field needs no fan-out.
+            // Child plans share picture and threshold.
             return fanout->partitions.front()->follows_weights();
         }
         return !std::get<Local>(shape_).pared_from_operator;
     }
 
-    /// Throw unless `params` fits and the propagator still holds what the plan replays.
-    // A facade checks its own control block here -- the group it fans out over belongs to the facade --
-    // and each child plan then checks its own partition's, on that partition's master thread. Only the
-    // single-partition shape has an operator to run the layout backstop against.
+    /// Throw unless `params` and the propagator still match this plan.
+    // The facade validates its group; child plans validate on their partition masters.
     auto validate(const VecD &params) const -> void {
-        // Aliveness is settled here rather than left to validate_functional_state: the layout backstop
-        // reads the propagator's operator, and every argument is evaluated before the callee runs, so a
-        // dead propagator has to drop out of the argument list itself. The control block is shared, so it
-        // stays readable after the propagator is gone -- nothing else the plan holds does.
+        // Check liveness before reading the borrowed operator for the layout check.
         const bool alive = control_->propagator_alive.load();
         const auto *local = alive ? std::get_if<Local>(&shape_) : nullptr;
         validate_functional_state({.propagator_alive = alive,
@@ -133,20 +113,19 @@ public:
         validate_functional_call(params, num_params_);
     }
 
-    /// Replay the snapshot: `fn(request, comm, cos)` locally, or partition 0's answer on a facade.
+    /// Replay locally, or return partition 0's facade result.
     template <typename Fn,
               typename R = std::invoke_result_t<Fn &, const EvalRequest &, mpi::Comm, const CosCallbacks &>>
     auto evaluate(Fn &&fn, const VecD &params) const -> R {
         validate(params);
         if (const auto *fanout = std::get_if<Fanout>(&shape_)) {
-            // Each partition allreduces internally, so partition 0 already carries the global answer.
-            // The fan-out must reach every master: the partitions' collectives are barrier-synced.
+            // Every partition must join its synchronized collective; partition 0 has the result.
             return std::move(partition::collect_on_all(*fanout->group, [&](int r) -> R {
                 return fanout->partitions[static_cast<size_t>(r)]->evaluate(fn, params);
             })[0]);
         }
         const auto &local = std::get<Local>(shape_);
-        // Held for the whole call: `weights` is what keeps the vector `request.op` refers to alive.
+        // Keeps `request.op` alive for the call.
         const auto weights = resolve_weights(local);
         return fn(EvalRequest{.e_core = weights->core_term,
                               .state = local.state,
@@ -160,17 +139,10 @@ public:
     }
 
 private:
-    // The weights this call evaluates against: the propagator's live set, which a re-weight replaces
-    // between two calls. One load, so `op` and `core_term` cannot come from two publications.
-    //
-    // A functional is therefore a live view of the weights, not a frozen number: the same parameters give
-    // the new answer after a re-weight. Everything else a re-weight cannot leave intact -- a store row it
-    // would have to add, a graph it would have to re-pare -- either throws in
-    // MPOperator::update_initial_operator or is caught by validate_weight_refresh.
+    // Load matching `op` and `core_term` from the current weight publication.
     auto resolve_weights(const Local &local) const -> std::shared_ptr<const OperatorWeights> {
         auto published = control_->weights.load();
-        // Null cannot happen -- make_plan_ publishes -- and identity means no re-weight since this plan
-        // was built. Either way `local.weights` is the current set, so there is nothing to check.
+        // No publication or no re-weight: build-time weights are current.
         if (published == nullptr || published == local.weights) {
             return local.weights;
         }
@@ -180,8 +152,7 @@ private:
         return published;
     }
 
-    // Read straight off the borrowed operator, never through inverted_index(): that accessor rebuilds a
-    // stale index, which is a write, and a plan must not write to its propagator.
+    // Do not call inverted_index(): it could rebuild the borrowed index.
     static auto operator_layout_unchanged(const Local &local) -> bool {
         return local.mp_op->store.get() == local.op_store && local.mp_op->inverted_index_.has_value()
                && local.mp_op->inverted_index_->rows() == local.inverted_index_rows;
@@ -193,16 +164,14 @@ private:
     std::variant<Local, Fanout> shape_;
 };
 
-/// The handle half both functional kinds share: the plan they replay, and the two facts a caller can
-/// ask about it without calling it. The kinds differ only in what `operator()` computes.
+/// Shared functional handle; derived types differ only in `operator()`.
 template <size_t NumModes>
 class FunctionalHandle {
 public:
-    /// The parameter-axis length this functional was built against.
+    /// Required parameter-axis length.
     auto num_params() const -> size_t { return plan_->num_params(); }
 
-    /// True unless a MonomialPropagator::update_initial_operator() makes a call throw: the contract as
-    /// this object holds it, so a caller need not re-derive it from picture and pare threshold.
+    /// Whether calls may follow a re-weight.
     auto follows_weights() const -> bool { return plan_->follows_weights(); }
 
 protected:
@@ -213,16 +182,10 @@ protected:
 
 } // namespace detail
 
-/// A reusable expectation value over one propagator snapshot: `fn(parameters) -> double`.
+/// Reusable expectation value: `fn(parameters) -> double`.
 ///
-/// Built by MonomialPropagator::expectation_value_functional(). It borrows from the propagator that
-/// made it (see detail::FunctionalPlan), so it must not outlive it, and a structural change to the
-/// propagator makes a call throw rather than answer.
-///
-/// A re-weight is not a structural change: the functional follows the propagator's current
-/// initial-operator weights, so two calls with the same parameters give two answers across a
-/// MonomialPropagator::update_initial_operator(). Build the functional again after the last re-weight
-/// to freeze a value.
+/// Borrows its propagator and throws after structural mutation. It follows re-weighted initial-operator
+/// coefficients unless its graph was coefficient-pared.
 template <size_t NumModes>
 class ExpectationValueFunctional : public detail::FunctionalHandle<NumModes> {
 public:
@@ -235,9 +198,8 @@ private:
         : detail::FunctionalHandle<NumModes>(std::move(plan)) {}
 };
 
-/// As ExpectationValueFunctional, plus the gradient from the same backward pass:
-/// `fn(parameters) -> (value, gradient)`, the gradient in parameter-axis order. It follows the
-/// initial-operator weights on the same terms.
+/// Expectation value and gradient from one backward pass.
+/// `fn(parameters) -> (value, gradient)`, with the gradient in parameter-axis order.
 template <size_t NumModes>
 class ExpectationValueAndGradientFunctional : public detail::FunctionalHandle<NumModes> {
 public:

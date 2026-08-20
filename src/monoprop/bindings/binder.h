@@ -50,9 +50,7 @@ auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string;
 auto basis_str_2_enum(const std::string &basis) -> Basis;
 auto basis_enum_2_str(Basis basis) -> std::string;
 
-// One functional class, opaque and non-constructible from Python: the only way to one is the matching
-// factory on the propagator, which keep_alive-pins the propagator it borrows from. Both kinds expose the
-// same handle surface (see monoprop::detail::FunctionalHandle), so only the call's result differs.
+// Opaque Python functional types, created only by their propagator factories.
 template <typename Functional>
 auto bind_functional(nb::module_ &mod, const std::string &name, const char *call_doc) -> void {
     nb::class_<Functional>(mod, name.c_str())
@@ -159,8 +157,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "parameters"_a,
             "Expectation value and its gradient at the given variational parameters");
 
-    // keep_alive<0, 1>: the functional borrows this propagator's inverted index and, without a pare
-    // threshold, its graph, so the propagator must outlive it. Python has no other way to know.
+    // Functionals borrow this propagator's index and graph.
     cls.def("expectation_value_functional",
             &MonomialPropagator<NumModes>::expectation_value_functional,
             "pare_threshold"_a = std::nullopt,
