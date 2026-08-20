@@ -100,8 +100,6 @@ auto validate_functional_call(const VecD &parameters, size_t expected_num_params
 }
 
 auto validate_functional_state(const FunctionalState &state) -> void {
-    // Aliveness first: every other handle a functional holds points into the propagator, so there is
-    // nothing else it may legally read once this is false.
     if (!state.propagator_alive) {
         throw StaleFunctionalGraph("The propagator this functional was built from has been destroyed. "
                                    "A functional reads the propagator's operator index directly, so it "
@@ -114,8 +112,6 @@ auto validate_functional_state(const FunctionalState &state) -> void {
             "graph or operator the functional replays. Create a new functional.",
             state.last_structural_change != nullptr ? state.last_structural_change : "a structural mutation"));
     }
-    // No bump, but the operator moved anyway: some mutation is missing its bump_structure_ call. Report
-    // it as staleness rather than read a rebuilt inverted index through a pointer to the old one.
     if (!state.operator_layout_unchanged) {
         throw StaleFunctionalGraph("MP object has been modified since the functional was created: the "
                                    "operator index it reads was rebuilt or grown. Create a new functional.");
@@ -123,11 +119,6 @@ auto validate_functional_state(const FunctionalState &state) -> void {
 }
 
 auto validate_weight_refresh(const WeightRefresh &refresh) -> void {
-    // The caller passes its own follows_weights(), the property it advertises, so what is enforced here
-    // and what is advertised cannot drift apart. It is false for exactly one shape: a pared Schrodinger
-    // plan holds a keep-set thresholded from the operator coefficients themselves, so new coefficients
-    // would need a different keep-set and replaying this one would answer for a paring nobody asked for.
-    // Heisenberg thresholds the state, which a re-weight does not touch, so it follows exactly.
     if (!refresh.may_follow_weights) {
         throw StaleFunctionalGraph("MP object has been modified since the functional was created: the "
                                    "initial operator was re-weighted, and this functional pares its graph "
@@ -135,9 +126,6 @@ auto validate_weight_refresh(const WeightRefresh &refresh) -> void {
                                    "with a pare_threshold), so it cannot follow the new weights. Create a "
                                    "new functional.");
     }
-    // Unreachable while every structural mutation bumps and every publication carries the revision it
-    // was made at: a functional whose revision still matches the propagator's cannot see weights from
-    // another revision. Kept as the backstop for the day one of those two stops being true.
     if (refresh.weights_revision != refresh.expected_revision) {
         throw StaleFunctionalGraph("MP object has been modified since the functional was created: the "
                                    "initial-operator weights it reads belong to a different graph. Create "

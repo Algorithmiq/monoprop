@@ -40,8 +40,6 @@ monoprop_EXPORT auto validate_parameters_length(const VecD &params, const VecZ &
 monoprop_EXPORT auto validate_functional_call(const VecD &parameters, size_t expected_num_params) -> void;
 
 /// What a functional must be able to say about its propagator before it reads anything it borrowed.
-// Assembled from detail::FunctionalControl plus, for a single-partition plan, two facts derived from the
-// operator itself. The derived pair is the backstop: it holds even for a mutation that forgot to bump.
 struct FunctionalState {
     bool propagator_alive;              ///< false once ~MonomialPropagator has run
     size_t current_revision;            ///< the propagator's structure revision now
