@@ -18,48 +18,61 @@
 #include <cstddef>
 #include <exception>
 #include <memory>
+#include <mutex>
 
 #include "monoprop/TypeAliases.h"
 
 namespace monoprop::detail {
 
-// Immutable initial-operator weights, atomically published on re-weight.
-// A single load keeps `op` and `core_term` from one publication.
+// Initial-operator weights published together.
 struct OperatorWeights {
     VecD op;                      // One coefficient per store row.
-    double core_term{0.0};        // Identity contribution to the expectation value.
-    size_t structure_revision{0}; // Revision at publication.
+    double core_term{0.0};        // Identity contribution.
+    size_t structure_revision{0}; // Publication revision.
 };
 
-// Validity state shared by a propagator and its functionals.
-// Copies start with a fresh block.
+// Thread-safe slot for the current weights.
+class WeightsSlot {
+public:
+    auto load() const -> std::shared_ptr<const OperatorWeights> {
+        const std::lock_guard lock(mutex_);
+        return weights_;
+    }
+
+    auto store(std::shared_ptr<const OperatorWeights> weights) -> void {
+        const std::lock_guard lock(mutex_);
+        weights_ = std::move(weights);
+    }
+
+private:
+    mutable std::mutex mutex_; // Allows reads through const FunctionalControl.
+    std::shared_ptr<const OperatorWeights> weights_;
+};
+
+// State shared by a propagator and its functionals.
 struct FunctionalControl {
-    // Bumped when replayed structure changes.
+    // Changes when replayed structure changes.
     std::atomic<size_t> structure_revision{0};
 
-    // Cleared before propagator destruction.
+    // Cleared before destruction.
     std::atomic<bool> propagator_alive{true};
 
-    // Last structural change, as a string literal.
+    // Last structural change.
     std::atomic<const char *> last_structural_change{nullptr};
 
-    // Current weights, null until the first functional plan. Written by the propagator and read by
-    // functional calls.
-    std::atomic<std::shared_ptr<const OperatorWeights>> weights{};
+    // Current weights, null until the first plan.
+    WeightsSlot weights;
 
-    // Record a replayed-structure change. `site` must outlive the propagator.
+    // Record a structure change.
     auto bump(const char *site) -> void {
         last_structural_change.store(site);
         structure_revision.fetch_add(1);
     }
 };
 
-// Bumps the control block when a mutation throws after it may have changed replayed state.
-// Construct after validation and before the first write. Set `armed` to false for known no-ops;
-// the caller records successful changes.
+// Bumps the control block if a mutation throws after a possible state change.
 class [[nodiscard]] BumpOnUnwind {
 public:
-    // `site` must outlive the propagator.
     BumpOnUnwind(FunctionalControl &control, const char *site, bool armed = true)
         : control_(control),
           site_(site),
@@ -72,7 +85,6 @@ public:
     auto operator=(BumpOnUnwind &&) -> BumpOnUnwind & = delete;
 
     ~BumpOnUnwind() {
-        // This also works when called during another unwind.
         if (armed_ && std::uncaught_exceptions() > uncaught_) {
             control_.bump(site_);
         }
