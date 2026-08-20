@@ -29,6 +29,7 @@
 
 #include <mpi.h>
 
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/PartitionBarrier.h"
@@ -49,13 +50,16 @@ public:
 class HybridComm {
 public:
     // n_local_partitions = S, identical on every rank (the facade ctor checks that before constructing).
-    HybridComm(MPI_Comm parent, int n_local_partitions)
+    // `prof.mpi_rank` is IGNORED: this transport knows its own rank from the communicator.
+    HybridComm(MPI_Comm parent, int n_local_partitions, profile::CommOptions prof = {})
         : parent_(parent),
           s_(n_local_partitions),
+          mpi_rank_(rank_of_(parent)),
           slots_(static_cast<size_t>(n_local_partitions)),
+          prof_(n_local_partitions,
+                {.mpi_rank = mpi_rank_, .transport = "hybrid", .enabled = prof.enabled, .out = prof.out}),
           barrier_(n_local_partitions) {
         MPI_Comm_size(parent_, &r_);
-        MPI_Comm_rank(parent_, &mpi_rank_);
         int provided = MPI_THREAD_SINGLE;
         MPI_Query_thread(&provided);
         if (provided < MPI_THREAD_SERIALIZED) {
@@ -81,7 +85,17 @@ public:
     auto size() const -> int { return r_ * s_; }
     auto global_rank(int local_partition) const -> int { return mpi_rank_ * s_ + local_partition; }
 
+    // See ShmComm::note_pinned for why this needs no synchronisation of its own.
+    auto note_pinned(int local_partition) -> void {
+        if (auto *prof = prof_.slot(local_partition); prof != nullptr) {
+            prof->pinned = 1;
+        }
+    }
+
+    // No timer may wrap guard_partition0_, which wraps the impl and its barriers: that folds every
+    // peer's barrier wait into mpi_ns.
     auto alltoall_counts(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
+        note_verb_(local_partition);
         guard_partition0_(local_partition, "alltoall_counts", [this, local_partition, send_counts, recv_counts] {
             alltoall_counts_impl_(local_partition, send_counts, recv_counts);
         });
@@ -91,6 +105,7 @@ public:
     // datatype whose extent is args.elem, and it stays a separate argument because the bundle is shared
     // with the non-MPI-capable transport.
     auto alltoallv(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt) -> void {
+        note_verb_(local_partition);
         guard_partition0_(local_partition, "alltoallv", [this, local_partition, &args, dt] {
             alltoallv_impl_(local_partition, args, dt);
         });
@@ -99,6 +114,7 @@ public:
     // See AlltoallvResolveArgs: the recv side is an output, and args.recv is resized here.
     template <typename T>
     auto alltoallv_resolve(int local_partition, const AlltoallvResolveArgs<T> &args, MPI_Datatype dt) -> void {
+        note_verb_(local_partition);
         // `args` by reference, not by value: the impl resizes args.recv and then writes through it.
         guard_partition0_(local_partition, "alltoallv_resolve", [this, local_partition, &args, dt] {
             alltoallv_resolve_impl_<T>(local_partition, args, dt);
@@ -107,12 +123,14 @@ public:
 
     template <typename T>
     auto allreduce_sum(int local_partition, T local_val) -> T {
+        note_verb_(local_partition);
         return guard_partition0_(local_partition, "allreduce_sum", [this, local_partition, local_val] {
             return allreduce_sum_impl_<T>(local_partition, local_val);
         });
     }
 
     auto allreduce_sum_inplace(int local_partition, double *values, size_t len) -> void {
+        note_verb_(local_partition);
         guard_partition0_(local_partition, "allreduce_sum_inplace", [this, local_partition, values, len] {
             allreduce_sum_inplace_impl_(local_partition, values, len);
         });
@@ -157,13 +175,16 @@ private:
     // recv_counts[g] = amount global partition g sends to this partition. 2 barriers + one S*S-int MPI_Alltoall.
     auto alltoall_counts_impl_(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
         const size_t u = static_cast<size_t>(local_partition);
+        auto *prof = prof_.slot(local_partition);
         slots_[u].counts = send_counts;
-        sync();
+        sync(prof);
         if (local_partition == 0) {
             pack_count_matrix_(&Slot::counts);
+            // Starts AFTER the table fill: that fill is partition 0's serial work, not MPI's.
+            monoprop_PROF_SCOPE(prof, mpi);
             MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
         }
-        sync();
+        sync(prof);
         // Partition t extracts its row: recv from (rank a, partition su) is contiguous per source rank a.
         const int t = local_partition;
         for (int a = 0; a < r_; ++a) {
@@ -181,25 +202,27 @@ private:
     // Flat variable all-to-all over caller-owned buffers; see AlltoallvArgs for the conventions.
     auto alltoallv_impl_(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt) -> void {
         const size_t u = static_cast<size_t>(local_partition);
+        auto *prof = prof_.slot(local_partition);
         Slot &me = slots_[u];
         me.ptr = args.send;
         me.send_counts = args.send_counts;
         me.send_displs = args.send_displs;
         me.recv_counts = args.recv_counts;
-        sync(); // B1
+        sync(prof); // B1
 
         // B2: partition 0 sizes/reallocates staging; must finish before any partition packs into stage_send_.
         if (local_partition == 0) {
             size_staging_(args.elem);
         }
-        sync(); // B2
+        sync(prof); // B2
 
         // B3: each partition packs its own cross-rank blocks into stage_send_ (disjoint writes).
         pack_send_(local_partition, args.elem);
-        sync(); // B3
+        sync(prof); // B3
 
         // B4: partition 0 runs the single MPI_Alltoallv while peers park at the barrier.
         if (local_partition == 0) {
+            monoprop_PROF_SCOPE(prof, mpi);
             MPI_Alltoallv(stage_send_.data(),
                           mpi_send_counts_.data(),
                           mpi_send_displs_.data(),
@@ -210,7 +233,7 @@ private:
                           dt,
                           parent_);
         }
-        sync(); // B4
+        sync(prof); // B4
 
         // Scatter each global source's contiguous run from stage_recv_ to recv_displs[g] (all legs, incl.
         // self-rank, go through staging). Block starts come from scatter_off_: no peer slot is read past B4.
@@ -238,6 +261,7 @@ private:
         // Typed verb: element bytes are sizeof(T) by construction, so they are derived rather than passed.
         constexpr size_t elem = sizeof(T);
         const size_t u = static_cast<size_t>(local_partition);
+        auto *prof = prof_.slot(local_partition);
         Slot &me = slots_[u];
         // Typed here but byte-addressed in the slot: pack_send_ copies by (displ, count) in elements and
         // never reconstructs T, so the slot stays type-erased for the untyped alltoallv_impl_ above.
@@ -245,18 +269,22 @@ private:
         me.send_counts = args.send_counts;
         me.send_displs = args.send_displs;
         // recv_counts is an output here — deliberately not published; the count Alltoall resolves it.
-        sync(); // B1
+        sync(prof); // B1
 
         if (local_partition == 0) {
             pack_count_matrix_(&Slot::send_counts);
-            MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
+            {
+                // Braced, unlike the other verbs: size_staging_impl_ follows here and is serial work.
+                monoprop_PROF_SCOPE(prof, mpi);
+                MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
+            }
             // Size staging from counts_recv_: recv of partition t from (rank, su) sits at rank*S*S + t*S + su.
             size_staging_impl_(elem, [this](int t, int rank, int su) {
                 return counts_recv_[(static_cast<size_t>(rank) * static_cast<size_t>(s_) * static_cast<size_t>(s_))
                                     + (static_cast<size_t>(t) * static_cast<size_t>(s_)) + static_cast<size_t>(su)];
             });
         }
-        sync(); // B2
+        sync(prof); // B2
 
         const int t = local_partition;
         long long total = 0;
@@ -274,9 +302,10 @@ private:
         args.recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
 
         pack_send_(local_partition, elem);
-        sync(); // B3
+        sync(prof); // B3
 
         if (local_partition == 0) {
+            monoprop_PROF_SCOPE(prof, mpi);
             MPI_Alltoallv(stage_send_.data(),
                           mpi_send_counts_.data(),
                           mpi_send_displs_.data(),
@@ -287,7 +316,7 @@ private:
                           dt,
                           parent_);
         }
-        sync(); // B4
+        sync(prof); // B4
 
         std::byte *dst = reinterpret_cast<std::byte *>(args.recv.data()); // after the resize: it may reallocate
         for (int a = 0; a < r_; ++a) {
@@ -306,6 +335,7 @@ private:
 
     template <typename T>
     auto allreduce_sum_impl_(int local_partition, T local_val) -> T {
+        auto *prof = prof_.slot(local_partition);
         Slot &me = slots_[static_cast<size_t>(local_partition)];
         if constexpr (std::is_floating_point_v<T>) {
             me.f64 = static_cast<double>(local_val);
@@ -313,13 +343,14 @@ private:
         else {
             me.u64 = static_cast<uint64_t>(local_val);
         }
-        sync();
+        sync(prof);
         if (local_partition == 0) {
             if constexpr (std::is_floating_point_v<T>) {
                 double local = 0.0;
                 for (int s = 0; s < s_; ++s) {
                     local += slots_[static_cast<size_t>(s)].f64;
                 }
+                monoprop_PROF_SCOPE(prof, mpi);
                 MPI_Allreduce(&local, &red_f64_, 1, MPI_DOUBLE, MPI_SUM, parent_);
             }
             else {
@@ -327,10 +358,11 @@ private:
                 for (int s = 0; s < s_; ++s) {
                     local += slots_[static_cast<size_t>(s)].u64;
                 }
+                monoprop_PROF_SCOPE(prof, mpi);
                 MPI_Allreduce(&local, &red_u64_, 1, MPI_UINT64_T, MPI_SUM, parent_);
             }
         }
-        sync();
+        sync(prof);
         T out{};
         if constexpr (std::is_floating_point_v<T>) {
             out = static_cast<T>(red_f64_);
@@ -345,12 +377,13 @@ private:
     // In-place element-wise allreduce-sum across the flat P-world, slice-partitioned across partitions in
     // ascending order (bit-identical to a sequential sum).
     auto allreduce_sum_inplace_impl_(int local_partition, double *values, size_t len) -> void {
+        auto *prof = prof_.slot(local_partition);
         slots_[static_cast<size_t>(local_partition)].vec = values;
-        sync(); // all inputs published
+        sync(prof); // all inputs published
         if (local_partition == 0) {
             grow_(red_vec_, len);
         }
-        sync(); // red_vec_ sized
+        sync(prof); // red_vec_ sized
         constexpr size_t kLine = 64 / sizeof(double);
         const size_t lines = (len + kLine - 1) / kLine;
         const size_t per = (lines + static_cast<size_t>(s_) - 1) / static_cast<size_t>(s_);
@@ -363,11 +396,12 @@ private:
             }
             red_vec_[k] = acc; // disjoint line-rounded slices: no two partitions store to one line
         }
-        sync(); // local reduction complete
+        sync(prof); // local reduction complete
         if (local_partition == 0) {
+            monoprop_PROF_SCOPE(prof, mpi);
             MPI_Allreduce(MPI_IN_PLACE, red_vec_.data(), static_cast<int>(len), MPI_DOUBLE, MPI_SUM, parent_);
         }
-        sync(); // global result in red_vec_
+        sync(prof); // global result in red_vec_
         std::memcpy(values, red_vec_.data(), len * sizeof(double));
         // No trailing barrier: red_vec_ is rewritten only inside a future verb's barriered phases.
     }
@@ -493,7 +527,21 @@ private:
         std::abort(); // MPI_Abort is not marked [[noreturn]]; unreachable in practice
     }
 
-    auto sync() -> void { barrier_.sync(); }
+    auto sync(profile::CommSlot *prof) -> void { barrier_.sync(prof); }
+
+    // Needed in the member-init list: prof_'s rank label is fixed before the constructor body runs.
+    static auto rank_of_(MPI_Comm c) -> int {
+        int rank = 0;
+        MPI_Comm_rank(c, &rank);
+        return rank;
+    }
+
+    // Bumped on ENTRY: a rank that MPI_Aborts inside a collective still has to say how far it got.
+    auto note_verb_(int local_partition) -> void {
+        if (auto *prof = prof_.slot(local_partition); prof != nullptr) {
+            ++prof->n_verbs;
+        }
+    }
 
     MPI_Comm parent_;
     int s_;
@@ -520,6 +568,8 @@ private:
     uint64_t red_u64_ = 0;
     std::vector<double> red_vec_;
 
+    // Declared before barrier_ so it is destroyed after it: nothing may be inside sync() when emit reads.
+    profile::CommRegistry prof_;
     PartitionBarrier barrier_;
 };
 

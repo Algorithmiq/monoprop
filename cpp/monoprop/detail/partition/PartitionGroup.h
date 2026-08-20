@@ -26,6 +26,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "monoprop/detail/Profile.h" // profile::CommOptions, handed to the transport below
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPICompat.h" // mpi::size for the transport choice
 #include "monoprop/detail/mpi/ShmComm.h"
@@ -199,7 +200,10 @@ private:
             return;
         }
 #endif
-        shm_ = std::make_unique<mpi::ShmComm>(n_);
+        // Rank handed over rather than assumed 0, or a size-1-parent run would label every COMMPROF
+        // line rank=0 and make them unattributable in a shared log.
+        shm_ =
+            std::make_unique<mpi::ShmComm>(n_, monoprop::detail::profile::CommOptions{.mpi_rank = mpi::rank(parent_)});
     }
     auto comm_for_(int r) -> mpi::Comm {
 #ifdef monoprop_ENABLE_MPI
@@ -227,6 +231,15 @@ private:
 #endif
         shm_->reset();
     }
+    auto transport_note_pinned_(int rank) -> void {
+#ifdef monoprop_ENABLE_MPI
+        if (hyb_) {
+            hyb_->note_pinned(rank);
+            return;
+        }
+#endif
+        shm_->note_pinned(rank);
+    }
 
     // Spawning is itself a failure point: one std::thread per partition is O(100) threads, and a mid-loop
     // std::system_error must not escape with live masters parked in masters_ (see the primary ctor).
@@ -244,8 +257,10 @@ private:
     }
 
     auto master_loop_(int rank) -> void {
-        if (!cpusets_.empty()) {
-            pin_this_thread(cpusets_[static_cast<size_t>(rank)]);
+        // Set from this thread before it takes any job, read back only after stop_and_join_'s join, so
+        // that happens-before edge is enough: no atomic or publish step needed for the count below.
+        if (!cpusets_.empty() && pin_this_thread(cpusets_[static_cast<size_t>(rank)])) {
+            transport_note_pinned_(rank);
         }
         unsigned seen = 0;
         for (;;) {

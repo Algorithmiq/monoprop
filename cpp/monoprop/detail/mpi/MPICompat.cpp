@@ -18,7 +18,59 @@
 #include <print>
 #include <stdexcept>
 
+#include "monoprop/detail/Profile.h"
+
 namespace monoprop::mpi {
+
+namespace {
+
+// The PROCESS's identity, not the rank of whichever communicator a call happens to use: a flat run
+// makes collectives on MPI_COMM_SELF and on MPI_COMM_WORLD, so the last one's rank would leave the line
+// unattributable in a shared log.
+#ifdef monoprop_ENABLE_PROFILE
+auto world_rank_() -> int {
+#ifdef monoprop_ENABLE_MPI
+    int initialized = 0;
+    MPI_Initialized(&initialized);
+    if (initialized != 0) {
+        int r = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &r);
+        return r;
+    }
+#endif
+    return 0;
+}
+
+// TU-local: every caller sits after the Shm/Hybrid dispatch and immediately before a real MPI_* call,
+// so the function-local statics below are first constructed with MPI already initialised.
+auto flat_comm_slot() -> profile::CommSlot * {
+    static profile::CommRegistry registry(1, {.mpi_rank = world_rank_(), .transport = "flat"});
+    static profile::CommSlot *slot = registry.slot(0);
+    return slot;
+}
+#endif
+
+} // namespace
+
+#ifdef monoprop_ENABLE_PROFILE
+auto flat_verb_ns() -> uint64_t * {
+    auto *slot = flat_comm_slot();
+    if (slot == nullptr) {
+        return nullptr;
+    }
+    ++slot->n_verbs;
+    return &slot->mpi_ns;
+}
+
+auto flat_wait_ns() -> uint64_t * {
+    auto *slot = flat_comm_slot();
+    if (slot == nullptr) {
+        return nullptr;
+    }
+    ++slot->n_barriers;
+    return &slot->barrier_ns;
+}
+#endif
 
 #ifdef monoprop_ENABLE_MPI
 auto init(int *argc, char ***argv) -> void {
@@ -94,6 +146,7 @@ auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
         comm.hyb->allreduce_sum_inplace(comm.shm_rank, values.data(), values.size());
         return;
     }
+    monoprop_PROF_SCOPE_AT(verb, flat_verb_ns());
     MPI_Allreduce(MPI_IN_PLACE, values.data(), static_cast<int>(values.size()), MPI_DOUBLE, MPI_SUM, comm.mpi);
 #else
     (void)values; // single participant: identity
@@ -111,6 +164,7 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm)
         return;
     }
     (void)n;
+    monoprop_PROF_SCOPE_AT(verb, flat_verb_ns());
     MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
 #else
     for (int i = 0; i < n; ++i) {

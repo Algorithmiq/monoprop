@@ -17,6 +17,7 @@
 #include <cmath>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 
@@ -35,6 +36,8 @@ inline auto apply_fused_contract(FusedContract &fc,
                                  double param,
                                  bool schrodinger,
                                  bool fused_scale) -> void {
+    monoprop_PROF_SLOT(prof);
+    monoprop_PROF_SCOPE(prof, apply);
     // (1) insert records: v_tgt is the freshly-inserted term's pre-cos coeff, readable only now op_coeffs
     // is extended. Needed only in Schrödinger — a Heisenberg fresh insert has coeff 0, so skip the gather.
     if (schrodinger) {

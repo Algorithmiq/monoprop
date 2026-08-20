@@ -168,6 +168,33 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 8. Regenerate bindings with `tools/generate-binders.py`
 9. Test with both C++ and Python tests
 
+## Diagnostics: `monoprop_PROFILE`
+
+`monoprop_PROFILE` is a comma-separated list of diagnostic regions, parsed once in
+`cpp/monoprop/detail/EnvConfig.h` (`config::detail::parse_profile` into `config::Profile`); the instrument behind it
+lives in `cpp/monoprop/detail/Profile.h`. The user-facing region table is in
+`docs/content/docs/features/parallelism.mdx` — a region added to `parse_profile` has to be added
+there too, or the docs advertise a name that throws. `just test-profile` builds and runs the
+configuration that has it.
+
+- **One knob, and only one.** A diagnostic that shares this cost class, this output channel (stderr)
+  and this lifecycle gets a region name in this variable. Do not grow a second diagnostic env var
+  beside it, and do not add a compatibility alias for a spelling that never reached `main`.
+- **An unrecognised region throws.** It is not ignored and does not fall back to off, because a
+  diagnostic that silently does nothing is indistinguishable from one whose subject did nothing —
+  this project has already reported an experimental arm while running the shipped rule, because a
+  knob quietly took its default. Hold any region you add to that.
+- **Off is absent, not branched.** The instrument compiles only under `monoprop_ENABLE_PROFILE`
+  (default OFF), so a default build has nothing to switch off and nothing to price: the per-word scan
+  worker is byte-identical to `main`'s, and a non-empty `monoprop_PROFILE` there throws at import
+  rather than yielding an empty log. Reach it only through the `monoprop_PROF*` macros at the foot of
+  `Profile.h` — a call site that names a `profile::` type keeps the namespace alive in every build.
+  The one exception is `CommOptions`/`CommSlot`/`CommRegistry`, which a transport holds as a member;
+  those compile either way, hollow when off.
+- **Do not quote a profiling build's wall time.** Its timers sit inside the hot loops and change what
+  the compiler inlines there (the scan worker is 24.9% larger). Shares and counters come from a
+  profiling build, wall time from a default build, and the two are never compared.
+
 ## Documentation Maintenance Policy
 
 When changing behavior, APIs, build/test workflows, paths, or developer conventions:

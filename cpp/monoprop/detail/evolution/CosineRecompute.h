@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "monoprop/algebra/Algebra.h"
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
@@ -181,9 +182,13 @@ template <size_t NumModes>
     return apply_fold_mask(blk[wi - bb], wi, r.fold, row_parity);
 }
 
+// `lazy` recomputes a layer's cosine set from the inverted index; `mask` reads a stored per-layer
+// bitmap. The `replay` region times the two apart because which one a run pays for is the question.
 template <size_t NumModes>
 auto scale_cos_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, double *coeff, double cos_val)
     -> void {
+    monoprop_PROF_REPLAY_SLOT(prof);
+    monoprop_PROF(if (prof != nullptr) { ++prof->n_cos_lazy; }) monoprop_PROF_SCOPE(prof, cos_lazy);
     const size_t mask_words = r.fold.mask_words;
     const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
     std::vector<uint64_t> &blk = column_block_scratch();
@@ -205,6 +210,8 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
                          double *ham,
                          double cos_val,
                          double sec_val) -> double {
+    monoprop_PROF_REPLAY_SLOT(prof);
+    monoprop_PROF(if (prof != nullptr) { ++prof->n_cos_lazy; }) monoprop_PROF_SCOPE(prof, cos_lazy);
     const size_t mask_words = r.fold.mask_words;
     const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
     double loc = 0.0;
@@ -224,6 +231,8 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
 }
 
 inline auto scale_cos_mask(double *coeff, const CosMask &cos, double cos_val) -> void {
+    monoprop_PROF_REPLAY_SLOT(prof);
+    monoprop_PROF(if (prof != nullptr) { ++prof->n_cos_mask; }) monoprop_PROF_SCOPE(prof, cos_mask);
     const size_t n = cos.blocks.size();
     for (size_t k = 0; k < n; ++k) {
         const auto [base, bits] = cos.blocks[k];
@@ -232,6 +241,8 @@ inline auto scale_cos_mask(double *coeff, const CosMask &cos, double cos_val) ->
 }
 inline auto accumulate_cos_mask(double *state, double *ham, const CosMask &cos, double cos_val, double sec_val)
     -> double {
+    monoprop_PROF_REPLAY_SLOT(prof);
+    monoprop_PROF(if (prof != nullptr) { ++prof->n_cos_mask; }) monoprop_PROF_SCOPE(prof, cos_mask);
     const size_t n = cos.blocks.size();
     double loc = 0.0;
     for (size_t k = 0; k < n; ++k) {

@@ -33,6 +33,7 @@
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/EnvConfig.h"
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/LayerBuilder.h"
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
@@ -497,18 +498,34 @@ auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
-    (void)mp_op_.get_operator();
-    // Heisenberg warms the sparse state only; densifying here would defeat it. Schrödinger's dense vector
-    // IS the live evolved vector.
-    if (schrodinger_) {
-        (void)mp_op_.dense_state();
+    monoprop_PROF_SLOT(prof);
+    {
+        monoprop_PROF_SCOPE(prof, contract);
+        {
+            monoprop_PROF_SCOPE(prof, cache_op);
+            (void)mp_op_.get_operator();
+        }
+        {
+            monoprop_PROF_SCOPE(prof, cache_state);
+            // Heisenberg warms the sparse state only; densifying here would defeat it. Schrödinger's
+            // dense vector IS the live evolved vector.
+            if (schrodinger_) {
+                (void)mp_op_.dense_state();
+            }
+            else {
+                (void)mp_op_.sparse_state();
+            }
+        }
+        {
+            monoprop_PROF_SCOPE(prof, index);
+            (void)mp_op_.inverted_index();
+        }
+        {
+            monoprop_PROF_SCOPE(prof, cache_shrink);
+            mp_op_.op_coeffs.shrink_to_fit();
+            mp_op_.shrink_state_to_fit();
+        }
     }
-    else {
-        (void)mp_op_.sparse_state();
-    }
-    (void)mp_op_.inverted_index();
-    mp_op_.op_coeffs.shrink_to_fit();
-    mp_op_.shrink_state_to_fit();
 }
 
 template <size_t NumModes>
@@ -579,7 +596,12 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
                        // The cos word list is not persisted on the layer; the builder moves it out transiently.
                        auto cos = std::make_shared<CosMask>();
                        auto storage = build_evolve_result_(mono, rot_len, std::cref(coeffs), build_angle, cos.get());
-                       graph_.append(storage, parameter_mapping[idx], gen_coeffs[idx], gate_indices[idx]);
+                       {
+                           // `storage` is used again below, so the handle is copied here, not moved.
+                           monoprop_PROF_SLOT(append_prof);
+                           monoprop_PROF_SCOPE(append_prof, append);
+                           graph_.append(storage, parameter_mapping[idx], gen_coeffs[idx], gate_indices[idx]);
+                       }
 
                        extend_coeffs_from_current_picture_if_needed_(coeffs);
 
@@ -722,13 +744,14 @@ template <typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
                                                   std::optional<size_t> only_rotate_len_k,
                                                   EvolutionFunc evolution_func) -> void {
+    monoprop_PROF_SLOT(prof);
+    monoprop_PROF_SCOPE(prof, total);
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
-        const auto &mono = majoranas[idx];
-        evolution_func(mono, only_rotate_len_k, i);
+        monoprop_PROF_SCOPE(prof, gate);
+        evolution_func(majoranas[idx], only_rotate_len_k, i);
     }
-
     initialize_operator_caches_();
 }
 
@@ -772,7 +795,11 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
                                                   size_t param_index,
                                                   double gen_coeff,
                                                   size_t gate_index) -> void {
-    graph_.append(build_evolve_result_(gen_vec, only_rotate_len_k, coeffs, param), param_index, gen_coeff, gate_index);
+    // A named local, not an inline argument: as one expression build_layer would run inside the timer.
+    auto storage = build_evolve_result_(gen_vec, only_rotate_len_k, coeffs, param);
+    monoprop_PROF_SLOT(prof);
+    monoprop_PROF_SCOPE(prof, append);
+    graph_.append(std::move(storage), param_index, gen_coeff, gate_index);
 }
 
 template <size_t NumModes>

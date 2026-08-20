@@ -22,6 +22,7 @@ target_compile_definitions(
   PUBLIC
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
     $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
+    $<$<BOOL:${monoprop_ENABLE_PROFILE}>:monoprop_ENABLE_PROFILE>
 )
 
 # flags to prepend
@@ -98,6 +99,7 @@ target_compile_definitions(
   INTERFACE
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
     $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
+    $<$<BOOL:${monoprop_ENABLE_PROFILE}>:monoprop_ENABLE_PROFILE>
 )
 
 target_link_libraries(

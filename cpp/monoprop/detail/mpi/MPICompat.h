@@ -27,6 +27,7 @@
 #include <vector>
 
 // Comm.h owns the MPI_Comm typedef (real or non-MPI fallback) and the runtime-tagged mpi::Comm handle.
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/ShmComm.h"
@@ -90,6 +91,14 @@ inline auto finalize() -> void {}
 auto rank(const Comm &comm) -> int;
 auto size(const Comm &comm) -> int;
 
+// The flat (Kind::Mpi) path's comm instrument: one more CommRegistry, holding the single slot a rank
+// without partitions has. `barrier_ns` is MPI_Wait here, this path's only separable parked interval, so
+// it is not also in `mpi_ns`. Each bumps its counter and returns the accumulator, or nullptr when off.
+#ifdef monoprop_ENABLE_PROFILE
+auto flat_verb_ns() -> uint64_t *;
+auto flat_wait_ns() -> uint64_t *;
+#endif
+
 template <typename T>
 inline auto allreduce_sum(T local_val, Comm comm) -> T {
     if (comm.kind == Comm::Kind::Shm) {
@@ -99,7 +108,10 @@ inline auto allreduce_sum(T local_val, Comm comm) -> T {
     if (comm.kind == Comm::Kind::Hybrid) {
         return comm.hyb->allreduce_sum<T>(comm.shm_rank, local_val);
     }
+    // Below both transport branches on purpose: they instrument themselves, and a verb counted here too
+    // would double every collective they already report.
     T global_val{};
+    monoprop_PROF_SCOPE_AT(verb, flat_verb_ns());
     MPI_Allreduce(&local_val, &global_val, 1, datatype<T>::get(), MPI_SUM, comm.mpi);
     return global_val;
 #else
@@ -131,6 +143,8 @@ struct PendingAlltoallv {
     auto wait_into(std::vector<std::vector<T>> &recv_data) -> void {
 #ifdef monoprop_ENABLE_MPI
         if (request != MPI_REQUEST_NULL) {
+            // A live request exists only on the flat path: Shm and Hybrid completed inside begin_alltoallv.
+            monoprop_PROF_SCOPE_AT(wait, flat_wait_ns());
             MPI_Wait(&request, MPI_STATUS_IGNORE);
             request = MPI_REQUEST_NULL;
         }
@@ -260,6 +274,8 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
 #endif
     else {
 #ifdef monoprop_ENABLE_MPI
+        // Posts only: the transfer's wall time lands in wait_into's MPI_Wait, on the other counter.
+        monoprop_PROF_SCOPE_AT(verb, flat_verb_ns());
         MPI_Ialltoallv(h.send_buffer.data(),
                        h.send_counts.data(),
                        h.send_displs.data(),

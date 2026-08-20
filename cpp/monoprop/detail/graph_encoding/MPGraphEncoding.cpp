@@ -23,6 +23,8 @@
 #include <utility>
 #include <vector>
 
+#include "monoprop/detail/Profile.h"
+
 namespace monoprop::detail {
 
 auto checked_mpi_int(size_t value, const char *what) -> int {
@@ -179,11 +181,16 @@ auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> s
     return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
 }
 
+// The whole graph-store build.
 auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore> {
+    monoprop_PROF_SLOT(prof);
+    monoprop_PROF_SCOPE(prof, encode);
+
     auto storage = std::make_shared<LayerCore>();
 
     {
+        monoprop_PROF_SCOPE(prof, encode_layout);
         std::vector<size_t> send_counts;
         send_counts.reserve(all_partners.size());
         for (size_t r = 0; r < all_partners.size(); ++r) {
@@ -197,7 +204,10 @@ auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners,
         static_cast<void>(build_derivative_exchange_layout(storage->evolution_exchange_layout));
     }
 
-    storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
+    {
+        monoprop_PROF_SCOPE(prof, encode_pack);
+        storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
+    }
 
     // Both are indexed by the same rank space.
     if (storage->evolution_exchange_layout.counts.size() != storage->cross_rank.rank_count()) {

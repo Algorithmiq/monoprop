@@ -58,6 +58,16 @@ test-wide:
     uv run --no-sync python -m pytest -m "not mpi"
     ctest --test-dir build/editable/Release --output-on-failure
 
+# Build and run the C++ suite with the profiling instrument compiled in
+# (monoprop_ENABLE_PROFILE=ON), the only configuration in which comm_profile_tests exists.
+# monoprop_PROFILE=all arms every region, so the registries emit and their static-destructor
+# teardown runs; `-s` is required because these lines leave via fd 2.
+
+test-profile:
+    uv sync --all-extras --group workspace-test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_PROFILE=ON"
+    monoprop_PROFILE=all uv run --no-sync python -m pytest -s -m "not mpi"
+    monoprop_PROFILE=all ctest --test-dir build/editable/Release --output-on-failure
+
 # Report code coverage.
 
 code-coverage:

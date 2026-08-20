@@ -132,11 +132,16 @@ auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1,
  *
  * Allocates a temporary hwloc bitmap, sets the single bit for @c set.pu, and calls
  * @c hwloc_set_cpubind with @c HWLOC_CPUBIND_THREAD | @c HWLOC_CPUBIND_STRICT. The call is
- * best-effort: hwloc errors are silently ignored because only performance, not correctness,
- * depends on successful pinning.
+ * best-effort: a failure is not an error, because only performance and not correctness depends on
+ * successful pinning.
+ *
+ * @c [[nodiscard]] because a failed bind must not be silent: a launcher that confines the process to
+ * fewer PUs than it placed partitions on fails every strict bind, and the surviving count is what lets
+ * a run's `pinned=` field tell an unpinned run apart from a pinned one.
  *
  * @param set  Placement token as returned by partition_cpusets(). A token with @c pu == -1
  *             is a no-op.
+ * @returns @c true iff the calling thread's affinity was actually restricted to @c set.pu.
  */
-auto pin_this_thread(const CpuSet &set) -> void;
+[[nodiscard]] auto pin_this_thread(const CpuSet &set) -> bool;
 } // namespace monoprop::detail::partition
