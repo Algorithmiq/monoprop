@@ -50,6 +50,23 @@ auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string;
 auto basis_str_2_enum(const std::string &basis) -> Basis;
 auto basis_enum_2_str(Basis basis) -> std::string;
 
+// One functional class, opaque and non-constructible from Python: the only way to one is the matching
+// factory on the propagator, which keep_alive-pins the propagator it borrows from. Both kinds expose the
+// same handle surface (see monoprop::detail::FunctionalHandle), so only the call's result differs.
+template <typename Functional>
+auto bind_functional(nb::module_ &mod, const std::string &name, const char *call_doc) -> void {
+    nb::class_<Functional>(mod, name.c_str())
+        .def("__call__", &Functional::operator(), "parameters"_a, call_doc)
+        .def_prop_ro(
+            "num_params",
+            [](const Functional &f) { return f.num_params(); },
+            "Parameter-axis length this functional was built against")
+        .def_prop_ro(
+            "follows_weights",
+            [](const Functional &f) { return f.follows_weights(); },
+            "Whether a call after update_initial_operator() answers for the new weights");
+}
+
 template <size_t NumModes>
 auto bind_monomial_propagator(nb::module_ &mod) -> void {
     using namespace monoprop;
@@ -57,33 +74,13 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
     auto name = std::format("MonomialPropagator{:03d}", NumModes);
     auto cls = nb::class_<MonomialPropagator<NumModes>>(mod, name.c_str());
 
-    // The functional objects. Opaque and non-constructible from Python: the only way to one is the
-    // matching factory below, which keep_alive-pins the propagator it borrows from.
-    auto ev_name = std::format("ExpectationValueFunctional{:03d}", NumModes);
-    nb::class_<ExpectationValueFunctional<NumModes>>(mod, ev_name.c_str())
-        .def("__call__",
-             &ExpectationValueFunctional<NumModes>::operator(),
-             "parameters"_a,
-             "Expectation value at the given variational parameters")
-        .def_prop_ro("num_params",
-                     &ExpectationValueFunctional<NumModes>::num_params,
-                     "Parameter-axis length this functional was built against")
-        .def_prop_ro("follows_weights",
-                     &ExpectationValueFunctional<NumModes>::follows_weights,
-                     "Whether a call after update_initial_operator() answers for the new weights");
-
-    auto grad_name = std::format("ExpectationValueAndGradientFunctional{:03d}", NumModes);
-    nb::class_<ExpectationValueAndGradientFunctional<NumModes>>(mod, grad_name.c_str())
-        .def("__call__",
-             &ExpectationValueAndGradientFunctional<NumModes>::operator(),
-             "parameters"_a,
-             "(expectation value, gradient) at the given variational parameters")
-        .def_prop_ro("num_params",
-                     &ExpectationValueAndGradientFunctional<NumModes>::num_params,
-                     "Parameter-axis length this functional was built against")
-        .def_prop_ro("follows_weights",
-                     &ExpectationValueAndGradientFunctional<NumModes>::follows_weights,
-                     "Whether a call after update_initial_operator() answers for the new weights");
+    bind_functional<ExpectationValueFunctional<NumModes>>(mod,
+                                                          std::format("ExpectationValueFunctional{:03d}", NumModes),
+                                                          "Expectation value at the given variational parameters");
+    bind_functional<ExpectationValueAndGradientFunctional<NumModes>>(
+        mod,
+        std::format("ExpectationValueAndGradientFunctional{:03d}", NumModes),
+        "(expectation value, gradient) at the given variational parameters");
 
     cls.def(
         "__init__",

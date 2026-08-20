@@ -72,12 +72,14 @@ Key files:
   (the Majorana/Pauli choice is a runtime `Basis`, not a separate class). Its `only_rotate_len_k`
   arguments use `std::optional<size_t>`; `std::nullopt` means no gate-application length cap.
 - `cpp/include/monoprop/Functional.h`: the two functional objects,
-  `ExpectationValueFunctional<NumModes>` and `ExpectationValueAndGradientFunctional<NumModes>`. Each is
-  a handle on one shared `detail::FunctionalPlan<NumModes>` — the propagator snapshot a call replays,
-  plus the checks that say the snapshot is still that propagator's. The plan's `std::variant` carries the
-  single-partition shape and the facade shape, so both paths have one public type, and the value and the
-  gradient functional over one snapshot share one plan. A functional borrows from its propagator (the
-  inverted index always, the graph unless pared), so it must not outlive it; the bindings pin that with
+  `ExpectationValueFunctional<NumModes>` and `ExpectationValueAndGradientFunctional<NumModes>`. Both derive
+  from `detail::FunctionalHandle<NumModes>` — the shared handle half — and each holds a
+  `detail::FunctionalPlan<NumModes>`: the propagator snapshot a call replays, plus the checks that say the
+  snapshot is still that propagator's. The plan's `std::variant` carries the single-partition shape and the
+  facade shape, so both paths have one public type, and the plan holds the snapshot rather than the
+  choice of what to compute, so one plan type backs either kind (each factory call builds its own). A
+  functional borrows from its propagator (the inverted index always, the graph unless pared), so it
+  must not outlive it; the bindings pin that with
   `nb::keep_alive<0, 1>`. It does **not** snapshot the initial-operator weights: it reads the
   `detail::OperatorWeights` set the propagator has published, so it follows an
   `update_initial_operator` instead of going stale — the one exception being a Schrödinger plan with a

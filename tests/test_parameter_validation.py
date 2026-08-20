@@ -301,7 +301,9 @@ class TestFunctionalValidityTable:
     def _mutate_upper_atol(mp):
         mp.upper_atol = 1e-3
 
-    # (method, mutator, needs_empty_graph, exact, pared, pared_schrodinger, rationale).
+    # (method, mutator, needs_empty_graph, outcome, pared_schrodinger, rationale). Paring only changes
+    # the verdict where the keep-set came from the operator coefficients, so the Schrodinger-pared
+    # column is the only one that can differ from the general one -- as in the C++ table.
     # "stale" = the call must throw that the propagator moved, "answers" = it must return exactly what
     # it returned before the mutation, "refreshes" = it must return what a functional built after the
     # mutation returns, "refuses-refresh" = it must throw that it cannot follow the new weights.
@@ -310,7 +312,6 @@ class TestFunctionalValidityTable:
             "build_graph",
             "_mutate_build_graph",
             False,
-            "stale",
             "stale",
             "stale",
             "Appending a layer moves the structure revision, which a pared plan reads as readily as "
@@ -322,7 +323,6 @@ class TestFunctionalValidityTable:
             True,
             "stale",
             "stale",
-            "stale",
             "Re-evolves the operator in place. It leaves the layer count at zero, so the revision "
             "is the only thing that sees it.",
         ),
@@ -332,14 +332,12 @@ class TestFunctionalValidityTable:
             False,
             "stale",
             "stale",
-            "stale",
             "Consumes the folded layers and rewrites the coefficients. Only inplace=True bumps.",
         ),
         (
             "update_initial_operator",
             "_mutate_update_initial_operator",
             False,
-            "refreshes",
             "refreshes",
             "refuses-refresh",
             "A re-weight moves no structure, so the functional follows the new coefficients -- "
@@ -352,7 +350,6 @@ class TestFunctionalValidityTable:
             False,
             "stale",
             "stale",
-            "stale",
             "Relabels the layers in place, which changes neither the layer count nor the operator -- "
             "the revision is the only thing that sees it.",
         ),
@@ -360,7 +357,6 @@ class TestFunctionalValidityTable:
             "cutoff",
             "_mutate_cutoff",
             False,
-            "answers",
             "answers",
             "answers",
             "Intended: a cutoff gates the next build and changes nothing the plan holds.",
@@ -371,14 +367,12 @@ class TestFunctionalValidityTable:
             False,
             "answers",
             "answers",
-            "answers",
             "Intended: as cutoff.",
         ),
         (
             "basis_change",
             "_mutate_basis_change",
             False,
-            "answers",
             "answers",
             "answers",
             "Intended: as cutoff.",
@@ -389,14 +383,12 @@ class TestFunctionalValidityTable:
             False,
             "answers",
             "answers",
-            "answers",
             "Intended: as cutoff.",
         ),
         (
             "upper_atol",
             "_mutate_upper_atol",
             False,
-            "answers",
             "answers",
             "answers",
             "Intended: as cutoff.",
@@ -430,8 +422,7 @@ class TestFunctionalValidityTable:
             method,
             mutator,
             needs_empty_graph,
-            exact,
-            pared_outcome,
+            outcome,
             pared_schrodinger,
             rationale,
         ) = row
@@ -447,9 +438,7 @@ class TestFunctionalValidityTable:
         before = _value(functional(parameters))
         getattr(self, mutator)(mp)
 
-        expected = exact
-        if pared:
-            expected = pared_schrodinger if schrodinger else pared_outcome
+        expected = pared_schrodinger if pared and schrodinger else outcome
         context = f"{method}: {rationale}"
         if expected == "stale":
             with pytest.raises(RuntimeError, match=r"MP object has been modified"):

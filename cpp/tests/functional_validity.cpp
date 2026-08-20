@@ -134,9 +134,10 @@ enum class Outcome : std::uint8_t {
 struct MutatorRow {
     std::string_view method; // the public method this row covers
     void (*apply)(Prop &);
-    bool needs_empty_graph;    // build the functional with no graph, so the mutator is accepted
-    Outcome exact;             // pare_threshold == nullopt, in either picture
-    Outcome pared;             // pare_threshold == kPareThreshold, Heisenberg
+    bool needs_empty_graph; // build the functional with no graph, so the mutator is accepted
+    // Paring only changes the verdict where the keep-set came from the operator coefficients, so the
+    // Schrodinger-pared column is the only one that can differ from the general one.
+    Outcome outcome;           // no pare_threshold in either picture, or pared Heisenberg
     Outcome pared_schrodinger; // pare_threshold == kPareThreshold, Schrodinger: pares from `op`
     std::string_view rationale;
 };
@@ -145,32 +146,28 @@ constexpr std::array kMutatorTable{
     MutatorRow{.method = "build_graph",
                .apply = &mutate_build_graph,
                .needs_empty_graph = false,
-               .exact = Outcome::Stale,
-               .pared = Outcome::Stale,
+               .outcome = Outcome::Stale,
                .pared_schrodinger = Outcome::Stale,
                .rationale = "Appending a layer moves the structure revision, which a pared plan reads as "
                             "readily as an exact one."},
     MutatorRow{.method = "propagate",
                .apply = &mutate_propagate,
                .needs_empty_graph = true,
-               .exact = Outcome::Stale,
-               .pared = Outcome::Stale,
+               .outcome = Outcome::Stale,
                .pared_schrodinger = Outcome::Stale,
                .rationale = "Re-evolves the operator in place. It leaves the layer count at zero, so the "
                             "revision is the only thing that sees it."},
     MutatorRow{.method = "contract_partially",
                .apply = &mutate_contract_partially,
                .needs_empty_graph = false,
-               .exact = Outcome::Stale,
-               .pared = Outcome::Stale,
+               .outcome = Outcome::Stale,
                .pared_schrodinger = Outcome::Stale,
                .rationale = "Consumes the folded layers and rewrites the coefficients. Only inplace=true "
                             "bumps; see contract_partially_out_of_place_keeps_functional_valid."},
     MutatorRow{.method = "update_initial_operator",
                .apply = &mutate_update_initial_operator,
                .needs_empty_graph = false,
-               .exact = Outcome::Refreshes,
-               .pared = Outcome::Refreshes,
+               .outcome = Outcome::Refreshes,
                .pared_schrodinger = Outcome::RefusesRefresh,
                .rationale = "A re-weight moves no structure, so the functional follows the new "
                             "coefficients -- unless its keep-set was thresholded from those very "
@@ -178,44 +175,38 @@ constexpr std::array kMutatorTable{
     MutatorRow{.method = "set_parameter_mapping",
                .apply = &mutate_set_parameter_mapping,
                .needs_empty_graph = false,
-               .exact = Outcome::Stale,
-               .pared = Outcome::Stale,
+               .outcome = Outcome::Stale,
                .pared_schrodinger = Outcome::Stale,
                .rationale = "Relabels the layers in place, which changes neither the layer count nor the "
                             "operator -- the revision is the only thing that sees it."},
     MutatorRow{.method = "update_cutoff",
                .apply = &mutate_update_cutoff,
                .needs_empty_graph = false,
-               .exact = Outcome::Answers,
-               .pared = Outcome::Answers,
+               .outcome = Outcome::Answers,
                .pared_schrodinger = Outcome::Answers,
                .rationale = "Intended: a cutoff gates the next build and changes nothing the plan holds."},
     MutatorRow{.method = "update_cutoff_type",
                .apply = &mutate_update_cutoff_type,
                .needs_empty_graph = false,
-               .exact = Outcome::Answers,
-               .pared = Outcome::Answers,
+               .outcome = Outcome::Answers,
                .pared_schrodinger = Outcome::Answers,
                .rationale = "Intended: as update_cutoff."},
     MutatorRow{.method = "update_basis_change",
                .apply = &mutate_update_basis_change,
                .needs_empty_graph = false,
-               .exact = Outcome::Answers,
-               .pared = Outcome::Answers,
+               .outcome = Outcome::Answers,
                .pared_schrodinger = Outcome::Answers,
                .rationale = "Intended: as update_cutoff."},
     MutatorRow{.method = "update_lower_atol",
                .apply = &mutate_update_lower_atol,
                .needs_empty_graph = false,
-               .exact = Outcome::Answers,
-               .pared = Outcome::Answers,
+               .outcome = Outcome::Answers,
                .pared_schrodinger = Outcome::Answers,
                .rationale = "Intended: as update_cutoff."},
     MutatorRow{.method = "update_upper_atol",
                .apply = &mutate_update_upper_atol,
                .needs_empty_graph = false,
-               .exact = Outcome::Answers,
-               .pared = Outcome::Answers,
+               .outcome = Outcome::Answers,
                .pared_schrodinger = Outcome::Answers,
                .rationale = "Intended: as update_cutoff."},
 };
@@ -250,10 +241,7 @@ auto make_call(Prop &prop, bool gradient, std::optional<double> pare_threshold) 
 }
 
 auto expected_outcome(const MutatorRow &row, bool schrodinger, std::optional<double> pare_threshold) -> Outcome {
-    if (!pare_threshold.has_value()) {
-        return row.exact;
-    }
-    return schrodinger ? row.pared_schrodinger : row.pared;
+    return pare_threshold.has_value() && schrodinger ? row.pared_schrodinger : row.outcome;
 }
 
 auto run_row(const MutatorRow &row, bool schrodinger, bool gradient, std::optional<double> pare_threshold) -> void {

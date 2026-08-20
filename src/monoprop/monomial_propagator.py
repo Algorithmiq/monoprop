@@ -43,7 +43,7 @@ from .pauli import PauliOperator
 from .utils import validate_basis_change
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
     from typing import Self
 
     from mpi4py import MPI
@@ -59,8 +59,8 @@ class _BoundFunctional:
     """One engine functional, called through the front end's parameter binding.
 
     A call has to resolve named or circuit-carried parameters first, so the caller cannot be handed
-    the engine functional itself. Forwarding everything else by attribute, rather than copying named
-    properties across, keeps this in step with the bindings on its own.
+    the engine functional itself. The two engine attributes worth exposing are forwarded by name, so
+    this class -- not whatever the bindings happen to carry -- is what defines the Python surface.
     """
 
     def __init__(self, propagator: MonomialPropagator, functional: object) -> None:
@@ -70,12 +70,15 @@ class _BoundFunctional:
     def __call__(self, parameters: ParameterValues = None) -> float:
         return self._functional(self._propagator._bind(parameters))
 
-    def __getattr__(self, name: str) -> object:
-        # Private names are answered by the instance dictionary alone: reaching the engine object for
-        # one would recurse here through `self._functional` before __init__ has set it.
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return getattr(self._functional, name)
+    @property
+    def num_params(self) -> int:
+        """Parameter-axis length this functional was built against."""
+        return self._functional.num_params
+
+    @property
+    def follows_weights(self) -> bool:
+        """Whether a call after [update_initial_operator][] answers for the new coefficients."""
+        return self._functional.follows_weights
 
 
 class _BoundGradientFunctional(_BoundFunctional):
@@ -410,7 +413,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     def expectation_value_functional(
         self, pare_threshold: float | None = None
-    ) -> Callable[..., float]:
+    ) -> _BoundFunctional:
         """Return a reusable callable computing the expectation value from parameters.
 
         The callable is built against the graph present now, so a structural change to it --
@@ -445,7 +448,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     def expectation_value_and_gradient_functional(
         self, pare_threshold: float | None = None
-    ) -> Callable[..., tuple]:
+    ) -> _BoundGradientFunctional:
         """Return a reusable callable computing (expectation value, gradient).
 
         Like [expectation_value_functional][], but one backward pass also yields the gradient. It is
@@ -500,7 +503,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     def expval_functional(
         self, pare_threshold: float | None = None
-    ) -> Callable[..., float]:
+    ) -> _BoundFunctional:
         """Shorthand for [expectation_value_functional][].
 
         See [expectation_value_functional][] for full documentation.
@@ -509,7 +512,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     def expval_and_grad_functional(
         self, pare_threshold: float | None = None
-    ) -> Callable[..., tuple]:
+    ) -> _BoundGradientFunctional:
         """Shorthand for [expectation_value_and_gradient_functional][].
 
         See [expectation_value_and_gradient_functional][] for full documentation.
