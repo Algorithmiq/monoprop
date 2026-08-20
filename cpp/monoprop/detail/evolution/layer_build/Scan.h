@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -29,6 +30,7 @@
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/QueryCodec.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
@@ -268,6 +270,40 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
 
+        const OperatorIndex<NumModes> &ham = *op.store;
+
+        // Everything after a term survives the structural cutoff, from the dense partner emit built.
+        auto push = [&](const Monomial<NumModes> &dense,
+                        size_t mono_pop,
+                        size_t overlap,
+                        int phase_factor,
+                        size_t i,
+                        double v_src,
+                        bool is_follower) {
+            const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
+            // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
+            // Must be the SAME function find_rank computes (MPIUtils.h) or a term is placed and queried
+            // on different ranks, which duplicates a row silently; mpi_utils_tests.cpp asserts it.
+            size_t r_prime = my_rank;
+            if (rank_count != 1) {
+                r_prime = monomial_hash<NumModes>(dense) % rank_count;
+            }
+            if (is_follower) {
+                QueryCodec<NumModes>::push(fq[r_prime], dense, phase);
+                fs[r_prime].push_back(i);
+                if (capture_values) {
+                    fv[r_prime].push_back(v_src);
+                }
+            }
+            else {
+                QueryCodec<NumModes>::push(lq[r_prime], dense, phase);
+                ls[r_prime].push_back(i);
+                if (capture_values) {
+                    lv[r_prime].push_back(v_src);
+                }
+            }
+        };
+
         // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
         // abs_c/v_src come from the caller's coeff read, not re-read.
         auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
@@ -277,31 +313,16 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             Monomial<NumModes> new_mono;
             size_t overlap = 0;
             int phase_factor = 0;
-            emit_term_products<NumModes, A>(*op.store, i, ectx, new_mono, overlap, phase_factor);
+            emit_term_products<NumModes, A>(ham, i, ectx, new_mono, overlap, phase_factor);
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
-            const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
+            // nullopt only for an opaque cutoff_fn_, which has no (k, d) form and must be invoked.
+            const auto keep = cutoff_eval.passes_from_dense(new_mono, new_pop);
+            const bool struct_pass = keep.value_or(false) || (!keep.has_value() && cutoff_eval(new_mono));
             if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
                 return;
             }
-            const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
-            // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_mono) % rank_count);
-            const size_t source = i;
-            if (is_follower) {
-                query_push<NumModes>(fq[r_prime], new_mono, phase);
-                fs[r_prime].push_back(source);
-                if (capture_values) {
-                    fv[r_prime].push_back(v_src);
-                }
-            }
-            else {
-                query_push<NumModes>(lq[r_prime], new_mono, phase);
-                ls[r_prime].push_back(source);
-                if (capture_values) {
-                    lv[r_prime].push_back(v_src);
-                }
-            }
+            push(new_mono, mono_pop, overlap, phase_factor, i, v_src, is_follower);
         };
 
         // Pass 1 and pass 2 stay fused over `nz`: splitting them regressed measurably, as `nz` spills L1
@@ -327,9 +348,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                                              n_foll);
         }
         if (rank_count == 1) {
-            lq[my_rank].reserve((n_anti - n_foll) * kQueryWords<NumModes>);
+            // A hint only: 2 words covers k <= 6; wider terms grow the buffer rather than be reserved for.
+            const size_t qw = QueryCodec<NumModes>::kReserveWordsPerQuery;
+            lq[my_rank].reserve((n_anti - n_foll) * qw);
             ls[my_rank].reserve(n_anti - n_foll);
-            fq[my_rank].reserve(n_foll * kQueryWords<NumModes>);
+            fq[my_rank].reserve(n_foll * qw);
             fs[my_rank].reserve(n_foll);
         }
         auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
