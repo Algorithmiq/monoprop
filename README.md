@@ -175,12 +175,8 @@ executed from the notebooks in `docs/notebooks/`.  Building the documentation lo
 ```bash
 just build-docs   # output: docs/out/
 just serve-docs   # live-reloading dev server
-just check-doc-links  # checks internal docs links/anchors from source MDX
-just check-doc-links-built  # builds docs and checks exported HTML links (including external URLs)
+just check-doc-links  # checks exported HTML links (including external URLs)
 ```
-
-`just check-doc-links` requires [`lychee`](https://github.com/lycheeverse/lychee)
-to be installed locally.
 
 ### Keeping documentation up to date
 
