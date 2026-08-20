@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/detail/functional/Control.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
 using namespace monoprop;
@@ -51,11 +52,22 @@ const std::vector<VecZ> kBaseGates{VecZ{0}, VecZ{2}};
 // answer exactly like one built with it from the start, so both sides read it from here.
 constexpr double kReweightedFirstWeight = 2.75;
 
+// The identity weight the core-term cases start from; every other case leaves the row out entirely,
+// which is what makes a re-weight that also leaves it out a no-op there.
+constexpr double kCoreTerm = 0.25;
+
 // `partitions` is passed explicitly, so it wins over the suite-wide monoprop_PARTITIONS=off.
-auto make_propagator(bool schrodinger, size_t partitions = 1, double first_weight = 1.0) -> Prop {
+// `core_term` adds the identity row, which only the core-term cases below need.
+auto make_propagator(bool schrodinger,
+                     size_t partitions = 1,
+                     double first_weight = 1.0,
+                     std::optional<double> core_term = std::nullopt) -> Prop {
     OperatorDict initial_ham;
     initial_ham[VecZ{0, 1}] = std::complex<double>{0.0, first_weight};
     initial_ham[VecZ{2, 3}] = std::complex<double>{0.0, 0.5};
+    if (core_term.has_value()) {
+        initial_ham[VecZ{}] = std::complex<double>{*core_term, 0.0};
+    }
     const auto cutoff = static_cast<unsigned int>(2 * kNumModes);
     return Prop(initial_ham,
                 cutoff,
@@ -550,4 +562,144 @@ BOOST_AUTO_TEST_CASE(building_another_functional_is_not_a_reweight) {
     BOOST_CHECK_NO_THROW(other(kBaseParams));
 
     BOOST_TEST(call(kBaseParams) == before);
+}
+
+// The scope guard behind the failure-path rule, over a bare control block: a scope that returns
+// normally leaves the revision alone, and one that throws bumps it once, recording its site.
+BOOST_AUTO_TEST_CASE(bump_on_unwind_bumps_only_when_the_scope_throws) {
+    detail::FunctionalControl control;
+
+    {
+        auto guard = detail::BumpOnUnwind(control, "site()");
+    }
+    BOOST_TEST(control.structure_revision.load() == 0U);
+    BOOST_TEST((control.last_structural_change.load() == nullptr));
+
+    BOOST_CHECK_THROW(
+        [&] {
+            auto guard = detail::BumpOnUnwind(control, "site()");
+            throw std::runtime_error("part-way");
+        }(),
+        std::runtime_error);
+    BOOST_TEST(control.structure_revision.load() == 1U);
+    BOOST_TEST(std::string_view(control.last_structural_change.load()) == std::string_view("site()"));
+
+    // Disarmed is how a known no-op opts out, so it must stay silent on both paths.
+    BOOST_CHECK_THROW(
+        [&] {
+            auto guard = detail::BumpOnUnwind(control, "other()", /*armed=*/false);
+            throw std::runtime_error("part-way");
+        }(),
+        std::runtime_error);
+    BOOST_TEST(control.structure_revision.load() == 1U);
+}
+
+// A gate generator is bounds-checked only as the gate loop reaches it, so a bad one in a multi-gate
+// call throws with the earlier gates already committed: valid, out of range, valid appends before it
+// throws in both pictures (Heisenberg walks the gates in reverse).
+namespace {
+
+const std::vector<VecZ> kPartWayGates{VecZ{0}, VecZ{2 * kNumModes + 1}, VecZ{2}};
+const VecZ kPartWayMapping{0, 1, 2};
+const VecD kPartWayCoeffs{1.0, 1.0, 1.0};
+
+auto reports_site(std::string_view site) {
+    return [site](const std::runtime_error &e) {
+        const std::string_view what(e.what());
+        BOOST_TEST_INFO("message: " << what);
+        return what.find(site) != std::string_view::npos;
+    };
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(a_part_way_build_graph_failure_invalidates_the_functional) {
+    for (const bool schrodinger : {false, true}) {
+        BOOST_TEST_CONTEXT("schrodinger=" << schrodinger) {
+            auto prop = make_propagator(schrodinger);
+            build_base_graph(prop);
+            auto call = make_call(prop, /*gradient=*/false, std::nullopt);
+            BOOST_CHECK_NO_THROW(call(kBaseParams));
+            const size_t layers_before = prop.graph_layers();
+
+            BOOST_CHECK_THROW(prop.build_graph(kPartWayGates, kPartWayMapping, kPartWayCoeffs), std::runtime_error);
+
+            // The graph grew, so the call did mutate on its way to the throw.
+            BOOST_TEST(prop.graph_layers() > layers_before);
+            BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports_site("build_graph()"));
+        }
+    }
+}
+
+// propagate() folds into the operator instead of appending, so nothing counts the mutation: without
+// the failure-path bump the functional would keep answering for coefficients that had moved.
+BOOST_AUTO_TEST_CASE(a_part_way_propagate_failure_invalidates_the_functional) {
+    for (const bool schrodinger : {false, true}) {
+        BOOST_TEST_CONTEXT("schrodinger=" << schrodinger) {
+            auto prop = make_propagator(schrodinger);
+            auto call = make_call(prop, /*gradient=*/false, std::nullopt);
+            BOOST_CHECK_NO_THROW(call(VecD{}));
+
+            BOOST_CHECK_THROW(prop.propagate(kPartWayGates, kPartWayMapping, kPartWayCoeffs, VecD{0.3, 0.7, 0.5}),
+                              std::runtime_error);
+
+            BOOST_CHECK_EXCEPTION(call(VecD{}), std::runtime_error, reports_site("propagate()"));
+        }
+    }
+}
+
+// A call that appends or folds nothing is not a mutation. The facade decides that before it fans out,
+// so both partition counts must agree -- this is the off/auto divergence the table exists to rule out.
+BOOST_AUTO_TEST_CASE(no_op_mutators_keep_a_functional_valid) {
+    for (const size_t partitions : {1U, 2U}) {
+        BOOST_TEST_CONTEXT("partitions=" << partitions) {
+            auto prop = make_propagator(/*schrodinger=*/false, partitions);
+            auto call = make_call(prop, /*gradient=*/false, std::nullopt);
+            const double before = call(VecD{});
+
+            // No graph, so there is nothing to fold and no layer to retire; the return is the current
+            // coefficients either way, which is what it was before the call.
+            const VecD folded = prop.contract_partially(VecD{}, /*inplace=*/true);
+            BOOST_TEST(folded == prop.contract_partially(VecD{}, /*inplace=*/false), tt::per_element());
+            prop.build_graph({}, VecZ{}, VecD{});
+            prop.propagate({}, VecZ{}, VecD{}, VecD{});
+            BOOST_TEST(prop.graph_layers() == 0U);
+
+            BOOST_TEST(call(VecD{}) == before, tt::tolerance(1e-12));
+        }
+    }
+}
+
+// The core term describes the dict that committed, like every other row: a re-weight that leaves the
+// identity out zeroes it, which is what MPOperator::update_initial_operator does with the rows the dict
+// omits. The live functional and the propagator's own answer must both see that.
+BOOST_AUTO_TEST_CASE(a_reweight_that_drops_the_core_term_zeroes_it) {
+    auto prop = make_propagator(/*schrodinger=*/false, /*partitions=*/1, /*first_weight=*/1.0, kCoreTerm);
+    build_base_graph(prop);
+    auto call = make_call(prop, /*gradient=*/false, std::nullopt);
+    BOOST_TEST(prop.core_term() == kCoreTerm);
+
+    mutate_update_initial_operator(prop); // carries no identity row
+
+    BOOST_TEST(prop.core_term() == 0.0);
+    auto fresh = make_propagator(/*schrodinger=*/false, /*partitions=*/1, kReweightedFirstWeight);
+    build_base_graph(fresh);
+    BOOST_TEST(call(kBaseParams) == make_call(fresh, /*gradient=*/false, std::nullopt)(kBaseParams));
+    BOOST_TEST(call(kBaseParams) == prop.expectation_value(kBaseParams));
+}
+
+// The other half of the same rule: a dict the store rejects commits nothing, so the core term stays
+// where it was and the propagator's own expectation value is untouched.
+BOOST_AUTO_TEST_CASE(a_rejected_reweight_leaves_the_core_term_alone) {
+    auto prop = make_propagator(/*schrodinger=*/false, /*partitions=*/1, /*first_weight=*/1.0, kCoreTerm);
+    build_base_graph(prop);
+    const double before = prop.expectation_value(kBaseParams);
+
+    OperatorDict rejected;
+    rejected[VecZ{}] = std::complex<double>{2.0, 0.0};
+    rejected[VecZ{0, 2}] = std::complex<double>{0.0, 1.0}; // a term the operator does not hold
+    BOOST_CHECK_THROW(prop.update_initial_operator(rejected), std::runtime_error);
+
+    BOOST_TEST(prop.core_term() == kCoreTerm);
+    BOOST_TEST(prop.expectation_value(kBaseParams) == before, tt::tolerance(1e-12));
 }

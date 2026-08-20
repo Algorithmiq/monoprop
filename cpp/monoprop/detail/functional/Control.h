@@ -16,37 +16,73 @@
 
 #include <atomic>
 #include <cstddef>
+#include <exception>
 #include <memory>
 
 #include "monoprop/TypeAliases.h"
 
 namespace monoprop::detail {
 
-// Immutable initial-operator weights, published together on re-weight.
-//
-// Re-weighting preserves the store, inverted index and graph. A single atomic load keeps `op` and
-// `core_term` from the same publication.
+// Immutable initial-operator weights, atomically published on re-weight.
+// A single load keeps `op` and `core_term` from one publication.
 struct OperatorWeights {
     VecD op;                      // One coefficient per store row.
     double core_term{0.0};        // Identity contribution to the expectation value.
     size_t structure_revision{0}; // Revision at publication.
 };
 
-// Shared validity state for a propagator and its functionals.
-// A copy has a fresh block because it has no functionals.
+// Validity state shared by a propagator and its functionals.
+// Copies start with a fresh block.
 struct FunctionalControl {
-    // Bumped when a replayed graph layer, parameter label, or operator row changes.
+    // Bumped when replayed structure changes.
     std::atomic<size_t> structure_revision{0};
 
-    // Cleared before propagator members are destroyed.
+    // Cleared before propagator destruction.
     std::atomic<bool> propagator_alive{true};
 
-    // String literal naming the last structural change.
+    // Last structural change, as a string literal.
     std::atomic<const char *> last_structural_change{nullptr};
 
-    // Current weights. Null until the first functional plan is built.
-    // The propagator writes; functional calls read.
+    // Current weights, null until the first functional plan. Written by the propagator and read by
+    // functional calls.
     std::atomic<std::shared_ptr<const OperatorWeights>> weights{};
+
+    // Record a replayed-structure change. `site` must outlive the propagator.
+    auto bump(const char *site) -> void {
+        last_structural_change.store(site);
+        structure_revision.fetch_add(1);
+    }
+};
+
+// Bumps the control block when a mutation throws after it may have changed replayed state.
+// Construct after validation and before the first write. Set `armed` to false for known no-ops;
+// the caller records successful changes.
+class [[nodiscard]] BumpOnUnwind {
+public:
+    // `site` must outlive the propagator.
+    BumpOnUnwind(FunctionalControl &control, const char *site, bool armed = true)
+        : control_(control),
+          site_(site),
+          armed_(armed),
+          uncaught_(std::uncaught_exceptions()) {}
+
+    BumpOnUnwind(const BumpOnUnwind &) = delete;
+    BumpOnUnwind(BumpOnUnwind &&) = delete;
+    auto operator=(const BumpOnUnwind &) -> BumpOnUnwind & = delete;
+    auto operator=(BumpOnUnwind &&) -> BumpOnUnwind & = delete;
+
+    ~BumpOnUnwind() {
+        // This also works when called during another unwind.
+        if (armed_ && std::uncaught_exceptions() > uncaught_) {
+            control_.bump(site_);
+        }
+    }
+
+private:
+    FunctionalControl &control_;
+    const char *site_;
+    bool armed_;
+    int uncaught_;
 };
 
 } // namespace monoprop::detail

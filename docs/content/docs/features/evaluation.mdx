@@ -72,9 +72,11 @@ This is what every public mutating method does to a functional built before it r
 | [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially] with `inplace=True` | raises |
 | [parameter_mapping][monoprop.monomial_propagator.MonomialPropagator.parameter_mapping] | raises |
 | [update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator] | answers for the new coefficients — except in the Schrödinger picture with a `pare_threshold`, where it raises, because the pared graph was selected from the coefficients the re-weight replaced |
-| a rejected `update_initial_operator` | raises: the call can fail with the core term already written |
+| a rejected `update_initial_operator` | raises: a partitioned propagator applies the re-weight one partition at a time, so a term only one of them holds is rejected with its siblings already re-weighted |
+| a `build_graph` or `propagate` that fails part-way | raises: a gate generator is bounds-checked only as the gate loop reaches it, so the gates before it are already committed |
 | `cutoff`, `cutoff_type`, `basis_change`, `lower_atol`, `upper_atol` | answers, unchanged: these gate the next build and touch nothing a functional replays |
 | `contract_partially` with `inplace=False` | answers, unchanged: it mutates nothing |
+| a call that folds or appends nothing — `contract_partially([], inplace=True)`, `build_graph` or `propagate` with no gates | answers, unchanged: nothing moved, on any partition count |
 
 The table is executable — see [the mutation table](/testing#the-mutation-table).
 

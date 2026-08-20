@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, Protocol, TypeVar
 
 import numpy as np
 
@@ -55,20 +55,29 @@ logger = logging.getLogger(__name__)
 T_op = TypeVar("T_op", MajoranaOperator, PauliOperator)
 
 
-class _BoundFunctional:
-    """One engine functional, called through the front end's parameter binding.
+T_ret_co = TypeVar("T_ret_co", covariant=True)
 
-    A call has to resolve named or circuit-carried parameters first, so the caller cannot be handed
-    the engine functional itself. The two engine attributes worth exposing are forwarded by name, so
-    this class -- not whatever the bindings happen to carry -- is what defines the Python surface.
-    """
 
-    def __init__(self, propagator: MonomialPropagator, functional: object) -> None:
+class _EngineFunctional(Protocol[T_ret_co]):
+    """Interface exposed by engine functionals."""
+
+    def __call__(self, parameters: list[float], /) -> T_ret_co: ...
+
+    @property
+    def num_params(self) -> int: ...
+
+    @property
+    def follows_weights(self) -> bool: ...
+
+
+class _BoundFunctionalBase(Generic[T_ret_co]):
+    """Shared parameter binding and forwarded functional attributes."""
+
+    def __init__(
+        self, propagator: MonomialPropagator, functional: _EngineFunctional[T_ret_co]
+    ) -> None:
         self._propagator = propagator
         self._functional = functional
-
-    def __call__(self, parameters: ParameterValues = None) -> float:
-        return self._functional(self._propagator._bind(parameters))
 
     @property
     def num_params(self) -> int:
@@ -81,7 +90,14 @@ class _BoundFunctional:
         return self._functional.follows_weights
 
 
-class _BoundGradientFunctional(_BoundFunctional):
+class _BoundFunctional(_BoundFunctionalBase[float]):
+    """One engine functional returning the expectation value."""
+
+    def __call__(self, parameters: ParameterValues = None) -> float:
+        return self._functional(self._propagator._bind(parameters))
+
+
+class _BoundGradientFunctional(_BoundFunctionalBase[tuple[float, np.ndarray]]):
     """As the value functional, but returning ``(value, gradient)`` with the gradient as ``float64``."""
 
     def __call__(self, parameters: ParameterValues = None) -> tuple[float, np.ndarray]:
@@ -592,13 +608,16 @@ class MonomialPropagator(ABC, Generic[T_op]):
         pared graph was selected from the coefficients this call replaces, so it raises instead of
         following them.
 
-        A rejected re-weight invalidates them, since this call can fail with the core term already
-        written: they raise rather than answer for weights the propagator disagrees with.
+        A rejected re-weight invalidates them: a partitioned propagator applies the new weights one
+        partition at a time, so a term only one of them holds is rejected with its siblings already
+        re-weighted, and a functional cannot tell that apart from a rejection that committed nothing.
+        They raise rather than answer for weights the propagator disagrees with.
 
         Args:
             new_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
                 [PauliOperator][monoprop.pauli.PauliOperator], per the front-end, whose terms replace
-                the matching initial-operator.
+                the matching initial-operator. Every existing term it leaves out is zeroed, the
+                identity term included.
 
         Raises:
             RuntimeError: In the Heisenberg picture, if a term is absent from the current operator.

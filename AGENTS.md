@@ -114,11 +114,15 @@ Key files:
   the propagator still there, and does it still hold what I replay?" without dereferencing it. **Every
   new mutating method must call `bump_structure_("its_name()")`** once the mutation has committed (a
   rejected mutation must not bump); the settings that only gate the next build — the atols, the cutoff,
-  the cutoff type, the basis change — deliberately do not. A plan additionally re-derives the operator's
-  store pointer and inverted-index row count as a backstop, so a missing bump reports staleness instead
-  of folding a rebuilt index. The block also carries the published `OperatorWeights`: a re-weight
-  publishes a new set rather than bumping, which is what lets a live functional follow it, and bumps only
-  if it fails part-way. Publishing runs on the propagator's own thread (a facade publishes through
+  the cutoff type, the basis change — deliberately do not. Two halves go with that success-path bump:
+  guard the mutation itself with `bump_structure_on_unwind_` (`detail::BumpOnUnwind`), constructed after
+  the last rejection check and before the first write, so a mutator that throws part-way still
+  invalidates; and do not bump a fan-out whose children all no-op — decide with the facade-transparent
+  readers *before* fanning out, or `monoprop_PARTITIONS=auto` invalidates where `off` does not. A plan
+  additionally re-derives the operator's store pointer and inverted-index row count as a backstop, so a
+  missing bump reports staleness instead of folding a rebuilt index. The block also carries the
+  published `OperatorWeights`: a re-weight publishes a new set rather than bumping, which is what lets a
+  live functional follow it, and bumps only if it fails part-way. Publishing runs on the propagator's own thread (a facade publishes through
   `for_each_partition_`), and a plan reads the set once per call so `op` and `core_term` cannot come from
   two publications.
 - **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
@@ -195,10 +199,10 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 7. Add Python bindings in `src/monoprop/bindings/binder.h`
 8. Regenerate bindings with `tools/generate-binders.py`
 9. Test with both C++ and Python tests
-10. If the new method mutates a `MonomialPropagator`: call `bump_structure_` from it (see
-    `detail::FunctionalControl`), bump `MonomialPropagator::num_mutating_methods`, and add its row to
-    the mutation table (see "Testing Structure"). A mutator with no row leaves its effect on a live
-    functional unrecorded.
+10. If the new method mutates a `MonomialPropagator`: call `bump_structure_` from it and guard it with
+    `bump_structure_on_unwind_` (see `detail::FunctionalControl`), bump
+    `MonomialPropagator::num_mutating_methods`, and add its row to the mutation table (see "Testing
+    Structure"). A mutator with no row leaves its effect on a live functional unrecorded.
 
 ## Documentation Maintenance Policy
 

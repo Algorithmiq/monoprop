@@ -179,7 +179,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
     cls.def("update_initial_operator",
             &MonomialPropagator<NumModes>::update_initial_operator,
             "op_dict"_a,
-            "Rewrite the initial operator from an {indices: coefficient} dict");
+            "Rewrite the initial operator from an {indices: coefficient} dict; every existing term "
+            "the dict omits is zeroed, the identity term included");
 
     cls.def_prop_rw("lower_atol",
                     &MonomialPropagator<NumModes>::lower_atol,

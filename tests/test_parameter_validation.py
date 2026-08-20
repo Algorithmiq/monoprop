@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from monoprop import (
@@ -29,9 +30,46 @@ from monoprop.majorana import MajoranaOperator
 from monoprop.pauli import PauliOperator
 
 
-def _value(result):
-    """The value component of a functional's answer, for either functional kind."""
-    return result[0] if isinstance(result, tuple) else result
+def _components(result):
+    """A functional's answer as ``(value, gradient)``; ``None`` gradient for the value-only kind."""
+    return result if isinstance(result, tuple) else (result, None)
+
+
+def _assert_answers_match(actual, expected, *, exact, context=""):
+    """Assert both components of two answers agree, bit-exactly or to ``pytest.approx``.
+
+    The two functional kinds return different shapes, so a test parametrized over both has to
+    compare whatever the kind under test returned -- a gradient dropped here is a gradient nobody
+    checks.
+    """
+    value, gradient = _components(actual)
+    expected_value, expected_gradient = _components(expected)
+    assert (gradient is None) == (expected_gradient is None), context
+    if exact:
+        assert value == expected_value, context
+        if gradient is not None:
+            assert np.array_equal(gradient, expected_gradient), context
+    else:
+        assert value == pytest.approx(expected_value), context
+        if gradient is not None:
+            assert gradient == pytest.approx(expected_gradient), context
+
+
+def _assert_answers_differ(actual, other, context=""):
+    """Assert both components of two answers moved (a gradient counts as moved if any entry did)."""
+    value, gradient = _components(actual)
+    other_value, other_gradient = _components(other)
+    assert value != pytest.approx(other_value), context
+    if gradient is not None:
+        assert gradient != pytest.approx(other_gradient), context
+
+
+# The propagator method each functional factory is the reusable form of, so a test can compare a
+# functional's answer against the direct call of the same shape.
+_DIRECT_CALL = {
+    "expectation_value_functional": "expectation_value",
+    "expectation_value_and_gradient_functional": "expectation_value_and_gradient",
+}
 
 
 def _two_gate_graph(serial_comm):
@@ -197,16 +235,19 @@ class TestGraphAndParameterValidation:
         )
         functional = getattr(mp, functional_name)()
         parameters = [0.3, 0.7]
-        before = _value(functional(parameters))
+        before = functional(parameters)
 
         mp.update_initial_operator(updated_operator)
 
         # A re-weight moves no structure, so the functional built before it follows the new
         # coefficients instead of refusing the call: it now answers what the propagator answers.
-        after = _value(functional(parameters))
-        assert after != pytest.approx(before)
-        assert after == pytest.approx(mp.expval(parameters))
-        assert after == _value(getattr(mp, functional_name)()(parameters))
+        after = functional(parameters)
+        _assert_answers_differ(after, before)
+        direct = getattr(mp, _DIRECT_CALL[functional_name])(parameters)
+        _assert_answers_match(after, direct, exact=False)
+        _assert_answers_match(
+            after, getattr(mp, functional_name)()(parameters), exact=True
+        )
 
 
 class TestFunctionalValidityTable:
@@ -240,11 +281,16 @@ class TestFunctionalValidityTable:
         )
 
     @classmethod
-    def _propagator(cls, comm, *, schrodinger, with_graph, first_weight=1.0):
+    def _propagator(
+        cls, comm, *, schrodinger, with_graph, first_weight=1.0, core_term=None
+    ):
+        # The identity row is only carried by the core-term case; every other case leaves it out,
+        # which is what makes a re-weight that also leaves it out a no-op there.
+        terms = {(0, 1): first_weight * 1j, (2, 3): 0.5j}
+        if core_term is not None:
+            terms[()] = core_term
         mp = MajoranaPropagator(
-            MajoranaOperator(
-                {(0, 1): first_weight * 1j, (2, 3): 0.5j}, num_modes=cls._MODES
-            ),
+            MajoranaOperator(terms, num_modes=cls._MODES),
             [0, 1],
             cutoff=cls._CUTOFF,
             schrodinger_cutoff=cls._CUTOFF if schrodinger else None,
@@ -435,7 +481,7 @@ class TestFunctionalValidityTable:
         threshold = self._PARE_THRESHOLD if pared else None
         functional = getattr(mp, functional_name)(threshold)
 
-        before = _value(functional(parameters))
+        before = functional(parameters)
         getattr(self, mutator)(mp)
 
         expected = pared_schrodinger if pared and schrodinger else outcome
@@ -447,12 +493,14 @@ class TestFunctionalValidityTable:
             with pytest.raises(RuntimeError, match=r"cannot follow the new weights"):
                 functional(parameters)
         elif expected == "refreshes":
-            after = _value(functional(parameters))
+            after = functional(parameters)
             fresh = getattr(mp, functional_name)(threshold)
-            assert after == _value(fresh(parameters)), context
-            assert after != pytest.approx(before), context
+            _assert_answers_match(after, fresh(parameters), exact=True, context=context)
+            _assert_answers_differ(after, before, context=context)
         else:
-            assert _value(functional(parameters)) == pytest.approx(before), context
+            _assert_answers_match(
+                functional(parameters), before, exact=False, context=context
+            )
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
     @pytest.mark.parametrize(
@@ -537,7 +585,7 @@ class TestFunctionalValidityTable:
 
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
         functional = getattr(mp, functional_name)(threshold)
-        before = _value(functional(parameters))
+        before = functional(parameters)
         self._mutate_update_initial_operator(mp)
 
         fresh = self._propagator(
@@ -546,11 +594,11 @@ class TestFunctionalValidityTable:
             with_graph=True,
             first_weight=self._REWEIGHTED_FIRST_WEIGHT,
         )
-        expected = _value(getattr(fresh, functional_name)(threshold)(parameters))
+        expected = getattr(fresh, functional_name)(threshold)(parameters)
 
-        after = _value(functional(parameters))
-        assert after == expected
-        assert after != pytest.approx(before)
+        after = functional(parameters)
+        _assert_answers_match(after, expected, exact=True)
+        _assert_answers_differ(after, before)
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
     def test_pared_schrodinger_functional_refuses_to_follow_a_reweight(
@@ -573,6 +621,123 @@ class TestFunctionalValidityTable:
         with pytest.raises(RuntimeError, match=r"cannot follow the new weights"):
             pared(parameters)
         assert exact(parameters) == pytest.approx(mp.expval(parameters))
+
+    @pytest.mark.parametrize("partitions", ["off", "auto"])
+    def test_no_op_mutators_keep_a_functional_valid(
+        self, monkeypatch, serial_comm, partitions
+    ):
+        """A call that appends or folds nothing is not a mutation, on either partition setting.
+
+        The facade decides that before it fans out, so ``off`` and ``auto`` must agree -- an
+        unconditional bump on the fan-out is exactly the divergence this table exists to rule out.
+        """
+        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=False)
+        functional = mp.expectation_value_functional()
+        before = functional([])
+
+        # No graph, so there is nothing to fold and no layer to retire; the return is the current
+        # coefficients either way.
+        folded = mp.contract_partially([], inplace=True)
+        assert folded == pytest.approx(mp.contract_partially([], inplace=False))
+        empty = Circuit((), self._MODES, ())
+        mp.build_graph(empty)
+        mp.propagate(empty)
+        assert mp.n_parameters == 0
+
+        assert functional([]) == pytest.approx(before)
+
+    # A gate generator is bounds-checked only as the gate loop reaches it, so a bad one in a
+    # multi-gate call throws with the earlier gates already committed. The front end validates
+    # generators against num_modes, so the engine is the only way to express one -- as in
+    # _mutate_basis_change.
+    _PART_WAY_GATES = ((0,), (2 * _MODES + 1,), (2,))
+    _PART_WAY_MAPPING = (0, 1, 2)
+    _PART_WAY_COEFFS = (1.0, 1.0, 1.0)
+
+    @pytest.mark.parametrize("partitions", ["off", "auto"])
+    def test_part_way_build_graph_failure_invalidates_the_functional(
+        self, monkeypatch, serial_comm, partitions
+    ):
+        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
+        functional = mp.expectation_value_functional()
+        parameters = list(self._PARAMS)
+        functional(parameters)
+        layers_before = mp.graph_layers
+
+        with pytest.raises(RuntimeError):
+            mp._simulator.build_graph(
+                self._PART_WAY_GATES, self._PART_WAY_MAPPING, self._PART_WAY_COEFFS
+            )
+
+        # The graph grew, so the call did mutate on its way to the throw.
+        assert mp.graph_layers > layers_before
+        with pytest.raises(RuntimeError, match=r"build_graph"):
+            functional(parameters)
+
+    @pytest.mark.parametrize("partitions", ["off", "auto"])
+    def test_part_way_propagate_failure_invalidates_the_functional(
+        self, monkeypatch, serial_comm, partitions
+    ):
+        """propagate() folds into the operator instead of appending, so nothing counts the
+        mutation: without the failure-path bump the functional would keep answering for
+        coefficients that had moved.
+        """
+        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=False)
+        functional = mp.expectation_value_functional()
+        functional([])
+
+        with pytest.raises(RuntimeError):
+            mp._simulator.propagate(
+                self._PART_WAY_GATES,
+                self._PART_WAY_MAPPING,
+                self._PART_WAY_COEFFS,
+                [0.3, 0.7, 0.5],
+            )
+
+        with pytest.raises(RuntimeError, match=r"propagate"):
+            functional([])
+
+    @pytest.mark.parametrize("partitions", ["off", "auto"])
+    @pytest.mark.parametrize(
+        "functional_name",
+        [
+            "expectation_value_functional",
+            "expectation_value_and_gradient_functional",
+        ],
+    )
+    def test_reweight_that_drops_the_core_term_zeroes_it(
+        self, monkeypatch, serial_comm, functional_name, partitions
+    ):
+        """The identity row describes the dict that committed, like every other row: a re-weight
+        that leaves it out zeroes it, which is what the store does with every row a dict omits.
+        """
+        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+        parameters = list(self._PARAMS)
+        mp = self._propagator(
+            serial_comm, schrodinger=False, with_graph=True, core_term=0.25
+        )
+        functional = getattr(mp, functional_name)(None)
+        before = functional(parameters)
+
+        self._mutate_update_initial_operator(mp)  # carries no identity row
+
+        fresh = self._propagator(
+            serial_comm,
+            schrodinger=False,
+            with_graph=True,
+            first_weight=self._REWEIGHTED_FIRST_WEIGHT,
+        )
+        after = functional(parameters)
+        _assert_answers_match(
+            after, getattr(fresh, functional_name)(None)(parameters), exact=True
+        )
+        _assert_answers_match(
+            after, getattr(mp, _DIRECT_CALL[functional_name])(parameters), exact=False
+        )
+        _assert_answers_differ(after, before)
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
     def test_pared_functional_is_invalidated_by_build_graph(
