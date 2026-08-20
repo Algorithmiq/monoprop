@@ -1089,11 +1089,14 @@ auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &pa
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bool inplace) -> VecD {
+    // The one site name all three bump paths below report; bump_structure_ stores the pointer, so it has
+    // to be a literal that outlives every propagator.
+    static constexpr const char *kInplaceSite = "contract_partially(inplace=true)";
     if (partition_group_) {
         auto merged =
             concat_partitions_([&](MonomialPropagator &s) { return s.contract_partially(parameters, inplace); });
         if (inplace) {
-            bump_structure_("contract_partially(inplace=true)");
+            bump_structure_(kInplaceSite);
         }
         return merged;
     }
@@ -1120,7 +1123,7 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
             mp_op_.state_coeffs = evolved_state;
             // The graph lost the layers it folded and the state moved, so every plan built against
             // either is stale. Out of place nothing changes, so there is no bump on that branch.
-            bump_structure_("contract_partially(inplace=true)");
+            bump_structure_(kInplaceSite);
         }
         else {
             evolved_state =
@@ -1136,7 +1139,7 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
         const MPGraph sliced = graph_.slice_graph(num_majoranas, true);
         evolved_op = evolve_operator_with_recompute_(VecD(op), sliced.replay_view(), mapped_params);
         mp_op_.op_coeffs = evolved_op;
-        bump_structure_("contract_partially(inplace=true)");
+        bump_structure_(kInplaceSite);
     }
     else {
         evolved_op = evolve_operator_with_recompute_(VecD(op), graph_.slice_view(num_majoranas), mapped_params);

@@ -41,9 +41,9 @@ namespace detail {
 /// One propagator snapshot a functional replays, plus the checks that say the snapshot is still that
 /// propagator's own.
 ///
-/// Immutable once built and held by `shared_ptr<const>`, so the value and the gradient functional over
-/// the same snapshot share one plan. Every field is either owned or, where the comment says so,
-/// borrowed from the propagator — which is why a functional must not outlive it.
+/// Immutable once built and held by `shared_ptr<const>`, so one plan backs either functional kind: it
+/// holds the snapshot, not the choice of what to compute. Every field is either owned or, where the
+/// comment says so, borrowed from the propagator — which is why a functional must not outlive it.
 template <size_t NumModes>
 class FunctionalPlan {
 public:
@@ -109,7 +109,7 @@ public:
         if (const auto *fanout = std::get_if<Fanout>(&shape_)) {
             // Every child was built in the same picture at the same threshold, so one child answers for
             // all of them. Reading an immutable child field needs no fan-out.
-            return fanout->partitions.empty() || fanout->partitions.front()->follows_weights();
+            return fanout->partitions.front()->follows_weights();
         }
         return !std::get<Local>(shape_).pared_from_operator;
     }
@@ -141,9 +141,9 @@ public:
         if (const auto *fanout = std::get_if<Fanout>(&shape_)) {
             // Each partition allreduces internally, so partition 0 already carries the global answer.
             // The fan-out must reach every master: the partitions' collectives are barrier-synced.
-            return partition::collect_on_all(*fanout->group, [&](int r) -> R {
+            return std::move(partition::collect_on_all(*fanout->group, [&](int r) -> R {
                 return fanout->partitions[static_cast<size_t>(r)]->evaluate(fn, params);
-            })[0];
+            })[0]);
         }
         const auto &local = std::get<Local>(shape_);
         // Held for the whole call: `weights` is what keeps the vector `request.op` refers to alive.
@@ -193,6 +193,24 @@ private:
     std::variant<Local, Fanout> shape_;
 };
 
+/// The handle half both functional kinds share: the plan they replay, and the two facts a caller can
+/// ask about it without calling it. The kinds differ only in what `operator()` computes.
+template <size_t NumModes>
+class FunctionalHandle {
+public:
+    /// The parameter-axis length this functional was built against.
+    auto num_params() const -> size_t { return plan_->num_params(); }
+
+    /// True unless a MonomialPropagator::update_initial_operator() makes a call throw: the contract as
+    /// this object holds it, so a caller need not re-derive it from picture and pare threshold.
+    auto follows_weights() const -> bool { return plan_->follows_weights(); }
+
+protected:
+    explicit FunctionalHandle(std::shared_ptr<const FunctionalPlan<NumModes>> plan) : plan_(std::move(plan)) {}
+
+    std::shared_ptr<const FunctionalPlan<NumModes>> plan_;
+};
+
 } // namespace detail
 
 /// A reusable expectation value over one propagator snapshot: `fn(parameters) -> double`.
@@ -206,60 +224,32 @@ private:
 /// MonomialPropagator::update_initial_operator(). Build the functional again after the last re-weight
 /// to freeze a value.
 template <size_t NumModes>
-class ExpectationValueFunctional {
+class ExpectationValueFunctional : public detail::FunctionalHandle<NumModes> {
 public:
-    /// The parameter-axis length this functional was built against.
-    auto num_params() const -> size_t { return plan_->num_params(); }
-
-    /// True unless a MonomialPropagator::update_initial_operator() makes a call throw: the contract as
-    /// this object holds it, so a caller need not re-derive it from picture and pare threshold.
-    auto follows_weights() const -> bool { return plan_->follows_weights(); }
-
-    auto operator()(const VecD &parameters) const -> double {
-        return plan_->evaluate(
-            [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> double {
-                return ev(request, comm, cos);
-            },
-            parameters);
-    }
+    auto operator()(const VecD &parameters) const -> double { return this->plan_->evaluate(ev, parameters); }
 
 private:
     friend class MonomialPropagator<NumModes>;
 
     explicit ExpectationValueFunctional(std::shared_ptr<const detail::FunctionalPlan<NumModes>> plan)
-        : plan_(std::move(plan)) {}
-
-    std::shared_ptr<const detail::FunctionalPlan<NumModes>> plan_;
+        : detail::FunctionalHandle<NumModes>(std::move(plan)) {}
 };
 
 /// As ExpectationValueFunctional, plus the gradient from the same backward pass:
 /// `fn(parameters) -> (value, gradient)`, the gradient in parameter-axis order. It follows the
 /// initial-operator weights on the same terms.
 template <size_t NumModes>
-class ExpectationValueAndGradientFunctional {
+class ExpectationValueAndGradientFunctional : public detail::FunctionalHandle<NumModes> {
 public:
-    /// The parameter-axis length this functional was built against.
-    auto num_params() const -> size_t { return plan_->num_params(); }
-
-    /// True unless a MonomialPropagator::update_initial_operator() makes a call throw: the contract as
-    /// this object holds it, so a caller need not re-derive it from picture and pare threshold.
-    auto follows_weights() const -> bool { return plan_->follows_weights(); }
-
     auto operator()(const VecD &parameters) const -> std::pair<double, VecD> {
-        return plan_->evaluate(
-            [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> std::pair<double, VecD> {
-                return ev_and_grad(request, comm, cos);
-            },
-            parameters);
+        return this->plan_->evaluate(ev_and_grad, parameters);
     }
 
 private:
     friend class MonomialPropagator<NumModes>;
 
     explicit ExpectationValueAndGradientFunctional(std::shared_ptr<const detail::FunctionalPlan<NumModes>> plan)
-        : plan_(std::move(plan)) {}
-
-    std::shared_ptr<const detail::FunctionalPlan<NumModes>> plan_;
+        : detail::FunctionalHandle<NumModes>(std::move(plan)) {}
 };
 
 } // namespace monoprop

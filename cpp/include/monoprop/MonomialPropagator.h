@@ -103,9 +103,7 @@ public:
     /// How many public methods mutate this propagator, and so may invalidate a live functional.
     // cpp/tests/functional_validity.cpp static_asserts that its table has a row for each, so bumping
     // this when adding a mutator breaks that build until the new method's effect on a functional is
-    // recorded. The roster: build_graph, propagate, contract_partially, update_initial_operator,
-    // set_parameter_mapping, update_cutoff, update_cutoff_type, update_basis_change,
-    // update_lower_atol, update_upper_atol.
+    // recorded. That table is the roster; keeping the names here too would be a copy nothing enforces.
     static constexpr size_t num_mutating_methods{10};
 
     auto logical_num_modes() const -> size_t { return logical_num_modes_; }
