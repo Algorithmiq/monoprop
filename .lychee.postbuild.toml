@@ -1,0 +1,11 @@
+# Post-build check over exported HTML with external links enabled.
+
+# Avoid noisy/generated dependency paths if ever passed as inputs.
+exclude_path = ["docs/node_modules/**"]
+
+# Keep retries bounded while reducing transient external failures.
+max_retries = 2
+timeout = 20
+
+# Treat common external rate limiting as non-fatal for CI stability.
+accept = [200, 429]
