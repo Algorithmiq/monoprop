@@ -82,7 +82,7 @@ jobs:
           args: >-
             --config .lychee.postbuild.toml --no-progress
             --root-dir ${{ github.workspace }}/docs/out
-            --fallback-extensions html --index-files index.html
+            --fallback-extensions html
             'docs/out/**/*.html'
           fail: true
 
