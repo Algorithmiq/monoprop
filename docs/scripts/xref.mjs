@@ -7,7 +7,7 @@ export const API_BASE_URL = '/api';
 
 /**
  * Turn a fully-qualified symbol path into the URL of the page that documents
- * it. Mirrors fumadocs-python's `getHref`, then drops the leading `monoprop`
+ * it. Mirrors `getHref` in `api-mdx.mjs`, then drops the leading `monoprop`
  * segment that `write` strips from file paths (the same realignment applied to
  * the rendered content).
  */
