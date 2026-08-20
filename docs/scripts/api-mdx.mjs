@@ -28,6 +28,8 @@ export function convert(mod, options = {}) {
   const tabContents = [];
 
   if (mod.description) content.push(encodeText(mod.description));
+  const remainder = convertDoc(mod.docstring ?? []);
+  if (remainder) content.push(remainder);
   for (const attr of mod.attributes) content.push(convertAttribute(attr));
 
   if (Object.keys(mod.classes).length > 0) {
@@ -79,6 +81,8 @@ function convertClass(cls) {
   const content = [];
 
   if (cls.description) content.push(encodeText(cls.description));
+  const remainder = convertDoc(cls.docstring ?? []);
+  if (remainder) content.push(remainder);
   if (cls.attributes.length > 0) content.push(heading(2, 'Attributes'));
   for (const attr of cls.attributes) content.push(convertAttribute(attr));
   if (Object.keys(cls.functions).length > 0) {
@@ -143,12 +147,20 @@ function convertAttribute(attribute) {
   );
 }
 
-/** Render the docstring sections `simplify_docstring` left in `remainder`. */
+/**
+ * Render the docstring sections `simplify_docstring` left in `remainder`.
+ *
+ * Anything not handled here is dropped, which is why the default warns: which
+ * sections griffe splits out is a function of its version, so a docstring can
+ * stop rendering without anything else changing. `Raises:` is the known case --
+ * 19 of them are dropped today.
+ */
 function convertDoc(docstring) {
   const lines = [];
   for (const item of docstring) {
-    if (item.kind === 'text') lines.push(encodeText(item.value));
-    if (item.kind === 'admonition') {
+    if (item.kind === 'text') {
+      lines.push(encodeText(item.value));
+    } else if (item.kind === 'admonition') {
       lines.push(
         element(
           'Callout',
@@ -156,6 +168,8 @@ function convertDoc(docstring) {
           encodeText(item.value.description),
         ),
       );
+    } else {
+      console.warn(`api-mdx: dropping unhandled docstring section "${item.kind}"`);
     }
   }
   return lines.join('\n\n');
