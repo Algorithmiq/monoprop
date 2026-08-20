@@ -361,47 +361,49 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &op_dict)
     -> std::pair<MonomialList<NumModes>, VecD> {
-    try {
-        if (partition_group_) {
-            // The facade holds no local terms of its own, so the return is empty. Each partition publishes
-            // its own weights on its own master, which is what its children's functionals read.
-            for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
-            return {};
-        }
-        const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
-        const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
-
-        OperatorDict new_op;
-        for (const auto &[ind, coeff] : op_dict) {
-            const auto mono = indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
-            if (ind.empty()) { // Core term, store in all
-                core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
-                continue;
-            }
-            if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
-                const auto mono_indices = bitset_to_indices<NumModes>(mono);
-                new_op[mono_indices] = coeff;
-            }
-        }
-
-        // No revision bump: a re-weight leaves the store, the inverted index and the graph where they are,
-        // so a live functional follows the new coefficients instead of going stale. Publication comes after
-        // the commit, so a functional never sees half of one.
-        auto applied = mp_op_.update_initial_operator(new_op, schrodinger_);
-        // Only refresh a set somebody has already been given: a null one means no plan was ever built,
-        // and weights_for_plan_() publishes on demand, so there is nothing left stale by skipping this.
-        // Publishing copies the whole coefficient vector, which a re-weight loop would otherwise pay per
-        // call on a propagator with no functionals.
-        if (functional_control_->weights.load() != nullptr) {
-            publish_weights_();
-        }
-        return applied;
+    // A failed re-weight cannot be followed: the facade fan-out can commit some partitions before
+    // another rejects a term only it holds, and a functional cannot tell that apart from a dict
+    // rejected before anything committed. Guarding the whole body keeps today's verdict for both.
+    auto guard = bump_structure_on_unwind_("update_initial_operator()");
+    if (partition_group_) {
+        // The facade holds no local terms of its own, so the return is empty. Each partition publishes
+        // its own weights on its own master, which is what its children's functionals read.
+        for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
+        return {};
     }
-    catch (...) {
-        // A failed partial re-weight cannot be followed.
-        bump_structure_("update_initial_operator()");
-        throw;
+    const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
+    const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
+
+    OperatorDict new_op;
+    // A dict that omits the identity term means zero, which is what MPOperator::update_initial_operator
+    // does with every row this dict leaves out; accumulated locally so a rejected dict leaves the
+    // propagator's own expectation value where it was.
+    double core_term = 0.0;
+    for (const auto &[ind, coeff] : op_dict) {
+        const auto mono = indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
+        if (ind.empty()) { // Core term, store in all
+            core_term = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
+            continue;
+        }
+        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+            const auto mono_indices = bitset_to_indices<NumModes>(mono);
+            new_op[mono_indices] = coeff;
+        }
     }
+
+    // No revision bump: a re-weight leaves the store, the inverted index and the graph where they are,
+    // so a live functional follows the new coefficients instead of going stale. Publication comes after
+    // the commit, so a functional never sees half of one.
+    auto applied = mp_op_.update_initial_operator(new_op, schrodinger_);
+    core_term_ = core_term;
+    // Only refresh a set somebody has already been given: a null one means no plan was ever built,
+    // and weights_for_plan_() publishes on demand, so there is nothing left stale by skipping this.
+    // Publishing copies the whole coefficient vector, which a re-weight loop would otherwise pay per
+    // call on a propagator with no functionals.
+    if (functional_control_->weights.load() != nullptr) {
+        publish_weights_();
+    }
+    return applied;
 }
 
 template <size_t NumModes>
@@ -666,17 +668,21 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                                std::optional<VecD> parameters,
                                                std::optional<size_t> only_rotate_len_k) -> void {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
+    // Hoisted above the fan-out so a call that appends nothing bumps on neither shape: the children
+    // re-run both identically, so deciding here moves nothing observable.
+    if (majoranas.empty()) {
+        return;
+    }
+    validate_coefficient_lengths(parameter_mapping, gen_coeffs);
     if (partition_group_) {
+        // A fan-out that throws part-way has already mutated the partitions it reached.
+        auto guard = bump_structure_on_unwind_("build_graph()");
         for_each_partition_([&](MonomialPropagator &s) {
             s.build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
         });
         bump_structure_("build_graph()");
         return;
     }
-    if (majoranas.empty()) {
-        return;
-    }
-    validate_coefficient_lengths(parameter_mapping, gen_coeffs);
 
     VecZ local_gates;
     if (gate_indices.has_value()) {
@@ -692,15 +698,14 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
         g += gate_offset;
     }
 
-    if (!parameters.has_value()) {
-        evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k);
-    }
-    else {
+    // The seed is computed before the guard below: it validates and contracts out of place, so a
+    // rejection here has changed nothing yet.
+    VecD seed;
+    if (parameters.has_value()) {
         // map_params() indexes `parameters` by parameter_mapping, so a too-short vector reads out of bounds.
         validate_parameters_length(*parameters, parameter_mapping);
         // Coefficient-informed build: seed by contracting the existing graph so atol truncation sees
         // realistic coefficients. That graph covers the parameter prefix [0, m).
-        VecD seed;
         if (graph_layers() > 0) {
             const auto existing = graph_gate_arrays_();
             const size_t m = expected_num_params(existing.first);
@@ -721,6 +726,15 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
         else {
             seed = current_picture_coeffs_();
         }
+    }
+
+    // The gate loop bounds-checks each generator as it reaches it, so a bad generator in a multi-gate
+    // call throws with the earlier layers already appended.
+    auto guard = bump_structure_on_unwind_("build_graph()");
+    if (!parameters.has_value()) {
+        evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k);
+    }
+    else {
         evolve_mode_graph_with_coeffs_(majoranas,
                                        parameter_mapping,
                                        gen_coeffs,
@@ -739,13 +753,8 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              const VecD &parameters,
                                              std::optional<size_t> only_rotate_len_k) -> void {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
-    if (partition_group_) {
-        for_each_partition_([&](MonomialPropagator &s) {
-            s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
-        });
-        bump_structure_("propagate()");
-        return;
-    }
+    // Hoisted above the fan-out so a call that evolves nothing bumps on neither shape: the children
+    // re-run all three identically (graph_layers() is facade-transparent), so nothing observable moves.
     if (majoranas.empty()) {
         return;
     }
@@ -758,6 +767,18 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              "build_graph() to extend it.",
                                              graph_layers()));
     }
+    if (partition_group_) {
+        // A fan-out that throws part-way has already mutated the partitions it reached.
+        auto guard = bump_structure_on_unwind_("propagate()");
+        for_each_partition_([&](MonomialPropagator &s) {
+            s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+        });
+        bump_structure_("propagate()");
+        return;
+    }
+    // The gate loop bounds-checks each generator as it reaches it, so a bad generator in a multi-gate
+    // call throws with the earlier gates already folded into the operator.
+    auto guard = bump_structure_on_unwind_("propagate()");
     evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
     bump_structure_("propagate()");
 }
@@ -1076,9 +1097,14 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
     // to be a literal that outlives every propagator.
     static constexpr const char *kInplaceSite = "contract_partially(inplace=true)";
     if (partition_group_) {
+        // Decided before the fan-out, so an empty parameter vector -- which every child early-returns on
+        // without folding anything -- leaves a functional valid here exactly as it does on one partition.
+        validate_parameters_length(parameters, parameter_mapping());
+        const bool folds = !parameters.empty();
+        auto guard = bump_structure_on_unwind_(kInplaceSite, inplace && folds);
         auto merged =
             concat_partitions_([&](MonomialPropagator &s) { return s.contract_partially(parameters, inplace); });
-        if (inplace) {
+        if (inplace && folds) {
             bump_structure_(kInplaceSite);
         }
         return merged;
@@ -1094,6 +1120,9 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
     }
 
     const size_t num_majoranas = parameter_mapping.size();
+    // Retiring the folded layers commits before the evolve that can throw, so the failure path has to
+    // bump as well; out of place nothing is written, so the guard stays disarmed there.
+    auto guard = bump_structure_on_unwind_(kInplaceSite, inplace);
     // Inplace slicing produces an owned MPGraph that must be bound to a named local before viewing
     // (never view a temporary); slice_view() views this graph's still-live layers directly.
     if (schrodinger_) {

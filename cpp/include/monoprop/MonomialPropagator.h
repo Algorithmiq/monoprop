@@ -291,6 +291,8 @@ public:
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
+    /// Re-weight the initial operator in place; every existing term op_dict omits is zeroed, the
+    /// identity term included.
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
@@ -343,9 +345,13 @@ private:
     // so it must not invalidate anything. A mutation that can fail part-way bumps on the failure path
     // instead: invalidating a functional that did not need it costs a rebuild, answering from a snapshot
     // of a half-written operator costs a wrong number.
-    auto bump_structure_(const char *site) -> void {
-        functional_control_->last_structural_change.store(site);
-        functional_control_->structure_revision.fetch_add(1);
+    auto bump_structure_(const char *site) const -> void { functional_control_->bump(site); }
+
+    // The failure-path half of the rule above: guard the mutation itself, so a mutator that throws
+    // after committing part of its work still invalidates. `armed` is false where the guarded call
+    // is a known no-op. See detail::BumpOnUnwind.
+    auto bump_structure_on_unwind_(const char *site, bool armed = true) const -> detail::BumpOnUnwind {
+        return detail::BumpOnUnwind(*functional_control_, site, armed);
     }
 
     // Hand the current initial-operator weights to every functional over this propagator, as one
