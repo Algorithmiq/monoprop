@@ -271,5 +271,21 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
                                              {"d_state_coeffs_nonzero", b.state_coeffs_nonzero}};
     });
+
+    cls.def("graph_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
+        const auto b = self.graph_memory_usage();
+        return std::map<std::string, size_t>{{"layer_descriptor_bytes", b.layer_descriptor_bytes},
+                                             {"layer_storage_object_bytes", b.layer_storage_object_bytes},
+                                             {"cos_data_bytes", b.cos_data_bytes},
+                                             {"cross_rank_bytes", b.cross_rank_bytes},
+                                             {"exchange_layout_bytes", b.exchange_layout_bytes},
+                                             {"total_bytes", b.total_bytes()},
+                                             // Diagnostics (not part of total_bytes; see the struct).
+                                             {"d_slot_record_bytes", b.slot_record_bytes},
+                                             {"d_layer_cores", b.layer_cores},
+                                             {"d_slot_records", b.slot_records},
+                                             {"d_occupied_slots", b.occupied_slots},
+                                             {"d_cross_rank_endpoints", b.cross_rank_endpoints}};
+    });
 }
 } // namespace monoprop::bindings::detail

@@ -98,6 +98,15 @@ inline auto cross_rank_sin_recv_phase(const PackedCrossRankStorage &storage, siz
 
 auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t;
 
+// The slot-proportional slice of cross_rank_storage_bytes: one record per world slot, whether or not
+// that slot carries traffic; the remainder scales with terms crossing rather than with the world size.
+auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size_t;
+
+auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t;
+
+// The traffic itself, and the world-size-independent ceiling on cross_rank_occupied_slots.
+auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t;
+
 auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t;
 
 // Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so

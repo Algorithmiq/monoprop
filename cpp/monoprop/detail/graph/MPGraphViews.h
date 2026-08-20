@@ -40,6 +40,14 @@ struct GraphMemoryBreakdown final {
     size_t cross_rank_bytes = 0;
     size_t exchange_layout_bytes = 0;
 
+    // Diagnostics, deliberately OUTSIDE total_bytes(): each is a count or a slice of cross_rank_bytes,
+    // separating the part of the graph that scales with the flat world size P from the traffic part.
+    size_t slot_record_bytes = 0;    // the slice of cross_rank_bytes that is one record per world slot
+    size_t layer_cores = 0;          // distinct LayerCores; slot_records / layer_cores recovers P
+    size_t slot_records = 0;         // summed over cores, so P per core
+    size_t occupied_slots = 0;       // slots carrying any traffic; / slot_records is the occupancy
+    size_t cross_rank_endpoints = 0; // traffic itself; P-independent ceiling on occupied_slots (>= 1 endpoint each)
+
     auto total_bytes() const -> size_t {
         return layer_descriptor_bytes + layer_storage_object_bytes + cos_data_bytes + cross_rank_bytes
                + exchange_layout_bytes;
@@ -52,6 +60,11 @@ struct GraphMemoryBreakdown final {
         cos_data_bytes += o.cos_data_bytes;
         cross_rank_bytes += o.cross_rank_bytes;
         exchange_layout_bytes += o.exchange_layout_bytes;
+        slot_record_bytes += o.slot_record_bytes;
+        layer_cores += o.layer_cores;
+        slot_records += o.slot_records;
+        occupied_slots += o.occupied_slots;
+        cross_rank_endpoints += o.cross_rank_endpoints;
         return *this;
     }
 };

@@ -52,6 +52,14 @@ auto layer_storage_memory_usage(const LayerCore &storage) -> GraphMemoryBreakdow
     breakdown.layer_storage_object_bytes = sizeof(LayerCore);
     breakdown.cross_rank_bytes = detail::cross_rank_storage_bytes(storage.cross_rank);
     breakdown.exchange_layout_bytes = detail::layer_exchange_layout_storage_bytes(storage.evolution_exchange_layout);
+
+    // Diagnostics. The graph does not partition -- its per-layer arrays are indexed by the FLAT world
+    // (ranks x partitions), so on a partitioned run these grow with a P the rank count never shows.
+    breakdown.slot_record_bytes = detail::cross_rank_slot_record_bytes(storage.cross_rank);
+    breakdown.layer_cores = 1;
+    breakdown.slot_records = storage.cross_rank.rank_count();
+    breakdown.occupied_slots = detail::cross_rank_occupied_slots(storage.cross_rank);
+    breakdown.cross_rank_endpoints = detail::cross_rank_endpoint_count(storage.cross_rank);
     return breakdown;
 }
 
