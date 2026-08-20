@@ -57,6 +57,10 @@ _NS_PER_S = 1e9
 # describe a built operator rather than one timed call.
 _OPERATOR = "operator"
 
+# ``opsize``/``memrest`` are also keyed by pytest node id (``::``, as report.py reads
+# them) for a private A/B harness; those are not operators, so they are skipped here.
+_NODE_ID_SEP = "::"
+
 Metric = dict[str, float]
 Bmf = dict[str, dict[str, Metric]]
 
@@ -118,17 +122,17 @@ def build_bmf(results_dir: Path, label: str) -> Bmf:
     for benchmark, latency in _timings(results_dir, label):
         bmf.setdefault(benchmark, {})["latency"] = latency
 
-    # ``memhwm`` is the kernel's exact peak RSS per operation (summed over ranks
-    # under MPI), which is what REPORT.md shows; ``mem`` is the peak-of-sum PSS
-    # lower bound for the same window and would only duplicate the signal.
+    # ``memhwm`` is the kernel's exact peak RSS per operation, summed over ranks under MPI.
     for benchmark, peak in results.get("memhwm", {}).items():
         measure(benchmark, "peak-memory", peak)
 
     for key, size in results.get("opsize", {}).items():
-        measure(f"{_OPERATOR}[{key}]", "terms", size["terms"])
+        if _NODE_ID_SEP not in key:
+            measure(f"{_OPERATOR}[{key}]", "terms", size["terms"])
 
     for key, resting in results.get("memrest", {}).items():
-        measure(f"{_OPERATOR}[{key}]", "resting-memory", resting)
+        if _NODE_ID_SEP not in key:
+            measure(f"{_OPERATOR}[{key}]", "resting-memory", resting)
 
     return bmf
 
