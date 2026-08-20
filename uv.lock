@@ -534,6 +534,31 @@ wheels = [
 ]
 
 [[package]]
+name = "griffe"
+version = "1.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0d/0c/3a471b6e31951dce2360477420d0a8d1e00dea6cf33b70f3e8c3ab6e28e1/griffe-1.15.0.tar.gz", hash = "sha256:7726e3afd6f298fbc3696e67958803e7ac843c1cfe59734b6251a40cdbfb5eea", size = 424112, upload-time = "2025-11-10T15:03:15.52Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9c/83/3b1d03d36f224edded98e9affd0467630fc09d766c0e56fb1498cbb04a9b/griffe-1.15.0-py3-none-any.whl", hash = "sha256:6f6762661949411031f5fcda9593f586e6ce8340f0ba88921a0f2ef7a81eb9a3", size = 150705, upload-time = "2025-11-10T15:03:13.549Z" },
+]
+
+[[package]]
+name = "griffe-typingdoc"
+version = "0.2.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "griffe" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/63/15/92e1cdd63515f18e35c357f10970f5a8b46fed15d615305497241c944be2/griffe_typingdoc-0.2.9.tar.gz", hash = "sha256:99c05bf09a9c391464e3937718c9a5a1055bb95ed549f4f7706be9a71578669c", size = 32878, upload-time = "2025-09-05T15:45:32.178Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/33/f2e21b688e36d5e3d1ee681aed9b7e651b97bc8c31e9ec096d7f7a2181e3/griffe_typingdoc-0.2.9-py3-none-any.whl", hash = "sha256:cc6b1e34d64e1659da5b3d37506214834bc8fbb62b081b2fb43563ee5cdaf8f5", size = 9876, upload-time = "2025-09-05T15:45:31.137Z" },
+]
+
+[[package]]
 name = "h5py"
 version = "3.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1073,6 +1098,8 @@ dev = [
     { name = "ruff" },
 ]
 docs = [
+    { name = "griffe" },
+    { name = "griffe-typingdoc" },
     { name = "ipykernel" },
     { name = "matplotlib" },
     { name = "nbconvert" },
@@ -1134,6 +1161,8 @@ dev = [
     { name = "ruff", specifier = "==0.15.20" },
 ]
 docs = [
+    { name = "griffe", specifier = ">=1.15,<2" },
+    { name = "griffe-typingdoc", specifier = ">=0.2.8,<0.3" },
     { name = "ipykernel" },
     { name = "matplotlib" },
     { name = "nbconvert" },

@@ -1,6 +1,6 @@
 [build-system]
 requires = [
-  "nanobind>=2.13.0,<3",
+  "nanobind==2.15.0",
   "scikit-build-core>=1.0.3,<2",
   "setuptools-scm>=8",
   "mpi4py>=4.1.0",
@@ -54,9 +54,20 @@ qiskit = ["qiskit>=2.0.0"]
 dev = ["prek>=0.4", "ruff==0.15.20"]
 # The documentation site is built with Fumadocs (Next.js); see `docs/`.
 # Python's only roles are converting the tutorial notebooks to Markdown
-# (`nbconvert`) and generating the API reference from docstrings (`griffe`,
-# injected via the `fumadocs-python` npm package in the `gen-api` recipe).
-docs = ["nbconvert", "pytest-markdown-docs", { include-group = "interactive" }]
+# (`nbconvert`) and dumping the API surface from docstrings (`griffe`, driven by
+# `docs/scripts/gen_api_dump.py` in the `gen-api` recipe). griffe is held to the
+# 1.x line, and `griffe-typingdoc` (which reads the `Doc[...]` annotations) below
+# 0.3 with it: from 0.3.1 it depends on `griffelib`, the distribution griffe 2.x
+# ships its library in, and that would install a second copy of the `griffe`
+# package on top of this one. The floor is 1.15 because earlier 1.x releases
+# infer different return annotations, which changes the generated pages.
+docs = [
+  "griffe>=1.15,<2",
+  "griffe-typingdoc>=0.2.8,<0.3",
+  "nbconvert",
+  "pytest-markdown-docs",
+  { include-group = "interactive" },
+]
 interactive = [
   "ipykernel",
   "matplotlib",

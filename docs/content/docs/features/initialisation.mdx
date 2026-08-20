@@ -19,7 +19,7 @@ picture they are applied to the observable.
 `schrodinger_cutoff` is the truncation applied to the initial state. It must be
 set higher than the regular `cutoff` for the Schrödinger-picture result to
 match the Heisenberg-picture one. A good value of the parameter depends on the circuit
-and observable, although setting `schrodinger_cutoff = cutoff + 2` for MajoranaPropagator and
+and observable, although setting `schrodinger_cutoff = cutoff + 2` for [MajoranaPropagator][] and
 `schrodinger_cutoff = cutoff + 1` for [PauliPropagator][] is usually a good starting point.
 For second-quantized Hamiltonians and usual Fermionic circuits coming from variational
 quantum computing, under length truncation the two pictures agree when
@@ -28,8 +28,8 @@ quantum computing, under length truncation the two pictures agree when
 ## Operator updates
 
 The coefficients of the initial operator can be patched after construction
-without rebuilding the simulator or the graph. For MajoranaPropagator,
-MajoranaOperator is required while PauliPropagator requires PauliOperator.
+without rebuilding the simulator or the graph. For [MajoranaPropagator][],
+[MajoranaOperator][] is required while [PauliPropagator][] requires [PauliOperator][].
 
 ```python
 from monoprop import MajoranaPropagator, MajoranaOperator
