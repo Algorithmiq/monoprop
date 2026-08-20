@@ -1,15 +1,15 @@
 // Generate the Python API reference MDX from the griffe JSON produced by
-// `fumapy-generate monoprop` (see the `gen-api` recipe in the justfile).
+// `gen_api_dump.py` (see the `gen-api` recipe in the justfile).
 //
-// fumadocs-python's `convert`/`write` do the heavy lifting; this script only
+// `api-mdx.mjs`'s `convert`/`write` do the heavy lifting; this script only
 //  1. prunes the griffe dump to the public surface (minus private `_`-prefixed members),
 //  2. fixes the package-name segment that `convert` puts in cross-links but
 //     `write` strips from file paths, and
 //  3. emits a `meta.json` so the API section is ordered like the old reference.
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { convert, write, frontmatter } from 'fumadocs-python';
-import { API_BASE_URL, buildXrefMap, pageUrl, resolve } from './xref.mjs';
+import { convert, write } from './api-mdx.mjs';
+import { API_BASE_URL, buildXrefMap, resolve } from './xref.mjs';
 
 const JSON_PATH = path.resolve('monoprop.json');
 const OUT_DIR = path.resolve('content/docs/api');
@@ -132,31 +132,22 @@ function extractReturnsFromSource(source) {
 }
 
 /**
- * griffe preserves wrapped descriptions in parsed docstring sections. The
- * fumadocs-python renderer currently truncates multi-line Returns text in some
- * cases, so we normalize function Returns descriptions to one line before
- * conversion.
+ * Recover a multi-line `Returns:` description that the dump truncated, by
+ * re-reading it from the function source.
+ *
+ * This is a bandaid over the dump, not a fix. griffe's Google parser defaults to
+ * `returns_multiple_items`, which splits the block one item per physical line
+ * and distributes a tuple annotation element-wise across them, so the dump's
+ * `sec.value[0]` keeps only the first line *and* the wrong annotation
+ * (`graph_size` is documented as `int`, not `tuple[int, int]`). Passing
+ * `docstring_options={"returns_multiple_items": False}` to `griffe.load` in
+ * `gen_api_dump.py` fixes both and retires this whole path -- deferred only
+ * because it changes the generated pages.
  */
 function normalizeFunctionReturnsSection(funcNode) {
   const fromSource = extractReturnsFromSource(funcNode?.source);
   if (fromSource && funcNode?.returns && typeof funcNode.returns === 'object') {
     funcNode.returns.description = foldToOneLine(fromSource);
-  }
-
-  const parsed = funcNode?.docstring?.parsed;
-  if (!Array.isArray(parsed)) return;
-
-  for (const section of parsed) {
-    if (section?.kind !== 'returns') continue;
-
-    // Depending on parser shape, `value` can be a list of return entries or a
-    // single entry-like object.
-    const values = Array.isArray(section.value) ? section.value : [section.value];
-    for (const item of values) {
-      if (item && typeof item.description === 'string') {
-        item.description = foldToOneLine(item.description);
-      }
-    }
   }
 }
 
@@ -196,10 +187,6 @@ async function main() {
 
   for (const file of files) {
     file.content = resolveXrefs(file.content, xref, unresolved, scopeFromPath(file.path));
-
-    // `convert` keeps the package name ("monoprop") in hrefs, but `write`
-    // strips that leading segment from file paths. Realign the links.
-    file.content = file.content.replaceAll(`${API_BASE_URL}/monoprop`, API_BASE_URL);
 
     // Attach source paths to frontmatter so docs can build GitHub links
     // without duplicating the module list in app code.

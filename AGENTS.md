@@ -98,6 +98,10 @@ Key files:
   change to the recorded sections has to land on both sides of the package boundary. Benchmark
   names are Bencher's history key, so renaming or moving a `bench_*` test orphans its tracked
   series.
+- **`rounds > 1` overlaps two rounds' live memory** (`setup=` runs before the prior round's
+  teardown) — pin `--bench-rounds=1`; `record_memory` measures that construction transient,
+  not per-op cost (use `op_memory`).
+- **Peak memory is `HighWaterMark`, not sampled PSS** — exact, unlike `/proc/self/smaps_rollup`.
 
 ### Core abstractions (the propagation backbone)
 
@@ -175,6 +179,8 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - Fixture msgpack schema is documented in `tests/data/README.md`
 - Tests validate against exact solutions for small systems
 - Heavy use of `@parametrize_with_cases` decorators
+- **pytest's fd-level capture hides C++ stderr** (e.g. `COMMPROF`) — rerun with `-s` to see it.
+- **A slow CTest run on an MPI build is `MPI_Init` fabric probing, not slow tests** — see `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
 
 ## Key Dependencies & Integration
 
@@ -218,5 +224,7 @@ When changing behavior, APIs, build/test workflows, paths, or developer conventi
 - Check `build/*/compile_commands.json` for compilation flags
 - Use `rm -rf build` to clear environment-specific builds
 - Verify `monoprop_MAX_NUM_MODES` matches your use case (default: 250)
+- **`uv sync` does not relink `bin/monoprop_unit_tests.x`** — check its mtime against the
+  source's; recipe for a standalone C++ build tree in `docs/content/docs/building.mdx`.
 
 This is a sophisticated scientific computing project requiring careful attention to template instantiation, build system configuration, and the C++/Python boundary.

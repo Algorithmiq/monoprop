@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include <array>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -59,7 +61,7 @@ public:
           errs_(static_cast<size_t>(n_partitions)) {
         make_transport_();
         discover_node_peers_();
-        cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_);
+        cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_, node_mask_);
         start_masters_();
         // The masters are already running, so a ctor throw must not escape: ~PartitionGroup would never run,
         // and destroying joinable threads during unwinding calls std::terminate.
@@ -79,10 +81,11 @@ public:
           parent_(src.parent_),
           node_rank_(src.node_rank_),
           node_size_(src.node_size_),
+          node_mask_(src.node_mask_),
           partitions_(static_cast<size_t>(src.n_)),
           errs_(static_cast<size_t>(src.n_)) {
         make_transport_();
-        cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_);
+        cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_, node_mask_);
         start_masters_();
         try { // see the primary ctor: a throw past live masters would std::terminate
             run_on_all([&](int r) {
@@ -146,11 +149,12 @@ private:
     }
 
     // Free-function wrapper so the header compiles on non-Linux (where partition_cpusets returns {}).
-    static auto topo_partition_cpusets(int n, int group_index, int group_count)
+    static auto topo_partition_cpusets(int n, int group_index, int group_count, NodeMask mask)
         -> std::vector<monoprop::detail::partition::CpuSet> {
         return monoprop::detail::partition::partition_cpusets(static_cast<size_t>(n),
                                                               static_cast<size_t>(group_index),
-                                                              static_cast<size_t>(group_count));
+                                                              static_cast<size_t>(group_count),
+                                                              mask);
     }
 
     // Under an MPI parent, find how many ranks share this host and which we are, so each co-located rank
@@ -162,10 +166,31 @@ private:
             MPI_Comm_split_type(parent_.mpi, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node);
             MPI_Comm_rank(node, &node_rank_);
             MPI_Comm_size(node, &node_size_);
+            classify_node_masks_(node);
             MPI_Comm_free(&node);
         }
 #endif
     }
+
+#ifdef monoprop_ENABLE_MPI
+    // A rank seeing 16 of 128 CPUs is equally "my own 16" and "eight of us share these 16": only the masks tell.
+    auto classify_node_masks_(MPI_Comm node) -> void {
+        node_mask_ = NodeMask::Shared;
+        if (node_size_ <= 1) {
+            return; // nobody to collide with; the normal split already handles group_count == 1
+        }
+        constexpr size_t kMaskWords = monoprop::detail::partition::kAffinityMaskWords;
+        std::array<uint64_t, kMaskWords> mine{};
+        // Refusal zeroes `mine` and an all-zero row is never private, so no reduction of the verdict is needed.
+        monoprop::detail::partition::affinity_mask_words(mine.data(), kMaskWords);
+        std::vector<uint64_t> all(kMaskWords * static_cast<size_t>(node_size_), 0);
+        MPI_Allgather(mine.data(), kMaskWords, MPI_UINT64_T, all.data(), kMaskWords, MPI_UINT64_T, node);
+        const bool disjoint = monoprop::detail::partition::masks_are_pairwise_disjoint(all.data(),
+                                                                                       static_cast<size_t>(node_size_),
+                                                                                       kMaskWords);
+        node_mask_ = disjoint ? NodeMask::PerRank : NodeMask::Shared;
+    }
+#endif
 
     auto make_transport_() -> void {
 #ifdef monoprop_ENABLE_MPI
@@ -250,10 +275,11 @@ private:
     }
 
     int n_;
-    mpi::Comm parent_;                  // enclosing communicator (size R) — decides the transport
-    int node_rank_ = 0;                 // this rank's index among the ranks sharing the host
-    int node_size_ = 1;                 // how many parent ranks share the host (1 unless MPI R>1)
-    std::unique_ptr<mpi::ShmComm> shm_; // set iff R == 1
+    mpi::Comm parent_;                      // enclosing communicator (size R) — decides the transport
+    int node_rank_ = 0;                     // this rank's index among the ranks sharing the host
+    int node_size_ = 1;                     // how many parent ranks share the host (1 unless MPI R>1)
+    NodeMask node_mask_ = NodeMask::Shared; // set by classify_node_masks_; copied, never re-derived, by the copy ctor
+    std::unique_ptr<mpi::ShmComm> shm_;     // set iff R == 1
 #ifdef monoprop_ENABLE_MPI
     std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1
 #endif

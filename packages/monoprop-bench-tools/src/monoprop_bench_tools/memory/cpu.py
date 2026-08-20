@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import os
 import threading
 import time
 from pathlib import Path
@@ -124,6 +125,55 @@ def resting_rss_bytes() -> int:
     return rss_bytes()
 
 
+def _parse_cpu_list(spec: str) -> set[int]:
+    """Expand a kernel CPU list (``0-3,8``) into a set of CPU numbers."""
+    cpus: set[int] = set()
+    for part in spec.split(","):
+        if not part:
+            continue
+        lo, _, hi = part.partition("-")
+        cpus.update(range(int(lo), int(hi or lo) + 1))
+    return cpus
+
+
+def pinned_thread_summary() -> dict[str, int | list[int]]:
+    """Count this rank's own threads bound to a single CPU; all-zero means ``/proc`` was unreadable, not unpinned."""
+    try:
+        tasks = list(Path("/proc/self/task").iterdir())
+    except OSError:  # pragma: no cover - non-Linux or restricted /proc
+        return {
+            "threads": 0,
+            "single_cpu_threads": 0,
+            "distinct_pinned_cpus": 0,
+            "affinity_cpus": 0,
+            "pinned_cpus": [],
+        }
+
+    threads = 0
+    pinned: set[int] = set()
+    single = 0
+    for task in tasks:
+        try:
+            text = (task / "status").read_text()
+        except OSError:  # thread exited between listing and reading
+            continue
+        threads += 1
+        for line in text.splitlines():
+            if line.startswith("Cpus_allowed_list:"):
+                cpus = _parse_cpu_list(line.split(":", 1)[1].strip())
+                if len(cpus) == 1:
+                    single += 1
+                    pinned |= cpus
+                break
+    return {
+        "threads": threads,
+        "single_cpu_threads": single,
+        "distinct_pinned_cpus": len(pinned),
+        "affinity_cpus": len(os.sched_getaffinity(0)),
+        "pinned_cpus": sorted(pinned),
+    }
+
+
 class HighWaterMark:
     """Exact peak RSS over the enclosed block, straight from the kernel.
 
@@ -172,6 +222,14 @@ class HighWaterMark:
         """Read the peak back, never below the baseline. Exceptions propagate."""
         observed = peak_rss_bytes() if self.exact else rss_bytes()
         self.peak_bytes = max(self.baseline_bytes, observed)
+
+    def start(self) -> Self:
+        """Open the window explicitly; a ``pedantic`` run cannot be wrapped in a ``with``."""
+        return self.__enter__()
+
+    def stop(self) -> None:
+        """Close the window explicitly (same as ``__exit__``)."""
+        self.__exit__(None, None, None)
 
     @property
     def delta_bytes(self) -> int:
