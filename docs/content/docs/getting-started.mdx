@@ -65,11 +65,11 @@ assert sorted(result.terms) == [(0, 1, 2, 4), (0, 1, 2, 5)]  # original (cosine)
 assert np.isclose(result.terms[(0, 1, 2, 4)].real, np.cos(2 * 0.5))  # cosine branch
 ```
 
-For qubit problems there is a dedicated simulator, `PauliPropagator`, which takes
+For qubit problems there is a dedicated simulator, [PauliPropagator][], which takes
 Pauli operators and gates directly. The following example back-propagates the
 two-qubit observable $Z \otimes Z$ under a single qubit rotation
 $e^{+i\theta X_0}$, which likewise splits it into a cosine and a sine branch.
-Its result is a `PauliOperator` whose `.terms` map each Pauli to its coefficient
+Its result is a [PauliOperator][] whose `.terms` map each Pauli to its coefficient
 (see [Notation](/concepts/notation)):
 
 ```python
