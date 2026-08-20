@@ -22,45 +22,30 @@
 
 namespace monoprop::detail {
 
-// The initial-operator weights an evaluation runs against, published as one immutable set.
+// Immutable initial-operator weights, published together on re-weight.
 //
-// A re-weight writes only these two fields: MPOperator::update_initial_operator cannot add a store row,
-// and apply_initial_operator_ writes core_term_ beside it, so the store, the inverted index and the graph
-// all stay put. That is what lets a functional follow a re-weight instead of going stale. A published set
-// is never edited, so one atomic load gives a caller a pair that belong together -- `op` and `core_term`
-// read separately could come from two re-weights.
+// Re-weighting preserves the store, inverted index and graph. A single atomic load keeps `op` and
+// `core_term` from the same publication.
 struct OperatorWeights {
-    VecD op;                      // un-evolved operator coefficients, one per store row
-    double core_term{0.0};        // the identity term, added to the summed expectation value
-    size_t structure_revision{0}; // the FunctionalControl revision these weights were published at
+    VecD op;                      // One coefficient per store row.
+    double core_term{0.0};        // Identity contribution to the expectation value.
+    size_t structure_revision{0}; // Revision at publication.
 };
 
-// The validity block a propagator shares with every functional plan it makes.
-//
-// A plan borrows from its propagator, so before it reads any of those handles it needs two facts: whether the
-// propagator is still there, and whether the structure the snapshot describes is still the propagator's.
-//
-// A copied propagator gets its own block: a copy carries no functionals, so it starts at revision 0.
+// Shared validity state for a propagator and its functionals.
+// A copy has a fresh block because it has no functionals.
 struct FunctionalControl {
-    // Bumped by every change to what a plan replays -- the graph's layers, their parameter labels, or
-    // the operator's rows. Deliberately NOT bumped by the settings that only gate the next build (the
-    // atols, the cutoff, the cutoff type, the basis change): none of them touches a plan's snapshot.
+    // Bumped when a replayed graph layer, parameter label, or operator row changes.
     std::atomic<size_t> structure_revision{0};
 
-    // Cleared by ~MonomialPropagator, which runs before its members go away. A plan that outlives its
-    // propagator must report that instead of reading through handles into freed memory.
+    // Cleared before propagator members are destroyed.
     std::atomic<bool> propagator_alive{true};
 
-    // The method that last bumped structure_revision, so the error can name it. Always a string
-    // literal, whose lifetime outlives every propagator.
+    // String literal naming the last structural change.
     std::atomic<const char *> last_structural_change{nullptr};
 
-    // The live initial-operator weights, republished by every re-weight and by the first plan built at a
-    // given revision. Null until the first plan is built: a propagator with no functionals has nobody to
-    // publish for, and publishing is a copy of `op`.
-    //
-    // Written only by the propagator, on its own thread (a facade publishes through for_each_partition_,
-    // so each partition publishes on its own pinned master). Read by a call through the plan.
+    // Current weights. Null until the first functional plan is built.
+    // The propagator writes; functional calls read.
     std::atomic<std::shared_ptr<const OperatorWeights>> weights{};
 };
 
