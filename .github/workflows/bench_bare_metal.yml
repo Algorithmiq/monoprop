@@ -1,0 +1,39 @@
+name: Track benchmarks (bare metal)
+
+# The same benchmark profile as `bench_main.yml`, on a dedicated EC2 node
+# provisioned per run by RunsOn. The point is the noise floor: nothing else is
+# scheduled on the machine, so this testbed can eventually carry thresholds
+# tight enough to gate on, which the shared GitHub runner cannot.
+#
+# The node exists only for the duration of the run, so cost tracks the number
+# of commits to main rather than wall-clock time.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bare-metal:
+    # Inert until a maintainer sets the BENCH_BARE_METAL repository variable to
+    # 'true'. Without a RunsOn stack behind the label the job would sit queued
+    # until it timed out, once per commit.
+    if: ${{ vars.BENCH_BARE_METAL == 'true' }}
+    uses: ./.github/workflows/bench.yml
+    with:
+      # The `runner=bench` shape is defined in .github/runs-on.yml; run_id
+      # namespaces the runner so no other job can claim it.
+      runner: runs-on=${{ github.run_id }}/runner=bench
+      # Names the hardware, not the provider: a different instance type is a
+      # different testbed, because its history cannot be compared to this one.
+      testbed: aws-c7i-4xlarge
+      label: ci-bare-metal
+    secrets: inherit
+    permissions:
+      contents: read
+      checks: write

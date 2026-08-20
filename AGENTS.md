@@ -84,6 +84,12 @@ Key files:
   change to the recorded sections has to land on both sides of the package boundary. Benchmark
   names are Bencher's history key, so renaming or moving a `bench_*` test orphans its tracked
   series.
+- `.github/workflows/bench.yml`: the reusable build/benchmark/upload workflow; `bench_main.yml` and
+  `bench_bare_metal.yml` are thin callers that only pick a runner, a testbed name and a label.
+  Bencher keys history on (branch, testbed, measure), so one testbed name means one machine shape —
+  the RunsOn runner in `.github/runs-on.yml` is pinned, not ranged, for that reason. RunsOn reads
+  that file from the default branch on public repos, so it is inert in a PR branch, as is the
+  bare-metal workflow until the `BENCH_BARE_METAL` repository variable is set.
 - **`rounds > 1` overlaps two rounds' live memory** (`setup=` runs before the prior round's
   teardown) — pin `--bench-rounds=1`; `record_memory` measures that construction transient,
   not per-op cost (use `op_memory`).

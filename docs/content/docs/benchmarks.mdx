@@ -484,3 +484,42 @@ recorded but do not fail the build.
 Setting this up on a fork needs a Bencher project and a `BENCHER_API_KEY`
 repository secret; the project slug defaults to `monoprop` and can be overridden
 with a `BENCHER_PROJECT` repository variable.
+
+#### Testbeds
+
+Bencher keys every metric on (branch, testbed, measure), so a testbed is one
+machine shape and its history is only meaningful against itself. Changing the
+hardware under a testbed name shows up as a step change in every series, which
+is why each machine gets its own name and why the runner shapes below are pinned
+rather than ranged.
+
+The build, benchmark and upload steps live once in the reusable
+`.github/workflows/bench.yml`; a caller workflow supplies the runner, the
+testbed name and the result label:
+
+| Workflow | Runner | Testbed | Label |
+|---|---|---|---|
+| `bench_main.yml` | GitHub-hosted `ubuntu-26.04` | `ubuntu-26.04` | `ci-linux` |
+| `bench_bare_metal.yml` | [RunsOn](https://runs-on.com/) EC2 node | `aws-c7i-4xlarge` | `ci-bare-metal` |
+
+The bare-metal workflow provisions a dedicated node per run, so the machine is
+billed per commit rather than continuously and nothing else is scheduled on it
+while the benchmarks run. That lower noise floor is the point: it is what a
+testbed needs before its timing thresholds can be tightened enough to gate on.
+
+It is skipped unless the `BENCH_BARE_METAL` repository variable is set to
+`true` — without a RunsOn stack answering the label, the job would queue until
+it timed out on every commit. The node's shape is defined under `runners.bench`
+in `.github/runs-on.yml`; on public repositories RunsOn reads that file from the
+default branch only, so changes to it take effect after merge, not in the pull
+request that makes them.
+
+A new testbed starts with no history, so its first runs raise no alerts and its
+thresholds need setting once enough points exist to see the noise. Problem sizes
+are shared with the GitHub-hosted testbed until they are calibrated on the real
+node; `bench-ci` forwards extra arguments to `pytest` for that, so widening the
+profile for one machine does not need a second recipe:
+
+```bash
+just bench-ci ci-bare-metal -m ""   # include the slow fixed models
+```
