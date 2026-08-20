@@ -273,7 +273,8 @@ For every engine, `results.json` collects, indexed by Trotter step:
 - `native_memory`: where an engine accounts for itself, its own figure (monoprop's C++
   operator-memory accounting, cuPauliProp's peak device memory over the step,
   `PauliPropagation.jl`'s `Base.summarysize` of the Pauli sum). These are reference values
-  only: they measure different things and must not be compared across engines. `QuEra ppvm`
+  only: they measure different things and must not be compared across engines. monoprop's
+  own total also steps up when a container gains a field that counted it nowhere. `QuEra ppvm`
   and `Qiskit pauli-prop` expose no such accounting and so report none. Each record's
   `operator_memory_metric` names the quantity, which for the GPU depends on the allocator in
   use — CUDA's resettable `cudaMemPoolAttrUsedMemHigh` where available, otherwise a

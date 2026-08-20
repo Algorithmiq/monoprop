@@ -132,7 +132,11 @@ public:
         if (partition_group_) {
             return partitioned_operator_memory_usage_();
         }
-        return detail::estimate_memory_usage(mp_op_);
+        // matched_scratch_ is propagator-owned, so estimate_memory_usage() cannot see it; on a facade the
+        // partitioned path above already picks it up per partition.
+        auto breakdown = detail::estimate_memory_usage(mp_op_);
+        breakdown.matched_scratch_bytes = matched_scratch_.memory_bytes();
+        return breakdown;
     }
 
     auto graph_layers() const -> size_t { return partition_group_ ? partitioned_graph_layers_() : graph_.layers(); }
