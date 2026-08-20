@@ -3,7 +3,8 @@
 //
 // `api-mdx.mjs`'s `convert`/`write` do the heavy lifting; this script only
 //  1. prunes the griffe dump to the public surface (minus private `_`-prefixed members),
-//  2. resolves cross-references inside the rendered pages, and
+//  2. fixes the package-name segment that `convert` puts in cross-links but
+//     `write` strips from file paths, and
 //  3. emits a `meta.json` so the API section is ordered like the old reference.
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
