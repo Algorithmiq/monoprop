@@ -176,7 +176,7 @@ private:
         }
         validate_weight_refresh({.weights_revision = published->structure_revision,
                                  .expected_revision = expected_revision_,
-                                 .pared_from_operator = local.pared_from_operator});
+                                 .may_follow_weights = follows_weights()});
         return published;
     }
 

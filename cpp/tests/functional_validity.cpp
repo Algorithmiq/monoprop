@@ -47,31 +47,14 @@ const VecD kBaseParams{0.3, 0.7};
 // symmetric under swapping the two angles -- which is what makes the set_parameter_mapping row bite.
 const std::vector<VecZ> kBaseGates{VecZ{0}, VecZ{2}};
 
-// `partitions` is passed explicitly, so it wins over the suite-wide monoprop_PARTITIONS=off.
-auto make_propagator(bool schrodinger, size_t partitions = 1) -> Prop {
-    OperatorDict initial_ham;
-    initial_ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
-    initial_ham[VecZ{2, 3}] = std::complex<double>{0.0, 0.5};
-    const auto cutoff = static_cast<unsigned int>(2 * kNumModes);
-    return Prop(initial_ham,
-                cutoff,
-                VecZ{0, 1},
-                schrodinger ? std::optional<unsigned int>{cutoff} : std::nullopt,
-                MPI_COMM_SELF,
-                std::nullopt,
-                std::nullopt,
-                CutoffType::Support,
-                std::nullopt,
-                kNumModes,
-                Basis::Majorana,
-                partitions);
-}
+// The weight mutate_update_initial_operator() writes onto term (0, 1). A re-weighted propagator must
+// answer exactly like one built with it from the start, so both sides read it from here.
+constexpr double kReweightedFirstWeight = 2.75;
 
-// The same propagator, built with the coefficients mutate_update_initial_operator() writes. A re-weight
-// must leave a functional answering exactly what this propagator's answers.
-auto make_reweighted_propagator(bool schrodinger, size_t partitions = 1) -> Prop {
+// `partitions` is passed explicitly, so it wins over the suite-wide monoprop_PARTITIONS=off.
+auto make_propagator(bool schrodinger, size_t partitions = 1, double first_weight = 1.0) -> Prop {
     OperatorDict initial_ham;
-    initial_ham[VecZ{0, 1}] = std::complex<double>{0.0, 2.75};
+    initial_ham[VecZ{0, 1}] = std::complex<double>{0.0, first_weight};
     initial_ham[VecZ{2, 3}] = std::complex<double>{0.0, 0.5};
     const auto cutoff = static_cast<unsigned int>(2 * kNumModes);
     return Prop(initial_ham,
@@ -110,7 +93,7 @@ auto mutate_contract_partially(Prop &prop) -> void {
 
 auto mutate_update_initial_operator(Prop &prop) -> void {
     OperatorDict updated;
-    updated[VecZ{0, 1}] = std::complex<double>{0.0, 2.75};
+    updated[VecZ{0, 1}] = std::complex<double>{0.0, kReweightedFirstWeight};
     updated[VecZ{2, 3}] = std::complex<double>{0.0, 0.5};
     prop.update_initial_operator(updated);
 }
@@ -149,13 +132,13 @@ enum class Outcome : std::uint8_t {
 };
 
 struct MutatorRow {
-    std::string_view method;    // the public method this row covers
-    void (*apply)(Prop &);      //
-    bool needs_empty_graph;     // build the functional with no graph, so the mutator is accepted
-    Outcome exact;              // pare_threshold == nullopt, in either picture
-    Outcome pared;              // pare_threshold == kPareThreshold, Heisenberg
-    Outcome pared_schrodinger;  // pare_threshold == kPareThreshold, Schrodinger: pares from `op`
-    std::string_view rationale; //
+    std::string_view method; // the public method this row covers
+    void (*apply)(Prop &);
+    bool needs_empty_graph;    // build the functional with no graph, so the mutator is accepted
+    Outcome exact;             // pare_threshold == nullopt, in either picture
+    Outcome pared;             // pare_threshold == kPareThreshold, Heisenberg
+    Outcome pared_schrodinger; // pare_threshold == kPareThreshold, Schrodinger: pares from `op`
+    std::string_view rationale;
 };
 
 constexpr std::array kMutatorTable{
@@ -173,8 +156,8 @@ constexpr std::array kMutatorTable{
                .exact = Outcome::Stale,
                .pared = Outcome::Stale,
                .pared_schrodinger = Outcome::Stale,
-               .rationale = "Re-evolves the operator in place. It leaves the layer count at zero, which is "
-                            "why a layer count was never enough to see it."},
+               .rationale = "Re-evolves the operator in place. It leaves the layer count at zero, so the "
+                            "revision is the only thing that sees it."},
     MutatorRow{.method = "contract_partially",
                .apply = &mutate_contract_partially,
                .needs_empty_graph = false,
@@ -252,7 +235,7 @@ constexpr auto distinct_methods() -> size_t {
     return distinct;
 }
 
-static_assert(distinct_methods() == Prop::num_mutating_methods,
+static_assert(kMutatorTable.size() == Prop::num_mutating_methods && distinct_methods() == kMutatorTable.size(),
               "cpp/tests/functional_validity.cpp must carry one row per public mutating method of "
               "MonomialPropagator; see num_mutating_methods in MonomialPropagator.h.");
 
@@ -371,9 +354,8 @@ BOOST_AUTO_TEST_CASE(propagate_on_non_empty_graph_leaves_functional_valid) {
     BOOST_TEST(call(kBaseParams) == before, tt::tolerance(1e-12));
 }
 
-// The two rows those tests cover used to answer instead of throwing, each returning a number for a
-// circuit nobody had asked about any more. These say so directly: the propagator's own answer moves,
-// and the functional refuses rather than following it half way.
+// Two of the table's Stale rows, spelled out: the propagator's own answer moves, and the functional
+// refuses the call rather than following it half way.
 
 BOOST_AUTO_TEST_CASE(set_parameter_mapping_invalidates_functional_it_desynchronises) {
     auto prop = make_propagator(/*schrodinger=*/false);
@@ -487,7 +469,7 @@ auto check_refresh_matches_fresh_propagator(bool gradient, std::optional<double>
     const double before = call(kBaseParams);
     mutate_update_initial_operator(reweighted);
 
-    auto fresh = make_reweighted_propagator(/*schrodinger=*/false, partitions);
+    auto fresh = make_propagator(/*schrodinger=*/false, partitions, kReweightedFirstWeight);
     build_base_graph(fresh);
 
     BOOST_TEST(call(kBaseParams) == make_call(fresh, gradient, pare_threshold)(kBaseParams));
@@ -518,7 +500,7 @@ BOOST_AUTO_TEST_CASE(reweighted_gradient_matches_a_fresh_propagator) {
     const auto before = fn(kBaseParams);
     mutate_update_initial_operator(reweighted);
 
-    auto fresh = make_reweighted_propagator(/*schrodinger=*/false);
+    auto fresh = make_propagator(/*schrodinger=*/false, /*partitions=*/1, kReweightedFirstWeight);
     build_base_graph(fresh);
     const auto expected = fresh.expectation_value_and_gradient_functional(std::nullopt)(kBaseParams);
 

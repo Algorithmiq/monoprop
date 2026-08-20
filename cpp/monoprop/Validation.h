@@ -56,7 +56,7 @@ monoprop_EXPORT auto validate_functional_state(const FunctionalState &state) -> 
 struct WeightRefresh {
     size_t weights_revision;  ///< the structure revision the newer weights were published at
     size_t expected_revision; ///< the revision the functional was built at
-    bool pared_from_operator; ///< the functional's keep-set was thresholded from the operator itself
+    bool may_follow_weights;  ///< the functional's own follows_weights(), so the rule has one definition
 };
 
 monoprop_EXPORT auto validate_weight_refresh(const WeightRefresh &refresh) -> void;

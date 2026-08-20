@@ -382,7 +382,13 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
         // so a live functional follows the new coefficients instead of going stale. Publication comes after
         // the commit, so a functional never sees half of one.
         auto applied = mp_op_.update_initial_operator(new_op, schrodinger_);
-        publish_weights_();
+        // Only refresh a set somebody has already been given: a null one means no plan was ever built,
+        // and weights_for_plan_() publishes on demand, so there is nothing left stale by skipping this.
+        // Publishing copies the whole coefficient vector, which a re-weight loop would otherwise pay per
+        // call on a propagator with no functionals.
+        if (functional_control_->weights.load() != nullptr) {
+            publish_weights_();
+        }
         return applied;
     }
     catch (...) {
@@ -973,11 +979,10 @@ auto MonomialPropagator<NumModes>::make_plan_(std::optional<double> pare_thresho
         typename Plan::Fanout fanout;
         fanout.group = partition_group_.get();
         fanout.partitions = map_partitions_([&](MonomialPropagator &s) { return s.make_plan_(pare_threshold); });
-        // graph_gate_arrays_() reads partition 0: the graph structure and gate info are identical on
-        // every partition. A facade validates nothing itself (see FunctionalPlan::validate).
-        return std::make_shared<const Plan>(expected_num_params(graph_gate_arrays_().first),
-                                            functional_control_,
-                                            std::move(fanout));
+        // The children hold the same graph structure and gate info, so one of them already carries the
+        // parameter-axis length. A facade validates nothing else itself (see FunctionalPlan::validate).
+        const auto num_params = fanout.partitions.front()->num_params();
+        return std::make_shared<const Plan>(num_params, functional_control_, std::move(fanout));
     }
 
     typename Plan::Local local;
@@ -1030,6 +1035,8 @@ auto MonomialPropagator<NumModes>::make_plan_(std::optional<double> pare_thresho
             std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, schrodinger_, comm_, full_cos_of_layer));
     }
     else {
+        // Rebuilt from the active layers rather than copied off graph_: MPGraph keeps what a slice
+        // retired in front of front_offset_, and a plan has no use for those layers.
         std::vector<Layer> owned;
         owned.reserve(graph_.layers());
         for (size_t i = 0; i < graph_.layers(); ++i) {

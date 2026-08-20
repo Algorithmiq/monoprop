@@ -55,6 +55,37 @@ logger = logging.getLogger(__name__)
 T_op = TypeVar("T_op", MajoranaOperator, PauliOperator)
 
 
+class _BoundFunctional:
+    """One engine functional, called through the front end's parameter binding.
+
+    A call has to resolve named or circuit-carried parameters first, so the caller cannot be handed
+    the engine functional itself. Forwarding everything else by attribute, rather than copying named
+    properties across, keeps this in step with the bindings on its own.
+    """
+
+    def __init__(self, propagator: MonomialPropagator, functional: object) -> None:
+        self._propagator = propagator
+        self._functional = functional
+
+    def __call__(self, parameters: ParameterValues = None) -> float:
+        return self._functional(self._propagator._bind(parameters))
+
+    def __getattr__(self, name: str) -> object:
+        # Private names are answered by the instance dictionary alone: reaching the engine object for
+        # one would recurse here through `self._functional` before __init__ has set it.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._functional, name)
+
+
+class _BoundGradientFunctional(_BoundFunctional):
+    """As the value functional, but returning ``(value, gradient)`` with the gradient as ``float64``."""
+
+    def __call__(self, parameters: ParameterValues = None) -> tuple[float, np.ndarray]:
+        value, grad = self._functional(self._propagator._bind(parameters))
+        return value, np.asarray(grad, dtype=np.float64)
+
+
 class MonomialPropagator(ABC, Generic[T_op]):
     """Abstract base for the classical monomial-propagation simulators.
 
@@ -398,8 +429,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 accuracy for speed. ``None`` (default) disables paring.
 
         Returns:
-            A callable ``fn(parameters=None) -> float``, carrying the rule above as a
-            ``follows_weights`` attribute.
+            A callable ``fn(parameters=None) -> float``, exposing the rule above as
+            ``follows_weights`` and its parameter-axis length as ``num_params``.
 
         Raises:
             RuntimeError: From the returned callable, if the propagator was structurally mutated
@@ -408,15 +439,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 ``pare_threshold``, whose pared graph was selected from the very coefficients the
                 re-weight replaced.
         """
-        fn = self._simulator.expectation_value_functional(pare_threshold)
-
-        def _call(parameters: ParameterValues = None) -> float:
-            return fn(self._bind(parameters))
-
-        # Carried through to the caller's object rather than left on the engine functional, which is
-        # not part of the public surface.
-        _call.follows_weights = fn.follows_weights  # type: ignore[attr-defined]
-        return _call
+        return _BoundFunctional(
+            self, self._simulator.expectation_value_functional(pare_threshold)
+        )
 
     def expectation_value_and_gradient_functional(
         self, pare_threshold: float | None = None
@@ -432,20 +457,16 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
         Returns:
             A callable ``fn(parameters=None) -> (float, np.ndarray)``, gradient in parameter order,
-            carrying a ``follows_weights`` attribute as [expectation_value_functional][] does.
+            with the same ``follows_weights`` and ``num_params`` as [expectation_value_functional][].
 
         Raises:
             RuntimeError: From the returned callable, on the same conditions as
                 [expectation_value_functional][].
         """
-        fn = self._simulator.expectation_value_and_gradient_functional(pare_threshold)
-
-        def _call(parameters: ParameterValues = None) -> tuple[float, np.ndarray]:
-            value, grad = fn(self._bind(parameters))
-            return value, np.asarray(grad, dtype=np.float64)
-
-        _call.follows_weights = fn.follows_weights  # type: ignore[attr-defined]
-        return _call
+        return _BoundGradientFunctional(
+            self,
+            self._simulator.expectation_value_and_gradient_functional(pare_threshold),
+        )
 
     def expval(
         self,

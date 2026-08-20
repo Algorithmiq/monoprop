@@ -29,6 +29,11 @@ from monoprop.majorana import MajoranaOperator
 from monoprop.pauli import PauliOperator
 
 
+def _value(result):
+    """The value component of a functional's answer, for either functional kind."""
+    return result[0] if isinstance(result, tuple) else result
+
+
 def _two_gate_graph(serial_comm):
     """A propagator with a two-layer, two-parameter graph already built."""
     operator = MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2)
@@ -192,35 +197,33 @@ class TestGraphAndParameterValidation:
         )
         functional = getattr(mp, functional_name)()
         parameters = [0.3, 0.7]
-
-        def call(fn):
-            result = fn(parameters)
-            return result[0] if isinstance(result, tuple) else result
-
-        before = call(functional)
+        before = _value(functional(parameters))
 
         mp.update_initial_operator(updated_operator)
 
         # A re-weight moves no structure, so the functional built before it follows the new
         # coefficients instead of refusing the call: it now answers what the propagator answers.
-        after = call(functional)
+        after = _value(functional(parameters))
         assert after != pytest.approx(before)
         assert after == pytest.approx(mp.expval(parameters))
-        assert after == call(getattr(mp, functional_name)())
+        assert after == _value(getattr(mp, functional_name)()(parameters))
 
 
 class TestFunctionalValidityTable:
     """What each public mutator does to a functional built before it ran.
 
     The Python mirror of ``cpp/tests/functional_validity.cpp``: same rows, same expectations, run
-    over both partition settings. The build-time coverage gate lives on the C++ side
-    (``MonomialPropagator::num_mutating_methods``); here the roster is asserted as data.
+    over both partition settings. The gate that a new mutator gets a row is the C++ static_assert
+    against ``MonomialPropagator::num_mutating_methods``; these rows mirror that table.
     """
 
     _MODES = 2
     _CUTOFF = 4
     _PARAMS = (0.3, 0.7)
     _PARE_THRESHOLD = 1e-12
+    # What _mutate_update_initial_operator() writes onto term (0, 1); a re-weighted propagator must
+    # answer exactly like one built with it from the start, so both sides read it from here.
+    _REWEIGHTED_FIRST_WEIGHT = 2.75
 
     # One gate per Hamiltonian term, and the terms carry different weights, so the answer is not
     # symmetric under swapping the two angles -- which is what makes the parameter_mapping row bite.
@@ -267,7 +270,10 @@ class TestFunctionalValidityTable:
     @classmethod
     def _mutate_update_initial_operator(cls, mp):
         mp.update_initial_operator(
-            MajoranaOperator({(0, 1): 2.75j, (2, 3): 0.5j}, num_modes=cls._MODES)
+            MajoranaOperator(
+                {(0, 1): cls._REWEIGHTED_FIRST_WEIGHT * 1j, (2, 3): 0.5j},
+                num_modes=cls._MODES,
+            )
         )
 
     @staticmethod
@@ -317,8 +323,8 @@ class TestFunctionalValidityTable:
             "stale",
             "stale",
             "stale",
-            "Re-evolves the operator in place. It leaves the layer count at zero, which is why a "
-            "layer count was never enough to see it.",
+            "Re-evolves the operator in place. It leaves the layer count at zero, so the revision "
+            "is the only thing that sees it.",
         ),
         (
             "contract_partially",
@@ -397,20 +403,6 @@ class TestFunctionalValidityTable:
         ),
     )
 
-    def test_table_covers_every_public_mutator(self):
-        assert {row[0] for row in self.ROWS} == {
-            "build_graph",
-            "propagate",
-            "contract_partially",
-            "update_initial_operator",
-            "parameter_mapping",
-            "cutoff",
-            "cutoff_type",
-            "basis_change",
-            "lower_atol",
-            "upper_atol",
-        }
-
     @pytest.mark.parametrize("row", ROWS, ids=[row[0] for row in ROWS])
     @pytest.mark.parametrize("partitions", ["off", "auto"])
     @pytest.mark.parametrize("pared", [False, True], ids=["exact", "pared"])
@@ -452,11 +444,7 @@ class TestFunctionalValidityTable:
         threshold = self._PARE_THRESHOLD if pared else None
         functional = getattr(mp, functional_name)(threshold)
 
-        def call(fn=None):
-            result = (fn or functional)(parameters)
-            return result[0] if isinstance(result, tuple) else result
-
-        before = call()
+        before = _value(functional(parameters))
         getattr(self, mutator)(mp)
 
         expected = exact
@@ -465,16 +453,17 @@ class TestFunctionalValidityTable:
         context = f"{method}: {rationale}"
         if expected == "stale":
             with pytest.raises(RuntimeError, match=r"MP object has been modified"):
-                call()
+                functional(parameters)
         elif expected == "refuses-refresh":
             with pytest.raises(RuntimeError, match=r"cannot follow the new weights"):
-                call()
+                functional(parameters)
         elif expected == "refreshes":
-            after = call()
-            assert after == call(getattr(mp, functional_name)(threshold)), context
+            after = _value(functional(parameters))
+            fresh = getattr(mp, functional_name)(threshold)
+            assert after == _value(fresh(parameters)), context
             assert after != pytest.approx(before), context
         else:
-            assert call() == pytest.approx(before), context
+            assert _value(functional(parameters)) == pytest.approx(before), context
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
     @pytest.mark.parametrize(
@@ -489,15 +478,16 @@ class TestFunctionalValidityTable:
     ):
         monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
-        functional = getattr(mp._simulator, factory)(None)
-        assert functional.num_params == len(self._PARAMS)
+        assert getattr(mp._simulator, factory)(None).num_params == len(self._PARAMS)
+        # The front end hands back its own callable, which forwards what the engine object exposes.
+        assert getattr(mp, factory)(None).num_params == len(self._PARAMS)
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
     def test_parameter_mapping_invalidates_functional_it_desynchronises(
         self, monkeypatch, serial_comm, partitions
     ):
-        """The relabel moves the propagator's own answer, and the functional refuses rather than
-        following it half way -- it used to keep returning the pre-relabel number.
+        """The relabel moves the propagator's own answer, and the functional refuses the call rather
+        than following it half way.
         """
         monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
@@ -532,8 +522,8 @@ class TestFunctionalValidityTable:
                 follows = not (schrodinger and threshold is not None)
                 engine = getattr(mp._simulator, factory)(threshold)
                 assert engine.follows_weights is follows
-                # The front end wraps the engine functional in a callable, which has to carry the
-                # rule through: the engine object is not part of the public surface.
+                # The engine object is not part of the public surface, so the rule has to be readable
+                # off what the front end returns.
                 assert getattr(mp, factory)(threshold).follows_weights is follows
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
@@ -556,20 +546,20 @@ class TestFunctionalValidityTable:
         threshold = self._PARE_THRESHOLD if pared else None
         parameters = list(self._PARAMS)
 
-        def value(result):
-            return result[0] if isinstance(result, tuple) else result
-
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
         functional = getattr(mp, functional_name)(threshold)
-        before = value(functional(parameters))
+        before = _value(functional(parameters))
         self._mutate_update_initial_operator(mp)
 
         fresh = self._propagator(
-            serial_comm, schrodinger=False, with_graph=True, first_weight=2.75
+            serial_comm,
+            schrodinger=False,
+            with_graph=True,
+            first_weight=self._REWEIGHTED_FIRST_WEIGHT,
         )
-        expected = value(getattr(fresh, functional_name)(threshold)(parameters))
+        expected = _value(getattr(fresh, functional_name)(threshold)(parameters))
 
-        after = value(functional(parameters))
+        after = _value(functional(parameters))
         assert after == expected
         assert after != pytest.approx(before)
 

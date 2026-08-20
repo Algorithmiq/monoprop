@@ -123,11 +123,12 @@ auto validate_functional_state(const FunctionalState &state) -> void {
 }
 
 auto validate_weight_refresh(const WeightRefresh &refresh) -> void {
-    // A pared plan holds the layers pare_graph kept, and Schrodinger thresholds that keep-set from the
-    // operator coefficients themselves -- so new coefficients would need a different keep-set, and
-    // replaying this one would silently answer for a paring nobody asked for. Heisenberg thresholds the
-    // state, which a re-weight does not touch, so it follows exactly.
-    if (refresh.pared_from_operator) {
+    // The caller passes its own follows_weights(), the property it advertises, so what is enforced here
+    // and what is advertised cannot drift apart. It is false for exactly one shape: a pared Schrodinger
+    // plan holds a keep-set thresholded from the operator coefficients themselves, so new coefficients
+    // would need a different keep-set and replaying this one would answer for a paring nobody asked for.
+    // Heisenberg thresholds the state, which a re-weight does not touch, so it follows exactly.
+    if (!refresh.may_follow_weights) {
         throw StaleFunctionalGraph("MP object has been modified since the functional was created: the "
                                    "initial operator was re-weighted, and this functional pares its graph "
                                    "against the operator coefficients (a Schrodinger picture functional "
