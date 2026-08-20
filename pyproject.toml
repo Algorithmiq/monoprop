@@ -56,8 +56,8 @@ dev = ["prek>=0.4", "ruff==0.15.20"]
 # Python's only roles are converting the tutorial notebooks to Markdown
 # (`nbconvert`) and dumping the API surface from docstrings (`griffe`, driven by
 # `docs/scripts/gen_api_dump.py` in the `gen-api` recipe). griffe is held to the
-# 1.x line: `griffe-typingdoc` 0.2.x, which reads the `Doc[...]` annotations,
-# does not support 2.x. The floor is 1.15 because earlier 1.x releases infer
+# 1.x line because `griffe-typingdoc` (<1), which reads the `Doc[...]` annotations,
+# does not support griffe 2.x. The floor is 1.15 because earlier 1.x releases infer
 # different return annotations, which changes the generated pages.
 docs = [
   "griffe>=1.15,<2",

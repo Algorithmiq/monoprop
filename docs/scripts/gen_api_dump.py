@@ -469,7 +469,7 @@ def parse_module(m: griffe.Object | griffe.Alias) -> Module:
     if m.is_package:
         try:
             res["version"] = version(m.name)
-        except AttributeError:
+        except Exception:
             res["version"] = "unknown"
 
     return t.cast("Module", res)
