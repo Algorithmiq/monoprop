@@ -38,8 +38,8 @@ hooks = [
 repo = "https://github.com/astral-sh/ruff-pre-commit"
 rev = "v0.15.20"
 hooks = [
-    { id = "ruff-check", exclude = "(docs/)" },
-    { id = "ruff-format", exclude = "(docs/)", args = [
+    { id = "ruff-check" },
+    { id = "ruff-format", args = [
         "--check",
     ] },
 ]

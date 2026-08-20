@@ -132,31 +132,22 @@ function extractReturnsFromSource(source) {
 }
 
 /**
- * griffe preserves wrapped descriptions in parsed docstring sections, and the
- * dump's `returns` entry truncates multi-line Returns text in some cases, so we
- * re-read it from the function source and fold it to one line before
- * conversion. Fixing this in `gen_api_dump.py` would retire this whole path.
+ * Recover a multi-line `Returns:` description that the dump truncated, by
+ * re-reading it from the function source.
+ *
+ * This is a bandaid over the dump, not a fix. griffe's Google parser defaults to
+ * `returns_multiple_items`, which splits the block one item per physical line
+ * and distributes a tuple annotation element-wise across them, so the dump's
+ * `sec.value[0]` keeps only the first line *and* the wrong annotation
+ * (`graph_size` is documented as `int`, not `tuple[int, int]`). Passing
+ * `docstring_options={"returns_multiple_items": False}` to `griffe.load` in
+ * `gen_api_dump.py` fixes both and retires this whole path -- deferred only
+ * because it changes the generated pages.
  */
 function normalizeFunctionReturnsSection(funcNode) {
   const fromSource = extractReturnsFromSource(funcNode?.source);
   if (fromSource && funcNode?.returns && typeof funcNode.returns === 'object') {
     funcNode.returns.description = foldToOneLine(fromSource);
-  }
-
-  const parsed = funcNode?.docstring?.parsed;
-  if (!Array.isArray(parsed)) return;
-
-  for (const section of parsed) {
-    if (section?.kind !== 'returns') continue;
-
-    // Depending on parser shape, `value` can be a list of return entries or a
-    // single entry-like object.
-    const values = Array.isArray(section.value) ? section.value : [section.value];
-    for (const item of values) {
-      if (item && typeof item.description === 'string') {
-        item.description = foldToOneLine(item.description);
-      }
-    }
   }
 }
 
@@ -196,10 +187,6 @@ async function main() {
 
   for (const file of files) {
     file.content = resolveXrefs(file.content, xref, unresolved, scopeFromPath(file.path));
-
-    // `convert` keeps the package name ("monoprop") in hrefs, but `write`
-    // strips that leading segment from file paths. Realign the links.
-    file.content = file.content.replaceAll(`${API_BASE_URL}/monoprop`, API_BASE_URL);
 
     // Attach source paths to frontmatter so docs can build GitHub links
     // without duplicating the module list in app code.

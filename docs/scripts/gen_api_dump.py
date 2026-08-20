@@ -57,7 +57,7 @@ import argparse
 import json
 import typing as t
 from importlib.metadata import version
-from pathlib import Path, PosixPath, WindowsPath
+from pathlib import Path
 
 import griffe
 from griffe_typingdoc import TypingDocExtension
@@ -213,14 +213,8 @@ def _parse_nested(description: str) -> object:
     """Re-parse a docstring entry's description as a Google-style docstring.
 
     Parameter and attribute descriptions can themselves carry sections; the
-    renderer expects the parsed form. Non-string descriptions are already
-    parsed, and `AttributeError` is how that shows up.
-
-    Args:
-        description: The entry's description, parsed or not.
-
-    Returns:
-        The parsed sections, or `description` unchanged if it was not raw text.
+    renderer expects the parsed form. A description that is already parsed is
+    returned unchanged -- `AttributeError` is how that shows up.
     """
     try:
         return griffe.parse_google(griffe.Docstring(description))
@@ -233,12 +227,8 @@ def _merge_parameters(
 ) -> list[object]:
     """Order a docstring's parameter entries by the real signature.
 
-    Args:
-        documented: The entries from the docstring's parameters section.
-        parent: The object whose signature fixes the order.
-
-    Returns:
-        One entry per signature parameter, documented or not.
+    Yields one entry per signature parameter, documented or not, so the renderer
+    can lay out a full parameter list from a partial docstring.
     """
     by_name = {entry.name: entry for entry in documented}
     merged: list[object] = []
@@ -267,12 +257,7 @@ def _merge_attributes(
 ) -> list[object]:
     """Order a docstring's attribute entries by the real attributes.
 
-    Args:
-        documented: The entries from the docstring's attributes section.
-        parent: The object whose attributes fix the order.
-
-    Returns:
-        One entry per non-aliased attribute, documented or not.
+    Yields one entry per non-aliased attribute, documented or not.
     """
     by_name = {entry.name: entry for entry in documented}
     merged: list[object] = []
@@ -383,14 +368,7 @@ def simplify_docstring(
 
 
 def _render_parameter(p: griffe.Parameter) -> str:
-    """Render one parameter, with its `*`/`**` prefix and default if it has one.
-
-    Args:
-        p: The parameter to render.
-
-    Returns:
-        The parameter as it appears in the signature.
-    """
+    """Render one parameter, with its `*`/`**` prefix and default if it has one."""
     if p.kind == griffe.ParameterKind.var_keyword:
         return f"**{p.name}"
     if p.kind == griffe.ParameterKind.var_positional:
@@ -535,14 +513,7 @@ def parse_class(c: griffe.Class) -> Class:
 
 
 def parse_function(f: griffe.Function) -> Function:
-    """Walk a function or method.
-
-    Args:
-        f: The function to walk.
-
-    Returns:
-        The function's documented surface.
-    """
+    """Walk a function or method."""
     out = simplify_docstring(f.docstring, f)
     return t.cast(
         "Function",
@@ -563,35 +534,21 @@ def parse_function(f: griffe.Function) -> Function:
 # Serialisation
 # ---------------------------------------------------------------------------
 
-_ENCODERS: dict[type, t.Callable[[t.Any], t.Any]] = {
-    Path: str,
-    PosixPath: str,
-    WindowsPath: str,
-    set: sorted,
-}
-
 
 class Encoder(griffe.JSONEncoder):
-    """Serialise the griffe objects left in the tree by `simplify_docstring`."""
+    """Serialise the griffe objects `simplify_docstring` leaves in the tree.
+
+    The base class already handles every griffe model (via `as_dict`) plus the
+    `Path`/`set` values they carry; the one thing it gets wrong for us is
+    `Expr`, which *has* an `as_dict` and so would serialise as a nested tree
+    where the consumers want the annotation as written.
+    """
 
     def default(self, obj: object) -> object:
-        """Return a serialisable representation of `obj`.
-
-        Args:
-            obj: The object to serialise.
-
-        Returns:
-            A serialisable representation.
-        """
+        """Return a serialisable representation of `obj`."""
         if isinstance(obj, griffe.Expr):
             return str(obj)
-        # Every griffe model serialises itself; anything else is one of the
-        # plain Python types the dump also carries.
-        as_dict = getattr(obj, "as_dict", None)
-        if as_dict is not None:
-            return as_dict(full=self.full)
-        encode = _ENCODERS.get(type(obj))
-        return encode(obj) if encode is not None else super().default(obj)
+        return super().default(obj)
 
 
 def main() -> None:

@@ -17,8 +17,9 @@ import { stringify } from 'yaml';
 /**
  * Render a module tree to a flat list of `{path, frontmatter, content}` files.
  *
- * Hrefs keep the package's own leading segment (`/api/monoprop/...`), which
- * `write` then strips from file paths; `generate-api.mjs` realigns the two.
+ * `path` stays package-qualified (`monoprop/circuit/ExpGate.mdx`) -- callers key
+ * off that leading segment to derive a page's scope and source file -- while
+ * `write` strips it on the way to disk, matching the hrefs `getHref` mints.
  */
 export function convert(mod, options = {}) {
   const files = [];
@@ -179,10 +180,14 @@ function element(name, props = {}, children) {
   return `<${name} ${propsStr.join(' ')} />`;
 }
 
+// Mints the URL of the page documenting `ele`, dropping the package's own
+// leading segment so it lines up with where `write` puts the file. `pageUrl` in
+// `xref.mjs` has to agree with this, since prose links are resolved from there.
 function getHref(ele, options) {
   const { baseUrl = '/' } = options;
   return (
-    '/' + [...baseUrl.split('/'), ...ele.path.split('.')].filter((v) => v.length > 0).join('/')
+    '/' +
+    [...baseUrl.split('/'), ...ele.path.split('.').slice(1)].filter((v) => v.length > 0).join('/')
   );
 }
 
@@ -214,6 +219,6 @@ export async function write(output, options = {}) {
   );
 }
 
-export function frontmatter(obj) {
+function frontmatter(obj) {
   return `---\n${stringify(obj, { compat: 'yaml-1.1', singleQuote: true }).trim()}\n---`;
 }

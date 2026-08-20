@@ -7,7 +7,6 @@
 // `PyFunction` and `PyAttribute` carry `id={name}`: that is the `#<member>`
 // fragment `buildXrefMap` (scripts/xref.mjs) appends for members, which are
 // documented inline on their parent's page rather than on one of their own.
-// `scroll-mt` keeps the target clear of the sticky header.
 
 import {
   Collapsible,
@@ -22,7 +21,9 @@ import type { ComponentProps, ReactNode } from 'react';
 
 export { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-const card = 'bg-fd-card rounded-lg text-sm my-6 p-3 border';
+// The `scroll-mt` keeps a card clear of the sticky header when an anchor jumps
+// to it, so it belongs with the card surface itself, not the anchored members.
+const card = 'bg-fd-card rounded-lg text-sm my-6 p-3 border scroll-mt-24';
 
 /** The kind badge in a card's header; the colours come from `global.css`. */
 function Badge({ kind }: { kind: 'func' | 'attribute' | 'param' }) {
@@ -32,20 +33,18 @@ function Badge({ kind }: { kind: 'func' | 'attribute' | 'param' }) {
     param: 'bg-fd-primary/10 text-fd-primary border-fd-primary/10',
   }[kind];
   return (
-    <code className={cn('text-xs font-medium border p-1 rounded-lg not-prose', color)}>
-      {kind === 'param' ? 'param' : kind}
-    </code>
+    <code className={cn('text-xs font-medium border p-1 rounded-lg not-prose', color)}>{kind}</code>
   );
 }
 
 /**
  * A syntax-highlighted code span. Async (it awaits shiki), so it only ever
  * renders on the server -- which is fine, every caller here is a server
- * component.
+ * component. Everything rendered here is Python, so the language is not a prop.
  */
-async function InlineCode({ lang, code, ...rest }: { lang: string; code: string } & ComponentProps<'span'>) {
+async function InlineCode({ code, ...rest }: { code: string } & ComponentProps<'span'>) {
   return highlight(code, {
-    lang,
+    lang: 'python',
     components: {
       pre: (props) => <span {...props} {...rest} className={cn(rest.className, props.className)} />,
     },
@@ -54,12 +53,11 @@ async function InlineCode({ lang, code, ...rest }: { lang: string; code: string 
 
 export function PyFunction(props: { name: string; type: string; children?: ReactNode }) {
   return (
-    <figure id={props.name} className={cn(card, 'scroll-mt-24')}>
+    <figure id={props.name} className={card}>
       <div className="flex gap-2 items-center font-mono flex-wrap mb-4">
         <Badge kind="func" />
         {props.name}
         <InlineCode
-          lang="python"
           className="not-prose text-xs text-fd-muted-foreground"
           code={props.type}
         />
@@ -76,13 +74,12 @@ export function PyAttribute(props: {
   children?: ReactNode;
 }) {
   return (
-    <figure id={props.name} className={cn(card, 'scroll-mt-24')}>
+    <figure id={props.name} className={card}>
       <div className="flex gap-2 items-center flex-wrap font-mono mb-4">
         <Badge kind="attribute" />
         {props.name}
         {props.type && (
           <InlineCode
-            lang="python"
             className="not-prose text-fd-muted-foreground text-xs"
             code={props.type}
           />
@@ -90,7 +87,7 @@ export function PyAttribute(props: {
       </div>
       <div className="text-fd-muted-foreground prose-no-margin">
         {props.value && (
-          <InlineCode lang="python" className="not-prose text-xs" code={`= ${props.value}`} />
+          <InlineCode className="not-prose text-xs" code={`= ${props.value}`} />
         )}
         {props.children}
       </div>
@@ -105,18 +102,17 @@ export function PyParameter(props: {
   children?: ReactNode;
 }) {
   return (
-    // The square middle corners plus `first:`/`last:` rounding stack the
-    // parameters of one function into a single seamless list.
+    // Square middle corners, rounded only at the ends, so the parameters of one
+    // function stack into a single seamless list.
     <div
       data-parameter=""
-      className="bg-fd-secondary rounded-lg text-sm p-3 border shadow-md rounded-none first:rounded-t-lg last:rounded-b-lg"
+      className="bg-fd-secondary text-sm p-3 border shadow-md rounded-none first:rounded-t-lg last:rounded-b-lg"
     >
       <div className="flex flex-wrap gap-2 items-center font-mono text-fd-foreground">
         <Badge kind="param" />
         {props.name}
         {props.type && (
           <InlineCode
-            lang="python"
             className="ms-auto text-fd-muted-foreground not-prose text-xs"
             code={props.type}
           />
@@ -124,7 +120,7 @@ export function PyParameter(props: {
       </div>
       <div className="text-fd-muted-foreground prose-no-margin mt-4 empty:hidden">
         {props.value ? (
-          <InlineCode lang="python" code={`= ${props.value}`} className="not-prose text-xs" />
+          <InlineCode code={`= ${props.value}`} className="not-prose text-xs" />
         ) : null}
         {props.children}
       </div>
@@ -137,7 +133,7 @@ export function PyFunctionReturn({ type, children }: { type?: string; children?:
     <div className="border bg-fd-secondary rounded-lg p-3 mt-2">
       <div className="flex flex-wrap gap-2 not-prose">
         <p className="font-medium me-auto">Returns</p>
-        <InlineCode lang="python" code={type ?? 'None'} className="text-xs" />
+        <InlineCode code={type ?? 'None'} className="text-xs" />
       </div>
       {children}
     </div>

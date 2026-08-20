@@ -1170,7 +1170,7 @@ dev = [
     { name = "ruff", specifier = "==0.15.20" },
 ]
 docs = [
-    { name = "griffe", specifier = ">=1.13,<2" },
+    { name = "griffe", specifier = ">=1.15,<2" },
     { name = "griffe-typingdoc", specifier = ">=0.2.8,<1" },
     { name = "ipykernel" },
     { name = "matplotlib" },

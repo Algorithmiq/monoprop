@@ -57,9 +57,10 @@ dev = ["prek>=0.4", "ruff==0.15.20"]
 # (`nbconvert`) and dumping the API surface from docstrings (`griffe`, driven by
 # `docs/scripts/gen_api_dump.py` in the `gen-api` recipe). griffe is held to the
 # 1.x line: `griffe-typingdoc` 0.2.x, which reads the `Doc[...]` annotations,
-# does not support 2.x.
+# does not support 2.x. The floor is 1.15 because earlier 1.x releases infer
+# different return annotations, which changes the generated pages.
 docs = [
-  "griffe>=1.13,<2",
+  "griffe>=1.15,<2",
   "griffe-typingdoc>=0.2.8,<1",
   "nbconvert",
   "pytest-markdown-docs",
