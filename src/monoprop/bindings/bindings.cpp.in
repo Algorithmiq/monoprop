@@ -22,6 +22,8 @@
 #include "generated/bind.h"
 #include "monoprop/Info.h"
 #include "monoprop/MPFunctions.h"
+#include "monoprop/detail/EnvConfig.h"
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
 using namespace monoprop;
@@ -96,6 +98,9 @@ auto basis_enum_2_str(Basis basis) -> std::string {
 } // namespace monoprop::bindings::detail
 
 NB_MODULE(_core, m) {
+    monoprop::config::validate();
+    monoprop::detail::profile::arm_from_config();
+
     m.doc() = "Monomial Propagator";
 
 #ifdef monoprop_ENABLE_MPI

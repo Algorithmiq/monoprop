@@ -14,6 +14,7 @@
 
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 
+#include <algorithm>
 #include <format>
 #include <limits>
 #include <memory>
@@ -21,6 +22,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "monoprop/detail/Profile.h"
 
 namespace monoprop::detail {
 
@@ -148,21 +151,46 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
 }
 
 auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t {
-    size_t bytes =
-        storage.ranges.capacity() * sizeof(CrossRankPartnerRange) + packed_phase_storage_bytes(storage.sin_recv_phases);
+    size_t bytes = cross_rank_slot_record_bytes(storage) + packed_phase_storage_bytes(storage.sin_recv_phases);
     bytes += storage.sin_send_indices.capacity() * sizeof(TermIndex);
     return bytes;
+}
+
+auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size_t {
+    return storage.ranges.capacity() * sizeof(CrossRankPartnerRange);
+}
+
+auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t {
+    // sin_send_count alone is the predicate. B and D hold the same endpoint set in two orders (see
+    // cross_rank_sin_recv_index), so a slot cannot carry D entries while carrying no B entries, and
+    // counting either gives the same answer.
+    return static_cast<size_t>(std::ranges::count_if(storage.ranges, [](const CrossRankPartnerRange &range) {
+        return range.sin_send_count != 0;
+    }));
+}
+
+auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t {
+    size_t count = 0;
+    for (const auto &range : storage.ranges) {
+        count += range.sin_send_count;
+    }
+    return count;
 }
 
 auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t {
     return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
 }
 
+// The whole graph-store build.
 auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore> {
+    monoprop_PROF_SLOT(prof);
+    monoprop_PROF_SCOPE(prof, encode);
+
     auto storage = std::make_shared<LayerCore>();
 
     {
+        monoprop_PROF_SCOPE(prof, encode_layout);
         std::vector<size_t> send_counts;
         send_counts.reserve(all_partners.size());
         for (size_t r = 0; r < all_partners.size(); ++r) {
@@ -176,7 +204,10 @@ auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners,
         static_cast<void>(build_derivative_exchange_layout(storage->evolution_exchange_layout));
     }
 
-    storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
+    {
+        monoprop_PROF_SCOPE(prof, encode_pack);
+        storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
+    }
 
     // Both are indexed by the same rank space.
     if (storage->evolution_exchange_layout.counts.size() != storage->cross_rank.rank_count()) {

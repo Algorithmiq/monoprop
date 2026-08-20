@@ -215,7 +215,10 @@ jobs:
 
       - name: Build (generates compile_commands.json)
         env:
-          SKBUILD_CMAKE_DEFINE: "CMAKE_CXX_COMPILER=clang++;monoprop_ENABLE_CXX_UNIT_TESTS=OFF;monoprop_ENABLE_MPI=ON"
+          # ENABLE_PROFILE=ON here and nowhere else in this file: without it the instrument is compiled
+          # by one test cell and statically analysed by nobody. Not on the coverage job -- gated lines the
+          # default build does not contain would read as uncovered.
+          SKBUILD_CMAKE_DEFINE: "CMAKE_CXX_COMPILER=clang++;monoprop_ENABLE_CXX_UNIT_TESTS=OFF;monoprop_ENABLE_MPI=ON;monoprop_ENABLE_PROFILE=ON"
         run: |
           uv sync --no-progress --all-extras -v
 

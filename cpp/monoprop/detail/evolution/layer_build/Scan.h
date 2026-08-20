@@ -26,6 +26,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
@@ -79,6 +80,7 @@ struct EvenParityNzWord {
 // `pivot_col` is read separately from `gen_cols` so a caller can fold a transformed generator while
 // splitting on the untransformed one. `g_odd` XORs the per-row parity(|M|) correction (row_parity_ptr)
 // in before followers are derived.
+//
 template <size_t NumModes>
 inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                                    std::span<const size_t> gen_cols,
@@ -101,33 +103,44 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     // A dense pivot is read inline; a sparse pivot is scatter-expanded lazily (only for blocks with a
     // nonzero overlap, so no-anticommuter blocks skip it) via a deferred follower fix-up — bit-identical
     // to eager expansion.
+    monoprop_PROF_SLOT(prof);
     auto fold_range = [&](size_t bb, size_t be) {
-        combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
+        {
+            monoprop_PROF_SCOPE(prof, fold);
+            combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
+        }
         const size_t nz_block_start = nz.size();
-        for (size_t wi = bb; wi < be; ++wi) {
-            uint64_t overlap = blk[wi - bb];
-            if (g_odd) {
-                overlap ^= row_parity_ptr[wi];
+        {
+            monoprop_PROF_SCOPE(prof, scan);
+            for (size_t wi = bb; wi < be; ++wi) {
+                uint64_t overlap = blk[wi - bb];
+                if (g_odd) {
+                    overlap ^= row_parity_ptr[wi];
+                }
+                if (wi == last_word) {
+                    overlap &= last_word_mask;
+                }
+                if (!overlap) {
+                    continue;
+                }
+                n_anti += static_cast<size_t>(std::popcount(overlap));
+                uint64_t foll = 0;
+                if (pivot_dense) {
+                    foll = overlap & pivot_dense_ptr[wi];
+                    n_foll += static_cast<size_t>(std::popcount(foll));
+                }
+                nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
             }
-            if (wi == last_word) {
-                overlap &= last_word_mask;
-            }
-            if (!overlap) {
-                continue;
-            }
-            n_anti += static_cast<size_t>(std::popcount(overlap));
-            uint64_t foll = 0;
-            if (pivot_dense) {
-                foll = overlap & pivot_dense_ptr[wi];
-                n_foll += static_cast<size_t>(std::popcount(foll));
-            }
-            nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
         }
         if (pivot_dense || nz.size() == nz_block_start) {
             return; // dense pivot already folded in, or no anticommuting term — nothing to expand
         }
         std::vector<uint64_t> &pblk = pivot_column_block_scratch();
-        combine_columns_block<NumModes>(sc, std::span<const size_t>(&pivot_col, 1), pblk.data(), bb, be);
+        {
+            monoprop_PROF_SCOPE(prof, fold);
+            combine_columns_block<NumModes>(sc, std::span<const size_t>(&pivot_col, 1), pblk.data(), bb, be);
+        }
+        monoprop_PROF_SCOPE(prof, scan);
         const uint64_t *pw = pblk.data();
         for (size_t k = nz_block_start; k < nz.size(); ++k) {
             EvenParityNzWord &e = nz[k];
@@ -206,7 +219,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     const size_t gen_pop = gen.count();
     const auto ectx = A::make_gen_context(gen);
 
-    FusedScanResult res;
+    // Counted before the early-outs below, so `gates` is the gate loop's trip count, not gates with work.
+    monoprop_PROF_SLOT(prof);
+    monoprop_PROF(if (prof != nullptr) { ++prof->n_gates; })
+
+        FusedScanResult res;
     res.leader_queries.assign(rank_count, VecZ{});
     res.leader_src.assign(rank_count, std::vector<size_t>{});
     res.follower_queries.assign(rank_count, VecZ{});
@@ -229,7 +246,13 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         if (gen_columns.count == 0) {
             return res;
         }
-        const auto &inverted_index = op.inverted_index();
+        // The index is built lazily: index_ns is charged to the gate whose first touch pays the rebuild.
+        // A forcing touch, not an IIFE around the real binding: a second closure type here moves GCC's
+        // inlining and register allocation across the whole body, on BOTH instantiations.
+        monoprop_PROF({
+            monoprop_PROF_SCOPE(prof, index);
+            (void)op.inverted_index();
+        }) const auto &inverted_index = op.inverted_index();
         const size_t word_count = inverted_index.words();
         if (word_count == 0) {
             return res;
@@ -267,41 +290,46 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
 
-        // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
-        // abs_c/v_src come from the caller's coeff read, not re-read.
-        auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
-            if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
-                return;
-            }
-            Monomial<NumModes> new_mono;
-            size_t overlap = 0;
-            int phase_factor = 0;
-            emit_term_products<NumModes, A>(*op.store, i, ectx, new_mono, overlap, phase_factor);
-            // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
-            const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
-            const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
-            if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
-                return;
-            }
-            const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
-            // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_mono) % rank_count);
-            const size_t source = i;
-            if (is_follower) {
-                query_push<NumModes>(fq[r_prime], new_mono, phase);
-                fs[r_prime].push_back(source);
-                if (capture_values) {
-                    fv[r_prime].push_back(v_src);
+        // Folded into the slot once per gate. c_atol also absorbs the only_rotate_len_k refusal, which is
+        // the same branch, so `atol` is not purely the atol gate once a length cap is set.
+        monoprop_PROF(size_t c_atol = 0; size_t c_emit = 0; size_t c_reject = 0; size_t c_push = 0; size_t c_words = 0;
+                      size_t c_live_words = 0;)
+
+            // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
+            // abs_c/v_src come from the caller's coeff read, not re-read.
+            auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
+                if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
+                    monoprop_PROF(++c_atol;) return;
                 }
-            }
-            else {
-                query_push<NumModes>(lq[r_prime], new_mono, phase);
-                ls[r_prime].push_back(source);
-                if (capture_values) {
-                    lv[r_prime].push_back(v_src);
+                monoprop_PROF(++c_emit;) Monomial<NumModes> new_mono;
+                size_t overlap = 0;
+                int phase_factor = 0;
+                emit_term_products<NumModes, A>(*op.store, i, ectx, new_mono, overlap, phase_factor);
+                // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
+                const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
+                const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
+                if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
+                    monoprop_PROF(++c_reject;) return;
                 }
-            }
-        };
+                monoprop_PROF(++c_push;) const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
+                // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
+                const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_mono) % rank_count);
+                const size_t source = i;
+                if (is_follower) {
+                    query_push<NumModes>(fq[r_prime], new_mono, phase);
+                    fs[r_prime].push_back(source);
+                    if (capture_values) {
+                        fv[r_prime].push_back(v_src);
+                    }
+                }
+                else {
+                    query_push<NumModes>(lq[r_prime], new_mono, phase);
+                    ls[r_prime].push_back(source);
+                    if (capture_values) {
+                        lv[r_prime].push_back(v_src);
+                    }
+                }
+            };
 
         // Pass 1 and pass 2 stay fused over `nz`: splitting them regressed measurably, as `nz` spills L1
         // between them. `nz` is thread_local so each partition master reuses its capacity across gates.
@@ -340,57 +368,76 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         };
         const bool word_aligned_cos = !only_rotate_len_k.has_value();
         CosineWordBuilder cos_b;
-        for (const auto &w : nz) {
-            if (word_aligned_cos && fused_scale_coeffs != nullptr) {
-                // Fused cos sweep: scaling in place here is what replaces building a cosine set.
-                for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
-                    const double v_src = fused_scale_coeffs[i];
-                    fused_scale_coeffs[i] = v_src * fused_scale_cos;
-                    const double abs_c = std::abs(v_src);
-                    if (cut_st.is_below_sin(abs_c)) {
-                        continue;
+        {
+            // Scoped: emit_ns must not swallow the counter fold and store walk below.
+            monoprop_PROF_SCOPE(prof, emit);
+            for (const auto &w : nz) {
+                monoprop_PROF(size_t emit_at_word_start = c_emit;
+                              ++c_words;) if (word_aligned_cos && fused_scale_coeffs != nullptr) {
+                    // Fused cos sweep: scaling in place here is what replaces building a cosine set.
+                    for (uint64_t m = w.overlap; m; m &= m - 1) {
+                        const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                        const size_t i = w.base + tz;
+                        const double v_src = fused_scale_coeffs[i];
+                        fused_scale_coeffs[i] = v_src * fused_scale_cos;
+                        const double abs_c = std::abs(v_src);
+                        if (cut_st.is_below_sin(abs_c)) {
+                            monoprop_PROF(++c_atol;) continue;
+                        }
+                        const size_t mono_pop = op.store->popcount(i);
+                        const bool is_follower = (w.foll >> tz) & 1u;
+                        emit(mono_pop, i, abs_c, v_src, is_follower);
                     }
-                    const size_t mono_pop = op.store->popcount(i);
-                    const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(mono_pop, i, abs_c, v_src, is_follower);
                 }
-            }
-            else if (word_aligned_cos) {
-                // No orbital gate: record the whole word in the cosine set, then per bit apply the atol
-                // gate before the popcount row read — deferring popcount saves random packed-row loads.
-                cos_b.push_word(w.base, w.overlap);
-                for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
-                    const auto [v_src, abs_c] = derive_coeff(i);
-                    if (cut_st.is_below_sin(abs_c)) {
-                        continue;
+                else if (word_aligned_cos) {
+                    // No orbital gate: record the whole word in the cosine set, then per bit apply the atol
+                    // gate before the popcount row read — deferring popcount saves random packed-row loads.
+                    cos_b.push_word(w.base, w.overlap);
+                    for (uint64_t m = w.overlap; m; m &= m - 1) {
+                        const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                        const size_t i = w.base + tz;
+                        const auto [v_src, abs_c] = derive_coeff(i);
+                        if (cut_st.is_below_sin(abs_c)) {
+                            monoprop_PROF(++c_atol;) continue;
+                        }
+                        const size_t mono_pop = op.store->popcount(i);
+                        const bool is_follower = (w.foll >> tz) & 1u;
+                        emit(mono_pop, i, abs_c, v_src, is_follower);
                     }
-                    const size_t mono_pop = op.store->popcount(i);
-                    const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(mono_pop, i, abs_c, v_src, is_follower);
                 }
-            }
-            else {
-                // Orbital gate active: it needs mono_pop, and the per-index cosine push covers only
-                // orbital-passing terms, so the popcount row read must precede both.
-                for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
-                    const size_t mono_pop = op.store->popcount(i);
-                    if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
-                        continue;
+                else {
+                    // Orbital gate active: it needs mono_pop, and the per-index cosine push covers only
+                    // orbital-passing terms, so the popcount row read must precede both.
+                    for (uint64_t m = w.overlap; m; m &= m - 1) {
+                        const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                        const size_t i = w.base + tz;
+                        const size_t mono_pop = op.store->popcount(i);
+                        if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
+                            continue;
+                        }
+                        cos_b.push_index(i);
+                        const auto [v_src, abs_c] = derive_coeff(i);
+                        const bool is_follower = (w.foll >> tz) & 1u;
+                        emit(mono_pop, i, abs_c, v_src, is_follower);
                     }
-                    cos_b.push_index(i);
-                    const auto [v_src, abs_c] = derive_coeff(i);
-                    const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(mono_pop, i, abs_c, v_src, is_follower);
                 }
+                monoprop_PROF(c_live_words += (c_emit != emit_at_word_start) ? 1 : 0;)
             }
+            res.cos_blocks.push_back(cos_b.finish());
         }
-        res.cos_blocks.push_back(cos_b.finish());
+        monoprop_PROF(if (prof != nullptr) {
+            prof->n_anti += n_anti;
+            prof->n_foll += n_foll;
+            prof->n_emit += c_emit;
+            prof->n_atol += c_atol;
+            prof->n_reject += c_reject;
+            prof->n_push += c_push;
+            prof->n_words += c_words;
+            prof->n_live_words += c_live_words;
+            for (size_t r = 0; r < rank_count; ++r) {
+                prof->query_words += lq[r].size() + fq[r].size();
+            }
+        })
     }
     return res;
 }

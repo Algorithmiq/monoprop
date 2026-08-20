@@ -20,6 +20,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/Algebra.h"
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/operator/MPOperator.h"
@@ -84,11 +85,20 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     {
         const size_t op_size = op.store->size();
         op.store->find_batch(pr.mono.data(), pr.nq_total, pr.idx_of.data());
-        for (size_t g = 0; g < pr.nq_total; ++g) {
+        // Counted here too: at a world of R*S the self stream resolve_range_ counts is only 1/R of the probes.
+        // ONE loop: a miss already takes the branch that stores kMissingIndex, so counting there is free
+        // and hits follow by subtraction. In a non-profiling build the counter is not compiled at all.
+        monoprop_PROF_SLOT(prof);
+        monoprop_PROF(size_t c_miss = 0;) for (size_t g = 0; g < pr.nq_total; ++g) {
             if (pr.idx_of[g] >= op_size) { // kNotFound is size_t max → also lands here
                 pr.idx_of[g] = kMissingIndex;
+                monoprop_PROF(++c_miss;)
             }
         }
+        monoprop_PROF(if (prof != nullptr) {
+            prof->n_hit += pr.nq_total - c_miss;
+            prof->n_miss += c_miss;
+        })
     }
 
     // Phase 2 ((sender,query) prefix order): each miss takes the next index base+j.

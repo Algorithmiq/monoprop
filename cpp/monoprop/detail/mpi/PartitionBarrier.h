@@ -18,9 +18,13 @@
 #include <stdexcept>
 #include <thread>
 
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/mpi/CpuRelax.h"
 
 namespace monoprop::mpi {
+
+// Spelled out: an unqualified `detail::profile` would find monoprop::mpi::detail (CpuRelax.h) and stop.
+namespace profile = monoprop::detail::profile;
 
 // Turns what would be a permanent hang into an exception on every participant.
 class ShmCommPoisoned : public std::runtime_error {
@@ -43,7 +47,11 @@ public:
     PartitionBarrier(const PartitionBarrier &) = delete;
     auto operator=(const PartitionBarrier &) -> PartitionBarrier & = delete;
 
-    auto sync() -> void {
+    // `prof` is the CALLING partition's slot; the barrier is the only path both transports share, so
+    // timing it here is what makes them report one quantity for one event. Charged on every participant,
+    // the last to arrive included, and across both throw paths. The parameter exists either way.
+    auto sync([[maybe_unused]] profile::CommSlot *prof = nullptr) -> void {
+        monoprop_PROF(if (prof != nullptr) { ++prof->n_barriers; }) monoprop_PROF_SCOPE(prof, barrier);
         const unsigned g = gen_.load(std::memory_order_acquire);
         if (arrived_.fetch_add(1, std::memory_order_acq_rel) + 1 == participants_) {
             arrived_.store(0, std::memory_order_relaxed);

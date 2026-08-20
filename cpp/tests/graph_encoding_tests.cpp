@@ -19,8 +19,10 @@
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <vector>
 
+#include "monoprop/MPGraph.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 
 using namespace monoprop;
@@ -186,4 +188,100 @@ BOOST_AUTO_TEST_CASE(graph_encoding_d_from_b_derivation_both_arms) {
     // send side reads B verbatim
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 0, 0), 10U);
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 0, 4), 22U);
+}
+
+namespace {
+// `counts.size()` world slots, slot r carrying counts[r] endpoints; zero means reserved and empty.
+auto slot_partners(const std::vector<size_t> &counts) -> std::vector<CrossRankPartnerData> {
+    std::vector<CrossRankPartnerData> data(counts.size());
+    for (size_t r = 0; r < counts.size(); ++r) {
+        for (size_t k = 0; k < counts[r]; ++k) {
+            data[r].sin_send_indices.push_back(k);
+            data[r].sin_recv_entries.push_back({k, 1});
+        }
+    }
+    return data;
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(graph_encoding_occupied_slots_counts_only_slots_carrying_traffic) {
+    // Zeros at the front, in the interior and at the back -- the three places a scan loses count.
+    const auto storage = detail::build_packed_cross_rank_storage(slot_partners({0, 3, 0, 0, 7, 0}));
+
+    BOOST_CHECK_EQUAL(storage.rank_count(), 6U);
+    BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(storage), 2U);
+    BOOST_CHECK_EQUAL(detail::cross_rank_endpoint_count(storage), 10U);
+    // The ceiling this instrument exists to expose: an occupied slot holds at least one endpoint.
+    BOOST_CHECK_LE(detail::cross_rank_occupied_slots(storage), detail::cross_rank_endpoint_count(storage));
+}
+
+BOOST_AUTO_TEST_CASE(graph_encoding_slot_record_bytes_track_the_world_not_the_traffic) {
+    const auto narrow = detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0}));
+    const auto wide =
+        detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+
+    BOOST_CHECK_EQUAL(detail::cross_rank_endpoint_count(narrow), detail::cross_rank_endpoint_count(wide));
+    BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(narrow), detail::cross_rank_occupied_slots(wide));
+    BOOST_CHECK_EQUAL(narrow.rank_count(), 4U);
+    BOOST_CHECK_EQUAL(wide.rank_count(), 16U);
+    // One record per world slot is the FLOOR: the figure is capacity-derived, so slack is not a defect.
+    BOOST_CHECK_GE(detail::cross_rank_slot_record_bytes(narrow), narrow.rank_count() * sizeof(CrossRankPartnerRange));
+    BOOST_CHECK_GE(detail::cross_rank_slot_record_bytes(wide), wide.rank_count() * sizeof(CrossRankPartnerRange));
+    BOOST_CHECK_LT(detail::cross_rank_slot_record_bytes(narrow), detail::cross_rank_slot_record_bytes(wide));
+    // And the slot records are a slice of cross_rank_bytes, not an addition to it.
+    BOOST_CHECK_LT(detail::cross_rank_slot_record_bytes(wide), detail::cross_rank_storage_bytes(wide));
+}
+
+// The five d_-prefixed graph_memory_breakdown() keys read these fields; each is a count or a slice of
+// cross_rank_bytes, so a total including them double-counts.
+BOOST_AUTO_TEST_CASE(graph_memory_breakdown_diagnostics_sit_outside_total_bytes) {
+    GraphMemoryBreakdown b;
+    b.layer_descriptor_bytes = 1;
+    b.layer_storage_object_bytes = 2;
+    b.cos_data_bytes = 4;
+    b.cross_rank_bytes = 8;
+    b.exchange_layout_bytes = 16;
+    constexpr size_t kOwnedBytes = 1U + 2U + 4U + 8U + 16U;
+    BOOST_CHECK_EQUAL(b.total_bytes(), kOwnedBytes);
+
+    b.slot_record_bytes = 32;
+    b.layer_cores = 64;
+    b.slot_records = 128;
+    b.occupied_slots = 256;
+    b.cross_rank_endpoints = 512;
+    BOOST_CHECK_EQUAL(b.total_bytes(), kOwnedBytes);
+
+    // A partitioned propagator sums per-partition breakdowns, so the diagnostics have to add too.
+    GraphMemoryBreakdown acc;
+    acc += b;
+    acc += b;
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 2U * kOwnedBytes);
+    BOOST_CHECK_EQUAL(acc.slot_record_bytes, 64U);
+    BOOST_CHECK_EQUAL(acc.layer_cores, 128U);
+    BOOST_CHECK_EQUAL(acc.slot_records, 256U);
+    BOOST_CHECK_EQUAL(acc.occupied_slots, 512U);
+    BOOST_CHECK_EQUAL(acc.cross_rank_endpoints, 1024U);
+}
+
+// Each d_ key against the helper it derives from; two layers share one core, so d_layer_cores is 1.
+BOOST_AUTO_TEST_CASE(graph_memory_breakdown_diagnostics_report_the_flat_world) {
+    auto core = std::make_shared<LayerCore>();
+    core->cross_rank = detail::build_packed_cross_rank_storage(slot_partners({0, 3, 0, 0, 7, 0}));
+
+    MPGraph graph(/*schrodinger=*/false);
+    graph.append(core);
+    graph.append(core);
+    BOOST_REQUIRE_EQUAL(graph.layers(), 2U);
+
+    const auto b = graph.storage_memory_usage();
+    BOOST_CHECK_EQUAL(b.layer_cores, 1U);
+    BOOST_CHECK_EQUAL(b.slot_records, core->cross_rank.rank_count());
+    BOOST_CHECK_EQUAL(b.slot_records, 6U);
+    BOOST_CHECK_EQUAL(b.occupied_slots, detail::cross_rank_occupied_slots(core->cross_rank));
+    BOOST_CHECK_EQUAL(b.cross_rank_endpoints, detail::cross_rank_endpoint_count(core->cross_rank));
+    BOOST_CHECK_EQUAL(b.slot_record_bytes, detail::cross_rank_slot_record_bytes(core->cross_rank));
+    BOOST_CHECK_EQUAL(b.cross_rank_bytes, detail::cross_rank_storage_bytes(core->cross_rank));
+    // slot_record_bytes is a slice of cross_rank_bytes, which total_bytes already counts in full.
+    BOOST_CHECK_LE(b.slot_record_bytes, b.cross_rank_bytes);
+    BOOST_CHECK_LE(b.cross_rank_bytes, b.total_bytes());
 }

@@ -29,7 +29,7 @@ jobs:
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
-    name: Check project ${{ matrix.runner }}/Python ${{ matrix.python-version }}/Compiler ${{ matrix.compiler}}/Wide term index ${{ matrix.wide}}
+    name: Check project ${{ matrix.runner }}/Python ${{ matrix.python-version }}/Compiler ${{ matrix.compiler}}/Wide term index ${{ matrix.wide}}/Profile ${{ matrix.profile}}
 
     strategy:
       fail-fast: false
@@ -38,6 +38,7 @@ jobs:
         runner: [ubuntu-26.04, ubuntu-26.04-arm, macos-15]
         compiler: [default, g++-14, clang++-18]
         wide: ["off"]
+        profile: ["OFF"]
         exclude:
           - compiler: g++-14
             python-version: "3.14"
@@ -52,11 +53,20 @@ jobs:
             runner: ubuntu-26.04
             compiler: default
             wide: "on"
+            profile: "OFF"
+          # The only cell that COMPILES the monoprop_PROFILE instrument, and therefore the only one in
+          # which comm_profile_tests exists at all. Its ctest and pytest steps run with the regions
+          # armed, so the registries emit and their static-destructor teardown executes.
+          - python-version: "3.11"
+            runner: ubuntu-26.04
+            compiler: default
+            wide: "off"
+            profile: "ON"
 
     runs-on: ${{ matrix.runner}}
 
     env:
-      SKBUILD_CMAKE_DEFINE: "monoprop_WIDE_TERM_INDEX=${{ matrix.wide }}"
+      SKBUILD_CMAKE_DEFINE: "monoprop_WIDE_TERM_INDEX=${{ matrix.wide }};monoprop_ENABLE_PROFILE=${{ matrix.profile }}"
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -144,18 +154,27 @@ jobs:
           pyver="${{ matrix.python-version }}"
           compiler="${{ matrix.compiler }}"
           wide="${{ matrix.wide }}"
-          echo "label=$runner-$pyver-$compiler-$wide" >> $GITHUB_OUTPUT
+          profile="${{ matrix.profile }}"
+          # Every matrix dimension belongs here: two cells sharing a label overwrite each other's
+          # junit XML, and Codecov ingests with fail_ci_if_error.
+          echo "label=$runner-$pyver-$compiler-$wide-prof$profile" >> $GITHUB_OUTPUT
 
       - name: Run Python tests
+        env:
+          # Empty on every other cell: a non-empty value in a build without the instrument throws.
+          monoprop_PROFILE: ${{ matrix.profile == 'ON' && 'all' || '' }}
         run: |
           uv run pytest \
           -r aR \
+          ${{ matrix.profile == 'ON' && '-s' || '' }} \
           --durations=50 \
           --durations-min=5.0 \
           --junit-xml=pytest-"${{ steps.test-group-label.outputs.label }}".xml \
           -o junit_family=legacy
 
       - name: Run C++ unit tests
+        env:
+          monoprop_PROFILE: ${{ matrix.profile == 'ON' && 'all' || '' }}
         run: |
           ctest --test-dir build/editable/Release --output-on-failure --output-junit ctest-"${{ steps.test-group-label.outputs.label }}".xml
 

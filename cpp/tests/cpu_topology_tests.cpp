@@ -73,7 +73,10 @@ BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
     if (!one.empty()) {
         // A placement only comes back when topology discovery succeeded and pinning is enabled.
         BOOST_CHECK(!cores.empty());
-        partition::pin_this_thread(one.front());
+        // Reported, not asserted: [[nodiscard]], but a container or launcher cpuset may refuse a strict
+        // bind and that is not a defect in the placement policy.
+        const bool bound = partition::pin_this_thread(one.front());
+        BOOST_TEST_MESSAGE("pin_this_thread: " << (bound ? "bound" : "refused"));
         // guard restores affinity on scope exit
     }
     // When topology discovery succeeds, a non-empty core list must produce a non-empty placement.

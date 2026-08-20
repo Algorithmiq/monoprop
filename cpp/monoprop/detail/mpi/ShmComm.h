@@ -24,6 +24,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/PartitionBarrier.h"
@@ -38,21 +39,35 @@ namespace monoprop::mpi {
 
 class ShmComm {
 public:
-    explicit ShmComm(int n) : n_(n), slots_(static_cast<size_t>(n)), barrier_(n) {}
+    // `prof.mpi_rank` is the OWNING rank's: an in-process transport has no rank of its own to report.
+    explicit ShmComm(int n, profile::CommOptions prof = {})
+        : n_(n),
+          slots_(static_cast<size_t>(n)),
+          prof_(n, {.mpi_rank = prof.mpi_rank, .transport = "shm", .enabled = prof.enabled, .out = prof.out}),
+          barrier_(n) {}
 
     ShmComm(const ShmComm &) = delete;
     auto operator=(const ShmComm &) -> ShmComm & = delete;
 
     auto size() const -> int { return n_; }
 
+    // Written before the thread it describes takes any job, read only after the join — the join is the
+    // happens-before edge, so no atomic is needed.
+    auto note_pinned(int rank) -> void {
+        if (auto *prof = prof_.slot(rank); prof != nullptr) {
+            prof->pinned = 1;
+        }
+    }
+
     // recv_counts[s] = what rank s sends to me (the transpose of the send-count matrix).
     auto alltoall_counts(int rank, const int *send_counts, int *recv_counts) -> void {
+        auto *prof = enter_verb_(rank);
         slots_[static_cast<size_t>(rank)].counts = send_counts;
-        sync();
+        sync(prof);
         for (int s = 0; s < n_; ++s) {
             recv_counts[s] = slots_[static_cast<size_t>(s)].counts[rank];
         }
-        sync();
+        sync(prof);
     }
 
     // Variable all-to-all over caller-owned flat buffers, addressed as raw bytes (counts/displs stay in
@@ -66,10 +81,11 @@ public:
                    const int *recv_counts,
                    const int *recv_displs,
                    size_t elem) -> void {
+        auto *prof = enter_verb_(rank);
         Slot &me = slots_[static_cast<size_t>(rank)];
         me.ptr = send;
         me.displs = send_displs;
-        sync();
+        sync(prof);
         auto *dst = recv;
         for (int s = 0; s < n_; ++s) {
             const Slot &src = slots_[static_cast<size_t>(s)];
@@ -83,7 +99,7 @@ public:
                         src.ptr + static_cast<size_t>(src.displs[rank]) * elem,
                         count * elem);
         }
-        sync();
+        sync(prof);
     }
 
     // Fused count-resolve + payload all-to-all in one round (2 syncs vs 4). Same contiguous
@@ -91,13 +107,14 @@ public:
     // See AlltoallvResolveArgs for the lifetime and element-offset contract.
     template <typename T>
     auto alltoallv_resolve(int rank, const AlltoallvResolveArgs<T> &args) -> void {
+        auto *prof = enter_verb_(rank);
         Slot &me = slots_[static_cast<size_t>(rank)];
         // Typed here but byte-addressed in the slot: peers scatter by (displ, count) in elements and
         // never reconstruct T, so the slot stays type-erased for the untyped alltoallv above.
         me.ptr = reinterpret_cast<const std::byte *>(args.send);
         me.displs = args.send_displs;
         me.counts = args.send_counts;
-        sync(); // B1: send buffers published
+        sync(prof); // B1: send buffers published
         long long total = 0;
         for (int s = 0; s < n_; ++s) {
             const int c = slots_[static_cast<size_t>(s)].counts[rank]; // what s sends to me
@@ -118,11 +135,12 @@ public:
                         src.ptr + static_cast<size_t>(src.displs[rank]) * sizeof(T),
                         count * sizeof(T));
         }
-        sync(); // B2: peers finished reading our send buffer before the caller may reuse it
+        sync(prof); // B2: peers finished reading our send buffer before the caller may reuse it
     }
 
     template <typename T>
     auto allreduce_sum(int rank, T local_val) -> T {
+        auto *prof = enter_verb_(rank);
         Slot &me = slots_[static_cast<size_t>(rank)];
         if constexpr (std::is_floating_point_v<T>) {
             me.f64 = static_cast<double>(local_val);
@@ -130,7 +148,7 @@ public:
         else {
             me.u64 = static_cast<uint64_t>(local_val);
         }
-        sync();
+        sync(prof);
         T acc{};
         for (int s = 0; s < n_; ++s) {
             const Slot &src = slots_[static_cast<size_t>(s)];
@@ -141,15 +159,16 @@ public:
                 acc += static_cast<T>(src.u64);
             }
         }
-        sync();
+        sync(prof);
         return acc;
     }
 
     // Safe in place: each element is read then overwritten by its single slice owner, and slices are
     // cache-line-rounded.
     auto allreduce_sum_inplace(int rank, double *values, size_t len) -> void {
+        auto *prof = enter_verb_(rank);
         slots_[static_cast<size_t>(rank)].vec = values;
-        sync();
+        sync(prof);
         constexpr size_t kLine = 64 / sizeof(double);
         const size_t lines = (len + kLine - 1) / kLine;
         const size_t per = (lines + static_cast<size_t>(n_) - 1) / static_cast<size_t>(n_);
@@ -164,7 +183,7 @@ public:
                 slots_[static_cast<size_t>(s)].vec[k] = acc;
             }
         }
-        sync(); // peers write into our buffer (and read from it) until here
+        sync(prof); // peers write into our buffer (and read from it) until here
     }
 
     // See PartitionBarrier::poison / ::reset for when each is legal to call.
@@ -184,10 +203,21 @@ private:
         uint64_t u64 = 0;
     };
 
-    auto sync() -> void { barrier_.sync(); }
+    // Bumped on ENTRY, not on completion: a verb that threw still has to be accounted for.
+    auto enter_verb_(int rank) -> profile::CommSlot * {
+        auto *prof = prof_.slot(rank);
+        if (prof != nullptr) {
+            ++prof->n_verbs;
+        }
+        return prof;
+    }
+
+    auto sync(profile::CommSlot *prof) -> void { barrier_.sync(prof); }
 
     int n_;
     std::vector<Slot> slots_;
+    // Declared before barrier_ so it is destroyed after it: nothing may be inside sync() when emit reads.
+    profile::CommRegistry prof_;
     PartitionBarrier barrier_;
 };
 

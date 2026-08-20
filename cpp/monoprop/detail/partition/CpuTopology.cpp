@@ -27,8 +27,6 @@ namespace monoprop::detail::partition {
 
 namespace {
 
-/* ── Process-lifetime hwloc topology ──────────────────────────────────────── */
-
 // hwloc_topology_t is safe for concurrent read-only access after hwloc_topology_load().
 struct TopologyHolder {
     hwloc_topology_t topo = nullptr;
@@ -65,8 +63,6 @@ auto get_topology() -> hwloc_topology_t {
     return holder.topo;
 }
 
-/* ── Effective allowed cpuset for the calling thread ──────────────────────── */
-
 // Queries the current thread's affinity to respect any launcher-imposed restriction (cgroup, MPI
 // process binding) narrower than the topology's own allowed cpuset. Falls back to the topology
 // allowed cpuset when the cpubind query is unsupported on this platform. Caller must free the bitmap.
@@ -84,8 +80,6 @@ auto effective_allowed_cpuset(hwloc_topology_t topo) -> hwloc_cpuset_t {
 }
 
 } // anonymous namespace
-
-/* ── topo_detail::placement_order ─────────────────────────────────────────── */
 
 namespace topo_detail {
 
@@ -149,8 +143,6 @@ auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t gr
 }
 
 } // namespace topo_detail
-
-/* ── enumerate_physical_cores ──────────────────────────────────────────────── */
 
 auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
     const auto topo = get_topology();
@@ -221,8 +213,6 @@ auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
     return cores;
 }
 
-/* ── affinity_mask_words ───────────────────────────────────────────────────── */
-
 auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool {
     if (out == nullptr || nwords == 0) {
         return false;
@@ -247,8 +237,6 @@ auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool {
     hwloc_bitmap_free(allowed);
     return representable;
 }
-
-/* ── masks_are_pairwise_disjoint ───────────────────────────────────────────── */
 
 auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool {
     if (masks == nullptr || words == 0 || n < 2) {
@@ -275,8 +263,6 @@ auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) 
     }
     return true;
 }
-
-/* ── partition_cpusets ─────────────────────────────────────────────────────── */
 
 auto partition_cpusets(size_t n, size_t group_index, size_t group_count, NodeMask mask) -> std::vector<CpuSet> {
     if (!config::get().partition_pinning) {
@@ -311,24 +297,25 @@ auto partition_cpusets(size_t n, size_t group_index, size_t group_count, NodeMas
     return sets;
 }
 
-/* ── pin_this_thread ───────────────────────────────────────────────────────── */
-
-auto pin_this_thread(const CpuSet &set) -> void {
+auto pin_this_thread(const CpuSet &set) -> bool {
     if (set.pu < 0) {
-        return;
+        return false;
     }
     const auto topo = get_topology();
     if (!topo) {
-        return;
+        return false;
     }
     hwloc_cpuset_t cpuset = hwloc_bitmap_alloc();
     if (!cpuset) {
-        return;
+        return false;
     }
     hwloc_bitmap_only(cpuset, static_cast<unsigned>(set.pu));
-    /* Errors are intentionally ignored: pinning is performance-only, not a correctness requirement. */
-    hwloc_set_cpubind(topo, cpuset, HWLOC_CPUBIND_THREAD | HWLOC_CPUBIND_STRICT);
+    /* Every early return above is a false too, so the result answers "is this thread now confined to
+     * set.pu", not "did hwloc get as far as trying". An error still does not propagate: pinning is
+     * performance-only, not a correctness requirement. */
+    const bool bound = hwloc_set_cpubind(topo, cpuset, HWLOC_CPUBIND_THREAD | HWLOC_CPUBIND_STRICT) == 0;
     hwloc_bitmap_free(cpuset);
+    return bound;
 }
 
 } // namespace monoprop::detail::partition

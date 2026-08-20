@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
@@ -106,7 +107,12 @@ auto pare_graph(const MPGraph &graph,
                 bool schrodinger,
                 mpi::Comm comm,
                 const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
-    const size_t num_layers = graph.layers();
+    // Disjoint from ev/grad in REPLAYPROF: paring's cost amortises over later evaluations, not summed into either.
+    monoprop_PROF_REPLAY_SLOT(prof);
+    monoprop_PROF_SCOPE(prof, pare);
+    monoprop_PROF(if (prof != nullptr) { ++prof->n_pare; })
+
+        const size_t num_layers = graph.layers();
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
 
     std::vector<char> nodes_to_keep(local_index_count, 0);

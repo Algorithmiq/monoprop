@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/Profile.h"
 
 namespace monoprop::detail {
 
@@ -326,11 +327,18 @@ private:
                 rehash_to(slots.size() * 2);
             }
         }
+        // The early-out above is what keeps the timer off the per-insert path: rehash_to is reached from
+        // rehash_if_needed on every insert, and only a real growth gets past it.
         auto rehash_to(size_t new_cap) -> void {
             new_cap = std::bit_ceil(std::max<size_t>(new_cap, kMinSlots));
             if (new_cap <= slots.size()) {
                 return;
             }
+            monoprop_PROF_SLOT(prof);
+            monoprop_PROF(if (prof != nullptr) {
+                ++prof->n_rehash;
+                prof->n_rehash_rows += count;
+            }) monoprop_PROF_SCOPE(prof, rehash);
             std::vector<Slot> old = std::move(slots);
             slots.assign(new_cap, Slot{});
             mask = new_cap - 1;

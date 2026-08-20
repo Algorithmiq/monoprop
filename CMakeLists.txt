@@ -55,6 +55,12 @@ option(
   OFF
 )
 
+option(
+  monoprop_ENABLE_PROFILE
+  "Compile the internal profiling instrument (monoprop_PROFILE)"
+  OFF
+)
+
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
 set(Python_FIND_VIRTUALENV FIRST)
@@ -100,6 +106,7 @@ message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
 message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
 message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
+message(STATUS "   Profiling instrument   : ${monoprop_ENABLE_PROFILE}")
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 
 include(GNUInstallDirs)

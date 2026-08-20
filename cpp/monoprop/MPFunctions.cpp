@@ -19,6 +19,7 @@
 #include <stdexcept>
 
 #include "monoprop/Evolution.h"
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
 
 namespace monoprop {
@@ -76,6 +77,9 @@ auto prepare_evolved_operator(const EvalRequest &request, mpi::Comm comm, const 
         throw MissingLayerCallback("Evaluating at non-empty parameters requires a cos_scale (forward) callback.");
     }
     auto &scratch = eval_scratch();
+    // Covers the mapping, the operator copy and the walk together: none is separable by the caller.
+    monoprop_PROF_REPLAY_SLOT(prof);
+    monoprop_PROF_SCOPE(prof, evolve);
     fill_mapped_params(scratch.mapped_params, request.params, request.parameter_mapping, request.gen_coeffs, 1.0, true);
     scratch.op = request.op;
     scratch.op = evolve_operator(std::move(scratch.op), request.graph, scratch.mapped_params, comm, cos_scale);
@@ -194,9 +198,13 @@ auto map_params(const VecD &parameters,
 }
 
 auto ev(const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> double {
-    // The allreduce is unconditional -- ShmComm's is barrier-synced, so short-circuiting an empty local
-    // sum past it would deadlock every peer.
-    if (request.params.empty()) {
+    // Brackets the whole verb incl. the allreduce, so ev_s - evolve_s is the dot+collective remainder.
+    monoprop_PROF_REPLAY_SLOT(prof);
+    monoprop_PROF_SCOPE(prof, ev);
+    monoprop_PROF(if (prof != nullptr) { ++prof->n_ev; })
+
+        // Unconditional: ShmComm's allreduce is barrier-synced, so short-circuiting it deadlocks peers.
+        if (request.params.empty()) {
         return request.e_core + mpi::allreduce_sum(request.state.dot(request.op), comm);
     }
 
@@ -206,7 +214,12 @@ auto ev(const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &
 
 auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos)
     -> std::pair<double, VecD> {
-    if (request.params.empty()) {
+    // Same bracketing as ev: grad_s - evolve_s - deriv_s is the densify/inner-product/collectives remainder.
+    monoprop_PROF_REPLAY_SLOT(prof);
+    monoprop_PROF_SCOPE(prof, grad);
+    monoprop_PROF(if (prof != nullptr) { ++prof->n_grad; })
+
+        if (request.params.empty()) {
         return {request.e_core + mpi::allreduce_sum(request.state.dot(request.op), comm), VecD(0)};
     }
 
@@ -228,17 +241,21 @@ auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
 
     const auto &parameter_mapping = request.parameter_mapping;
     scratch.gradient.assign(request.params.size(), 0.0);
-    for (size_t i = 0; i < parameter_mapping.size(); ++i) {
-        const auto idx = parameter_mapping.size() - 1 - i;
-        const auto param_ind = parameter_mapping[i];
-        scratch.gradient[param_ind] +=
-            state_operator_derivative_local(state_,
-                                            op_,
-                                            request.graph,
-                                            idx,
-                                            {.gen_coeff = request.gen_coeffs[i], .param = request.params[param_ind]},
-                                            comm,
-                                            cos.accumulate);
+    {
+        // One region, not per parameter: this is one back-evolution walk yielding a derivative per layer.
+        monoprop_PROF_SCOPE(prof, deriv);
+        for (size_t i = 0; i < parameter_mapping.size(); ++i) {
+            const auto idx = parameter_mapping.size() - 1 - i;
+            const auto param_ind = parameter_mapping[i];
+            scratch.gradient[param_ind] += state_operator_derivative_local(
+                state_,
+                op_,
+                request.graph,
+                idx,
+                {.gen_coeff = request.gen_coeffs[i], .param = request.params[param_ind]},
+                comm,
+                cos.accumulate);
+        }
     }
 
     mpi::allreduce_sum_inplace(scratch.gradient, comm);

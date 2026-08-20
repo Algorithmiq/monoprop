@@ -30,6 +30,7 @@ whose partner lives in another partition are resolved through a per-gate exchang
 | `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. Set it to run fewer partitions than cores. |
 | `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
 | `monoprop_PARTITION_PINNING` | `on` | `0`/`false`/`no` disables pinning each partition to a core. Supported on platforms where hwloc can bind threads. |
+| `monoprop_PROFILE` | off | Comma-separated list of diagnostic regions to print to stderr. See [Profiling a run](#profiling-a-run). |
 
 ```bash
 # Run 8 partitions instead of one-per-core:
@@ -72,3 +73,103 @@ one partition per rank.
 MPI is **off by default**, so the prebuilt PyPI wheels run single-rank and the
 communicators above only distribute work after a from-source build with MPI
 enabled. See [Building from source](/building) for the full build instructions.
+
+## Profiling a run
+
+When a run is slower than expected, `monoprop_PROFILE` asks the engine to report
+where the time and the memory went. The instrument is **compiled only when you
+ask for it**, so the prebuilt wheels do not contain it at all:
+
+```bash
+uv pip install --no-binary monoprop \
+  --config-settings=cmake.define.monoprop_ENABLE_PROFILE=ON monoprop
+```
+
+In that build, set `monoprop_PROFILE` to a comma-separated list of regions. In
+any other build a non-empty value raises at import rather than producing an
+empty log:
+
+```bash
+# Where did the layer build spend its time?
+monoprop_PROFILE=layer uv run python your_script.py
+
+# Everything the engine can report:
+monoprop_PROFILE=all mpiexec -n 8 uv run python your_script.py
+```
+
+| Region | What it reports | Line |
+| --- | --- | --- |
+| `layer` | Per-partition phase timers and per-gate counters over the layer build and the graph store | `LAYERPROF` |
+| `comm` | Per-partition barrier and MPI time inside the transport | `COMMPROF` |
+| `replay` | Per-region timers over the replay paths and the cosine cache | `REPLAYPROF` |
+| `mem` | Page faults and peak resident set size, at teardown | `LAYERRUSAGE` |
+| `all` | Every region above | |
+
+`layer` covers the per-gate work that
+[propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] and
+[build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] do. Both run the same gate
+loop, so the same denominator (`total_s`) and the same phase fields describe them; `build_graph`
+additionally reports the two things only it does — `encode_s`, building each layer's stored exchange
+layouts and cross-rank slot records, and `append_s`, adding the finished layer to the graph.
+`replay` covers the paths described in
+[Expectation values and gradients](/features/evaluation) —
+[expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value],
+its gradient counterpart, and paring.
+
+An unrecognised name raises rather than being ignored, so `monoprop_PROFILE=laer`
+stops the run instead of producing an empty log that looks exactly like a run
+that did nothing. Names are matched exactly: they are case-sensitive, and there
+is no boolean form — `monoprop_PROFILE=1` is an error, not "on". To turn every
+region off, leave the variable unset or set it to the empty string.
+
+The value is checked when `monoprop` is imported, before any communicator
+exists, so a bad value on one rank of an MPI run fails that rank's import
+instead of aborting it part-way through a collective its peers are waiting in.
+
+### Reading the output
+
+Every region writes plain `KEY=value` lines to **stderr**, tagged so they can be
+grepped out of a mixed log.
+
+- **`LAYERPROF`** — one line per partition, tagged `row=`. That index is print
+  order, not the partition index, and it is not stable across runs. The timers
+  **nest**, and the line prints them flat, so adding the fields up
+  double-counts: `total_s` contains `gate_s`, which contains `layer_s`, which
+  contains the per-phase fields (`fold_s`, `scan_s`, `emit_s`, `index_s`,
+  `resolve_s`, `insert_s`, `sendbuf_s`, `exchange_s`, `incoming_s`) — and
+  `exchange_s` is the sum of the two legs printed straight after it,
+  `exchangeq_s` (the query leg) and `exchangeresp_s` (the response leg).
+  `total_s` separately contains `contract_s` and its own leaves. The fields are
+  printed outermost-first, so the nesting is visible from their order. `layer_s`
+  minus the phases is the unattributed remainder — without it a phase split
+  says nothing about the wall time. The remaining fields are counters, not
+  seconds.
+- **`COMMPROF`** — one line per rank at transport teardown, reporting barrier and
+  MPI time, how many barriers and MPI operations were issued, and whether the
+  run's threads were pinned.
+- **`LAYERRUSAGE`** — one line per process: minor and major page faults, peak RSS
+  in KiB, and context switches. Peak RSS is a per-process high-water mark, so on
+  a multi-rank run it is per rank and not a total.
+- **`REPLAYPROF`** — one line per thread that entered a replay path, timing the
+  expectation value, the gradient, the forward evolution, the reverse derivative
+  pass and paring, plus the two cosine-cache implementations. These nest too
+  (`ev` contains `evolve`, which contains the cosine timers; the gradient
+  contains both `evolve` and `deriv`), and `pare` is disjoint from both.
+
+### Two traps
+
+**Under pytest you need `-s`.** pytest captures at the file-descriptor level, and
+these lines go straight to stderr — some of them from a static destructor at
+process teardown — so without `-s` they are swallowed and the log is empty. An
+empty log is indistinguishable from a run where the instrument was never
+switched on, so always pass it:
+
+```bash
+monoprop_PROFILE=layer uv run python -m pytest -s -m "not mpi"
+```
+
+**Do not quote a profiling build's wall time.** It is a different binary: the
+timers sit inside the hot loops and change what the compiler inlines there. Use
+a profiling build for phase shares and counters, and a default build for the
+wall time you report — never compare a number from one against a number from the
+other.

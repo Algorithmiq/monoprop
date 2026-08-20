@@ -113,6 +113,9 @@ ctest --test-dir build/editable/Debug
 ### Related workflows
 
 - Use `just test-wide` for the 64-bit `monoprop_WIDE_TERM_INDEX` configuration.
+- Use `just test-profile` for the `monoprop_ENABLE_PROFILE` configuration, which
+  compiles the `monoprop_PROFILE` instrument described in
+  [Parallelism and distribution](/features/parallelism).
 - Use `just code-coverage` for the coverage build.
 - Use `ctest --test-dir build/editable/Release -L serial` or `-L mpi-2` to
   filter the discovered C++ test set.

@@ -27,6 +27,7 @@
 
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
+#include "monoprop/detail/Profile.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
@@ -372,17 +373,35 @@ struct LayerBuildEngine {
         if (!is_leader_pass && R > 1) {
             drop_matched_cross_rank_followers();
         }
-        resolve_self_queries(is_leader_pass);
+        monoprop_PROF_SLOT(prof);
+        {
+            monoprop_PROF_SCOPE(prof, resolve);
+            resolve_self_queries(is_leader_pass);
+        }
         if (R <= 1) {
             return;
         }
-        std::vector<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
+        std::vector<VecZ> *send = nullptr;
+        {
+            monoprop_PROF_SCOPE(prof, sendbuf);
+            send = &sink.send_buffer(queries_r, src_val_r, combined_qv_);
+        }
         std::vector<std::vector<size_t>> inc_q;
-        mpi::begin_alltoallv(send, comm).wait_into(inc_q);
-        auto resp = resolve_incoming<NumModes>(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
+        {
+            monoprop_PROF_SCOPE(prof, exchange);
+            mpi::begin_alltoallv(*send, comm).wait_into(inc_q);
+        }
+        // An IIFE so the timer can bracket the call without naming resolve_incoming's return type.
+        auto resp = [&] {
+            monoprop_PROF_SCOPE(prof, incoming);
+            return resolve_incoming<NumModes>(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
+        }();
         std::vector<int> resp_recv = response_recv_counts();
         std::vector<std::vector<typename Sink::Response>> inc_r;
-        mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_r);
+        {
+            monoprop_PROF_SCOPE(prof, exchange_resp);
+            mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_r);
+        }
         process_responses<NumModes>(inc_r, src_idx_r, queries_r, R, my_rank, sink);
     }
 
@@ -429,11 +448,15 @@ struct LayerBuildEngine {
     // complete, else the base+k ↔ record-slot assignment and per-miss distinctness break. Deferred self
     // misses are pairwise-distinct (mono = source⊕G, ⊕G injective) and still absent, so miss k gets
     // base+k in leader-then-follower order. See insert_absent_terms.
+    //
+    // insert_ns covers the dedup-table insert, the row-store growth and the inverted-index append.
     auto insert_deferred_self_misses() -> void {
         const size_t n_miss = deferred_self_misses.size();
         if (n_miss == 0) {
             return;
         }
+        monoprop_PROF_SLOT(prof);
+        monoprop_PROF_SCOPE(prof, insert);
         auto key_at = [&](size_t k) -> const Monomial<NumModes> & { return deferred_self_misses[k].mono; };
         sink.prepare_deferred(n_miss);
         insert_absent_terms<NumModes>(local_op, n_miss, key_at, [&](size_t k, size_t base) {
@@ -469,7 +492,10 @@ private:
                         size_t hi,
                         bool is_leader_pass) -> void {
         const size_t op_size = local_op.store->size();
-        std::array<Monomial<NumModes>, kResolveBatch> keys;
+        monoprop_PROF_SLOT(prof);
+        // Only misses are counted in the loop: every probe is a hit or a miss, so hits are exact by
+        // subtraction and the hot path keeps one counter instead of two.
+        monoprop_PROF(size_t c_probe = 0; size_t c_miss = 0;) std::array<Monomial<NumModes>, kResolveBatch> keys;
         std::array<int, kResolveBatch> phases;
         std::array<size_t, kResolveBatch> srcs;
         std::array<double, kResolveBatch> vals;
@@ -507,9 +533,15 @@ private:
                 }
                 else {
                     deferred_self_misses.push_back({keys[j], srcs[j], phases[j], v_src});
+                    monoprop_PROF(++c_miss;)
                 }
             }
+            monoprop_PROF(c_probe += m;)
         }
+        monoprop_PROF(if (prof != nullptr) {
+            prof->n_hit += c_probe - c_miss;
+            prof->n_miss += c_miss;
+        })
     }
 };
 
@@ -536,6 +568,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  VecD *fused_scale_coeffs = nullptr,
                  bool *fused_scale_out = nullptr,
                  Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
+    monoprop_PROF_SLOT(layer_prof);
+    monoprop_PROF_SCOPE(layer_prof, layer);
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
