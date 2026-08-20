@@ -19,7 +19,7 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
     - `test`: adding/refactoring tests, *i.e.* improving code coverage. **No** functional changes.
     - `chore`: "boring" tasks, *i.e.* updating dependency pins in `pyproject.toml`. **No** functional changes.
 - If you make a commit, add a trailer: `Assisted-by: <harness>:<model>`, where `<harness>` is the current agent harness (like ClaudeCode), and `<model>` is the AI model (like claude-opus-4.8). You don't need to add a coauthored-by when you have this.
-- PR titles must adhere to the same conventional commits format.
+- PR titles must adhere to the same conventional commits format. PR text should follow the PR template in the `.github` folder.
 - Prefix PR descriptions and comments on PRs with the line ":robot: _AI text below_ :robot:" to indicate you are an agent speaking on a user's behalf.
 - Python docstrings use Google style, and are rendered into the docs site by `just gen-api` — keep
   them accurate.
@@ -87,6 +87,10 @@ Key files:
   change to the recorded sections has to land on both sides of the package boundary. Benchmark
   names are Bencher's history key, so renaming or moving a `bench_*` test orphans its tracked
   series.
+- **`rounds > 1` overlaps two rounds' live memory** (`setup=` runs before the prior round's
+  teardown) — pin `--bench-rounds=1`; `record_memory` measures that construction transient,
+  not per-op cost (use `op_memory`).
+- **Peak memory is `HighWaterMark`, not sampled PSS** — exact, unlike `/proc/self/smaps_rollup`.
 
 ### Core abstractions (the propagation backbone)
 
@@ -140,6 +144,8 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - Fixture msgpack schema is documented in `tests/data/README.md`
 - Tests validate against exact solutions for small systems
 - Heavy use of `@parametrize_with_cases` decorators
+- **pytest's fd-level capture hides C++ stderr** (e.g. `COMMPROF`) — rerun with `-s` to see it.
+- **A slow CTest run on an MPI build is `MPI_Init` fabric probing, not slow tests** — see `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
 
 ## Key Dependencies & Integration
 
@@ -179,5 +185,7 @@ When changing behavior, APIs, build/test workflows, paths, or developer conventi
 - Check `build/*/compile_commands.json` for compilation flags
 - Use `rm -rf build` to clear environment-specific builds
 - Verify `monoprop_MAX_NUM_MODES` matches your use case (default: 250)
+- **`uv sync` does not relink `bin/monoprop_unit_tests.x`** — check its mtime against the
+  source's; recipe for a standalone C++ build tree in `docs/content/docs/building.mdx`.
 
 This is a sophisticated scientific computing project requiring careful attention to template instantiation, build system configuration, and the C++/Python boundary.

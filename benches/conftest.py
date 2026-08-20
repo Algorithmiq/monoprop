@@ -32,6 +32,8 @@ the slowest rank, and only rank 0 writes results.
 
 from __future__ import annotations
 
+import gc
+import hashlib
 import json
 import os
 import platform
@@ -45,8 +47,7 @@ import psutil
 import pytest
 from monoprop_bench_tools.memory.cpu import (
     HighWaterMark,
-    PssSampler,
-    merge_peak_of_sum,
+    pinned_thread_summary,
     resting_rss_bytes,
 )
 from monoprop_bench_tools.models import (
@@ -90,6 +91,33 @@ def _reduce_sum(comm: Any, value: int) -> int:
     return value
 
 
+def _reduce_max(comm: Any, value: int) -> int:
+    """Return the largest ``value`` over ranks. Collective; serial returns ``value``."""
+    if comm is not None and comm.Get_size() > 1:
+        return comm.allreduce(value, op=MPI.MAX)
+    return value
+
+
+def _reduce_min(comm: Any, value: int) -> int:
+    """Return the smallest ``value`` over ranks. Collective; serial returns ``value``."""
+    if comm is not None and comm.Get_size() > 1:
+        return comm.allreduce(value, op=MPI.MIN)
+    return value
+
+
+def _gather_lists(comm: Any, values: list[int]) -> list[list[int]]:
+    """Gather per-rank CPU-id lists to rank 0. Collective; off root returns ``[]``."""
+    if comm is None or comm.Get_size() == 1:
+        return [values]
+    gathered = comm.gather(values, root=0)
+    return gathered if gathered is not None else []
+
+
+def _spread(comm: Any, value: int) -> dict[str, int]:
+    """Reduce a per-rank number to ``sum`` (bounds the job) and ``max`` (bounds a node)."""
+    return {"sum": _reduce_sum(comm, value), "max": _reduce_max(comm, value)}
+
+
 _RANDOM_OPTIONS = (
     ("gen-length", 4, "Majorana operators per generator."),
     ("obs-terms", 10000, "Observable terms."),
@@ -100,17 +128,21 @@ _RANDOM_OPTIONS = (
     ("bench-rounds", 1, "Fixed timing rounds (MPI-safe)."),
 )
 
-# Non-timing results, written at session end (rank 0) to ``results/<label>.json``.
 _RESULTS: dict[str, Any] = {
     "meta": {},  # run configuration (ranks, threads, host, ...)
     "params": {},  # resolved random-problem hyperparameters
-    "mem": {},  # node id -> peak-of-sum PSS bytes (per operation; MPI lower bound)
-    "memhwm": {},  # node id -> summed per-rank peak RSS bytes (per operation; may fall back to exit RSS if VmHWM can't be reset)  # noqa: E501
-    "opsize": {},  # picture / model -> {"terms": n}
+    "memhwm": {},  # node id -> summed peak RSS, whole test, setup() included
+    "opsize": {},  # picture / model / node id -> {"terms": n}
     "memrest": {},  # picture / model -> resting RSS bytes
     "membase": {},  # fixed model -> resting RSS bytes before the model is built
     "configs": {},  # fixed model -> config dataclass fields
     "opmem": {},  # fixed model -> per-field operator memory split (bytes)
+    # Timed call only (see ``OpMemory``), each {"sum", "max"}.
+    "opmemdelta": {},  # node id -> peak above the operation's floor
+    "opmempeak": {},  # node id -> peak including resident bytes
+    "opmembase": {},  # node id -> that floor
+    "opbytes": {},  # node id -> {"operator": n, "graph": n}
+    "opmembreak": {},  # node id -> operator memory split (bytes)
 }
 
 
@@ -127,20 +159,6 @@ def _results_path() -> Path | None:
     if not label or not results:
         return None
     return Path(results, f"{label}.json")
-
-
-def _peak_of_sum(comm: Any, samples: list[tuple[float, int]]) -> int:
-    """Reduce per-rank PSS timelines to the job's peak summed footprint (bytes).
-
-    Gathers every rank's ``(wall_clock, pss)`` samples to rank 0 and merges them
-    via :func:`_memory.merge_peak_of_sum`. Collective; returns ``0`` off root.
-    """
-    if comm is None or comm.Get_size() == 1:
-        return merge_peak_of_sum([samples])
-    gathered = comm.gather(samples, root=0)
-    if comm.Get_rank() != 0:
-        return 0
-    return merge_peak_of_sum(gathered)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -160,6 +178,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             )
 
 
+def _core_md5() -> str:
+    """Return the md5 of the extension module this run imported.
+
+    The install-time version stamp is not rewritten by a later ``cmake --build`` and
+    site-packages holds its own copies, so hash what ``_core`` actually resolved to.
+    """
+    try:
+        path = Path(monoprop._core.__file__)
+        return hashlib.md5(path.read_bytes()).hexdigest()  # noqa: S324
+    except (AttributeError, OSError, TypeError):
+        return "unavailable"
+
+
 def _meta() -> dict[str, Any]:
     """Return this run's configuration metadata for the report."""
     try:
@@ -175,11 +206,17 @@ def _meta() -> dict[str, Any]:
         "cpu_count_physical": psutil.cpu_count(logical=False),
         "hostname": socket.gethostname(),
         "monoprop_version": monoprop.__version__,
+        "monoprop_core_md5": _core_md5(),
         "monoprop_variant": monoprop.__variant__,
         "monoprop_compiler_flags": monoprop.__compiler_flags__,
         "python_version": platform.python_version(),
         "nanobind_version": monoprop.__nanobind_version__,
         "nanobind_backend_version": nanobind_backend_version,
+        "monoprop_max_num_modes": monoprop.MAX_NUM_MODES,
+        "malloc_arena_max": os.environ.get("MALLOC_ARENA_MAX", "default"),
+        "omp_num_threads": os.environ.get("OMP_NUM_THREADS", "default"),
+        # Filled by _record_placement: the threads exist only once a propagator does.
+        "pinning": {},
     }
 
 
@@ -195,11 +232,7 @@ def _params(config: pytest.Config) -> dict[str, Any]:
 def pytest_configure(config: pytest.Config) -> None:
     """Record run metadata on rank 0; silence the other ranks under MPI.
 
-    Every rank runs the whole session, so without intervention they interleave
-    output and race on the shared ``--benchmark-json`` file. Rank 0 prints, writes
-    the JSON, and records metadata; the others go silent. The memory fixture still
-    runs everywhere (for the collective reduce), but only rank 0 records.
-
+    Every rank runs the whole session, so rank 0 alone prints, writes and records.
     ``trylast`` so the terminal reporter exists before non-root ranks unregister it.
     """
     if _rank() == 0:
@@ -210,9 +243,8 @@ def pytest_configure(config: pytest.Config) -> None:
     reporter = config.pluginmanager.getplugin("terminalreporter")
     if reporter is not None:
         config.pluginmanager.unregister(reporter)
-    # pytest-benchmark opens --benchmark-json at parse time and writes it at
-    # session finish. Null the session handle to skip the write, then close the
-    # file so it does not leak (closing alone leaves ``with self.json`` raising).
+    # Nulling the session handle skips the write; closing alone leaves ``with self.json``
+    # raising, so do both.
     bench_session = getattr(config, "_benchmarksession", None)
     if bench_session is not None:
         bench_session.json = None
@@ -263,6 +295,30 @@ def model_configs(request: pytest.FixtureRequest) -> dict[str, Any]:
     }
 
 
+def _record_placement(comm: Any) -> None:
+    """Record engine thread placement over ranks; every rank must enter the reductions and gather.
+
+    min/max because a partial failure -- some ranks placed, some not -- is the shape a cpuset
+    confinement takes and is invisible in rank 0's view alone.
+    """
+    summary = pinned_thread_summary()
+    placed = summary["single_cpu_threads"]
+    mask = summary["affinity_cpus"]
+    spread = {
+        "single_cpu_threads_min": _reduce_min(comm, placed),
+        "single_cpu_threads_max": _reduce_max(comm, placed),
+        "affinity_cpus_min": _reduce_min(comm, mask),
+        "affinity_cpus_max": _reduce_max(comm, mask),
+    }
+    pinned_cpus_by_rank = _gather_lists(comm, summary["pinned_cpus"])
+    if _rank() == 0:
+        _RESULTS["meta"]["pinning"] = {
+            **summary,
+            **spread,
+            "pinned_cpus_by_rank": pinned_cpus_by_rank,
+        }
+
+
 @pytest.fixture
 def record_model_config() -> Callable[[str, Any], None]:
     """Return ``record(model, config)`` recording a model's resolved config."""
@@ -273,61 +329,135 @@ def record_model_config() -> Callable[[str, Any], None]:
     return _do
 
 
+def _record_model_stats(
+    comm: Any, key: str, propagator: Any, baseline_rss: int | None = None
+) -> None:
+    """Record term count, operator memory breakdown and footprint under ``key``."""
+    _record("opsize", key, {"terms": _reduce_sum(comm, propagator.size())})
+
+    # Placement is only observable while the propagator's threads are alive.
+    _record_placement(comm)
+
+    # The Python front-end does not re-export the C++ accounting.
+    breakdown = getattr(propagator._simulator, "operator_memory_breakdown", None)
+    if breakdown is not None:
+        _record(
+            "opmem",
+            key,
+            {k: _reduce_sum(comm, v) for k, v in breakdown().items()},
+        )
+
+    resting = _reduce_sum(comm, resting_rss_bytes())
+    if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
+        _record("memrest", key, resting)
+
+    if baseline_rss is not None:
+        baseline = _reduce_sum(comm, baseline_rss)
+        if baseline:
+            _record("membase", key, baseline)
+
+
 @pytest.fixture
 def record_model_stats(bench_comm: Any) -> Callable[..., None]:
     """Return ``record(model, propagator, baseline_rss)`` for fixed-model runs."""
 
     def _do(model: str, propagator: Any, baseline_rss: int) -> None:
-        _record("opsize", model, {"terms": _reduce_sum(bench_comm, propagator.size())})
+        _record_model_stats(bench_comm, model, propagator, baseline_rss)
 
-        # Sparse InvertedIndex columns cost a TermIndex (4B) per set bit against ~1-2B per
-        # set bit in the rows, so which of the two dominates is what sizing decisions turn on.
-        # The Python front-end does not re-export the C++ accounting; it hangs off ._simulator.
-        breakdown = getattr(propagator._simulator, "operator_memory_breakdown", None)
-        # None => binding predates operator_memory_breakdown()
+    return _do
+
+
+class OpMemory:
+    """Records one benchmarked operation's memory over the timed call alone.
+
+    The window opens in ``setup`` and closes when ``pedantic`` returns, so ``delta`` is the
+    operation's own cost, not the construction transient. ``settle=False`` deliberately:
+    settling is seconds of ``gc.collect()``/``malloc_trim`` beside a timed region.
+    """
+
+    def __init__(self, key: str, comm: Any) -> None:
+        """Bind the recorder to one benchmark's report key and communicator."""
+        self._key = key
+        self._comm = comm
+        self._window: HighWaterMark | None = None
+
+    def open(self) -> None:
+        """Start the window. Safe to call once per round; the last round wins."""
+        self._window = HighWaterMark(settle=False)
+        self._window.start()
+
+    def close(self, propagator: Any = None) -> None:
+        """Record the window and ``propagator``'s byte counts; collective, so every rank calls it equally often."""
+        if self._window is None:
+            return
+        self._window.stop()
+        window, self._window = self._window, None
+
+        _record("opmemdelta", self._key, _spread(self._comm, window.delta_bytes))
+        _record("opmempeak", self._key, _spread(self._comm, window.peak_bytes))
+        _record("opmembase", self._key, _spread(self._comm, window.baseline_bytes))
+
+        _record_placement(self._comm)
+
+        if propagator is None:
+            return
+        simulator = getattr(propagator, "_simulator", None)
+        counts = {
+            name: getattr(simulator, f"{name}_memory_bytes", None)
+            for name in ("operator", "graph")
+        }
+        if all(fn is not None for fn in counts.values()):
+            _record(
+                "opbytes",
+                self._key,
+                {
+                    name: _reduce_sum(self._comm, int(fn()))
+                    for name, fn in counts.items()
+                },
+            )
+        breakdown = getattr(simulator, "operator_memory_breakdown", None)
         if breakdown is not None:
             _record(
-                "opmem",
-                model,
-                {k: _reduce_sum(bench_comm, v) for k, v in breakdown().items()},
+                "opmembreak",
+                self._key,
+                {k: _reduce_sum(self._comm, v) for k, v in breakdown().items()},
             )
 
-        resting = _reduce_sum(bench_comm, resting_rss_bytes())
-        if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
-            _record("memrest", model, resting)
 
-        baseline = _reduce_sum(bench_comm, baseline_rss)
-        if baseline:
-            _record("membase", model, baseline)
+@pytest.fixture
+def op_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[OpMemory]:
+    """Return this test's :class:`OpMemory` recorder, keyed as the timing report keys it."""
+    recorder = OpMemory(request.node.nodeid.split("/")[-1], bench_comm)
+    yield recorder
+    # A test that raised before closing would desync the collectives.
+    recorder.close()
+
+
+@pytest.fixture
+def record_opsize(
+    request: pytest.FixtureRequest, bench_comm: Any
+) -> Callable[[Any], int]:
+    """Return ``record(propagator)`` storing and returning the global term count."""
+    key = request.node.nodeid.split("/")[-1]
+
+    def _do(propagator: Any) -> int:
+        terms = _reduce_sum(bench_comm, propagator.size())
+        _record("opsize", key, {"terms": terms})
+        return terms
 
     return _do
 
 
 @pytest.fixture(autouse=True)
 def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[None]:
-    """Record each benchmark's peak physical-memory footprint for the report.
+    """Record ``memhwm``: peak RSS over the whole test, summed over ranks.
 
-    Two numbers, because neither alone is both exact and MPI-aware:
-
-    ``memhwm``
-        The kernel's exact peak RSS (:class:`HighWaterMark`) summed over ranks. Exact per
-        rank, and an upper bound on the job total, since ranks that peak at different
-        moments are added as though they had peaked together.
-    ``mem``
-        The peak-of-sum of the sampled per-rank PSS timelines, which is the quantity that
-        actually bounds a node's RAM. A lower bound: the sampler only advances when a rank
-        drops the GIL, and monoprop's ``propagate()`` holds it for the whole call.
-
-    Both are footprints, not deltas: they include structures already resident when the
-    operation starts (e.g. the shared :func:`built_graph`). The gather is collective, but
-    only rank 0 records.
+    It spans ``setup``, so it predicts an OOM kill but is the wrong number for comparing
+    operations -- ``opmemdelta`` is that. The reduce is collective; only rank 0 records.
     """
-    with HighWaterMark() as window, PssSampler() as sampler:
+    with HighWaterMark() as window:
         yield
     key = request.node.nodeid.split("/")[-1]
-    mem = _peak_of_sum(bench_comm, sampler.samples)
-    if mem:  # 0 => non-root rank or /proc unavailable: nothing to record
-        _record("mem", key, mem)
     hwm = _reduce_sum(bench_comm, window.peak_bytes)
     if hwm:
         _record("memhwm", key, hwm)
@@ -346,7 +476,7 @@ def picture(request: pytest.FixtureRequest) -> str:
 def random_problem(request: pytest.FixtureRequest) -> RandomProblem:
     """Build the random observable/circuit problem from the CLI options."""
     opt = request.config.getoption
-    return make_random_problem(
+    problem = make_random_problem(
         gen_length=opt("--gen-length"),
         obs_terms=opt("--obs-terms"),
         num_generators=opt("--num-generators"),
@@ -354,6 +484,9 @@ def random_problem(request: pytest.FixtureRequest) -> RandomProblem:
         cutoff=opt("--cutoff"),
         seed=opt("--seed"),
     )
+    # Keeps every later HighWaterMark's gc.collect() off these session-lifetime tuples.
+    gc.freeze()
+    return problem
 
 
 @pytest.fixture
@@ -404,3 +537,36 @@ def built_graph(
         _record("memrest", picture, resting)
 
     return mp
+
+
+@pytest.fixture(scope="session")
+def model_graph(
+    model_configs: dict[str, Any], bench_comm: Any
+) -> Callable[[str], tuple[Any, list[float]]]:
+    """Return ``get(model)`` giving a fixed model's built graph and its parameter vector.
+
+    Hubbard's circuit is one Trotter step re-applied, so the graph takes ``steps`` successive
+    ``build_graph`` calls and the parameter vector is the circuit's repeated to match.
+    """
+    cache: dict[str, tuple[Any, list[float]]] = {}
+
+    def _get(model: str) -> tuple[Any, list[float]]:
+        if model not in cache:
+            _config_cls, build_fn, steps_fn = MODELS[model]
+            config = model_configs[model]
+            steps = steps_fn(config)
+            propagator, circuit = build_fn(config, comm=bench_comm)
+            for _ in range(steps):
+                propagator.build_graph(circuit)
+            parameters = list(circuit.parameters) * steps
+            # A mismatch benchmarks a different graph than the build_graph cell measured.
+            assert len(parameters) == propagator.n_parameters
+
+            # No test here calls record_model_config, so record the config from this side.
+            _record("configs", model, asdict(config))
+            _record_model_stats(bench_comm, model, propagator)
+            gc.freeze()  # same reason as random_problem
+            cache[model] = (propagator, parameters)
+        return cache[model]
+
+    return _get
