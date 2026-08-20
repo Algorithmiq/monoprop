@@ -16,6 +16,7 @@
 
 #include <array>
 #include <bit>
+#include <cassert>
 #include <cstdint>
 #include <format>
 #include <optional>
@@ -24,6 +25,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
+#include "monoprop/core/SparseMonomial.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop {
@@ -96,6 +98,8 @@ auto is_paired(const VecZ &mono) -> bool {
     return is_paired<NumModes>(indices_to_bitset<NumModes>(mono));
 }
 
+// The (k, d) digest form of the predicate above is is_paired(size_t, size_t) in SparseMonomial.h.
+
 template <size_t NumModes, typename Rows>
 auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ {
     VecZ result;
@@ -155,6 +159,27 @@ template <size_t NumModes>
     return {(first_pair ^ second_pair).count(), active_mono.count(), (first_pair | second_pair).count()};
 }
 
+// The same sums from a (k, d) digest; no logical_num_modes because the masking above is inert for a
+// well-formed monomial (every set bit at physical position >= 2 * (NumModes - logical_num_modes)).
+[[nodiscard]] inline constexpr auto cutoff_sums(size_t k, size_t d) noexcept -> CutoffSums {
+    return {k - (2 * d), k, k - d};
+}
+
+// d alone: mode m owns bits (2m, 2m+1) LSb0, so `w & (w >> 1)` masked to even bits counts each
+// doubly-occupied mode once. The shift is word-local because a carry would land on odd bit 63.
+// Same well-formedness precondition as cutoff_sums(k, d); a monomial built below the active offset by
+// hand (majorana_cutoff_tests.cpp:79,101) must keep the bitset overload, which stays the oracle.
+template <size_t NumModes>
+[[gnu::always_inline]] [[nodiscard]] inline auto paired_mode_count(const Monomial<NumModes> &mono) noexcept -> size_t {
+    constexpr auto even = even_bits<2 * NumModes, LSb0>();
+    size_t d = 0;
+    for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
+        const uint64_t word = mono.word(w);
+        d += static_cast<size_t>(std::popcount(word & (word >> 1) & even.word(w)));
+    }
+    return d;
+}
+
 // Both cutoffs below keep a fully paired monomial (xor_sum == 0) unconditionally: those are the only
 // terms contributing to an expectation value against a product reference state, so bounding them by
 // length or support would discard signal.
@@ -170,6 +195,11 @@ auto length_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff) -> bool 
     return length_cutoff<NumModes>(mono, cutoff, NumModes);
 }
 
+// Digest form, on the same precondition as cutoff_sums(k, d). Width-independent, hence not templated.
+[[nodiscard]] inline constexpr auto length_cutoff(size_t k, size_t d, unsigned int cutoff) noexcept -> bool {
+    return length_keeps(k, d, cutoff);
+}
+
 template <size_t NumModes>
 auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
     const auto sums = cutoff_sums<NumModes>(mono, logical_num_modes);
@@ -179,6 +209,11 @@ auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff, size_t 
 template <size_t NumModes>
 auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff) -> bool {
     return support_cutoff<NumModes>(mono, cutoff, NumModes);
+}
+
+// Digest form, on the same precondition as cutoff_sums(k, d). Width-independent, hence not templated.
+[[nodiscard]] inline constexpr auto support_cutoff(size_t k, size_t d, unsigned int cutoff) noexcept -> bool {
+    return support_keeps(k, d, cutoff);
 }
 
 namespace detail {
@@ -243,6 +278,20 @@ public:
         return cutoff_fn_(mono);
     }
 
+    // Same decision without cutoff_sums: the caller already knows k, so only d is computed. No
+    // popcount early-out, deliberately -- the digest is cheaper than the branch. nullopt if opaque.
+    auto passes_from_dense(const Monomial<NumModes> &mono, size_t k) const -> std::optional<bool> {
+        // paired_mode_count has no active_mask, so it agrees with cutoff_sums(mono, L) only above it.
+        assert(mono.find_first() >= active_bit_offset_() && "monomial has a set bit below its active offset");
+        if (length_cutoff_ != nullptr) {
+            return length_keeps(k, paired_mode_count<NumModes>(mono), length_cutoff_->cutoff);
+        }
+        if (support_cutoff_ != nullptr) {
+            return support_keeps(k, paired_mode_count<NumModes>(mono), support_cutoff_->cutoff);
+        }
+        return std::nullopt;
+    }
+
     // Upper bound on the set bits (physical slots) a surviving term can carry, so the store can size
     // its packed inline rows. A length cutoff counts set bits directly; a support cutoff counts
     // modes/qubits, each spanning two slots, hence the x2.
@@ -257,6 +306,17 @@ public:
     }
 
 private:
+    // 2 * (NumModes - logical_num_modes) of whichever concrete cutoff is configured; assert-only.
+    [[nodiscard]] auto active_bit_offset_() const -> size_t {
+        if (length_cutoff_ != nullptr) {
+            return 2 * (NumModes - length_cutoff_->logical_num_modes);
+        }
+        if (support_cutoff_ != nullptr) {
+            return 2 * (NumModes - support_cutoff_->logical_num_modes);
+        }
+        return 0;
+    }
+
     const CutoffFn<NumModes> &cutoff_fn_;
     const LengthCutoff<NumModes> *length_cutoff_;
     const SupportCutoff<NumModes> *support_cutoff_;
