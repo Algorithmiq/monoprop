@@ -18,7 +18,7 @@ accepts operators in three forms, each suited to a different starting point; see
 The natural starting point for quantum chemistry and lattice models. An operator
 is given as a weighted sum of products of fermionic creation and annihilation
 operators on numbered modes (for example $c_0^\dagger c_1$); use
-`MajoranaPropagator`.
+[MajoranaPropagator][].
 
 ```python
 from monoprop import MajoranaPropagator, Circuit, ExpGate
@@ -45,7 +45,7 @@ print(mp.evolved_operator())  # MajoranaOperator
 
 The natural starting point when you already hold a qubit Hamiltonian. An
 operator is given as a real-coefficient sum of Paulis (tensor products of
-$I, X, Y, Z$). For qubit problems, use `PauliPropagator`, which accepts Pauli
+$I, X, Y, Z$). For qubit problems, use [PauliPropagator][], which accepts Pauli
 operators and gates directly and truncates by Pauli weight.
 
 ```python
@@ -114,7 +114,7 @@ A circuit is a sequence of *gates*, each a Majorana rotation described by:
 4. **Evaluate** expectation values or gradients across many parameter values.
 
 Steps 1-2 happen once; step 3 happens once for a fixed circuit, although running it multiple times for a single
-`MajoranaPropagator` instance with new gates is possible. Step 4 can be executed multiple times for various
+[MajoranaPropagator][] instance with new gates is possible. Step 4 can be executed multiple times for various
 parameter inputs, allowing effective variational
 optimisation, covered in [Propagation Algorithm](/concepts/algorithm) with the
 concrete API in [Python API](/api).
