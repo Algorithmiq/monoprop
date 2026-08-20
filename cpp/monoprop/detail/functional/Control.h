@@ -37,11 +37,8 @@ struct OperatorWeights {
 
 // The validity block a propagator shares with every functional plan it makes.
 //
-// A plan borrows from its propagator, so before it reads any of those handles it needs two facts its
-// own snapshot cannot supply: whether the propagator is still there, and whether the structure the
-// snapshot describes is still the propagator's. Both live here, behind one shared_ptr, so a plan
-// answers them without dereferencing the propagator at all. The propagator holds the only mutating
-// handle; plans hold shared_ptr<const>.
+// A plan borrows from its propagator, so before it reads any of those handles it needs two facts: whether the propagator is still there, and whether the structure the
+// snapshot describes is still the propagator's.
 //
 // A copied propagator gets its own block: a copy carries no functionals, so it starts at revision 0.
 struct FunctionalControl {
