@@ -64,16 +64,22 @@ interactive = [
   "qiskit>=2.0.0",
   "pyscf",
 ]
+# Dependencies of monoprop's own suite (`tests/`). Deliberately free of workspace
+# members: cibuildwheel installs this group to exercise a *built wheel*, and a
+# workspace member would drag monoprop back in from source.
 test = [
   "psutil>=7.2",
   "pytest-cases>=3.8.6,<4",
   "pytest-cov>=7.1.0",
   "pytest-datadir",
   "pytest-mpi>=0.6",
-  "pytest>=8.2.2,<8.3",
+  "pytest>=8.2.2,<9.1",
   "tabulate>=0.9",
 ]
-bench = [{ include-group = "test" }, "pytest-benchmark>=5"]
+# What `uv run pytest` needs at the repository root, which also collects the
+# workspace members' suites (see `testpaths`).
+workspace-test = [{ include-group = "test" }, "monoprop-bench-tools"]
+bench = [{ include-group = "workspace-test" }, "pytest-benchmark>=5"]
 
 
 [tool.uv]
@@ -82,11 +88,20 @@ keyring-provider = "subprocess"
 cache-keys = [
   { file = "pyproject.toml" },
   { file = "cpp/include/**/*.h" },
+  { file = "cpp/include/**/*.h.in" },
   { file = "cpp/monoprop/**/*.{h,cpp}" },
   { file = "**/CMakeLists.txt" },
   { file = "cmake/**/*" },
   { file = "src/monoprop/bindings/bindings.cpp.in" },
 ]
+
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/bench-third-party"]
+
+[tool.uv.sources]
+monoprop-bench-tools = { workspace = true }
 
 
 [[tool.dynamic-metadata]]
@@ -109,6 +124,7 @@ sdist.exclude = [
   ".github",
   ".devcontainer",
   ".vscode",
+  "packages",
   "performance_scripts",
   "results",
   "src/ex_script.cpp",
@@ -149,11 +165,11 @@ addopts = [
 ]
 xfail_strict = true
 filterwarnings = ["error"]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/monoprop-bench-tools/tests"]
 # Collect both the test suite (test_*.py) and the benchmark suite (bench_*.py);
 # benches/ is excluded from testpaths so it only runs when invoked explicitly.
 python_files = ["test_*.py", "bench_*.py"]
-pythonpath = [".", "benches"]
+pythonpath = ["."]
 markers = [
   "slow: mark test as slow (>=1 minute runtime)",
   "mpi: mark test as requiring --with-mpi (pytest-mpi)",
@@ -195,6 +211,7 @@ exclude_also = [
 # for the default settings, see: https://docs.astral.sh/ruff/configuration/#configuring-ruff
 exclude = [
   "src/monoprop/_version.py",
+  "packages/monoprop-bench-tools/src/monoprop_bench_tools/_version.py",
   "docs/conf.py",
   "performance_scripts/*.py",
 ]
@@ -293,14 +310,22 @@ flake8-annotations.allow-star-arg-any = true
 # - ANN (flake8-annotations)
 # - I002 (isort required import)
 "tests/**/test_*.py" = ["ANN", "I002"]
+# workspace members carry their own test suites, under the same relaxations
+"packages/*/tests/*" = ["S101", "D", "C901", "INP001", "E721", "ANN", "I002"]
 # ignore I002 (isort required import) for all `__init__.py` files
 "src/monoprop/**/__init__.py" = ["I002"]
 # benchmark suite: asserts are fine (S101), it is an intentional non-package
-# directory loaded via pythonpath (INP001), the MPI communicator type is
-# unavoidably dynamic (ANN401), and report.py intentionally prints (T201).
-"benches/*" = ["S101", "INP001", "ANN401", "T201"]
+# directory holding pytest modules (INP001), and the MPI communicator type is
+# unavoidably dynamic (ANN401).
+"benches/*" = ["S101", "INP001", "ANN401"]
 # benchmark test functions: annotations on the pytest signatures are just noise.
 "benches/bench_*.py" = ["ANN"]
+# the report renderer writes to stdout by design (T201) and the MPI communicator
+# type is unavoidably dynamic (ANN401).
+"packages/monoprop-bench-tools/src/**" = ["ANN401", "T201"]
+# cupy comes from an optional, GPU-only extra, so it is imported inside the
+# functions that need it (PLC0415).
+"packages/monoprop-bench-tools/src/monoprop_bench_tools/memory/gpu.py" = ["PLC0415"]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,
@@ -350,14 +375,8 @@ test-extras = ["qiskit"]
 
 [tool.cibuildwheel.linux]
 before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
-environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
+environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
 
 [tool.cibuildwheel.macos]
-before-all = "brew install boost"
-environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF;-DCPM_USE_LOCAL_PACKAGES=TRUE" }
-
-[[tool.cibuildwheel.overrides]]
-# override on x86_64 to keep the gcc-toolset runtime and /usr/local pkg-config paths visible
-select = "*_x86_64"
-inherit.environment = "prepend"
-environment = { LD_LIBRARY_PATH = "/opt/rh/gcc-toolset-14/root/usr/lib64:/opt/rh/gcc-toolset-14/root/usr/lib:/opt/rh/gcc-toolset-14/root/usr/lib64/dyninst:/opt/rh/gcc-toolset-14/root/usr/lib/dyninst", PKG_CONFIG_PATH = "/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig" }
+before-all = "brew install boost hwloc"
+environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }

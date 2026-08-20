@@ -10,29 +10,29 @@
     "postinstall": "fumadocs-mdx"
   },
   "dependencies": {
-    "cnfast": "^0.0.8",
-    "fumadocs-core": "16.10.7",
-    "fumadocs-mdx": "15.0.13",
-    "fumadocs-python": "^0.0.11",
-    "fumadocs-ui": "16.10.7",
-    "katex": "^0.17.0",
-    "lucide-react": "^1.21.0",
-    "next": "16.2.9",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
+    "cnfast": "^0.1.0",
+    "fumadocs-core": "16.14.5",
+    "fumadocs-mdx": "15.3.0",
+    "fumadocs-python": "^0.1.1",
+    "fumadocs-ui": "16.14.5",
+    "katex": "^0.18.4",
+    "lucide-react": "^1.33.0",
+    "next": "16.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "rehype-citation": "^2.3.2",
     "rehype-katex": "^7.0.1",
     "rehype-raw": "^7.0.0",
     "remark-math": "^6.0.0"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.1",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/mdx": "^2.0.14",
-    "@types/node": "^26.0.0",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
-    "postcss": "^8.5.15",
-    "tailwindcss": "^4.3.1",
-    "typescript": "^6.0.3"
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2"
   }
 }

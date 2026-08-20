@@ -97,7 +97,7 @@ public:
     }
 
     // See AlltoallvResolveArgs: the recv side is an output, and args.recv is resized here.
-    template <class T>
+    template <typename T>
     auto alltoallv_resolve(int local_partition, const AlltoallvResolveArgs<T> &args, MPI_Datatype dt) -> void {
         // `args` by reference, not by value: the impl resizes args.recv and then writes through it.
         guard_partition0_(local_partition, "alltoallv_resolve", [this, local_partition, &args, dt] {
@@ -105,7 +105,7 @@ public:
         });
     }
 
-    template <class T>
+    template <typename T>
     auto allreduce_sum(int local_partition, T local_val) -> T {
         return guard_partition0_(local_partition, "allreduce_sum", [this, local_partition, local_val] {
             return allreduce_sum_impl_<T>(local_partition, local_val);
@@ -138,7 +138,7 @@ private:
     // rank-local failure here must MPI_Abort with the underlying error rather than throw, which would
     // hang the job. Single-rank partitioned runs use ShmComm, not HybridComm, and keep their exceptions.
     // `body` is invoked synchronously and never stored, so the callers' lambdas may capture by reference.
-    template <class Body>
+    template <typename Body>
     auto guard_partition0_(int local_partition, const char *verb, Body &&body) -> decltype(body()) {
         if (local_partition != 0) {
             return body();
@@ -233,7 +233,7 @@ private:
     // Fused count-resolve + payload alltoallv: folds the standalone count exchange into this verb's
     // B1→B2 window (4 syncs instead of 6). recv_counts / recv_displs and `recv` (resized) are outputs.
     // Bit-identical to alltoall_counts + alltoallv.
-    template <class T>
+    template <typename T>
     auto alltoallv_resolve_impl_(int local_partition, const AlltoallvResolveArgs<T> &args, MPI_Datatype dt) -> void {
         // Typed verb: element bytes are sizeof(T) by construction, so they are derived rather than passed.
         constexpr size_t elem = sizeof(T);
@@ -304,7 +304,7 @@ private:
         // No trailing barrier: same discipline as alltoallv_impl_.
     }
 
-    template <class T>
+    template <typename T>
     auto allreduce_sum_impl_(int local_partition, T local_val) -> T {
         Slot &me = slots_[static_cast<size_t>(local_partition)];
         if constexpr (std::is_floating_point_v<T>) {
@@ -396,7 +396,7 @@ private:
         }
     }
 
-    template <class V>
+    template <typename V>
     static auto grow_(V &v, size_t need) -> void {
         if (v.size() < need) {
             v.resize(need);
@@ -411,7 +411,7 @@ private:
     }
 
     // recv_count(t, rank, su) yields the count partition t on this rank receives from (rank, source partition su).
-    template <class RecvCountFn>
+    template <typename RecvCountFn>
     auto size_staging_impl_(size_t elem, RecvCountFn recv_count) -> void {
         for (int b = 0; b < r_; ++b) {
             long long send_sum = 0;

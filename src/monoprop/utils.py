@@ -17,6 +17,29 @@
 from __future__ import annotations
 
 
+def _validate_system_size(size: int, *, argument_name: str) -> int:
+    """Validate and normalize a non-negative system-size argument.
+
+    Args:
+        size: Number of modes/qubits.
+        argument_name: Public argument name for error messages.
+
+    Returns:
+        The normalized integer value.
+
+    Raises:
+        TypeError: If ``size`` is not an integer (or is ``bool``).
+        ValueError: If ``size`` is negative.
+    """
+    if isinstance(size, bool) or not isinstance(size, int):
+        raise TypeError(
+            f"{argument_name} must be an integer (not {type(size).__name__})."
+        )
+    if size < 0:
+        raise ValueError(f"{argument_name} must be non-negative; got {size}.")
+    return int(size)
+
+
 def jordan_wigner_basis_change(n_qubits: int) -> list[list[int]]:
     """Return the Jordan-Wigner basis change: the ``2 * n_qubits`` Majoranas as slot lists.
 

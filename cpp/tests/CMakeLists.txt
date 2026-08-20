@@ -46,14 +46,39 @@ target_link_libraries(
     monoprop-objs
     Boost::unit_test_framework
     msgpack-cxx
+    PkgConfig::HWLOC
 )
 
 include(${CMAKE_CURRENT_LIST_DIR}/boost-test.cmake)
 
+# CTest launches each Boost case as a world-size-1 process, so excluding fabric components cuts
+# MPI_Init from 2.03 s to 0.61 s without affecting communication; real MPI tests must keep the
+# full component set.
+#
+# Use SERIAL_ENVIRONMENT with exclusions (^), not a positive component list: Open MPI component
+# names change across versions, and unknown OMPI_MCA_* variables are harmless under other MPIs.
+option(
+  monoprop_TEST_EXCLUDE_MPI_FABRIC
+  "Skip fabric init in the single-process (serial) test variants to cut MPI_Init cost"
+  ON
+)
+set(_monoprop_serial_env_entries)
+if(monoprop_TEST_EXCLUDE_MPI_FABRIC AND monoprop_ENABLE_MPI)
+  list(
+    APPEND _monoprop_serial_env_entries
+    "OMPI_MCA_pml=^ucx"
+    "OMPI_MCA_btl=^openib,ofi,uct"
+  )
+endif()
+
 # Automatic discovery of unit tests.
 # Default CTest run includes per-case serial tests plus suite-level MPI variants
 # for monoprop_MPI_TEST_PROCS.
-discover_tests(monoprop_unit_tests.x
+discover_tests(
+  monoprop_unit_tests.x
   PROPERTIES
-    LABELS "unit"
+  LABELS
+  "unit"
+  SERIAL_ENVIRONMENT
+  ${_monoprop_serial_env_entries}
 )

@@ -18,6 +18,18 @@ The Python tests run with `pytest`. Without MPI:
 uv run python -m pytest -m "not mpi"   # or: just test
 ```
 
+This collects two suites: monoprop's own (`tests/`) and the one belonging to the
+`monoprop-bench-tools` workspace member (`packages/monoprop-bench-tools/tests/`).
+The member has to be installed for the second to import, which is what the
+`workspace-test` dependency group is for:
+
+```bash
+uv sync --all-groups --all-extras   # or: uv sync --group workspace-test --all-extras
+```
+
+The plain `test` group covers monoprop's suite alone; it is deliberately free of
+workspace members so it can be installed against a built wheel in CI.
+
 The MPI tests need an MPI-enabled build, which the default source build does not
 produce. The `just` recipes build an MPI-enabled extension and launch the suite
 under `mpiexec`:
@@ -72,6 +84,12 @@ A 64-bit `TermIndex` build is the only configuration that compiles the
 ```bash
 just test-wide   # rebuilds via uv sync with monoprop_WIDE_TERM_INDEX=ON, then runs CTest
 ```
+
+CTest runs each Boost case as its own process, so an MPI build's `MPI_Init` probes every
+fabric device per case, whether or not the test sends anything. `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`
+(default) skips that probe for the single-process `serial` variants only; multi-rank variants
+keep the full component set, since they exchange real messages. Turn it off by adding
+`-Dmonoprop_TEST_EXCLUDE_MPI_FABRIC=OFF` to the `SKBUILD_CMAKE_ARGS` MPI build above.
 
 CTest registers every Boost case individually as a `serial` variant. When the
 build has MPI enabled and a launcher is found, it also registers the whole suite

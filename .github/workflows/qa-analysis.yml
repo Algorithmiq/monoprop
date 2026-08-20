@@ -70,17 +70,17 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@v10.0.0
         with:
           enable-cache: true
           python-version: "3.11"
 
       - name: Install package
         run: |
-          uv sync --no-progress --group test --all-extras -v
+          uv sync --no-progress --group workspace-test --all-extras -v
 
       - name: Run Python tests
         run: |
@@ -130,7 +130,7 @@ jobs:
           fail_ci_if_error: true
 
       - name: Upload coverage reports for SonarQube
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-reports
           path: |
@@ -157,10 +157,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libhwloc-dev
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@v10.0.0
         with:
           enable-cache: true
           python-version: "3.11"
@@ -172,7 +172,7 @@ jobs:
           uv sync --no-progress --all-extras -v
 
       - name: Download coverage reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: coverage-reports
 
@@ -205,10 +205,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libhwloc-dev
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@v10.0.0
         with:
           enable-cache: true
           python-version: "3.11"

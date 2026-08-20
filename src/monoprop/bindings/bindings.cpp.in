@@ -112,6 +112,8 @@ NB_MODULE(_core, m) {
     // clang-format on
     m.attr("__build_type__") = std::string(build_type());
     m.attr("__compiler_flags__") = compiler_flags();
+    m.attr("__variant__") = std::string(variant());
+
 #ifdef monoprop_ENABLE_MPI
     m.attr("has_mpi") = true;
 #else

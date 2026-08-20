@@ -14,8 +14,6 @@
 
 #pragma once
 
-#include <cstddef>
-#include <format>
 #include <span>
 #include <utility>
 #include <vector>
@@ -30,37 +28,7 @@ namespace monoprop::mpi {
 // Resolve the recv side of a send-count vector, reusing `cache` when comm size is unchanged: a
 // replayed graph's send pattern is fixed, so a hit removes one blocking count round-trip per layer
 // per evaluation.
-inline auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache)
-    -> const RecvLayout & {
-    const auto n = static_cast<int>(send_counts.size());
-    const int comm_size = mpi::size(comm);
-    // alltoall_counts moves comm_size ints each way regardless of `n`, so a send vector that is not
-    // exactly one entry per rank reads and writes out of bounds — reachable because layouts outlive
-    // propagator copies and pare rebuilds.
-    if (n != comm_size) {
-        throw CollectiveArgumentError(
-            std::format("Exchange layout has {} send counts but the communicator has {} ranks — a graph built for one "
-                        "communicator cannot be replayed on another of a different size.",
-                        n,
-                        comm_size));
-    }
-    if (cache.comm_size == comm_size && static_cast<int>(cache.layout.counts.size()) == n) {
-        return cache.layout;
-    }
-
-    RecvLayout &out = cache.layout;
-    out.counts.resize(static_cast<size_t>(n));
-    alltoall_counts(send_counts.data(), out.counts.data(), n, comm);
-    out.displs.resize(static_cast<size_t>(n));
-    long long total = 0;
-    for (int i = 0; i < n; ++i) {
-        out.displs[static_cast<size_t>(i)] = checked_mpi_count(total);
-        total += out.counts[static_cast<size_t>(i)];
-    }
-    out.total = checked_mpi_count(total);
-    cache.comm_size = comm_size;
-    return out;
-}
+auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache) -> const RecvLayout &;
 
 // Idempotent completion handle for a posted payload transfer; move-only, so a request is waited on
 // exactly once. wait() is a no-op on the blocking path and in non-MPI builds. Owns its request: the
@@ -106,7 +74,7 @@ private:
 // Never skipped on zero total: all ranks must participate or the collective deadlocks. Non-blocking
 // (MPI_Ialltoallv) in an MPI build (the Ticket completes it); non-MPI build does a per-rank self-copy
 // (recv layout == send layout).
-template <class T>
+template <typename T>
 inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks, Comm comm) -> Ticket {
     // The in-process transports address the buffers as raw bytes; MPI_Ialltoallv below still takes the
     // typed pointers plus a datatype. Offsets stay in elements on both paths.

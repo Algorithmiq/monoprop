@@ -25,8 +25,9 @@
 #include <utility>
 #include <vector>
 
+#include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
-#include "monoprop/detail/evolution/EvolutionHelpers.h"
+#include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
@@ -293,7 +294,7 @@ struct ContractSink {
 };
 
 // Owns build_layer's machinery over a compile-time Sink policy. combined_size = the pre-layer operator size.
-template <size_t NumModes, class Sink>
+template <size_t NumModes, typename Sink>
 struct LayerBuildEngine {
     struct DeferredSelfMiss {
         Monomial<NumModes> mono;
@@ -512,6 +513,11 @@ private:
     }
 };
 
+static inline auto empty_coeffs() -> const VecD & {
+    static const VecD coeffs;
+    return coeffs;
+}
+
 // Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
 template <size_t NumModes>
 auto build_layer(MPOperator<NumModes> &local_op,
@@ -521,7 +527,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  std::optional<std::reference_wrapper<const VecD>> local_coeffs,
                  const std::optional<double> &upper_atol,
                  const std::optional<double> &param,
-                 int only_rotate_len_k,
+                 std::optional<size_t> only_rotate_len_k,
                  MatchedEpochSet &matched_scratch,
                  mpi::Comm comm,
                  CosMask *out_cos = nullptr,
@@ -530,21 +536,22 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  VecD *fused_scale_coeffs = nullptr,
                  bool *fused_scale_out = nullptr,
                  Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
+    validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
-    const auto &coeffs = local_coeffs ? local_coeffs->get() : empty_coeffs();
+    const auto &coeffs = local_coeffs.value_or(empty_coeffs()).get();
     const CutoffEvaluator<NumModes> cut_eval{cutoff_fn};
 
-    // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass. k==0 only (a
+    // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass. No length cap only (a
     // popcount>k hit is outside the per-index cos set, so 1/cos recovery would be wrong) and cos!=0 (else
     // recovery is impossible; two-pass fallback). cos is even, so the sweep's cos(2·build_angle) matches
     // the apply's cos(2·apply_angle) bit-for-bit.
     const double cos_build = (use_fused && param.has_value()) ? std::cos(2.0 * param.value()) : 1.0;
-    const bool fused_scale =
-        use_fused && only_rotate_len_k == 0 && fused_scale_coeffs != nullptr && param.has_value() && cos_build != 0.0;
+    const bool fused_scale = use_fused && !only_rotate_len_k.has_value() && fused_scale_coeffs != nullptr
+                             && param.has_value() && cos_build != 0.0;
     // build_layer is the single authority for this decision; the fused caller must drive its apply from it.
     if (fused_scale_out != nullptr) {
         *fused_scale_out = fused_scale;
@@ -553,7 +560,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
 
     FusedScanResult fused = [&] {
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
-        return with_algebra<NumModes>(basis, [&]<class A>() {
+        return with_algebra<NumModes>(basis, [&]<typename A>() {
             return fused_find_and_collect<NumModes, A>(local_op,
                                                        gen,
                                                        cut_eval,
@@ -582,7 +589,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
     }
     fused.cos_blocks = std::vector<CosMask>{};
 
-    auto run = [&]<class Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
+    auto run = [&]<typename Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
         LayerBuildEngine<NumModes, Sink> eng(local_op,
                                              comm,
                                              R,

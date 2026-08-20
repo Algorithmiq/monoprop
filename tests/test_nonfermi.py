@@ -31,6 +31,7 @@ def test_nonfermi(serial_comm):
         majoranas=majoranas,
         gen_coeffs=gen_coeffs,
         param_inds=param_inds,
+        system_size=num_modes,
         parameters=parameters,
         initial_state=[],
     )

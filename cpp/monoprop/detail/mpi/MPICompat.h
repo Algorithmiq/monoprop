@@ -40,38 +40,15 @@
 namespace monoprop::mpi {
 
 #ifdef monoprop_ENABLE_MPI
-inline auto init(int *argc = nullptr, char ***argv = nullptr) -> void {
-    auto initialized = 0;
-    MPI_Initialized(&initialized);
-    if (!initialized) {
-        // serialized (not funneled): under the hybrid the one-at-a-time MPI calls come from each rank's
-        // partition-0 master, not the main thread. mpi4py already requests >= serialized.
-        auto required = MPI_THREAD_SERIALIZED;
-        auto provided = 0;
-        MPI_Init_thread(argc, argv, required, &provided);
-        if (provided < required) {
-            auto comm = MPI_COMM_WORLD;
-            std::print("Sorry, the MPI library does not provide MPI_THREAD_SERIALIZED support, which is required "
-                       "by the partition/MPI hybrid transport.\n");
-            MPI_Abort(comm, 1);
-        }
-    }
-}
-
-inline auto finalize() -> void {
-    int finalized = 0;
-    MPI_Finalized(&finalized);
-    if (!finalized) {
-        MPI_Finalize();
-    }
-}
+auto init(int *argc = nullptr, char ***argv = nullptr) -> void;
+auto finalize() -> void;
 
 namespace detail {
 template <class>
 inline constexpr bool unsupported_mpi_datatype_v = false;
 } // namespace detail
 
-template <class T>
+template <typename T>
 struct datatype {
     static inline auto get() -> MPI_Datatype {
         if constexpr (std::is_same_v<T, int>) {
@@ -110,43 +87,10 @@ inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr) -> void 
 inline auto finalize() -> void {}
 #endif // monoprop_ENABLE_MPI
 
-inline auto rank(const Comm &comm) -> int {
-    if (comm.kind == Comm::Kind::Shm) {
-        return comm.shm_rank;
-    }
-#ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        return comm.hyb->global_rank(comm.shm_rank);
-    }
-    int r = 0;
-    if (MPI_Comm_rank(comm.mpi, &r) != MPI_SUCCESS) {
-        throw CollectiveArgumentError("MPI_Comm_rank failed");
-    }
-    return r;
-#else
-    return 0;
-#endif
-}
+auto rank(const Comm &comm) -> int;
+auto size(const Comm &comm) -> int;
 
-inline auto size(const Comm &comm) -> int {
-    if (comm.kind == Comm::Kind::Shm) {
-        return comm.shm->size();
-    }
-#ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        return comm.hyb->size();
-    }
-    int s = 0;
-    if (MPI_Comm_size(comm.mpi, &s) != MPI_SUCCESS) {
-        throw CollectiveArgumentError("MPI_Comm_size failed");
-    }
-    return s;
-#else
-    return 1;
-#endif
-}
-
-template <class T>
+template <typename T>
 inline auto allreduce_sum(T local_val, Comm comm) -> T {
     if (comm.kind == Comm::Kind::Shm) {
         return comm.shm->allreduce_sum<T>(comm.shm_rank, local_val);
@@ -163,46 +107,15 @@ inline auto allreduce_sum(T local_val, Comm comm) -> T {
 #endif
 }
 
-inline auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
-    if (comm.kind == Comm::Kind::Shm) {
-        comm.shm->allreduce_sum_inplace(comm.shm_rank, values.data(), values.size());
-        return;
-    }
-#ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->allreduce_sum_inplace(comm.shm_rank, values.data(), values.size());
-        return;
-    }
-    MPI_Allreduce(MPI_IN_PLACE, values.data(), static_cast<int>(values.size()), MPI_DOUBLE, MPI_SUM, comm.mpi);
-#else
-    (void)values; // single participant: identity
-#endif
-}
+auto allreduce_sum_inplace(VecD &values, Comm comm) -> void;
 
 // `n` is the comm size.
-inline auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void {
-    if (comm.kind == Comm::Kind::Shm) {
-        comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
-        return;
-    }
-#ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
-        return;
-    }
-    (void)n;
-    MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
-#else
-    for (int i = 0; i < n; ++i) {
-        recv_counts[i] = send_counts[i];
-    }
-#endif
-}
+auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void;
 
 // In-flight variable-size all-to-all owning its buffers + layout, so several can be in flight.
 // recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a
 // no-op on the synchronous Shm / single-process paths) and unpacks by source.
-template <class T>
+template <typename T>
 struct PendingAlltoallv {
     int num_ranks = 0;
     std::vector<int> send_counts;
@@ -235,7 +148,7 @@ struct PendingAlltoallv {
 // skip_self: do not send the self slot (the caller handles self inline) — self send/recv = 0.
 // known_recv_counts: recv counts already known (e.g. the transpose of the query counts), so skip the
 // count exchange. The self slot is also zeroed when skip_self is set.
-template <class T>
+template <typename T>
 inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                             Comm comm,
                             bool skip_self = false,

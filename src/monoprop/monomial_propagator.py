@@ -70,7 +70,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     _comm: MPI.Comm | None
     _n_params: int
-    _num_qubits: int | None
+    _system_size: int
     _initial_state: list[int]
     _simulator: object
 
@@ -113,8 +113,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
         self._comm = comm
         self._n_params = 0
-        # Qubit count for expanding Pauli gates; PauliPropagator overwrites it after this call.
-        self._num_qubits = None
+        self._system_size = num_modes
         self._initial_state = list(initial_state)
         # dispatch() returns the concrete adapter class for this mode count;
         # call it with keyword args matching the public constructor.
@@ -171,10 +170,16 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 "propagator with this circuit's initial state (or via from_circuit)."
             )
 
-    def _validate_and_correct_only_rotate_len_k(
-        self, only_rotate_len_k: int | None
-    ) -> int:
-        """Validate ``only_rotate_len_k``; ``None`` becomes the ``0`` the engine reads as "all".
+    def _check_circuit_width(self, circuit: Circuit) -> None:
+        """Reject a circuit with a system width that disagrees with the propagator."""
+        if circuit.system_size != self._system_size:
+            raise ValueError(
+                f"Circuit system_size={circuit.system_size} does not match propagator width "
+                f"{self._system_size}."
+            )
+
+    def _validate_only_rotate_len_k(self, only_rotate_len_k: int | None) -> None:
+        """Validate ``only_rotate_len_k``.
 
         Must be positive, and at most ``2 * num_qubits`` when the propagator knows its qubit count
         (i.e. on a [PauliPropagator][monoprop.pauli_propagator.PauliPropagator]).
@@ -183,19 +188,15 @@ class MonomialPropagator(ABC, Generic[T_op]):
             only_rotate_len_k: Optional length cutoff for gate application.
 
         Returns:
-            The validated cutoff. The engine reads ``0`` as "apply all gates to all monomials",
-            so ``None`` maps onto it and callers need not special-case "no restriction".
+            The validated optional cutoff.
         """
-        if only_rotate_len_k is None:
-            return 0
-        if only_rotate_len_k <= 0 or (
-            isinstance(self._num_qubits, int)
-            and only_rotate_len_k > 2 * self._num_qubits
+        if (
+            only_rotate_len_k is not None
+            and not 0 < only_rotate_len_k <= 2 * self._system_size
         ):
             raise ValueError(
                 f"only_rotate_len_k={only_rotate_len_k} is out of range; must be 0 < k <= 2*num_qubits "
             )
-        return only_rotate_len_k
 
     def build_graph(
         self,
@@ -223,9 +224,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 picture with many free-fermionic (length-2 Majorana) generators.
         """
         self._check_initial_state(circuit)
-        only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
-            only_rotate_len_k
-        )
+        self._check_circuit_width(circuit)
+        self._validate_only_rotate_len_k(only_rotate_len_k)
 
         if seed_parameters is not None:
             seed = seed_parameters
@@ -234,7 +234,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         else:
             seed = None
         gates = self._circuit_gates(circuit)
-        num_qubits = self._num_qubits
+        num_qubits = self._system_size
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
         majoranas, gen_coeffs, per_monomial, gate_indices = expand_monomials(
             gates, mapping, num_qubits
@@ -266,12 +266,11 @@ class MonomialPropagator(ABC, Generic[T_op]):
             circuit: Gates to apply, and the angle values to apply them at.
             only_rotate_len_k: See [build_graph][].
         """
-        only_rotate_len_k = self._validate_and_correct_only_rotate_len_k(
-            only_rotate_len_k
-        )
+        self._validate_only_rotate_len_k(only_rotate_len_k)
         self._check_initial_state(circuit)
+        self._check_circuit_width(circuit)
         gates = self._circuit_gates(circuit)
-        num_qubits = self._num_qubits
+        num_qubits = self._system_size
         majoranas, gen_coeffs, mapping, _gate_indices = expand_monomials(
             gates, circuit.resolved_mapping, num_qubits
         )
@@ -383,6 +382,10 @@ class MonomialPropagator(ABC, Generic[T_op]):
     ) -> Callable[..., float]:
         """Return a reusable callable computing the expectation value from parameters.
 
+        The callable is built against the graph and initial-operator coefficients present now, so
+        mutating either -- [build_graph][], [contract_partially][], [update_initial_operator][] --
+        invalidates it; build a new one after such a call.
+
         Args:
             pare_threshold: Edge-retention cutoff for this functional's masked plan: edges
                 contributing below it are pared away and skipped during replay, trading memory and
@@ -390,6 +393,10 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
         Returns:
             A callable ``fn(parameters=None) -> float``.
+
+        Raises:
+            RuntimeError: From the returned callable, if the propagator was mutated after this
+                functional was created.
         """
         fn = self._simulator.expectation_value_functional(pare_threshold)
         return lambda parameters=None: fn(self._bind(parameters))
@@ -399,13 +406,18 @@ class MonomialPropagator(ABC, Generic[T_op]):
     ) -> Callable[..., tuple]:
         """Return a reusable callable computing (expectation value, gradient).
 
-        Like [expectation_value_functional][], but one backward pass also yields the gradient.
+        Like [expectation_value_functional][], but one backward pass also yields the gradient. It is
+        invalidated by the same mutations.
 
         Args:
             pare_threshold: See [expectation_value_functional][].
 
         Returns:
             A callable ``fn(parameters=None) -> (float, np.ndarray)``, gradient in parameter order.
+
+        Raises:
+            RuntimeError: From the returned callable, if the propagator was mutated after this
+                functional was created.
         """
         fn = self._simulator.expectation_value_and_gradient_functional(pare_threshold)
 
@@ -529,6 +541,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Each concrete front-end implements this over its own operator type, encoding the terms into
         the engine's raw index tuples.
 
+        Functionals hold the coefficients they were built with, so any created earlier are
+        invalidated -- they raise instead of answering for the replaced operator.
+
         Args:
             new_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
                 [PauliOperator][monoprop.pauli.PauliOperator], per the front-end, whose terms replace
@@ -554,8 +569,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     @property
     def num_modes(self) -> int:
-        """Number of modes the simulator acts on (qubits, in the Pauli basis)."""
-        return self._simulator.num_modes
+        """Number of fermionic modes for the simulator."""
+        return self._system_size
 
     @property
     def graph_layers(self) -> int:

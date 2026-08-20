@@ -51,7 +51,11 @@ def test_basis_change(serial_comm) -> None:
     propagator._simulator.basis_change = jordan_wigner_basis_change(N_MODES)
     propagator.propagate(
         Circuit.from_dense_arrays(
-            majoranas=[(5,)], gen_coeffs=[-1.0], param_inds=[0], parameters=[1.0]
+            majoranas=[(5,)],
+            gen_coeffs=[-1.0],
+            param_inds=[0],
+            parameters=[1.0],
+            system_size=N_MODES,
         )
     )
 

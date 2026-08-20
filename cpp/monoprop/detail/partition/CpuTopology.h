@@ -12,252 +12,131 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/*!
+ * @file CpuTopology.h
+ * @brief CPU-topology helpers for partition placement.
+ *
+ * Uses hwloc for cross-platform topology discovery and thread binding.
+ * Policy: one partition per physical core, spread across L3/CCX domains, each worker thread pinned
+ * to its representative PU. Falls back to unpinned execution when hwloc cannot load the topology or
+ * when binding is unsupported — pinning is a performance optimisation, not a correctness requirement.
+ */
+
 #pragma once
 
+#include <climits>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "monoprop/detail/EnvConfig.h"
 
-#if defined(__linux__)
-#include <pthread.h>
-#include <sched.h>
-#include <algorithm>
-#include <cstdlib>
-#include <fstream>
-#include <set>
-#include <sstream>
-#include <string>
-#elif defined(__APPLE__)
-#include <sys/sysctl.h>
-#endif
-
-// CPU-topology helpers for partition placement (the one platform-specific file). Policy: one partition per
-// physical core, spread across L3/ccx domains. The Linux fast path parses /sys and pins each master,
-// intersected with the process's allowed-CPU mask; elsewhere partitions run unpinned (still correct, no
-// locality win).
-
 namespace monoprop::detail::partition {
 
+/*!
+ * @brief One physical CPU core the process may use, tagged with its L3 cache domain.
+ *
+ * Produced by enumerate_physical_cores(). The representative PU is the lowest OS index in the
+ * calling thread's allowed affinity mask for the core, so a cgroup or launcher-imposed restriction
+ * is always respected.
+ */
 struct PhysicalCore {
-    int cpu = 0; // representative hardware thread (an allowed SMT sibling of the core)
-    int l3_domain = 0;
+    int cpu = 0;       //!< OS index of the representative PU (lowest allowed SMT sibling of the core).
+    int l3_domain = 0; //!< Sequential L3-cache domain id assigned by enumerate_physical_cores().
 };
 
-#if defined(__linux__)
-
-using CpuSet = cpu_set_t;
+/*!
+ * @brief Lightweight placement token: identifies the single PU a partition worker thread is pinned to.
+ */
+struct CpuSet {
+    int pu = -1; //!< OS PU index. -1 ⇒ invalid / not placed.
+};
 
 namespace topo_detail {
-
-// Parse a Linux cpulist ("0-3,16-19") into the set of CPU ids it names.
-inline auto parse_cpulist(const std::string &text) -> std::vector<int> {
-    std::vector<int> out;
-    std::stringstream ss(text);
-    std::string tok;
-    while (std::getline(ss, tok, ',')) {
-        const auto dash = tok.find('-');
-        if (dash == std::string::npos) {
-            if (!tok.empty()) {
-                out.push_back(std::stoi(tok));
-            }
-        }
-        else {
-            const int lo = std::stoi(tok.substr(0, dash));
-            const int hi = std::stoi(tok.substr(dash + 1));
-            for (int c = lo; c <= hi; ++c) {
-                out.push_back(c);
-            }
-        }
-    }
-    return out;
-}
-
-inline auto read_line(const std::string &path) -> std::string {
-    std::ifstream f(path);
-    std::string line;
-    if (f) {
-        std::getline(f, line);
-    }
-    return line;
-}
-
-// The CPUs this process is allowed to run on (the cgroup / cpuset the launcher gave us). Empty ⇒ the
-// query failed; callers then treat every CPU as allowed.
-inline auto allowed_cpus() -> std::set<int> {
-    std::set<int> allowed;
-    cpu_set_t mask;
-    CPU_ZERO(&mask);
-    if (sched_getaffinity(0, sizeof(mask), &mask) == 0) {
-        for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
-            if (CPU_ISSET(cpu, &mask)) {
-                allowed.insert(cpu);
-            }
-        }
-    }
-    return allowed;
-}
-
+/*!
+ * @brief Apply the L3-domain interleaving placement policy to a synthetic core list.
+ *
+ * Factored out of partition_cpusets() so the scheduling logic can be exercised without depending
+ * on hwloc or live hardware. Cores are bucketed by their l3_domain, then interleaved depth-first
+ * across the domains dealt to this rank. When there are more co-located ranks than L3 domains the
+ * algorithm falls back to flat domain-major order with one contiguous slice per rank.
+ *
+ * @param cores  Physical cores available to allocate from, with L3 domain tags.
+ * @param n      Number of partitions (PUs) requested for this rank.
+ * @param group_index  This rank's 0-based index among the co-located ranks on the host.
+ * @param group_count  Total number of co-located ranks on the host.
+ * @returns Ordered PU OS indices of length @p n for the slice assigned to this rank,
+ *          or empty when the request cannot be filled (empty core list, oversubscription,
+ *          or computed offset out of range).
+ */
+auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t group_index, size_t group_count)
+    -> std::vector<int>;
 } // namespace topo_detail
 
-// Enumerate physical cores (one per smt sibling group) the process is allowed to use, tagged with their
-// L3 domain. A core is included iff a sibling is in the allowed mask, with the smallest allowed sibling
-// as representative, so a partial allocation never pins outside the mask. Empty if /sys cannot be read.
-inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
-    const std::set<int> allowed = topo_detail::allowed_cpus();
-    const bool filter = !allowed.empty(); // no mask readable ⇒ accept every CPU
-    const auto is_allowed = [&](int cpu) { return !filter || allowed.contains(cpu); };
+/*!
+ * @brief Enumerate physical cores (one per SMT sibling group) the process may use.
+ *
+ * Queries the calling thread's CPU affinity via hwloc to respect any cgroup or launcher-imposed
+ * restriction. For each core whose cpuset intersects that affinity mask, the lowest matching OS
+ * index is recorded as the representative PU and the core is labelled with the sequential id of
+ * its nearest L3 cache ancestor (or a unique singleton id when no L3 object is present).
+ *
+ * @returns Vector of PhysicalCore in hwloc logical-core order, or empty when hwloc cannot load
+ *          the topology or when no core passes the affinity filter.
+ *
+ * @note This function deliberately ignores @c monoprop_PARTITION_PINNING so that the auto
+ *       partition-count heuristic (one partition per physical core) works even when pinning is
+ *       disabled by the user.
+ */
+auto enumerate_physical_cores() -> std::vector<PhysicalCore>;
 
-    std::vector<PhysicalCore> cores;
-    std::set<int> seen_cores;                 // sibling-group key (min sibling) already recorded
-    std::vector<std::vector<int>> l3_members; // cpu-set per distinct L3 domain, in discovery order
+//! Affinity-mask exchange width, in 64-bit words. A mask needing more is "cannot classify", never private.
+inline constexpr size_t kAffinityMaskWords = 64;
 
-    // Scan a bounded id range rather than stopping at the first gap: online CPU ids are not contiguous
-    // (offlined or hot-plugged CPUs leave holes), and breaking on the first unreadable id truncates the
-    // core list to whatever preceded the hole, silently under-partitioning and crowding the low CPUs.
-    const int scan_limit = filter ? *allowed.rbegin() + 1 : CPU_SETSIZE;
-    for (int cpu = 0; cpu < scan_limit; ++cpu) {
-        const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(cpu);
-        const std::string sib = topo_detail::read_line(base + "/topology/thread_siblings_list");
-        if (sib.empty()) {
-            continue;
-        }
-        const auto siblings = topo_detail::parse_cpulist(sib);
-        const int group_key = siblings.empty() ? cpu : *std::min_element(siblings.begin(), siblings.end());
-        if (seen_cores.contains(group_key)) {
-            continue;
-        }
-        seen_cores.insert(group_key);
+static_assert(kAffinityMaskWords > 0 && kAffinityMaskWords <= static_cast<size_t>(INT_MAX),
+              "the affinity-mask width is an MPI_Allgather element count, which is an int");
 
-        int rep = -1;
-        if (siblings.empty()) {
-            rep = is_allowed(cpu) ? cpu : -1;
-        }
-        else {
-            for (int s : siblings) { // parse_cpulist yields ascending order
-                if (is_allowed(s)) {
-                    rep = s;
-                    break;
-                }
-            }
-        }
-        if (rep < 0) {
-            continue;
-        }
+//! This process's allowed cpuset as @p nwords 64-bit words; false with @p out zeroed when it does not fit.
+auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
 
-        const auto l3 = topo_detail::parse_cpulist(topo_detail::read_line(base + "/cache/index3/shared_cpu_list"));
-        int domain = -1;
-        for (size_t d = 0; d < l3_members.size(); ++d) {
-            if (std::find(l3_members[d].begin(), l3_members[d].end(), group_key) != l3_members[d].end()) {
-                domain = static_cast<int>(d);
-                break;
-            }
-        }
-        if (domain < 0) {
-            domain = static_cast<int>(l3_members.size());
-            l3_members.push_back(l3.empty() ? std::vector<int>{group_key} : l3);
-        }
-        cores.push_back(PhysicalCore{rep, domain});
-    }
-    return cores;
-}
+/*! @brief Whether the @p n masks of @p words words laid end to end in @p masks are pairwise disjoint.
+ *  False for @p n < 2 and for any empty mask: all-zero is disjoint from everything, and shared is the safe error.
+ */
+[[nodiscard]] auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool;
 
-// Build `n` partition cpusets, one physical core each. `group_index`/`group_count` place one MPI rank's
-// partitions among the ranks sharing this host, spread across L3 domains and disjoint from the other ranks'
-// — two ranks must never share a core (one rank's busy-polling collectives would starve the other's
-// barrier spins). Empty (⇒ unpinned) if the host lacks group_count*n cores.
-inline auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1) -> std::vector<CpuSet> {
-    if (!config::get().partition_pinning) {
-        return {};
-    }
-    const auto cores = enumerate_physical_cores();
-    if (cores.empty() || group_count * n > cores.size()) {
-        return {};
-    }
-    int max_domain = 0;
-    for (const auto &c : cores) {
-        max_domain = std::max(max_domain, c.l3_domain);
-    }
-    // Ordering: interleaved for a lone process, contiguous blocks for co-located ranks.
-    std::vector<std::vector<int>> by_domain(static_cast<size_t>(max_domain) + 1);
-    for (const auto &c : cores) {
-        by_domain[static_cast<size_t>(c.l3_domain)].push_back(c.cpu);
-    }
-    // Interleave `buckets` depth-first: bucket0[0], bucket1[0], …, bucket0[1], bucket1[1], …
-    const auto interleave = [](const std::vector<std::vector<int>> &buckets) {
-        std::vector<int> out;
-        for (size_t depth = 0;; ++depth) {
-            bool any = false;
-            for (const auto &bucket : buckets) {
-                if (depth < bucket.size()) {
-                    out.push_back(bucket[depth]);
-                    any = true;
-                }
-            }
-            if (!any) {
-                return out;
-            }
-        }
-    };
+//! Whether the launcher has already handed this rank a private slice of the node, or the node's CPUs are shared.
+enum class NodeMask { Shared, PerRank };
 
-    std::vector<int> order;
-    size_t offset = 0;
-    if (group_count <= by_domain.size()) {
-        // Domains dealt to this rank: group_index, +group_count, … (group_count == 1 ⇒ all of them).
-        std::vector<std::vector<int>> mine;
-        for (size_t d = group_index; d < by_domain.size(); d += group_count) {
-            mine.push_back(by_domain[d]);
-        }
-        order = interleave(mine);
-    }
-    else {
-        // More co-located ranks than L3 domains: flat domain-major order, one contiguous slice each.
-        for (const auto &bucket : by_domain) {
-            order.insert(order.end(), bucket.begin(), bucket.end());
-        }
-        offset = group_index * n;
-    }
-    if (offset + n > order.size()) {
-        return {};
-    }
+/*!
+ * @brief Build placement tokens for one MPI rank's partitions.
+ *
+ * Calls enumerate_physical_cores() and applies topo_detail::placement_order() to select @p n
+ * distinct physical cores for this rank. Two co-located ranks must never share a core: one rank's
+ * busy-polling collectives would starve the other's barrier spins.
+ *
+ * @param n            Number of partitions to place.
+ * @param group_index  This rank's 0-based index among the co-located ranks on the host.
+ * @param group_count  Total number of co-located ranks on the host.
+ * @param mask         NodeMask::PerRank only when the co-located ranks' affinity masks have been measured
+ *                     pairwise DISJOINT (PartitionGroup::classify_node_masks_), so this mask is our share.
+ * @returns Vector of @p n CpuSet tokens, or empty when @c monoprop_PARTITION_PINNING is disabled,
+ *          hwloc is unavailable, or fewer than @p group_count x @p n cores are visible (@p n under PerRank).
+ *
+ * @note Under NodeMask::PerRank the group split is skipped: our share is already this rank's alone.
+ */
+auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1, NodeMask mask = NodeMask::Shared)
+    -> std::vector<CpuSet>;
 
-    std::vector<CpuSet> sets(n);
-    for (size_t i = 0; i < n; ++i) {
-        CPU_ZERO(&sets[i]);
-        CPU_SET(order[offset + i], &sets[i]);
-    }
-    return sets;
-}
-
-// A failing pthread call is ignored: only performance depends on it.
-inline auto pin_this_thread(const CpuSet &set) -> void {
-    pthread_setaffinity_np(pthread_self(), sizeof(CpuSet), &set);
-}
-
-#else // portable fallback: no topology, no pinning
-
-// A placeholder cpuset type so PartitionGroup's member/signatures are platform-independent.
-struct CpuSet {};
-
-// No /sys to parse. macOS reports its physical-core count so the partition-count policy stays accurate
-// (threads still can't be pinned); other platforms return empty ⇒ hardware_concurrency()/2.
-inline auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
-#if defined(__APPLE__)
-    int n = 0;
-    size_t sz = sizeof(n);
-    if (sysctlbyname("hw.physicalcpu", &n, &sz, nullptr, 0) == 0 && n > 0) {
-        return std::vector<PhysicalCore>(static_cast<size_t>(n));
-    }
-#endif
-    return {};
-}
-
-inline auto partition_cpusets(size_t /*n*/, size_t /*group_index*/ = 0, size_t /*group_count*/ = 1)
-    -> std::vector<CpuSet> {
-    return {};
-}
-inline auto pin_this_thread(const CpuSet & /*set*/) -> void {}
-
-#endif // __linux__
-
+/*!
+ * @brief Bind the calling thread to the PU identified by @p set.
+ *
+ * Allocates a temporary hwloc bitmap, sets the single bit for @c set.pu, and calls
+ * @c hwloc_set_cpubind with @c HWLOC_CPUBIND_THREAD | @c HWLOC_CPUBIND_STRICT. The call is
+ * best-effort: hwloc errors are silently ignored because only performance, not correctness,
+ * depends on successful pinning.
+ *
+ * @param set  Placement token as returned by partition_cpusets(). A token with @c pu == -1
+ *             is a no-op.
+ */
+auto pin_this_thread(const CpuSet &set) -> void;
 } // namespace monoprop::detail::partition

@@ -39,12 +39,14 @@ class DenseMajoranaArrays:
     parameters: list[float] | ndarray
     gen_coeffs: list[float] | ndarray
     param_inds: list[int] | ndarray
+    num_modes: int
 
     def to_circuit(self) -> Circuit:
         return Circuit.from_dense_arrays(
             majoranas=self.majoranas,
             gen_coeffs=self.gen_coeffs,
             param_inds=self.param_inds,
+            system_size=self.num_modes,
             parameters=self.parameters,
             initial_state=self.initial_state,
         )
@@ -77,6 +79,7 @@ def load_problem(path: Path) -> FermionicProblem:
         gen_coeffs=np.asarray(data["gen_coeffs"]),
         param_inds=np.asarray(data["param_inds"], dtype=int),
         parameters=np.asarray(data["parameters"]),
+        num_modes=int(data["num_modes"]),
     )
 
     ham = data["hamiltonian"]

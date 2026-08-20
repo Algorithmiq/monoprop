@@ -26,8 +26,9 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-// The graph was rebuilt after a functional captured its layer count, so the functional's parameter
-// mapping no longer describes the graph.
+// The propagator was mutated after a functional captured what it replays: a rebuilt graph leaves the
+// functional's parameter mapping describing a graph that is gone, a re-weight leaves its snapshotted
+// operator coefficients stale.
 class StaleFunctionalGraph : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -105,6 +106,29 @@ auto validate_expected_graph_layers(size_t current_layers, size_t expected_layer
                                                expected_layers,
                                                current_layers));
     }
+}
+
+auto validate_expected_initial_operator(size_t current_epoch, size_t expected_epoch) -> void {
+    if (current_epoch != expected_epoch) {
+        throw StaleFunctionalGraph("MP object has been modified since the functional was created. "
+                                   "The initial operator was re-weighted, so the coefficients the functional "
+                                   "snapshotted are stale; create a new functional.");
+    }
+}
+
+auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void {
+    if (!only_rotate_len_k.has_value()) {
+        return;
+    }
+
+    const auto k = *only_rotate_len_k;
+    if (k == 0 || static_cast<size_t>(k) > max_k) {
+        throw ValidationError(std::format("only_rotate_len_k={} is out of range; must be 0 < k <= 2*num_qubits", k));
+    }
+}
+
+auto expected_num_params(const VecZ &parameter_mapping) -> size_t {
+    return parameter_mapping.empty() ? 0 : *std::ranges::max_element(parameter_mapping) + 1;
 }
 
 // NOLINTEND(misc-use-internal-linkage)
