@@ -110,22 +110,98 @@ uv sync --all-extras -v --config-settings=cmake.build-type=Debug
 ctest --test-dir build/editable/Debug
 ```
 
-### GCC sanitizer trees
+### Sanitizer trees
 
-The QA workflow uses two explicit GCC sanitizer profiles, configured with
-`monoprop_GCC_SANITIZER`:
+The QA workflow builds two sanitizer profiles, selected with `monoprop_SANITIZER`
+(`none`, `asan-ubsan`, or `tsan`). Both require Linux and either GCC or Clang;
+CI uses the default system GCC, which is what builds the released wheels.
+
+Sanitizer trees intentionally skip the `_core.pyi` typing stubs — generating them
+means importing the instrumented extension, which is not worth arranging for a
+tree that is never packaged.
+
+#### ASan + LSan + UBSan
 
 ```bash
 SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan \
-SKBUILD_CMAKE_DEFINE="CMAKE_CXX_COMPILER=g++-14;monoprop_GCC_SANITIZER=asan-ubsan" \
-uv sync --group workspace-test --all-extras -v
-ctest --test-dir build/editable/AsanUbsan --output-on-failure
-
-SKBUILD_CMAKE_BUILD_TYPE=Tsan \
-SKBUILD_CMAKE_DEFINE="CMAKE_CXX_COMPILER=g++-14;monoprop_GCC_SANITIZER=tsan" \
-uv sync --group workspace-test --all-extras -v
-ctest --test-dir build/editable/Tsan --output-on-failure
+SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=asan-ubsan" \
+uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v
 ```
+
+`--reinstall-package monoprop --no-cache` matters locally. uv decides whether to
+rebuild from the `cache-keys` in `pyproject.toml`, which hash *source files* — not
+environment variables. So if you already have an editable install, switching only
+the build type leaves the sources unchanged, `uv sync` does nothing, and
+`build/editable/AsanUbsan` is never created (the `ctest` below then fails with
+"No such file or directory"). CI omits these flags because each job starts on a
+clean runner with nothing installed.
+
+The C++ test binary is fully instrumented, so every check applies to it,
+including leak detection:
+
+```bash
+ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=1:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:halt_on_error=1 \
+LSAN_OPTIONS=suppressions=$PWD/.github/lsan.supp \
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+ctest --test-dir build/editable/AsanUbsan --output-on-failure
+```
+
+The Python tests are a different situation: an instrumented `_core` is loaded
+into an ordinary CPython, so the ASan runtime must be preloaded, and the checks
+that assume the whole process is instrumented have to be switched off.
+
+```bash
+ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1 \
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" \
+uv run pytest
+```
+
+Both preloads are required. Without `libasan.so`, the first `import monoprop`
+aborts with `ASan runtime does not come first in initial library list`. Without
+`libstdc++.so.6`, ASan initialises before libstdc++ is loaded — `python` is not
+linked against it — so ASan's `__cxa_throw` interceptor never resolves the real
+symbol, and the first C++ exception thrown out of the engine dies with
+`CHECK failed: real___cxa_throw != 0`. monoprop reports validation errors as C++
+exceptions, so that affects a large part of the suite.
+
+Leak detection is off here because LSan cannot get a clean baseline from an
+uninstrumented interpreter — the C++ leg above is what covers leaks.
+
+<Callout title="Sanitizer reports are hidden by pytest" type="warn">
+pytest replaces the stderr file descriptor, so a sanitizer report printed from
+native code is swallowed and the run looks like a bare exit code 1 with no
+diagnostic. Add `log_path` to route reports to files instead, then read them:
+
+```bash
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:log_path=$PWD/sanitizer-log \
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:log_path=$PWD/sanitizer-log \
+LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" \
+uv run pytest
+cat sanitizer-log.*
+```
+
+The QA workflow does this and dumps the files on failure.
+</Callout>
+
+#### ThreadSanitizer
+
+```bash
+SKBUILD_CMAKE_BUILD_TYPE=Tsan \
+SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=tsan" \
+uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v
+
+TSAN_OPTIONS=halt_on_error=1:history_size=4 \
+ctest --test-dir build/editable/Tsan --output-on-failure -R "(partition_|shm_comm_)"
+```
+
+TSan is scoped to the concurrency surface — the partition and `ShmComm` tests —
+which is where its reports are worth the runtime cost.
+
+There is no ThreadSanitizer equivalent of the ASan Python leg. TSan does not
+support `dlopen` of instrumented libraries, so loading an instrumented `_core`
+into a stock interpreter crashes during TSan initialisation; exercising the
+Python API under TSan would require a TSan-instrumented CPython.
 
 ### Related workflows
 

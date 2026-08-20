@@ -37,10 +37,20 @@
 #
 #   CXXFLAGS
 
-option(
+include(CMakeDependentOption)
+
+# forced OFF in configurations where machine-dependent codegen is pointless or harmful
+set(_monoprop_arch_flags_supported TRUE)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR NOT monoprop_SANITIZER STREQUAL "none")
+  set(_monoprop_arch_flags_supported FALSE)
+endif()
+
+cmake_dependent_option(
   monoprop_ENABLE_ARCH_FLAGS
   "Enable architecture-specific compiler flags"
   ON
+  "_monoprop_arch_flags_supported"
+  OFF
 )
 
 # code needs C++23 at least
@@ -59,7 +69,7 @@ set(CMAKE_CXX_VISIBILITY_PRESET "hidden")
 set(CMAKE_VISIBILITY_INLINES_HIDDEN TRUE)
 
 set(ARCH_FLAG "")
-if(monoprop_ENABLE_ARCH_FLAGS AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+if(monoprop_ENABLE_ARCH_FLAGS)
   if(CMAKE_CXX_COMPILER_ID MATCHES GNU)
     set(ARCH_FLAG "-march=native")
   endif()

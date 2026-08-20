@@ -149,11 +149,12 @@ jobs:
     runs-on: ubuntu-26.04
     permissions:
       contents: read
+    # ASAN_OPTIONS/LSAN_OPTIONS are deliberately per-step, not job-wide: only the ctest binary
+    # is fully instrumented. The Python leg dlopens an instrumented _core into a stock CPython,
+    # so every check that assumes whole-process instrumentation has to be off there.
     env:
       SKBUILD_CMAKE_BUILD_TYPE: "AsanUbsan"
-      SKBUILD_CMAKE_DEFINE: "monoprop_GCC_SANITIZER=asan-ubsan"
-      ASAN_OPTIONS: "detect_leaks=1:leak_check_at_exit=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=2:check_initialization_order=1:strict_string_checks=1:halt_on_error=1"
-      LSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/lsan-python.supp"
+      SKBUILD_CMAKE_DEFINE: "monoprop_SANITIZER=asan-ubsan"
       UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
 
     steps:
@@ -176,32 +177,73 @@ jobs:
         run: |
           uv sync --no-progress --group workspace-test --all-extras -v
 
-      - name: Resolve GCC ASan runtime
+      # libstdc++ must be preloaded alongside libasan. Preloaded into a `python` binary that is
+      # not itself linked against libstdc++, ASan initialises before libstdc++ is loaded and its
+      # __cxa_throw interceptor never resolves the real symbol; the first C++ exception thrown
+      # out of the engine then dies with `CHECK failed: real___cxa_throw != 0`. monoprop signals
+      # validation errors with C++ exceptions, so this affects a large part of the suite.
+      - name: Resolve GCC sanitizer runtimes
         run: |
-          echo "ASAN_RUNTIME=$(g++ -print-file-name=libasan.so)" >> "$GITHUB_ENV"
+          echo "ASAN_PRELOAD=$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" >> "$GITHUB_ENV"
 
+      # Fully instrumented binary: every check is meaningful here, including leak detection.
       - name: Run C++ unit tests
+        env:
+          ASAN_OPTIONS: "detect_leaks=1:leak_check_at_exit=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=1:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:halt_on_error=1"
+          LSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/lsan.supp"
         run: |
           ctest --test-dir build/editable/AsanUbsan --output-on-failure
 
+      # Partially instrumented process. LSan is off: against an uninstrumented CPython its
+      # reports are dominated by interpreter and NumPy allocations, and the only way to quiet
+      # those is to suppress frames common to nearly every Python allocation stack -- which
+      # would also hide the binding-layer leaks this leg exists to catch. Leaks are covered by
+      # the ctest leg above. detect_invalid_pointer_pairs and check_initialization_order are
+      # off for the same reason: both require all code instrumented.
+      #
+      # log_path is essential here, not a nicety: pytest replaces the stderr fd, so a sanitizer
+      # report is swallowed and the job shows nothing but a bare "exit code 1". Writing to files
+      # and dumping them on failure is what makes this leg diagnosable.
       - name: Run Python tests
         env:
-          LD_PRELOAD: ${{ env.ASAN_RUNTIME }}
+          LD_PRELOAD: ${{ env.ASAN_PRELOAD }}
+          ASAN_OPTIONS: "detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1:log_path=${{ github.workspace }}/sanitizer-log"
+          UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1:log_path=${{ github.workspace }}/sanitizer-log"
         run: |
           uv run pytest -r aR --durations=50 --durations-min=5.0
+
+      - name: Show sanitizer reports
+        if: failure()
+        run: |
+          shopt -s nullglob
+          files=("${{ github.workspace }}"/sanitizer-log.*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No sanitizer report was written; the failure came from the tests themselves."
+            exit 0
+          fi
+          for f in "${files[@]}"; do
+            echo "::group::$(basename "$f")"
+            cat "$f"
+            echo "::endgroup::"
+          done
 
   gcc-tsan:
     # in combination with the PR types selection, this top-level if statement
     # skips running the workflow for Draft PRs
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
 
-    name: GCC ThreadSanitizer
+    # C++ only, by necessity: ThreadSanitizer does not support dlopen of instrumented
+    # libraries, so there is no way to load an instrumented _core into a stock CPython -- it
+    # segfaults during TSan initialisation. A Python leg would need a TSan-instrumented
+    # interpreter. The concurrency surface it would have exercised (partitions, ShmComm) is
+    # covered by the ctest selection below. Do not add a Python step here.
+    name: GCC ThreadSanitizer (C++)
     runs-on: ubuntu-26.04
     permissions:
       contents: read
     env:
       SKBUILD_CMAKE_BUILD_TYPE: "Tsan"
-      SKBUILD_CMAKE_DEFINE: "monoprop_GCC_SANITIZER=tsan"
+      SKBUILD_CMAKE_DEFINE: "monoprop_SANITIZER=tsan"
       TSAN_OPTIONS: "halt_on_error=1:history_size=4"
 
     steps:
@@ -224,20 +266,11 @@ jobs:
         run: |
           uv sync --no-progress --group workspace-test --all-extras -v
 
-      - name: Resolve GCC TSan runtime
-        run: |
-          echo "TSAN_RUNTIME=$(g++ -print-file-name=libtsan.so)" >> "$GITHUB_ENV"
-
+      # Scoped to the concurrency surface: TSan's value is in the multi-threaded partition and
+      # shared-memory paths, and restricting the selection keeps the job within a few minutes.
       - name: Run C++ partition and ShmComm tests
         run: |
           ctest --test-dir build/editable/Tsan --output-on-failure -R "(partition_|shm_comm_)"
-
-      - name: Run Python partition smoke tests
-        env:
-          LD_PRELOAD: ${{ env.TSAN_RUNTIME }}
-          monoprop_PARTITIONS: "4"
-        run: |
-          .venv/bin/python -m pytest tests/test_monoprop_smoke.py -v
 
   sonarqube-analysis:
     # in combination with the PR types selection, this top-level if statement
