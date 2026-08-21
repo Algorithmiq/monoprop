@@ -207,14 +207,22 @@ auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t 
     return count;
 }
 
+namespace {
+// Labels the overflow only when it throws: this now runs per posted exchange rather than once at
+// build, so formatting the two labels up front was two heap allocations per layer per transfer.
+auto checked_exchange_int(size_t value, const char *what, const char *field) -> int {
+    if (value > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return checked_mpi_int(value, std::format("{} {}", what, field).c_str());
+    }
+    return static_cast<int>(value);
+}
+} // namespace
+
 auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
                             size_t my_rank,
                             int scale,
                             LayerExchangeLayout &out,
                             const char *what) -> void {
-    const std::string count_label = std::format("{} count", what);
-    const std::string displacement_label = std::format("{} displacement", what);
-
     const size_t num_ranks = cross_rank.rank_count();
     // assign() over resize(): every slot that carries nothing must read zero, and `out` is reused
     // across layers, so last layer's counts would otherwise survive into this one's.
@@ -229,14 +237,14 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
         if (slot == my_rank) {
             return; // excluded from the transfer and handled locally, as the stored layout did
         }
-        out.counts[slot] = checked_mpi_int(static_cast<size_t>(scale) * view.sin_send_count, count_label.c_str());
+        out.counts[slot] = checked_exchange_int(static_cast<size_t>(scale) * view.sin_send_count, what, "count");
     });
 
     // The prefix sum stays dense: MPI_Alltoallv wants a displacement for every rank, and an empty
     // slot still needs a valid (repeated) one.
     size_t total = 0;
     for (size_t r = 0; r < num_ranks; ++r) {
-        out.displs[r] = checked_mpi_int(total, displacement_label.c_str());
+        out.displs[r] = checked_exchange_int(total, what, "displacement");
         total += static_cast<size_t>(out.counts[r]);
     }
     out.total_count = total;
