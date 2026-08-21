@@ -11,11 +11,11 @@ runners:
   # step change in the series rather than a data point -- widening any of these
   # means retiring the testbed and starting a new one.
   bench:
-    family: ["c7i"]
+    # Avoid expand to partial family
+    family: ["c7i.4xlarge"]
     cpu: 16
     ram: 32
     image: ubuntu26-full-x64
     volume: 40gb:gp3
-    # Spot risks both an interrupted run and a different instance type.
     spot: false
     ssh: false

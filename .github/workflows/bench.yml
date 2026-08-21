@@ -50,7 +50,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y just libopenmpi-dev openmpi-bin libboost-dev
+          sudo apt-get install -y just libopenmpi-dev openmpi-bin libboost-dev libhwloc-dev
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v10.0.0
