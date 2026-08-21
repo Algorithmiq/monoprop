@@ -258,16 +258,17 @@ auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners,
     resolve_self_slot(storage->cross_rank, my_rank);
 
     {
-        // Derive both scales once at build time and throw the result away. This is purely eager
-        // validation: an overflow of MPI's int has to throw from build_graph, not from inside the
-        // exchange, where peers are already committed to a transfer of that size -- there it is a
-        // distributed hang rather than an error. Scale 2 is checked as well as 1 because the
-        // derivative round overflows first and a gradient may run long after the graph was built.
+        // Derive once at build time and throw the result away. This is purely eager validation: an
+        // overflow of MPI's int has to throw from build_graph, not from inside the exchange, where
+        // peers are already committed to a transfer of that size -- there it is a distributed hang
+        // rather than an error.
+        //
+        // Scale 2 alone: its counts are exactly 2x scale 1's, so scale 1 cannot overflow alone, and
+        // a graph that overflows at all is unusable for both rounds -- the derivative label fits.
         //
         // The vectors are not kept. They are a prefix sum of what cross_rank already holds, and
         // retaining them per layer per partition is the O(P^2) term this change removes.
         LayerExchangeLayout scratch;
-        derive_exchange_layout(storage->cross_rank, my_rank, 1, scratch);
         derive_exchange_layout(storage->cross_rank, my_rank, 2, scratch, "Layer derivative exchange");
     }
 
