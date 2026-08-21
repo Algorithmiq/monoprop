@@ -159,6 +159,7 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
                                                                            recipe,
                                                                            sb.data(),
                                                                            hb.data(),
+                                                                           nullptr,
                                                                            cos_val,
                                                                            sec_val);
 

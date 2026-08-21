@@ -136,7 +136,7 @@ BOOST_AUTO_TEST_CASE(cosine_word_list_scale_and_accumulate) {
     BOOST_TEST(par[100] == 2.0);
 
     std::vector<double> pp(256, 1.5), ph(256, 0.5);
-    const double a_par = monoprop::detail::accumulate_cos_mask(pp.data(), ph.data(), cos, 0.7, 0.9);
+    const double a_par = monoprop::detail::accumulate_cos_mask(pp.data(), ph.data(), cos, nullptr, 0.7, 0.9);
     // Returns sum(state[i]*ham[i]) over the 5 set indices, taken before the scaling below.
     BOOST_TEST(a_par == 5.0 * 1.5 * 0.5, boost::test_tools::tolerance(1e-12));
     // state and ham at set indices scaled by cos_val and sec_val respectively

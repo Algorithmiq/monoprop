@@ -356,7 +356,8 @@ auto apply_self_slot_derivative_paired(VecD &state,
                                        VecD &op,
                                        const LayerTraversal &layer,
                                        size_t my_rank,
-                                       const TrigValues &trig) -> EndpointContrib {
+                                       const TrigValues &trig,
+                                       const double *cached) -> EndpointContrib {
     const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);
     if (self_d_count == 0) {
         return {};
@@ -368,11 +369,14 @@ auto apply_self_slot_derivative_paired(VecD &state,
         const double phi1 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k));
         const size_t i2 = layer.cross_rank_sin_recv_index_at(my_rank, k + pairs);
         const auto phi2 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k + pairs));
-        // Recover pre-cos values.
+        // Recover pre-cos values; with a cache, op[i] no longer holds the post-cos value, so re-apply
+        // the layer's rotation to the cached pre-layer coefficients instead of undoing the cos pass.
         const double s1 = state[i1] * trig.sec_val;
-        const double h1 = op[i1] * trig.cos_val;
         const double s2 = state[i2] * trig.sec_val;
-        const double h2 = op[i2] * trig.cos_val;
+        const double h1 = (cached != nullptr) ? ((trig.cos_val * cached[i1]) + (trig.sin_val * phi1 * cached[i2]))
+                                              : (op[i1] * trig.cos_val);
+        const double h2 = (cached != nullptr) ? ((trig.cos_val * cached[i2]) + (trig.sin_val * phi2 * cached[i1]))
+                                              : (op[i2] * trig.cos_val);
         local.cos_terms += (s1 * h1) + (s2 * h2);
         local.sin_terms += (phi1 * s1 * h2) + (phi2 * s2 * h1);
         // Inverse-rotation write-back (−sin); see apply_cross_rank_derivative_exchange_impl.
@@ -442,7 +446,8 @@ auto state_operator_derivative_local(VecD &state,
                                      size_t layer_idx,
                                      LayerAngle angle,
                                      mpi::Comm comm,
-                                     const detail::LayerCosAccumulate &cos_acc) -> double {
+                                     const detail::LayerCosAccumulate &cos_acc,
+                                     const double *cached_op) -> double {
     const TrigValues trig(angle.param, angle.gen_coeff);
     const auto layer = graph.get_layer_traversal(layer_idx);
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
@@ -455,11 +460,11 @@ auto state_operator_derivative_local(VecD &state,
     auto in_flight = begin_cross_rank_derivative_exchange(snap, layer, comm);
 
     // A = Σ s_old·h_old over all anticommuting indices, endpoints included — hence the subtraction below.
-    const double A = cos_acc(layer_idx, state.data(), op.data(), trig.cos_val, trig.sec_val);
+    const double A = cos_acc(layer_idx, state.data(), op.data(), cached_op, trig.cos_val, trig.sec_val);
 
     EndpointContrib ep;
     if (my_rank < R) {
-        ep = apply_self_slot_derivative_paired(state, op, layer, my_rank, trig);
+        ep = apply_self_slot_derivative_paired(state, op, layer, my_rank, trig, cached_op);
     }
     const auto remote = finish_cross_rank_derivative_exchange(state, op, layer, snap, trig, in_flight);
     ep = combine_endpoint_contrib(ep, remote);
@@ -511,12 +516,12 @@ auto evolve_step_traversal_impl(VecD &op,
     }
 }
 
-auto evolve_step_impl(VecD &op,
-                      const MPGraphView &graph,
-                      double param,
-                      size_t layer_idx,
-                      const mpi::Comm &comm,
-                      const detail::LayerCosScale &cos_scale) -> void {
+auto evolve_step(VecD &op,
+                 const MPGraphView &graph,
+                 double param,
+                 size_t layer_idx,
+                 mpi::Comm comm,
+                 const detail::LayerCosScale &cos_scale) -> void {
     evolve_step_traversal_impl(op, graph.get_layer_traversal(layer_idx), param, layer_idx, comm, cos_scale);
 }
 
@@ -534,7 +539,7 @@ auto evolve_operator(VecD &&coeffs,
     // Evolved in place in the caller's moved-from vector, then handed back: no per-layer copy.
     VecD evolved = std::move(coeffs);
     for (size_t i = 0; i < graph.layers(); ++i) {
-        evolve_step_impl(evolved, graph, params[i], i, comm, cos_scale);
+        evolve_step(evolved, graph, params[i], i, comm, cos_scale);
     }
     return evolved;
 }

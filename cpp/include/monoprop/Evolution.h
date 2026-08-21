@@ -36,6 +36,14 @@ monoprop_EXPORT auto evolve_step(VecD &op,
                                  mpi::Comm comm,
                                  const detail::LayerCosScale &cos_scale) -> void;
 
+/// Forward-evolve `op` through one layer of `graph`; `layer_idx` also selects the layer's cosine set.
+monoprop_EXPORT auto evolve_step(VecD &op,
+                                 const MPGraphView &graph,
+                                 double param,
+                                 size_t layer_idx,
+                                 mpi::Comm comm,
+                                 const detail::LayerCosScale &cos_scale) -> void;
+
 /// Forward-evolve `coeffs` through every layer of `graph`, returning this rank's evolved coefficients.
 monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
                                      const MPGraphView &graph,
@@ -44,11 +52,14 @@ monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
                                      const detail::LayerCosScale &cos_scale) -> VecD;
 
 /// Reverse-mode derivative of one layer: inverse-rotates (state, op) in place and returns the gradient term.
+/// `cached_op` is the forward pass's pre-layer coefficients for this layer, used in place of dividing `op`
+/// by the layer's cosine; null falls back to that division.
 monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
                                                      VecD &op,
                                                      const MPGraphView &graph,
                                                      size_t layer_idx,
                                                      LayerAngle angle,
                                                      mpi::Comm comm,
-                                                     const detail::LayerCosAccumulate &cos_acc) -> double;
+                                                     const detail::LayerCosAccumulate &cos_acc,
+                                                     const double *cached_op = nullptr) -> double;
 } // namespace monoprop
