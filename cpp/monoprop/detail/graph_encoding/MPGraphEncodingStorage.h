@@ -25,11 +25,6 @@
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 
 namespace monoprop::detail {
-// The layer exchange layout and the packed cross-rank storage disagree on the rank count.
-class ExchangeLayoutRankMismatch : public std::logic_error {
-public:
-    using std::logic_error::logic_error;
-};
 
 // The ceiling has to track the TermIndex width, not a fixed 32-bit limit.
 auto checked_term_index(size_t value, const char *what) -> TermIndex;

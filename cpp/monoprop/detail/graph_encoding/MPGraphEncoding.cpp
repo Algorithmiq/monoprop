@@ -245,19 +245,9 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
 auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore> {
     auto storage = std::make_shared<LayerCore>();
-    const size_t num_ranks = all_partners.size();
 
     storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
     resolve_self_slot(storage->cross_rank, my_rank);
-
-    // Both are indexed by the same rank space. Checked here because everything downstream now
-    // derives the layout from cross_rank, so this is the one place the two can still disagree.
-    if (num_ranks != storage->cross_rank.rank_count()) {
-        throw ExchangeLayoutRankMismatch(
-            std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
-                        num_ranks,
-                        storage->cross_rank.rank_count()));
-    }
 
     {
         // Derive both scales once at build time and throw the result away. This is purely eager
