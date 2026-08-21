@@ -7,25 +7,27 @@ export const API_BASE_URL = '/api';
 
 /**
  * Turn a fully-qualified symbol path into the URL of the page that documents
- * it. Mirrors fumadocs-python's `getHref`, then drops the leading `monoprop`
- * segment that `write` strips from file paths (the same realignment applied to
- * the rendered content).
+ * it. Must agree with `getHref` in `api-mdx.mjs`, which mints the same URLs for
+ * the links inside the generated pages: both drop the leading package segment,
+ * because that is what `write` strips from the file paths.
  */
 export function pageUrl(dottedPath) {
-  const url =
+  return (
     '/' +
-    [...API_BASE_URL.split('/'), ...dottedPath.split('.')].filter((v) => v.length > 0).join('/');
-  return url.replace(`${API_BASE_URL}/monoprop`, API_BASE_URL);
+    [...API_BASE_URL.split('/'), ...dottedPath.split('.').slice(1)]
+      .filter((v) => v.length > 0)
+      .join('/')
+  );
 }
 
 /**
  * Build a map from fully-qualified symbol path to the doc URL that documents it.
  *
  * Classes and modules get their own page. Functions, methods and attributes are
- * rendered inline on their parent's page; the `getMDXComponents` wrappers give
- * each `PyFunction`/`PyAttribute` card an `id` equal to its member name, so those
- * members resolve to their parent page with a `#<name>` fragment that jumps to
- * the definition.
+ * rendered inline on their parent's page; `PyFunction`/`PyAttribute` (in
+ * `src/components/py.tsx`) give each card an `id` equal to its member name, so
+ * those members resolve to their parent page with a `#<name>` fragment that
+ * jumps to the definition.
  */
 export function buildXrefMap(pkg) {
   const map = new Map();
