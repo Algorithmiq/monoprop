@@ -116,8 +116,7 @@ struct MPOperator {
         return *inverted_index_;
     }
 
-    // Pending init_op_map terms are erased after the lookup loop: the flat_map is not iterable while
-    // mutating.
+    // erase/clear keep bucket_count(), which init_operator_bytes reports, so drained buckets must be released.
     auto get_operator() -> const VecD & {
         if (size() == op_coeffs.size()) {
             return op_coeffs;
@@ -129,18 +128,16 @@ struct MPOperator {
             return op_coeffs;
         }
 
-        std::vector<Monomial<NumModes>> del;
-        for (const auto &kv : init_op_map) {
-            const auto &mono = kv.first;
-            const auto coeff = kv.second;
-            if (const auto found = store->find(mono)) {
-                op_coeffs[*found] = coeff;
-                del.push_back(mono);
+        const auto before = init_op_map.size();
+        erase_if(init_op_map, [&](const auto &kv) {
+            const auto found = store->find(kv.first);
+            if (found) {
+                op_coeffs[*found] = kv.second;
             }
-        }
-
-        for (const auto &mono : del) {
-            init_op_map.erase(mono);
+            return found.has_value();
+        });
+        if (init_op_map.size() != before) {
+            init_op_map.rehash(0);
         }
 
         return op_coeffs;
@@ -300,6 +297,8 @@ struct MPOperatorMemoryBreakdown final {
     size_t operator_terms_slack_bytes = 0; // of operator_terms_bytes: unused geometric-growth capacity
     // of state_coeffs_bytes: entries of the state that are not exactly 0.0
     size_t state_coeffs_nonzero = 0;
+    // Live entries behind init_operator_bytes, which is bucket_count(): bytes with no entries are dead buckets.
+    size_t init_operator_entries = 0;
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
@@ -319,6 +318,7 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_dense_columns += o.inverted_index_dense_columns;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
         state_coeffs_nonzero += o.state_coeffs_nonzero;
+        init_operator_entries += o.init_operator_entries;
         return *this;
     }
 };
@@ -334,6 +334,7 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
                                    + op.state_vals_.capacity() * sizeof(double);
     breakdown.indexing_bytes = op.store->index_estimated_memory_bytes();
     breakdown.init_operator_bytes = unordered_flat_map_storage_bytes(op.init_op_map);
+    breakdown.init_operator_entries = op.init_op_map.size();
     breakdown.initial_state_bytes = op.initial_state.capacity() * sizeof(size_t);
     if (op.inverted_index_.has_value()) {
         breakdown.inverted_index_bytes = op.inverted_index_->memory_bytes();
