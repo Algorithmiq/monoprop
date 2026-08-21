@@ -155,7 +155,6 @@ private:
     // partition itself (pack_send_) or by partition 0 inside a barriered window (the reductions).
     struct alignas(64) Slot {
         const std::byte *ptr = nullptr; // byte view of this partition's send buffer; null until published
-        const int *send_counts = nullptr;
         const int *send_displs = nullptr;
         const double *vec = nullptr;
         double f64 = 0.0;
@@ -212,7 +211,6 @@ private:
         const size_t u = static_cast<size_t>(local_partition);
         Slot &me = slots_[u];
         me.ptr = args.send;
-        me.send_counts = args.send_counts;
         me.send_displs = args.send_displs;
         // Phase P0, BEFORE B1: each partition publishes its own count row and its per-rank recv totals,
         // reading only its own arguments. No peer state is touched, so this needs no barrier of its own
@@ -291,7 +289,6 @@ private:
         // Typed here but byte-addressed in the slot: pack_send_ copies by (displ, count) in elements and
         // never reconstructs T, so the slot stays type-erased for the untyped alltoallv_impl_ above.
         me.ptr = reinterpret_cast<const std::byte *>(args.send);
-        me.send_counts = args.send_counts;
         me.send_displs = args.send_displs;
         // Phase P0, BEFORE B1: the count row only. This verb cannot publish recv rows, because its recv
         // counts do not exist until the count MPI_Alltoall has run on partition 0 in the B1→B2 window;
@@ -474,13 +471,16 @@ private:
      * LIFETIME — this invariant must survive future edits or the next change silently breaks it. A fast
      * peer may enter verb k+1's Phase P0 while a slow peer is still in verb k's post-B4 tail, so the
      * write of row u for verb k+1 races the tail of verb k unless something orders them. It is ordered:
-     * the ONLY reader of counts_matrix_ / rows_ is partition 0, and it reads them strictly inside the
-     * B1→B2 window. Partition 0 cannot leave B2 of verb k until every partition has arrived at B2, so
-     * its verb-k reads are complete before ANY partition passes B2 of verb k; and a peer cannot reach
-     * verb k+1's Phase P0 without first passing the LAST barrier of verb k (B4 for the payload verbs, B2
-     * for the count exchange), hence B2 of verb k. The rewrite therefore
-     * strictly follows the read. This is the same argument alltoall_counts_impl_ makes for counts_recv_
-     * at the end of its own window, pushed one verb further out.
+     * the only CROSS-partition reader of counts_matrix_ / rows_ is partition 0, and it reads them
+     * strictly inside the B1→B2 window. Partition 0 cannot leave B2 of verb k until every partition has
+     * arrived at B2, so its verb-k reads are complete before ANY partition passes B2 of verb k; and a
+     * peer cannot reach verb k+1's Phase P0 without first passing the LAST barrier of verb k (B4 for the
+     * payload verbs, B2 for the count exchange), hence B2 of verb k. The rewrite therefore strictly
+     * follows the read. This is the same argument alltoall_counts_impl_ makes for counts_recv_ at the end
+     * of its own window, pushed one verb further out.
+     *
+     * Partition u also reads its OWN counts row, in pack_send_ (B2→B3): one thread reading what it wrote,
+     * and it cannot rewrite that row before verb k+1's Phase P0, which is past B4.
      *
      * Row u is written only by partition u, and the row strides are padded to whole cache lines
      * (see the constructor), so concurrent publishes neither race nor false-share.
@@ -673,7 +673,8 @@ private:
         // Own slot only — no peer's published send buffer is read here, which is what lets every
         // partition pack concurrently in the B2→B3 window.
         const std::byte *src = slots_[static_cast<size_t>(u)].ptr;
-        const int *my_send_counts = slots_[static_cast<size_t>(u)].send_counts;
+        // Lengths from this partition's own published row -- the same snapshot pack_off_ was derived from.
+        const int *my_send_counts = counts_row_(u);
         const int *my_send_displs = slots_[static_cast<size_t>(u)].send_displs;
         // One flat sweep over g = b*S + t: the same (b, t) visiting order the two-level loop had, but the
         // offset row is now contiguous in g where pack_off_[block_idx_(b, t, u)] strode by S.
@@ -735,9 +736,9 @@ private:
     std::vector<long long> run_;
     std::vector<long long> recv_col_;
     // [S x counts_stride_] send-count matrix: row u is written ONLY by partition u, in Phase P0, and read
-    // ONLY by partition 0 in the B1→B2 window. The stride is padded and the base realigned so that no two
-    // partitions' rows share a 64-byte line; the ctor asserts the padding. See publish_counts_row_ for
-    // the lifetime argument that makes the pre-barrier write safe.
+    // by partition 0 in the B1→B2 window and by partition u itself in pack_send_. The stride is padded and
+    // the base realigned so that no two partitions' rows share a 64-byte line; the ctor asserts the
+    // padding. See publish_counts_row_ for the lifetime argument that makes the pre-barrier write safe.
     std::vector<int> counts_matrix_store_;
     int *counts_matrix_ = nullptr;
     size_t counts_stride_ = 0;
