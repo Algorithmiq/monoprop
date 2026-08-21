@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <vector>
 
@@ -22,15 +23,11 @@
 
 namespace monoprop {
 
-// Each of these throws when the stated condition does not hold: ValidationError for inconsistent
-// arguments, StaleFunctionalGraph when the propagator was mutated after a functional captured the
-// graph and operator it replays. Both derive from std::runtime_error, so catching that still catches
-// either.
+// Validators throw ValidationError for invalid arguments or StaleFunctionalGraph for stale plans.
 
 monoprop_EXPORT auto validate_coefficient_lengths(const VecZ &parameter_mapping, const VecD &gen_coeffs) -> void;
 
-// gate_indices records which ingested gate each monomial came from: one entry per monomial, forming
-// contiguous runs from 0.
+// gate_indices has one contiguous-run index per ingested monomial.
 monoprop_EXPORT auto validate_gate_indices(const VecZ &gate_indices, size_t num_monomials) -> void;
 
 // params must have max(parameter_mapping)+1 entries.
@@ -38,11 +35,25 @@ monoprop_EXPORT auto validate_parameters_length(const VecD &params, const VecZ &
 
 monoprop_EXPORT auto validate_functional_call(const VecD &parameters, size_t expected_num_params) -> void;
 
-// The graph must still have the layer count the functional was built against.
-monoprop_EXPORT auto validate_expected_graph_layers(size_t current_layers, size_t expected_layers) -> void;
+/// Propagator state required before reading a functional's borrowed data.
+struct FunctionalState {
+    bool propagator_alive;              ///< False after destruction begins.
+    size_t current_revision;            ///< Current structure revision.
+    size_t expected_revision;           ///< Build-time structure revision.
+    bool operator_layout_unchanged;     ///< Borrowed index still matches its store and rows.
+    const char *last_structural_change; ///< Last mutation, or nullptr.
+};
 
-// The initial operator must not have been re-weighted since the functional snapshotted its coefficients.
-monoprop_EXPORT auto validate_expected_initial_operator(size_t current_epoch, size_t expected_epoch) -> void;
+monoprop_EXPORT auto validate_functional_state(const FunctionalState &state) -> void;
+
+/// Inputs for checking whether a functional may follow new weights.
+struct WeightRefresh {
+    size_t weights_revision;  ///< Revision at publication.
+    size_t expected_revision; ///< Build-time revision.
+    bool may_follow_weights;  ///< Functional weight-following policy.
+};
+
+monoprop_EXPORT auto validate_weight_refresh(const WeightRefresh &refresh) -> void;
 
 // only_rotate_len_k is optional; when set it must satisfy 0 < k <= max_k.
 monoprop_EXPORT auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void;

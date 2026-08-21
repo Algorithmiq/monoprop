@@ -71,6 +71,20 @@ Key files:
 - `cpp/include/monoprop/MonomialPropagator.h`: the single templated C++ engine `MonomialPropagator<NumModes>`
   (the Majorana/Pauli choice is a runtime `Basis`, not a separate class). Its `only_rotate_len_k`
   arguments use `std::optional<size_t>`; `std::nullopt` means no gate-application length cap.
+- `cpp/include/monoprop/Functional.h`: the two functional objects,
+  `ExpectationValueFunctional<NumModes>` and `ExpectationValueAndGradientFunctional<NumModes>`. Both derive
+  from `detail::FunctionalHandle<NumModes>` — the shared handle half — and each holds a
+  `detail::FunctionalPlan<NumModes>`: the propagator snapshot a call replays, plus the checks that say the
+  snapshot is still that propagator's. The plan's `std::variant` carries the single-partition shape and the
+  facade shape, so both paths have one public type, and the plan holds the snapshot rather than the
+  choice of what to compute, so one plan type backs either kind (each factory call builds its own). A
+  functional borrows from its propagator (the inverted index always, the graph unless pared), so it
+  must not outlive it; the bindings pin that with
+  `nb::keep_alive<0, 1>`. It does **not** snapshot the initial-operator weights: it reads the
+  `detail::OperatorWeights` set the propagator has published, so it follows an
+  `update_initial_operator` instead of going stale — the one exception being a Schrödinger plan with a
+  `pare_threshold`, whose keep-set came from the coefficients the re-weight replaced, which throws
+  (`follows_weights` reports which case an object is).
 - `src/monoprop/bindings/binder.h`: hand-written binding template; `tools/generate-*.py` generate the
   per-mode-width `bindings.cpp` and `_dispatch.py` from it (do not hand-edit the generated files).
   Both generators take the 32-mode storage-block rule from `tools/_binding_layout.py` — they must
@@ -98,6 +112,23 @@ Key files:
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
   templated on the algebra policy and bound to a runtime `Basis` once, via `with_algebra`.
+- **`detail::FunctionalControl`** (`cpp/monoprop/detail/functional/Control.h`): the validity block a
+  propagator shares with every functional plan it makes — a structure revision, an alive flag, and the
+  name of the last structural change. A plan borrows from its propagator, so this is how it answers "is
+  the propagator still there, and does it still hold what I replay?" without dereferencing it. **Every
+  new mutating method must call `bump_structure_("its_name()")`** once the mutation has committed (a
+  rejected mutation must not bump); the settings that only gate the next build — the atols, the cutoff,
+  the cutoff type, the basis change — deliberately do not. Two halves go with that success-path bump:
+  guard the mutation itself with `bump_structure_on_unwind_` (`detail::BumpOnUnwind`), constructed after
+  the last rejection check and before the first write, so a mutator that throws part-way still
+  invalidates; and do not bump a fan-out whose children all no-op — decide with the facade-transparent
+  readers *before* fanning out, or `monoprop_PARTITIONS=auto` invalidates where `off` does not. A plan
+  additionally re-derives the operator's store pointer and inverted-index row count as a backstop, so a
+  missing bump reports staleness instead of folding a rebuilt index. The block also carries the
+  published `OperatorWeights`: a re-weight publishes a new set rather than bumping, which is what lets a
+  live functional follow it, and bumps only if it fails part-way. Publishing runs on the propagator's own thread (a facade publishes through
+  `for_each_partition_`), and a plan reads the set once per call so `op` and `core_term` cannot come from
+  two publications.
 - **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
   propagators, one hash partition each. Every method that fans out must use the private partition
   vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`
@@ -137,6 +168,13 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 
 ### Testing Structure
 
+- `cpp/tests/functional_validity.cpp` is the **mutation table**: one row per public mutating method of
+  `MonomialPropagator`, recording what a functional built *before* that mutator ran does when called
+  *after* it — throw, or answer from its own snapshot. `MonomialPropagator::num_mutating_methods` pins
+  the roster and the table `static_assert`s against it, so adding a mutator means bumping that
+  constant and adding a row (the build fails until you do).
+  `tests/test_parameter_validation.py::TestFunctionalValidityTable` mirrors the same rows through the
+  Python front end, over `monoprop_PARTITIONS=off` and `=auto`.
 - `tests/cases.py`: Parametrized test cases using `pytest-cases`; `load_problem()` loads a `tests/data/*.msgpack` fixture directly into the public API (`MonomialCircuit` + `MonomialOperator`). C++ tests use the equivalent `test_utils::load_case()` in `cpp/tests/TestData.h`
 - Fixture msgpack schema is documented in `tests/data/README.md`
 - Tests validate against exact solutions for small systems
@@ -167,6 +205,10 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 7. Add Python bindings in `src/monoprop/bindings/binder.h`
 8. Regenerate bindings with `tools/generate-binders.py`
 9. Test with both C++ and Python tests
+10. If the new method mutates a `MonomialPropagator`: call `bump_structure_` from it and guard it with
+    `bump_structure_on_unwind_` (see `detail::FunctionalControl`), bump
+    `MonomialPropagator::num_mutating_methods`, and add its row to the mutation table (see "Testing
+    Structure"). A mutator with no row leaves its effect on a live functional unrecorded.
 
 ## Documentation Maintenance Policy
 

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, Protocol, TypeVar
 
 import numpy as np
 
@@ -43,7 +43,7 @@ from .pauli import PauliOperator
 from .utils import validate_basis_change
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
     from typing import Self
 
     from mpi4py import MPI
@@ -53,6 +53,56 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 T_op = TypeVar("T_op", MajoranaOperator, PauliOperator)
+
+
+T_ret_co = TypeVar("T_ret_co", covariant=True)
+
+
+class _EngineFunctional(Protocol[T_ret_co]):
+    """Interface exposed by engine functionals."""
+
+    def __call__(self, parameters: list[float], /) -> T_ret_co: ...
+
+    @property
+    def num_params(self) -> int: ...
+
+    @property
+    def follows_weights(self) -> bool: ...
+
+
+class _BoundFunctionalBase(Generic[T_ret_co]):
+    """Shared parameter binding and forwarded functional attributes."""
+
+    def __init__(
+        self, propagator: MonomialPropagator, functional: _EngineFunctional[T_ret_co]
+    ) -> None:
+        self._propagator = propagator
+        self._functional = functional
+
+    @property
+    def num_params(self) -> int:
+        """Parameter-axis length this functional was built against."""
+        return self._functional.num_params
+
+    @property
+    def follows_weights(self) -> bool:
+        """Whether a call after [update_initial_operator][] answers for the new coefficients."""
+        return self._functional.follows_weights
+
+
+class _BoundFunctional(_BoundFunctionalBase[float]):
+    """One engine functional returning the expectation value."""
+
+    def __call__(self, parameters: ParameterValues = None) -> float:
+        return self._functional(self._propagator._bind(parameters))
+
+
+class _BoundGradientFunctional(_BoundFunctionalBase[tuple[float, np.ndarray]]):
+    """As the value functional, but returning ``(value, gradient)`` with the gradient as ``float64``."""
+
+    def __call__(self, parameters: ParameterValues = None) -> tuple[float, np.ndarray]:
+        value, grad = self._functional(self._propagator._bind(parameters))
+        return value, np.asarray(grad, dtype=np.float64)
 
 
 class MonomialPropagator(ABC, Generic[T_op]):
@@ -379,12 +429,18 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     def expectation_value_functional(
         self, pare_threshold: float | None = None
-    ) -> Callable[..., float]:
+    ) -> _BoundFunctional:
         """Return a reusable callable computing the expectation value from parameters.
 
-        The callable is built against the graph and initial-operator coefficients present now, so
-        mutating either -- [build_graph][], [contract_partially][], [update_initial_operator][] --
-        invalidates it; build a new one after such a call.
+        The callable is built against the graph present now, so a structural change to it --
+        [build_graph][], [propagate][], [contract_partially][] with ``inplace=True``, or a new
+        [parameter_mapping][] -- invalidates the callable; build a new one after such a call.
+
+        A re-weight is not a structural change: the callable follows the propagator's current
+        initial-operator coefficients, so an [update_initial_operator][] leaves it valid and it
+        answers for the new weights. The price is that it is a live view of those weights rather
+        than a frozen number -- two calls with the same parameters give two answers across a
+        re-weight. Build the callable again after the last re-weight to freeze a value.
 
         Args:
             pare_threshold: Edge-retention cutoff for this functional's masked plan: edges
@@ -392,40 +448,44 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 accuracy for speed. ``None`` (default) disables paring.
 
         Returns:
-            A callable ``fn(parameters=None) -> float``.
+            A callable ``fn(parameters=None) -> float``, exposing the rule above as
+            ``follows_weights`` and its parameter-axis length as ``num_params``.
 
         Raises:
-            RuntimeError: From the returned callable, if the propagator was mutated after this
-                functional was created.
+            RuntimeError: From the returned callable, if the propagator was structurally mutated
+                after this functional was created, or if it was re-weighted and this functional
+                cannot follow the new weights -- which is the Schrodinger picture with a
+                ``pare_threshold``, whose pared graph was selected from the very coefficients the
+                re-weight replaced.
         """
-        fn = self._simulator.expectation_value_functional(pare_threshold)
-        return lambda parameters=None: fn(self._bind(parameters))
+        return _BoundFunctional(
+            self, self._simulator.expectation_value_functional(pare_threshold)
+        )
 
     def expectation_value_and_gradient_functional(
         self, pare_threshold: float | None = None
-    ) -> Callable[..., tuple]:
+    ) -> _BoundGradientFunctional:
         """Return a reusable callable computing (expectation value, gradient).
 
         Like [expectation_value_functional][], but one backward pass also yields the gradient. It is
-        invalidated by the same mutations.
+        invalidated by the same mutations, and follows the initial-operator weights on the same
+        terms: value and gradient both answer for the current coefficients.
 
         Args:
             pare_threshold: See [expectation_value_functional][].
 
         Returns:
-            A callable ``fn(parameters=None) -> (float, np.ndarray)``, gradient in parameter order.
+            A callable ``fn(parameters=None) -> (float, np.ndarray)``, gradient in parameter order,
+            with the same ``follows_weights`` and ``num_params`` as [expectation_value_functional][].
 
         Raises:
-            RuntimeError: From the returned callable, if the propagator was mutated after this
-                functional was created.
+            RuntimeError: From the returned callable, on the same conditions as
+                [expectation_value_functional][].
         """
-        fn = self._simulator.expectation_value_and_gradient_functional(pare_threshold)
-
-        def _call(parameters=None):  # noqa: ANN001, ANN202
-            value, grad = fn(self._bind(parameters))
-            return value, np.asarray(grad, dtype=np.float64)
-
-        return _call
+        return _BoundGradientFunctional(
+            self,
+            self._simulator.expectation_value_and_gradient_functional(pare_threshold),
+        )
 
     def expval(
         self,
@@ -459,7 +519,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     def expval_functional(
         self, pare_threshold: float | None = None
-    ) -> Callable[..., float]:
+    ) -> _BoundFunctional:
         """Shorthand for [expectation_value_functional][].
 
         See [expectation_value_functional][] for full documentation.
@@ -468,7 +528,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     def expval_and_grad_functional(
         self, pare_threshold: float | None = None
-    ) -> Callable[..., tuple]:
+    ) -> _BoundGradientFunctional:
         """Shorthand for [expectation_value_and_gradient_functional][].
 
         See [expectation_value_and_gradient_functional][] for full documentation.
@@ -541,13 +601,23 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Each concrete front-end implements this over its own operator type, encoding the terms into
         the engine's raw index tuples.
 
-        Functionals hold the coefficients they were built with, so any created earlier are
-        invalidated -- they raise instead of answering for the replaced operator.
+        Functionals created earlier stay valid and follow the new coefficients: a re-weight moves no
+        structure, so there is nothing for them to be stale about. They are therefore a live view of
+        the weights -- two calls with the same parameters give two answers across this call. The one
+        exception is a functional built in the Schrodinger picture with a ``pare_threshold``: its
+        pared graph was selected from the coefficients this call replaces, so it raises instead of
+        following them.
+
+        A rejected re-weight invalidates them: a partitioned propagator applies the new weights one
+        partition at a time, so a term only one of them holds is rejected with its siblings already
+        re-weighted, and a functional cannot tell that apart from a rejection that committed nothing.
+        They raise rather than answer for weights the propagator disagrees with.
 
         Args:
             new_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
                 [PauliOperator][monoprop.pauli.PauliOperator], per the front-end, whose terms replace
-                the matching initial-operator.
+                the matching initial-operator. Every existing term it leaves out is zeroed, the
+                identity term included.
 
         Raises:
             RuntimeError: In the Heisenberg picture, if a term is absent from the current operator.

@@ -44,6 +44,10 @@ Schrödinger picture the state is evolved independently, so you can change the
 observable arbitrarily and read it off against the same evolved state; in the Heisenberg
 picture the observable can be re-weighted.
 
+Functionals built before the update stay valid and answer for the new coefficients, so a re-weight
+loop does not have to rebuild them — see [Reusable functionals](/features/evaluation#reusable-functionals)
+for the one exception and for what a live view of the weights costs.
+
 <Callout type="info">
     Only terms that already exist in the initial operator can be updated; supplying a
   monomial that is not present (or a non-Hermitian coefficient) raises
