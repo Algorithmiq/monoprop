@@ -15,7 +15,9 @@
 // HybridComm transport equivalence: R MPI ranks x S in-process partitions must behave as one flat P=R*S
 // SPMD world, with only partition 0 touching MPI, exactly as PartitionGroup drives it.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #ifdef monoprop_ENABLE_MPI
 
@@ -56,7 +58,7 @@ auto world_rank() -> int {
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(hybrid_comm_flat_size_and_rank) {
+TEST_CASE("hybrid_comm_flat_size_and_rank") {
     if (world_size() < 2) {
         return;
     }
@@ -70,17 +72,17 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_flat_size_and_rank) {
             seen_rank[static_cast<size_t>(u)] = monoprop::mpi::rank(c);
         });
         for (const auto &e : errs) {
-            BOOST_CHECK(e == nullptr);
+            CHECK(e == nullptr);
         }
         for (int u = 0; u < S; ++u) {
-            BOOST_CHECK_EQUAL(seen_size[static_cast<size_t>(u)], R * S);
-            BOOST_CHECK_EQUAL(seen_rank[static_cast<size_t>(u)], world_rank() * S + u);
+            CHECK((seen_size[static_cast<size_t>(u)]) == (R * S));
+            CHECK((seen_rank[static_cast<size_t>(u)]) == (world_rank() * S + u));
         }
     }
 }
 
 // Each partition contributes its global id, so the expected total is sum_{g<P} g.
-BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_global) {
+TEST_CASE("hybrid_comm_allreduce_sum_global") {
     if (world_size() < 2) {
         return;
     }
@@ -95,17 +97,17 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_global) {
             got[static_cast<size_t>(u)] = monoprop::mpi::allreduce_sum<double>(mine, c);
         });
         for (const auto &e : errs) {
-            BOOST_CHECK(e == nullptr);
+            CHECK(e == nullptr);
         }
         for (int u = 0; u < S; ++u) {
-            BOOST_CHECK_EQUAL(got[static_cast<size_t>(u)], expected);
+            CHECK((got[static_cast<size_t>(u)]) == (expected));
         }
     }
 }
 
 // begin_alltoallv must deliver each source's block contiguously in ascending global source order with
 // tags intact (Resolve.h's positional pairing).
-BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
+TEST_CASE("hybrid_comm_alltoallv_source_order_and_tags") {
     if (world_size() < 2) {
         return;
     }
@@ -130,17 +132,17 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
             recv[static_cast<size_t>(u)] = out;
         });
         for (const auto &e : errs) {
-            BOOST_CHECK(e == nullptr);
+            CHECK(e == nullptr);
         }
         for (int u = 0; u < S; ++u) {
             const auto &out = recv[static_cast<size_t>(u)];
-            BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), P);
+            REQUIRE((static_cast<int>(out.size())) == (P));
             for (int src = 0; src < P; ++src) {
                 const int len = src % 3 + 1;
                 const auto &blk = out[static_cast<size_t>(src)];
-                BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), len);
+                REQUIRE((static_cast<int>(blk.size())) == (len));
                 for (int j = 0; j < len; ++j) {
-                    BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)], src * 1000 + j);
+                    CHECK((blk[static_cast<size_t>(j)]) == (src * 1000 + j));
                 }
             }
         }
@@ -149,7 +151,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
 
 // Back-to-back alltoallvs with varying counts (zeros, growth, shrink) on one HybridComm: staging and
 // offset-table reuse (a stale staged byte surfaces as a wrong tag), and the no-trailing-barrier rule.
-BOOST_AUTO_TEST_CASE(hybrid_comm_repeated_alltoallv_varying_sizes) {
+TEST_CASE("hybrid_comm_repeated_alltoallv_varying_sizes") {
     if (world_size() < 2) {
         return;
     }
@@ -196,14 +198,14 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_repeated_alltoallv_varying_sizes) {
         }
     });
     for (const auto &e : errs) {
-        BOOST_CHECK(e == nullptr);
+        CHECK(e == nullptr);
     }
-    BOOST_CHECK_EQUAL(failures.load(), 0);
+    CHECK((failures.load()) == (0));
 }
 
 // alltoallv_resolve driven directly: it folds the count MPI_Alltoall into the payload verb's B1→B2
 // window and sizes recv itself.
-BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
+TEST_CASE("hybrid_comm_alltoallv_resolve_fused") {
     if (world_size() < 2) {
         return;
     }
@@ -260,12 +262,12 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
         }
     });
     for (const auto &e : errs) {
-        BOOST_CHECK(e == nullptr);
+        CHECK(e == nullptr);
     }
-    BOOST_CHECK_EQUAL(failures.load(), 0);
+    CHECK((failures.load()) == (0));
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global) {
+TEST_CASE("hybrid_comm_allreduce_sum_inplace_global") {
     if (world_size() < 2) {
         return;
     }
@@ -286,16 +288,16 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global) {
                 res[static_cast<size_t>(u)] = v;
             });
             for (const auto &e : errs) {
-                BOOST_CHECK(e == nullptr);
+                CHECK(e == nullptr);
             }
             // sum over g of ((g+1)*0.25 + k) = P(P+1)/8 + P*k
             for (int u = 0; u < S; ++u) {
-                BOOST_REQUIRE_EQUAL(res[static_cast<size_t>(u)].size(), N);
+                REQUIRE((res[static_cast<size_t>(u)].size()) == (N));
                 for (size_t k = 0; k < N; ++k) {
                     const double expect =
                         static_cast<double>(P) * (P + 1) / 8.0 + static_cast<double>(P) * static_cast<double>(k);
-                    BOOST_CHECK_CLOSE(res[static_cast<size_t>(u)][k], expect, 1e-12);
-                    BOOST_CHECK_EQUAL(res[static_cast<size_t>(u)][k], res[0][k]); // bit-identical
+                    CHECK((res[static_cast<size_t>(u)][k]) == Catch::Approx(expect).epsilon((1e-12) / 100.0));
+                    CHECK((res[static_cast<size_t>(u)][k]) == (res[0][k])); // bit-identical
                 }
             }
         }
@@ -305,7 +307,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global) {
 // Poison releases barrier waiters on every rank; the test completing at all proves that. Partition 0 poisons
 // before entering a collective, so no rank is committed to MPI and the partition-0 guard deliberately does
 // not fire. Poisoning inside a collective calls MPI_Abort instead, so it cannot be a ctest case.
-BOOST_AUTO_TEST_CASE(hybrid_comm_poison_releases_waiters) {
+TEST_CASE("hybrid_comm_poison_releases_waiters") {
     if (world_size() < 2) {
         return;
     }
@@ -319,10 +321,10 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_poison_releases_waiters) {
             std::vector<int> got(static_cast<size_t>(world_size() * S));
             hyb.alltoall_counts(u, send.data(), got.data());
         });
-        BOOST_CHECK(errs[0] == nullptr);
+        CHECK(errs[0] == nullptr);
         for (int u = 1; u < S; ++u) {
-            BOOST_REQUIRE(errs[static_cast<size_t>(u)] != nullptr);
-            BOOST_CHECK_THROW(std::rethrow_exception(errs[static_cast<size_t>(u)]), monoprop::mpi::ShmCommPoisoned);
+            REQUIRE(errs[static_cast<size_t>(u)] != nullptr);
+            CHECK_THROWS_AS(std::rethrow_exception(errs[static_cast<size_t>(u)]), monoprop::mpi::ShmCommPoisoned);
         }
     }
 }

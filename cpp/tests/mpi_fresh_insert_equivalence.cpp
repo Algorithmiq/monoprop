@@ -18,7 +18,9 @@
 // mpi_distributed_layer_equivalence. Only runs at world >= 2. Oracle: serial<->world equivalence --
 // the deterministic base+j miss-prefix must sum the same terms at any rank count, to near()'s rtol.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <complex>
 #include <optional>
@@ -54,15 +56,15 @@ auto run_schrodinger_majorana(const CaseData& data, MPI_Comm comm) -> double {
     return energy_fn(VecD{});
 }
 
-BOOST_FIXTURE_TEST_CASE(mpi_fresh_insert_schrodinger_majorana_serial_world_equiv, ExampleDataFix) {
+TEST_CASE_METHOD(ExampleDataFix, "mpi_fresh_insert_schrodinger_majorana_serial_world_equiv") {
     if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping Schrödinger Majorana fresh-insert equivalence (world size = 1).");
+        INFO("Skipping Schrödinger Majorana fresh-insert equivalence (world size = 1).");
         return;
     }
     const double e_serial = run_schrodinger_majorana<ExampleDataFix::n_modes>(data, MPI_COMM_SELF);
     const double e_world = run_schrodinger_majorana<ExampleDataFix::n_modes>(data, MPI_COMM_WORLD);
-    BOOST_TEST_MESSAGE("schrodinger majorana serial=" << e_serial << " world=" << e_world);
-    BOOST_TEST(near(e_serial, e_world));
+    INFO("schrodinger majorana serial=" << e_serial << " world=" << e_world);
+    CHECK(near(e_serial, e_world));
 }
 
 // Drives the pauli_state_phase sub-branch of the same miss arm: a hand Pauli operator with X / ZZ
@@ -107,15 +109,15 @@ auto run_schrodinger_pauli(MPI_Comm comm) -> double {
     return sim.expectation_value({});
 }
 
-BOOST_AUTO_TEST_CASE(mpi_fresh_insert_schrodinger_pauli_serial_world_equiv) {
+TEST_CASE("mpi_fresh_insert_schrodinger_pauli_serial_world_equiv") {
     if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping Schrödinger Pauli fresh-insert equivalence (world size = 1).");
+        INFO("Skipping Schrödinger Pauli fresh-insert equivalence (world size = 1).");
         return;
     }
     const double e_serial = run_schrodinger_pauli(MPI_COMM_SELF);
     const double e_world = run_schrodinger_pauli(MPI_COMM_WORLD);
-    BOOST_TEST_MESSAGE("schrodinger pauli serial=" << e_serial << " world=" << e_world);
-    BOOST_TEST(near(e_serial, e_world));
+    INFO("schrodinger pauli serial=" << e_serial << " world=" << e_world);
+    CHECK(near(e_serial, e_world));
 }
 
 } // namespace

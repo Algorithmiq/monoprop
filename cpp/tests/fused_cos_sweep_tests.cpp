@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <optional>
 
@@ -50,30 +52,31 @@ auto graph_energy(const CaseData &data, const SimulatorConfig &cfg) -> double {
 void check_agreement(const CaseData &data, const SimulatorConfig &cfg, const char *label) {
     const double inplace = inplace_energy<ExampleDataFix::n_modes>(data, cfg);
     const double graph = graph_energy<ExampleDataFix::n_modes>(data, cfg);
-    BOOST_TEST_CONTEXT(label << " inplace=" << inplace << " graph=" << graph) {
-        BOOST_CHECK_SMALL(inplace - graph, kAgreeAtol);
-        BOOST_CHECK_SMALL(inplace - data.actual_expval, kExactAtol);
+    {
+        INFO(label << " inplace=" << inplace << " graph=" << graph);
+        CHECK_THAT(inplace - graph, Catch::Matchers::WithinAbs(0.0, kAgreeAtol));
+        CHECK_THAT(inplace - data.actual_expval, Catch::Matchers::WithinAbs(0.0, kExactAtol));
     }
 }
 
 } // namespace
 
-BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg, ExampleDataFix) {
+TEST_CASE_METHOD(ExampleDataFix, "fused_sweep_matches_graph_replay_heisenberg") {
     check_agreement(data, SimulatorConfig{}, "heisenberg");
 }
 
 // lower_atol active: the sin gate reads the pre-cos value, so the in-place store that follows must
 // not change which terms are emitted.
-BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_heisenberg_atol, ExampleDataFix) {
+TEST_CASE_METHOD(ExampleDataFix, "fused_sweep_matches_graph_replay_heisenberg_atol") {
     check_agreement(data, SimulatorConfig{.atol = 1e-10}, "heisenberg atol=1e-10");
 }
 
 // Schrödinger: fresh inserts are born after the sweep with a nonzero coeff, so the apply's insert arm
 // must fold the gate's cos into those slots itself.
-BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger, ExampleDataFix) {
+TEST_CASE_METHOD(ExampleDataFix, "fused_sweep_matches_graph_replay_schrodinger") {
     check_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes}, "schrodinger");
 }
 
-BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger_atol, ExampleDataFix) {
+TEST_CASE_METHOD(ExampleDataFix, "fused_sweep_matches_graph_replay_schrodinger_atol") {
     check_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes, .atol = 1e-10}, "schrodinger atol=1e-10");
 }

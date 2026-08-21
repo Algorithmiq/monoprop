@@ -16,7 +16,9 @@
 // bit-for-bit with the materialised-fold oracle (make_fold_cache + the scale_cos_cached /
 // accumulate_cos_cached replays below), on every layer of a real propagated operator.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cmath>
 #include <cstring>
@@ -77,7 +79,7 @@ double accumulate_cos_cached(const monoprop::detail::FoldCache<NumModes> &p,
 
 // scale: coeff[i] *= cos over the layer's cosine index set — a pure per-index scatter, so the two
 // paths must produce byte-identical arrays.
-BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
+TEST_CASE("combined_scale_cache_equals_recompute") {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto sim = build_simulator<kNumModes>(data, cfg);
@@ -86,7 +88,7 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
     const auto &inverted_index = sim.mp_op().inverted_index();
     const auto &graph = sim.graph();
     const size_t n = sim.mp_op().size();
-    BOOST_REQUIRE(n > 0);
+    REQUIRE(n > 0);
 
     // Distinct, non-degenerate coefficients so a missed/extra index shows up.
     std::vector<double> baseline(n);
@@ -114,16 +116,16 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
         scale_cos_cached<kNumModes>(prepared, a.data(), cos_val);
         monoprop::detail::scale_cos_lazy<kNumModes>(inverted_index, recipe, b.data(), cos_val);
 
-        BOOST_TEST_INFO("layer " << li);
-        BOOST_TEST(std::memcmp(a.data(), b.data(), n * sizeof(double)) == 0);
+        INFO("layer " << li);
+        CHECK(std::memcmp(a.data(), b.data(), n * sizeof(double)) == 0);
     }
     // The fixture must actually exercise the odd-|G| parity correction, or the guardrail is hollow.
-    BOOST_TEST(odd_layers > 0u);
+    CHECK(odd_layers > 0u);
 }
 
 // accumulate: the per-index state/ham mutations must be byte-identical; the returned reduction may be
 // summed in a different order, so it is compared within a tight fp tolerance.
-BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
+TEST_CASE("combined_accumulate_cache_equals_recompute") {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto sim = build_simulator<kNumModes>(data, cfg);
@@ -132,7 +134,7 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
     const auto &inverted_index = sim.mp_op().inverted_index();
     const auto &graph = sim.graph();
     const size_t n = sim.mp_op().size();
-    BOOST_REQUIRE(n > 0);
+    REQUIRE(n > 0);
 
     std::vector<double> state0(n);
     std::vector<double> ham0(n);
@@ -162,16 +164,16 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
                                                                            cos_val,
                                                                            sec_val);
 
-        BOOST_TEST_INFO("layer " << li);
-        BOOST_TEST(std::memcmp(sa.data(), sb.data(), n * sizeof(double)) == 0);
-        BOOST_TEST_INFO("layer " << li);
-        BOOST_TEST(std::memcmp(ha.data(), hb.data(), n * sizeof(double)) == 0);
-        BOOST_CHECK_SMALL(std::abs(ea - eb), 1e-9 * (1.0 + std::abs(ea)));
+        INFO("layer " << li);
+        CHECK(std::memcmp(sa.data(), sb.data(), n * sizeof(double)) == 0);
+        INFO("layer " << li);
+        CHECK(std::memcmp(ha.data(), hb.data(), n * sizeof(double)) == 0);
+        CHECK_THAT(std::abs(ea - eb), Catch::Matchers::WithinAbs(0.0, 1e-9 * (1.0 + std::abs(ea))));
     }
 }
 
 // Lives here because it re-runs the same recompute machinery exercised above.
-BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix) {
+TEST_CASE_METHOD(ExampleDataFix, "snapshot_invariance_repeated_evaluation") {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto sim = build_simulator<n_modes>(data, cfg);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
@@ -180,15 +182,15 @@ BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix)
     const double e1 = fn(data.parameters);
     const double e2 = fn(data.parameters);
 
-    BOOST_CHECK_SMALL(e1 - e2, 1e-13);
-    BOOST_TEST_MESSAGE("snapshot_invariance energy=" << e1);
+    CHECK_THAT(e1 - e2, Catch::Matchers::WithinAbs(0.0, 1e-13));
+    INFO("snapshot_invariance energy=" << e1);
 }
 
 // Lifetime contract: a LazyFold outlives the index it was built from (build_cos_callbacks retains one
 // per layer in a functional's closure, and a later build_graph rebuilds InvertedIndex::row_parity_),
 // so it must hold no pointer into that buffer. Pins both halves — that the buffer really does move
 // under growth, and that a fold built before the growth still folds like a FoldCache built after it.
-BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
+TEST_CASE("lazy_fold_survives_operator_growth") {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto sim = build_simulator<kNumModes>(data, cfg);
@@ -204,21 +206,21 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
             break;
         }
     }
-    BOOST_REQUIRE(odd_layer < graph.layers());
+    REQUIRE(odd_layer < graph.layers());
 
     const auto layer = graph.get_layer_traversal(odd_layer);
     const auto gen = generator_of<kNumModes>(layer);
     const auto scaled_count = layer.scaled_count();
 
     const uint64_t *before = sim.mp_op().inverted_index().row_parity_words();
-    BOOST_REQUIRE(before != nullptr);
+    REQUIRE(before != nullptr);
     auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count, kBasis);
 
     // Grow the operator, forcing the index and its row parity onto fresh storage.
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const uint64_t *after = sim.mp_op().inverted_index().row_parity_words();
-    BOOST_REQUIRE(after != nullptr);
-    BOOST_TEST(before != after); // a pointer cached in the fold would now dangle
+    REQUIRE(after != nullptr);
+    CHECK(before != after); // a pointer cached in the fold would now dangle
 
     const size_t n = sim.mp_op().size();
     std::vector<double> baseline(n);
@@ -234,5 +236,5 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
     scale_cos_cached<kNumModes>(prepared, expected.data(), cos_val);
     monoprop::detail::scale_cos_lazy<kNumModes>(sim.mp_op().inverted_index(), recipe, actual.data(), cos_val);
 
-    BOOST_TEST(std::memcmp(expected.data(), actual.data(), n * sizeof(double)) == 0);
+    CHECK(std::memcmp(expected.data(), actual.data(), n * sizeof(double)) == 0);
 }

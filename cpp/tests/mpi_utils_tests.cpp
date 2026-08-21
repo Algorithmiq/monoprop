@@ -14,7 +14,9 @@
 
 // The pure MPIUtils.h primitives (term->owner mapping, wire word packing), driven without a comm.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <random>
 #include <vector>
@@ -24,7 +26,7 @@
 
 using namespace monoprop;
 
-BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
+TEST_CASE("mpi_utils_find_rank_range_and_hash_mod") {
     constexpr size_t N = 32;
     std::mt19937_64 rng(0x9E3779B9ULL);
     std::uniform_int_distribution<size_t> slot(0, 2 * N - 1);
@@ -36,21 +38,21 @@ BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
         const auto mono = indices_to_bitset<N>(inds);
         for (size_t n_ranks : {size_t{1}, size_t{2}, size_t{3}, size_t{7}}) {
             const size_t r = find_rank<N>(mono, n_ranks);
-            BOOST_TEST(r < n_ranks);
-            BOOST_TEST(r == monomial_hash<N>(mono) % n_ranks);
-            BOOST_TEST(r == find_rank<N>(mono, n_ranks)); // deterministic
+            CHECK(r < n_ranks);
+            CHECK(r == monomial_hash<N>(mono) % n_ranks);
+            CHECK(r == find_rank<N>(mono, n_ranks)); // deterministic
         }
     }
 }
 
 // n_ranks == 0 is degenerate: owner is rank 0, not a modulo by zero.
-BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_zero_ranks) {
+TEST_CASE("mpi_utils_find_rank_zero_ranks") {
     constexpr size_t N = 32;
     const auto mono = indices_to_bitset<N>(VecZ{0, 3, 5});
-    BOOST_TEST(find_rank<N>(mono, 0) == 0U);
+    CHECK(find_rank<N>(mono, 0) == 0U);
 }
 
-BOOST_AUTO_TEST_CASE(mpi_utils_monomial_words_roundtrip) {
+TEST_CASE("mpi_utils_monomial_words_roundtrip") {
     constexpr size_t N = 96; // 2N = 192 bits -> 3 words
     const auto a = indices_to_bitset<N>(VecZ{0, 1, 100, 191});
     const auto b = indices_to_bitset<N>(VecZ{5});
@@ -60,16 +62,16 @@ BOOST_AUTO_TEST_CASE(mpi_utils_monomial_words_roundtrip) {
     mpi_detail::append_monomial_words<N>(a, buf);
     mpi_detail::append_monomial_words<N>(b, buf);
     mpi_detail::append_monomial_words<N>(c, buf);
-    BOOST_REQUIRE(buf.size() == 3 * mpi_detail::kWords<N>);
+    REQUIRE(buf.size() == 3 * mpi_detail::kWords<N>);
 
-    BOOST_TEST((mpi_detail::read_monomial_from_words<N>(buf, 0) == a));
-    BOOST_TEST((mpi_detail::read_monomial_from_words<N>(buf, mpi_detail::kWords<N>) == b));
-    BOOST_TEST((mpi_detail::read_monomial_from_words<N>(buf, 2 * mpi_detail::kWords<N>) == c));
+    CHECK((mpi_detail::read_monomial_from_words<N>(buf, 0) == a));
+    CHECK((mpi_detail::read_monomial_from_words<N>(buf, mpi_detail::kWords<N>) == b));
+    CHECK((mpi_detail::read_monomial_from_words<N>(buf, 2 * mpi_detail::kWords<N>) == c));
 
     constexpr size_t M = 32;
     const auto d = indices_to_bitset<M>(VecZ{2, 40, 63});
     VecZ sbuf;
     mpi_detail::append_monomial_words<M>(d, sbuf);
-    BOOST_REQUIRE(sbuf.size() == mpi_detail::kWords<M>);
-    BOOST_TEST((mpi_detail::read_monomial_from_words<M>(sbuf, 0) == d));
+    REQUIRE(sbuf.size() == mpi_detail::kWords<M>);
+    CHECK((mpi_detail::read_monomial_from_words<M>(sbuf, 0) == d));
 }

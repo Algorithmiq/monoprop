@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -62,7 +64,7 @@ auto rows_of(const Sc &sc, size_t c) -> std::vector<size_t> {
 }
 } // namespace
 
-BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
+TEST_CASE("inverted_index_row_parity_matches_popcount") {
     const std::vector<MSet> op{
         bs({0, 1}),
         bs({0, 1, 2}),
@@ -71,7 +73,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
     };
     Sc sc;
     sc.rebuild(op);
-    BOOST_TEST(sc.rows() == op.size());
+    CHECK(sc.rows() == op.size());
 
     const uint64_t *parity = sc.row_parity_words();
     bool all_match = true;
@@ -81,13 +83,13 @@ BOOST_AUTO_TEST_CASE(inverted_index_row_parity_matches_popcount) {
             all_match = false;
         }
     }
-    BOOST_TEST(all_match);
+    CHECK(all_match);
     // row_parity_words is idempotent (a lazy cache): a second call must not change the bitmap.
-    BOOST_TEST(((sc.row_parity_words()[0] >> 1U) & 1U) == 1U); // row 1 is odd
+    CHECK(((sc.row_parity_words()[0] >> 1U) & 1U) == 1U); // row 1 is odd
 }
 
 // rebuild decides tiers from the final per-column counts: dense once density >= 1/kPromoteDensityInv.
-BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
+TEST_CASE("inverted_index_promotes_column_at_density_crossover") {
     constexpr size_t kR = 128; // threshold = ceil(128/64) = 2 set rows to go dense
     std::vector<MSet> op;
     op.reserve(kR);
@@ -106,16 +108,16 @@ BOOST_AUTO_TEST_CASE(inverted_index_promotes_column_at_density_crossover) {
     }
     Sc sc;
     sc.rebuild(op);
-    BOOST_TEST(sc.rows() == kR);
-    BOOST_TEST(sc.column_is_dense(col_of(0)));  // 10/128 >= 1/64
-    BOOST_TEST(!sc.column_is_dense(col_of(1))); // 1/128  <  1/64
-    BOOST_TEST(sc.sparse_column_rows(col_of(1)).size() == 1u);
-    BOOST_TEST(sc.sparse_column_rows(col_of(1))[0] == 0u);
+    CHECK(sc.rows() == kR);
+    CHECK(sc.column_is_dense(col_of(0)));  // 10/128 >= 1/64
+    CHECK(!sc.column_is_dense(col_of(1))); // 1/128  <  1/64
+    CHECK(sc.sparse_column_rows(col_of(1)).size() == 1u);
+    CHECK(sc.sparse_column_rows(col_of(1))[0] == 0u);
 }
 
 // rebuild fills columns in row order, so sparse row-lists come out ascending — the invariant
 // combine_columns_block's lower_bound relies on.
-BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
+TEST_CASE("inverted_index_fill_yields_ascending_sparse_rows") {
     constexpr size_t M = 64; // 2M = 128 columns
     using ScW = InvertedIndex<M>;
     constexpr size_t kR = 16'385; // large operator, many sparse columns
@@ -127,7 +129,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
     }
     ScW sc;
     sc.rebuild(op);
-    BOOST_TEST(sc.rows() == kR);
+    CHECK(sc.rows() == kR);
 
     bool all_sorted = true;
     bool saw_nonempty_sparse = false;
@@ -143,15 +145,15 @@ BOOST_AUTO_TEST_CASE(inverted_index_fill_yields_ascending_sparse_rows) {
             all_sorted = false;
         }
     }
-    BOOST_TEST(saw_nonempty_sparse); // the fill actually populated sparse columns
-    BOOST_TEST(all_sorted);
+    CHECK(saw_nonempty_sparse); // the fill actually populated sparse columns
+    CHECK(all_sorted);
 }
 
 // append_rows is the incremental growth path (MPOperator appends as terms are inserted); rebuild is the
 // from-scratch one. On the same final row set the two must agree on membership. Tier choice legitimately
 // differs -- rebuild sees the final per-column counts up front, while the append path promotes on
 // crossing the threshold -- so the comparison is on set rows, which are tier-independent.
-BOOST_AUTO_TEST_CASE(inverted_index_append_rows_matches_rebuild) {
+TEST_CASE("inverted_index_append_rows_matches_rebuild") {
     constexpr size_t kR = 200;
     std::vector<MSet> op;
     op.reserve(kR);
@@ -177,10 +179,11 @@ BOOST_AUTO_TEST_CASE(inverted_index_append_rows_matches_rebuild) {
     inc.append_rows(op, 64, 100);
     inc.append_rows(op, 164, kR - 164);
 
-    BOOST_REQUIRE_EQUAL(inc.rows(), full.rows());
+    REQUIRE((inc.rows()) == (full.rows()));
     for (size_t c = 0; c < Sc::kNumColumns; ++c) {
-        BOOST_TEST_CONTEXT("column " << c) {
-            BOOST_TEST(rows_of(inc, c) == rows_of(full, c), boost::test_tools::per_element());
+        {
+            INFO("column " << c);
+            CHECK(rows_of(inc, c) == rows_of(full, c));
         }
     }
 
@@ -193,14 +196,14 @@ BOOST_AUTO_TEST_CASE(inverted_index_append_rows_matches_rebuild) {
             parity_matches = false;
         }
     }
-    BOOST_TEST(parity_matches);
+    CHECK(parity_matches);
 }
 
 // combine_columns_block is the fold-combine kernel every scan and recompute path shares. It XORs the
 // given columns' row bitmaps over a word range: XOR associativity means any block decomposition
 // reproduces the full-width fold bit-for-bit, and the dense-column memcpy seed must equal
 // memset + XOR-all.
-BOOST_AUTO_TEST_CASE(combine_columns_block_folds_dense_and_sparse_identically) {
+TEST_CASE("combine_columns_block_folds_dense_and_sparse_identically") {
     constexpr size_t kR = 300; // 5 row words, so a block split has something to split
     std::vector<MSet> op;
     std::vector<bool> in_a(kR, false), in_b(kR, false), in_sparse(kR, false);
@@ -226,9 +229,9 @@ BOOST_AUTO_TEST_CASE(combine_columns_block_folds_dense_and_sparse_identically) {
     }
     Sc sc;
     sc.rebuild(op);
-    BOOST_REQUIRE(sc.column_is_dense(col_of(0)));
-    BOOST_REQUIRE(sc.column_is_dense(col_of(1)));
-    BOOST_REQUIRE(!sc.column_is_dense(col_of(2)));
+    REQUIRE(sc.column_is_dense(col_of(0)));
+    REQUIRE(sc.column_is_dense(col_of(1)));
+    REQUIRE(!sc.column_is_dense(col_of(2)));
 
     const size_t words = (kR + 63) / 64;
     const std::vector<size_t> cols{col_of(0), col_of(1), col_of(2)};
@@ -243,13 +246,13 @@ BOOST_AUTO_TEST_CASE(combine_columns_block_folds_dense_and_sparse_identically) {
 
     std::vector<uint64_t> whole(words, 0xdeadbeefULL); // pre-dirtied: the kernel seeds, never accumulates
     combine_columns_block<N>(sc, cols, whole.data(), 0, words);
-    BOOST_TEST(whole == expected, boost::test_tools::per_element());
+    CHECK(whole == expected);
 
     std::vector<uint64_t> pieced(words, 0xdeadbeefULL);
     for (size_t w = 0; w < words; ++w) {
         combine_columns_block<N>(sc, cols, pieced.data() + w, w, w + 1);
     }
-    BOOST_TEST(pieced == expected, boost::test_tools::per_element());
+    CHECK(pieced == expected);
 
     // Sparse-only column list: no dense column to memcpy from, so this is the memset seed path.
     const size_t sparse_col = col_of(2);
@@ -258,5 +261,5 @@ BOOST_AUTO_TEST_CASE(combine_columns_block_folds_dense_and_sparse_identically) {
     std::vector<uint64_t> sparse_expected(words, 0);
     sparse_expected[5 >> 6] |= uint64_t{1} << (5 & 63U);
     sparse_expected[200 >> 6] |= uint64_t{1} << (200 & 63U);
-    BOOST_TEST(sparse_fold == sparse_expected, boost::test_tools::per_element());
+    CHECK(sparse_fold == sparse_expected);
 }

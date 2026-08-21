@@ -69,7 +69,7 @@ jobs:
             brew install boost open-mpi msgpack-cxx hwloc
           else
             sudo apt-get update
-            packages="libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev"
+            packages="libopenmpi-dev openmpi-bin libboost-dev libmsgpack-cxx-dev libhwloc-dev catch2"
             if [[ "${{ matrix.compiler }}" == "clang++-18" ]]; then
               packages="$packages clang-18"
             fi

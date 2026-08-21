@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <optional>
 
@@ -21,48 +23,50 @@
 using monoprop::config::detail::parse_flag;
 using monoprop::config::detail::parse_positive_int;
 
-BOOST_AUTO_TEST_CASE(env_config_parse_flag_default_when_unset_or_empty) {
-    BOOST_CHECK_EQUAL(parse_flag(nullptr, true), true);
-    BOOST_CHECK_EQUAL(parse_flag(nullptr, false), false);
-    BOOST_CHECK_EQUAL(parse_flag("", true), true);
-    BOOST_CHECK_EQUAL(parse_flag("", false), false);
+TEST_CASE("env_config_parse_flag_default_when_unset_or_empty") {
+    CHECK((parse_flag(nullptr, true)) == (true));
+    CHECK((parse_flag(nullptr, false)) == (false));
+    CHECK((parse_flag("", true)) == (true));
+    CHECK((parse_flag("", false)) == (false));
 }
 
-BOOST_AUTO_TEST_CASE(env_config_parse_flag_falsey_first_char) {
+TEST_CASE("env_config_parse_flag_falsey_first_char") {
     // Only the first character decides, so "0abc" is falsey too.
     for (const char *v : {"0", "f", "F", "n", "N"}) {
-        BOOST_CHECK_MESSAGE(parse_flag(v, true) == false, v);
+        INFO(v);
+        CHECK(parse_flag(v, true) == false);
     }
-    BOOST_CHECK_EQUAL(parse_flag("0abc", true), false);
+    CHECK((parse_flag("0abc", true)) == (false));
 }
 
-BOOST_AUTO_TEST_CASE(env_config_parse_flag_truthy_first_char) {
+TEST_CASE("env_config_parse_flag_truthy_first_char") {
     for (const char *v : {"1", "t", "T", "y", "Y", "on", "true", "anything"}) {
-        BOOST_CHECK_MESSAGE(parse_flag(v, false) == true, v);
+        INFO(v);
+        CHECK(parse_flag(v, false) == true);
     }
 }
 
-BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_null_and_malformed) {
-    BOOST_CHECK(parse_positive_int(nullptr) == std::nullopt);
-    BOOST_CHECK(parse_positive_int("") == std::nullopt);
-    BOOST_CHECK(parse_positive_int("abc") == std::nullopt);
-    BOOST_CHECK(parse_positive_int("12x") == std::nullopt); // trailing junk rejects, not a partial 12
-    BOOST_CHECK(parse_positive_int("  ") == std::nullopt);  // strtol consumes ws, then end == text
+TEST_CASE("env_config_parse_positive_int_null_and_malformed") {
+    CHECK(parse_positive_int(nullptr) == std::nullopt);
+    CHECK(parse_positive_int("") == std::nullopt);
+    CHECK(parse_positive_int("abc") == std::nullopt);
+    CHECK(parse_positive_int("12x") == std::nullopt); // trailing junk rejects, not a partial 12
+    CHECK(parse_positive_int("  ") == std::nullopt);  // strtol consumes ws, then end == text
 }
 
-BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_range) {
-    BOOST_CHECK(parse_positive_int("0") == std::nullopt);
-    BOOST_CHECK(parse_positive_int("-5") == std::nullopt);
-    BOOST_CHECK(parse_positive_int("1000001") == std::nullopt); // above the 1e6 ceiling
-    BOOST_CHECK(parse_positive_int("1") == std::optional<int>(1));
-    BOOST_CHECK(parse_positive_int("42") == std::optional<int>(42));
-    BOOST_CHECK(parse_positive_int("1000000") == std::optional<int>(1'000'000)); // inclusive upper bound
+TEST_CASE("env_config_parse_positive_int_range") {
+    CHECK(parse_positive_int("0") == std::nullopt);
+    CHECK(parse_positive_int("-5") == std::nullopt);
+    CHECK(parse_positive_int("1000001") == std::nullopt); // above the 1e6 ceiling
+    CHECK(parse_positive_int("1") == std::optional<int>(1));
+    CHECK(parse_positive_int("42") == std::optional<int>(42));
+    CHECK(parse_positive_int("1000000") == std::optional<int>(1'000'000)); // inclusive upper bound
 }
 
-BOOST_AUTO_TEST_CASE(env_config_settings_cached_singleton) {
+TEST_CASE("env_config_settings_cached_singleton") {
     const auto &a = monoprop::config::get();
     const auto &b = monoprop::config::get();
-    BOOST_CHECK_EQUAL(&a, &b);
+    CHECK((&a) == (&b));
     // Touch a field so the Settings aggregate is actually read.
-    BOOST_CHECK(a.partition_pinning == true || a.partition_pinning == false);
+    CHECK((a.partition_pinning == true || a.partition_pinning == false));
 }

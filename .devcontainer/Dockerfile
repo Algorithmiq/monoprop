@@ -5,6 +5,7 @@ FROM mcr.microsoft.com/devcontainers/base:ubuntu26.04
 # install needed packages
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install \
+    catch2 \
     clang \
     clang-tidy \
     clang-format \
@@ -19,7 +20,6 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     python3 \
     openmpi-bin \
     libboost-dev \
-    libboost-test-dev \
     libhwloc-dev \
     libmsgpack-cxx-dev \
     libopenmpi-dev \

@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cstring>
 #include <limits>
@@ -48,7 +50,7 @@ auto make_mono(size_t r) -> Monomial<kModes> {
     return m;
 }
 
-BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
+TEST_CASE("fused_record_roundtrip_exact") {
     const std::vector<int> phases = {1, -1, 1, -1, 1, 1, -1};
     const std::vector<double> values = {
         0.0,
@@ -67,27 +69,27 @@ BOOST_AUTO_TEST_CASE(fused_record_roundtrip_exact) {
         monos[r] = make_mono(r);
         query_push<kModes>(plain, monos[r], phases[r]);
     }
-    BOOST_REQUIRE_EQUAL(plain.size(), nq * kQueryWords<kModes>);
+    REQUIRE((plain.size()) == (nq * kQueryWords<kModes>));
 
     VecZ fused;
     build_fused_query_value<kModes>(plain, values, fused);
-    BOOST_REQUIRE_EQUAL(fused.size(), nq * kQueryWordsFused<kModes>);
+    REQUIRE((fused.size()) == (nq * kQueryWordsFused<kModes>));
 
     for (size_t q = 0; q < nq; ++q) {
         Monomial<kModes> m_out;
         int ph_out = 0;
         query_read<kModes, kQueryWordsFused<kModes>>(fused, q, m_out, ph_out);
-        BOOST_CHECK(m_out == monos[q]);
-        BOOST_CHECK_EQUAL(ph_out, phases[q]);
+        CHECK(m_out == monos[q]);
+        CHECK((ph_out) == (phases[q]));
         // Compare the raw payload, so -0.0 and denormals stay distinguished from 0.0.
         const double v_out = query_value<kModes>(fused, q);
-        BOOST_CHECK(std::memcmp(&v_out, &values[q], sizeof(double)) == 0);
+        CHECK(std::memcmp(&v_out, &values[q], sizeof(double)) == 0);
     }
 }
 
 // Reusing `out` across calls must leak no stale words: capacity is a high-water mark, size is exact.
 // This is the reuse pattern LayerBuildEngine::combined_qv_ relies on gate to gate.
-BOOST_AUTO_TEST_CASE(fused_buffer_reuse_shrinks_logical_size) {
+TEST_CASE("fused_buffer_reuse_shrinks_logical_size") {
     VecZ plain_big;
     std::vector<double> vbig;
     for (size_t r = 0; r < 32; ++r) {
@@ -104,21 +106,21 @@ BOOST_AUTO_TEST_CASE(fused_buffer_reuse_shrinks_logical_size) {
         query_push<kModes>(plain_small, make_mono(100 + r), 1);
     }
     build_fused_query_value<kModes>(plain_small, vsmall, out);
-    BOOST_CHECK_EQUAL(out.size(), vsmall.size() * kQueryWordsFused<kModes>);
-    BOOST_CHECK_GE(out.capacity(), cap_after_big);
+    CHECK((out.size()) == (vsmall.size() * kQueryWordsFused<kModes>));
+    CHECK((out.capacity()) >= (cap_after_big));
     for (size_t q = 0; q < vsmall.size(); ++q) {
         const double v_out = query_value<kModes>(out, q);
-        BOOST_CHECK(std::memcmp(&v_out, &vsmall[q], sizeof(double)) == 0);
+        CHECK(std::memcmp(&v_out, &vsmall[q], sizeof(double)) == 0);
     }
 }
 
 // Empty input arises for the self slot, which resolve_self_queries clears before the exchange.
-BOOST_AUTO_TEST_CASE(fused_empty_input) {
+TEST_CASE("fused_empty_input") {
     VecZ empty;
     std::vector<double> no_values;
     VecZ out{1, 2, 3}; // pre-dirtied; build must clear it
     build_fused_query_value<kModes>(empty, no_values, out);
-    BOOST_CHECK(out.empty());
+    CHECK(out.empty());
 }
 
 } // namespace

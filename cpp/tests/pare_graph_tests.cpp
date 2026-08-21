@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -51,7 +53,7 @@ auto recompute_cos(const monoprop::detail::InvertedIndex<NumModes> &inverted_ind
 } // namespace
 
 // The streaming pare sweep must engage pruned_cos on exactly the layers whose cos loses an index.
-BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
+TEST_CASE("pare_graph_emits_expected_layer_kinds") {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
 
@@ -61,14 +63,14 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
     const auto &graph = sim.graph();
     const auto &inverted_index = sim.mp_op().inverted_index();
     const VecD state = sim.mp_op().materialize_state();
-    BOOST_REQUIRE(state.size() > 0);
+    REQUIRE(state.size() > 0);
 
     // materialize_state() hands back a caller-owned vector and caches nothing on the operator, so
     // state_coeffs stays empty and the sparse entry count must equal the dense vector's nonzero count.
-    BOOST_CHECK(sim.mp_op().state_coeffs.empty());
+    CHECK(sim.mp_op().state_coeffs.empty());
     const auto sparse = sim.mp_op().sparse_state();
-    BOOST_CHECK_EQUAL(sparse.rows.size(),
-                      static_cast<size_t>(std::ranges::count_if(state, [](double c) { return c != 0.0; })));
+    CHECK((sparse.rows.size())
+          == (static_cast<size_t>(std::ranges::count_if(state, [](double c) { return c != 0.0; }))));
 
     // Single-rank, mark_replayed_d_targets force-keeps every cosine index, so a real threshold prunes
     // nothing (real pruning is a multi-rank effect, covered by mpi_pare). To reach the prune path
@@ -106,7 +108,7 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
     }
 
     auto pared = pare_graph(graph, seed, local_index_count, /*schrodinger=*/false, MPI_COMM_SELF, provider);
-    BOOST_REQUIRE_EQUAL(pared.layers(), graph.layers());
+    REQUIRE((pared.layers()) == (graph.layers()));
 
     size_t pruned_count = 0;
     for (size_t i = 0; i < pared.layers(); ++i) {
@@ -115,7 +117,7 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
             // The synthetic index is the only one outside the keep-set, so a stored cos must be the
             // recomputed one minus exactly that index. `<=` here would also pass on a sweep that
             // dropped real indices.
-            BOOST_CHECK_EQUAL(pruned->total_count + 1, provider(i).total_count);
+            CHECK((pruned->total_count + 1) == (provider(i).total_count));
 
             // Same block-mask walk graph_data() uses to turn a stored cos back into indices: the
             // decoded set must be the recomputed one with only synth_index missing, so a stored cos
@@ -131,17 +133,17 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
             const auto kept = decode(*pruned);
             auto expected = decode(provider(i));
             std::erase(expected, synth_index);
-            BOOST_CHECK_EQUAL(kept.size(), pruned->total_count);
-            BOOST_TEST(kept == expected, boost::test_tools::per_element());
+            CHECK((kept.size()) == (pruned->total_count));
+            CHECK(kept == expected);
         }
     }
     // Exactly the marked layer is pruned: every other layer's cos lies entirely inside the keep-set,
     // and a preserved layer stores nothing (its cos is recomputed at replay).
-    BOOST_CHECK_EQUAL(pruned_count, 1u);
-    BOOST_TEST(pared.get_layer(marked_layer).pruned_cos() != static_cast<const CosMask *>(nullptr));
+    CHECK((pruned_count) == (1u));
+    CHECK(pared.get_layer(marked_layer).pruned_cos() != static_cast<const CosMask *>(nullptr));
 }
 
-BOOST_AUTO_TEST_CASE(pare_graph_energy_matches_unpared) {
+TEST_CASE("pare_graph_energy_matches_unpared") {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
 
@@ -157,11 +159,11 @@ BOOST_AUTO_TEST_CASE(pare_graph_energy_matches_unpared) {
     sim_tiny.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     auto ev_tiny = sim_tiny.expectation_value_functional(std::optional<double>{1e-12});
     const double e_tiny = ev_tiny(data.parameters);
-    BOOST_CHECK_SMALL(std::abs(e_full - e_tiny), 1e-12);
+    CHECK_THAT(std::abs(e_full - e_tiny), Catch::Matchers::WithinAbs(0.0, 1e-12));
 
     auto sim_real = build_simulator<kNumModes>(data, cfg);
     sim_real.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     auto ev_real = sim_real.expectation_value_functional(std::optional<double>{1e-10});
     const double e_real = ev_real(data.parameters);
-    BOOST_CHECK_SMALL(std::abs(e_real - data.actual_expval), 1e-9);
+    CHECK_THAT(std::abs(e_real - data.actual_expval), Catch::Matchers::WithinAbs(0.0, 1e-9));
 }

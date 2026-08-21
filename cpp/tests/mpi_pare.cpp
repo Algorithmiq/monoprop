@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cmath>
 
@@ -20,10 +22,10 @@
 
 using namespace test_utils;
 
-BOOST_AUTO_TEST_CASE(multi_rank_pare_expval_is_finite) {
+TEST_CASE("multi_rank_pare_expval_is_finite") {
     const int world_size = monoprop::mpi::size(MPI_COMM_WORLD);
     if (world_size < 2) {
-        BOOST_TEST_MESSAGE("Skipping multi_rank_pare_expval_is_finite: MPI world size=" << world_size);
+        INFO("Skipping multi_rank_pare_expval_is_finite: MPI world size=" << world_size);
         return;
     }
 
@@ -36,14 +38,15 @@ BOOST_AUTO_TEST_CASE(multi_rank_pare_expval_is_finite) {
 
     auto baseline_sim = build_simulator<NumModes>(data, cfg);
     const double baseline_expval = evaluate_expval(baseline_sim, data, false);
-    BOOST_CHECK_SMALL(std::abs(baseline_expval - data.actual_expval), kExpvalAtol);
+    CHECK_THAT(std::abs(baseline_expval - data.actual_expval), Catch::Matchers::WithinAbs(0.0, kExpvalAtol));
 
     auto pared_sim = build_simulator<NumModes>(data, cfg);
     const double pared_expval = evaluate_expval(pared_sim, data, true);
 
-    BOOST_TEST_CONTEXT("world_size=" << world_size) {
-        BOOST_CHECK_MESSAGE(std::isfinite(pared_expval),
-                            "pare=true produced non-finite expectation value across MPI ranks");
-        BOOST_CHECK_SMALL(std::abs(pared_expval - data.actual_expval), kExpvalAtol);
+    {
+        INFO("world_size=" << world_size);
+        INFO("pare=true produced non-finite expectation value across MPI ranks");
+        CHECK(std::isfinite(pared_expval));
+        CHECK_THAT(std::abs(pared_expval - data.actual_expval), Catch::Matchers::WithinAbs(0.0, kExpvalAtol));
     }
 }

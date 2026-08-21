@@ -1,0 +1,26 @@
+foreach(_monoprop_test_metadata IN LISTS monoprop_unit_tests.x_TESTS)
+  string(
+    REGEX MATCH "\"name\"[ \t\r\n]*:[ \t\r\n]*\"([^\"]+)\""
+    _monoprop_test_name_match
+    "${_monoprop_test_metadata}"
+  )
+  if(_monoprop_test_name_match)
+    set(_monoprop_test "${CMAKE_MATCH_1}")
+  else()
+    set(_monoprop_test "${_monoprop_test_metadata}")
+  endif()
+  set_tests_properties(
+    "${_monoprop_test}"
+    PROPERTIES
+      LABELS
+        "unit;cxx;serial"
+  )
+  if(NOT "@_monoprop_serial_env_entries@" STREQUAL "")
+    set_tests_properties(
+      "${_monoprop_test}"
+      PROPERTIES
+        ENVIRONMENT
+          "@_monoprop_serial_env_entries@"
+    )
+  endif()
+endforeach()

@@ -14,7 +14,9 @@
 
 // The MonomialPropagator throw paths that define the public contract.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <complex>
 #include <optional>
@@ -57,132 +59,132 @@ auto make(const OperatorDict &op,
 }
 } // namespace
 
-BOOST_AUTO_TEST_CASE(ctor_accepts_valid_config) {
-    BOOST_CHECK_NO_THROW(make(OperatorDict{}));
+TEST_CASE("ctor_accepts_valid_config") {
+    CHECK_NOTHROW(make(OperatorDict{}));
 }
 
-BOOST_AUTO_TEST_CASE(ctor_logical_num_modes_out_of_range_throws) {
-    BOOST_CHECK_THROW(make(OperatorDict{},
-                           2 * N,
-                           std::nullopt,
-                           std::nullopt,
-                           CutoffType::Length,
-                           std::nullopt,
-                           /*logical=*/0),
-                      std::runtime_error);
-    BOOST_CHECK_THROW(make(OperatorDict{},
-                           2 * N,
-                           std::nullopt,
-                           std::nullopt,
-                           CutoffType::Length,
-                           std::nullopt,
-                           /*logical=*/N + 1),
-                      std::runtime_error);
+TEST_CASE("ctor_logical_num_modes_out_of_range_throws") {
+    CHECK_THROWS_AS(make(OperatorDict{},
+                         2 * N,
+                         std::nullopt,
+                         std::nullopt,
+                         CutoffType::Length,
+                         std::nullopt,
+                         /*logical=*/0),
+                    std::runtime_error);
+    CHECK_THROWS_AS(make(OperatorDict{},
+                         2 * N,
+                         std::nullopt,
+                         std::nullopt,
+                         CutoffType::Length,
+                         std::nullopt,
+                         /*logical=*/N + 1),
+                    std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(ctor_pauli_requires_support_cutoff_throws) {
+TEST_CASE("ctor_pauli_requires_support_cutoff_throws") {
     // Length has no Pauli-weight meaning.
-    BOOST_CHECK_THROW(
+    CHECK_THROWS_AS(
         make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, N, Basis::Pauli),
         std::invalid_argument);
-    BOOST_CHECK_NO_THROW(
+    CHECK_NOTHROW(
         make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Support, std::nullopt, N, Basis::Pauli));
 }
 
-BOOST_AUTO_TEST_CASE(ctor_pauli_forbids_basis_change_throws) {
+TEST_CASE("ctor_pauli_forbids_basis_change_throws") {
     const std::vector<VecZ> some_basis(2 * N, VecZ{0});
-    BOOST_CHECK_THROW(
+    CHECK_THROWS_AS(
         make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Support, some_basis, N, Basis::Pauli),
         std::invalid_argument);
 }
 
-BOOST_AUTO_TEST_CASE(ctor_upper_atol_below_lower_atol_throws) {
-    BOOST_CHECK_THROW(make(OperatorDict{}, 2 * N, /*lower=*/1e-6, /*upper=*/1e-8), std::runtime_error);
-    BOOST_CHECK_NO_THROW(make(OperatorDict{}, 2 * N, /*lower=*/1e-8, /*upper=*/1e-6));
+TEST_CASE("ctor_upper_atol_below_lower_atol_throws") {
+    CHECK_THROWS_AS(make(OperatorDict{}, 2 * N, /*lower=*/1e-6, /*upper=*/1e-8), std::runtime_error);
+    CHECK_NOTHROW(make(OperatorDict{}, 2 * N, /*lower=*/1e-8, /*upper=*/1e-6));
 }
 
-BOOST_AUTO_TEST_CASE(ctor_operator_index_out_of_range_throws) {
+TEST_CASE("ctor_operator_index_out_of_range_throws") {
     OperatorDict op;
     op[VecZ{20}] = std::complex<double>(1.0, 0.0); // 20 >= 2*logical (=16)
-    BOOST_CHECK_THROW(make(op), std::runtime_error);
+    CHECK_THROWS_AS(make(op), std::runtime_error);
 }
 
 // A gate generator index outside the system must throw, not underflow 2*NumModes-1-index into an
 // out-of-bounds Bitset::set.
-BOOST_AUTO_TEST_CASE(build_graph_generator_index_out_of_range_throws) {
+TEST_CASE("build_graph_generator_index_out_of_range_throws") {
     OperatorDict op;
     op[VecZ{0, 1}] = std::complex<double>(0.0, 1.0);
     auto sim = make(op);
     // 2*logical_num_modes == 16, so slot 20 is outside this system.
-    BOOST_CHECK_THROW(sim.build_graph({VecZ{20, 21}}, VecZ{0}, VecD{1.0}), std::runtime_error);
-    BOOST_CHECK_NO_THROW(sim.build_graph({VecZ{0, 3}}, VecZ{0}, VecD{1.0}));
+    CHECK_THROWS_AS(sim.build_graph({VecZ{20, 21}}, VecZ{0}, VecD{1.0}), std::runtime_error);
+    CHECK_NOTHROW(sim.build_graph({VecZ{0, 3}}, VecZ{0}, VecD{1.0}));
 }
 
-BOOST_AUTO_TEST_CASE(generator_index_bound_is_logical_not_storage) {
+TEST_CASE("generator_index_bound_is_logical_not_storage") {
     OperatorDict op;
     op[VecZ{0, 1}] = std::complex<double>(0.0, 1.0);
     auto sim = make(op, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, /*logical=*/4);
     // 2*logical == 8 <= slot 9 < 2*N == 16: inside the storage, outside the system.
-    BOOST_CHECK_THROW(sim.build_graph({VecZ{9}}, VecZ{0}, VecD{1.0}), std::runtime_error);
+    CHECK_THROWS_AS(sim.build_graph({VecZ{9}}, VecZ{0}, VecD{1.0}), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(only_rotate_len_k_build_graph_validation_matches_python_contract) {
+TEST_CASE("only_rotate_len_k_build_graph_validation_matches_python_contract") {
     auto sim = make(OperatorDict{});
 
-    BOOST_CHECK_THROW(sim.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, /*k=*/0u),
-                      std::runtime_error);
-    BOOST_CHECK_NO_THROW(sim.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, std::nullopt));
+    CHECK_THROWS_AS(sim.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, /*k=*/0u),
+                    std::runtime_error);
+    CHECK_NOTHROW(sim.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, std::nullopt));
 
     auto logical_bound = make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, 4);
-    BOOST_CHECK_THROW(logical_bound.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, 9u),
-                      std::runtime_error);
-    BOOST_CHECK_NO_THROW(logical_bound.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, 8u));
+    CHECK_THROWS_AS(logical_bound.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, 9u),
+                    std::runtime_error);
+    CHECK_NOTHROW(logical_bound.build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, std::nullopt, std::nullopt, 8u));
 }
 
-BOOST_AUTO_TEST_CASE(only_rotate_len_k_propagate_validation_matches_python_contract) {
+TEST_CASE("only_rotate_len_k_propagate_validation_matches_python_contract") {
     auto sim = make(OperatorDict{});
 
-    BOOST_CHECK_THROW(sim.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, /*k=*/0u), std::runtime_error);
-    BOOST_CHECK_NO_THROW(sim.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, std::nullopt));
+    CHECK_THROWS_AS(sim.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, /*k=*/0u), std::runtime_error);
+    CHECK_NOTHROW(sim.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, std::nullopt));
 
     auto logical_bound = make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, 4);
-    BOOST_CHECK_THROW(logical_bound.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, 9u), std::runtime_error);
-    BOOST_CHECK_NO_THROW(logical_bound.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, 8u));
+    CHECK_THROWS_AS(logical_bound.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, 9u), std::runtime_error);
+    CHECK_NOTHROW(logical_bound.propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.5}, 8u));
 }
 
 // The update_* setters must not write straight through to regenerate_cutoff_fn_().
-BOOST_AUTO_TEST_CASE(setters_enforce_the_constructor_invariants) {
+TEST_CASE("setters_enforce_the_constructor_invariants") {
     auto pauli =
         make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Support, std::nullopt, N, Basis::Pauli);
-    BOOST_CHECK_THROW(pauli.update_cutoff_type(CutoffType::Length), std::invalid_argument);
-    BOOST_CHECK_THROW(pauli.update_basis_change(std::vector<VecZ>(2 * N, VecZ{0})), std::invalid_argument);
+    CHECK_THROWS_AS(pauli.update_cutoff_type(CutoffType::Length), std::invalid_argument);
+    CHECK_THROWS_AS(pauli.update_basis_change(std::vector<VecZ>(2 * N, VecZ{0})), std::invalid_argument);
 
     auto majorana = make(OperatorDict{});
     // Too few rows: regenerate_cutoff_fn_ indexes [0, 2*logical_num_modes) unconditionally.
-    BOOST_CHECK_THROW(majorana.update_basis_change(std::vector<VecZ>{VecZ{0}}), std::invalid_argument);
-    BOOST_CHECK_THROW(majorana.update_basis_change(std::vector<VecZ>(2 * N, VecZ{2 * N})), std::runtime_error);
+    CHECK_THROWS_AS(majorana.update_basis_change(std::vector<VecZ>{VecZ{0}}), std::invalid_argument);
+    CHECK_THROWS_AS(majorana.update_basis_change(std::vector<VecZ>(2 * N, VecZ{2 * N})), std::runtime_error);
     std::vector<VecZ> identity(2 * N);
     for (size_t i = 0; i < identity.size(); ++i) {
         identity[i] = VecZ{i};
     }
-    BOOST_CHECK_NO_THROW(majorana.update_basis_change(identity));
+    CHECK_NOTHROW(majorana.update_basis_change(identity));
 }
 
-BOOST_FIXTURE_TEST_CASE(propagate_on_nonempty_graph_throws, ExampleDataFix) {
+TEST_CASE_METHOD(ExampleDataFix, "propagate_on_nonempty_graph_throws") {
     auto sim = build_simulator<n_modes>(data, SimulatorConfig{});
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
-    BOOST_REQUIRE(sim.graph_layers() > 0);
-    BOOST_CHECK_THROW(sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters),
-                      std::runtime_error);
+    REQUIRE(sim.graph_layers() > 0);
+    CHECK_THROWS_AS(sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters),
+                    std::runtime_error);
 }
 
 // Pins MPGraph::get_layer's checked_layer_offset throw site.
-BOOST_FIXTURE_TEST_CASE(graph_get_layer_out_of_range_throws, ExampleDataFix) {
+TEST_CASE_METHOD(ExampleDataFix, "graph_get_layer_out_of_range_throws") {
     auto sim = build_simulator<n_modes>(data, SimulatorConfig{});
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const auto &graph = sim.graph();
     const size_t n_layers = graph.layers();
-    BOOST_REQUIRE(n_layers > 0);
-    BOOST_CHECK_NO_THROW((void)graph.get_layer(0));
-    BOOST_CHECK_THROW((void)graph.get_layer(n_layers), std::exception);
+    REQUIRE(n_layers > 0);
+    CHECK_NOTHROW((void)graph.get_layer(0));
+    CHECK_THROWS_AS((void)graph.get_layer(n_layers), std::exception);
 }

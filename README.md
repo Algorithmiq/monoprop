@@ -100,7 +100,7 @@ uv sync --all-extras -v
 uv sync --all-extras -v --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
 ```
 
-C++ unit-test build:
+C++ unit-test build (Catch2 v3, registered through CTest):
 
 ```bash
 uv sync --all-extras -v

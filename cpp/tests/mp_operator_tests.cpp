@@ -17,7 +17,9 @@
 // encode_pauli_coeff) as the oracle. They pin composition -- incremental scoring, slot placement, the
 // init-map drain, the picture/basis branches -- not the phase math (majorana_cutoff_tests.cpp).
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
 #include <complex>
@@ -79,7 +81,7 @@ auto sparse_state_equals(const detail::MPOperator<8>::SparseState &sparse, const
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_pauli) {
+TEST_CASE("mp_operator_get_state_scores_paired_terms_majorana_and_pauli") {
     const VecZ initial_state = {0, 1}; // occupied modes
     for (const Basis basis : {Basis::Majorana, Basis::Pauli}) {
         detail::MPOperator<8> op;
@@ -99,24 +101,24 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_paul
 
         // The sparse form is the resting representation: paired rows only, ascending.
         const auto sparse = op.sparse_state();
-        BOOST_CHECK(sparse_state_equals(sparse, expected_sparse_state(op, basis, initial_state)));
-        BOOST_REQUIRE_EQUAL(sparse.rows.size(), 2U); // rows 0 and 1; the unpaired row 2 is absent
-        BOOST_CHECK_EQUAL(sparse.rows[0], 0U);
-        BOOST_CHECK_EQUAL(sparse.rows[1], 1U);
+        CHECK(sparse_state_equals(sparse, expected_sparse_state(op, basis, initial_state)));
+        REQUIRE((sparse.rows.size()) == (2U)); // rows 0 and 1; the unpaired row 2 is absent
+        CHECK((sparse.rows[0]) == (0U));
+        CHECK((sparse.rows[1]) == (1U));
 
         const VecD state = op.materialize_state();
-        BOOST_REQUIRE_EQUAL(state.size(), 3U);
-        BOOST_CHECK(state == expected_state(op, basis, initial_state));
-        BOOST_CHECK(op.dense_state() == state);
+        REQUIRE((state.size()) == (3U));
+        CHECK(state == expected_state(op, basis, initial_state));
+        CHECK(op.dense_state() == state);
 
         // Structural, oracle-independent: paired rows carry a unit phase, the unpaired row is zero.
-        BOOST_CHECK_EQUAL(std::abs(state[0]), 1.0);
-        BOOST_CHECK_EQUAL(std::abs(state[1]), 1.0);
-        BOOST_CHECK_EQUAL(state[2], 0.0);
+        CHECK((std::abs(state[0])) == (1.0));
+        CHECK((std::abs(state[1])) == (1.0));
+        CHECK((state[2]) == (0.0));
     }
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) {
+TEST_CASE("mp_operator_get_state_scores_only_new_terms_incrementally") {
     const VecZ initial_state = {0};
     detail::MPOperator<8> op;
     op.initial_state = initial_state;
@@ -126,9 +128,9 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) 
     a.set(1); // paired
     op.append_term(a);
     const VecD first = op.dense_state();
-    BOOST_REQUIRE_EQUAL(first.size(), 1U);
+    REQUIRE((first.size()) == (1U));
     const double a_score = first[0];
-    BOOST_CHECK_EQUAL(op.state_scored_rows_, 1U);
+    CHECK((op.state_scored_rows_) == (1U));
 
     // Stands in for evolution mutating the live vector: the incremental pass must not rewrite an
     // already-scored row, so this value has to survive.
@@ -139,21 +141,21 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) 
     b.set(3); // paired
     op.append_term(b);
     const VecD second = op.dense_state(); // must score only row 1, leave row 0 untouched
-    BOOST_REQUIRE_EQUAL(second.size(), 2U);
-    BOOST_CHECK_EQUAL(second[0], 7.5);
-    BOOST_CHECK_EQUAL(second[1], expected_state(op, Basis::Majorana, initial_state)[1]);
+    REQUIRE((second.size()) == (2U));
+    CHECK((second[0]) == (7.5));
+    CHECK((second[1]) == (expected_state(op, Basis::Majorana, initial_state)[1]));
 
     // The sparse set was extended, not rebuilt: row 0 still carries its original state score.
     const auto sparse = op.sparse_state();
-    BOOST_CHECK(sparse_state_equals(sparse, expected_sparse_state(op, Basis::Majorana, initial_state)));
-    BOOST_REQUIRE_EQUAL(sparse.rows.size(), 2U);
-    BOOST_CHECK_EQUAL(sparse.values[0], a_score);
+    CHECK(sparse_state_equals(sparse, expected_sparse_state(op, Basis::Majorana, initial_state)));
+    REQUIRE((sparse.rows.size()) == (2U));
+    CHECK((sparse.values[0]) == (a_score));
 
     // Idempotent when nothing was appended.
-    BOOST_CHECK(op.dense_state() == second);
+    CHECK(op.dense_state() == second);
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map) {
+TEST_CASE("mp_operator_get_operator_drains_present_terms_from_init_map") {
     const auto a = indices_to_bitset<8>({0, 1});
     const auto b = indices_to_bitset<8>({2, 3});
     auto op = build_indexed_op({a, b});
@@ -163,17 +165,17 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map
     op.init_op_map[absent] = 9.0; // absent from store -> stays pending
 
     const VecD &coeffs = op.get_operator();
-    BOOST_REQUIRE_EQUAL(coeffs.size(), 2U);
-    BOOST_CHECK_EQUAL(coeffs[0], 3.0);
-    BOOST_CHECK_EQUAL(coeffs[1], 0.0);                                // b was not in the init map
-    BOOST_CHECK(op.init_op_map.find(a) == op.init_op_map.end());      // drained
-    BOOST_CHECK(op.init_op_map.find(absent) != op.init_op_map.end()); // retained
+    REQUIRE((coeffs.size()) == (2U));
+    CHECK((coeffs[0]) == (3.0));
+    CHECK((coeffs[1]) == (0.0));                                // b was not in the init map
+    CHECK(op.init_op_map.find(a) == op.init_op_map.end());      // drained
+    CHECK(op.init_op_map.find(absent) != op.init_op_map.end()); // retained
 
     // Second call is a no-op fast path (size already matches).
-    BOOST_CHECK(op.get_operator() == coeffs);
+    CHECK(op.get_operator() == coeffs);
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pauli) {
+TEST_CASE("mp_operator_update_initial_operator_heisenberg_branches_pauli") {
     const auto present = indices_to_bitset<8>({0, 2});
     auto op = build_indexed_op({present}, Basis::Pauli); // row 0 indexed
     op.init_op_map[indices_to_bitset<8>({4, 6})] = 0.0;  // seed a pending term
@@ -183,32 +185,32 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pau
     dict[VecZ{4, 6}] = cd(2.5, 0.0); // in init_op_map -> stays pending
 
     const auto grad = op.update_initial_operator(dict, /*schrodinger=*/false);
-    BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), 1U);
-    BOOST_CHECK_EQUAL(op.op_coeffs[0], encode_pauli_coeff(cd(1.5, 0.0))); // Pauli encode path
-    BOOST_CHECK(op.init_op_map.find(indices_to_bitset<8>({4, 6})) != op.init_op_map.end());
-    BOOST_CHECK(op.init_op_map.find(present) == op.init_op_map.end());
-    BOOST_CHECK_EQUAL(grad.first.size(), 2U); // every supplied term recorded in the grad arrays
+    REQUIRE((op.op_coeffs.size()) == (1U));
+    CHECK((op.op_coeffs[0]) == (encode_pauli_coeff(cd(1.5, 0.0)))); // Pauli encode path
+    CHECK(op.init_op_map.find(indices_to_bitset<8>({4, 6})) != op.init_op_map.end());
+    CHECK(op.init_op_map.find(present) == op.init_op_map.end());
+    CHECK((grad.first.size()) == (2U)); // every supplied term recorded in the grad arrays
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_rejects_absent_term) {
+TEST_CASE("mp_operator_update_initial_operator_heisenberg_rejects_absent_term") {
     auto op = build_indexed_op({indices_to_bitset<8>({0, 2})}, Basis::Pauli);
 
     OperatorDict dict;
     dict[VecZ{1, 3, 5}] = cd(1.0, 0.0); // absent from both store and init_op_map
-    BOOST_CHECK_THROW(op.update_initial_operator(dict, /*schrodinger=*/false), std::runtime_error);
+    CHECK_THROWS_AS(op.update_initial_operator(dict, /*schrodinger=*/false), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_absent_term) {
+TEST_CASE("mp_operator_update_initial_operator_schrodinger_admits_absent_term") {
     auto op = build_indexed_op({indices_to_bitset<8>({0, 2})}, Basis::Pauli);
 
     OperatorDict dict;
     const auto fresh = indices_to_bitset<8>({1, 3, 5});
     dict[VecZ{1, 3, 5}] = cd(4.0, 0.0);
     op.update_initial_operator(dict, /*schrodinger=*/true);
-    BOOST_CHECK(op.init_op_map.find(fresh) != op.init_op_map.end());
+    CHECK(op.init_op_map.find(fresh) != op.init_op_map.end());
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identity_term) {
+TEST_CASE("mp_operator_update_initial_operator_majorana_encode_identity_term") {
     // The Majorana codec divides by the term's hermitian phase, which is 1 for the identity term, so
     // a real coefficient round-trips as itself without tripping the non-Hermitian guard.
     const Monomial<8> identity;             // empty
@@ -217,12 +219,12 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identit
     OperatorDict dict;
     dict[VecZ{}] = cd(2.75, 0.0);
     op.update_initial_operator(dict, /*schrodinger=*/false);
-    BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), 1U);
-    BOOST_CHECK_EQUAL(op.op_coeffs[0], algebra_encode_coeff<8>(Basis::Majorana, cd(2.75, 0.0), identity));
-    BOOST_CHECK_EQUAL(op.op_coeffs[0], 2.75);
+    REQUIRE((op.op_coeffs.size()) == (1U));
+    CHECK((op.op_coeffs[0]) == (algebra_encode_coeff<8>(Basis::Majorana, cd(2.75, 0.0), identity)));
+    CHECK((op.op_coeffs[0]) == (2.75));
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {
+TEST_CASE("mp_operator_insert_absent_terms_grows_and_indexes") {
     const auto e0 = indices_to_bitset<8>({0, 1});
     const auto e1 = indices_to_bitset<8>({2, 3});
     auto op = build_indexed_op({e0, e1});
@@ -237,55 +239,55 @@ BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {
         [&](size_t k) -> const Monomial<8> & { return fresh[k]; },
         [&](size_t k, size_t b) { assign_row<8>(*op.store, b + k, fresh[k]); });
 
-    BOOST_CHECK_EQUAL(base, 2U);
-    BOOST_CHECK_EQUAL(op.size(), 5U);
+    CHECK((base) == (2U));
+    CHECK((op.size()) == (5U));
     for (const auto &f : fresh) {
-        BOOST_CHECK(op.store->find(f).has_value());
+        CHECK(op.store->find(f).has_value());
     }
-    BOOST_CHECK(op.store->find(e0).has_value()); // existing rows intact
-    BOOST_CHECK(op.store->find(e1).has_value());
+    CHECK(op.store->find(e0).has_value()); // existing rows intact
+    CHECK(op.store->find(e1).has_value());
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_append_term_after_materialization_rebuilds_inverted_index) {
+TEST_CASE("mp_operator_append_term_after_materialization_rebuilds_inverted_index") {
     detail::MPOperator<8> op;
     op.append_term(indices_to_bitset<8>({0, 1}));
-    BOOST_CHECK_EQUAL(op.inverted_index().rows(), 1U); // materializes the index (rows == size)
+    CHECK((op.inverted_index().rows()) == (1U)); // materializes the index (rows == size)
 
     // append_term does not sync the index; the next inverted_index() sees rows() != store size and
     // rebuilds against the grown store.
     op.append_term(indices_to_bitset<8>({2, 3}));
-    BOOST_CHECK_EQUAL(op.inverted_index().rows(), 2U);
+    CHECK((op.inverted_index().rows()) == (2U));
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_presence) {
+TEST_CASE("mp_operator_estimate_memory_usage_tracks_inverted_index_presence") {
     detail::MPOperator<8> op;
     op.append_term(indices_to_bitset<8>({0, 1}));
     op.append_term(indices_to_bitset<8>({2, 3}));
 
     const auto before = detail::estimate_memory_usage<8>(op);
-    BOOST_CHECK_GT(before.total_bytes(), 0U);
-    BOOST_CHECK_GT(before.operator_terms_bytes, 0U);
-    BOOST_CHECK_EQUAL(before.inverted_index_bytes, 0U); // absent arm
+    CHECK((before.total_bytes()) > (0U));
+    CHECK((before.operator_terms_bytes) > (0U));
+    CHECK((before.inverted_index_bytes) == (0U)); // absent arm
 
     (void)op.inverted_index();
     const auto after = detail::estimate_memory_usage<8>(op);
-    BOOST_CHECK_GT(after.inverted_index_bytes, 0U); // present arm
+    CHECK((after.inverted_index_bytes) > (0U)); // present arm
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {
+TEST_CASE("mp_operator_copy_constructor_clones_store_and_coeffs") {
     auto op = build_indexed_op({indices_to_bitset<8>({0, 1}), indices_to_bitset<8>({2, 3})});
     op.initial_state = {0};
     (void)op.sparse_state();
 
     detail::MPOperator<8> copy(op); // deep copy via clone()
-    BOOST_CHECK_EQUAL(copy.size(), op.size());
-    BOOST_CHECK_EQUAL(copy.state_scored_rows_, op.state_scored_rows_);
-    BOOST_CHECK(copy.state_rows_ == op.state_rows_);
-    BOOST_CHECK(copy.state_vals_ == op.state_vals_);
-    BOOST_CHECK(copy.materialize_state() == op.materialize_state());
-    BOOST_CHECK(copy.store->find(indices_to_bitset<8>({0, 1})).has_value());
+    CHECK((copy.size()) == (op.size()));
+    CHECK((copy.state_scored_rows_) == (op.state_scored_rows_));
+    CHECK(copy.state_rows_ == op.state_rows_);
+    CHECK(copy.state_vals_ == op.state_vals_);
+    CHECK(copy.materialize_state() == op.materialize_state());
+    CHECK(copy.store->find(indices_to_bitset<8>({0, 1})).has_value());
     // Mutating the copy must not touch the original (independent stores).
     copy.append_term(indices_to_bitset<8>({4, 5}));
-    BOOST_CHECK_EQUAL(op.size(), 2U);
-    BOOST_CHECK_EQUAL(copy.size(), 3U);
+    CHECK((op.size()) == (2U));
+    CHECK((copy.size()) == (3U));
 }

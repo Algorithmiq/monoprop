@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cmath>
 #include <optional>
@@ -58,16 +60,17 @@ auto evaluate_zero_cutoff_full_rescue_energy(MonomialPropagator<NumModes>& simul
 } // namespace
 
 // One test per (fixture, comm) so a failure pinpoints the configuration.
+#define STRINGIFY_IMPL(Token) #Token
+#define STRINGIFY(Token)      STRINGIFY_IMPL(Token)
 #define MAKE_ZERO_CUTOFF_RESCUE_TEST(NAME, FixtureType, CommToken)                                            \
-    BOOST_FIXTURE_TEST_CASE(NAME##_##CommToken, FixtureType) {                                                \
+    TEST_CASE_METHOD(FixtureType, STRINGIFY(NAME) "_" STRINGIFY(CommToken)) {                                 \
         MPI_Comm comm = (CommMode::CommToken == CommMode::Self) ? MPI_COMM_SELF : MPI_COMM_WORLD;             \
         if (CommMode::CommToken == CommMode::World && mpi::size(comm) == 1) {                                 \
-            BOOST_TEST_MESSAGE("Skipping multi-rank scenario for " #NAME " (world size=1)");                  \
-            return;                                                                                           \
+            SKIP("Skipping multi-rank scenario for " #NAME " (world size=1)");                                \
         }                                                                                                     \
         auto simulator = build_zero_cutoff_full_rescue<FixtureType::n_modes>(data, comm);                     \
         const double energy = evaluate_zero_cutoff_full_rescue_energy<FixtureType::n_modes>(simulator, data); \
-        BOOST_CHECK_SMALL(std::abs(energy - data.actual_expval), kEnergyAtol);                                \
+        CHECK_THAT(energy - data.actual_expval, Catch::Matchers::WithinAbs(0.0, kEnergyAtol));                \
     }
 
 MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, ExampleDataFix, Self)
@@ -77,3 +80,5 @@ MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixtur
 MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, World)
 
 #undef MAKE_ZERO_CUTOFF_RESCUE_TEST
+#undef STRINGIFY
+#undef STRINGIFY_IMPL

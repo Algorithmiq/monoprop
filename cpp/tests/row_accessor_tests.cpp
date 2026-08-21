@@ -14,7 +14,9 @@
 
 // The dense-vector and packed OperatorIndex backends must agree through every TypeAliases.h accessor.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <vector>
 
@@ -45,26 +47,26 @@ auto check_backends_agree(const std::vector<std::vector<size_t>> &raw_rows) -> v
         packed.push_back(m);
     }
 
-    BOOST_REQUIRE(packed.size() == dense.size());
+    REQUIRE(packed.size() == dense.size());
     for (size_t i = 0; i < dense.size(); ++i) {
-        BOOST_TEST((materialize_row<N>(dense, i) == materialize_row<N>(packed, i)));
-        BOOST_TEST(row_popcount<N>(dense, i) == row_popcount<N>(packed, i));
-        BOOST_TEST(row_popcount<N>(dense, i) == materialize_row<N>(dense, i).count());
-        BOOST_TEST(positions_of<N>(dense, i) == positions_of<N>(packed, i));
+        CHECK((materialize_row<N>(dense, i) == materialize_row<N>(packed, i)));
+        CHECK(row_popcount<N>(dense, i) == row_popcount<N>(packed, i));
+        CHECK(row_popcount<N>(dense, i) == materialize_row<N>(dense, i).count());
+        CHECK(positions_of<N>(dense, i) == positions_of<N>(packed, i));
     }
 }
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(row_accessor_backends_agree_single_word) {
+TEST_CASE("row_accessor_backends_agree_single_word") {
     check_backends_agree<32>({{0, 3, 5}, {1, 2}, {}, {63}, {0, 1, 2, 3, 62, 63}});
 }
 
-BOOST_AUTO_TEST_CASE(row_accessor_backends_agree_multi_word) {
+TEST_CASE("row_accessor_backends_agree_multi_word") {
     check_backends_agree<96>({{0, 64, 191}, {5, 63, 64, 65}, {}, {128, 190}});
 }
 
-BOOST_AUTO_TEST_CASE(row_accessor_assign_row_overwrites) {
+TEST_CASE("row_accessor_assign_row_overwrites") {
     constexpr size_t N = 32;
     std::vector<Monomial<N>> dense;
     detail::OperatorIndex<N> packed;
@@ -81,8 +83,8 @@ BOOST_AUTO_TEST_CASE(row_accessor_assign_row_overwrites) {
     assign_row<N>(dense, 0, replacement);
     assign_row<N>(packed, 0, replacement);
 
-    BOOST_TEST((materialize_row<N>(dense, 0) == replacement));
-    BOOST_TEST((materialize_row<N>(packed, 0) == replacement));
-    BOOST_TEST(row_popcount<N>(packed, 0) == 3U);
-    BOOST_TEST(positions_of<N>(dense, 0) == positions_of<N>(packed, 0));
+    CHECK((materialize_row<N>(dense, 0) == replacement));
+    CHECK((materialize_row<N>(packed, 0) == replacement));
+    CHECK(row_popcount<N>(packed, 0) == 3U);
+    CHECK(positions_of<N>(dense, 0) == positions_of<N>(packed, 0));
 }
