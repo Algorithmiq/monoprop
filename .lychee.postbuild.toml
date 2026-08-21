@@ -1,0 +1,18 @@
+# Post-build check over exported HTML with external links enabled.
+
+# Avoid noisy/generated dependency paths if ever passed as inputs.
+exclude_path = ["docs/node_modules/**"]
+
+# Keep retries bounded while reducing transient external failures.
+max_retries = 2
+timeout = 20
+
+# Treat common external rate limiting as non-fatal for CI stability.
+# Also some websites like aps.org block crawlers with 403.
+accept = [200, 403, 429]
+
+# False positives:
+# - localhost:3000: development server URL used as an example in the docs.
+exclude = [
+  "^http://localhost",
+]
