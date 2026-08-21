@@ -80,7 +80,6 @@ public:
         base_recv_.resize(p);
         col_sum_.resize(p);
         recv_col_.resize(p);
-        run_.resize(p);
         // Row u of counts_matrix_ is written ONLY by partition u, concurrently with every other row, so
         // the row stride is rounded up to a whole number of 64-byte lines: without that, two partitions
         // share a line and the Phase P0 publish becomes a false-sharing storm across S cores. At P=256
@@ -594,14 +593,15 @@ private:
                 cur += static_cast<size_t>(col_sum_[g]);
             }
         }
-        // Pass B: the exclusive prefix over source partitions, u OUTER again.
-        std::fill(run_.begin(), run_.end(), 0LL);
+        // Pass B: the exclusive prefix over source partitions, u OUTER again. col_sum_ carries it: its
+        // last reader is the base_send_ loop above, and pass B ends up rebuilding the same column sums.
+        std::fill(col_sum_.begin(), col_sum_.end(), 0LL);
         for (int u = 0; u < s_; ++u) {
             const int *row = counts_row_(u);
             size_t *off = pack_off_.data() + pack_idx_(u, 0);
             for (size_t g = 0; g < p; ++g) {
-                off[g] = base_send_[g] + static_cast<size_t>(run_[g]);
-                run_[g] += row[g];
+                off[g] = base_send_[g] + static_cast<size_t>(col_sum_[g]);
+                col_sum_[g] += row[g];
             }
         }
         // Grow-only, no zero-fill: pack_send_'s blocks tile [0, total_send) exactly, so stale bytes past
@@ -733,7 +733,6 @@ private:
     // locals: the constructor's no-per-call-allocation contract covers these too. long long throughout,
     // because each entry sums up to S int counts and only the per-rank totals are int-checked.
     std::vector<long long> col_sum_;
-    std::vector<long long> run_;
     std::vector<long long> recv_col_;
     // [S x counts_stride_] send-count matrix: row u is written ONLY by partition u, in Phase P0, and read
     // by partition 0 in the B1→B2 window and by partition u itself in pack_send_. The stride is padded and
