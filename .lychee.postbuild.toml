@@ -8,14 +8,11 @@ max_retries = 2
 timeout = 20
 
 # Treat common external rate limiting as non-fatal for CI stability.
-accept = [200, 429]
+# Also some websites like aps.org block crawlers with 403.
+accept = [200, 403, 429]
 
 # False positives:
-# - settings.json: lives on this branch, not yet on main; 404 until merged.
 # - localhost:3000: development server URL used as an example in the docs.
-# - link.aps.org: APS journal blocks automated link checkers with 403.
 exclude = [
-  "https://github\\.com/Algorithmiq/monoprop/blob/main/benches/third_party/pauli_prop/settings\\.json",
   "^http://localhost",
-  "https://link\\.aps\\.org/",
 ]
