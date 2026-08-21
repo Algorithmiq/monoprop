@@ -19,11 +19,16 @@ on:
         description: Benchmark label, used to name the result artifacts.
         required: true
         type: string
-      bench-args:
-        description: Extra pytest args appended to `just bench-ci`.
+      bench-markers:
+        description: pytest marker expression. Empty selects every benchmark.
         required: false
         type: string
-        default: ""
+        default: not slow
+      bench-rounds:
+        description: Fixed timing rounds per benchmark.
+        required: false
+        type: string
+        default: "5"
 
 env:
   FORCE_COLOR: 3
@@ -54,18 +59,21 @@ jobs:
           python-version: "3.11"
 
       - name: Install package
+        env:
+          SKBUILD_CMAKE_DEFINE: monoprop_ENABLE_CXX_UNIT_TESTS=OFF
         run: |
           uv sync --no-progress --group bench --all-extras -v
 
       # Inputs reach the shell through the environment rather than `${{ }}`
-      # interpolation, which would splice them into the script text. BENCH_ARGS
-      # is deliberately unquoted: it carries several pytest words, or none.
+      # interpolation, which would splice them into the script text. The recipe
+      # quotes both, so a marker expression may contain spaces or be empty.
       - name: Run benchmarks
         env:
           BENCHER_LABEL: ${{ inputs.label }}
-          BENCH_ARGS: ${{ inputs.bench-args }}
+          monoprop_BENCH_MARKERS: ${{ inputs.bench-markers }}
+          monoprop_BENCH_ROUNDS: ${{ inputs.bench-rounds }}
         run: |
-          just bench-ci "$BENCHER_LABEL" $BENCH_ARGS
+          just bench-ci "$BENCHER_LABEL"
 
       - name: Convert results to Bencher Metric Format
         env:

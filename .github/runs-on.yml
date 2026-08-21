@@ -16,7 +16,6 @@ runners:
     ram: 32
     image: ubuntu24-full-x64
     volume: 40gb:gp3
-    # Spot would trade that comparability for cost twice over: an interruption
-    # loses the run, and the allocator is free to hand back a different type.
+    # Spot risks both an interrupted run and a different instance type.
     spot: false
     ssh: false

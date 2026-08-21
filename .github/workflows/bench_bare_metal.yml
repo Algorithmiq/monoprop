@@ -33,6 +33,9 @@ jobs:
       # different testbed, because its history cannot be compared to this one.
       testbed: aws-c7i-4xlarge
       label: ci-bare-metal
+      # A dedicated node can afford the slow fixed models
+      bench-markers: ""
+      bench-rounds: "3"
     secrets: inherit
     permissions:
       contents: read

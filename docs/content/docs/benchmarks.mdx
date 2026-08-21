@@ -497,15 +497,17 @@ The build, benchmark and upload steps live once in the reusable
 `.github/workflows/bench.yml`; a caller workflow supplies the runner, the
 testbed name and the result label:
 
-| Workflow | Runner | Testbed | Label |
-|---|---|---|---|
-| `bench_main.yml` | GitHub-hosted `ubuntu-26.04` | `ubuntu-26.04` | `ci-linux` |
-| `bench_bare_metal.yml` | [RunsOn](https://runs-on.com/) EC2 node | `aws-c7i-4xlarge` | `ci-bare-metal` |
+| Workflow | Runner | Testbed | Label | Profile |
+|---|---|---|---|---|
+| `bench_main.yml` | GitHub-hosted `ubuntu-26.04` | `ubuntu-26.04` | `ci-linux` | `not slow`, 5 rounds |
+| `bench_bare_metal.yml` | [RunsOn](https://runs-on.com/) EC2 node | `aws-c7i-4xlarge` | `ci-bare-metal` | everything, 3 rounds |
 
 The bare-metal workflow provisions a dedicated node per run, so the machine is
 billed per commit rather than continuously and nothing else is scheduled on it
 while the benchmarks run. That lower noise floor is the point: it is what a
 testbed needs before its timing thresholds can be tightened enough to gate on.
+It is also why it can afford the slow fixed models that the shared runner skips,
+and why fewer rounds reach the same confidence there.
 
 It is skipped unless the `BENCH_BARE_METAL` repository variable is set to
 `true` — without a RunsOn stack answering the label, the job would queue until
@@ -515,11 +517,14 @@ default branch only, so changes to it take effect after merge, not in the pull
 request that makes them.
 
 A new testbed starts with no history, so its first runs raise no alerts and its
-thresholds need setting once enough points exist to see the noise. Problem sizes
-are shared with the GitHub-hosted testbed until they are calibrated on the real
-node; `bench-ci` forwards extra arguments to `pytest` for that, so widening the
-profile for one machine does not need a second recipe:
+thresholds need setting once enough points exist to see the noise. Which
+benchmarks run, and how many rounds each gets, are the `bench-markers` and
+`bench-rounds` inputs of the reusable workflow; `bench-ci` reads them from the
+environment, so a profile can be reproduced locally:
 
 ```bash
-just bench-ci ci-bare-metal -m ""   # include the slow fixed models
+monoprop_BENCH_MARKERS= monoprop_BENCH_ROUNDS=3 just bench-ci ci-bare-metal
 ```
+
+Changing either for a testbed that already has history rewrites what its series
+measures, so pick them before the first run rather than after.
