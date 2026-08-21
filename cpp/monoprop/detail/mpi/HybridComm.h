@@ -86,7 +86,7 @@ public:
         // share a line and the Phase P0 publish becomes a false-sharing storm across S cores. At P=256
         // a row is exactly 1 KiB and the padding costs nothing; at other P it does.
         counts_stride_ = round_up_(p, kIntsPerLine);
-        rows_stride_ = round_up_(2 * static_cast<size_t>(r_), kLongsPerLine);
+        rows_stride_ = round_up_(static_cast<size_t>(r_), kLongsPerLine);
         // Over-allocated by one line each so the base pointer can be advanced to a line boundary:
         // std::vector's allocator guarantees alignof(T), not 64, and a padded stride only keeps rows
         // apart once row 0 starts on a line of its own.
@@ -214,16 +214,16 @@ private:
         me.ptr = args.send;
         me.send_counts = args.send_counts;
         me.send_displs = args.send_displs;
-        // Phase P0, BEFORE B1: each partition publishes its own count row and its per-rank row totals,
+        // Phase P0, BEFORE B1: each partition publishes its own count row and its per-rank recv totals,
         // reading only its own arguments. No peer state is touched, so this needs no barrier of its own
         // and the verb still costs exactly 4.
         //
         // Do not overstate it: partition 0 still sweeps every partition's row in B1→B2, so the volume
         // it pulls across cores is unchanged at S rows x P ints. What changed is the access pattern
         // (three strided passes over S separate arrays become sequential sweeps of one matrix) and the
-        // row TOTALS, which are the only part genuinely moved onto the owners, at O(R*S).
-        // See publish_send_rows_ for the lifetime rule.
-        publish_send_rows_(local_partition, args.send_counts);
+        // recv row TOTALS, which are the only part genuinely moved onto the owners, at O(R*S).
+        // See publish_counts_row_ for the lifetime rule.
+        publish_counts_row_(local_partition, args.send_counts);
         publish_recv_rows_(local_partition, args.recv_counts);
         sync(); // B1
 
@@ -293,10 +293,10 @@ private:
         me.ptr = reinterpret_cast<const std::byte *>(args.send);
         me.send_counts = args.send_counts;
         me.send_displs = args.send_displs;
-        // Phase P0, BEFORE B1: the send half only. This verb cannot publish recv rows, because its recv
+        // Phase P0, BEFORE B1: the count row only. This verb cannot publish recv rows, because its recv
         // counts do not exist until the count MPI_Alltoall has run on partition 0 in the B1→B2 window;
         // that side is served by fill_recv_col_from_counts_recv_ instead.
-        publish_send_rows_(local_partition, args.send_counts);
+        publish_counts_row_(local_partition, args.send_counts);
         sync(); // B1
 
         if (local_partition == 0) {
@@ -461,8 +461,7 @@ private:
 
     // Partition u's own line-aligned rows of the two Phase P0 tables.
     auto counts_row_(int u) -> int * { return counts_matrix_ + static_cast<size_t>(u) * counts_stride_; }
-    auto row_send_(int u) -> long long * { return rows_ + static_cast<size_t>(u) * rows_stride_; }
-    auto row_recv_(int u) -> long long * { return row_send_(u) + r_; }
+    auto row_recv_(int u) -> long long * { return rows_ + static_cast<size_t>(u) * rows_stride_; }
 
     /* Phase P0 — what a partition publishes BEFORE the verb's first barrier.
      *
@@ -492,24 +491,9 @@ private:
                     static_cast<size_t>(r_) * static_cast<size_t>(s_) * sizeof(int));
     }
 
-    // Phase P0 for the payload verbs: the count row plus this partition's per-destination-rank totals.
-    // row_send_(u)[b] is exactly the quantity the old size_staging_impl_ re-derived on partition 0 by
-    // striding across every peer's send_counts, and is all partition 0 needs to size the MPI messages.
+    // The recv side, for the verb whose recv counts are a caller input. There is no send counterpart:
+    // partition 0 derives the per-rank send totals from col_sum_, which it must build anyway.
     // long long, not int: it sums up to S int counts, and only the per-rank total is int-checked.
-    auto publish_send_rows_(int local_partition, const int *send_counts) -> void {
-        publish_counts_row_(local_partition, send_counts);
-        long long *rs = row_send_(local_partition);
-        for (int b = 0; b < r_; ++b) {
-            long long sum = 0;
-            for (int t = 0; t < s_; ++t) {
-                sum += send_counts[b * s_ + t];
-            }
-            rs[b] = sum;
-        }
-    }
-
-    // The recv half, for the verb whose recv counts are a caller input. With S == 1 this and the send
-    // half degenerate to 2*R adds and one memcpy, with partition 0 being the only partition.
     auto publish_recv_rows_(int local_partition, const int *recv_counts) -> void {
         long long *rr = row_recv_(local_partition);
         for (int a = 0; a < r_; ++a) {
@@ -563,9 +547,10 @@ private:
      *
      * and the new code splits that same recurrence into a per-destination base and a per-source offset:
      *
-     *     W[g]           = sum_u c[u][g]                                   (pass A, u outer)
-     *     base_send_[g]  = mpi_send_displs_[b] + sum_{t'<t} W[b*S+t']       for g = b*S + t
-     *     pack_off_(u,g) = base_send_[g] + sum_{u'<u} c[u'][g]             (pass B, u outer)
+     *     W[g]                 = sum_u c[u][g]                             (pass A, u outer)
+     *     mpi_send_counts_[b]  = sum_t W[b*S+t]
+     *     base_send_[g]        = mpi_send_displs_[b] + sum_{t'<t} W[b*S+t']  for g = b*S + t
+     *     pack_off_(u,g)       = base_send_[g] + sum_{u'<u} c[u'][g]        (pass B, u outer)
      *
      * These are elementwise EQUAL, not merely equivalent. W[b*S+t] is exactly the total the old inner
      * u-loop accumulated before it moved on to t+1, so base_send_[b*S+t] is the value `cur` held when
@@ -576,12 +561,22 @@ private:
      */
     auto size_staging_send_(size_t elem) -> void {
         const size_t p = static_cast<size_t>(r_) * static_cast<size_t>(s_);
-        // checked_mpi_count moves from one whole-rank accumulator to S per-partition subtotals; the
-        // messages it raises are unchanged, so the same failure still names itself the same way.
+        // Pass A: the column sums W, u OUTER and g INNER, so both the count row and the accumulator are
+        // swept in address order. It feeds the checked counts below and cannot throw, so the order in
+        // which those throw is unchanged.
+        std::fill(col_sum_.begin(), col_sum_.end(), 0LL);
+        for (int u = 0; u < s_; ++u) {
+            const int *row = counts_row_(u);
+            for (size_t g = 0; g < p; ++g) {
+                col_sum_[g] += row[g];
+            }
+        }
+        // The per-rank total is that same W summed over t: one contiguous S-run of this rank's own array.
         for (int b = 0; b < r_; ++b) {
+            const long long *col = col_sum_.data() + static_cast<size_t>(b) * static_cast<size_t>(s_);
             long long send_sum = 0;
-            for (int u = 0; u < s_; ++u) {
-                send_sum += row_send_(u)[b];
+            for (int t = 0; t < s_; ++t) {
+                send_sum += col[t];
             }
             mpi_send_counts_[static_cast<size_t>(b)] = checked_mpi_count(send_sum, "Per-rank send count");
         }
@@ -591,15 +586,6 @@ private:
             send_running += mpi_send_counts_[static_cast<size_t>(b)];
         }
         const size_t total_send = static_cast<size_t>(checked_mpi_count(send_running, "Total send count"));
-        // Pass A: the column sums W, u OUTER and g INNER, so both the count row and the accumulator are
-        // swept in address order and the loop vectorises.
-        std::fill(col_sum_.begin(), col_sum_.end(), 0LL);
-        for (int u = 0; u < s_; ++u) {
-            const int *row = counts_row_(u);
-            for (size_t g = 0; g < p; ++g) {
-                col_sum_[g] += row[g];
-            }
-        }
         for (int b = 0; b < r_; ++b) {
             size_t cur = static_cast<size_t>(mpi_send_displs_[static_cast<size_t>(b)]);
             for (int t = 0; t < s_; ++t) {
@@ -755,8 +741,8 @@ private:
     std::vector<int> counts_matrix_store_;
     int *counts_matrix_ = nullptr;
     size_t counts_stride_ = 0;
-    // [S x rows_stride_] per-partition per-rank totals, row u = row_send_(u)[0..R) then row_recv_(u)[0..R),
-    // under the same ownership, padding and lifetime rules as counts_matrix_.
+    // [S x rows_stride_] per-partition per-rank recv totals, row u = row_recv_(u)[0..R), under the same
+    // ownership, padding and lifetime rules as counts_matrix_.
     std::vector<long long> rows_store_;
     long long *rows_ = nullptr;
     size_t rows_stride_ = 0;
