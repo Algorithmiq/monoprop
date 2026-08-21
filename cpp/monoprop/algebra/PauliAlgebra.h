@@ -150,6 +150,30 @@ auto make_pauli_gen_context(const MonomialLike auto &gen) -> PauliGenContext {
     return detail::mod4(delta + 2 * cross) == 1 ? -1 : 1;
 }
 
+// The same sign off word pointers instead of monomials. Identical arithmetic and identical word
+// order; what it drops is the storage-pointer select that mono.word(w) / new_mono.word(w) repeat on
+// every one of the ctx.nz_count accesses. The pointers must be the data() of bitsets at the
+// generator's width, which is what the per-gate kernel that calls this guarantees.
+[[gnu::always_inline]] inline auto pauli_rotation_sign_words(const auto &ctx,
+                                                             const uint64_t *mono,
+                                                             const uint64_t *new_mono) -> int {
+    const auto &e_mask = ctx.e_mask;
+    long delta = static_cast<long>(ctx.g_y);
+    long cross = 0;
+    for (size_t k = 0; k < ctx.nz_count; ++k) {
+        const size_t w = ctx.nz_words[k];
+        const uint64_t e = e_mask.word(w);
+        const auto [v_m, u_m] = detail::pauli_uv(mono[w], e);
+        const auto [v_n, u_n] = detail::pauli_uv(new_mono[w], e);
+        const auto [v_g, u_g] = detail::pauli_uv(ctx.gen.word(w), e);
+        delta += std::popcount(v_m & ~u_m);
+        delta -= std::popcount(v_n & ~u_n);
+        const uint64_t x_g = u_g ^ v_g;
+        cross += std::popcount(v_m & x_g);
+    }
+    return detail::mod4(delta + 2 * cross) == 1 ? -1 : 1;
+}
+
 // Diagonal element <b|P|b> = (-1)^{|Z ∩ occupied|} of a Z-only Pauli against the initial product
 // state. Only meaningful where is_paired holds; for a non-diagonal Pauli <b|P|b> = 0.
 [[nodiscard]] auto pauli_state_phase(const MonomialLike auto &mono, const auto &state_mask) -> double {

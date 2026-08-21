@@ -456,6 +456,12 @@ Each run writes `results/time-<label>.json` (pytest-benchmark) and
 `<label>.json` (everything else); `report.py` merges all labels into
 `results/REPORT.md`.
 
+The **Configuration** table names the row backend the run actually used, as `asked → ran`. Both halves
+are needed: `monoprop_ROW_STORE` records what was requested, but its default of `auto` leaves the
+choice to the storage width against a build-time crossover, so the setting alone does not identify the
+backend — and the two backends differ in footprint and in the order they accumulate a term sum. A run
+whose propagators disagree (they can only differ by width) reads `mixed`.
+
 The random benchmarks are reported per physical picture, since their size comes from the CLI and is
 shared by every label. The fixed models get a **Fixed models** section instead, one table each, because
 each model carries its own mode count: term count, time, **cost per term**, peak and resting RSS, and

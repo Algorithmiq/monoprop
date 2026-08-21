@@ -195,3 +195,78 @@ BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
         BOOST_TEST(out[i] == Store::kNotFound);
     }
 }
+
+// The row payload width is chosen from num_bits: one byte per slot while a bit position fits one, two
+// above that. The row array is the operator's largest, and rows are payload -- never a hash input, never
+// serialized -- so a widening here changes no term and no energy and a baseline diff cannot see it. This
+// is the footprint gate. memory_bytes() - slack_bytes() is the *used* part of the array, which makes the
+// figure exact instead of allocator-dependent.
+BOOST_AUTO_TEST_CASE(row_slot_width_follows_the_position_count) {
+    constexpr size_t kInline = 6;
+    constexpr size_t kRows = 500;
+    constexpr size_t kNarrowBits = Store::kNarrowPositions;
+    constexpr size_t kWideBits = Store::kNarrowPositions + 2;
+
+    Store narrow(kNarrowBits, kInline);
+    Store wide(kWideBits, kInline);
+    for (size_t i = 0; i < kRows; ++i) {
+        // One bit per row: any popcount <= kInline works, but staying at 1 keeps every row off the
+        // overflow side-map, whose bytes are counted separately and would blur the comparison.
+        narrow.push_back(Bitset(kNarrowBits, uint64_t{1} << (i % 64)));
+        wide.push_back(Bitset(kWideBits, uint64_t{1} << (i % 64)));
+    }
+
+    const size_t slots = kRows * (1 + kInline);
+    BOOST_TEST(narrow.memory_bytes() - narrow.slack_bytes() == slots);
+    BOOST_TEST(wide.memory_bytes() - wide.slack_bytes() == 2 * slots);
+}
+
+// The narrow overflow marker is 255, which is also a legal bit position at 256 positions. A row holding
+// it must read back as a position: the marker only ever occupies slot 0.
+BOOST_AUTO_TEST_CASE(a_narrow_row_holds_the_marker_valued_position) {
+    constexpr size_t kNarrowBits = Store::kNarrowPositions;
+    Store s(kNarrowBits, 4);
+    Bitset m(kNarrowBits);
+    m.set(0);
+    m.set(kNarrowBits - 1);
+    s.push_back(m);
+    s.emplace(m, 0);
+
+    BOOST_TEST(s.popcount(0) == 2u);
+    BOOST_TEST((s.row(0) == m));
+    BOOST_TEST(s.find(m).has_value());
+    BOOST_TEST(*s.find(m) == 0u);
+    std::vector<size_t> pos;
+    s.for_each_position(0, [&](size_t b) { pos.push_back(b); });
+    BOOST_TEST(pos.size() == 2u);
+    BOOST_TEST(pos[0] == 0u);
+    BOOST_TEST(pos[1] == kNarrowBits - 1);
+}
+
+// The marker is per-width, so the lossless spill has to be exercised on both sides of the crossover.
+BOOST_AUTO_TEST_CASE(overflow_spills_at_both_row_widths) {
+    for (const size_t bits : {Store::kNarrowPositions, Store::kNarrowPositions + 2}) {
+        Store s(bits, 2);
+        Bitset m(bits);
+        m.set(0);
+        m.set(1);
+        m.set(bits - 1); // popcount 3, above the inline width of 2
+        s.push_back(m);
+        s.emplace(m, 0);
+
+        BOOST_TEST(s.popcount(0) == 3u);
+        BOOST_TEST((s.row(0) == m));
+        BOOST_TEST(*s.find(m) == 0u);
+        // A round trip through clone() too: it copies both row arrays and the side-map.
+        const auto c = s.clone();
+        BOOST_TEST(c->popcount(0) == 3u);
+        BOOST_TEST((c->row(0) == m));
+    }
+}
+
+// A store past kMaxPositions has no row width that can hold its positions, and says so rather than
+// truncating a position into a plausible-looking row.
+BOOST_AUTO_TEST_CASE(a_width_past_the_row_payload_bound_throws) {
+    BOOST_CHECK_THROW(Store(Store::kMaxPositions + 2), OperatorIndexWidthUnsupported);
+    BOOST_CHECK_NO_THROW(Store(Store::kMaxPositions));
+}

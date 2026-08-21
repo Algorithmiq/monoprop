@@ -60,6 +60,27 @@ set(
   "Logical mode count at or above which the sparse row store is preferred (empty = ISA default)"
 )
 
+# How many storage words the scan's per-term kernel is specialized for. The gain is confined to narrow
+# registers -- it is the per-term word loops getting a compile-time trip count, which matters least
+# where the loop is longest -- so this is a cap and not a switch: 0 turns the specialization off
+# entirely and gives the unspecialized kernel at every width, 8 (Bitset::kInlineWords) specializes the
+# whole inline regime. See cpp/monoprop/detail/evolution/layer_build/TermProduct.h.
+set(
+  monoprop_NARROW_KERNEL_MAX_WORDS
+  4
+  CACHE STRING
+  "Storage word counts 1..N for which the per-term scan kernel is specialized (0 disables)"
+)
+
+if(
+  NOT monoprop_NARROW_KERNEL_MAX_WORDS MATCHES "^[0-8]$"
+)
+  message(
+    FATAL_ERROR
+    "monoprop_NARROW_KERNEL_MAX_WORDS must be 0..8 (Bitset::kInlineWords), got '${monoprop_NARROW_KERNEL_MAX_WORDS}'"
+  )
+endif()
+
 set(Python_FIND_VIRTUALENV FIRST)
 find_package(
   Python
@@ -129,6 +150,10 @@ message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 message(
   STATUS
   "   Sparse rows from       : ${monoprop_SPARSE_ROW_MIN_MODES} modes"
+)
+message(
+  STATUS
+  "   Narrow scan kernel     : up to ${monoprop_NARROW_KERNEL_MAX_WORDS} storage words"
 )
 
 # Testing is enabled from the *top-level* list file on purpose: CTest's root is wherever

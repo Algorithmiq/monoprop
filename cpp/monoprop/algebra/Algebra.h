@@ -54,6 +54,14 @@ struct MajoranaAlgebra {
     static auto rotation_sign(const GenContext &ctx, const Bitset &mono, const Bitset & /*new_mono*/) -> int {
         return mono.parity_and(ctx.interleave_mask) ? -1 : 1;
     }
+    // The same sign off word pointers the caller resolved once, with the word count bound by the
+    // caller rather than read off the operand. Same fold, same parity; see detail::WordKernel.
+    template <size_t W>
+    static auto rotation_sign_words(const GenContext &ctx,
+                                    const Bitset::word_type *mono,
+                                    const Bitset::word_type * /*new_mono*/) -> int {
+        return detail::WordKernel<W>::parity_and(mono, ctx.interleave_mask.data()) ? -1 : 1;
+    }
     // The same sign in support form. No GenContext: the interleave mask is dense by construction
     // (roughly half the register), so the sparse form walks the two rows instead of carrying a mask, and
     // the product row is not an argument either -- see codes_interleave_phase.
@@ -93,6 +101,15 @@ struct PauliAlgebra {
     // Rotation-ready sign: already the negated raw product sign (see pauli_rotation_sign).
     static auto rotation_sign(const GenContext &ctx, const Bitset &mono, const Bitset &new_mono) -> int {
         return pauli_rotation_sign(ctx.pauli_ctx, mono, new_mono);
+    }
+    // W is unused here and that is the point: this sign already loops over the generator's non-zero
+    // words only, so there is no trip count to bind -- what the word form removes is the storage-pointer
+    // select that mono.word(w) repeats on every access.
+    template <size_t W>
+    static auto rotation_sign_words(const GenContext &ctx,
+                                    const Bitset::word_type *mono,
+                                    const Bitset::word_type *new_mono) -> int {
+        return pauli_rotation_sign_words(ctx.pauli_ctx, mono, new_mono);
     }
     // Same exponent as above off the two rows; new_mono never has to exist, since a mode the generator
     // misses contributes nothing (see codes_pauli_rotation_sign).

@@ -23,6 +23,8 @@ engine picks rounds up rather than being fixed by a template argument.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from monoprop import Circuit, ExpGate, MajoranaPropagator, PauliPropagator
@@ -82,3 +84,41 @@ def test_pauli_propagator_runs_past_the_old_compile_time_ceiling(serial_comm):
     assert mp.num_modes == num_qubits
     # Z on qubit 0 against the all-zero reference state.
     assert mp.expectation_value([]) == pytest.approx(1.0)
+
+
+def _terms_and_row_bytes(num_modes, comm):
+    """Return (term count, row-array bytes) after one gate at a given system width.
+
+    The gate and the observable stay inside Majoranas 0..3, so widening the system pads it with
+    ungated, unoccupied modes: the surviving term set is identical at every width, and the only thing
+    that moves is the storage width and hence the width of a row slot.
+    """
+    observable = MajoranaOperator({(0, 1): 1j}, num_modes)
+    generator = MajoranaOperator({(2, 3): 1j}, num_modes)
+    circuit = Circuit(
+        gates=[ExpGate(generator)], system_size=num_modes, initial_state=[]
+    )
+    mp = MajoranaPropagator(observable, [], cutoff=4, comm=comm)
+    mp.build_graph(circuit)
+    breakdown = mp._simulator.operator_memory_breakdown()
+    return mp.size(), breakdown["operator_terms_bytes"]
+
+
+def test_row_slot_width_follows_the_storage_width(serial_comm):
+    """A row slot is one byte while a bit position fits one, and two above that.
+
+    The row array is the operator's largest, so this is a footprint gate rather than a correctness one:
+    rows are payload -- never a hash input, never serialized -- so a widening here changes no term and
+    no energy, and a baseline diff cannot see it. 128 storage modes is 256 bit positions, the last width
+    that fits a byte; 160 is the next whole block above it.
+
+    Dense rows only: the support-form store keys rows by mode lanes, not bit positions, so its slot
+    width follows a different bound and the factor below does not apply to it.
+    """
+    if os.environ.get("monoprop_ROW_STORE") == "sparse":  # noqa: SIM112
+        pytest.skip("the factor of two is a dense-row property")
+    narrow_terms, narrow_bytes = _terms_and_row_bytes(128, serial_comm)
+    wide_terms, wide_bytes = _terms_and_row_bytes(160, serial_comm)
+    assert narrow_terms == wide_terms
+    assert narrow_bytes > 0
+    assert wide_bytes == 2 * narrow_bytes

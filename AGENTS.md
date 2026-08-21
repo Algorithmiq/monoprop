@@ -81,12 +81,23 @@ Key files:
   `cached_even_bits` (`Utilities.h`) or a per-layer context rather than rebuilding them per call.
   Within-word pair tricks like `(word >> 1) & even_mask` are safe because a mode's two bits are
   `2m, 2m+1` and never straddle a word.
+  Only words `[0, num_words())` hold a value: the inline tail above them is deliberately left
+  indeterminate so a copy costs the operand's own width instead of the widest supported one. Every
+  reader — the word loops, `operator==`, `SplitmixHash`, the MPI readers — must therefore stop at
+  `num_words()`, and a new one that walks the whole inline array will read garbage rather than zeros.
 - **The row-store seam**: a dense monomial is a transient, not the storage. `TypeAliases.h` declares
   four accessors — `materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position` — and
   three backends answer them: `std::vector<Bitset>`, `detail::OperatorIndex` (packed position lists) and
   `detail::SparseRowStore` (fixed-width mode lanes plus one 2-bit-per-slot `codes` word per row). Reach
   rows through the accessors, never through a backend's own API, and add any fourth backend to
   `cpp/tests/row_accessor_tests.cpp`, which asserts that all of them agree through every accessor.
+  A row slot is sized at runtime from the width: `OperatorIndex` keeps one `uint8_t` array and one
+  `uint16_t` array with exactly one non-empty, bound per call by its private `with_rows`, because the
+  rows are the operator's largest array and one fixed `uint16_t` doubles the whole footprint at or below
+  128 modes — where both shipping models sit. Rows are payload, never a hash input and never serialized,
+  so a widening there changes no term and no energy: `just diff-baseline` cannot see it, and the gate is
+  instead the `operator_terms_bytes` assertions in `cpp/tests/operator_index_tests.cpp` and
+  `tests/test_mode_width.py`.
 - **Which backend, and where it is bound**: a propagator uses one of the two, chosen once from its
   storage width by `SparseRowStore::preferred_for_modes()` — a build-time constant
   (`monoprop_SPARSE_ROW_MIN_MODES`, defaulted off `monoprop_ENABLE_ARCH_FLAGS`) because what moves the
@@ -101,6 +112,9 @@ Key files:
   `sparse-rows` ctest label) — every fixture is below the crossover, so without that the sparse backend
   would ship untested. The two backends agree on term sets and values but not on term *order*, so
   compare them with `just diff-baseline-sparse` (tolerance), never `just diff-baseline` (byte-wise).
+  A benchmark run records the backend it resolved to in its artifact's `meta` (`monoprop_row_store` as
+  asked, `row_store_effective` as run) and `REPORT.md` shows both: under the default `auto` the setting
+  alone does not identify the backend, and the two differ in footprint and in accumulation order.
   `algebra/CodesAlgebra.h` is the structural algebra on a sparse row, one function per dense
   counterpart, reading the `codes` word instead of looping over storage words, plus `sparse_toggle` --
   the product `M ⊕ G` as one merge over two ascending lane arrays, which is the per-term operation the
@@ -119,6 +133,28 @@ Key files:
   product past the scratch capacity) or no codes form of the cutoff (`CutoffEvaluator` recovered neither
   concrete functor, e.g. under a basis change). `cpp/tests/term_product_tests.cpp` compares the two
   kernels answer for answer: extend it with any new answer, or that answer ships untested.
+- **The third thing bound once per layer**: the storage word count, beside the algebra and the backend.
+  `with_kernel_width<Store>` (`layer_build/TermProduct.h`) turns `gen.num_words()` into a template
+  parameter `W` at the same seam in `build_layer`, and `fused_find_and_collect<A, W>` and
+  `DenseTermProductsW<A, W>` are templated on it, so every per-term word loop has a compile-time trip
+  count and every operand's storage pointer is resolved once per gate — which is what a `Bitset<NumBits>`
+  used to give for free. Measured worth ~10% at two and four storage words and nothing at seven or eight,
+  so `monoprop_NARROW_KERNEL_MAX_WORDS` (default 4, `0` disables) caps which widths get an instantiation;
+  the cost is ~11% of `.text`. Two conditions on that number, both measured. It is the **Majorana** path:
+  the Pauli rotation sign already loops over the generator's non-zero words only, so `W` binds no trip
+  count there and the 127-qubit kicked-Ising model gains ~1%. And it scales with how much of a run is in
+  the per-term product at all, so a loose `lower_atol` — which rejects a term on its coefficient before
+  the product is computed — sees about a third of it. Three consequences for the code.
+  `DenseTermProductsW` specializes the cutoff only for a **length** cutoff over the **whole register**; a
+  support cutoff or a narrower active window keeps going through `CutoffEvaluator`, and
+  `uses_word_cutoff()` is how a test tells those apart. (A support arm was tried and measured: ~1% worse
+  everywhere, and no gain even on the Pauli models that use it, because their per-term time is not in the
+  cutoff.) `WordKernel<W>` (`Bitset.h`) restates five `Bitset` word ops with `W` fixed, one of which is
+  `splitmix` — that is `monomial_hash`, so it routes MPI ownership and must stay bit-identical, and
+  `cpp/tests/word_kernel_tests.cpp` asserts equality with `SplitmixHash` at every `W` while
+  `term_product_tests.cpp` compares the whole kernel against `DenseTermProducts` over the whole inline
+  regime, not just the capped widths. And the kernel's precondition is that every operand is inline, so
+  `W` is never bound above `Bitset::kInlineWords`.
 - **The query record**: a store is queried in the form it keys its rows by, so a resolve never converts —
   `QueryKeysFor<Store>` (`layer_build/Common.h`) picks the batch, and `query_payload_words_for(store,
   capacity)` the width. A buffer is `[nq][record 0]…[record nq-1][dense escape tail]`: the header,

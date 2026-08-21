@@ -172,6 +172,7 @@ def _meta() -> dict[str, Any]:
         "label": os.environ.get("monoprop_BENCH_LABEL", "?"),  # noqa: SIM112
         "ranks": _size(),
         "monoprop_threads": os.environ.get("monoprop_NUM_THREADS", "default"),  # noqa: SIM112
+        "monoprop_row_store": os.environ.get("monoprop_ROW_STORE") or "auto",  # noqa: SIM112
         "cpu_count_logical": psutil.cpu_count(logical=True),
         "cpu_count_physical": psutil.cpu_count(logical=False),
         "hostname": socket.gethostname(),
@@ -179,6 +180,28 @@ def _meta() -> dict[str, Any]:
         "monoprop_variant": monoprop.__variant__,
         "monoprop_compiler_flags": monoprop.__compiler_flags__,
     }
+
+
+def _record_row_store(propagator: Any) -> None:
+    """Fold one propagator's resolved row backend into this run's metadata.
+
+    ``monoprop_ROW_STORE`` says what was asked for, not what ran: unset lets the storage width pick,
+    and the crossover it picks against is a build-time constant. The two backends accumulate a term
+    sum in different orders and have different footprints, so a report has to name the one that ran.
+    Widths differ within a run, hence so can the backend: a disagreement records as ``"mixed"``
+    rather than letting the last propagator speak for the others.
+    """
+    if _rank() != 0:
+        return
+    # None => binding predates rows_are_sparse
+    sparse = getattr(propagator._simulator, "rows_are_sparse", None)
+    if sparse is None:
+        return
+    resolved = "sparse" if sparse else "dense"
+    seen = _RESULTS["meta"].get("row_store_effective")
+    _RESULTS["meta"]["row_store_effective"] = (
+        resolved if seen in (None, resolved) else "mixed"
+    )
 
 
 def _params(config: pytest.Config) -> dict[str, Any]:
@@ -283,6 +306,7 @@ def record_model_stats(bench_comm: Any) -> Callable[..., None]:
 
     def _do(model: str, propagator: Any, baseline_rss: int) -> None:
         _record("opsize", model, {"terms": _reduce_sum(bench_comm, propagator.size())})
+        _record_row_store(propagator)
 
         # Sparse InvertedIndex columns cost a TermIndex (4B) per set bit against ~1-2B per
         # set bit in the rows, so which of the two dominates is what sizing decisions turn on.
@@ -400,6 +424,7 @@ def built_graph(
 
     # Under MPI the operator is partitioned, so sum the partitions.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})
+    _record_row_store(mp)
 
     # Settled RSS once the build's transients are released -- the persistent
     # footprint the per-operation peak cannot see.

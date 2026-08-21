@@ -74,24 +74,64 @@ namespace monoprop {
 // out is Stage 6's arena, where a Bitset becomes a non-owning {pointer, width} view over
 // exactly-sized storage and the size question disappears.
 class Bitset {
+public:
+    // The word vocabulary is public because callers reason in words: data() already hands out a
+    // word_type*, and a per-gate kernel that binds the word count needs the same three names to say
+    // what it binds (see detail::WordKernel).
     using word_type = uint64_t;
     static constexpr auto word_width = sizeof(word_type) * 8;
     static constexpr size_t kInlineWords = 8;
 
+private:
     // The inline words and the heap pointer are never both live -- nwords_ alone selects which -- so
     // they share storage. A std::vector member instead costs 24 bytes on *every* monomial at *every*
     // width, and monomials are stored by value in bulk (MonomialList, OperatorIndex::overflow_,
     // IncomingProbe::mono), so that overhead is multiplied by the term count. Sizing the object for
     // the widest inline width already costs enough; see the class comment above.
+    //
+    // Deliberately *not* initializing: a value-initialized inline_ zero-fills all kInlineWords words,
+    // and since a default member initializer also runs before a copy constructor's body, every copy
+    // paid that fill before overwriting it. Storage is left indeterminate and each constructor writes
+    // exactly the words it owns -- see the indeterminate-tail invariant below.
     union Storage {
         std::array<word_type, kInlineWords> inline_;
         word_type *heap_;
-        constexpr Storage() noexcept : inline_{} {}
+        Storage() noexcept {}
     };
 
-    Storage s_{};
+    Storage s_;
     uint32_t nwords_ = 0;
     uint32_t top_bits_ = 0; // bits used in the last word; 0 means "all word_width bits used"
+
+    // Invariant: only words [0, nwords_) hold a value. The inline tail above nwords_ is indeterminate,
+    // and no reader may touch it -- every word loop, operator==, and SplitmixHash run nwords_, and the
+    // MPI readers memcpy num_words() words. That is what lets a copy cost the operand's own width
+    // instead of the widest supported one (16 bytes at 64 modes rather than 64), which is paid per
+    // element wherever monomials are held by value in bulk.
+
+    // Copies the live words only. Precondition: !spilled() -- with_nwords caps at kInlineWords, so a
+    // spilled width would silently copy the first 8 words and drop the rest; those paths memcpy.
+    auto copy_inline_from(const Bitset &o) noexcept -> void {
+        word_type *d = s_.inline_.data();
+        const word_type *s = o.data();
+        detail::with_nwords(nwords_, [d, s]<size_t W>(std::integral_constant<size_t, W>) {
+            for (size_t i = 0; i < W; ++i) {
+                d[i] = s[i];
+            }
+        });
+    }
+
+    // Zeroes the live words only, same precondition and same reason as copy_inline_from. An unrolled
+    // store loop rather than std::memset: the length is a runtime value, so memset would be an out-of-line
+    // call on a path that is one or two stores wide.
+    auto zero_inline() noexcept -> void {
+        word_type *d = s_.inline_.data();
+        detail::with_nwords(nwords_, [d]<size_t W>(std::integral_constant<size_t, W>) {
+            for (size_t i = 0; i < W; ++i) {
+                d[i] = 0;
+            }
+        });
+    }
 
     // Selects the active union member. Must be consulted *before* nwords_ is overwritten by an
     // assignment, and *after* it is set by a constructor.
@@ -110,12 +150,15 @@ class Bitset {
 public:
     Bitset() noexcept = default;
 
-    // num_bits: the logical width. Zero-initialized.
+    // num_bits: the logical width. Words [0, nwords_) are zeroed; the inline tail is not (invariant above).
     explicit Bitset(size_t num_bits) noexcept
         : nwords_(static_cast<uint32_t>((num_bits + word_width - 1) / word_width)),
           top_bits_(static_cast<uint32_t>(num_bits % word_width)) {
         if (spilled()) {
             s_.heap_ = new word_type[nwords_]{};
+        }
+        else {
+            zero_inline();
         }
     }
 
@@ -134,13 +177,20 @@ public:
             std::memcpy(s_.heap_, o.s_.heap_, nwords_ * sizeof(word_type));
         }
         else {
-            s_.inline_ = o.s_.inline_;
+            copy_inline_from(o);
         }
     }
 
-    // Copies the union's object representation, which steals the pointer in the spilled case. Zeroing
-    // the source's nwords_ makes it inline-empty, so its destructor frees nothing.
-    Bitset(Bitset &&o) noexcept : s_(o.s_), nwords_(o.nwords_), top_bits_(o.top_bits_) {
+    // Steals the pointer in the spilled case and copies the live words otherwise -- not the union's whole
+    // object representation, which would move kInlineWords words at every width. Zeroing the source's
+    // nwords_ makes it inline-empty, so its destructor frees nothing.
+    Bitset(Bitset &&o) noexcept : nwords_(o.nwords_), top_bits_(o.top_bits_) {
+        if (spilled()) {
+            s_.heap_ = o.s_.heap_;
+        }
+        else {
+            copy_inline_from(o);
+        }
         o.nwords_ = 0;
         o.top_bits_ = 0;
     }
@@ -157,7 +207,7 @@ public:
                 std::memcpy(s_.heap_, o.s_.heap_, nwords_ * sizeof(word_type));
             }
             else {
-                s_.inline_ = o.s_.inline_;
+                copy_inline_from(o);
             }
             return *this;
         }
@@ -171,7 +221,7 @@ public:
             std::memcpy(s_.heap_, o.s_.heap_, nwords_ * sizeof(word_type));
         }
         else {
-            s_.inline_ = o.s_.inline_;
+            copy_inline_from(o);
         }
         return *this;
     }
@@ -183,9 +233,16 @@ public:
         if (spilled()) {
             delete[] s_.heap_;
         }
-        s_ = o.s_;
+        // spilled() reads nwords_, so the two tests below straddle the assignment on purpose: the first
+        // frees against the old width, the second selects the union member for the new one.
         nwords_ = o.nwords_;
         top_bits_ = o.top_bits_;
+        if (spilled()) {
+            s_.heap_ = o.s_.heap_;
+        }
+        else {
+            copy_inline_from(o);
+        }
         o.nwords_ = 0;
         o.top_bits_ = 0;
         return *this;
@@ -604,6 +661,91 @@ struct SplitmixHash {
         return static_cast<size_t>(h);
     }
 };
+
+namespace detail {
+
+// The per-term word ops with the word count supplied by the caller instead of read off the operand.
+//
+// The arithmetic is identical to Bitset's own methods; what differs is what the compiler knows. A
+// Bitset method must load nwords_, compare it against the inline capacity and select a storage
+// pointer on every call, and none of those three can be hoisted out of a loop the optimizer cannot
+// see through -- which, on the per-term path, is every call. Handing a kernel a compile-time W and
+// the word pointers the caller resolved once leaves a straight-line unrolled loop, which is what the
+// per-width Bitset<NumBits> got for free.
+//
+// Preconditions, none of them checkable here: every pointer is a Bitset::data() of a bitset of
+// exactly W words, and W <= kInlineWords so no operand is spilled. The only legal caller is one that
+// bound W from a width it owns for the whole loop -- see DenseTermProductsW, which is the seam that
+// binds it once per gate.
+template <size_t W>
+struct WordKernel {
+    static_assert(W >= 1 && W <= Bitset::kInlineWords,
+                  "the kernel covers the inline regime; above it the runtime loop already wins");
+
+    using word_type = Bitset::word_type;
+
+    static auto clear(word_type *a) noexcept -> void {
+        for (size_t i = 0; i < W; ++i) {
+            a[i] = 0;
+        }
+    }
+
+    // Bitset::fused_xor_into with W fixed. Same word order and same two counts.
+    static auto fused_xor_into(const word_type *a, const word_type *b, word_type *out) noexcept -> Bitset::FusedCounts {
+        size_t overlap = 0;
+        size_t result_count = 0;
+        for (size_t i = 0; i < W; ++i) {
+            const word_type n = a[i] ^ b[i];
+            out[i] = n;
+            overlap += static_cast<size_t>(std::popcount(a[i] & b[i]));
+            result_count += static_cast<size_t>(std::popcount(n));
+        }
+        return {overlap, result_count};
+    }
+
+    // Bitset::parity_and with W fixed: fold first, then one popcount, so the parity is of the whole
+    // AND and not of any per-word rounding.
+    [[nodiscard]] static auto parity_and(const word_type *a, const word_type *b) noexcept -> bool {
+        word_type parity_word = 0;
+        for (size_t i = 0; i < W; ++i) {
+            parity_word ^= a[i] & b[i];
+        }
+        return (std::popcount(parity_word) & 1U) != 0;
+    }
+
+    // xor_sum == 0 from cutoff_sums, i.e. "every occupied mode has both its Majoranas" -- the clause
+    // that keeps a fully paired term whatever its length. Folded with OR and tested against zero
+    // rather than summing popcounts: the caller only ever compares the sum to zero, and the two are
+    // equivalent because each per-word term is non-negative. `mask` is the even-bit pattern at this
+    // width; (word >> 1) & mask cannot cross a word because a mode's two bits are 2m and 2m+1.
+    [[nodiscard]] static auto fully_paired(const word_type *a, const word_type *mask) noexcept -> bool {
+        word_type unpaired = 0;
+        for (size_t i = 0; i < W; ++i) {
+            const word_type word = a[i];
+            const word_type m = mask[i];
+            unpaired |= (word & m) ^ ((word >> 1) & m);
+        }
+        return unpaired == 0;
+    }
+
+    // SplitmixHash with W fixed. Must stay bit-identical to it: this value routes MPI ownership, so a
+    // divergence would move terms between ranks rather than merely run slower. Hence the W == 1 arm
+    // reproducing the same special case rather than folding into the loop.
+    [[nodiscard]] static auto splitmix(const word_type *a) noexcept -> size_t {
+        if constexpr (W == 1) {
+            return static_cast<size_t>(SplitmixHash::mix(a[0]));
+        }
+        else {
+            uint64_t h = 0;
+            for (size_t i = 0; i < W; ++i) {
+                h ^= SplitmixHash::mix(a[i] + static_cast<uint64_t>(i));
+            }
+            return static_cast<size_t>(h);
+        }
+    }
+};
+
+} // namespace detail
 
 } // namespace monoprop
 

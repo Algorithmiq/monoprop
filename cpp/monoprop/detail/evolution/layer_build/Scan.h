@@ -189,7 +189,13 @@ struct FusedScanResult {
 // `store` is a separate argument rather than reached through `op`, and its concrete type is what selects
 // the per-term kernel: build_layer has already bound the backend, and re-entering that dispatch here
 // would put a branch on the per-term path, which is the one place it cannot go.
-template <Algebra A>
+//
+// W is the storage word count, bound by build_layer through with_kernel_width for the same reason and at
+// the same seam as the backend and the algebra; 0 means "not specialized" (see TermKernelFor). It is a
+// template parameter of the scan rather than something the kernel is handed, so that the per-term code
+// below stays an ordinary function body: wrapping it in a generic lambda instead measured 2-3% slower
+// even on the unspecialized arm, which does no different work.
+template <Algebra A, size_t W>
 auto fused_find_and_collect(const auto &op,
                             const auto &store,
                             const MonomialLike auto &gen,
@@ -280,7 +286,7 @@ auto fused_find_and_collect(const auto &op,
         // path. Which kernel this is follows from the store (TermProductsFor); the scan below names no
         // representation.
         using Store = std::remove_cvref_t<decltype(store)>;
-        typename TermProductsFor<Store, A>::type products(gen, cutoff_eval);
+        typename TermKernelFor<A, Store, W>::type products(gen, cutoff_eval);
 
         // The dynamic gate runs before the product, so a gate-rejected term computes none.
         // abs_c/v_src come from the caller's coeff read, not re-read.

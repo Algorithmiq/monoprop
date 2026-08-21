@@ -619,19 +619,23 @@ auto build_layer(auto &local_op,
         FusedScanResult fused = [&] {
             double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
             return with_algebra(basis, [&]<class A>() {
-                return fused_find_and_collect<A>(local_op,
-                                                 store,
-                                                 gen,
-                                                 cut_eval,
-                                                 cut_st,
-                                                 coeffs,
-                                                 only_rotate_len_k,
-                                                 R,
-                                                 my_rank,
-                                                 logical_num_modes,
-                                                 /*capture_values=*/use_fused,
-                                                 sweep_ptr,
-                                                 cos_build);
+                // Third and last thing bound once per layer, beside the algebra and the backend: the
+                // storage word count, so the scan's per-term word loops have a compile-time trip count.
+                return with_kernel_width<S>(gen.num_words(), [&]<size_t W>(std::integral_constant<size_t, W>) {
+                    return fused_find_and_collect<A, W>(local_op,
+                                                        store,
+                                                        gen,
+                                                        cut_eval,
+                                                        cut_st,
+                                                        coeffs,
+                                                        only_rotate_len_k,
+                                                        R,
+                                                        my_rank,
+                                                        logical_num_modes,
+                                                        /*capture_values=*/use_fused,
+                                                        sweep_ptr,
+                                                        cos_build);
+                });
             });
         }();
 

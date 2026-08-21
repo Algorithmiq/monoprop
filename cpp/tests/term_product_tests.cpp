@@ -21,12 +21,19 @@
 //
 // This is the gate on Stage 6's store swap: with MPOperator::Store still OperatorIndex the sparse kernel
 // is unreachable from the library, so nothing else would instantiate it.
+//
+// The width-bound dense kernel, DenseTermProductsW<A, W>, is the third answer to the same questions and
+// is compared here for the same reason: it restates four of the five off raw words with the storage word
+// count fixed at compile time, so nothing but a differential test can tell a restatement that agrees
+// from one that merely runs. Its cases live at the bottom of the file; WordKernel<W>'s own primitives
+// are pinned separately in word_kernel_tests.cpp.
 
 #include <boost/test/unit_test.hpp>
 
 #include <cstddef>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -416,4 +423,221 @@ BOOST_AUTO_TEST_CASE(term_product_falls_back_on_a_generator_past_one_codes_word)
     sweep<MajoranaAlgebra>(terms, gens, cutoff_function(CutoffType::Length, 6, kNumModes, 2 * kNumModes), 40, seen);
     BOOST_TEST(seen.sparse_terms == 0U);
     BOOST_TEST(seen.fallback_terms == terms.size());
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The width-bound dense kernel against the width-agnostic one.
+// ---------------------------------------------------------------------------------------------------
+
+namespace {
+
+// Which of the two cutoff paths a narrow-kernel run took, per term. Both have to occur across the
+// cases below or one of them ships compared against nothing.
+struct NarrowSeen {
+    size_t terms = 0;
+    size_t word_cutoff_terms = 0; // passes() answered off the words
+    size_t evaluator_terms = 0;   // passes() went through the CutoffEvaluator
+    size_t passed = 0;
+    size_t failed = 0;
+    size_t paired_rescues = 0; // kept although longer than the cutoff, i.e. the fully-paired clause
+};
+
+// One term through both dense kernels, comparing every answer the scan reads plus the product itself.
+// Unlike the sparse comparison the records must agree *byte for byte*: both push a dense monomial, so
+// any difference here is a difference in the product.
+template <class A, size_t W>
+auto check_narrow_term(DenseTermProducts<A> &reference_kernel,
+                       DenseTermProductsW<A, W> &candidate_kernel,
+                       const OperatorIndex &packed,
+                       size_t i,
+                       size_t gen_pop,
+                       unsigned int cutoff,
+                       NarrowSeen &seen) -> void {
+    const auto reference = reference_kernel.product(packed, i);
+    const auto candidate = candidate_kernel.product(packed, i);
+    BOOST_TEST(candidate.overlap == reference.overlap);
+    BOOST_TEST(candidate.phase_factor == reference.phase_factor);
+    BOOST_TEST((candidate_kernel.product_row() == reference_kernel.product_row()));
+    BOOST_TEST(candidate_kernel.record_words() == reference_kernel.record_words());
+
+    const size_t new_pop = packed.popcount(i) + gen_pop - (2 * reference.overlap);
+    const bool reference_passes = reference_kernel.passes(new_pop);
+    BOOST_TEST(candidate_kernel.passes(new_pop) == reference_passes);
+
+    if (reference_passes) {
+        for (const size_t rank_count : {2U, 3U, 8U}) {
+            BOOST_TEST(candidate_kernel.owner(rank_count) == reference_kernel.owner(rank_count));
+        }
+
+        VecZ unused_escapes;
+        VecZ reference_record = query_buffer();
+        reference_kernel.push(QueryOut{reference_record, unused_escapes}, -1);
+        VecZ candidate_record = query_buffer();
+        candidate_kernel.push(QueryOut{candidate_record, unused_escapes}, -1);
+        BOOST_TEST(candidate_record == reference_record, boost::test_tools::per_element());
+        BOOST_TEST(unused_escapes.empty()); // neither dense kernel has anywhere to escape to
+        seen.paired_rescues += new_pop > cutoff ? 1 : 0;
+    }
+
+    ++seen.terms;
+    seen.word_cutoff_terms += candidate_kernel.uses_word_cutoff() ? 1 : 0;
+    seen.evaluator_terms += candidate_kernel.uses_word_cutoff() ? 0 : 1;
+    seen.passed += reference_passes ? 1 : 0;
+    seen.failed += reference_passes ? 0 : 1;
+}
+
+// Every term of `terms` against every generator of `gens`, at the one width W the terms are built for.
+template <class A, size_t W>
+auto sweep_narrow(const std::vector<Bitset> &terms,
+                  const std::vector<Bitset> &gens,
+                  const CutoffFn &cutoff_fn,
+                  unsigned int cutoff,
+                  NarrowSeen &seen) -> void {
+    BOOST_REQUIRE(!terms.empty());
+    const size_t num_bits = terms.front().size();
+    BOOST_REQUIRE(num_bits == W * Bitset::word_width);
+    OperatorIndex packed(num_bits);
+    for (const auto &mono : terms) {
+        packed.push_back(mono);
+    }
+
+    const CutoffEvaluator cutoff_eval{cutoff_fn};
+    for (const auto &gen : gens) {
+        DenseTermProducts<A> reference_kernel(gen, cutoff_eval);
+        DenseTermProductsW<A, W> candidate_kernel(gen, cutoff_eval);
+        const size_t gen_pop = gen.count();
+        for (size_t i = 0; i < terms.size(); ++i) {
+            check_narrow_term<A, W>(reference_kernel, candidate_kernel, packed, i, gen_pop, cutoff, seen);
+        }
+    }
+}
+
+// W = 1..kInlineWords, i.e. 32..256 storage modes, run through one generic body. The kernel is only
+// *selected* up to monoprop_NARROW_KERNEL_MAX_WORDS, but it is correct over the whole inline regime and
+// raising the cap must not be what discovers otherwise.
+template <size_t... Ws>
+auto for_each_kernel_width(std::index_sequence<Ws...>, auto &&body) -> void {
+    (body(std::integral_constant<size_t, Ws + 1>{}), ...);
+}
+auto for_each_kernel_width(auto &&body) -> void {
+    for_each_kernel_width(std::make_index_sequence<Bitset::kInlineWords>{}, body);
+}
+
+// The W the dispatch bound, read back out of the arm it selected -- the only thing about the seam that
+// is observable, since every arm answers identically.
+template <typename Store>
+auto bound_kernel_width(size_t num_words) -> size_t {
+    return with_kernel_width<Store>(num_words, []<size_t W>(std::integral_constant<size_t, W>) -> size_t { return W; });
+}
+
+// Terms wide enough to be rejected, narrow enough to survive, and some fully paired well above the
+// cutoff -- which is the clause the word cutoff answers with its own fold rather than a popcount.
+auto narrow_kernel_terms(std::mt19937_64 &rng, size_t num_modes) -> std::vector<Bitset> {
+    std::vector<Bitset> terms;
+    for (size_t t = 0; t < 60; ++t) {
+        terms.push_back(random_term(rng, num_modes, 7));
+    }
+    for (const size_t paired : {1U, 3U, 8U}) {
+        terms.push_back(paired_term(num_modes, paired));
+    }
+    return terms;
+}
+
+} // namespace
+
+// A length cutoff over the whole register: the one shape the word cutoff answers, so this is the case
+// where the specialized path is actually under test. Asserted through uses_word_cutoff(), because a
+// change that quietly stopped engaging it would leave every other assertion here still passing.
+BOOST_AUTO_TEST_CASE(narrow_kernel_matches_dense_under_a_whole_register_length_cutoff) {
+    std::mt19937_64 rng(20260821U);
+    NarrowSeen seen;
+    for_each_kernel_width([&]<size_t W>(std::integral_constant<size_t, W>) {
+        const size_t num_modes = (W * Bitset::word_width) / 2;
+        const auto terms = narrow_kernel_terms(rng, num_modes);
+        const std::vector<Bitset> gens{random_term(rng, num_modes, 2),
+                                       random_term(rng, num_modes, 4),
+                                       paired_term(num_modes, 2)};
+        for (const unsigned int cutoff : {4U, 8U}) {
+            const auto length = cutoff_function(CutoffType::Length, cutoff, num_modes, 2 * num_modes);
+            sweep_narrow<MajoranaAlgebra, W>(terms, gens, length, cutoff, seen);
+            // The Pauli algebra with a length cutoff: the kind and the basis are independent here even
+            // though the shipping models pair them, and the kernel's cutoff arm must not depend on the
+            // algebra it was instantiated with.
+            sweep_narrow<PauliAlgebra, W>(terms, gens, length, cutoff, seen);
+        }
+    });
+    BOOST_TEST(seen.terms > 0U);
+    BOOST_TEST(seen.evaluator_terms == 0U); // every term took the word cutoff
+    BOOST_TEST(seen.word_cutoff_terms == seen.terms);
+    BOOST_TEST(seen.passed > 0U);
+    BOOST_TEST(seen.failed > 0U);
+    // Products kept although longer than the cutoff, i.e. the fully-paired fold answering yes. Without
+    // these the word cutoff would be tested as nothing but `new_pop <= cutoff`.
+    BOOST_TEST(seen.paired_rescues > 0U);
+}
+
+// The two shapes the word cutoff declines: a support cutoff, and a length cutoff whose active window is
+// narrower than the storage register -- which is what storage_modes_for() produces for any mode count
+// that is not a whole 32-mode block. Both must fall through to the evaluator and still agree; the
+// failure this guards against is answering a *different* cutoff, which changes which terms survive.
+BOOST_AUTO_TEST_CASE(narrow_kernel_defers_to_the_evaluator_off_the_whole_register_length_cutoff) {
+    std::mt19937_64 rng(606U);
+    NarrowSeen seen;
+    for_each_kernel_width([&]<size_t W>(std::integral_constant<size_t, W>) {
+        const size_t num_modes = (W * Bitset::word_width) / 2;
+        const size_t logical_modes = num_modes - 5; // an inactive prefix of 5 modes
+        const auto terms = narrow_kernel_terms(rng, num_modes);
+        const std::vector<Bitset> gens{random_term(rng, num_modes, 3), random_term(rng, num_modes, 2)};
+        for (const unsigned int cutoff : {4U, 6U}) {
+            const auto support = cutoff_function(CutoffType::Support, cutoff, num_modes, 2 * num_modes);
+            const auto narrow = cutoff_function(CutoffType::Length, cutoff, logical_modes, 2 * num_modes);
+            sweep_narrow<MajoranaAlgebra, W>(terms, gens, support, cutoff, seen);
+            sweep_narrow<PauliAlgebra, W>(terms, gens, support, cutoff, seen);
+            sweep_narrow<MajoranaAlgebra, W>(terms, gens, narrow, cutoff, seen);
+        }
+    });
+    BOOST_TEST(seen.terms > 0U);
+    BOOST_TEST(seen.word_cutoff_terms == 0U);
+    BOOST_TEST(seen.evaluator_terms == seen.terms);
+    BOOST_TEST(seen.passed > 0U);
+    BOOST_TEST(seen.failed > 0U);
+}
+
+// A cutoff that is neither concrete functor, so CutoffEvaluator recovered nothing: the kernel keeps its
+// word product and defers the whole predicate. Same case as the sparse kernel's, for the same reason.
+BOOST_AUTO_TEST_CASE(narrow_kernel_defers_when_the_cutoff_has_no_concrete_functor) {
+    std::mt19937_64 rng(707U);
+    constexpr size_t kWords = 2;
+    constexpr size_t kNumModes = (kWords * Bitset::word_width) / 2;
+    const auto terms = narrow_kernel_terms(rng, kNumModes);
+    const std::vector<Bitset> gens{random_term(rng, kNumModes, 3)};
+
+    MonomialList basis;
+    for (size_t b = 0; b < 2 * kNumModes; ++b) {
+        Bitset single(2 * kNumModes);
+        single.set(b);
+        basis.push_back(single);
+    }
+    const auto wrapped = cutoff_function_basis_change(CutoffType::Length, 4, basis, kNumModes);
+    BOOST_REQUIRE(CutoffEvaluator{wrapped}.length_cutoff() == nullptr);
+
+    NarrowSeen seen;
+    sweep_narrow<MajoranaAlgebra, kWords>(terms, gens, wrapped, 4, seen);
+    BOOST_TEST(seen.terms == terms.size());
+    BOOST_TEST(seen.word_cutoff_terms == 0U);
+    BOOST_TEST(seen.passed > 0U);
+    BOOST_TEST(seen.failed > 0U);
+}
+
+// The seam itself: which W the scan binds for a given storage width and store. Pinned because it is the
+// one thing above that no differential test can see -- every arm computes the same answers, so a
+// dispatch that always chose 0 would leave the whole suite green and only the benchmark different.
+BOOST_AUTO_TEST_CASE(with_kernel_width_binds_the_capped_storage_word_count) {
+    for (size_t words = 1; words <= Bitset::kInlineWords; ++words) {
+        BOOST_TEST(bound_kernel_width<OperatorIndex>(words) == (words <= kNarrowKernelWords ? words : 0));
+        // The sparse store is never specialized: its per-term work is O(slots), not O(storage words).
+        BOOST_TEST(bound_kernel_width<SparseRowStore>(words) == 0U);
+    }
+    // Above the inline regime the words are on the heap, so there is no width to bind.
+    BOOST_TEST(bound_kernel_width<OperatorIndex>(Bitset::kInlineWords + 1) == 0U);
 }
