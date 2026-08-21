@@ -60,7 +60,6 @@ from importlib.metadata import version
 from pathlib import Path
 
 import griffe
-from griffe_typingdoc import TypingDocExtension
 
 # ---------------------------------------------------------------------------
 # The JSON schema
@@ -570,8 +569,6 @@ def main() -> None:
             docstring_parser="auto",
             # The renderer shows each function's source in a collapsible block.
             store_source=True,
-            # Reads `Doc[...]` annotations (PEP 727) as descriptions.
-            extensions=griffe.load_extensions(TypingDocExtension),
         )
     )
 

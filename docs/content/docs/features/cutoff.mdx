@@ -52,7 +52,8 @@ structural measure: `cutoff` bounds the Pauli weight.
 
 ## Gate-application length cap
 
-[MonomialPropagator.build_graph][] and [MonomialPropagator.propagate][] accept
+[MonomialPropagator.build_graph][monomial_propagator.MonomialPropagator.build_graph]
+and [MonomialPropagator.propagate][monomial_propagator.MonomialPropagator.propagate] accept
 `only_rotate_len_k` to apply gates only to terms whose length is at most `k`.
 This is independent of the structural cutoff. Omitting the argument or passing
 `None` imposes no additional gate-application cap.
