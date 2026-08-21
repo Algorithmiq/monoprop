@@ -68,7 +68,8 @@ struct LayerTraversal final {
         return detail::cross_rank_self_slot(core_->cross_rank);
     }
 
-    // Every slot carrying traffic, ascending, each with its offset. func(slot_id, view).
+    // Every slot carrying traffic, ascending, each with its offset. func(slot_id, view), or
+    // func(occupied_pos, slot_id, view) to index a per-slot array by occupied position instead of P.
     //
     // This is what a partner sweep should use. The old shape -- loop 0..P, ask each slot its size,
     // `continue` on zero -- walked the whole world to find the part of it that had anything in it.
@@ -76,6 +77,9 @@ struct LayerTraversal final {
     auto for_each_occupied_slot(Func &&func) const -> void {
         detail::for_each_occupied_slot(core_->cross_rank, std::forward<Func>(func));
     }
+
+    // The size an array indexed by occupied position needs; the sweep above visits exactly this many.
+    auto occupied_slot_count() const -> size_t { return detail::cross_rank_occupied_slots(core_->cross_rank); }
 
     // The slot is resolved ONCE, outside the loop: the lookup it costs is indexed by the flat world P,
     // so doing it per endpoint made per-term work out of what is per-slot work.

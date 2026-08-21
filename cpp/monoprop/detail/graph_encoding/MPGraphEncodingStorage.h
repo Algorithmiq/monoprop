@@ -20,6 +20,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
@@ -106,16 +107,26 @@ inline auto view_at(const PackedCrossRankStorage &storage, const CrossRankOccupi
 } // namespace slot_detail
 
 // Every occupied slot in ascending order, each with its B/D offset -- the running prefix, which is
-// exactly what the dense layout stored per slot. func(slot_id, view).
+// exactly what the dense layout stored per slot. func(slot_id, view), or func(occupied_pos, slot_id,
+// view) for a caller whose own array is indexed by occupied position rather than by world slot.
 //
 // This is the shape production code should use. It is O(occupied) for the whole sweep rather than
 // O(P), and it never visits a slot with nothing in it: under a dense layout those were visited and
 // skipped, so on a large world most of the loop was the skip.
+//
+// The position is handed out here rather than counted at the call site because a hand-rolled counter
+// past the self-slot `return`s of those loops would silently skew every later index.
 template <typename Func>
 auto for_each_occupied_slot(const PackedCrossRankStorage &storage, Func &&func) -> void {
     size_t offset = 0;
-    for (const auto &entry : storage.occupied) {
-        func(static_cast<size_t>(entry.slot), slot_detail::view_at(storage, entry, offset));
+    for (size_t pos = 0; pos < storage.occupied.size(); ++pos) {
+        const auto &entry = storage.occupied[pos];
+        if constexpr (std::is_invocable_v<Func &, size_t, size_t, const CrossRankSlotView &>) {
+            func(pos, static_cast<size_t>(entry.slot), slot_detail::view_at(storage, entry, offset));
+        }
+        else {
+            func(static_cast<size_t>(entry.slot), slot_detail::view_at(storage, entry, offset));
+        }
         offset += entry.sin_send_count;
     }
 }

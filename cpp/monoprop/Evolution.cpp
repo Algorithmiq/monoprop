@@ -198,6 +198,9 @@ inline auto finish_layer_exchange(InFlightExchange &in_flight, Apply apply)
 // Per-thread pre-cos snapshot buffers, reused across layers to avoid a malloc/free per layer. Passed whole
 // to the pack and apply passes: each reads two of the four vectors, and re-splitting them at every hand-off
 // is what lets a send buffer be mistaken for a recv one.
+//
+// Indexed by OCCUPIED POSITION, not by world slot: sized by traffic rather than by P, so nothing here
+// grows with the world. All four users take the position from for_each_occupied_slot's 3-argument form.
 struct DerivativeSnapshotScratch {
     std::vector<VecD> sin_send_state;
     std::vector<VecD> sin_send_op;
@@ -216,13 +219,14 @@ void pack_cross_rank_derivative_payload_impl(const DerivativeSnapshotScratch &sn
                                              int my_rank,
                                              const LayerExchangeLayout &layout,
                                              VecD &send_buffer) {
-    layer.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
+    layer.for_each_occupied_slot([&](size_t pos, size_t rank, const detail::CrossRankSlotView &slot) {
         if (static_cast<int>(rank) == my_rank) {
             return;
         }
+        // The send layout stays dense in the world; only the snapshot is indexed by position.
         const auto base = static_cast<size_t>(layout.displs[rank]);
-        const auto &bs = snap.sin_send_state[rank];
-        const auto &bh = snap.sin_send_op[rank];
+        const auto &bs = snap.sin_send_state[pos];
+        const auto &bh = snap.sin_send_op[pos];
         for (size_t k = 0; k < slot.sin_send_count; ++k) {
             send_buffer[base + 2 * k] = bs[k];
             send_buffer[base + 2 * k + 1] = bh[k];
@@ -239,13 +243,13 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
                                                const TrigValues &trig,
                                                const ExchangePayload &payload) -> EndpointContrib {
     EndpointContrib local{};
-    layer.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
+    layer.for_each_occupied_slot([&](size_t pos, size_t rank, const detail::CrossRankSlotView &slot) {
         if (static_cast<int>(rank) == payload.my_rank) {
             return;
         }
         const auto *rv = payload.recv_buffer.data() + payload.recv_displs[rank];
-        const auto &ds = snap.sin_recv_state[rank];
-        const auto &dh = snap.sin_recv_op[rank];
+        const auto &ds = snap.sin_recv_state[pos];
+        const auto &dh = snap.sin_recv_op[pos];
         for (size_t k = 0; k < slot.sin_send_count; ++k) {
             const size_t i = detail::slot_sin_recv_index(slot, k);
             const auto phi = static_cast<double>(detail::slot_sin_recv_phase(slot, k));
@@ -395,32 +399,37 @@ void snapshot_remote_endpoints(const VecD &state,
                                const VecD &op,
                                const LayerTraversal &layer,
                                size_t my_rank,
-                               size_t R,
                                DerivativeSnapshotScratch &snap) {
-    snap.sin_send_state.resize(R);
-    snap.sin_send_op.resize(R);
-    snap.sin_recv_state.resize(R);
-    snap.sin_recv_op.resize(R);
-    // The scratch is indexed by world slot, so it is still sized R -- but only the occupied slots have
-    // anything to put in it. Clear first, then fill those: an empty slot's snapshot is an empty vector,
-    // which is what the dense sweep produced for it anyway.
-    for (size_t r = 0; r < R; ++r) {
-        snap.sin_send_state[r].clear();
-        snap.sin_send_op[r].clear();
-        snap.sin_recv_state[r].clear();
-        snap.sin_recv_op[r].clear();
-    }
-    layer.for_each_occupied_slot([&](size_t r, const detail::CrossRankSlotView &slot) {
+    // Sized by the slots that carry traffic, so the dense pre-clear over the whole world goes with
+    // the world-sized array. Grow-only: shrinking to a thinner layer's occupancy would free the
+    // allocations this scratch exists to reuse, and positions past it are never visited -- every
+    // reader walks the same occupied sweep.
+    const size_t occupied = layer.occupied_slot_count();
+    const auto grow = [occupied](std::vector<VecD> &v) {
+        if (v.size() < occupied) {
+            v.resize(occupied);
+        }
+    };
+    grow(snap.sin_send_state);
+    grow(snap.sin_send_op);
+    grow(snap.sin_recv_state);
+    grow(snap.sin_recv_op);
+    layer.for_each_occupied_slot([&](size_t pos, size_t r, const detail::CrossRankSlotView &slot) {
+        auto &bs = snap.sin_send_state[pos];
+        auto &bh = snap.sin_send_op[pos];
+        auto &ds = snap.sin_recv_state[pos];
+        auto &dh = snap.sin_recv_op[pos];
         if (r == my_rank) {
-            return; // the self slot recovers live; it needs no snapshot
+            // The self slot recovers live; emptied so a previous layer's snapshot cannot be read here.
+            bs.clear();
+            bh.clear();
+            ds.clear();
+            dh.clear();
+            return;
         }
         const size_t count = slot.sin_send_count;
-        auto &bs = snap.sin_send_state[r];
-        auto &bh = snap.sin_send_op[r];
         bs.resize(count);
         bh.resize(count);
-        auto &ds = snap.sin_recv_state[r];
-        auto &dh = snap.sin_recv_op[r];
         ds.resize(count);
         dh.resize(count);
         for (size_t k = 0; k < count; ++k) {
@@ -449,7 +458,7 @@ auto state_operator_derivative_local(VecD &state,
     const size_t R = layer.cross_rank_rank_count();
 
     auto &snap = derivative_snapshot_scratch();
-    snapshot_remote_endpoints(state, op, layer, my_rank, R, snap);
+    snapshot_remote_endpoints(state, op, layer, my_rank, snap);
 
     // No-op at single rank; the transfer touches only buffers, so the cos pass below may mutate state/op.
     auto in_flight = begin_cross_rank_derivative_exchange(snap, layer, comm);
