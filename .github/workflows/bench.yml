@@ -1,0 +1,122 @@
+name: Benchmark
+
+# Shared body of the Bencher continuous-benchmarking runs. Callers choose the
+# machine and the Bencher testbed; everything downstream is identical, so the
+# testbeds stay comparable in shape even though their absolute numbers are not.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Value for the job's `runs-on`.
+        required: true
+        type: string
+      testbed:
+        description: Bencher testbed. Must change whenever the hardware does.
+        required: true
+        type: string
+      label:
+        description: Benchmark label, used to name the result artifacts.
+        required: true
+        type: string
+      bench-markers:
+        description: pytest marker expression. Empty selects every benchmark.
+        required: false
+        type: string
+        default: not slow
+      bench-rounds:
+        description: Fixed timing rounds per benchmark.
+        required: false
+        type: string
+        default: "5"
+
+env:
+  FORCE_COLOR: 3
+  COLUMNS: 120
+  CPM_USE_LOCAL_PACKAGES: "TRUE"
+
+jobs:
+  benchmark:
+    name: Continuous benchmarking with Bencher
+    # Skips forks, which have no BENCHER_API_KEY.
+    if: ${{ github.repository == 'Algorithmiq/monoprop' }}
+    runs-on: ${{ inputs.runner }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y just libopenmpi-dev openmpi-bin libboost-dev libhwloc-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        env:
+          SKBUILD_CMAKE_DEFINE: monoprop_ENABLE_CXX_UNIT_TESTS=OFF
+        run: |
+          uv sync --no-progress --group bench --all-extras -v
+
+      # Inputs reach the shell through the environment rather than `${{ }}`
+      # interpolation, which would splice them into the script text. The recipe
+      # quotes both, so a marker expression may contain spaces or be empty.
+      - name: Run benchmarks
+        env:
+          BENCHER_LABEL: ${{ inputs.label }}
+          monoprop_BENCH_MARKERS: ${{ inputs.bench-markers }}
+          monoprop_BENCH_ROUNDS: ${{ inputs.bench-rounds }}
+        run: |
+          just bench-ci "$BENCHER_LABEL"
+
+      - name: Convert results to Bencher Metric Format
+        env:
+          BENCHER_LABEL: ${{ inputs.label }}
+        run: |
+          just bench-bmf "$BENCHER_LABEL" > bmf.json
+
+      - uses: bencherdev/bencher@v0.6.11
+
+      # Credentials and the project slug go through the environment rather than
+      # the command line: `bencher` reads BENCHER_PROJECT / BENCHER_API_KEY
+      # natively, and it keeps a maintainer-set variable out of the shell's
+      # parsing.
+      - name: Track benchmarks with Bencher
+        env:
+          BENCHER_PROJECT: ${{ vars.BENCHER_PROJECT || 'monoprop' }}
+          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
+          BENCHER_TESTBED: ${{ inputs.testbed }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bencher run \
+            --branch main \
+            --adapter json \
+            --file bmf.json \
+            --github-actions "$GH_TOKEN" \
+            --thresholds-reset \
+            --threshold-measure latency \
+            --threshold-test t_test \
+            --threshold-max-sample-size 64 \
+            --threshold-lower-boundary _ \
+            --threshold-upper-boundary 0.99 \
+            --threshold-measure peak-memory \
+            --threshold-test percentage \
+            --threshold-max-sample-size 64 \
+            --threshold-lower-boundary _ \
+            --threshold-upper-boundary 0.10 \
+            --threshold-measure resting-memory \
+            --threshold-test percentage \
+            --threshold-max-sample-size 64 \
+            --threshold-lower-boundary _ \
+            --threshold-upper-boundary 0.10 \
+            --threshold-measure terms \
+            --threshold-test percentage \
+            --threshold-max-sample-size 1 \
+            --threshold-lower-boundary 0.0 \
+            --threshold-upper-boundary 0.0
