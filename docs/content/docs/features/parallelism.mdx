@@ -29,7 +29,10 @@ whose partner lives in another partition are resolved through a per-gate exchang
 | --- | --- | --- |
 | `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. Set it to run fewer partitions than cores. |
 | `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
-| `monoprop_PARTITION_PINNING` | `on` | `0`/`false`/`no` disables pinning each partition to a core. Supported on platforms where hwloc can bind threads. |
+| `monoprop_COMMPLACE` | `off` | Report-only. Writes one `COMMPLACE` line per rank to stderr when the propagator is built, naming the CPUs the launcher gave that rank and whether co-located ranks were handed disjoint masks. `0`, `false`, `no` and `off` (whole word, any case) disable it; any other non-empty value enables it. It changes no placement decision. |
+
+Pinning each partition to a core is not configurable: leaving placement to the
+launcher measured `propagate[hubbard]` 2.90x slower, so the disabled arm is gone.
 
 ```bash
 # Run 8 partitions instead of one-per-core:

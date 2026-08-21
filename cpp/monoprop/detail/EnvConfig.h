@@ -22,19 +22,35 @@
 // pulled into hot-path headers.
 //
 //   monoprop_NUM_THREADS    positive int (1..1e6), else ignored                → num_threads
-//   monoprop_PARTITION_PINNING  bool, default ON; 0/false disables per-core pinning → partition_pinning
+//   monoprop_COMMPLACE          bool, default OFF; one COMMPLACE line per rank on stderr → commplace
 //   monoprop_PARTITIONS         int N | "auto" | "off"; parsed where it is used (resolve_partition_count_)
+//
+// monoprop_PARTITION_PINNING is deleted and pinning is unconditional. Its parser matched only the
+// first CHARACTER, so `off`, `OFF` and `disabled` all parsed as ON; parse_env_flag compares whole
+// words instead, which is the one thing that bug was about.
 
 namespace monoprop::config {
 
 namespace detail {
 
-inline auto parse_flag(const char *value, bool default_value) -> bool {
-    if (value == nullptr || value[0] == '\0') {
-        return default_value;
+// Case-insensitive whole-string compare; `lower` must already be lowercase.
+inline auto iequals(const char *value, const char *lower) -> bool {
+    for (; *value != '\0' && *lower != '\0'; ++value, ++lower) {
+        const char c = (*value >= 'A' && *value <= 'Z') ? static_cast<char>(*value - 'A' + 'a') : *value;
+        if (c != *lower) {
+            return false;
+        }
     }
-    const char c = value[0];
-    return !(c == '0' || c == 'f' || c == 'F' || c == 'n' || c == 'N');
+    return *value == *lower;
+}
+
+// Off when unset, empty, or a WHOLE-WORD match on 0/false/no/off; on otherwise. Whole words because
+// first-character matching is what read `off` as ON.
+inline auto parse_env_flag(const char *value) -> bool {
+    if (value == nullptr || value[0] == '\0') {
+        return false;
+    }
+    return !(iequals(value, "0") || iequals(value, "false") || iequals(value, "no") || iequals(value, "off"));
 }
 
 inline auto parse_positive_int(const char *text) -> std::optional<int> {
@@ -56,7 +72,7 @@ inline auto parse_positive_int(const char *text) -> std::optional<int> {
 
 struct Settings {
     std::optional<int> num_threads;
-    bool partition_pinning = true;
+    bool commplace = false;
 };
 
 // Parse the environment once; the Settings are cached and shared across TUs.
@@ -64,7 +80,7 @@ inline auto get() -> const Settings & {
     static const Settings settings = [] {
         Settings s;
         s.num_threads = detail::parse_positive_int(std::getenv("monoprop_NUM_THREADS"));
-        s.partition_pinning = detail::parse_flag(std::getenv("monoprop_PARTITION_PINNING"), true);
+        s.commplace = detail::parse_env_flag(std::getenv("monoprop_COMMPLACE"));
         return s;
     }();
     return settings;
