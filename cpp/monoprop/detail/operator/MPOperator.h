@@ -291,6 +291,8 @@ struct MPOperatorMemoryBreakdown final {
     size_t init_operator_bytes = 0;
     size_t initial_state_bytes = 0;
     size_t inverted_index_bytes = 0;
+    // The MatchedEpochSet stamp array. Propagator-owned, so 0 unless MonomialPropagator fills it in.
+    size_t matched_scratch_bytes = 0;
 
     // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
     // never double-count.
@@ -303,7 +305,7 @@ struct MPOperatorMemoryBreakdown final {
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
-               + initial_state_bytes + inverted_index_bytes;
+               + initial_state_bytes + inverted_index_bytes + matched_scratch_bytes;
     }
 
     auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
@@ -314,6 +316,7 @@ struct MPOperatorMemoryBreakdown final {
         init_operator_bytes += o.init_operator_bytes;
         initial_state_bytes += o.initial_state_bytes;
         inverted_index_bytes += o.inverted_index_bytes;
+        matched_scratch_bytes += o.matched_scratch_bytes;
         inverted_index_dense_bytes += o.inverted_index_dense_bytes;
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;

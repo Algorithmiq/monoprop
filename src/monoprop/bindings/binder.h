@@ -263,6 +263,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"init_operator_bytes", b.init_operator_bytes},
                                              {"initial_state_bytes", b.initial_state_bytes},
                                              {"inverted_index_bytes", b.inverted_index_bytes},
+                                             {"matched_scratch_bytes", b.matched_scratch_bytes},
                                              {"total_bytes", b.total_bytes()},
                                              // Diagnostics (not part of total_bytes; see the struct).
                                              {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
