@@ -55,13 +55,7 @@ dev = ["prek>=0.4", "ruff==0.15.20"]
 # The documentation site is built with Fumadocs (Next.js); see `docs/`.
 # Python's only roles are converting the tutorial notebooks to Markdown
 # (`nbconvert`) and dumping the API surface from docstrings (`griffe`, driven by
-# `docs/scripts/gen_api_dump.py` in the `gen-api` recipe). griffe 2.0 split
-# itself into three distributions: `griffe` is now a metapackage over
-# `griffecli` + `griffelib`, and the importable `griffe` package lives in
-# `griffelib` -- which is what we depend on, since the API reference never
-# shells out to the CLI. The 2.2 floor is where `Note:`-style admonitions are
-# detected in Google docstrings and where expressions stringify faithfully; both
-# show up in the generated pages.
+# `docs/scripts/gen_api_dump.py` in the `gen-api` recipe).
 docs = [
   "griffelib>=2.2,<3",
   "nbconvert",
