@@ -4,6 +4,5 @@ target_sources(
     FILE_SET headers
       TYPE HEADERS
       FILES
-        "Monomial.h"
         "Picture.h"
 )

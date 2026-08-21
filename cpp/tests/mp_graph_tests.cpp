@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// White-box tests for MPGraph transforms and MPGraphView, built by direct Layer construction
-// (GraphBuildHarness). Each layer's distinct gate_index is the oracle for slice / view ordering.
+// White-box tests for MPGraph's views and MPGraphView, built by direct Layer construction
+// (GraphBuildHarness). Each layer's distinct gate_index is the oracle for view ordering.
 
 #include <boost/test/unit_test.hpp>
 
@@ -24,96 +24,87 @@
 #include "monoprop/MPGraph.h"
 
 using namespace monoprop;
-using test_utils::core_with_gate;
 using test_utils::graph_with_gates;
 using test_utils::layer_with_gate;
 
-BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_heisenberg_prefix_no_contract) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 5); // layers_ = [0,1,2,3,4]
-    auto sliced = graph.slice_graph(3, /*contract=*/false);
-
-    BOOST_REQUIRE_EQUAL(sliced.layers(), 3U);
-    BOOST_CHECK_EQUAL(sliced.get_layer_traversal(0).gate_index(), 0U);
-    BOOST_CHECK_EQUAL(sliced.get_layer_traversal(1).gate_index(), 1U);
-    BOOST_CHECK_EQUAL(sliced.get_layer_traversal(2).gate_index(), 2U);
-    // Non-contracting slice leaves the source untouched.
-    BOOST_CHECK_EQUAL(graph.layers(), 5U);
-    BOOST_CHECK_EQUAL(graph.get_layer_traversal(0).gate_index(), 0U);
+// graph_with_gates tags gate_index by arrival, so an AscendingSlot graph reads back in reverse. Every
+// case below reads that way, which is the whole storage invariant in one line.
+BOOST_AUTO_TEST_CASE(mp_graph_layer_index_reverses_an_ascending_slot_arrival) {
+    auto descending = graph_with_gates(ArrivalOrder::DescendingSlot, 5);
+    auto ascending = graph_with_gates(ArrivalOrder::AscendingSlot, 5);
+    for (std::size_t i = 0; i < 5; ++i) {
+        BOOST_CHECK_EQUAL(descending.get_layer_traversal(i).gate_index(), i);
+        BOOST_CHECK_EQUAL(ascending.get_layer_traversal(i).gate_index(), 4U - i);
+    }
+    // Appending again keeps the mapping: the new layer is the last arrival either way.
+    descending.append(std::make_shared<LayerCore>(), 0, 0.0, /*gate_index=*/5);
+    ascending.append(std::make_shared<LayerCore>(), 0, 0.0, /*gate_index=*/5);
+    BOOST_CHECK_EQUAL(descending.get_layer_traversal(5).gate_index(), 5U);
+    BOOST_CHECK_EQUAL(ascending.get_layer_traversal(0).gate_index(), 5U);
 }
 
-BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_schrodinger_contract_newest_first_copy_and_resize) {
-    // Schrödinger stores newest-first: appending gates 0..4 gives layers_ = [4,3,2,1,0].
-    auto graph = graph_with_gates(/*schrodinger=*/true, 5);
-    auto sliced = graph.slice_graph(2, /*contract=*/true);
-
-    // sliced = layers_[active_end-1-i] = layers_[4], layers_[3] = gates 0, 1 (oldest-first).
-    BOOST_REQUIRE_EQUAL(sliced.layers(), 2U);
-    BOOST_CHECK_EQUAL(sliced.get_layer_traversal(0).gate_index(), 0U);
-    BOOST_CHECK_EQUAL(sliced.get_layer_traversal(1).gate_index(), 1U);
-
-    // Contract resized layers_ to the newest 3 (gates 4,3,2, still newest-first).
-    BOOST_REQUIRE_EQUAL(graph.layers(), 3U);
-    BOOST_CHECK_EQUAL(graph.get_layer_traversal(0).gate_index(), 4U);
-    BOOST_CHECK_EQUAL(graph.get_layer_traversal(1).gate_index(), 3U);
-    BOOST_CHECK_EQUAL(graph.get_layer_traversal(2).gate_index(), 2U);
+// replay_view() is the evaluation order: layer order, so the arrival order shows through it.
+BOOST_AUTO_TEST_CASE(mp_graph_replay_view_is_layer_order) {
+    auto descending = graph_with_gates(ArrivalOrder::DescendingSlot, 4);
+    auto ascending = graph_with_gates(ArrivalOrder::AscendingSlot, 4);
+    const auto descending_view = descending.replay_view();
+    const auto ascending_view = ascending.replay_view();
+    for (std::size_t i = 0; i < 4; ++i) {
+        BOOST_CHECK_EQUAL(descending_view.get_layer_traversal(i).gate_index(), i);
+        BOOST_CHECK_EQUAL(ascending_view.get_layer_traversal(i).gate_index(), 3U - i);
+    }
 }
 
-BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_key_clamped_to_size) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 3);
-    auto sliced = graph.slice_graph(100, /*contract=*/false);
-    BOOST_CHECK_EQUAL(sliced.layers(), 3U);
+// contraction_view() is the build order, so it yields the same sequence under either arrival order. That
+// equality is the point: a contraction replays the circuit the way the build walked it.
+BOOST_AUTO_TEST_CASE(mp_graph_contraction_view_is_build_order_under_either_arrival) {
+    auto descending = graph_with_gates(ArrivalOrder::DescendingSlot, 4);
+    auto ascending = graph_with_gates(ArrivalOrder::AscendingSlot, 4);
+    const auto descending_view = descending.contraction_view();
+    const auto ascending_view = ascending.contraction_view();
+    BOOST_REQUIRE_EQUAL(descending_view.layers(), 4U);
+    BOOST_REQUIRE_EQUAL(ascending_view.layers(), 4U);
+    for (std::size_t i = 0; i < 4; ++i) {
+        BOOST_CHECK_EQUAL(descending_view.get_layer_traversal(i).gate_index(), i);
+        BOOST_CHECK_EQUAL(ascending_view.get_layer_traversal(i).gate_index(), i);
+    }
 }
 
-// The maybe_compact_layers arms below are reached through Heisenberg slice_graph(contract=true).
+// replace_layer() addresses layers the way get_layer() does, which is what keeps pare_graph's sweep from
+// writing its filtered layer onto the mirror-image one.
+BOOST_AUTO_TEST_CASE(mp_graph_replace_layer_addresses_the_same_layer_as_get_layer) {
+    for (const auto arrival : {ArrivalOrder::DescendingSlot, ArrivalOrder::AscendingSlot}) {
+        auto graph = graph_with_gates(arrival, 4);
+        graph.replace_layer(1, layer_with_gate(99));
+        BOOST_CHECK_EQUAL(graph.get_layer_traversal(1).gate_index(), 99U);
+        // The others are untouched, so nothing was written through the mirror index.
+        BOOST_CHECK_NE(graph.get_layer_traversal(2).gate_index(), 99U);
+        BOOST_CHECK_EQUAL(graph.layers(), 4U);
+    }
+}
 
-BOOST_AUTO_TEST_CASE(mp_graph_contract_clear_arm_when_prefix_covers_all) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 5);
-    (void)graph.slice_graph(5, /*contract=*/true); // front_offset == size -> clear
-    BOOST_CHECK_EQUAL(graph.layers(), 0U);
-    // Graph is still usable after a full clear.
-    graph.append(std::make_shared<LayerCore>(), 0, 0.0, /*gate_index=*/42);
+// The equality across arrival orders is the point, and it is what let pare_graph drop its sweep argument:
+// unbuild step 0 is the last gate the build applied under either order, so the sweep needs no picture.
+BOOST_AUTO_TEST_CASE(mp_graph_unbuild_step_is_newest_arrival_first_under_either_arrival) {
+    auto descending = graph_with_gates(ArrivalOrder::DescendingSlot, 4);
+    auto ascending = graph_with_gates(ArrivalOrder::AscendingSlot, 4);
+    for (std::size_t step = 0; step < 4; ++step) {
+        const auto d = descending.get_layer_traversal(descending.layer_of_unbuild_step(step)).gate_index();
+        const auto a = ascending.get_layer_traversal(ascending.layer_of_unbuild_step(step)).gate_index();
+        BOOST_CHECK_EQUAL(d, 3U - step);
+        BOOST_CHECK_EQUAL(a, 3U - step);
+    }
+    BOOST_CHECK_THROW((void)descending.layer_of_unbuild_step(4), std::out_of_range);
+    BOOST_CHECK_THROW((void)ascending.layer_of_unbuild_step(4), std::out_of_range);
+}
+
+BOOST_AUTO_TEST_CASE(mp_graph_clear_empties_and_leaves_the_graph_usable) {
+    auto graph = graph_with_gates(ArrivalOrder::AscendingSlot, 5);
+    graph.clear();
+    BOOST_REQUIRE_EQUAL(graph.layers(), 0U);
+    graph.append(std::make_shared<LayerCore>(), 0, 0.0, /*gate_index=*/7);
     BOOST_REQUIRE_EQUAL(graph.layers(), 1U);
-    BOOST_CHECK_EQUAL(graph.get_layer_traversal(0).gate_index(), 42U);
-}
-
-BOOST_AUTO_TEST_CASE(mp_graph_contract_noop_arm_keeps_dead_prefix_lazy) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 100);
-    (void)graph.slice_graph(3, /*contract=*/true); // front_offset 3 < 4096 -> no physical compaction
-    BOOST_REQUIRE_EQUAL(graph.layers(), 97U);
-    BOOST_CHECK_EQUAL(graph.get_layer_traversal(0).gate_index(), 3U);
-    BOOST_CHECK_EQUAL(graph.get_layer_traversal(96).gate_index(), 99U);
-}
-
-BOOST_AUTO_TEST_CASE(mp_graph_contract_erase_arm_above_threshold) {
-    // The erase arm fires only when front_offset >= 4096 AND 2*front_offset >= size.
-    auto graph = graph_with_gates(/*schrodinger=*/false, 8200);
-    auto sliced = graph.slice_graph(4100, /*contract=*/true);
-    BOOST_CHECK_EQUAL(sliced.layers(), 4100U);
-    BOOST_CHECK_EQUAL(sliced.get_layer_traversal(0).gate_index(), 0U);
-
-    BOOST_REQUIRE_EQUAL(graph.layers(), 4100U);
-    BOOST_CHECK_EQUAL(graph.get_layer_traversal(0).gate_index(), 4100U);
-    BOOST_CHECK_EQUAL(graph.get_layer_traversal(4099).gate_index(), 8199U);
-}
-
-BOOST_AUTO_TEST_CASE(mp_graph_slice_view_heisenberg_forward_window) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 5);
-    auto view = graph.slice_view(3);
-    BOOST_REQUIRE_EQUAL(view.layers(), 3U);
-    BOOST_CHECK_EQUAL(view.get_layer_traversal(0).gate_index(), 0U);
-    BOOST_CHECK_EQUAL(view.get_layer_traversal(1).gate_index(), 1U);
-    BOOST_CHECK_EQUAL(view.get_layer_traversal(2).gate_index(), 2U);
-}
-
-BOOST_AUTO_TEST_CASE(mp_graph_slice_view_schrodinger_reversed_window) {
-    // layers_ = [4,3,2,1,0]; slice_view(3) uses base=active_end-3=2, reverse=true.
-    // get_layer_traversal(i) -> layers_[2 + (3-1-i)] -> gates 0,1,2 in replay order.
-    auto graph = graph_with_gates(/*schrodinger=*/true, 5);
-    auto view = graph.slice_view(3);
-    BOOST_REQUIRE_EQUAL(view.layers(), 3U);
-    BOOST_CHECK_EQUAL(view.get_layer_traversal(0).gate_index(), 0U);
-    BOOST_CHECK_EQUAL(view.get_layer_traversal(1).gate_index(), 1U);
-    BOOST_CHECK_EQUAL(view.get_layer_traversal(2).gate_index(), 2U);
+    BOOST_CHECK_EQUAL(graph.get_layer_traversal(0).gate_index(), 7U);
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_view_reverse_flag_flips_index_mapping) {
@@ -122,8 +113,8 @@ BOOST_AUTO_TEST_CASE(mp_graph_view_reverse_flag_flips_index_mapping) {
         layers.push_back(layer_with_gate(g)); // [10,11,12,13]
     }
 
-    const MPGraphView fwd(layers, /*base=*/0, /*count=*/4, /*reverse=*/false);
-    const MPGraphView rev(layers, /*base=*/0, /*count=*/4, /*reverse=*/true);
+    const MPGraphView fwd(layers, /*reverse=*/false);
+    const MPGraphView rev(layers, /*reverse=*/true);
     for (std::size_t i = 0; i < 4; ++i) {
         BOOST_CHECK_EQUAL(fwd.get_layer_traversal(i).gate_index(), 10U + i);
         BOOST_CHECK_EQUAL(rev.get_layer_traversal(i).gate_index(), 13U - i);
@@ -133,7 +124,7 @@ BOOST_AUTO_TEST_CASE(mp_graph_view_reverse_flag_flips_index_mapping) {
 }
 
 BOOST_AUTO_TEST_CASE(mp_graph_get_layer_out_of_range_throws) {
-    auto graph = graph_with_gates(/*schrodinger=*/false, 3);
+    auto graph = graph_with_gates(ArrivalOrder::DescendingSlot, 3);
     BOOST_CHECK_NO_THROW((void)graph.get_layer(2));
     BOOST_CHECK_THROW((void)graph.get_layer(3), std::out_of_range);
     // const overload takes the same guard.

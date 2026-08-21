@@ -20,8 +20,8 @@
 
 #include "monoprop/MPGraph.h"
 
-// gate_index is only a distinguishable tag for asserting slice/view ordering; the rest of a LayerCore
-// is left empty.
+// gate_index is only a distinguishable tag for asserting layer ordering; the rest of a LayerCore is left
+// empty.
 namespace test_utils {
 
 inline auto core_with_gate(std::size_t gate_index) -> std::shared_ptr<monoprop::LayerCore> {
@@ -34,9 +34,9 @@ inline auto layer_with_gate(std::size_t gate_index) -> monoprop::Layer {
     return monoprop::Layer(core_with_gate(gate_index));
 }
 
-// Built via append() so layer ordering (Heisenberg back-append, Schrödinger front-insert) is production's.
-inline auto graph_with_gates(bool schrodinger, std::size_t n) -> monoprop::MPGraph {
-    monoprop::MPGraph graph(schrodinger);
+// Built via append() so the layer ordering is production's for the arrival order under test.
+inline auto graph_with_gates(monoprop::ArrivalOrder arrival, std::size_t n) -> monoprop::MPGraph {
+    monoprop::MPGraph graph(arrival);
     for (std::size_t i = 0; i < n; ++i) {
         graph.append(std::make_shared<monoprop::LayerCore>(), /*param_index=*/0, /*gen_coeff=*/0.0, /*gate_index=*/i);
     }

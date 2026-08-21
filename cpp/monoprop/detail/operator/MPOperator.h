@@ -28,6 +28,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
+#include "monoprop/core/Picture.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
@@ -190,7 +191,7 @@ struct MPOperator {
     // Heisenberg rejects a term absent from both (new monomials may have no graph paths); Schrödinger
     // admits them freely (the state was already evolved). Returns the supplied terms with their encoded
     // coefficients, in order.
-    auto update_initial_operator(const OperatorDict &op_dict, bool schrodinger)
+    auto update_initial_operator(const OperatorDict &op_dict, Picture picture)
         -> std::pair<MonomialList<NumModes>, VecD> {
         MonomialMap<NumModes> new_op_map;
         std::pair<MonomialList<NumModes>, VecD> new_grad_op;
@@ -203,7 +204,7 @@ struct MPOperator {
             const auto rank_init_op = init_op_map.find(mono);
             const auto coeff = algebra_encode_coeff<NumModes>(basis, v, mono);
 
-            if (!schrodinger) {
+            if (picture == Picture::Heisenberg) {
                 if (rank_init_op != init_op_map.end()) {
                     new_op_map[mono] = coeff;
                 }

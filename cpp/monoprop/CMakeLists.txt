@@ -113,6 +113,7 @@ target_link_libraries(
 add_subdirectory(algebra)
 add_subdirectory(core)
 add_subdirectory(detail)
+add_subdirectory(picture)
 
 install(
   TARGETS

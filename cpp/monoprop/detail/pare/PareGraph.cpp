@@ -103,7 +103,6 @@ auto mark_cross_rank_endpoints_kept(const LayerTraversal &layer, size_t my_rank,
 auto pare_graph(const MPGraph &graph,
                 const VecZ &nonzero_inds,
                 size_t local_index_count,
-                bool schrodinger,
                 mpi::Comm comm,
                 const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
     const size_t num_layers = graph.layers();
@@ -116,13 +115,17 @@ auto pare_graph(const MPGraph &graph,
         }
     }
 
-    std::vector<Layer> layers(num_layers);
+    // Copied, not default-built: a fresh std::vector<Layer>(num_layers) allocates a LayerCore per layer
+    // that the sweep then overwrites, and the copy keeps the source's arrival order for free.
+    MPGraph pared = graph;
 
     // Single backward sweep, entirely rank-local: every cross-rank endpoint is force-kept (see
     // mark_cross_rank_endpoints_kept), so nodes_to_keep stays consistent across ranks with no exchange.
     // Cross-rank lists are never pruned; the keep-set only has to be right so cos pruning stays exact.
     for (size_t iter = 0; iter < num_layers; ++iter) {
-        const size_t layer_idx = schrodinger ? iter : (num_layers - 1 - iter);
+        // Unbuild order: away from the seed, so reachability reaches every kept node before the cosine
+        // filter runs on the layer that produced it.
+        const size_t layer_idx = graph.layer_of_unbuild_step(iter);
         const auto &layer = graph.get_layer(layer_idx);
         const auto lt = layer.traversal();
 
@@ -132,10 +135,11 @@ auto pare_graph(const MPGraph &graph,
         const CosMask full = full_cos_of_layer(layer_idx);
         auto [filtered, preserves] = filter_layer_cosine_data(full, nodes_to_keep);
 
-        layers[layer_idx] = preserves ? Layer(layer.shared_core()) : Layer(layer.shared_core(), std::move(filtered));
+        pared.replace_layer(layer_idx,
+                            preserves ? Layer(layer.shared_core()) : Layer(layer.shared_core(), std::move(filtered)));
     }
 
-    return MPGraph(graph.is_schrodinger(), std::move(layers));
+    return pared;
 }
 
 } // namespace monoprop

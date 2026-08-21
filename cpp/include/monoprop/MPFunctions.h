@@ -110,7 +110,6 @@ monoprop_EXPORT auto ev_and_grad(const EvalRequest &request,
 monoprop_EXPORT auto pare_graph(const MPGraph &graph,
                                 const VecZ &nonzero_inds,
                                 size_t local_index_count,
-                                bool schrodinger,
                                 mpi::Comm comm,
                                 const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph;
 } // namespace monoprop

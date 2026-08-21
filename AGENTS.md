@@ -98,6 +98,23 @@ Key files:
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
   templated on the algebra policy and bound to a runtime `Basis` once, via `with_algebra`.
+- **`Picture` / the picture policy** (`cpp/monoprop/core/Picture.h`, `cpp/monoprop/picture/Picture.h`): the two
+  simulation pictures are sibling models (`HeisenbergPicture`, `SchrodingerPicture`), built the same way as the
+  algebras. Each states one picture's whole rule set — gate traversal direction, the sign an applied angle
+  carries (`apply_sign`, which is also the phase a contraction's `map_params` replays it with), the live
+  coefficient vector, the contraction partner — so no `if (schrodinger)` is written twice. Every public entry point of `MonomialPropagator` binds the policy once with `with_picture`;
+  its whole private layer is templated on that policy and never re-tests which picture it is in, so there is
+  no runtime-dispatching helper layer. The fused `ContractSink`/`apply_fused_contract` pair likewise takes
+  the policy as a template parameter, bound once inside `build_layer` — at the sink only, or the
+  `with_algebra` scan above it would instantiate four times per mode width instead of two. The picture is
+  fixed at construction: the constructor takes a `PictureSpec = std::variant<Heisenberg, Schrodinger>`, so
+  only a Schrodinger run carries a state cutoff. `MPGraph` deliberately knows no picture — it takes a
+  graph-local `ArrivalOrder` naming the slope of the optimizer slots a build hands to `append()`, and each
+  policy carries its own `arrival_order` beside `gate_slot`. The bit enters at construction and never leaves:
+  a caller that needs a traversal order asks the graph for it (`replay_view`, `contraction_view`,
+  `layer_of_unbuild_step`) rather than re-deriving one from the picture — which is why `pare_graph` takes no
+  sweep direction. Layer indices are picture-independent and load-bearing beyond `MPGraph`; its own comment
+  records what depends on them, and `slot_of_layer` is their one spelling.
 - **The partition facade**: `partitions > 1` makes a `MonomialPropagator` a facade over S single-partition
   propagators, one hash partition each. Every method that fans out must use the private partition
   vocabulary declared in `MonomialPropagator.h` (`for_each_partition_`, `map_partitions_`, `concat_partitions_`

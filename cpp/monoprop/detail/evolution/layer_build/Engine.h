@@ -34,6 +34,7 @@
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/MPOperator.h"
+#include "monoprop/picture/Picture.h"
 
 namespace monoprop::detail {
 
@@ -182,7 +183,10 @@ struct GraphSink {
 // Fused ContractImmediately sink: applies each resolved rotation directly to op_coeffs via the
 // FusedContract record streams (no LayerCore — finalize returns nullptr). wants_values=true: the scan
 // captures the signed pre-cos v_src, and resolve reads v_tgt from op_coeffs (·inv_cos under the cos sweep).
-template <size_t NumModes>
+// P is the picture policy (picture/Picture.h). It is a template parameter, not a field: the fresh
+// cross-rank miss arm below sits in the per-query resolve loop, and the apply that drains these records
+// (apply_fused_contract) must be specialized on the same policy.
+template <size_t NumModes, typename P>
 struct ContractSink {
     static constexpr bool wants_values = true;
     static constexpr size_t kStride = kQueryWordsFused<NumModes>;
@@ -195,14 +199,13 @@ struct ContractSink {
     const VecD &op_coeffs; // the very array the scan read, not a copy
     bool fused_scale;      // fused cos sweep active: hit v_tgt recovered as stored·inv_cos
     double inv_cos;
-    bool schrodinger;                 // fresh cross-rank miss coeff: 0 (Heisenberg) vs state-scored (Schrödinger)
     Basis basis;                      // Pauli vs Majorana state scoring of fresh cross-rank Schrödinger misses
     size_t def_base_ = 0;             // deferred self-insert base into fc.inserts
     size_t cross_base_ = 0;           // cross-rank resolver-half base into fc.cross_half
-    Monomial<NumModes> state_mask_{}; // Schrödinger fresh-insert scoring mask (empty in Heisenberg)
+    Monomial<NumModes> state_mask_{}; // Schrödinger fresh-insert scoring mask (unused in Heisenberg)
 
-    // No constructor on purpose: as an aggregate the call site names each field, so the two adjacent
-    // bools cannot be swapped silently. GraphSink keeps its ctor because it sizes `acc` from R.
+    // No constructor on purpose: as an aggregate the call site names each field. GraphSink keeps its ctor
+    // because it sizes `acc` from R.
 
     // Self-resolve hit (both endpoints local). always_inline: called once per surviving rotation in the
     // R=1 hot loop, where a real call is a measurable regression on the Pauli benches.
@@ -233,7 +236,9 @@ struct ContractSink {
                  size_t /*rank_count*/,
                  MPOperator<NumModes> &op,
                  const std::vector<std::vector<Response>> & /*responses*/) -> void {
-        state_mask_ = schrodinger ? initial_state_mask<NumModes>(op.initial_state) : Monomial<NumModes>{};
+        if constexpr (P::is_schrodinger) {
+            state_mask_ = initial_state_mask<NumModes>(op.initial_state);
+        }
         cross_base_ = fc.cross_half.size();
         fc.cross_half.resize(cross_base_ + pr.nq_total);
     }
@@ -247,7 +252,8 @@ struct ContractSink {
         if (ip < pr.base) {
             v_tgt = fused_scale ? op_coeffs[ip] * inv_cos : op_coeffs[ip];
         }
-        else if (schrodinger) {
+        else if constexpr (P::is_schrodinger) {
+            // Fresh cross-rank insert: the state already carries a diagonal amplitude for a paired monomial.
             v_tgt =
                 is_paired<NumModes>(pr.mono[g]) ? algebra_state_phase<NumModes>(basis, pr.mono[g], state_mask_) : 0.0;
         }
@@ -532,7 +538,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  mpi::Comm comm,
                  CosMask *out_cos = nullptr,
                  FusedContract *fused_contract = nullptr,
-                 bool schrodinger = false,
+                 Picture picture = Picture::Heisenberg,
                  VecD *fused_scale_coeffs = nullptr,
                  bool *fused_scale_out = nullptr,
                  Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
@@ -612,14 +618,17 @@ auto build_layer(MPOperator<NumModes> &local_op,
     std::shared_ptr<LayerCore> storage;
     if (use_fused) {
         const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
-        storage = run(ContractSink<NumModes>{.R = R,
-                                             .my_rank = my_rank,
-                                             .fc = *fused_contract,
-                                             .op_coeffs = coeffs,
-                                             .fused_scale = fused_scale,
-                                             .inv_cos = inv_cos,
-                                             .schrodinger = schrodinger,
-                                             .basis = basis});
+        // The picture is bound here and nowhere higher: templating build_layer itself would multiply the
+        // with_algebra scan above into four instantiations per mode width instead of two.
+        storage = with_picture(picture, [&]<typename P>() {
+            return run(ContractSink<NumModes, P>{.R = R,
+                                                 .my_rank = my_rank,
+                                                 .fc = *fused_contract,
+                                                 .op_coeffs = coeffs,
+                                                 .fused_scale = fused_scale,
+                                                 .inv_cos = inv_cos,
+                                                 .basis = basis});
+        });
     }
     else {
         storage = run(GraphSink<NumModes>{R, my_rank});

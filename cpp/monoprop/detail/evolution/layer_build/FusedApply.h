@@ -29,15 +29,14 @@ namespace monoprop::detail {
 //     here; slots born after that sweep (fresh inserts) fold cos in via their apply arm below.
 //   • two-pass (length cap / cos==0 fallback): scale_cos_mask runs here, then every arm is a plain add.
 // At R>1 each rank applies only the add to the slot it owns (half rotations in fc.cross_half).
-inline auto apply_fused_contract(FusedContract &fc,
-                                 VecD &op_coeffs,
-                                 const CosMask &cos,
-                                 double param,
-                                 bool schrodinger,
-                                 bool fused_scale) -> void {
+// P is the picture policy; it must be the one build_layer resolved for its ContractSink, or the records
+// drained here were not built for this arithmetic.
+template <typename P>
+auto apply_fused_contract(FusedContract &fc, VecD &op_coeffs, const CosMask &cos, double param, bool fused_scale)
+    -> void {
     // (1) insert records: v_tgt is the freshly-inserted term's pre-cos coeff, readable only now op_coeffs
     // is extended. Needed only in Schrödinger — a Heisenberg fresh insert has coeff 0, so skip the gather.
-    if (schrodinger) {
+    if constexpr (P::is_schrodinger) {
         for (size_t k = 0; k < fc.inserts.size(); ++k) {
             fc.inserts[k].v_tgt = op_coeffs[fc.inserts[k].tgt];
         }

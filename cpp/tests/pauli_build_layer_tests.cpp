@@ -62,7 +62,7 @@ auto jw_basis_indices(size_t n) -> std::vector<VecZ> {
 template <size_t N>
 auto build_pauli_sim(const std::map<std::string, double> &obs,
                      unsigned int cutoff,
-                     std::optional<unsigned int> schrodinger_cutoff = std::nullopt,
+                     PictureSpec picture = Heisenberg{},
                      const VecZ &initial_state = {},
                      std::optional<double> lower_atol = std::nullopt) -> MonomialPropagator<N> {
     OperatorDict init;
@@ -72,7 +72,7 @@ auto build_pauli_sim(const std::map<std::string, double> &obs,
     return MonomialPropagator<N>(init,
                                  cutoff,
                                  initial_state,
-                                 schrodinger_cutoff,
+                                 picture,
                                  MPI_COMM_SELF,
                                  lower_atol,
                                  std::nullopt,
@@ -232,7 +232,7 @@ auto jw_gate_arrays(const PauliCircuit &c) -> std::pair<std::vector<VecZ>, VecD>
 template <size_t N>
 auto build_jw_sim(const std::map<std::string, double> &obs,
                   unsigned int cutoff,
-                  std::optional<unsigned int> schrodinger_cutoff = std::nullopt,
+                  PictureSpec picture = Heisenberg{},
                   const VecZ &initial_state = {},
                   std::optional<double> lower_atol = std::nullopt) -> MonomialPropagator<N> {
     OperatorDict init;
@@ -243,7 +243,7 @@ auto build_jw_sim(const std::map<std::string, double> &obs,
     return MonomialPropagator<N>(init,
                                  cutoff,
                                  initial_state,
-                                 schrodinger_cutoff,
+                                 picture,
                                  MPI_COMM_SELF,
                                  lower_atol,
                                  std::nullopt,
@@ -342,21 +342,21 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
     const auto [jw_majs, jw_gcs] = jw_gate_arrays(circ);
 
     struct Cfg {
-        std::optional<unsigned int> sch;
+        PictureSpec picture;
         unsigned int cutoff;
         std::optional<double> atol;
         const char *name;
     };
     const std::vector<Cfg> cfgs{
-        {std::nullopt, 3, std::nullopt, "heisenberg-full-cutoff"},
-        {std::nullopt, 2, std::nullopt, "heisenberg-cutoff-2"},
-        {std::nullopt, 3, std::optional<double>(1e-6), "heisenberg-lower-atol"},
-        {std::optional<unsigned int>(5), 3, std::nullopt, "schrodinger-full-cutoff"},
-        {std::optional<unsigned int>(5), 3, std::optional<double>(1e-6), "schrodinger-lower-atol"},
+        {Heisenberg{}, 3, std::nullopt, "heisenberg-full-cutoff"},
+        {Heisenberg{}, 2, std::nullopt, "heisenberg-cutoff-2"},
+        {Heisenberg{}, 3, std::optional<double>(1e-6), "heisenberg-lower-atol"},
+        {Schrodinger{5}, 3, std::nullopt, "schrodinger-full-cutoff"},
+        {Schrodinger{5}, 3, std::optional<double>(1e-6), "schrodinger-lower-atol"},
     };
     for (const auto &cf : cfgs) {
-        auto nat = build_pauli_sim<N>(obs, cf.cutoff, cf.sch, initial_state, cf.atol);
-        auto jw = build_jw_sim<N>(obs, cf.cutoff, cf.sch, initial_state, cf.atol);
+        auto nat = build_pauli_sim<N>(obs, cf.cutoff, cf.picture, initial_state, cf.atol);
+        auto jw = build_jw_sim<N>(obs, cf.cutoff, cf.picture, initial_state, cf.atol);
         nat.build_graph(nat_monos, circ.param_map, nat_gcs);
         jw.build_graph(jw_majs, circ.param_map, jw_gcs);
         const double en = nat.expectation_value(circ.params);
@@ -423,17 +423,17 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
     const auto [jw_majs, jw_gcs] = jw_gate_arrays(circ);
 
     // (a) fused contract-immediately propagate.
-    auto prop = build_pauli_sim<N>(obs, 3, std::nullopt, initial_state);
+    auto prop = build_pauli_sim<N>(obs, 3, Heisenberg{}, initial_state);
     prop.propagate(nat_monos, circ.param_map, nat_gcs, circ.params);
     const double e_prop = heisenberg_expval<N>(prop);
 
     // (b) graph build + functional (expectation_value recomputes the cos from the fold).
-    auto grp = build_pauli_sim<N>(obs, 3, std::nullopt, initial_state);
+    auto grp = build_pauli_sim<N>(obs, 3, Heisenberg{}, initial_state);
     grp.build_graph(nat_monos, circ.param_map, nat_gcs);
     const double e_graph = grp.expectation_value(circ.params);
 
     // (c) contract_partially (evolve_operator_with_recompute — the same fold path, non-inplace).
-    auto ctr = build_pauli_sim<N>(obs, 3, std::nullopt, initial_state);
+    auto ctr = build_pauli_sim<N>(obs, 3, Heisenberg{}, initial_state);
     ctr.build_graph(nat_monos, circ.param_map, nat_gcs);
     const auto evolved = ctr.contract_partially(circ.params, /*inplace=*/false);
     const VecD st = ctr.mp_op().materialize_state();
@@ -444,7 +444,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
     const double e_contract = ctr.core_term() + s;
 
     // (d) JW-image Majorana reference.
-    auto jw = build_jw_sim<N>(obs, 3, std::nullopt, initial_state);
+    auto jw = build_jw_sim<N>(obs, 3, Heisenberg{}, initial_state);
     jw.build_graph(jw_majs, circ.param_map, jw_gcs);
     const double e_jw = jw.expectation_value(circ.params);
 

@@ -52,8 +52,8 @@ auto eval_scratch() -> EvalScratch & {
     return scratch;
 }
 
-// Graph is traversed in simulation order but parameter_mapping is stored in optimizer order; write the
-// mapped coefficients forward or reversed accordingly.
+// parameter_mapping is indexed by optimizer slot; `result` is indexed by the position the caller's graph
+// view traverses. `reverse` says the two disagree, and disagreement is exactly slot_of_layer.
 auto fill_mapped_params(VecD &result,
                         const VecD &parameters,
                         const VecZ &parameter_mapping,
@@ -63,7 +63,7 @@ auto fill_mapped_params(VecD &result,
     const size_t count = parameter_mapping.size();
     result.resize(count);
     for (size_t i = 0; i < count; ++i) {
-        const size_t dst = reverse ? (count - 1 - i) : i;
+        const size_t dst = reverse ? slot_of_layer(i, count) : i;
         result[dst] = phase * parameters[parameter_mapping[i]] * gen_coeffs[i];
     }
 }
@@ -229,7 +229,7 @@ auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
     const auto &parameter_mapping = request.parameter_mapping;
     scratch.gradient.assign(request.params.size(), 0.0);
     for (size_t i = 0; i < parameter_mapping.size(); ++i) {
-        const auto idx = parameter_mapping.size() - 1 - i;
+        const auto idx = slot_of_layer(i, parameter_mapping.size());
         const auto param_ind = parameter_mapping[i];
         scratch.gradient[param_ind] +=
             state_operator_derivative_local(state_,

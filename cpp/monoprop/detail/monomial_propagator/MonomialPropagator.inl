@@ -74,7 +74,7 @@ template <size_t NumModes>
 MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_operator,
                                                  unsigned int cutoff,
                                                  const VecZ &initial_state,
-                                                 std::optional<unsigned int> schrodinger_cutoff,
+                                                 const PictureSpec &picture,
                                                  mpi::Comm comm,
                                                  std::optional<double> lower_atol,
                                                  std::optional<double> upper_atol,
@@ -83,10 +83,10 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                  size_t logical_num_modes,
                                                  Basis basis,
                                                  size_t partitions)
-    : schrodinger_{schrodinger_cutoff.has_value()},
+    : picture_{kind_of(picture)},
       comm_{comm},
       mp_op_{},
-      graph_(schrodinger_cutoff.has_value()),
+      graph_(with_picture(picture_, []<typename P>() { return P::arrival_order; })),
       cutoff_{cutoff},
       lower_atol_{lower_atol},
       upper_atol_{upper_atol},
@@ -123,7 +123,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             return std::make_unique<MonomialPropagator<NumModes>>(initial_operator,
                                                                   cutoff,
                                                                   initial_state,
-                                                                  schrodinger_cutoff,
+                                                                  picture,
                                                                   partition_comm,
                                                                   lower_atol,
                                                                   upper_atol,
@@ -159,9 +159,17 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
         }
     }
 
-    auto sc = schrodinger_cutoff.value_or(cutoff + 2);
-    sc = std::min(sc, static_cast<unsigned int>(2 * logical_num_modes_));
-    auto op = schrodinger_ ? generate_paired_op<NumModes>(sc / 2 + sc % 2, logical_num_modes_) : local_heisenberg_terms;
+    // The picture decides the initial monomial set: Heisenberg starts from the observable's own terms,
+    // Schrödinger from every paired monomial the state cutoff admits. The variant is what makes the state
+    // cutoff unconditionally present here -- the old optional needed a fallback that could never fire.
+    MonomialList<NumModes> op;
+    if (const auto *state = std::get_if<Schrodinger>(&picture)) {
+        const auto sc = std::min(state->state_cutoff, static_cast<unsigned int>(2 * logical_num_modes_));
+        op = generate_paired_op<NumModes>(sc / 2 + sc % 2, logical_num_modes_);
+    }
+    else {
+        op = std::move(local_heisenberg_terms);
+    }
 
     const size_t expected_local_terms = std::max<size_t>(1, op.size() / std::max<size_t>(1, num_ranks));
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
@@ -184,7 +192,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     mp_op_.initial_state = initial_state;
     core_term_ = core_term;
 
-    initialize_operator_caches_();
+    with_picture(picture_, [&]<typename P>() { this->template initialize_operator_caches_<P>(); });
 }
 
 template <size_t NumModes>
@@ -192,7 +200,7 @@ MonomialPropagator<NumModes>::~MonomialPropagator() = default;
 
 template <size_t NumModes>
 MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other)
-    : schrodinger_(other.schrodinger_),
+    : picture_(other.picture_),
       comm_(other.comm_),
       cutoff_fn_(other.cutoff_fn_),
       mp_op_(other.mp_op_),
@@ -335,17 +343,8 @@ auto MonomialPropagator<NumModes>::partitioned_graph_memory_usage_() const -> Gr
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
-    constexpr size_t kMax = detail::OperatorIndex<NumModes>::kMaxInlinePositions;
-    constexpr size_t kDefault = detail::OperatorIndex<NumModes>::kDefaultInlinePositions;
-    if (schrodinger_) {
-        return kDefault;
-    }
-    // The bound is already in physical slots (CutoffEvaluator::max_slot_bound), so nothing to scale.
-    const auto bound = detail::CutoffEvaluator<NumModes>(cutoff_fn_).max_slot_bound();
-    if (!bound) {
-        return kDefault;
-    }
-    return std::min<size_t>(*bound, kMax);
+    // A leaf: one policy question, one call site (the ctor, before any P is in scope), so it binds here.
+    return with_picture(picture_, [&]<typename P>() { return P::template packed_inline_width<NumModes>(cutoff_fn_); });
 }
 
 template <size_t NumModes>
@@ -373,7 +372,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
         }
     }
 
-    return mp_op_.update_initial_operator(new_op, schrodinger_);
+    return mp_op_.update_initial_operator(new_op, picture_);
 }
 
 template <size_t NumModes>
@@ -496,33 +495,23 @@ auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
 }
 
 template <size_t NumModes>
+template <typename P>
 auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
     (void)mp_op_.get_operator();
-    // Heisenberg warms the sparse state only; densifying here would defeat it. Schrödinger's dense vector
-    // IS the live evolved vector.
-    if (schrodinger_) {
-        (void)mp_op_.dense_state();
-    }
-    else {
-        (void)mp_op_.sparse_state();
-    }
+    P::warm_state(mp_op_);
     (void)mp_op_.inverted_index();
     mp_op_.op_coeffs.shrink_to_fit();
     mp_op_.shrink_state_to_fit();
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::current_picture_coeffs_() -> const VecD & {
-    return schrodinger_ ? mp_op_.dense_state() : mp_op_.get_operator();
-}
-
-template <size_t NumModes>
+template <typename P>
 auto MonomialPropagator<NumModes>::extend_coeffs_from_current_picture_if_needed_(VecD &coeffs) -> void {
     if (coeffs.size() >= mp_op_.size()) {
         return;
     }
 
-    const auto &current = current_picture_coeffs_();
+    const auto &current = P::live_coeffs(mp_op_);
     if (&coeffs == &current) {
         return;
     }
@@ -534,87 +523,91 @@ auto MonomialPropagator<NumModes>::extend_coeffs_from_current_picture_if_needed_
 }
 
 template <size_t NumModes>
+template <typename P>
 auto MonomialPropagator<NumModes>::evolve_mode_build_graph_(const std::vector<VecZ> &majoranas,
                                                             const VecZ &parameter_mapping,
                                                             const VecD &gen_coeffs,
                                                             const VecZ &gate_indices,
                                                             std::optional<size_t> only_rotate_len_k) -> void {
-    const auto majoranas_size = majoranas.size();
-    run_gate_loop_(majoranas,
-                   only_rotate_len_k,
-                   [this, &parameter_mapping, &gen_coeffs, &gate_indices, majoranas_size](const VecZ &mono,
-                                                                                          std::optional<size_t> rot_len,
-                                                                                          size_t i) {
-                       const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
-                       propagate_one_(mono,
-                                      rot_len,
-                                      std::nullopt,
-                                      std::nullopt,
-                                      parameter_mapping[idx],
-                                      gen_coeffs[idx],
-                                      gate_indices[idx]);
-                   });
+    run_gate_loop_<P>(majoranas,
+                      only_rotate_len_k,
+                      [this, &parameter_mapping, &gen_coeffs, &gate_indices](const VecZ &mono,
+                                                                             std::optional<size_t> rot_len,
+                                                                             size_t slot) {
+                          this->propagate_one_(mono,
+                                               rot_len,
+                                               std::nullopt,
+                                               std::nullopt,
+                                               parameter_mapping[slot],
+                                               gen_coeffs[slot],
+                                               gate_indices[slot]);
+                      });
 }
 
 template <size_t NumModes>
+template <typename P>
 auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vector<VecZ> &majoranas,
                                                                   const VecZ &parameter_mapping,
                                                                   const VecD &gen_coeffs,
                                                                   const VecZ &gate_indices,
                                                                   const VecD &parameters,
-                                                                  const VecD &operator_coeffs,
+                                                                  VecD operator_coeffs,
                                                                   std::optional<size_t> only_rotate_len_k) -> void {
     auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0);
-    auto coeffs = operator_coeffs;
-    const auto majoranas_size = majoranas.size();
+    auto coeffs = std::move(operator_coeffs);
 
-    run_gate_loop_(majoranas,
-                   only_rotate_len_k,
-                   [this, &parameter_mapping, &gen_coeffs, &gate_indices, &mapped_params, &coeffs, majoranas_size](
-                       const VecZ &mono,
-                       std::optional<size_t> rot_len,
-                       size_t i) {
-                       const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
-                       const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
-                       // The cos word list is not persisted on the layer; the builder moves it out transiently.
-                       auto cos = std::make_shared<CosMask>();
-                       auto storage = build_evolve_result_(mono, rot_len, std::cref(coeffs), build_angle, cos.get());
-                       graph_.append(storage, parameter_mapping[idx], gen_coeffs[idx], gate_indices[idx]);
+    run_gate_loop_<P>(
+        majoranas,
+        only_rotate_len_k,
+        [this, &parameter_mapping, &gen_coeffs, &gate_indices, &mapped_params, &coeffs](const VecZ &mono,
+                                                                                        std::optional<size_t> rot_len,
+                                                                                        size_t slot) {
+            const auto [build_angle, apply_angle] = gate_angle_<P>(mapped_params, slot);
+            // The cos word list is not persisted on the layer; the builder moves it out transiently.
+            auto cos = std::make_shared<CosMask>();
+            auto storage = this->build_evolve_result_(mono, rot_len, std::cref(coeffs), build_angle, cos.get());
+            graph_.append(storage, parameter_mapping[slot], gen_coeffs[slot], gate_indices[slot]);
 
-                       extend_coeffs_from_current_picture_if_needed_(coeffs);
+            this->template extend_coeffs_from_current_picture_if_needed_<P>(coeffs);
 
-                       Layer layer(std::move(storage));
-                       detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v) {
-                           detail::scale_cos_mask(c, *cos, v);
-                       };
-                       evolve_step(coeffs, layer, apply_angle, comm_, cos_scale);
-                   });
+            Layer layer(std::move(storage));
+            detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v) {
+                detail::scale_cos_mask(c, *cos, v);
+            };
+            evolve_step(coeffs, layer, apply_angle, comm_, cos_scale);
+        });
 }
 
 template <size_t NumModes>
+template <typename P>
 auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::vector<VecZ> &majoranas,
                                                                      const VecZ &parameter_mapping,
                                                                      const VecD &gen_coeffs,
                                                                      const VecD &parameters,
                                                                      std::optional<size_t> only_rotate_len_k) -> void {
     auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0);
-    // Called for the side effect alone: it returns a reference to the very vector selected below.
-    (void)current_picture_coeffs_();
-    VecD *op_coeffs = schrodinger_ ? &mp_op_.state_coeffs : &mp_op_.op_coeffs;
-    const auto majoranas_size = majoranas.size();
-    run_gate_loop_(
-        majoranas,
-        only_rotate_len_k,
-        [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &mono, std::optional<size_t> rot_len, size_t i) {
-            const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
-            // extend_coeffs must run after build_evolve_result_'s self-rank grow and before the apply.
-            CosMask cos;
-            detail::FusedContract fc;
-            bool fused_scale = false;
-            build_evolve_result_(mono, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc, op_coeffs, &fused_scale);
-            extend_coeffs_from_current_picture_if_needed_(*op_coeffs);
-            detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, schrodinger_, fused_scale);
-        });
+    // Called for the side effect alone: it materializes the very vector the slot below points at.
+    (void)P::live_coeffs(mp_op_);
+    VecD *op_coeffs = &P::live_coeffs_slot(mp_op_);
+    run_gate_loop_<P>(majoranas,
+                      only_rotate_len_k,
+                      [this, &mapped_params, op_coeffs](const VecZ &mono, std::optional<size_t> rot_len, size_t slot) {
+                          const auto [build_angle, apply_angle] = gate_angle_<P>(mapped_params, slot);
+                          // extend_coeffs must run after build_evolve_result_'s self-rank grow and before the apply.
+                          CosMask cos;
+                          detail::FusedContract fc;
+                          bool fused_scale = false;
+                          this->build_evolve_result_(mono,
+                                                     rot_len,
+                                                     std::cref(*op_coeffs),
+                                                     build_angle,
+                                                     &cos,
+                                                     &fc,
+                                                     op_coeffs,
+                                                     &fused_scale);
+                          this->template extend_coeffs_from_current_picture_if_needed_<P>(*op_coeffs);
+                          detail::apply_fused_contract<P>(fc, *op_coeffs, cos, apply_angle, fused_scale);
+                      });
 }
 
 template <size_t NumModes>
@@ -650,10 +643,15 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
         g += gate_offset;
     }
 
-    if (!parameters.has_value()) {
-        evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k);
-    }
-    else {
+    with_picture(picture_, [&]<typename P>() {
+        if (!parameters.has_value()) {
+            this->template evolve_mode_build_graph_<P>(majoranas,
+                                                       parameter_mapping,
+                                                       gen_coeffs,
+                                                       local_gates,
+                                                       only_rotate_len_k);
+            return;
+        }
         // map_params() indexes `parameters` by parameter_mapping, so a too-short vector reads out of bounds.
         validate_parameters_length(*parameters, parameter_mapping);
         // Coefficient-informed build: seed by contracting the existing graph so atol truncation sees
@@ -674,19 +672,19 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                 parameters->size()));
             }
             const VecD existing_params(parameters->begin(), parameters->begin() + static_cast<std::ptrdiff_t>(m));
-            seed = contract_partially(existing_params, false);
+            seed = this->template contract_partially_<P>(existing_params, false);
         }
         else {
-            seed = current_picture_coeffs_();
+            seed = P::live_coeffs(mp_op_);
         }
-        evolve_mode_graph_with_coeffs_(majoranas,
-                                       parameter_mapping,
-                                       gen_coeffs,
-                                       local_gates,
-                                       *parameters,
-                                       seed,
-                                       only_rotate_len_k);
-    }
+        this->template evolve_mode_graph_with_coeffs_<P>(majoranas,
+                                                         parameter_mapping,
+                                                         gen_coeffs,
+                                                         local_gates,
+                                                         *parameters,
+                                                         std::move(seed),
+                                                         only_rotate_len_k);
+    });
 }
 
 template <size_t NumModes>
@@ -714,22 +712,27 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              "build_graph() to extend it.",
                                              graph_layers()));
     }
-    evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+    with_picture(picture_, [&]<typename P>() {
+        this->template evolve_mode_contract_immediately_<P>(majoranas,
+                                                            parameter_mapping,
+                                                            gen_coeffs,
+                                                            parameters,
+                                                            only_rotate_len_k);
+    });
 }
 
 template <size_t NumModes>
-template <typename EvolutionFunc>
+template <typename P, typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
                                                   std::optional<size_t> only_rotate_len_k,
                                                   EvolutionFunc evolution_func) -> void {
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
-        const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
-        const auto &mono = majoranas[idx];
-        evolution_func(mono, only_rotate_len_k, i);
+        const auto slot = P::gate_slot(i, majoranas.size());
+        evolution_func(majoranas[slot], only_rotate_len_k, slot);
     }
 
-    initialize_operator_caches_();
+    initialize_operator_caches_<P>();
 }
 
 template <size_t NumModes>
@@ -758,7 +761,7 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                          comm_,
                                          out_cos,
                                          fused_contract,
-                                         schrodinger_,
+                                         picture_,
                                          fused_scale_coeffs,
                                          fused_scale,
                                          basis_);
@@ -833,7 +836,7 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
     if (parameter_mapping.size() == count) {
         // Per-layer mapping in optimizer order.
         for (size_t layer = 0; layer < count; ++layer) {
-            relabel(layer, parameter_mapping[count - 1 - layer]);
+            relabel(layer, parameter_mapping[slot_of_layer(layer, count)]);
         }
     }
     else if (parameter_mapping.size() == gates) {
@@ -859,10 +862,9 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
     const size_t count = graph_.layers();
     VecZ parameter_mapping(count);
     VecD gen_coeffs(count);
-    // Layers store gate info in simulation order; the evaluation machinery expects optimizer order (the reverse).
     for (size_t layer = 0; layer < count; ++layer) {
         const auto traversal = graph_.get_layer_traversal(layer);
-        const size_t optimizer_index = count - 1 - layer;
+        const size_t optimizer_index = slot_of_layer(layer, count);
         parameter_mapping[optimizer_index] = traversal.param_index();
         gen_coeffs[optimizer_index] = traversal.gen_coeff();
     }
@@ -916,7 +918,7 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
 }
 
 template <size_t NumModes>
-template <typename Fn, typename R>
+template <typename P, typename Fn, typename R>
 auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<double> pare_threshold)
     -> std::function<R(const VecD &)> {
     auto gate_arrays = graph_gate_arrays_();
@@ -930,13 +932,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     // EvalState owns its rows and snapshots the term count -- a later append push_backs onto the operator's
     // sparse rows, which would both dangle a view and outrun the `op` captured below.
     const auto num_terms = mp_op_.size();
-    auto state = [&] {
-        if (schrodinger_) {
-            return EvalState::dense(mp_op_.dense_state());
-        }
-        const auto sparse = mp_op_.sparse_state();
-        return EvalState::sparse(num_terms, sparse.rows, sparse.values);
-    }();
+    auto state = P::eval_state(mp_op_, num_terms);
     VecD op = mp_op_.get_operator();
     const auto core_term = this->core_term();
     const auto comm = comm_;
@@ -958,10 +954,8 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
             return detail::fold_to_cos_mask<NumModes>(combined);
         };
         // Threshold the picture's driving vector: the Hamiltonian in Schrödinger, the state otherwise.
-        const auto keep = schrodinger_ ? indices_above(op, *pare_threshold) : state.indices_above(*pare_threshold);
-        const auto count = schrodinger_ ? op.size() : state.length();
-        graph =
-            std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, schrodinger_, comm_, full_cos_of_layer));
+        const auto [keep, count] = P::pare_seed(state, op, *pare_threshold);
+        graph = std::make_shared<const MPGraph>(pare_graph(graph_, keep, count, comm_, full_cos_of_layer));
     }
     else {
         graph = std::shared_ptr<const MPGraph>(std::shared_ptr<const void>{}, &graph_);
@@ -1013,7 +1007,8 @@ auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<do
                                                      [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];
         };
     }
-    return make_functional_(ev_fn, pare_threshold);
+    return with_picture(picture_,
+                        [&]<typename P>() { return this->template make_functional_<P>(ev_fn, pare_threshold); });
 }
 
 template <size_t NumModes>
@@ -1028,7 +1023,9 @@ auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional(std
                                                      [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];
         };
     }
-    return make_functional_(ev_and_grad_fn, pare_threshold);
+    return with_picture(picture_, [&]<typename P>() {
+        return this->template make_functional_<P>(ev_and_grad_fn, pare_threshold);
+    });
 }
 
 template <size_t NumModes>
@@ -1054,46 +1051,37 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
     if (partition_group_) {
         return concat_partitions_([&](MonomialPropagator &s) { return s.contract_partially(parameters, inplace); });
     }
+    return with_picture(picture_,
+                        [&]<typename P>() { return this->template contract_partially_<P>(parameters, inplace); });
+}
+
+template <size_t NumModes>
+template <typename P>
+auto MonomialPropagator<NumModes>::contract_partially_(const VecD &parameters, bool inplace) -> VecD {
     const auto gate_arrays = graph_gate_arrays_();
     const auto &parameter_mapping = gate_arrays.first;
     const auto &gen_coeffs = gate_arrays.second;
     validate_parameters_length(parameters, parameter_mapping);
 
     if (parameters.empty()) {
-        return current_picture_coeffs_();
+        return P::live_coeffs(mp_op_);
     }
 
-    const size_t num_majoranas = parameter_mapping.size();
-    // Inplace slicing produces an owned MPGraph that must be bound to a named local before viewing
-    // (never view a temporary); slice_view() views this graph's still-live layers directly.
-    if (schrodinger_) {
-        const auto &state = mp_op_.dense_state();
-        const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, -1.0);
-        VecD evolved_state;
-        if (inplace) {
-            const MPGraph sliced = graph_.slice_graph(num_majoranas, true);
-            evolved_state = evolve_operator_with_recompute_(VecD(state), sliced.replay_view(), mapped_params);
-            mp_op_.state_coeffs = evolved_state;
-        }
-        else {
-            evolved_state =
-                evolve_operator_with_recompute_(VecD(state), graph_.slice_view(num_majoranas), mapped_params);
-        }
-        return evolved_state;
-    }
+    // The pictures differ in three values only: the source vector, the (phase, reverse) map_params pair,
+    // and the slot that receives an inplace result. Everything else -- and the order of every flop -- is shared.
+    // The phase is apply_sign because this replays the very angles the build applied.
+    const VecD &source = P::live_coeffs(mp_op_);
+    const auto mapped_params =
+        map_params(parameters, parameter_mapping, gen_coeffs, P::apply_sign, P::contract_reverse);
 
-    const auto &op = mp_op_.get_operator();
-    const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0, true);
-    VecD evolved_op;
+    VecD evolved = evolve_operator_with_recompute_(VecD(source), graph_.contraction_view(), mapped_params);
     if (inplace) {
-        const MPGraph sliced = graph_.slice_graph(num_majoranas, true);
-        evolved_op = evolve_operator_with_recompute_(VecD(op), sliced.replay_view(), mapped_params);
-        mp_op_.op_coeffs = evolved_op;
+        // Drained only after the evolution: the cosine callbacks hold pointers into the layers' stored cos
+        // sets, and they die inside evolve_operator_with_recompute_.
+        P::live_coeffs_slot(mp_op_) = evolved;
+        graph_.clear();
     }
-    else {
-        evolved_op = evolve_operator_with_recompute_(VecD(op), graph_.slice_view(num_majoranas), mapped_params);
-    }
-    return evolved_op;
+    return evolved;
 }
 
 template <size_t NumModes>

@@ -16,6 +16,10 @@ Pass `schrodinger_cutoff` to switch from the default Heisenberg picture
 Schrödinger picture gates are applied to the state, whereas in the Heisenberg
 picture they are applied to the observable.
 
+In C++ the choice is a `PictureSpec` — `Heisenberg{}` or `Schrodinger{state_cutoff}` — so only a
+Schrödinger run carries a state cutoff. The Python constructors keep the `schrodinger_cutoff`
+spelling and resolve it at the binding boundary.
+
 `schrodinger_cutoff` is the truncation applied to the initial state. It must be
 set higher than the regular `cutoff` for the Schrödinger-picture result to
 match the Heisenberg-picture one. A good value of the parameter depends on the circuit
