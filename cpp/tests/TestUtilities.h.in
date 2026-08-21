@@ -18,49 +18,21 @@
 #include <array>
 #include <cmath>
 #include <complex>
-#include <concepts>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <map>
 #include <optional>
-#include <ostream>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "TestData.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
-
-namespace detail {
-template <typename T>
-concept Printable = requires(std::ostream& os, const T& value) {
-    { os << value } -> std::same_as<std::ostream&>;
-};
-} // namespace detail
-
-// boost_test_print_type has to be in the same namespace as the printed type
-namespace std {
-template <typename T>
-    requires detail::Printable<T>
-auto boost_test_print_type(std::ostream& os, const std::vector<T>& aVec) -> std::ostream& {
-    os << "std::vector size " << aVec.size() << " [";
-    for (const auto& i : aVec) {
-        os << "\n    " << i;
-    }
-    os << "]";
-    return os;
-}
-template <typename K, typename V>
-    requires detail::Printable<K> && detail::Printable<V>
-auto boost_test_print_type(std::ostream& os, const std::pair<K, V>& aPair) -> std::ostream& {
-    os << "[" << aPair.first << ", " << aPair.second << "]";
-    return os;
-}
-} // namespace std
 
 namespace test_utils {
 namespace fs = std::filesystem;
@@ -73,7 +45,8 @@ static inline auto test_data_path() -> fs::path {
 template <size_t NumModes>
 inline auto load_case_data(const std::string& filename) -> CaseData {
     const fs::path data_path = test_data_path() / filename;
-    BOOST_REQUIRE_MESSAGE(fs::exists(data_path), "Missing msgpack data file: " << data_path);
+    INFO("msgpack data file: " << data_path);
+    REQUIRE(fs::exists(data_path));
     return load_case(data_path);
 }
 
@@ -109,9 +82,9 @@ inline auto evaluate_expval(MonomialPropagator<NumModes>& sim, const CaseData& d
 }
 
 inline auto check_expval_close(const char* label, double expval, double exact, double atol = 1e-9) -> void {
-    BOOST_TEST_MESSAGE(std::string("[") + label + "] expval=" + std::format("{:.9f}", expval)
-                       + ", exact=" + std::format("{:.9f}", exact));
-    BOOST_CHECK_SMALL(expval - exact, atol);
+    INFO(std::string("[") + label + "] expval=" + std::format("{:.9f}", expval)
+         + ", exact=" + std::format("{:.9f}", exact));
+    CHECK_THAT(expval - exact, Catch::Matchers::WithinAbs(0.0, atol));
 }
 
 // Mixed absolute/relative comparison; rtol absorbs the accumulation drift between n=1 and n>1 runs.
@@ -130,8 +103,9 @@ inline auto test_evolve_build_graph(const CaseData& data, const SimulatorConfig&
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
     auto expval_fn = mp.expectation_value_functional(pare_threshold);
     double expval = expval_fn(data.parameters);
-    BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare << " sch_cutoff="
-                                  << (cfg.schrodinger_cutoff ? std::to_string(*cfg.schrodinger_cutoff) : "none")) {
+    {
+        INFO("n_modes=" << n_modes << " pare=" << pare << " sch_cutoff="
+                        << (cfg.schrodinger_cutoff ? std::to_string(*cfg.schrodinger_cutoff) : "none"));
         check_expval_close("Expectation Value Build Graph", expval, exact_expval);
     }
 }
@@ -149,8 +123,9 @@ inline auto test_evolve_build_graph_with_coeffs(const CaseData& data,
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
     auto expval_fn = mp.expectation_value_functional(pare_threshold);
     double expval = expval_fn(data.parameters);
-    BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare << " sch_cutoff="
-                                  << (cfg.schrodinger_cutoff ? std::to_string(*cfg.schrodinger_cutoff) : "none")) {
+    {
+        INFO("n_modes=" << n_modes << " pare=" << pare << " sch_cutoff="
+                        << (cfg.schrodinger_cutoff ? std::to_string(*cfg.schrodinger_cutoff) : "none"));
         check_expval_close("Expectation Value Build Graph with coeffs", expval, exact_expval);
     }
 }
@@ -194,7 +169,8 @@ inline auto test_evolve_build_graph_with_coeffs_extend(const CaseData& data,
     const std::optional<double> pare_threshold = pare ? std::optional<double>{1e-10} : std::nullopt;
     auto expval_fn = mp.expectation_value_functional(pare_threshold);
     double expval = expval_fn(data.parameters);
-    BOOST_TEST_CONTEXT("n_modes=" << n_modes << " pare=" << pare) {
+    {
+        INFO("n_modes=" << n_modes << " pare=" << pare);
         check_expval_close("Expectation Value Build Graph with coeffs (split build, schrodinger)",
                            expval,
                            exact_expval);

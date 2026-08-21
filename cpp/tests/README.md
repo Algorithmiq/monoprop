@@ -1,12 +1,12 @@
 # C++ Test Suite
 
-This directory contains the C++ test suite for monoprop, built using Boost.Test.
+This directory contains the C++ test suite for monoprop, built using Catch2 v3.
 Every `*.cpp` here is globbed into a single executable, `monoprop_unit_tests.x`.
 
 ## Test Organization
 
-Tests carry no labels of their own. The CTest harness (`boostAddTests.cmake`)
-discovers every Boost.Test case and registers it twice:
+Catch2's CMake integration discovers every `TEST_CASE` and registers it as a
+`serial` CTest test. The project also registers suite-level MPI variants:
 
 - **`serial`**: the case run in-process with `MPI_COMM_SELF`.
 - **`mpi`** (+ rank-specific `mpi-<n>`): the whole suite wrapped in
@@ -30,6 +30,9 @@ uv sync --all-extras -v
 ctest --test-dir build/editable/Release
 ```
 
+Release builds compile these test sources at `-O1`; linked production objects
+remain at `-O3`.
+
 For an MPI-enabled tree, rerun `uv sync` with
 `--config-settings=cmake.define.monoprop_ENABLE_MPI=ON`.
 ## Running Tests
@@ -44,15 +47,14 @@ ctest --test-dir build/editable/Release -L mpi-2  # only the 2-rank run
 Or drive the binary directly:
 
 ```bash
-build/editable/Release/bin/monoprop_unit_tests.x --list_content
-build/editable/Release/bin/monoprop_unit_tests.x --run_test=pauli_algebra_*
+build/editable/Release/bin/monoprop_unit_tests.x --list-tests
+build/editable/Release/bin/monoprop_unit_tests.x "pauli_algebra_*"
 mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x
 ```
 
-Because CTest discovery treats each `--list_content` line as a top-level test
-name and cannot address suite-nested cases, tests use flat
-`BOOST_AUTO_TEST_CASE`s with a shared name prefix (e.g. `pauli_algebra_*`,
-`inverted_index_*`) rather than `BOOST_AUTO_TEST_SUITE`.
+Tests use stable, flat names with shared prefixes (for example,
+`pauli_algebra_*` and `inverted_index_*`) so direct Catch2 test specs remain
+predictable.
 
 ## Shared Test Utilities
 
@@ -71,7 +73,8 @@ name and cannot address suite-nested cases, tests use flat
   (`core_with_gate`, `layer_with_gate`, `graph_with_gates`) for white-box
   MPGraph transform tests.
 - **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
-- **`boost-test.cmake` / `boostAddTests.cmake`**: CMake test discovery.
+- **`catch-properties.cmake.in`**: adds the project CTest labels and serial-only
+  MPI environment to Catch2's discovered tests.
 
 ## Test Files (by area)
 
@@ -118,11 +121,11 @@ CMake wraps the whole suite in `mpiexec -n <rank>` for each rank in
 per case, because the ranks have to reach the same collectives. For exhaustive
 rank coverage: `-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under
 MPI while debugging, invoke the binary directly:
-`mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x --run_test=<case>`.
+`mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x "<case>"`.
 
 ## Adding New Tests
 
-1. Add a `*.cpp` with flat `BOOST_AUTO_TEST_CASE`s (shared name prefix).
+1. Add a `*.cpp` with Catch2 `TEST_CASE`s and a shared name prefix.
 2. Reuse the shared helpers above rather than copying oracle/harness code.
 3. For MPI-required scenarios, check `monoprop::mpi::size(MPI_COMM_WORLD)` and
    skip if `< 2`.

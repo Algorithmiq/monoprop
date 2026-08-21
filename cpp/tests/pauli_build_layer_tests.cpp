@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <array>
 #include <cmath>
@@ -146,8 +148,9 @@ auto check_pauli_gate(const std::map<std::string, double> &obs, const std::strin
         }
     }
     const auto ref = matmul(matmul(Ud, O, d), U, d);
-    BOOST_TEST_CONTEXT("N=" << N << " G=" << gstr << " g=" << g << " theta=" << theta) {
-        BOOST_TEST(approx_equal(engine, ref));
+    {
+        INFO("N=" << N << " G=" << gstr << " g=" << g << " theta=" << theta);
+        CHECK(approx_equal(engine, ref));
     }
 }
 
@@ -256,7 +259,7 @@ auto build_jw_sim(const std::map<std::string, double> &obs,
 } // namespace
 
 // Pins the emit sign.
-BOOST_AUTO_TEST_CASE(pauli_build_layer_dense_matrix_ground_truth) {
+TEST_CASE("pauli_build_layer_dense_matrix_ground_truth") {
     const std::map<std::string, double> o2{{"XY", 0.5}, {"ZZ", -0.3}, {"YX", 0.7}, {"IZ", 0.2}, {"YY", -0.15}};
     for (double th : {0.37, 0.8, 1.3, -0.6}) {
         check_pauli_gate<2>(o2, "XX", 1.0, th);
@@ -322,7 +325,7 @@ auto heisenberg_expval(MonomialPropagator<N> &sim) -> double {
 
 // For the same observable and gates, the native Pauli propagator and the JW-image Majorana propagator
 // must agree on expectation value and term count, across pictures/cutoffs/atol.
-BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
+TEST_CASE("pauli_build_layer_jw_isomorphism") {
     constexpr size_t N = 3;
     // Kicked-Ising-like: single-qubit X rotations (incl. odd-popcount generators) + ZZ rotations.
     PauliCircuit circ;
@@ -361,9 +364,10 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
         jw.build_graph(jw_majs, circ.param_map, jw_gcs);
         const double en = nat.expectation_value(circ.params);
         const double ej = jw.expectation_value(circ.params);
-        BOOST_TEST_CONTEXT(cf.name) {
-            BOOST_TEST(en == ej, boost::test_tools::tolerance(1e-9));
-            BOOST_TEST(nat.size() == jw.size());
+        {
+            INFO(cf.name);
+            CHECK((en) == Catch::Approx(ej).epsilon(1e-9));
+            CHECK(nat.size() == jw.size());
         }
     }
 
@@ -380,8 +384,9 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
         auto jw = build_jw_sim<N>(obs, 3);
         nat.propagate(nm, pre.param_map, ng, pre.params);
         jw.propagate(jm, pre.param_map, jg, pre.params);
-        BOOST_TEST_CONTEXT("prefix k=" << k) {
-            BOOST_TEST(nat.size() == jw.size());
+        {
+            INFO("prefix k=" << k);
+            CHECK(nat.size() == jw.size());
         }
     }
 }
@@ -389,7 +394,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_jw_isomorphism) {
 // On a native Pauli circuit that includes a single-qubit X layer (odd-popcount generator), the fused
 // propagate path, the graph replay (which recomputes the cos from the fold) and the JW-Majorana
 // reference must all agree.
-BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
+TEST_CASE("pauli_build_layer_replay_fold_consumers") {
     constexpr size_t N = 3;
     const std::map<std::string, double> obs{{"ZII", 0.5}, {"IZI", -0.3}, {"YIY", 0.4}, {"XZI", 0.2}, {"IIZ", 0.6}};
     const VecZ initial_state{0};
@@ -400,7 +405,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
         auto mp = build_pauli_sim<N>(obs, 3);
         mp.build_graph({slots_of_string("XII")}, VecZ{0}, VecD{1.0});
         const auto layers = mp.graph_data();
-        BOOST_TEST_REQUIRE(layers.size() == 1U);
+        REQUIRE(layers.size() == 1U);
         const VecZ &cos_inds = std::get<0>(layers[0]);
         std::set<size_t> got(cos_inds.begin(), cos_inds.end());
         const auto Gb = indices_to_bitset<N>(slots_of_string("XII"));
@@ -411,7 +416,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
                 expected.insert(idx);
             }
         });
-        BOOST_TEST((got == expected));
+        CHECK((got == expected));
     }
 
     PauliCircuit circ;
@@ -448,7 +453,7 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
     jw.build_graph(jw_majs, circ.param_map, jw_gcs);
     const double e_jw = jw.expectation_value(circ.params);
 
-    BOOST_TEST(e_prop == e_graph, boost::test_tools::tolerance(1e-9));
-    BOOST_TEST(e_contract == e_graph, boost::test_tools::tolerance(1e-9));
-    BOOST_TEST(e_jw == e_graph, boost::test_tools::tolerance(1e-9));
+    CHECK((e_prop) == Catch::Approx(e_graph).epsilon(1e-9));
+    CHECK((e_contract) == Catch::Approx(e_graph).epsilon(1e-9));
+    CHECK((e_jw) == Catch::Approx(e_graph).epsilon(1e-9));
 }

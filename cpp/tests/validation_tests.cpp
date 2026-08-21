@@ -14,7 +14,9 @@
 
 // The validators in Validation.cpp that guard the public build/propagate/functional API.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <stdexcept>
 
@@ -23,47 +25,47 @@
 
 using namespace monoprop;
 
-BOOST_AUTO_TEST_CASE(validation_coefficient_lengths) {
-    BOOST_CHECK_NO_THROW(validate_coefficient_lengths(VecZ{0, 1, 2}, VecD{1.0, 2.0, 3.0}));
-    BOOST_CHECK_NO_THROW(validate_coefficient_lengths(VecZ{}, VecD{}));
-    BOOST_CHECK_THROW(validate_coefficient_lengths(VecZ{0, 1}, VecD{1.0}), std::runtime_error);
+TEST_CASE("validation_coefficient_lengths") {
+    CHECK_NOTHROW(validate_coefficient_lengths(VecZ{0, 1, 2}, VecD{1.0, 2.0, 3.0}));
+    CHECK_NOTHROW(validate_coefficient_lengths(VecZ{}, VecD{}));
+    CHECK_THROWS_AS(validate_coefficient_lengths(VecZ{0, 1}, VecD{1.0}), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(validation_gate_indices) {
-    BOOST_CHECK_NO_THROW(validate_gate_indices(VecZ{0, 0, 1, 1, 2}, 5));
-    BOOST_CHECK_NO_THROW(validate_gate_indices(VecZ{}, 0));
-    BOOST_CHECK_NO_THROW(validate_gate_indices(VecZ{0, 1, 2}, 3));
+TEST_CASE("validation_gate_indices") {
+    CHECK_NOTHROW(validate_gate_indices(VecZ{0, 0, 1, 1, 2}, 5));
+    CHECK_NOTHROW(validate_gate_indices(VecZ{}, 0));
+    CHECK_NOTHROW(validate_gate_indices(VecZ{0, 1, 2}, 3));
     // Length must match the monomial count.
-    BOOST_CHECK_THROW(validate_gate_indices(VecZ{0, 1}, 3), std::runtime_error);
+    CHECK_THROWS_AS(validate_gate_indices(VecZ{0, 1}, 3), std::runtime_error);
     // Must start at 0.
-    BOOST_CHECK_THROW(validate_gate_indices(VecZ{1, 2}, 2), std::runtime_error);
+    CHECK_THROWS_AS(validate_gate_indices(VecZ{1, 2}, 2), std::runtime_error);
     // Must not jump by more than 1.
-    BOOST_CHECK_THROW(validate_gate_indices(VecZ{0, 1, 3}, 3), std::runtime_error);
+    CHECK_THROWS_AS(validate_gate_indices(VecZ{0, 1, 3}, 3), std::runtime_error);
     // Must not decrease.
-    BOOST_CHECK_THROW(validate_gate_indices(VecZ{0, 1, 0}, 3), std::runtime_error);
+    CHECK_THROWS_AS(validate_gate_indices(VecZ{0, 1, 0}, 3), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(validation_parameters_length) {
-    BOOST_CHECK_NO_THROW(validate_parameters_length(VecD{0.1, 0.2, 0.3}, VecZ{0, 1, 2}));
-    BOOST_CHECK_NO_THROW(validate_parameters_length(VecD{0.1, 0.2}, VecZ{0, 1, 1, 0})); // max=1 -> len 2
-    BOOST_CHECK_NO_THROW(validate_parameters_length(VecD{}, VecZ{}));
-    BOOST_CHECK_THROW(validate_parameters_length(VecD{0.1, 0.2}, VecZ{0, 1, 2}), std::runtime_error);
+TEST_CASE("validation_parameters_length") {
+    CHECK_NOTHROW(validate_parameters_length(VecD{0.1, 0.2, 0.3}, VecZ{0, 1, 2}));
+    CHECK_NOTHROW(validate_parameters_length(VecD{0.1, 0.2}, VecZ{0, 1, 1, 0})); // max=1 -> len 2
+    CHECK_NOTHROW(validate_parameters_length(VecD{}, VecZ{}));
+    CHECK_THROWS_AS(validate_parameters_length(VecD{0.1, 0.2}, VecZ{0, 1, 2}), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(validation_functional_call) {
-    BOOST_CHECK_NO_THROW(validate_functional_call(VecD{0.1, 0.2}, 2));
-    BOOST_CHECK_NO_THROW(validate_functional_call(VecD{}, 0));
-    BOOST_CHECK_THROW(validate_functional_call(VecD{0.1}, 2), std::runtime_error);
+TEST_CASE("validation_functional_call") {
+    CHECK_NOTHROW(validate_functional_call(VecD{0.1, 0.2}, 2));
+    CHECK_NOTHROW(validate_functional_call(VecD{}, 0));
+    CHECK_THROWS_AS(validate_functional_call(VecD{0.1}, 2), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(validation_expected_graph_layers) {
-    BOOST_CHECK_NO_THROW(validate_expected_graph_layers(3, 3));
-    BOOST_CHECK_THROW(validate_expected_graph_layers(4, 3), std::runtime_error);
+TEST_CASE("validation_expected_graph_layers") {
+    CHECK_NOTHROW(validate_expected_graph_layers(3, 3));
+    CHECK_THROWS_AS(validate_expected_graph_layers(4, 3), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(validation_only_rotate_len_k) {
-    BOOST_CHECK_NO_THROW(validate_only_rotate_len_k_(std::nullopt, 8));
-    BOOST_CHECK_NO_THROW(validate_only_rotate_len_k_(8u, 8));
-    BOOST_CHECK_THROW(validate_only_rotate_len_k_(0u, 8), std::runtime_error);
-    BOOST_CHECK_THROW(validate_only_rotate_len_k_(9u, 8), std::runtime_error);
+TEST_CASE("validation_only_rotate_len_k") {
+    CHECK_NOTHROW(validate_only_rotate_len_k_(std::nullopt, 8));
+    CHECK_NOTHROW(validate_only_rotate_len_k_(8u, 8));
+    CHECK_THROWS_AS(validate_only_rotate_len_k_(0u, 8), std::runtime_error);
+    CHECK_THROWS_AS(validate_only_rotate_len_k_(9u, 8), std::runtime_error);
 }

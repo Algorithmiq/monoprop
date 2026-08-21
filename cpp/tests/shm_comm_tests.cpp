@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -42,7 +44,7 @@ auto run_shm(int s, Body body) -> std::vector<std::exception_ptr> {
 } // namespace
 
 // alltoall_counts is a transpose: recv[s] on rank r == what s declared it sends to r.
-BOOST_AUTO_TEST_CASE(shm_comm_alltoall_counts_transpose) {
+TEST_CASE("shm_comm_alltoall_counts_transpose") {
     for (const int S : {2, 4, 8}) {
         std::vector<std::vector<int>> recv(static_cast<size_t>(S));
         auto errs = run_shm(S, [&](ShmComm &sh, int r) {
@@ -55,11 +57,11 @@ BOOST_AUTO_TEST_CASE(shm_comm_alltoall_counts_transpose) {
             recv[static_cast<size_t>(r)] = got;
         });
         for (const auto &e : errs) {
-            BOOST_CHECK(e == nullptr);
+            CHECK(e == nullptr);
         }
         for (int r = 0; r < S; ++r) {
             for (int s = 0; s < S; ++s) {
-                BOOST_CHECK_EQUAL(recv[static_cast<size_t>(r)][static_cast<size_t>(s)], s * 100 + r);
+                CHECK((recv[static_cast<size_t>(r)][static_cast<size_t>(s)]) == (s * 100 + r));
             }
         }
     }
@@ -67,7 +69,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_alltoall_counts_transpose) {
 
 // begin_alltoallv (the vector-of-vectors facade) must deliver each source's block contiguously in
 // ascending source order — what Resolve.h's positional pairing depends on. Rank r sends (r+1) tagged elts.
-BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_source_order_and_tags) {
+TEST_CASE("shm_comm_begin_alltoallv_source_order_and_tags") {
     for (const int S : {2, 4, 8}) {
         std::vector<std::vector<std::vector<int>>> recv(static_cast<size_t>(S));
         auto errs = run_shm(S, [&](ShmComm &sh, int r) {
@@ -84,16 +86,16 @@ BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_source_order_and_tags) {
             recv[static_cast<size_t>(r)] = got;
         });
         for (const auto &e : errs) {
-            BOOST_CHECK(e == nullptr);
+            CHECK(e == nullptr);
         }
         for (int r = 0; r < S; ++r) {
             const auto &got = recv[static_cast<size_t>(r)];
-            BOOST_REQUIRE_EQUAL(static_cast<int>(got.size()), S);
+            REQUIRE((static_cast<int>(got.size())) == (S));
             for (int s = 0; s < S; ++s) {
                 const auto &blk = got[static_cast<size_t>(s)];
-                BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), s + 1); // source s sent (s+1)
+                REQUIRE((static_cast<int>(blk.size())) == (s + 1)); // source s sent (s+1)
                 for (int j = 0; j <= s; ++j) {
-                    BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)], s * 1000 + j);
+                    CHECK((blk[static_cast<size_t>(j)]) == (s * 1000 + j));
                 }
             }
         }
@@ -101,7 +103,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_source_order_and_tags) {
 }
 
 // skip_self: the self slot is neither sent nor received; every other source arrives intact.
-BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_skip_self) {
+TEST_CASE("shm_comm_begin_alltoallv_skip_self") {
     const int S = 4;
     std::vector<std::vector<std::vector<int>>> recv(static_cast<size_t>(S));
     auto errs = run_shm(S, [&](ShmComm &sh, int r) {
@@ -116,24 +118,24 @@ BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_skip_self) {
         recv[static_cast<size_t>(r)] = got;
     });
     for (const auto &e : errs) {
-        BOOST_CHECK(e == nullptr);
+        CHECK(e == nullptr);
     }
     for (int r = 0; r < S; ++r) {
         for (int s = 0; s < S; ++s) {
             const auto &blk = recv[static_cast<size_t>(r)][static_cast<size_t>(s)];
             if (s == r) {
-                BOOST_CHECK(blk.empty());
+                CHECK(blk.empty());
             }
             else {
-                BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), 2);
-                BOOST_CHECK_EQUAL(blk[0], s * 10 + 1);
+                REQUIRE((static_cast<int>(blk.size())) == (2));
+                CHECK((blk[0]) == (s * 10 + 1));
             }
         }
     }
 }
 
 // allreduce_sum is bit-identical on every rank and equals the fixed-order reference.
-BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_bit_identical) {
+TEST_CASE("shm_comm_allreduce_sum_bit_identical") {
     for (const int S : {2, 4, 8}) {
         std::vector<size_t> int_res(static_cast<size_t>(S));
         std::vector<double> dbl_res(static_cast<size_t>(S));
@@ -142,21 +144,21 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_bit_identical) {
             dbl_res[static_cast<size_t>(r)] = sh.allreduce_sum<double>(r, static_cast<double>(r) + 0.5);
         });
         for (const auto &e : errs) {
-            BOOST_CHECK(e == nullptr);
+            CHECK(e == nullptr);
         }
         const size_t expect_int = static_cast<size_t>(S) * (static_cast<size_t>(S) + 1) / 2; // sum 1..S
         const double expect_dbl = static_cast<double>(S) * static_cast<double>(S) / 2.0;     // sum (r+0.5)
         for (int r = 0; r < S; ++r) {
-            BOOST_CHECK_EQUAL(int_res[static_cast<size_t>(r)], expect_int);
-            BOOST_CHECK_EQUAL(dbl_res[static_cast<size_t>(r)], dbl_res[0]);
-            BOOST_CHECK_CLOSE(dbl_res[static_cast<size_t>(r)], expect_dbl, 1e-12);
+            CHECK((int_res[static_cast<size_t>(r)]) == (expect_int));
+            CHECK((dbl_res[static_cast<size_t>(r)]) == (dbl_res[0]));
+            CHECK((dbl_res[static_cast<size_t>(r)]) == Catch::Approx(expect_dbl).epsilon((1e-12) / 100.0));
         }
     }
 }
 
 // allreduce_sum_inplace sums element-wise; every rank ends bit-identical to the ascending-rank-order
 // reference. Lengths straddle the slice edges: shorter than S (empty slices), partial lines, many lines.
-BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_inplace_vector) {
+TEST_CASE("shm_comm_allreduce_sum_inplace_vector") {
     for (const int S : {2, 4, 8}) {
         for (const size_t N :
              {size_t{1}, size_t{5}, size_t{8 * 2 + 3}, size_t{8} * static_cast<size_t>(S) + 7, size_t{257}}) {
@@ -175,7 +177,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_inplace_vector) {
                 res[static_cast<size_t>(r)] = v;
             });
             for (const auto &e : errs) {
-                BOOST_CHECK(e == nullptr);
+                CHECK(e == nullptr);
             }
             std::vector<double> ref(N); // ascending-rank-order reference over the identical stored inputs
             for (size_t k = 0; k < N; ++k) {
@@ -186,9 +188,9 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_inplace_vector) {
                 ref[k] = acc;
             }
             for (int r = 0; r < S; ++r) {
-                BOOST_REQUIRE_EQUAL(res[static_cast<size_t>(r)].size(), N);
+                REQUIRE((res[static_cast<size_t>(r)].size()) == (N));
                 for (size_t k = 0; k < N; ++k) {
-                    BOOST_CHECK_EQUAL(res[static_cast<size_t>(r)][k], ref[k]);
+                    CHECK((res[static_cast<size_t>(r)][k]) == (ref[k]));
                 }
             }
         }
@@ -197,7 +199,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_allreduce_sum_inplace_vector) {
 
 // post_flat_alltoallv over caller-owned flat buffers (the Evolution/Pare replay path): each rank sends
 // its own id, so every target must receive [0,1,..,S-1] in source order.
-BOOST_AUTO_TEST_CASE(shm_comm_post_flat_alltoallv_flat_buffers) {
+TEST_CASE("shm_comm_post_flat_alltoallv_flat_buffers") {
     const int S = 4;
     std::vector<std::vector<int>> recv(static_cast<size_t>(S));
     auto errs = run_shm(S, [&](ShmComm &sh, int r) {
@@ -224,18 +226,18 @@ BOOST_AUTO_TEST_CASE(shm_comm_post_flat_alltoallv_flat_buffers) {
         recv[static_cast<size_t>(r)] = out;
     });
     for (const auto &e : errs) {
-        BOOST_CHECK(e == nullptr);
+        CHECK(e == nullptr);
     }
     for (int r = 0; r < S; ++r) {
         for (int s = 0; s < S; ++s) {
-            BOOST_CHECK_EQUAL(recv[static_cast<size_t>(r)][static_cast<size_t>(s)], s);
+            CHECK((recv[static_cast<size_t>(r)][static_cast<size_t>(s)]) == (s));
         }
     }
 }
 
 // alltoallv_resolve resolves recv_counts (the transpose) AND moves the payload in one 2-sync round,
 // sizing recv itself — what begin_alltoallv takes for unknown-layout Shm rounds.
-BOOST_AUTO_TEST_CASE(shm_comm_alltoallv_resolve_fused) {
+TEST_CASE("shm_comm_alltoallv_resolve_fused") {
     for (const int S : {2, 4, 8}) {
         const int rounds = 25;
         std::atomic<int> failures{0};
@@ -288,14 +290,14 @@ BOOST_AUTO_TEST_CASE(shm_comm_alltoallv_resolve_fused) {
             }
         });
         for (const auto &e : errs) {
-            BOOST_CHECK(e == nullptr);
+            CHECK(e == nullptr);
         }
-        BOOST_CHECK_EQUAL(failures.load(), 0);
+        CHECK((failures.load()) == (0));
     }
 }
 
 // Repeated collectives reuse one ShmComm across many rounds without drift (barrier generation reuse).
-BOOST_AUTO_TEST_CASE(shm_comm_repeated_collectives) {
+TEST_CASE("shm_comm_repeated_collectives") {
     const int S = 8;
     std::atomic<int> failures{0};
     auto errs = run_shm(S, [&](ShmComm &sh, int r) {
@@ -307,14 +309,14 @@ BOOST_AUTO_TEST_CASE(shm_comm_repeated_collectives) {
         }
     });
     for (const auto &e : errs) {
-        BOOST_CHECK(e == nullptr);
+        CHECK(e == nullptr);
     }
-    BOOST_CHECK_EQUAL(failures.load(), 0);
+    CHECK((failures.load()) == (0));
 }
 
 // Oversubscribed: the barrier's bounded spin must fall back to yielding or spinners starve the completer
 // of a core. The test completing at all proves liveness.
-BOOST_AUTO_TEST_CASE(shm_comm_oversubscribed_repeated_collectives) {
+TEST_CASE("shm_comm_oversubscribed_repeated_collectives") {
     const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
     const int S = static_cast<int>(std::min(64u, std::max(8u, 2 * hw)));
     std::atomic<int> failures{0};
@@ -327,14 +329,14 @@ BOOST_AUTO_TEST_CASE(shm_comm_oversubscribed_repeated_collectives) {
         }
     });
     for (const auto &e : errs) {
-        BOOST_CHECK(e == nullptr);
+        CHECK(e == nullptr);
     }
-    BOOST_CHECK_EQUAL(failures.load(), 0);
+    CHECK((failures.load()) == (0));
 }
 
 // Poison: if one participant unwinds instead of arriving, peers waiting in a barrier must throw
 // ShmCommPoisoned rather than hang. The test completing at all proves no deadlock.
-BOOST_AUTO_TEST_CASE(shm_comm_poison_releases_waiters) {
+TEST_CASE("shm_comm_poison_releases_waiters") {
     for (const int S : {2, 4, 8}) {
         auto errs = run_shm(S, [&](ShmComm &sh, int r) {
             if (r == 0) {
@@ -345,10 +347,10 @@ BOOST_AUTO_TEST_CASE(shm_comm_poison_releases_waiters) {
             std::vector<int> send(static_cast<size_t>(S), 1), got(static_cast<size_t>(S));
             sh.alltoall_counts(r, send.data(), got.data());
         });
-        BOOST_CHECK(errs[0] == nullptr);
+        CHECK(errs[0] == nullptr);
         for (int r = 1; r < S; ++r) {
-            BOOST_REQUIRE(errs[static_cast<size_t>(r)] != nullptr);
-            BOOST_CHECK_THROW(std::rethrow_exception(errs[static_cast<size_t>(r)]), ShmCommPoisoned);
+            REQUIRE(errs[static_cast<size_t>(r)] != nullptr);
+            CHECK_THROWS_AS(std::rethrow_exception(errs[static_cast<size_t>(r)]), ShmCommPoisoned);
         }
     }
 }

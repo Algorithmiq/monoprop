@@ -12,23 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#define BOOST_TEST_MODULE "MonoProp Unit Tests"
-
 #include <cstdlib>
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_session.hpp>
 
 #include "monoprop/detail/mpi/MPICompat.h"
-
-static auto init() -> bool {
-    return true;
-}
 
 auto main(int argc, char* argv[]) -> int {
     // overwrite=0, so an explicit environment override still wins; why it is off: tests/cpp/README.md.
     setenv("monoprop_PARTITIONS", "off", 0);
     monoprop::mpi::init(&argc, &argv);
-    int result = boost::unit_test::unit_test_main(&init, argc, argv);
+
+    Catch::Session session;
+    const int command_line_result = session.applyCommandLine(argc, argv);
+    if (command_line_result != 0) {
+        monoprop::mpi::finalize();
+        return command_line_result;
+    }
+
+    const int result = session.run();
     monoprop::mpi::finalize();
     return result;
 }

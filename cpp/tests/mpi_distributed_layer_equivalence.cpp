@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cmath>
 #include <map>
@@ -61,21 +63,21 @@ auto run_energy(const TestInputs& inputs, MPI_Comm comm) -> double {
     return fn(inputs.data.parameters);
 }
 
-BOOST_AUTO_TEST_CASE(rank_count_energy_within_fp_tolerance) {
+TEST_CASE("rank_count_energy_within_fp_tolerance") {
     if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping cross-rank-count case: requires at least 2 ranks.");
+        INFO("Skipping cross-rank-count case: requires at least 2 ranks.");
         return;
     }
     const auto inputs = load_inputs();
     const double e_serial = run_energy(inputs, MPI_COMM_SELF);
     const double e_world = run_energy(inputs, MPI_COMM_WORLD);
-    BOOST_TEST_MESSAGE("serial=" << e_serial << " world=" << e_world << " diff=" << (e_world - e_serial));
-    BOOST_TEST(near(e_serial, e_world));
+    INFO("serial=" << e_serial << " world=" << e_world << " diff=" << (e_world - e_serial));
+    CHECK(near(e_serial, e_world));
 }
 
-BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
+TEST_CASE("gradient_rank_count_within_fp_tolerance") {
     if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping gradient cross-rank-count case: requires at least 2 ranks.");
+        INFO("Skipping gradient cross-rank-count case: requires at least 2 ranks.");
         return;
     }
     const auto& inputs = load_inputs();
@@ -98,10 +100,11 @@ BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
     const auto g_serial = run_gradient(MPI_COMM_SELF);
     const auto g_world = run_gradient(MPI_COMM_WORLD);
 
-    BOOST_REQUIRE_EQUAL(g_serial.size(), g_world.size());
+    REQUIRE((g_serial.size()) == (g_world.size()));
     for (size_t i = 0; i < g_serial.size(); ++i) {
-        BOOST_TEST_CONTEXT("gradient idx=" << i) {
-            BOOST_TEST(near(g_serial[i], g_world[i]));
+        {
+            INFO("gradient idx=" << i);
+            CHECK(near(g_serial[i], g_world[i]));
         }
     }
 }
@@ -149,15 +152,15 @@ auto run_pauli_energy(MPI_Comm comm) -> double {
     return sim.expectation_value({});
 }
 
-BOOST_AUTO_TEST_CASE(pauli_rank_count_energy_within_fp_tolerance) {
+TEST_CASE("pauli_rank_count_energy_within_fp_tolerance") {
     if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping Pauli cross-rank-count case: requires at least 2 ranks.");
+        INFO("Skipping Pauli cross-rank-count case: requires at least 2 ranks.");
         return;
     }
     const double e_serial = run_pauli_energy(MPI_COMM_SELF);
     const double e_world = run_pauli_energy(MPI_COMM_WORLD);
-    BOOST_TEST_MESSAGE("pauli serial=" << e_serial << " world=" << e_world);
-    BOOST_TEST(near(e_serial, e_world));
+    INFO("pauli serial=" << e_serial << " world=" << e_world);
+    CHECK(near(e_serial, e_world));
 }
 
 // MPI x partition hybrid: partitions=S under R ranks builds the HybridComm flat R*S world, which only changes
@@ -184,9 +187,9 @@ auto run_energy_partitioned(const TestInputs& inputs, MPI_Comm comm, size_t part
     return {e, sim.size()};
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_mpi_partition_energy_and_size_equivalence) {
+TEST_CASE("hybrid_mpi_partition_energy_and_size_equivalence") {
     if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping hybrid case: requires at least 2 ranks.");
+        INFO("Skipping hybrid case: requires at least 2 ranks.");
         return;
     }
     const auto inputs = load_inputs();
@@ -194,10 +197,10 @@ BOOST_AUTO_TEST_CASE(hybrid_mpi_partition_energy_and_size_equivalence) {
     const auto [e_hybrid, n_local] = run_energy_partitioned(inputs, MPI_COMM_WORLD, 2);
     // Each rank's facade holds only its local partitions; the global term count is the cross-rank sum.
     const size_t n_hybrid_global = mpi::allreduce_sum<size_t>(n_local, MPI_COMM_WORLD);
-    BOOST_TEST_MESSAGE("serial=" << e_serial << " (n=" << n_serial << ") hybrid R*2=" << e_hybrid
-                                 << " (global n=" << n_hybrid_global << ")");
-    BOOST_TEST(near(e_serial, e_hybrid));
-    BOOST_CHECK_EQUAL(n_serial, n_hybrid_global);
+    INFO("serial=" << e_serial << " (n=" << n_serial << ") hybrid R*2=" << e_hybrid << " (global n=" << n_hybrid_global
+                   << ")");
+    CHECK(near(e_serial, e_hybrid));
+    CHECK((n_serial) == (n_hybrid_global));
 }
 
 } // namespace

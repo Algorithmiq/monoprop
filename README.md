@@ -100,12 +100,15 @@ uv sync --all-extras -v
 uv sync --all-extras -v --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
 ```
 
-C++ unit-test build:
+C++ unit-test build (Catch2 v3, registered through CTest):
 
 ```bash
 uv sync --all-extras -v
 ctest --test-dir build/editable/Release
 ```
+
+Release builds compile the test sources at `-O1` to reduce template-heavy build
+time while keeping the library at `-O3`.
 
 Full instructions — prerequisites, MPI options, and running the example
 executable — are in the [building guide](https://docs.monoprop.algorithmiq.tech/building).

@@ -20,7 +20,7 @@
 
 namespace test_utils {
 
-// Body exceptions are captured per-rank and returned for the caller to check: Boost.Test assertions
+// Body exceptions are captured per-rank and returned for the caller to check: Catch2 assertions
 // are only safe on the main thread.
 template <typename Comm, typename Body>
 auto run_comm_threads(Comm &comm, int s, Body body) -> std::vector<std::exception_ptr> {

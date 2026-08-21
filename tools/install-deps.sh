@@ -10,7 +10,7 @@ Usage: $0 [INSTALL_PREFIX] [OPTIONS]
 
 Install C++ dependencies for monoprop project.
 
-This script can install Boost Unordered, Boost Test, msgpack-cxx, and hwloc.
+This script can install Boost Unordered, Catch2, msgpack-cxx, and hwloc.
 Each component can be skipped with the corresponding option.
 The default installation prefix is /usr/local.
 
@@ -19,7 +19,7 @@ Arguments:
 
 Options:
     --skip-boost-unordered  Skip installing Boost unordered
-    --skip-boost-test   Skip installing Boost Test library (only install unordered)
+    --skip-catch2       Skip installing Catch2
     --skip-msgpack      Skip installing msgpack-cxx library
     --skip-hwloc        Skip installing hwloc library
     --help, -h          Show this help message
@@ -27,9 +27,8 @@ Options:
 Examples:
     $0                                   # Install all deps to /usr/local
     $0 \$HOME/Software                   # Install all deps to \$HOME/Software
-    $0 --skip-boost-test                 # Skip Boost Test, install rest to default location
     $0 /opt --skip-msgpack               # Install to /opt, skip msgpack
-    $0 --skip-boost-test --skip-msgpack  # Minimal install (Boost unordered + hwloc)
+    $0 --skip-catch2 --skip-msgpack      # Install Boost unordered and hwloc only
 EOF
 }
 
@@ -37,7 +36,7 @@ EOF
 DEFAULT_PREFIX="/usr/local"
 INSTALL_PREFIX="$DEFAULT_PREFIX"
 INSTALL_BOOST_UNORDERED=true
-INSTALL_BOOST_TEST=true
+INSTALL_CATCH2=true
 INSTALL_MSGPACK=true
 INSTALL_HWLOC=true
 
@@ -48,8 +47,8 @@ while [[ $# -gt 0 ]]; do
             INSTALL_BOOST_UNORDERED=false
             shift
             ;;
-        --skip-boost-test)
-            INSTALL_BOOST_TEST=false
+        --skip-catch2)
+            INSTALL_CATCH2=false
             shift
             ;;
         --skip-msgpack)
@@ -85,7 +84,7 @@ done
 
 echo "Installing C++ dependencies to: $INSTALL_PREFIX"
 echo "Boost unordered: $([ "$INSTALL_BOOST_UNORDERED" = true ] && echo "YES" || echo "SKIP")"
-echo "Boost Test: $([ "$INSTALL_BOOST_TEST" = true ] && echo "YES" || echo "SKIP")"
+echo "Catch2: $([ "$INSTALL_CATCH2" = true ] && echo "YES" || echo "SKIP")"
 echo "msgpack-cxx: $([ "$INSTALL_MSGPACK" = true ] && echo "YES" || echo "SKIP")"
 echo "hwloc: $([ "$INSTALL_HWLOC" = true ] && echo "YES" || echo "SKIP")"
 echo
@@ -102,7 +101,7 @@ cleanup_build() {
 }
 
 install_boost() {
-    if [ "$INSTALL_BOOST_UNORDERED" != true ] && [ "$INSTALL_BOOST_TEST" != true ]; then
+    if [ "$INSTALL_BOOST_UNORDERED" != true ]; then
         echo "Skipping Boost installation"
         return 0
     fi
@@ -120,19 +119,33 @@ install_boost() {
         echo "  - Skipping Boost unordered library"
     fi
 
-    if [ "$INSTALL_BOOST_TEST" = true ]; then
-        echo "  - Including Boost Test library"
-        git submodule update --depth 1 -q --init libs/test
-        python3 tools/boostdep/depinst/depinst.py -X test -g "--depth 1" test
-    else
-        echo "  - Skipping Boost Test library"
-    fi
-
     cmake -S. -Bbuild -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX"
     cmake --build build --target install --parallel
     cleanup_build boost_src
     if [[ "$INSTALL_PREFIX" == "$DEFAULT_PREFIX" ]]; then
         echo "Remember to export Boost_DIR=$INSTALL_PREFIX/lib/cmake/Boost-$boost_version"
+    fi
+}
+
+install_catch2() {
+    if [ "$INSTALL_CATCH2" != true ]; then
+        echo "Skipping Catch2 installation"
+        return 0
+    fi
+
+    local catch2_version="3.15.3"
+    echo "Installing Catch2 $catch2_version..."
+    git clone https://github.com/catchorg/Catch2.git -b "v$catch2_version" catch2_src --depth 1
+    cd catch2_src
+    cmake -S. -Bbuild \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCATCH_BUILD_TESTING=OFF \
+        -DCATCH_INSTALL_DOCS=OFF \
+        -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX"
+    cmake --build build --target install --parallel
+    cleanup_build catch2_src
+    if [[ "$INSTALL_PREFIX" == "$DEFAULT_PREFIX" ]]; then
+        echo "Remember to export Catch2_DIR=$INSTALL_PREFIX/lib/cmake/Catch2"
     fi
 }
 
@@ -207,6 +220,8 @@ fi
 
 install_boost
 
+install_catch2
+
 install_msgpack
 
 install_hwloc
@@ -220,6 +235,6 @@ echo "Make sure to set CMAKE_PREFIX_PATH=$INSTALL_PREFIX when building monoprop"
 echo
 echo "Installed components:"
 [ "$INSTALL_BOOST_UNORDERED" = true ] && echo "  ✓ Boost unordered" || echo "  ✗ Boost unordered (skipped)"
-[ "$INSTALL_BOOST_TEST" = true ] && echo "  ✓ Boost Test" || echo "  ✗ Boost Test (skipped)"
+[ "$INSTALL_CATCH2" = true ] && echo "  ✓ Catch2" || echo "  ✗ Catch2 (skipped)"
 [ "$INSTALL_MSGPACK" = true ] && echo "  ✓ msgpack-cxx" || echo "  ✗ msgpack-cxx (skipped)"
 [ "$INSTALL_HWLOC" = true ] && echo "  ✓ hwloc" || echo "  ✗ hwloc (skipped)"

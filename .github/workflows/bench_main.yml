@@ -43,7 +43,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y just libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev
+          sudo apt-get install -y just libopenmpi-dev openmpi-bin libboost-dev libmsgpack-cxx-dev catch2
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v10.0.0

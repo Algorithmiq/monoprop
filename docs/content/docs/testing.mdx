@@ -61,6 +61,9 @@ uv sync --all-extras
 ctest --test-dir build/editable/Release --output-on-failure
 ```
 
+Release builds use `-O1` for the test sources while retaining `-O3` for the
+library.
+
 With MPI, reuse the MPI-enabled `uv sync` from the Python MPI section above,
 then run CTest against the same tree:
 
@@ -85,13 +88,13 @@ A 64-bit `TermIndex` build is the only configuration that compiles the
 just test-wide   # rebuilds via uv sync with monoprop_WIDE_TERM_INDEX=ON, then runs CTest
 ```
 
-CTest runs each Boost case as its own process, so an MPI build's `MPI_Init` probes every
+CTest runs each Catch2 case as its own process, so an MPI build's `MPI_Init` probes every
 fabric device per case, whether or not the test sends anything. `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`
 (default) skips that probe for the single-process `serial` variants only; multi-rank variants
 keep the full component set, since they exchange real messages. Turn it off by adding
 `-Dmonoprop_TEST_EXCLUDE_MPI_FABRIC=OFF` to the `SKBUILD_CMAKE_ARGS` MPI build above.
 
-CTest registers every Boost case individually as a `serial` variant. When the
+CTest registers every Catch2 case individually as a `serial` variant. When the
 build has MPI enabled and a launcher is found, it also registers the whole suite
 once per rank count in `monoprop_MPI_TEST_PROCS`, labelled `mpi` and `mpi-<n>` —
 one entry per rank count rather than per case, because the ranks have to reach
@@ -181,39 +184,36 @@ class CasesFermionicProblem:
 
 ### C++ tests
 
-C++ tests live in `cpp/tests/` and use [Boost.Test](https://www.boost.org/doc/libs/release/libs/test/). They are registered automatically via CMake: new `*.cpp` files in `cpp/tests/` are picked up on the next configure, so no source-list edit is needed.
+C++ tests live in `cpp/tests/` and use [Catch2 v3](https://github.com/catchorg/Catch2). They are registered automatically via CMake: new `*.cpp` files in `cpp/tests/` are picked up on the next configure, so no source-list edit is needed.
 
 #### Simple unit test
 
 ```cpp
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_test_macros.hpp>
 
-BOOST_AUTO_TEST_CASE(my_basic_check) {
+TEST_CASE("my_basic_check") {
     int result = 2 + 2;
-    BOOST_TEST(result == 4);
+    CHECK(result == 4);
 }
 ```
 
 #### Data-driven test using reference fixtures
 
-Use the `ExampleDataFix` fixture class from `TestUtilities.h` to load the same msgpack data as Python tests, and `BOOST_DATA_TEST_CASE_F` to parametrize over it:
+Use the `ExampleDataFix` fixture class from `TestUtilities.h` to load the same msgpack data as Python tests, and Catch2 generators to parametrize over it:
 
 ```cpp
-#include <boost/test/data/monomorphic.hpp>
-#include <boost/test/data/test_case.hpp>
-#include <boost/test/unit_test.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include "TestUtilities.h"
 
 using namespace test_utils;
-namespace utf = boost::unit_test;
-namespace bdata = utf::data;
 
-BOOST_DATA_TEST_CASE_F(ExampleDataFix,
-                       my_new_test,
-                       bdata::make(ds_pare_values) ^ bdata::make(ds_schrodinger_enabled),
-                       pare,
-                       sch_enabled) {
+TEST_CASE_METHOD(ExampleDataFix, "my_new_test") {
+    const auto index = GENERATE(0U, 1U);
+    const auto pare = ds_pare_values[index];
+    const auto sch_enabled = ds_schrodinger_enabled[index];
+    CAPTURE(pare, sch_enabled);
     const auto schrodinger_cutoff = make_schrodinger_cutoff(sch_enabled, cutoff);
     SimulatorConfig cfg{
         .schrodinger_cutoff = schrodinger_cutoff
