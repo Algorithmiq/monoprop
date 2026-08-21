@@ -1,0 +1,11 @@
+#pragma once
+
+/**
+ * @brief Attribute used to enable function multiversioning target clones.
+ *
+ * This macro is configured at build time and expands to the compiler-specific
+ * attribute declaration.
+ */
+// clang-format off
+#define monoprop_TARGET_CLONES @monoprop_TARGET_CLONES@
+// clang-format on
