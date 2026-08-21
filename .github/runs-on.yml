@@ -14,7 +14,7 @@ runners:
     family: ["c7i"]
     cpu: 16
     ram: 32
-    image: ubuntu24-full-x64
+    image: ubuntu26-full-x64
     volume: 40gb:gp3
     # Spot risks both an interrupted run and a different instance type.
     spot: false
