@@ -92,12 +92,16 @@ python-preference = "only-managed"
 keyring-provider = "subprocess"
 cache-keys = [
   { file = "pyproject.toml" },
+  { file = "CMakeLists.txt" },
+  { file = "cmake/**/*" },
+  { file = "cpp/**/CMakeLists.txt" },
   { file = "cpp/include/**/*.h" },
   { file = "cpp/include/**/*.h.in" },
   { file = "cpp/monoprop/**/*.{h,cpp}" },
-  { file = "**/CMakeLists.txt" },
-  { file = "cmake/**/*" },
+  { file = "src/monoprop/**/CMakeLists.txt" },
+  { file = "src/monoprop/bindings/binder.h" },
   { file = "src/monoprop/bindings/bindings.cpp.in" },
+  { file = "tools/*.py" },
 ]
 
 
