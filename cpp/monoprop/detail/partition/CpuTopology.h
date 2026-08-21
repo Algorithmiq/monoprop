@@ -20,6 +20,7 @@
  * Policy: one partition per physical core, spread across L3/CCX domains, each worker thread pinned
  * to its representative PU. Falls back to unpinned execution when hwloc cannot load the topology or
  * when binding is unsupported — pinning is a performance optimisation, not a correctness requirement.
+ * Pinning has no runtime knob: leaving placement to the launcher measured propagate[hubbard] 2.90x slower.
  */
 
 #pragma once
@@ -27,9 +28,8 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
-
-#include "monoprop/detail/EnvConfig.h"
 
 namespace monoprop::detail::partition {
 
@@ -83,10 +83,6 @@ auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t gr
  *
  * @returns Vector of PhysicalCore in hwloc logical-core order, or empty when hwloc cannot load
  *          the topology or when no core passes the affinity filter.
- *
- * @note This function deliberately ignores @c monoprop_PARTITION_PINNING so that the auto
- *       partition-count heuristic (one partition per physical core) works even when pinning is
- *       disabled by the user.
  */
 auto enumerate_physical_cores() -> std::vector<PhysicalCore>;
 
@@ -104,6 +100,23 @@ auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
  */
 [[nodiscard]] auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool;
 
+//! How many CPUs are set in the @p words -word mask at @p mask; 0 for a null mask.
+[[nodiscard]] auto cpu_mask_popcount(const uint64_t *mask, size_t words) -> size_t;
+
+/*! @brief OR the @p n masks of @p words words laid end to end in @p masks into @p out (@p words words).
+ *  The union says which CPUs the JOB got, as opposed to which this one rank got; @p out is cleared, not accumulated.
+ */
+auto cpu_mask_union(uint64_t *out, const uint64_t *masks, size_t n, size_t words) -> void;
+
+//! At most this many ascending runs are spelled out by cpu_mask_ranges(); the rest are counted in a ",+N" suffix.
+inline constexpr size_t kMaxCpuRanges = 32;
+
+/*! @brief The set bits of @p mask as an ascending, comma-separated range list: "0-15,64-79".
+ *  A single-CPU run is the bare id ("7"), an empty or null mask is "none", and truncation past
+ *  kMaxCpuRanges is stated as a trailing ",+N" so a cut list is never read as a complete one.
+ */
+[[nodiscard]] auto cpu_mask_ranges(const uint64_t *mask, size_t words) -> std::string;
+
 //! Whether the launcher has already handed this rank a private slice of the node, or the node's CPUs are shared.
 enum class NodeMask { Shared, PerRank };
 
@@ -119,8 +132,8 @@ enum class NodeMask { Shared, PerRank };
  * @param group_count  Total number of co-located ranks on the host.
  * @param mask         NodeMask::PerRank only when the co-located ranks' affinity masks have been measured
  *                     pairwise DISJOINT (PartitionGroup::classify_node_masks_), so this mask is our share.
- * @returns Vector of @p n CpuSet tokens, or empty when @c monoprop_PARTITION_PINNING is disabled,
- *          hwloc is unavailable, or fewer than @p group_count x @p n cores are visible (@p n under PerRank).
+ * @returns Vector of @p n CpuSet tokens, or empty when hwloc is unavailable or fewer than
+ *          @p group_count x @p n cores are visible (@p n under PerRank).
  *
  * @note Under NodeMask::PerRank the group split is skipped: our share is already this rank's alone.
  */

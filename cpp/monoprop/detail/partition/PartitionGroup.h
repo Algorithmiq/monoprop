@@ -18,6 +18,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -26,6 +27,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "monoprop/detail/EnvConfig.h" // config::get().commplace -- gates the COMMPLACE line only
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPICompat.h" // mpi::size for the transport choice
 #include "monoprop/detail/mpi/ShmComm.h"
@@ -33,6 +35,7 @@
 #include "monoprop/detail/mpi/HybridComm.h"
 #endif
 #include "monoprop/detail/partition/CpuTopology.h"
+#include "monoprop/detail/partition/PlacementReport.h"
 
 // Intra-process partition runtime: S master threads, each pinned to a core and running an independent
 // MonomialPropagator over one hash partition, with an in-process comm standing in for the network.
@@ -61,6 +64,7 @@ public:
           errs_(static_cast<size_t>(n_partitions)) {
         make_transport_();
         discover_node_peers_();
+        report_placement_();
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_, node_mask_);
         start_masters_();
         // The masters are already running, so a ctor throw must not escape: ~PartitionGroup would never run,
@@ -85,6 +89,7 @@ public:
           partitions_(static_cast<size_t>(src.n_)),
           errs_(static_cast<size_t>(src.n_)) {
         make_transport_();
+        // Deliberately no report_placement_(): the report describes the process, not the object.
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_, node_mask_);
         start_masters_();
         try { // see the primary ctor: a throw past live masters would std::terminate
@@ -168,8 +173,10 @@ private:
             MPI_Comm_size(node, &node_size_);
             classify_node_masks_(node);
             MPI_Comm_free(&node);
+            return;
         }
 #endif
+        fill_own_report_();
     }
 
 #ifdef monoprop_ENABLE_MPI
@@ -177,6 +184,7 @@ private:
     auto classify_node_masks_(MPI_Comm node) -> void {
         node_mask_ = NodeMask::Shared;
         if (node_size_ <= 1) {
+            fill_own_report_();
             return; // nobody to collide with; the normal split already handles group_count == 1
         }
         constexpr size_t kMaskWords = monoprop::detail::partition::kAffinityMaskWords;
@@ -189,8 +197,58 @@ private:
                                                                                        static_cast<size_t>(node_size_),
                                                                                        kMaskWords);
         node_mask_ = disjoint ? NodeMask::PerRank : NodeMask::Shared;
+        fill_node_report_(mine.data(), all.data(), disjoint);
+    }
+
+    /* COMMPLACE only, over the array MPI_Allgather already filled: no extra collective, and no
+     * reduction either, because every rank reads the same gathered rows and so reaches the same
+     * verdict. A row of zeroes is a rank whose mask did not fit the window, which is "unknown"
+     * rather than "shared" -- and is also why masks_are_pairwise_disjoint refuses it. */
+    auto fill_node_report_(const uint64_t *mine, const uint64_t *all, bool disjoint) -> void {
+        if (!config::get().commplace) {
+            return;
+        }
+        constexpr size_t kMaskWords = monoprop::detail::partition::kAffinityMaskWords;
+        const auto peers = static_cast<size_t>(node_size_);
+        report_.mpi_rank = mpi::rank(parent_);
+        report_.node_rank = node_rank_;
+        report_.node_size = node_size_;
+        for (size_t r = 0; r < peers; ++r) {
+            if (cpu_mask_popcount(all + (r * kMaskWords), kMaskWords) == 0) {
+                return; // leaves masks=unknown, uniformly on every rank
+            }
+        }
+        report_.masks = disjoint ? "private" : "shared";
+        report_.cpus = cpu_mask_popcount(mine, kMaskWords);
+        std::vector<uint64_t> node_union(kMaskWords, 0);
+        cpu_mask_union(node_union.data(), all, peers, kMaskWords);
+        report_.node_cpus = cpu_mask_popcount(node_union.data(), kMaskWords);
+        report_.node_cpu_list = cpu_mask_ranges(node_union.data(), kMaskWords);
     }
 #endif
+
+    /* COMMPLACE only, for the arm with no peers: one rank on the host, or a non-MPI parent. Nobody
+     * to be disjoint from, so the verdict is "alone" -- which is NOT "private", and must not be read
+     * as evidence that a multi-rank launcher did the right thing. */
+    auto fill_own_report_() -> void {
+        if (!config::get().commplace) {
+            return;
+        }
+        constexpr size_t kMaskWords = monoprop::detail::partition::kAffinityMaskWords;
+        report_.mpi_rank = mpi::rank(parent_);
+        report_.node_rank = node_rank_;
+        report_.node_size = node_size_;
+        std::array<uint64_t, kMaskWords> mine{};
+        if (affinity_mask_words(mine.data(), kMaskWords)) {
+            report_.masks = "alone";
+            report_.cpus = cpu_mask_popcount(mine.data(), kMaskWords);
+            report_.node_cpus = report_.cpus;
+            report_.node_cpu_list = cpu_mask_ranges(mine.data(), kMaskWords);
+        }
+    }
+
+    // Reports what the launcher did; decides nothing. Costs one branch when monoprop_COMMPLACE is unset.
+    auto report_placement_() -> void { (void)emit_place_line(stderr, config::get().commplace, report_); }
 
     auto make_transport_() -> void {
 #ifdef monoprop_ENABLE_MPI
@@ -279,6 +337,7 @@ private:
     int node_rank_ = 0;                     // this rank's index among the ranks sharing the host
     int node_size_ = 1;                     // how many parent ranks share the host (1 unless MPI R>1)
     NodeMask node_mask_ = NodeMask::Shared; // set by classify_node_masks_; copied, never re-derived, by the copy ctor
+    PlacementReport report_;                // filled only when monoprop_COMMPLACE is set; never read by any decision
     std::unique_ptr<mpi::ShmComm> shm_;     // set iff R == 1
 #ifdef monoprop_ENABLE_MPI
     std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1
