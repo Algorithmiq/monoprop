@@ -61,10 +61,7 @@ struct LayerTraversal final {
     }
 
     // Every slot carrying traffic, ascending, each with its offset. func(slot_id, view), or
-    // func(occupied_pos, slot_id, view) to index a per-slot array by occupied position instead of P.
-    //
-    // This is what a partner sweep should use. The old shape -- loop 0..P, ask each slot its size,
-    // `continue` on zero -- walked the whole world to find the part of it that had anything in it.
+    // func(occupied_pos, slot_id, view) to index by occupied position instead of P. Use this for a sweep.
     template <typename Func>
     auto for_each_occupied_slot(Func &&func) const -> void {
         detail::for_each_occupied_slot(core_->cross_rank, std::forward<Func>(func));
@@ -73,8 +70,7 @@ struct LayerTraversal final {
     // The size an array indexed by occupied position needs; the sweep above visits exactly this many.
     auto occupied_slot_count() const -> size_t { return detail::cross_rank_occupied_slots(core_->cross_rank); }
 
-    // The slot is resolved ONCE, outside the loop: the lookup it costs is indexed by the flat world P,
-    // so doing it per endpoint made per-term work out of what is per-slot work.
+    // The slot is resolved ONCE, outside the loop: resolving per endpoint makes per-slot work per-term.
     template <typename Func>
     auto for_each_cross_rank_sin_send_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
         const auto slot = detail::cross_rank_slot(core_->cross_rank, rank);
@@ -91,8 +87,7 @@ struct LayerTraversal final {
         }
     }
 
-    // The exchange layout -- both sides of it -- is derived at the call site from these and
-    // nothing else is stored: see detail::derive_exchange_layout and Evolution.cpp.
+    // Both sides of the exchange layout are derived from these; see detail::derive_exchange_layout.
     auto cross_rank() const -> const PackedCrossRankStorage & { return core_->cross_rank; }
 
     auto param_index() const -> size_t { return core_->param_index; }
@@ -100,8 +95,7 @@ struct LayerTraversal final {
     auto gate_index() const -> size_t { return core_->gate_index; }
 
     // Rotations (Givens cycles) = sum of per-rank in-counts (one in-entry per rotation). sin_recv_size
-    // would double-count self-rank rotations (in+out). Empty slots contribute nothing, so summing over
-    // the occupied ones is the same total the full sweep gave.
+    // would double-count self-rank rotations (in+out); empty slots contribute nothing to either.
     auto total_cycles() const -> size_t {
         size_t count = 0;
         for_each_occupied_slot([&count](size_t, const detail::CrossRankSlotView &slot) { count += slot.in_count; });

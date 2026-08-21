@@ -39,9 +39,8 @@ namespace monoprop::mpi {
 //    change exists to remove. Not an environment variable, and deliberately not one: the audit IS a
 //    collective, so ranks that disagree about whether to run it hang the job rather than
 //    misreporting, and a per-rank variable is exactly how they come to disagree. A binary cannot.
-//    Worth having at all because of how the invariant fails if a future routing change breaks it: a
-//    peer blocks in MPI_Alltoallv against a size nobody sends, which is a hang with no line number.
-//    This turns that into an exception naming the slot.
+//    Worth having because the unguarded failure is a peer blocked in MPI_Alltoallv against a size
+//    nobody sends: a hang with no line number, which this turns into an exception naming the slot.
 auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm) -> void;
 
 // Idempotent completion handle for a posted payload transfer; move-only, so a request is waited on

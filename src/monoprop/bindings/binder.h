@@ -272,11 +272,9 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"d_state_coeffs_nonzero", b.state_coeffs_nonzero}};
     });
 
-    // The operator partitions but the graph does not: its per-layer arrays are indexed by rank, and on
-    // a partitioned run that index space is the FLAT world (ranks x partitions). So these grow with a
-    // P that the MPI rank count never reveals. d_slot_records / d_layer_cores recovers P;
-    // d_occupied_slots / d_slot_records is the occupancy that says whether a sparse layout would pay;
-    // and d_cross_rank_endpoints is the P-independent ceiling on d_occupied_slots.
+    // The operator partitions but the graph does not: its arrays are indexed by the FLAT world, so
+    // these grow with a P the MPI rank count never reveals. d_slot_records / d_layer_cores recovers P,
+    // d_occupied_slots / d_slot_records is the occupancy, d_cross_rank_endpoints the P-free ceiling.
     cls.def("graph_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
         const auto b = self.graph_memory_usage();
         return std::map<std::string, size_t>{{"layer_descriptor_bytes", b.layer_descriptor_bytes},

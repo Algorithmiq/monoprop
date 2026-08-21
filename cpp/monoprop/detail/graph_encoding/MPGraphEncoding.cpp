@@ -34,9 +34,7 @@ auto checked_mpi_int(size_t value, const char *what) -> int {
     return static_cast<int>(value);
 }
 
-// The slot id is stored as uint32 to keep the occupied record at 12 B. That bounds the flat world at
-// ~4.3e9 participants, which is not a limit anyone will meet, but it is a narrowing conversion and so
-// it is checked rather than cast.
+// The u32 slot id bounds the flat world; a narrowing conversion, so checked rather than cast.
 auto checked_world_slot(size_t rank) -> uint32_t {
     if (rank > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
         throw std::overflow_error(std::format("World slot {} exceeds the {} the occupied-slot record can hold.",
@@ -91,11 +89,8 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
     size_t total_b = 0;
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         const auto &partner = data[rank];
-        // B and D are the two endpoints of the same rotation set, so they must be the same
-        // length. The record stores one count and one offset for both; checking here is what
-        // makes that a precondition instead of a convention. Unchecked, a skew would not throw
-        // -- cross_rank_sin_recv_index would mis-derive Q and silently read the wrong endpoint,
-        // and Evolution's self-slot snapshot would run off the end of its B-sized buffer.
+        // The record stores one count and one offset for both B and D, so their equal length is a
+        // precondition: a skew would not throw, it would mis-derive Q and read the wrong endpoint.
         if (partner.sin_send_indices.size() != partner.sin_recv_entries.size()) {
             throw std::logic_error(std::format(
                 "Cross-rank slot {} has {} send endpoints against {} recv endpoints; B and D are the same set.",
@@ -103,11 +98,9 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
                 partner.sin_send_indices.size(),
                 partner.sin_recv_entries.size()));
         }
-        // P (the in-block) is a boundary WITHIN B, so it cannot point past B's end. Checked for the
-        // same reason as the skew above, and more urgently: Q = P+Q - P is computed in unsigned
-        // width by slot_sin_recv_index, so a P past the end does not produce a negative Q that some
-        // signed comparison would reject, it produces a Q near 2^64 that every index compares less
-        // than -- and every D read then addresses B at in_count + idx, off the end of the array.
+        // P (the in-block) is a boundary WITHIN B. Q = P+Q - P is computed in unsigned width by
+        // slot_sin_recv_index, so a P past the end yields not a negative Q but one near 2^64, which
+        // every index compares less than -- and every D read then addresses B off the end.
         if (partner.in_count > partner.sin_send_indices.size()) {
             throw std::logic_error(
                 std::format("Cross-rank slot {} declares an in-block of {} inside {} endpoints; the in-block is a "
@@ -116,15 +109,12 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
                             partner.in_count,
                             partner.sin_send_indices.size()));
         }
-        // The whole point: a slot with no traffic gets no record. Ascending rank order makes `occupied`
-        // sorted by construction, which is what lets readers binary-search it and lets the offset be a
-        // running prefix rather than a stored field.
+        // A slot with no traffic gets no record; ascending rank order leaves `occupied` sorted.
         if (partner.sin_send_indices.empty()) {
             continue;
         }
-        // Checked, not cast: total_b below accumulates the untruncated size while every reader
-        // reconstructs the offset as a prefix over the STORED counts, so a truncated slot shifts
-        // every later slot's window -- and truncation can also invert the in_count bound above.
+        // Checked, not cast: readers rebuild offsets from the STORED counts, so a truncated slot
+        // would shift every later slot's window.
         storage.occupied.push_back(
             {.slot = checked_world_slot(rank),
              .sin_send_count = checked_term_index(partner.sin_send_indices.size(), "Cross-rank slot endpoint count"),
@@ -146,8 +136,7 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
     storage.sin_send_indices.resize(total_b);
     storage.sin_recv_phases = make_packed_phase_storage(total_d, uses_binary_phases);
 
-    // Fill in the same ascending order the offsets were accumulated in, so the running prefix here is
-    // the one for_each_occupied_slot will reconstruct on every later read.
+    // Same ascending order the offsets accumulate in, so readers reconstruct this exact prefix.
     size_t offset = 0;
     for (const auto &entry : storage.occupied) {
         const auto &partner = data[entry.slot];
@@ -208,8 +197,7 @@ auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t 
 }
 
 namespace {
-// Labels the overflow only when it throws: this now runs per posted exchange rather than once at
-// build, so formatting the two labels up front was two heap allocations per layer per transfer.
+// Formats the label only on the throwing path: this runs per posted exchange, not once at build.
 auto checked_exchange_int(size_t value, const char *what, const char *field) -> int {
     if (value > static_cast<size_t>(std::numeric_limits<int>::max())) {
         return checked_mpi_int(value, std::format("{} {}", what, field).c_str());
@@ -224,15 +212,12 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
                             LayerExchangeLayout &out,
                             const char *what) -> void {
     const size_t num_ranks = cross_rank.rank_count();
-    // assign() over resize(): every slot that carries nothing must read zero, and `out` is reused
-    // across layers, so last layer's counts would otherwise survive into this one's.
+    // assign(), not resize(): `out` is reused across layers and an empty slot must read zero.
     out.counts.assign(num_ranks, 0);
     out.displs.resize(num_ranks);
 
-    // Scatter over the slots that carry traffic instead of interrogating every possible partner.
-    // sin_send_size(r) is a binary search once the storage is sparse, so the dense probe this
-    // replaces would cost O(P log occupied) per layer per exchange -- to fill an array that is
-    // ~82% zeros at P=512 by construction. Occupancy only falls as P grows, so the gap widens.
+    // Scatter over the slots that carry traffic: a dense probe would binary-search every possible
+    // partner, at O(P log occupied) per exchange, to fill an array that is mostly zeros.
     for_each_occupied_slot(cross_rank, [&](size_t slot, const CrossRankSlotView &view) {
         if (slot == my_rank) {
             return; // excluded from the transfer and handled locally, as the stored layout did
@@ -240,8 +225,7 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
         out.counts[slot] = checked_exchange_int(static_cast<size_t>(scale) * view.sin_send_count, what, "count");
     });
 
-    // The prefix sum stays dense: MPI_Alltoallv wants a displacement for every rank, and an empty
-    // slot still needs a valid (repeated) one.
+    // The prefix sum stays dense: MPI_Alltoallv wants a valid displacement for every rank.
     size_t total = 0;
     for (size_t r = 0; r < num_ranks; ++r) {
         out.displs[r] = checked_exchange_int(total, what, "displacement");
@@ -258,16 +242,9 @@ auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners,
     resolve_self_slot(storage->cross_rank, my_rank);
 
     {
-        // Derive once at build time and throw the result away. This is purely eager validation: an
-        // overflow of MPI's int has to throw from build_graph, not from inside the exchange, where
-        // peers are already committed to a transfer of that size -- there it is a distributed hang
-        // rather than an error.
-        //
-        // Scale 2 alone: its counts are exactly 2x scale 1's, so scale 1 cannot overflow alone, and
-        // a graph that overflows at all is unusable for both rounds -- the derivative label fits.
-        //
-        // The vectors are not kept. They are a prefix sum of what cross_rank already holds, and
-        // retaining them per layer per partition is the O(P^2) term this change removes.
+        // Eager validation, result discarded: an int overflow must throw from build_graph, not from
+        // inside an exchange whose peers are already committed, where it is a hang. Scale 2 alone
+        // suffices -- its counts are exactly 2x scale 1's, so scale 1 cannot overflow on its own.
         LayerExchangeLayout scratch;
         derive_exchange_layout(storage->cross_rank, my_rank, 2, scratch, "Layer derivative exchange");
     }

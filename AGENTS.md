@@ -120,12 +120,10 @@ Key files:
   - `mpi::check_exchange_symmetry` (`cpp/monoprop/detail/mpi/Exchange.h`) runs on every exchange.
     Its width check — the layout must hold exactly one entry per rank — is an unconditional
     precondition, because MPI reads one count and one displacement per rank whatever the span holds.
-    The symmetry audit behind it is a collective, and is gated at BUILD time by the CMake option
-    `monoprop_CHECK_EXCHANGE_SYMMETRY` (default OFF). A per-rank environment variable must never
-    decide whether a collective runs: ranks that disagree hang the job instead of misreporting.
+    The symmetry audit behind it is gated at BUILD time by the CMake option
+    `monoprop_CHECK_EXCHANGE_SYMMETRY` (default OFF); the reason is in `Exchange.h`.
   - `cpp/tests/ExchangeLayoutOracle.h` holds the independent reference that derivation is checked
-    against. It is outside the library on purpose — an oracle compiled in beside its subject gets
-    maintained beside it, and then proves nothing.
+    against, outside the library on purpose.
 
 
 ### Environment Management

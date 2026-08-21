@@ -73,19 +73,12 @@ inline auto store_packed_phase(PackedPhaseStorage &storage, size_t idx, int phas
 
 auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &data) -> PackedCrossRankStorage;
 
-// Record where my_rank's own slot sits, so the gradient's self-slot reads are O(1). Called once per
-// layer at build; separate from the builder because only build_layer_storage_unified knows my_rank.
+// Record where my_rank's own slot sits, so the gradient's self-slot reads are O(1). Once per layer.
 auto resolve_self_slot(PackedCrossRankStorage &storage, size_t my_rank) -> void;
 
-// One world slot's position in the flat B/D arrays, resolved once.
-//
-// Resolving is per-SLOT work -- an index into `ranges`, which is the array sized by the flat
-// world P. The per-element accessors below take this instead of a slot id so that walking a
-// slot's endpoints pays that cost once rather than on every endpoint. It matters more than it
-// looks: a recv endpoint reads three fields of the record, so the unhoisted form touched the
-// P-sized array three times per term. It is also the precondition for ever storing the slots
-// sparsely -- under a sparse layout resolving a slot stops being an array index, and anything
-// that resolves per term rather than per slot would become unaffordable.
+// One world slot's position in the flat B/D arrays, resolved once. The per-element accessors below
+// take this rather than a slot id so that walking a slot's endpoints pays the lookup once, not per
+// endpoint -- which is what makes resolving a slot affordable now that it is a search, not an index.
 struct CrossRankSlotView final {
     const TermIndex *sin_send_indices = nullptr; // B, already advanced to this slot's offset
     const PackedPhaseStorage *sin_recv_phases = nullptr;
@@ -105,16 +98,10 @@ inline auto view_at(const PackedCrossRankStorage &storage, const CrossRankOccupi
 }
 } // namespace slot_detail
 
-// Every occupied slot in ascending order, each with its B/D offset -- the running prefix, which is
-// exactly what the dense layout stored per slot. func(slot_id, view), or func(occupied_pos, slot_id,
-// view) for a caller whose own array is indexed by occupied position rather than by world slot.
-//
-// This is the shape production code should use. It is O(occupied) for the whole sweep rather than
-// O(P), and it never visits a slot with nothing in it: under a dense layout those were visited and
-// skipped, so on a large world most of the loop was the skip.
-//
-// The position is handed out here rather than counted at the call site because a hand-rolled counter
-// past the self-slot `return`s of those loops would silently skew every later index.
+// Every occupied slot in ascending order with its B/D offset (the running prefix). func(slot_id, view),
+// or func(occupied_pos, slot_id, view) for a caller indexing by occupied position -- handed out here
+// because a counter at the call site would skew past those loops' self-slot `return`s. What production
+// code should use: O(occupied) for the whole sweep, and it never visits an empty slot.
 template <typename Func>
 auto for_each_occupied_slot(const PackedCrossRankStorage &storage, Func &&func) -> void {
     size_t offset = 0;
@@ -130,8 +117,7 @@ auto for_each_occupied_slot(const PackedCrossRankStorage &storage, Func &&func) 
     }
 }
 
-// O(1). The self slot is read per rotation pair in the innermost gradient loop, so it cannot pay the
-// search or the prefix walk that an arbitrary slot does. An all-zero view when it carries no traffic.
+// O(1), for the innermost gradient loop; an all-zero view when this rank's slot carries no traffic.
 inline auto cross_rank_self_slot(const PackedCrossRankStorage &storage) -> CrossRankSlotView {
     if (storage.self_pos == kNoSelfSlot) {
         return CrossRankSlotView{.sin_recv_phases = &storage.sin_recv_phases};
@@ -139,9 +125,8 @@ inline auto cross_rank_self_slot(const PackedCrossRankStorage &storage) -> Cross
     return slot_detail::view_at(storage, storage.occupied[storage.self_pos], storage.self_offset);
 }
 
-// Arbitrary slot, and O(occupied): the offset is a prefix over preceding entries, so resolving one
-// slot in isolation walks them. Diagnostic and test use -- a production loop wants
-// for_each_occupied_slot, and the self slot wants cross_rank_self_slot.
+// Arbitrary slot, O(occupied) because the offset is a prefix over preceding entries. Diagnostic and
+// test use: a production loop wants for_each_occupied_slot, and the self slot cross_rank_self_slot.
 inline auto cross_rank_slot(const PackedCrossRankStorage &storage, size_t rank) -> CrossRankSlotView {
     size_t offset = 0;
     for (const auto &entry : storage.occupied) {
@@ -163,25 +148,19 @@ inline auto slot_sin_send_index(const CrossRankSlotView &slot, size_t idx) -> si
 // Invariant B=[in(P)]++[out(Q)], D=[out(Q)]++[in(P)] (P=in_count, Q=sin_send_count-P):
 // D[idx] = (idx<Q) ? B[P+idx] : B[idx-Q]. So D is not stored (saves ~half of cross_rank).
 inline auto slot_sin_recv_index(const CrossRankSlotView &slot, size_t idx) -> size_t {
-    // P <= P+Q is a precondition, enforced in build_packed_cross_rank_storage, and it has to be:
-    // this subtraction is unsigned, so an in_count past the end of B would not go negative, it
-    // would wrap to ~2^64 and send every idx down the (idx < out_count) arm to read B far past its
-    // range. Asserted rather than branched on because it is checked once at build and this runs per
-    // endpoint of the innermost apply.
+    // Unsigned subtraction; build_packed_cross_rank_storage enforces the precondition that keeps it safe.
     assert(slot.in_count <= slot.sin_send_count && "in-block cannot exceed the slot's endpoint count");
     const size_t out_count = slot.sin_send_count - slot.in_count; // Q
     const size_t sin_send_local = (idx < out_count) ? (slot.in_count + idx) : (idx - out_count);
     return slot_sin_send_index(slot, sin_send_local);
 }
 
-// The D phases run parallel to the B indices -- same count per slot, so the same prefix sum
-// addresses both. They are still separate arrays; only the offset into them is shared.
+// The D phases run parallel to the B indices, so the same prefix sum addresses both arrays.
 inline auto slot_sin_recv_phase(const CrossRankSlotView &slot, size_t idx) -> int {
     return packed_phase_at(*slot.sin_recv_phases, slot.phase_offset + idx);
 }
 
-// Single-endpoint forms, for callers that genuinely touch one endpoint of one slot. A loop
-// should resolve the slot once with cross_rank_slot() instead of calling these repeatedly.
+// Single-endpoint forms; a loop should resolve the slot once with cross_rank_slot() instead.
 inline auto cross_rank_sin_send_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
     return slot_sin_send_index(cross_rank_slot(storage, rank), idx);
 }
@@ -196,26 +175,17 @@ inline auto cross_rank_sin_recv_phase(const PackedCrossRankStorage &storage, siz
 
 auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t;
 
-// The slot-proportional slice of cross_rank_storage_bytes: one record per STORED world slot. Once the
-// storage is sparse that is one record per OCCUPIED slot, so this stops tracking the world size and
-// starts tracking traffic -- which is what makes the two growth laws separable in a measurement.
+// The slot-proportional slice of cross_rank_storage_bytes: one record per STORED world slot.
 auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size_t;
 
-// World slots carrying any traffic. Read against rank_count() to get occupancy: low occupancy means a
-// sparse layout pays, high occupancy means only a narrower record would.
+// World slots carrying any traffic; read against rank_count() to get occupancy.
 auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t;
 
-// Total cross-rank endpoints in this layer -- the length of the B array, so the traffic itself. It
-// bounds cross_rank_occupied_slots from above (an occupied slot holds at least one endpoint) and,
-// unlike the slot count, does not depend on the world size at all.
+// Total cross-rank endpoints in this layer: the B array's length, and an upper bound on occupied slots.
 auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t;
 
-// Derive a layer's send layout into caller-owned scratch instead of reading a stored one.
-//
-// counts[r] = scale * (r == my_rank ? 0 : cross_rank.sin_send_size(r)), displs the prefix sum --
-// the same rule build_layer_storage_unified used to build the stored copy, so this reproduces it
-// exactly rather than approximating it. `out` is resized, not reallocated, when reused across
-// layers at a fixed world size.
+// Derive a layer's send layout into caller-owned scratch: counts[r] = scale * (r == my_rank ? 0 :
+// cross_rank.sin_send_size(r)), displs the prefix sum. `out` is resized, not reallocated, on reuse.
 auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
                             size_t my_rank,
                             int scale,

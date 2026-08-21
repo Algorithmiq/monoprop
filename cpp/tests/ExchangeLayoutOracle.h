@@ -16,16 +16,9 @@
 
 // The independent reference for a layer's exchange layout: counts[r] = scale * send_counts[r], with
 // prefix-sum displacements. derive_exchange_layout in the library must agree with this elementwise.
-//
-// It lives here, and not in the library it checks, on purpose. An oracle compiled into
-// libmonoprop.so alongside its subject cannot drift from it -- the two would be edited together,
-// refactored together and broken together, and a check that moves with what it checks asserts
-// nothing. Kept in cpp/tests it can only be changed by someone changing a test, which is the point:
-// the derivation has to come back to a rule written down separately from the derivation.
-//
-// checked_mpi_int is borrowed from the library deliberately: it is the narrowing guard shared by
-// every MPI count in the tree, not part of the layout rule under test, and duplicating it here
-// would only mean asserting our own copy of an overflow policy.
+// It lives in cpp/tests and not in the library on purpose: an oracle compiled in beside its subject
+// gets refactored beside it, and a check that moves with what it checks asserts nothing.
+// checked_mpi_int is borrowed deliberately -- the narrowing guard is not part of the rule under test.
 
 #include <cstddef>
 #include <format>

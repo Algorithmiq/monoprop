@@ -60,13 +60,9 @@ auto combine_endpoint_contrib(const EndpointContrib &a, const EndpointContrib &b
 struct FlatExchangeBuffers {
     VecD send_buffer;
     VecD recv_buffer;
-    // The layout for the exchange currently being posted, derived per layer rather than read from
-    // one retained per layer. Reused, so it allocates once per thread per world size. Sharing one
-    // instance across layers is only sound because at most one exchange is in flight per thread --
-    // the same invariant send_buffer above has always required.
-    //
-    // ONE layout, not two: it describes the recv side as well as the send side. See
-    // derive_layer_exchange.
+    // Derived per layer for the exchange being posted, and reused, so it allocates once per thread per
+    // world size; one exchange in flight per thread, as send_buffer above has always required. ONE
+    // layout, not two: it describes the recv side as well. See derive_layer_exchange.
     LayerExchangeLayout layout;
 };
 
@@ -83,29 +79,17 @@ void resize_flat_exchange_buffers(const LayerExchangeLayout &layout, FlatExchang
     buffers.send_buffer.resize(alloc);
 }
 
-// Nothing to exchange at one rank. All ranks must participate even at local total_count 0, else
-// MPI_Alltoallv deadlocks, so this is a property of the communicator and not of the layer.
+// A property of the communicator, not the layer: all ranks participate even at local total_count 0.
 auto layer_exchange_participates(const mpi::Comm &comm) -> bool {
     return mpi::size(comm) != 1;
 }
 
-// Derive this layer's exchange layout into `buffers.layout` at `scale`. It describes BOTH sides.
-//
-// The count matrix is symmetric: rank m's slot for r holds (the queries r sent m) ++ (the queries
-// m sent r), and rank r's slot for m holds those two swapped, so the two slots have the same
-// length (MPGraphEncoding's sink, via layer_build/Engine.h). Counts are equal, and displacements
-// are prefix sums of counts, so the recv layout is the send layout -- there is nothing to
-// transpose and nothing to communicate. This is what a per-layer RecvLayoutCache used to hold,
-// at 8 B per world slot, and what an alltoall_counts per layer used to compute.
-//
-// Scaling is applied once, here, rather than to a scale-1 result: every rank multiplies by the
-// same literal, so the equality survives it.
-//
-// Verified end to end rather than reasoned about alone: in a build configured with
-// -Dmonoprop_CHECK_EXCHANGE_SYMMETRY=ON the derived counts are checked against a real alltoall on
-// every layer (see check_exchange_symmetry). A campaign at world 32 and 256 compared 550M slots
-// with no mismatch. The call below is unconditional in every build even so, because it also
-// enforces the layout's width against the communicator, which is a precondition and not an audit.
+// Derive this layer's exchange layout into `buffers.layout` at `scale`; it describes BOTH sides. The
+// count matrix is symmetric -- rank m's slot for r holds the same endpoint pair as rank r's slot for m,
+// swapped -- so counts are equal, displacements are their prefix sums, and the recv layout IS the send
+// layout. Scaling by the same literal on every rank preserves that. The symmetry itself is auditable
+// under monoprop_CHECK_EXCHANGE_SYMMETRY; the call below is unconditional because it also enforces the
+// layout's width against the communicator, which is a precondition rather than an audit.
 auto derive_layer_exchange(const LayerTraversal &layer, const mpi::Comm &comm, int scale, FlatExchangeBuffers &buffers)
     -> void {
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
@@ -135,8 +119,7 @@ inline auto begin_flat_exchange(FlatExchangeBuffers &buffers, const mpi::Comm &c
     handle.layout = &layout;
     handle.buffers = &buffers;
     buffers.recv_buffer.resize(layout.total_count == 0 ? 1 : layout.total_count);
-    // Same arrays on both sides. MPI reads recvcounts/recvdispls, it does not write them, so
-    // aliasing them onto the send layout is legal as well as correct here.
+    // Same arrays on both sides: MPI reads recvcounts/recvdispls and never writes them.
     handle.ticket = mpi::post_flat_alltoallv<double>({.send = buffers.send_buffer.data(),
                                                       .send_counts = layout.counts.data(),
                                                       .send_displs = layout.displs.data(),
@@ -159,8 +142,7 @@ struct InFlightExchange {
     bool active = false;
 };
 
-// Callers run layer_exchange_participates first, so no layout is derived at a single rank -- where
-// deriving one would allocate a P-int pair and resolve a transpose for a transfer that never posts.
+// Callers run layer_exchange_participates first, so no layout is derived for a transfer that never posts.
 template <typename Pack>
 inline auto begin_layer_exchange(const LayerTraversal &layer, int scale, const mpi::Comm &comm, Pack pack)
     -> InFlightExchange {
@@ -198,9 +180,7 @@ inline auto finish_layer_exchange(InFlightExchange &in_flight, Apply apply)
 // Per-thread pre-cos snapshot buffers, reused across layers to avoid a malloc/free per layer. Passed whole
 // to the pack and apply passes: each reads two of the four vectors, and re-splitting them at every hand-off
 // is what lets a send buffer be mistaken for a recv one.
-//
-// Indexed by OCCUPIED POSITION, not by world slot: sized by traffic rather than by P, so nothing here
-// grows with the world. All four users take the position from for_each_occupied_slot's 3-argument form.
+// Indexed by occupied position, not world slot, so nothing here grows with P.
 struct DerivativeSnapshotScratch {
     std::vector<VecD> sin_send_state;
     std::vector<VecD> sin_send_op;
@@ -357,12 +337,9 @@ inline auto finish_cross_rank_evolution_exchange(VecD &op,
 // Snapshot-free self-slot endpoint pass: sin_recv entries k and k+pairs are the two endpoints of one
 // rotation, so reading both (pre-cos recovered from the post-cos slots) before writing either avoids the
 // read-after-write hazard.
-//
-// Takes no rank: the layer records WHERE its own slot sits at build time, so this no longer searches
-// the slot array for a matching id the way the dense layout had to.
 auto apply_self_slot_derivative_paired(VecD &state, VecD &op, const LayerTraversal &layer, const TrigValues &trig)
     -> EndpointContrib {
-    // O(1): the self slot's position is recorded at build precisely so this loop does not search for it.
+    // O(1) and rank-free: the layer records where its own slot sits at build time.
     const auto slot = layer.cross_rank_self_slot();
     const size_t self_d_count = slot.sin_send_count;
     if (self_d_count == 0) {
@@ -400,10 +377,8 @@ void snapshot_remote_endpoints(const VecD &state,
                                const LayerTraversal &layer,
                                size_t my_rank,
                                DerivativeSnapshotScratch &snap) {
-    // Sized by the slots that carry traffic, so the dense pre-clear over the whole world goes with
-    // the world-sized array. Grow-only: shrinking to a thinner layer's occupancy would free the
-    // allocations this scratch exists to reuse, and positions past it are never visited -- every
-    // reader walks the same occupied sweep.
+    // Sized by the slots that carry traffic. Grow-only: shrinking would free the allocations this
+    // scratch exists to reuse, and positions past the occupancy are never visited.
     const size_t occupied = layer.occupied_slot_count();
     const auto grow = [occupied](std::vector<VecD> &v) {
         if (v.size() < occupied) {
@@ -489,8 +464,7 @@ auto evolve_step_traversal_impl(VecD &op,
     auto *const op_data = op.data();
 
     // Snapshot this rank's own sin_send values before the cos pass; runs unconditionally (the remote
-    // pack skips the self slot) so single-rank works. No rank id is read here: the layer records where
-    // its own slot sits, so nothing has to be matched against mpi::rank(comm).
+    // pack skips the self slot) so single-rank works. Rank-free: the layer records where its slot sits.
     const auto self_slot = layer.cross_rank_self_slot();
     const size_t self_b_count = self_slot.sin_send_count;
     VecD self_b_snapshot;

@@ -55,10 +55,8 @@ option(
   OFF
 )
 
-# Build-time and not an environment variable on purpose: the audit it enables is a
-# collective, so the decision to run it has to be identical on every participant. A
-# per-rank variable that one rank reads differently is a job-wide hang, not a wrong
-# number. Compiling it in makes agreement a property of the binary.
+# Build-time and not an environment variable on purpose; see check_exchange_symmetry
+# in cpp/monoprop/detail/mpi/Exchange.h.
 option(
   monoprop_CHECK_EXCHANGE_SYMMETRY
   "Audit each layer's derived exchange layout against a real alltoall (adds a collective per exchange)"

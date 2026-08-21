@@ -51,14 +51,11 @@ auto layer_storage_memory_usage(const LayerCore &storage) -> GraphMemoryBreakdow
     GraphMemoryBreakdown breakdown;
     breakdown.layer_storage_object_bytes = sizeof(LayerCore);
     breakdown.cross_rank_bytes = detail::cross_rank_storage_bytes(storage.cross_rank);
-    // Nothing: the layer no longer retains counts/displs. They are derived into per-thread
-    // scratch for the exchange being posted, so what used to be 2*P ints per layer per partition
-    // is now 2*P ints per THREAD. The field stays, reporting the truth, so an A/B against a build
-    // that did retain them shows the drop rather than silently losing the row.
+    // Nothing: counts/displs are derived into per-thread scratch, not retained per layer. The field
+    // stays and reports that, so the row does not silently vanish from a memory A/B.
     breakdown.exchange_layout_bytes = 0;
 
-    // Diagnostics. The graph does not partition -- its per-layer arrays are indexed by the FLAT world
-    // (ranks x partitions), so on a partitioned run these grow with a P the rank count never shows.
+    // Diagnostics. The graph does not partition: its arrays are indexed by the FLAT world.
     breakdown.slot_record_bytes = detail::cross_rank_slot_record_bytes(storage.cross_rank);
     breakdown.layer_cores = 1;
     breakdown.slot_records = storage.cross_rank.rank_count();

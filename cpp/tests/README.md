@@ -72,9 +72,7 @@ name and cannot address suite-nested cases, tests use flat
   MPGraph transform tests.
 - **`ExchangeLayoutOracle.h`**: `build_layer_exchange_layout` — the independent
   reference for a layer's exchange counts and displacements, which
-  `derive_exchange_layout` in the library is checked against. It is here rather
-  than in the library on purpose: an oracle compiled into the thing it checks
-  gets maintained alongside it and stops being independent evidence.
+  `derive_exchange_layout` in the library is checked against.
 - **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
 - **`boost-test.cmake` / `boostAddTests.cmake`**: CMake test discovery.
 
@@ -112,6 +110,8 @@ name and cannot address suite-nested cases, tests use flat
 - **Simulator / operator lifecycle**: `simulator_copy_tests.cpp`,
   `update_initial_operator.cpp`, `ctor_validation_tests.cpp` (constructor guard
   rails + MPGraph bounds).
+- **Exchange layout preconditions**: `exchange_layout_precondition_tests.cpp`
+  (the layout width check, driven through ShmComm, with the symmetry audit off).
 
 New `*.cpp` files are auto-discovered on the next configure — no CMake edit
 needed.

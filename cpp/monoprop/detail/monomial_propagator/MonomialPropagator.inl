@@ -389,9 +389,8 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
         // Always empty: local cycles are folded into cross_rank[my_rank].
         std::vector<LocalCycleData> local_cyc_data;
 
-        // The exported shape stays dense in the world size -- callers index it by rank -- but only the
-        // occupied slots have anything to put in it, so it is filled by scattering into a sized-empty
-        // array rather than by asking every possible slot how much it holds.
+        // The exported shape stays dense (callers index by rank), but it is filled by scattering the
+        // occupied slots rather than by asking every possible slot how much it holds.
         std::vector<CrossRankData> b_data(rank_count), d_data(rank_count);
         traversal.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
             const size_t count = slot.sin_send_count;
@@ -812,10 +811,7 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
     auto relabel = [this](size_t layer, size_t new_param_index) {
         auto &target = graph_.get_layer(layer);
         auto new_core = std::make_shared<LayerCore>(target.core());
-        // A plain copy, with nothing to invalidate: the core no longer retains any exchange
-        // state for a stale copy to serve. Relabelling changes only which parameter drives the
-        // rotation, never which endpoints cross to which slot, but that argument is no longer
-        // load-bearing -- both the send layout and its transpose are derived per exchange.
+        // A plain copy, with nothing to invalidate: the core retains no exchange state.
         new_core->param_index = new_param_index;
         if (const CosMask *pruned = target.pruned_cos()) {
             target = Layer(std::move(new_core), *pruned);

@@ -134,11 +134,8 @@ BOOST_AUTO_TEST_CASE(graph_encoding_exchange_layout_scale_and_displacements) {
     BOOST_CHECK_EQUAL(s2.total_count, 16U);
 }
 
-// The layout is no longer stored, so the claim under test is EQUIVALENCE: what the exchange
-// derives at the call site must equal, elementwise, what the retained copy used to hold. Asserted
-// against the oracle in ExchangeLayoutOracle.h rather than against hand-written literals, so the
-// two cannot drift apart in the same direction -- which is also why the oracle is not in the
-// library: one that shipped beside the derivation would be edited beside it too.
+// The claim under test is EQUIVALENCE: what the exchange derives at the call site must equal,
+// elementwise, the oracle in ExchangeLayoutOracle.h rather than hand-written literals.
 namespace {
 
 auto slot_partners(const std::vector<size_t> &sin_send_counts) -> std::vector<CrossRankPartnerData> {
@@ -176,8 +173,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_derived_layout_matches_the_layout_it_replace
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_derived_layout_reuses_its_scratch) {
-    // Reused across layers, so it must overwrite rather than append -- a stale tail would be read
-    // by MPI as a real count for a slot this layer does not send to.
+    // Reused across layers: a stale tail would be read by MPI as a real count for an unused slot.
     const auto wide = detail::build_packed_cross_rank_storage(slot_partners({1, 2, 3, 4}));
     const auto narrow = detail::build_packed_cross_rank_storage(slot_partners({7, 7}));
 
@@ -191,8 +187,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_derived_layout_reuses_its_scratch) {
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_a_zero_traffic_slot_still_gets_a_valid_displacement) {
-    // Empty slots are where an off-by-one in a prefix sum hides: the count is 0 but the
-    // displacement must still be non-decreasing, or MPI reads a peer's payload at the wrong base.
+    // Empty slots hide prefix-sum off-by-ones: count 0, but the displacement must still advance.
     const auto storage = detail::build_packed_cross_rank_storage(slot_partners({0, 4, 0, 0, 6}));
     LayerExchangeLayout derived;
     detail::derive_exchange_layout(storage, /*my_rank=*/3, 1, derived);
@@ -207,12 +202,8 @@ BOOST_AUTO_TEST_CASE(graph_encoding_a_zero_traffic_slot_still_gets_a_valid_displ
 
 BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_overflow_throws) {
     // A count that fits int at 1x but not at 2x. build_layer_storage_unified derives the 2x layout
-    // eagerly, so the throw lands in build_graph and not inside the gradient collective window,
-    // where the peers of a rank that threw are already blocked in the layer's MPI_Ialltoallv against
-    // a size nobody will now send -- a hang, not an error. (This used to name resolve_recv's count
-    // round; that round is gone. The recv layout is the send layout, so no counts are exchanged and
-    // the peers block one call later, in the payload transfer itself. The reason the throw has to
-    // happen at build time is unchanged.)
+    // eagerly, so the throw lands in build_graph rather than inside the collective window, where the
+    // peers of a rank that threw are already blocked against a size nobody will send.
     const size_t just_over_half = static_cast<size_t>(std::numeric_limits<int>::max()) / 2 + 1;
     const auto storage = detail::build_packed_cross_rank_storage(slot_partners({just_over_half}));
 
@@ -247,9 +238,8 @@ BOOST_AUTO_TEST_CASE(graph_encoding_d_from_b_derivation_both_arms) {
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 0, 4), 22U);
 }
 
-// The accounting split behind graph_memory_breakdown(). These lock the property the split
-// exists to expose: the slot-record cost is set by the size of the world, and does not move
-// when the traffic through it does. (slot_partners is defined above, with the layout tests.)
+// The accounting split behind graph_memory_breakdown(): the slot-record cost is set by the size of
+// the world and does not move when the traffic through it does.
 
 BOOST_AUTO_TEST_CASE(graph_encoding_occupied_slots_counts_only_slots_carrying_traffic) {
     // Zeros at the front, in the interior and at the back -- the three places a scan loses count.
@@ -263,8 +253,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_occupied_slots_counts_only_slots_carrying_tr
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_slot_record_bytes_track_the_traffic_not_the_world) {
-    // Same traffic, four times the world. This is the whole claim of the sparse layout: the record
-    // array is a function of what is sent, not of how many participants could have been sent to.
+    // Same traffic, four times the world: the record array is a function of what is sent.
     const auto narrow = detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0}));
     const auto wide =
         detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
@@ -285,24 +274,20 @@ BOOST_AUTO_TEST_CASE(graph_encoding_a_layer_retains_no_exchange_layout) {
     // Neither side of the exchange is retained -- not the send layout, and not a transpose of it.
     const auto core = detail::build_layer_storage_unified(slot_partners({3, 0, 5}), /*my_rank=*/1);
 
-    // Not stored, but not lost: the send total is still recoverable from the slot records alone,
-    // which is the whole claim. 3 + 5, with my_rank's own slot contributing nothing.
+    // Not stored, but recoverable from the slot records alone: 3 + 5, my_rank's own slot excluded.
     LayerExchangeLayout derived;
     detail::derive_exchange_layout(core->cross_rank, /*my_rank=*/1, /*scale=*/1, derived);
     BOOST_CHECK_EQUAL(derived.total_count, 8U);
 
-    // A LayerCore is what gets held L x P times across a job, so its size is the thing the change
-    // is about. Pinned against the members it should have: three vectors' worth of storage plus
-    // the scalars. A new P-sized member here would be paid for once per layer per partition.
+    // A LayerCore is held L x P times across a job, so pin its size against the members it should
+    // have: three vectors plus the scalars. A new P-sized member costs once per layer per partition.
     BOOST_CHECK_LE(sizeof(LayerCore), 256U);
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_skewed_endpoint_counts_are_refused) {
-    // B and D are the two endpoints of the same rotation set, so the packed record keeps one
-    // count and one offset for both. GraphSink::finalize resizes the two vectors from the same
-    // expression, so the engine cannot produce a skew -- but nothing in the TYPE prevents one,
-    // and unchecked it would not throw: cross_rank_sin_recv_index would mis-derive Q and read a
-    // wrong-but-valid endpoint. Refusing at the choke point makes the assumption a precondition.
+    // The packed record keeps one count and one offset for both B and D. Nothing in the TYPE prevents
+    // a skew, and unchecked it would not throw: Q would be mis-derived and a wrong-but-valid endpoint
+    // read. Refusing at the choke point makes the assumption a precondition.
     std::vector<CrossRankPartnerData> data(1);
     data[0].sin_send_indices.push_back(1);
     data[0].sin_send_indices.push_back(2);
@@ -313,11 +298,9 @@ BOOST_AUTO_TEST_CASE(graph_encoding_skewed_endpoint_counts_are_refused) {
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_an_in_block_past_the_endpoint_list_is_refused) {
-    // in_count is a boundary INSIDE B, and the out-block size is B.size() - in_count in unsigned
-    // width. An in_count past the end therefore does not underflow into a negative some comparison
-    // would reject -- it wraps to ~2^64, every D index takes the (idx < out_count) arm, and each
-    // one reads B at in_count + idx, off the end. Refused where the record is built, so the reader
-    // can subtract without branching.
+    // in_count is a boundary INSIDE B and the out-block size is an unsigned subtraction, so one past
+    // the end wraps instead of going negative. Refused where the record is built, so the reader can
+    // subtract without branching.
     std::vector<CrossRankPartnerData> data(1);
     data[0].sin_send_indices.push_back(1);
     data[0].sin_send_indices.push_back(2);
@@ -340,8 +323,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_occupied_sweep_matches_the_dense_sweep_it_re
     data[4].in_count = 4;
     const auto storage = detail::build_packed_cross_rank_storage(data);
 
-    // What the dense layout would have produced for the occupied slots. The offsets are the prefix over
-    // ALL slots -- which the empty ones contributed zero to, which is why dropping them is lossless.
+    // The offsets are the prefix over ALL slots, to which the empty ones contributed zero.
     struct Expected {
         size_t slot, offset, count, in_count;
     };

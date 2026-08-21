@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The width precondition on a layer's exchange layout, driven through the in-process ShmComm so it
-// needs no ranks.
+// The width precondition on a layer's exchange layout, driven through ShmComm so it needs no ranks.
 
 #include <boost/test/unit_test.hpp>
 
@@ -28,15 +27,11 @@ using monoprop::mpi::CollectiveArgumentError;
 using monoprop::mpi::Comm;
 using monoprop::mpi::ShmComm;
 
-// The check that must survive every configuration. It shares an entry point with the opt-in symmetry
-// audit, but it is not part of it: the audit is a diagnostic that may be compiled out, while a layout
-// whose width disagrees with the communicator is an out-of-bounds read inside MPI_Alltoallv, which no
-// build may be allowed to reach. This case is therefore written to pass with the audit OFF -- the
-// default, and the configuration the throw was silently lost in.
+// The width check shares an entry point with the opt-in symmetry audit but is not part of it, so this
+// case is written to pass with the audit OFF -- the default, and where the throw was silently lost.
 BOOST_AUTO_TEST_CASE(exchange_layout_width_is_checked_even_with_the_symmetry_audit_off) {
-    // Sized 4 but driven by this one thread: the throw has to happen before any collective is
-    // entered, or this test hangs instead of failing. That is the point -- the width is checked
-    // against mpi::size(comm) alone, with no communication.
+    // Sized 4 but driven by one thread: the throw must precede any collective, or this hangs
+    // instead of failing -- the width is checked against mpi::size(comm) alone.
     ShmComm world(4);
     const Comm comm = Comm::make_shm(&world, /*rank=*/0);
     BOOST_REQUIRE_EQUAL(monoprop::mpi::size(comm), 4);
@@ -51,8 +46,7 @@ BOOST_AUTO_TEST_CASE(exchange_layout_width_is_checked_even_with_the_symmetry_aud
     BOOST_CHECK_THROW(monoprop::mpi::check_exchange_symmetry(empty, comm), CollectiveArgumentError);
 }
 
-// The complement: a well-sized layout is not refused. At one participant every collective the audit
-// could run completes on this thread, so this case is safe whether the audit is compiled in or not.
+// The complement, at one participant, so it is safe whether the audit is compiled in or not.
 BOOST_AUTO_TEST_CASE(exchange_layout_of_the_right_width_is_accepted) {
     ShmComm world(1);
     const Comm comm = Comm::make_shm(&world, /*rank=*/0);

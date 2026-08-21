@@ -114,9 +114,9 @@ SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON;-Dmonoprop_CHECK_EXCHANGE_SYMMETRY=
 mpiexec -n 4 build/editable/Release/bin/monoprop_unit_tests.x
 ```
 
-It is a build option rather than an environment variable because the audit is a
-collective; the option table is in [Building from source](/building). Leave it off
-for timing runs — it reinstates the per-exchange collective the derivation removes.
+The option table, and why it is a build option rather than an environment
+variable, are in [Building from source](/building). Leave it off for timing runs —
+it reinstates the per-exchange collective the derivation removes.
 
 CTest registers every Boost case individually as a `serial` variant. When the
 build has MPI enabled and a launcher is found, it also registers the whole suite

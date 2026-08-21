@@ -85,18 +85,8 @@ BOOST_AUTO_TEST_CASE(cross_rank_partner_range_counts_track_term_index_width) {
     BOOST_CHECK_EQUAL(sizeof(r.sin_send_count), sizeof(TermIndex));
     BOOST_CHECK_EQUAL(sizeof(r.in_count), sizeof(TermIndex));
     // One record per OCCUPIED slot, so its width scales the traffic-bounded term, not a P-squared one.
-    // The B/D offset is derived rather than stored precisely to keep it this narrow.
-    //
-    // The record is {uint32_t slot; TermIndex sin_send_count; TermIndex in_count;}, so the u32 does
-    // NOT cost four bytes: it occupies a whole TermIndex-alignment slot, and the rest of that slot is
-    // padding. Narrow (TermIndex = u32) that is 4 + 4 + 4 = 12; wide (TermIndex = u64) it is
-    // 8 (4 used, 4 padding) + 8 + 8 = 24, not the 20 the field widths sum to -- which is what this
-    // case used to assert, unguarded, so the wide build would have failed it.
-    //
-    // Restated here rather than imported from MPGraphEncodingTypes.h's kOccupiedSlotIdField on
-    // purpose: that constant is what the header's own static_assert is written in terms of, and a
-    // check that borrows the value it is checking cannot fail. This is the independent statement of
-    // the same rule; the static_assert is the one that fires without a test run.
+    // Written out rather than imported from kOccupiedSlotIdField: a check that borrows the value it is
+    // checking cannot fail, so this is the independent statement of the header's static_assert.
     constexpr size_t slot_field = std::max(sizeof(uint32_t), alignof(TermIndex));
     BOOST_CHECK_EQUAL(alignof(CrossRankOccupiedSlot), alignof(TermIndex));
     BOOST_CHECK_EQUAL(sizeof(CrossRankOccupiedSlot), slot_field + 2 * sizeof(TermIndex));

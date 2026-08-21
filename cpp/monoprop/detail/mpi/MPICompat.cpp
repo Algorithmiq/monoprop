@@ -123,13 +123,8 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm)
 auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm) -> void {
     const auto n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);
-    // Above the gate deliberately: the width of the layout is a PRECONDITION of posting the
-    // exchange at all, not part of the optional symmetry audit below, so it must hold on every
-    // build and every path. MPI_Alltoallv reads comm_size counts and comm_size displacements
-    // regardless of `n`, so begin_flat_exchange hands it a short array and the library reads off
-    // the end — undefined behaviour where an exception belongs. Reachable because layouts outlive
-    // propagator copies and pare rebuilds: a graph built for one communicator can be replayed on
-    // another of a different size.
+    // Above the gate deliberately: MPI_Alltoallv reads comm_size counts and displacements whatever the
+    // span holds, so the width is a precondition of posting at all, not part of the audit below.
     if (n != comm_size) {
         throw CollectiveArgumentError(
             std::format("Exchange layout has {} send counts but the communicator has {} ranks — a graph built for one "
@@ -141,18 +136,14 @@ auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm)
 #ifndef monoprop_CHECK_EXCHANGE_SYMMETRY
     return; // audit compiled out; see the build option of the same name
 #else
-    // Compiled in or out, never selected at run time: what follows is a collective, and a
-    // per-rank environment variable that one rank reads differently makes the ranks disagree
-    // about whether the collective happens at all -- a job-wide hang, not a wrong number.
-    // A build option cannot disagree between the ranks of one job.
+    // Build-gated and never run-time selected; see check_exchange_symmetry in Exchange.h for why.
     std::vector<int> recv_counts(static_cast<size_t>(n));
     alltoall_counts(send_counts.data(), recv_counts.data(), n, comm);
     for (int i = 0; i < n; ++i) {
         const int sent = send_counts[static_cast<size_t>(i)];
         const int received = recv_counts[static_cast<size_t>(i)];
         if (sent != received) {
-            // Naming the slot and both counts, because the whole point of the check is that the
-            // unguarded failure carries neither.
+            // Naming the slot and both counts: the unguarded failure carries neither.
             throw CollectiveArgumentError(std::format(
                 "Exchange count matrix is not symmetric at slot {}: this rank sends {} there but receives {} back. "
                 "The exchange derives its recv layout from its send layout on the strength of that equality, so a "
