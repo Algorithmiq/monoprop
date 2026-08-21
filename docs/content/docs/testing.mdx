@@ -61,6 +61,9 @@ uv sync --all-extras
 ctest --test-dir build/editable/Release --output-on-failure
 ```
 
+Release builds use `-O1` for the test sources while retaining `-O3` for the
+library.
+
 With MPI, reuse the MPI-enabled `uv sync` from the Python MPI section above,
 then run CTest against the same tree:
 

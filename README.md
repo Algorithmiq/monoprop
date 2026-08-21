@@ -107,6 +107,9 @@ uv sync --all-extras -v
 ctest --test-dir build/editable/Release
 ```
 
+Release builds compile the test sources at `-O1` to reduce template-heavy build
+time while keeping the library at `-O3`.
+
 Full instructions — prerequisites, MPI options, and running the example
 executable — are in the [building guide](https://docs.monoprop.algorithmiq.tech/building).
 In particular, from-source builds require `hwloc` and `pkg-config` so CMake can

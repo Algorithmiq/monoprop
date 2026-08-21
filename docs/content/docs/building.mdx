@@ -101,7 +101,8 @@ ctest --test-dir build/editable/Release
 ```
 
 This uses the scikit-build-core Release tree at `build/editable/Release` and
-runs `bin/monoprop_unit_tests.x` there.
+runs `bin/monoprop_unit_tests.x` there. The test sources compile at `-O1` to
+reduce template-heavy build time while the library remains at Release `-O3`.
 
 ### Debug tree
 

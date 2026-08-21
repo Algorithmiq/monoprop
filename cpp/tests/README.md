@@ -30,6 +30,9 @@ uv sync --all-extras -v
 ctest --test-dir build/editable/Release
 ```
 
+Release builds compile these test sources at `-O1`; linked production objects
+remain at `-O3`.
+
 For an MPI-enabled tree, rerun `uv sync` with
 `--config-settings=cmake.define.monoprop_ENABLE_MPI=ON`.
 ## Running Tests

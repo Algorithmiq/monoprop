@@ -34,6 +34,8 @@ file(
 
 add_executable(monoprop_unit_tests.x ${_tests_cpps})
 
+target_compile_options(monoprop_unit_tests.x PRIVATE $<$<CONFIG:Release>:-O1>)
+
 target_include_directories(
   monoprop_unit_tests.x
   PRIVATE
