@@ -3,10 +3,6 @@ name: Benchmark
 # Shared body of the Bencher continuous-benchmarking runs. Callers choose the
 # machine and the Bencher testbed; everything downstream is identical, so the
 # testbeds stay comparable in shape even though their absolute numbers are not.
-#
-# Metrics are keyed by (branch, testbed, measure), so `testbed` has to change
-# whenever the hardware does -- reusing a name across machines makes the
-# threshold history meaningless.
 
 on:
   workflow_call:

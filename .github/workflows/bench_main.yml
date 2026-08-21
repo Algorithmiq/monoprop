@@ -1,14 +1,9 @@
 name: Track benchmarks
 
 # Builds the historical baseline that Bencher's Perf page graphs and that pull
-# request runs are compared against. One data point per commit on main, so this
-# deliberately does not cancel in-progress runs -- a cancelled run is a hole in
-# the series.
-#
-# Alerts are recorded but do not fail the job: the timing measures need a few
-# weeks of history on a shared runner before their noise floor is known. Gating
-# belongs on pull requests, where a base-vs-head comparison on one runner
-# cancels out machine-to-machine variance.
+# request runs are compared against. One data point per commit on main.
+# Alerts are recorded but do not fail the job for now.
+
 
 on:
   workflow_dispatch:
