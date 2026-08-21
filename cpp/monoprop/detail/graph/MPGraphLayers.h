@@ -55,14 +55,6 @@ struct LayerTraversal final {
     auto cross_rank_sin_recv_size(size_t rank) const -> size_t { return core_->cross_rank.sin_recv_size(rank); }
     auto cross_rank_in_count(size_t rank) const -> size_t { return core_->cross_rank.in_count(rank); }
 
-    // Random access into the D list, for the paired self-slot derivative fetches d[k], d[k+P].
-    auto cross_rank_sin_recv_index_at(size_t rank, size_t idx) const -> size_t {
-        return detail::cross_rank_sin_recv_index(core_->cross_rank, rank, idx);
-    }
-    auto cross_rank_sin_recv_phase_at(size_t rank, size_t idx) const -> int {
-        return detail::cross_rank_sin_recv_phase(core_->cross_rank, rank, idx);
-    }
-
     // O(1); the self slot is read per rotation pair in the innermost gradient loop.
     auto cross_rank_self_slot() const -> detail::CrossRankSlotView {
         return detail::cross_rank_self_slot(core_->cross_rank);
@@ -97,12 +89,6 @@ struct LayerTraversal final {
         for (size_t idx = begin; idx < end; ++idx) {
             func(idx, detail::slot_sin_recv_index(slot, idx), detail::slot_sin_recv_phase(slot, idx));
         }
-    }
-
-    // For the paired self-slot derivative fetches, which read d[k] and d[k+pairs] together:
-    // resolve the slot once and hand the caller the view rather than four lookups per pair.
-    auto cross_rank_slot(size_t rank) const -> detail::CrossRankSlotView {
-        return detail::cross_rank_slot(core_->cross_rank, rank);
     }
 
     // The exchange layout -- both sides of it -- is derived at the call site from these and
