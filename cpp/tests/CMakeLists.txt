@@ -52,6 +52,8 @@ target_link_libraries(
 
 if(Catch2_SOURCE_DIR)
   list(APPEND CMAKE_MODULE_PATH "${Catch2_SOURCE_DIR}/extras")
+else()
+  list(APPEND CMAKE_MODULE_PATH "${Catch2_DIR}")
 endif()
 include(Catch)
 
