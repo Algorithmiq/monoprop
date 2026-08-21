@@ -28,8 +28,7 @@ namespace monoprop {
 //   recompute (nullopt)   — cosine rebuilt from the generator's inverted-index columns at replay.
 //   pruned    (has value) — cosine pre-filtered to a backward-reachable subset, stored explicitly; an
 //                           empty stored list is still pruned (replay as nothing, do not recompute).
-// Cores are shared and immutable in value only: their eval-time caches (recv_cache, the lazy derivative
-// layout) are filled through const handles, so evaluating two aliasing propagators concurrently is a race.
+// Cores are shared and immutable: they hold no eval-time cache, so no const handle mutates one.
 
 // Cross-rank data is always read verbatim; only the cosine set is ever filtered.
 struct LayerTraversal final {
