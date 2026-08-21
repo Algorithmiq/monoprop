@@ -203,6 +203,7 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
                          const LazyFold<NumModes> &r,
                          double *state,
                          double *ham,
+                         const double *cached,
                          double cos_val,
                          double sec_val) -> double {
     const size_t mask_words = r.fold.mask_words;
@@ -215,7 +216,7 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
         for (size_t wi = bb; wi < be; ++wi) {
             for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
                 loc += state[i] * ham[i];
-                ham[i] *= sec_val;
+                ham[i] = (cached != nullptr) ? cached[i] : (ham[i] * sec_val);
                 state[i] *= cos_val;
             });
         }
@@ -230,15 +231,19 @@ inline auto scale_cos_mask(double *coeff, const CosMask &cos, double cos_val) ->
         for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
     }
 }
-inline auto accumulate_cos_mask(double *state, double *ham, const CosMask &cos, double cos_val, double sec_val)
-    -> double {
+inline auto accumulate_cos_mask(double *state,
+                                double *ham,
+                                const CosMask &cos,
+                                const double *cached,
+                                double cos_val,
+                                double sec_val) -> double {
     const size_t n = cos.blocks.size();
     double loc = 0.0;
     for (size_t k = 0; k < n; ++k) {
         const auto [base, bits] = cos.blocks[k];
         for_each_cos_index(base, bits, [&](size_t i) {
             loc += state[i] * ham[i];
-            ham[i] *= sec_val;
+            ham[i] = (cached != nullptr) ? cached[i] : (ham[i] * sec_val);
             state[i] *= cos_val;
         });
     }

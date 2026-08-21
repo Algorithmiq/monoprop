@@ -14,6 +14,7 @@
 
 #include "monoprop/MPFunctions.h"
 
+#include <algorithm>
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
@@ -45,6 +46,7 @@ struct EvalScratch {
     VecD op;
     VecD mapped_params;
     VecD gradient;
+    VecD layer_op_cache;
 };
 
 auto eval_scratch() -> EvalScratch & {
@@ -68,8 +70,10 @@ auto fill_mapped_params(VecD &result,
     }
 }
 
-auto prepare_evolved_operator(const EvalRequest &request, mpi::Comm comm, const detail::LayerCosScale &cos_scale)
-    -> void {
+auto prepare_evolved_operator(const EvalRequest &request,
+                              mpi::Comm comm,
+                              const detail::LayerCosScale &cos_scale,
+                              VecD *layer_cache = nullptr) -> void {
     // Checked once here rather than at each caller: evolve_operator invokes cos_scale per layer, so an
     // empty callback would otherwise surface as a std::bad_function_call naming nothing.
     if (!cos_scale) {
@@ -78,7 +82,19 @@ auto prepare_evolved_operator(const EvalRequest &request, mpi::Comm comm, const 
     auto &scratch = eval_scratch();
     fill_mapped_params(scratch.mapped_params, request.params, request.parameter_mapping, request.gen_coeffs, 1.0, true);
     scratch.op = request.op;
-    scratch.op = evolve_operator(std::move(scratch.op), request.graph, scratch.mapped_params, comm, cos_scale);
+    if (layer_cache == nullptr) {
+        scratch.op = evolve_operator(std::move(scratch.op), request.graph, scratch.mapped_params, comm, cos_scale);
+        return;
+    }
+
+    // Step layer by layer so each layer's pre-layer coefficients are kept for the reverse pass, which reads
+    // them instead of dividing the evolved operator back out by the layer's cosine.
+    const size_t stride = scratch.op.size();
+    layer_cache->resize(request.graph.layers() * stride);
+    for (size_t i = 0; i < request.graph.layers(); ++i) {
+        std::copy_n(scratch.op.data(), stride, layer_cache->data() + (i * stride));
+        evolve_step(scratch.op, request.graph, scratch.mapped_params[i], i, comm, cos_scale);
+    }
 }
 
 } // namespace
@@ -220,10 +236,11 @@ auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
     // building one.
     auto &scratch = eval_scratch();
     request.state.scatter_into(scratch.state);
-    prepare_evolved_operator(request, comm, cos.scale);
+    prepare_evolved_operator(request, comm, cos.scale, &scratch.layer_op_cache);
 
     auto &state_ = scratch.state;
     auto &op_ = scratch.op;
+    const size_t stride = op_.size();
     const auto expectation_value = mpi::allreduce_sum(inner_product(state_, op_), comm);
 
     const auto &parameter_mapping = request.parameter_mapping;
@@ -238,7 +255,8 @@ auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
                                             idx,
                                             {.gen_coeff = request.gen_coeffs[i], .param = request.params[param_ind]},
                                             comm,
-                                            cos.accumulate);
+                                            cos.accumulate,
+                                            scratch.layer_op_cache.data() + (idx * stride));
     }
 
     mpi::allreduce_sum_inplace(scratch.gradient, comm);

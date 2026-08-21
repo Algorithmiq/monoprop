@@ -23,10 +23,11 @@
 namespace monoprop::detail {
 
 // Per-layer cosine callbacks; `layer` selects the cosine set to replay. Scale is the forward path
-// (coeff *= cos); Accumulate is the reverse path (state *= cos, ham *= sec) and returns Σ state·ham.
+// (coeff *= cos); Accumulate is the reverse path (state *= cos, ham taken from `cached` -- the forward
+// pass's pre-layer coefficients -- or ham *= sec when `cached` is null) and returns Σ state·ham.
 using LayerCosScale = std::function<void(size_t layer, double *coeff, double cos_val)>;
-using LayerCosAccumulate =
-    std::function<double(size_t layer, double *state, double *ham, double cos_val, double sec_val)>;
+using LayerCosAccumulate = std::function<
+    double(size_t layer, double *state, double *ham, const double *cached, double cos_val, double sec_val)>;
 
 struct CosCallbacks {
     LayerCosScale scale;           ///< forward path; required whenever the parameters are non-empty

@@ -905,13 +905,14 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
             detail::scale_cos_lazy<NumModes>(*sc, e.recipe, c, v);
         }
     };
-    detail::LayerCosAccumulate cos_acc = [cache, sc](size_t i, double *s, double *h, double v, double sec) {
-        const auto &e = (*cache)[i];
-        if (!e.recomputes_cos) {
-            return detail::accumulate_cos_mask(s, h, *e.filtered, v, sec);
-        }
-        return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec);
-    };
+    detail::LayerCosAccumulate cos_acc =
+        [cache, sc](size_t i, double *s, double *h, const double *cached, double v, double sec) {
+            const auto &e = (*cache)[i];
+            if (!e.recomputes_cos) {
+                return detail::accumulate_cos_mask(s, h, *e.filtered, cached, v, sec);
+            }
+            return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, cached, v, sec);
+        };
     return {.scale = std::move(cos_scale), .accumulate = std::move(cos_acc)};
 }
 
