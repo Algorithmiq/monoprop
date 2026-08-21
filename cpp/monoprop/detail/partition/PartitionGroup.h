@@ -89,7 +89,7 @@ public:
         start_masters_();
         try { // see the primary ctor: a throw past live masters would std::terminate
             run_on_all([&](int r) {
-                auto p = std::make_unique<MonomialPropagator<NumModes>>(*src.partitions_[static_cast<size_t>(r)]);
+                auto p = src.partitions_[static_cast<size_t>(r)]->clone_(); // virtual: keeps the derived type
                 p->comm_ = comm_for_(r); // PartitionGroup is a friend of MonomialPropagator
                 partitions_[static_cast<size_t>(r)] = std::move(p);
             });
