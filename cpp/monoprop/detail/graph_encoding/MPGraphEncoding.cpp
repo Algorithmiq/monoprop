@@ -122,9 +122,13 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
         if (partner.sin_send_indices.empty()) {
             continue;
         }
-        storage.occupied.push_back({.slot = checked_world_slot(rank),
-                                    .sin_send_count = static_cast<TermIndex>(partner.sin_send_indices.size()),
-                                    .in_count = static_cast<TermIndex>(partner.in_count)});
+        // Checked, not cast: total_b below accumulates the untruncated size while every reader
+        // reconstructs the offset as a prefix over the STORED counts, so a truncated slot shifts
+        // every later slot's window -- and truncation can also invert the in_count bound above.
+        storage.occupied.push_back(
+            {.slot = checked_world_slot(rank),
+             .sin_send_count = checked_term_index(partner.sin_send_indices.size(), "Cross-rank slot endpoint count"),
+             .in_count = checked_term_index(partner.in_count, "Cross-rank slot in-block size")});
         total_b += partner.sin_send_indices.size();
     }
     storage.occupied.shrink_to_fit(); // push_back overshoots, and this array is the thing being shrunk
