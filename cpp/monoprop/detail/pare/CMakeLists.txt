@@ -7,4 +7,4 @@ target_sources(
         "PareGraph.h"
 )
 
-target_sources(monoprop-objs PRIVATE PareGraph.cpp)
+monoprop_engine_sources(PareGraph.cpp)

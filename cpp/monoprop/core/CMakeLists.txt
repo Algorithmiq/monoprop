@@ -1,4 +1,4 @@
-target_sources(monoprop-objs PRIVATE Monomial.cpp)
+monoprop_engine_sources(Monomial.cpp)
 
 target_sources(
   monoprop

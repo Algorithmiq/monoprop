@@ -8,62 +8,97 @@ message(
   "Using hwloc: ${HWLOC_LINK_LIBRARIES} (version ${HWLOC_VERSION})"
 )
 
-target_sources(
-  monoprop-objs
-  PRIVATE
-    Evolution.cpp
-    MPFunctions.cpp
-    MPGraph.cpp
-    Validation.cpp
+monoprop_engine_sources(
+  Evolution.cpp
+  MPFunctions.cpp
+  MPGraph.cpp
+  Validation.cpp
 )
 
-target_compile_definitions(
-  monoprop-objs
-  PUBLIC
-    $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
-    $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
-    monoprop_SPARSE_ROW_MIN_MODES=${monoprop_SPARSE_ROW_MIN_MODES}
-    monoprop_NARROW_KERNEL_MAX_WORDS=${monoprop_NARROW_KERNEL_MAX_WORDS}
-)
+# Everything an engine object library needs beyond its sources. Factored out because the fat binary
+# compiles the engine once per ISA tier and the tiers must differ in exactly two things -- the arch
+# flags and which Variants.h they see -- with nothing else drifting apart between them.
+#
+# variant_include_dir goes in BEFORE the shared binary include dir, which is what makes a tier report
+# its own identity instead of the build's default one.
+function(_monoprop_configure_engine_objs target arch_flags variant_include_dir)
+  target_compile_definitions(
+    ${target}
+    PUBLIC
+      $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
+      $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
+      monoprop_SPARSE_ROW_MIN_MODES=${monoprop_SPARSE_ROW_MIN_MODES}
+      monoprop_NARROW_KERNEL_MAX_WORDS=${monoprop_NARROW_KERNEL_MAX_WORDS}
+  )
 
-# flags to prepend
-target_compile_options(
-  monoprop-objs
-  BEFORE
-  PUBLIC
-    "${monoprop_CXX_FLAGS}"
+  # flags to prepend
+  target_compile_options(
+    ${target}
+    BEFORE
+    PUBLIC
+      "${monoprop_CXX_FLAGS}"
+      "${arch_flags}"
+  )
+
+  # flags to append
+  target_compile_options(${target} PUBLIC "${EXTRA_CXXFLAGS}")
+
+  target_include_directories(
+    ${target}
+    BEFORE
+    PUBLIC
+      $<BUILD_INTERFACE:${variant_include_dir}>
+  )
+
+  target_include_directories(
+    ${target}
+    PUBLIC
+      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp/include>
+      $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp>
+  )
+
+  target_link_libraries(
+    ${target}
+    PUBLIC
+      Boost::boost
+      Threads::Threads
+      $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
+    PRIVATE
+      PkgConfig::HWLOC
+  )
+
+  set_target_properties(
+    ${target}
+    PROPERTIES
+      CXX_VISIBILITY_PRESET
+        hidden
+      VISIBILITY_INLINES_HIDDEN
+        YES
+  )
+endfunction()
+
+if(monoprop_ENABLE_FAT_BINARY)
+  foreach(_tier IN LISTS monoprop_FAT_TIERS)
+    monoprop_tier_targets(
+      TIER "${_tier}"
+      OBJS_VAR _tier_objs
+      VARIANT_INCLUDE_DIR_VAR _tier_variant_include_dir
+    )
+    _monoprop_tier_spec(TIER "${_tier}" MARCH_VAR _tier_flags)
+    _monoprop_configure_engine_objs(
+      "${_tier_objs}"
+      "${_tier_flags}"
+      "${_tier_variant_include_dir}"
+    )
+  endforeach()
+else()
+  _monoprop_configure_engine_objs(
+    monoprop-objs
     "${ARCH_FLAG}"
-)
-
-# flags to append
-target_compile_options(monoprop-objs PUBLIC "${EXTRA_CXXFLAGS}")
-
-target_include_directories(
-  monoprop-objs
-  PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp/include>
-    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp>
-)
-
-target_link_libraries(
-  monoprop-objs
-  PUBLIC
-    Boost::boost
-    Threads::Threads
-    $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
-  PRIVATE
-    PkgConfig::HWLOC
-)
-
-set_target_properties(
-  monoprop-objs
-  PROPERTIES
-    CXX_VISIBILITY_PRESET
-      hidden
-    VISIBILITY_INLINES_HIDDEN
-      YES
-)
+    "${PROJECT_BINARY_DIR}/include"
+  )
+endif()
 
 include(GenerateExportHeader)
 

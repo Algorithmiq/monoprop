@@ -16,54 +16,25 @@
 
 #include <string_view>
 
-/**
- * @brief Declares a compile-time function that reports the active variant.
- *
- * Expands to a `consteval` function named `variant()` with a GNU
- * `target("arch=...")` attribute bound to the provided architecture string.
- *
- * @param archstr Architecture suffix used in `arch=<archstr>`.
- */
-#define monoprop_VARIANT(archstr)                                                                  \
-    [[using gnu: target("arch=" archstr)]] consteval auto variant() noexcept -> std::string_view { \
-        return "arch=" archstr;                                                                    \
-    }
-
-/**
- * @brief Declares a compile-time function that reports the machine-dependent
- * flags GCC applies for the given variant.
- *
- * Expands to a `consteval` function named `machine_flags()` with a GNU
- * `target("arch=...")` attribute bound to the provided architecture string. The
- * returned value is the cleaned, space-separated list of machine flags GCC uses
- * for that architecture, as reported by `gcc -march=<archstr> -Q --help=target`.
- *
- * @param archstr Architecture suffix used in `arch=<archstr>`.
- * @param flagsstr Machine-dependent flags reported for the architecture.
- */
-#define monoprop_VARIANT_FLAGS(archstr, flagsstr)                                                        \
-    [[using gnu: target("arch=" archstr)]] consteval auto variant_flags() noexcept -> std::string_view { \
-        return flagsstr;                                                                                 \
-    }
+// Configured once per ISA variant by _monoprop_generate_variant_header (cmake/compiler_flags/
+// CXXFlags.cmake). A fat-binary build writes one copy per tier into a per-tier include directory
+// which that tier's object library searches first, so these two answers are the tier's own -- they
+// are how a loaded variant is identified from Python, which is the only way to tell whether the
+// import-time dispatch picked what it was supposed to.
+//
+// The identity is per *translation unit*, not per function: monoprop tiers whole libraries rather
+// than multiversioning individual functions, because the vectorization the tiers buy lands in headers
+// that are inlined into their callers, and a per-function dispatch seam would suppress that inlining.
+// This header therefore carries no target attributes; there is nothing to attach them to.
 
 namespace monoprop {
-#if defined(__x86_64__) || defined(_M_X64)
-[[using gnu: target("default")]]
-#endif
+/// Identifier of the ISA variant this translation unit was compiled for.
 consteval auto variant() noexcept -> std::string_view {
-    return "default";
+    return "@monoprop_VARIANT_ID@";
 }
 
-#if defined(__x86_64__) || defined(_M_X64)
-[[using gnu: target("default")]]
-#endif
+/// Machine-dependent flags the compiler resolved for this variant, space separated.
 consteval auto variant_flags() noexcept -> std::string_view {
-    return "@monoprop_DEFAULT_VARIANT_FLAGS@";
+    return "@monoprop_VARIANT_MACHINE_FLAGS@";
 }
-
-// clang-format off
-@monoprop_VARIANTS@
-
-@monoprop_VARIANT_FLAGS@
-// clang-format on
 } // namespace monoprop

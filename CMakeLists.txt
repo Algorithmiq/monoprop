@@ -51,6 +51,16 @@ option(
 
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
+# Compile the engine once per x86-64 ISA tier and pick one when monoprop is imported. This is what
+# published wheels want and what a source build does not: a source build has -march=native, which is
+# strictly better than any tier, so the default is OFF. See cmake/compiler_flags/FatBinary.cmake and
+# docs/content/docs/fat-binary.mdx.
+option(
+  monoprop_ENABLE_FAT_BINARY
+  "Build one copy of the engine per x86-64 ISA tier and dispatch at import time"
+  OFF
+)
+
 # Empty means "take the default for this ISA", resolved below once CXXFlags.cmake has defined
 # monoprop_ENABLE_ARCH_FLAGS. A cache entry so a build can pin the crossover explicitly.
 set(
@@ -134,8 +144,20 @@ include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
 # Expect +-1 block of machine dependence: the crossing is where a dense word pass costs what a lane
 # read does, so cache and popcount throughput move it. Both directions cost only a few percent near
 # the crossing, which is why the first *clear* win is the threshold rather than the first win.
+#
+# A fat binary pins one value across every tier rather than following each tier's capability, even
+# though only the top tier has a vector popcount and 768 is the measured crossing there. The two
+# backends agree on term sets and values but not on term *order*, so a per-tier threshold would make a
+# wide run's accumulation order -- and hence its energy in the last bits -- depend on which CPU the
+# wheel landed on. 256 is the value three of the four tiers want and the value today's wheels already
+# use, so nothing regresses; the top tier gives up a few percent on systems at or above 256 modes.
+# One consequence to expect: a fat capture and a monoprop_ENABLE_ARCH_FLAGS=ON capture disagree on
+# any case at or above 256 storage modes, because they pick different backends there. Compare fat
+# against fat -- `just diff-baseline-variants`, not `just diff-baseline`.
 if(monoprop_SPARSE_ROW_MIN_MODES STREQUAL "")
-  if(monoprop_ENABLE_ARCH_FLAGS)
+  if(monoprop_ENABLE_FAT_BINARY)
+    set(monoprop_SPARSE_ROW_MIN_MODES 256)
+  elseif(monoprop_ENABLE_ARCH_FLAGS)
     set(monoprop_SPARSE_ROW_MIN_MODES 768)
   else()
     set(monoprop_SPARSE_ROW_MIN_MODES 256)
@@ -157,6 +179,11 @@ message(
   "   Build-type-specific    : ${_cmake_build_type_specific_flags}"
 )
 message(STATUS "   Vectorization flag     : ${ARCH_FLAG}")
+message(STATUS "   Fat binary             : ${monoprop_ENABLE_FAT_BINARY}")
+if(monoprop_ENABLE_FAT_BINARY)
+  message(STATUS "   ISA tiers              : ${monoprop_FAT_TIERS}")
+  message(STATUS "   Tier tuning            : -mtune=${monoprop_FAT_MTUNE}")
+endif()
 message(
   STATUS
   "   Project defaults       : ${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION} ${monoprop_CXX_FLAGS}"
