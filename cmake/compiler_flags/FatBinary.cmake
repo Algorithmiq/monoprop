@@ -3,16 +3,20 @@
 # The fat binary: one copy of the propagation engine per x86-64 ISA tier, all four in the same wheel,
 # one of them selected when ``monoprop`` is imported.
 #
-# Why whole-library tiering rather than ``target_clones``, and not for the reason one first reaches for:
-# ``__attribute__((flatten))`` does answer the "a dispatch seam is an inlining seam" objection, and
-# clones built that way really do vectorize at their own ISA. Two other things rule it out. The top
-# tier cannot be expressed -- ``avx512vpopcntdq`` is not a valid ISA name in the ``target`` attribute
-# and ``arch=`` takes one name from a closed list, while an ``arch=<named core>`` clone resolves on CPU
-# *identity* rather than on features, so it would skip every non-Intel part that has a vector popcount.
-# And flattening this call tree is not affordable: ``build_layer`` fans out over
-# ``with_algebra`` x ``with_store`` x ``with_kernel_width``, so four flattened clones took one TU from
-# 16.7 s to over 20 minutes and ~100 GB of compiler memory. See
-# ``docs/content/docs/fat-binary.mdx`` for the measurements behind that and behind the tier list.
+# Why the ISA is bound on the command line and not by an attribute. Two things, both measured.
+#
+# An attribute cannot widen code defined outside it. ``target("arch=x86-64-v4,avx512vpopcntdq")`` is
+# perfectly valid -- a comma separates options in a plain ``target``, unlike ``target_clones`` where it
+# separates clones -- but ``ix86_can_inline_p`` refuses to inline across an ``arch`` mismatch, so a
+# targeted wrapper around this engine compiles to a ``jmp``. ``flatten`` does not override that, and
+# ``#pragma GCC target`` does not capture a template that was defined outside its region. Header-resident
+# code is widened by its TU's command line or not at all.
+#
+# And ``flatten`` plus ``target_clones`` is not affordable here even so: ``build_layer`` fans out over
+# ``with_algebra`` x ``with_store`` x ``with_kernel_width``, and four flattened clones of that took one
+# TU from 16.7 s to >20 min at ~100 GB of compiler memory -- 24.5 GB even with the width axis collapsed,
+# against 740 MB for the same code as an ordinary compile. As separate TUs the multiplication is linear
+# and parallel; inside one function it is not. See ``docs/content/docs/fat-binary.mdx``.
 #
 # Why not glibc-hwcaps, which would need no code at all: its subdirectory names are the four psABI
 # levels, and the top tier here is ``x86-64-v4`` *plus* ``avx512vpopcntdq``. Installing it as
