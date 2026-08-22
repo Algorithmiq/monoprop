@@ -92,15 +92,35 @@ Set `monoprop_FAT_MTUNE` at configure time to try another.
 ## Why whole libraries, not individual functions
 
 The obvious implementation is GCC's function multiversioning — `target_clones` on the hot kernels, with
-an ifunc resolver picking a clone per call. It was rejected, and for a specific reason rather than a
-stylistic one.
+an ifunc resolver picking a clone per call. The natural worry is that a dispatch boundary is an
+inlining boundary, and the vectorization above lands overwhelmingly in *headers* inlined into their
+callers. That worry is answerable: `__attribute__((flatten))` on the cloned function inlines the whole
+call tree into each clone first, and it measurably works — clones built that way come out with `ymm` at
+`arch=x86-64-v3` and `zmm` at `arch=x86-64-v4`, header templates and all. The location is favourable
+too: 91% of the project's vectorized loops are in a single translation unit, and
+`MonomialPropagator::build_evolve_result_` is a non-template function that is the sole caller of
+`detail::build_layer`.
 
-The vectorization in the table above lands overwhelmingly in *headers* — `Bitset.h`, the algebra's
-cutoff accumulation, the row-store accessors — which are inlined into their callers, and which the
-scan instantiates a dozen times over across the basis, row-backend and word-width seams. A
-per-function dispatch boundary is exactly an inlining boundary: multiversioning the kernels would
-suppress the inlining the win depends on, in order to deliver the win. There is no small set of
-standalone hot functions to clone.
+It was rejected for two other reasons, both measured.
+
+**The top tier cannot be written down.** `avx512vpopcntdq` is rejected outright by the `target`
+attribute — *"ISA 'avx512vpopcntdq' is not supported in 'target' attribute, use 'arch=' syntax"* — and
+`arch=` takes exactly one name from a closed list with no way to add a feature. The escape hatch is
+worse than useless: an `arch=icelake-server` clone resolves on CPU *identity*
+(`cmpl $0x13, __cpu_model+8`), not on features, so Zen 4, Zen 5, Sapphire Rapids and Granite Rapids —
+all of which have a vector popcount — would not select it. Only the psABI-level clones test
+`__cpu_features2` properly. Reproducing the tier would need a whitelist of named cores that goes stale
+with every new part, which is the problem psABI levels exist to solve. `target_clones` could deliver
+v2, v3 and plain v4, losing exactly the +68 loops the ablation attributes entirely to
+`avx512vpopcntdq`.
+
+**And `flatten` does not survive this call tree.** `build_layer` fans out over
+`with_algebra` × `with_store` × `with_kernel_width` — already about a dozen instantiations of
+`fused_find_and_collect` — so flattening inlines that whole fan-out into one function body and
+`target_clones` then makes four copies of it to optimize. Compiling that one translation unit went from
+**16.7 s** to *killed at 21 minutes having peaked around 100 GB of compiler memory*. Not a slow build;
+an unbuildable one, against 16 GB CI runners. `target_clones` with `flatten` is the right tool when a
+small self-contained kernel sits behind one call. Here the kernel is the entire scan.
 
 So the unit of tiering is the whole engine. Each tier is a separate compile of every library
 translation unit *plus* the binding translation unit — the latter matters, because
