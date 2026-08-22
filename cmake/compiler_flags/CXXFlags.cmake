@@ -53,6 +53,11 @@ cmake_dependent_option(
   OFF
 )
 
+# What CXXFLAGS actually contained, recorded before anything appends to CMAKE_CXX_FLAGS. The fat
+# binary appends its baseline ISA floor there (see FatBinary.cmake), and the status report has to
+# be able to tell the two apart or it attributes our flags to the user's environment.
+set(monoprop_CXX_FLAGS_FROM_ENV "${CMAKE_CXX_FLAGS}")
+
 # code needs C++23 at least
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

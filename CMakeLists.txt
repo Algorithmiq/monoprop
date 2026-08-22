@@ -92,7 +92,7 @@ message(STATUS "Configuring a ${CMAKE_BUILD_TYPE} build")
 string(TOUPPER ${CMAKE_BUILD_TYPE} _cmake_build_type_upper)
 
 message(STATUS "Compiler flags for ${CMAKE_CXX_COMPILER_ID}")
-message(STATUS "   From environment       : ${CMAKE_CXX_FLAGS}")
+message(STATUS "   From environment       : ${monoprop_CXX_FLAGS_FROM_ENV}")
 set(
   _cmake_build_type_specific_flags
   "${CMAKE_CXX_FLAGS_${_cmake_build_type_upper}}"
@@ -106,6 +106,7 @@ message(STATUS "   Fat binary             : ${monoprop_ENABLE_FAT_BINARY}")
 if(monoprop_ENABLE_FAT_BINARY)
   message(STATUS "   ISA tiers              : ${monoprop_FAT_TIERS}")
   message(STATUS "   Tier tuning            : -mtune=${monoprop_FAT_MTUNE}")
+  message(STATUS "   Baseline ISA floor     : ${_monoprop_baseline_flags}")
 endif()
 message(
   STATUS
