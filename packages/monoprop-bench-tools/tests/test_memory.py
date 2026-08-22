@@ -22,6 +22,7 @@ sampler cannot, which is the whole reason it exists.
 
 from __future__ import annotations
 
+import ctypes
 import gc
 import resource
 
@@ -132,6 +133,18 @@ def test_peak_rss_never_below_current_rss() -> None:
     assert peak_rss_bytes() >= rss_bytes()
 
 
+def _under_sanitizer() -> bool:
+    """True when a sanitizer runtime is loaded into this interpreter.
+
+    Symbols confirm initialization; ``LD_PRELOAD`` does not.
+    """
+    try:
+        this_process = ctypes.CDLL(None)
+    except OSError:  # pragma: no cover - no dlopen on this platform
+        return False
+    return any(hasattr(this_process, sym) for sym in ("__asan_init", "__tsan_init"))
+
+
 def test_reset_also_clears_ru_maxrss() -> None:
     """``ru_maxrss`` shares ``mm->hiwater_rss`` with ``VmHWM``, so a window reset drops it.
 
@@ -140,6 +153,9 @@ def test_reset_also_clears_ru_maxrss() -> None:
     """
     if not reset_peak_rss():
         pytest.skip("/proc/self/clear_refs unavailable (non-Linux or kernel < 4.0)")
+    if _under_sanitizer():
+        # Sanitizer allocation and shadow mappings make peak-RSS accounting unreliable.
+        pytest.skip("peak-RSS accounting is not meaningful under a sanitizer runtime")
 
     blob = bytearray(80 * MIB)
     for i in range(0, len(blob), 4096):
