@@ -68,16 +68,25 @@ set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
 set(CMAKE_CXX_VISIBILITY_PRESET "hidden")
 set(CMAKE_VISIBILITY_INLINES_HIDDEN TRUE)
 
+# The single place an architecture is chosen. Everything downstream reads monoprop_ARCH_MARCH rather
+# than re-deciding, because the three sites that used to decide independently disagreed: ARCH_FLAG was
+# additionally suppressed in Debug, while the provenance query and the sparse-row crossover were gated
+# on the option alone. A Debug build therefore compiled portable code, advertised the native ISA and
+# took the native-tuned crossover.
+#
+# monoprop_ARCH_MARCH is the variant *id* a single-ISA build reports as monoprop.__variant__:
+# "native", or "default" for a build with no -march flag. The flags themselves are ARCH_FLAG, which is
+# what the provenance query reads.
 set(ARCH_FLAG "")
+set(monoprop_ARCH_MARCH "default")
 if(monoprop_ENABLE_ARCH_FLAGS)
-  if(CMAKE_CXX_COMPILER_ID MATCHES GNU)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set(ARCH_FLAG "-march=native")
-  endif()
-  if(CMAKE_CXX_COMPILER_ID MATCHES Clang)
-    set(ARCH_FLAG "-march=native")
+    set(monoprop_ARCH_MARCH "native")
   endif()
   if(CMAKE_CXX_COMPILER_ID MATCHES Intel)
     set(ARCH_FLAG "-xHost")
+    set(monoprop_ARCH_MARCH "native")
   endif()
 endif()
 
@@ -159,24 +168,56 @@ function(_monoprop_query_machine_flags)
   set(${_arg_OUTPUT_VARIABLE} "${_flags}" PARENT_SCOPE)
 endfunction()
 
-# Empty is the no-arch-flag build and queries the default target.
-set(monoprop_DEFAULT_VARIANT_FLAGS "")
-_monoprop_query_machine_flags(
+# Write a Variants.h reporting one variant's identity and the machine flags the compiler actually
+# resolved for it. Called once per fat-binary tier, into a per-tier include directory that the tier's
+# object library puts ahead of the shared one, plus once for the plain single-ISA build.
+#
+# This is the fix for a provenance bug worth naming: the header used to be configured once, from a
+# query of -march=native whenever monoprop_ENABLE_ARCH_FLAGS was ON regardless of what was actually
+# compiled. So monoprop.__variant__, monoprop.__compiler_flags__ and every benchmark artifact's
+# machine-flags entry reported the host's ISA even when the build had been pointed somewhere else --
+# which is exactly the metadata a fat binary needs to be trustworthy, since it is how you tell which
+# tier got loaded.
+#
+# Usage:
+#   _monoprop_generate_variant_header(VARIANT_ID <id> OUTPUT_DIR <dir> [ARCH_FLAGS <flags...>])
+function(_monoprop_generate_variant_header)
+  cmake_parse_arguments(PARSE_ARGV 0 _arg "" "VARIANT_ID;OUTPUT_DIR" "ARCH_FLAGS")
+
+  if(NOT _arg_VARIANT_ID OR NOT _arg_OUTPUT_DIR)
+    message(
+      FATAL_ERROR
+      "_monoprop_generate_variant_header: VARIANT_ID and OUTPUT_DIR are required"
+    )
+  endif()
+
+  # Unquoted on purpose: cmake_parse_arguments(PARSE_ARGV) escapes the semicolons inside a single
+  # argument, so a quoted list arrives as one flag spelled "-march=x86-64\;-mtune=skylake\;..." and
+  # the query silently reports the compiler's defaults instead of the variant's.
+  _monoprop_query_machine_flags(
+    ARCH_FLAGS ${_arg_ARCH_FLAGS}
+    OUTPUT_VARIABLE monoprop_VARIANT_MACHINE_FLAGS
+  )
+  set(monoprop_VARIANT_ID "${_arg_VARIANT_ID}")
+
+  configure_file(
+    ${PROJECT_SOURCE_DIR}/cpp/include/monoprop/Variants.h.in
+    ${_arg_OUTPUT_DIR}/monoprop/Variants.h
+    @ONLY
+  )
+endfunction()
+
+_monoprop_generate_variant_header(
+  VARIANT_ID "${monoprop_ARCH_MARCH}"
   ARCH_FLAGS ${ARCH_FLAG}
-  OUTPUT_VARIABLE monoprop_DEFAULT_VARIANT_FLAGS
-)
-
-set(monoprop_VARIANTS "")
-set(monoprop_VARIANT_FLAGS "")
-
-# generate a header file with the macros needed to describe the variant
-configure_file(
-  ${PROJECT_SOURCE_DIR}/cpp/include/monoprop/Variants.h.in
-  ${PROJECT_BINARY_DIR}/include/monoprop/Variants.h
-  @ONLY
+  OUTPUT_DIR "${PROJECT_BINARY_DIR}/include"
 )
 
 set(monoprop_CXX_FLAGS "")
 include(${CMAKE_CURRENT_LIST_DIR}/GNU.CXX.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/Intel.CXX.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/Clang.CXX.cmake)
+
+# Must come last: with the fat binary enabled this overwrites ARCH_FLAG with the baseline tier's flags
+# and defines the per-tier engine targets.
+include(${CMAKE_CURRENT_LIST_DIR}/FatBinary.cmake)

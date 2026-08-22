@@ -392,3 +392,15 @@ environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonopro
 [tool.cibuildwheel.macos]
 before-all = "brew install boost hwloc"
 environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
+
+# The fat binary is x86-64 only, and x86-64 is only built on the linux-intel leg of the wheel matrix
+# (linux-arm and macos-arm are both aarch64, where there is one ISA and nothing to select). So it goes
+# on an override rather than in [tool.cibuildwheel.linux], which also covers manylinux_aarch64.
+#
+# ENABLE_ARCH_FLAGS stays OFF: it means -march=native, which for a published wheel means "whatever the
+# build machine happened to be" -- the thing the tiers replace. Building four tiers is roughly four
+# times the compile work of one, against build.tool-args = -j2; raise it here if this leg becomes the
+# long pole.
+[[tool.cibuildwheel.overrides]]
+select = "*-manylinux_x86_64"
+environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_FAT_BINARY=ON;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }

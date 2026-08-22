@@ -40,6 +40,16 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - **Generated Code**: Python dispatch and C++ bindings auto-generated via `tools/generate-*.py`
 - **uv workspace**: the repository root is the `monoprop` package; `packages/*` holds the sibling
   distributions. See "Workspace layout" below.
+- **Tiered, not multiversioned**: the ISA is chosen per *whole library*, never per function. The
+  vectorization the tiers buy is in headers that are inlined into their callers, so a `target_clones`
+  seam would suppress the inlining it exists to enable. Consequences for the build: every engine
+  source goes through the `monoprop_engine_sources(...)` macro rather than
+  `target_sources(monoprop-objs ...)`, or it is missing from three of the four tiers; every per-target
+  setting goes through `_monoprop_configure_engine_objs` in `cpp/monoprop/CMakeLists.txt`, so the
+  tiers cannot drift apart in anything but arch flags. Consequence for numerics: `-ffp-contract=off`
+  is project-wide and is a **contract**, not a tuning knob -- without it `-march=x86-64-v3` and up
+  contract `a*b+c` into an FMA and the energy moves by 1-2 ULP, which in a fat binary means the same
+  wheel answering differently per host CPU. `just diff-baseline-variants` is the byte-wise gate.
 
 ### Workspace layout
 
@@ -90,6 +100,12 @@ Key files:
 - **Peak memory is the kernel's `VmHWM` high-water mark** — exact, with no sampling. Under
   MPI the ranks' peaks are summed, which errs high (disjoint transients, and shared pages
   charged to every rank): an upper bound, good for regressions, not for provisioning.
+- `cmake/compiler_flags/FatBinary.cmake`: the **only** place an ISA tier is declared. A published
+  x86-64 wheel compiles the whole engine once per tier (`x86-64`, `-v2`, `-v3`, `-v4` +
+  `avx512vpopcntdq`, all `-mtune=skylake`) and `src/monoprop/_bootstrap.py` loads one of them as
+  `monoprop._core` at import, choosing with the tiny baseline-ISA probe
+  `src/monoprop/bindings/isa.cpp`. Off by default in source builds, where `-march=native` beats every
+  tier. See `docs/content/docs/fat-binary.mdx`.
 
 ### Core abstractions (the propagation backbone)
 
@@ -172,7 +188,9 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 4. Use trailing return type syntax in function declarations.
 5. Add a one-line `///` summary if the declaration is in `cpp/include/monoprop/`; elsewhere add a plain
    `//` note only where the code does not already say it.
-6. Implement in the corresponding `.cpp` under `cpp/monoprop/`.
+6. Implement in the corresponding `.cpp` under `cpp/monoprop/`, and register a *new* `.cpp` with
+   `monoprop_engine_sources(...)` -- never `target_sources(monoprop-objs ...)`, which reaches only
+   the baseline fat-binary tier.
 7. Add Python bindings in `src/monoprop/bindings/binder.h`
 8. Regenerate bindings with `tools/generate-binders.py`
 9. Test with both C++ and Python tests

@@ -57,6 +57,16 @@ option(
 
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
+# Compile the engine once per x86-64 ISA tier and pick one when monoprop is imported. This is what
+# published wheels want and what a source build does not: a source build has -march=native, which is
+# strictly better than any tier, so the default is OFF. See cmake/compiler_flags/FatBinary.cmake and
+# docs/content/docs/fat-binary.mdx.
+option(
+  monoprop_ENABLE_FAT_BINARY
+  "Build one copy of the engine per x86-64 ISA tier and dispatch at import time"
+  OFF
+)
+
 set(Python_FIND_VIRTUALENV FIRST)
 find_package(
   Python
@@ -92,6 +102,11 @@ message(
   "   Build-type-specific    : ${_cmake_build_type_specific_flags}"
 )
 message(STATUS "   Vectorization flag     : ${ARCH_FLAG}")
+message(STATUS "   Fat binary             : ${monoprop_ENABLE_FAT_BINARY}")
+if(monoprop_ENABLE_FAT_BINARY)
+  message(STATUS "   ISA tiers              : ${monoprop_FAT_TIERS}")
+  message(STATUS "   Tier tuning            : -mtune=${monoprop_FAT_MTUNE}")
+endif()
 message(
   STATUS
   "   Project defaults       : ${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION} ${monoprop_CXX_FLAGS}"

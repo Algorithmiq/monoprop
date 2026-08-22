@@ -8,4 +8,4 @@ target_sources(
         "PartitionGroup.h"
 )
 
-target_sources(monoprop-objs PRIVATE CpuTopology.cpp)
+monoprop_engine_sources(CpuTopology.cpp)
