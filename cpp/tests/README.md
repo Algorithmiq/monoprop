@@ -70,6 +70,11 @@ name and cannot address suite-nested cases, tests use flat
 - **`GraphBuildHarness.h`**: direct Layer/MPGraph construction helpers
   (`core_with_gate`, `layer_with_gate`, `graph_with_gates`) for white-box
   MPGraph transform tests.
+- **`ExchangeLayoutOracle.h`**: `build_layer_exchange_layout` — the independent
+  reference for a layer's exchange counts and displacements, which
+  `derive_exchange_layout` in the library is checked against. It is here rather
+  than in the library on purpose: an oracle compiled into the thing it checks
+  gets maintained alongside it and stops being independent evidence.
 - **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
 - **`boost-test.cmake` / `boostAddTests.cmake`**: CMake test discovery.
 
@@ -93,8 +98,9 @@ name and cannot address suite-nested cases, tests use flat
   (recompute equivalence + snapshot invariance), `exact_upper_atol_rescue.cpp`,
   `large_cosine_storage_tests.cpp`, `gate_boundaries.cpp`.
 - **Graph encoding / packing**: `graph_encoding_tests.cpp` (CosineWordBuilder
-  coalescer, checked_* overflow guards, packed-phase storage + int8 read,
-  build_layer_exchange_layout, and both arms of the D-from-B derivation).
+  coalescer, checked_* overflow guards, packed-phase storage + int8 read, the
+  derived exchange layout against the independent `ExchangeLayoutOracle.h`
+  reference, and both arms of the D-from-B derivation).
 - **Graph / paring**: `pare_graph_tests.cpp`, `mpi_pare.cpp`,
   `mp_graph_tests.cpp` (MPGraph slice_graph/slice_view transforms, the
   front_offset lazy-compaction arms, MPGraphView reverse mapping + OOB throw).

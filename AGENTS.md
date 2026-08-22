@@ -104,6 +104,28 @@ Key files:
   for the mutating/collecting paths, which run on the partitions' own pinned masters; `sum_partitions_`,
   `fold_partitions_`, `first_partition_` for reads off quiescent partitions) rather than hand-rolling a
   `run_on_all` loop — the declarations record which helper is legal where.
+- **The distributed graph is indexed by the FLAT world**: a `LayerCore`
+  (`cpp/monoprop/detail/graph_encoding/MPGraphEncodingTypes.h`) is held per layer per partition, and
+  its partner index space is `P = mpi_ranks × partitions`, not the rank count. Anything stored per
+  layer per *possible* partner is `O(P)` on each of `P` participants — `O(P²)` across a job — so the
+  rule for this structure is **store per unit of traffic, not per participant**:
+  - `PackedCrossRankStorage` keeps one `CrossRankOccupiedSlot` per world slot that carries traffic,
+    not per slot that could exist. Walk it with `for_each_occupied_slot`, which is `O(occupied)` for
+    the whole sweep and carries each slot's B/D prefix offset with it; `cross_rank_self_slot` is the
+    O(1) path for this rank's own slot, resolved once at build by `resolve_self_slot`.
+  - The all-to-all counts and displacements are not stored. `derive_exchange_layout` fills a
+    `LayerExchangeLayout` in per-thread scratch for the exchange being posted, and the recv layout
+    IS the send layout (the count matrix is symmetric), so there is nothing to transpose and nothing
+    to resolve over the wire. `derive_layer_exchange` in `Evolution.cpp` is the call site.
+  - `mpi::check_exchange_symmetry` (`cpp/monoprop/detail/mpi/Exchange.h`) runs on every exchange.
+    Its width check — the layout must hold exactly one entry per rank — is an unconditional
+    precondition, because MPI reads one count and one displacement per rank whatever the span holds.
+    The symmetry audit behind it is a collective, and is gated at BUILD time by the CMake option
+    `monoprop_CHECK_EXCHANGE_SYMMETRY` (default OFF). A per-rank environment variable must never
+    decide whether a collective runs: ranks that disagree hang the job instead of misreporting.
+  - `cpp/tests/ExchangeLayoutOracle.h` holds the independent reference that derivation is checked
+    against. It is outside the library on purpose — an oracle compiled in beside its subject gets
+    maintained beside it, and then proves nothing.
 
 
 ### Environment Management
@@ -143,6 +165,27 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - Heavy use of `@parametrize_with_cases` decorators
 - **pytest's fd-level capture hides C++ stderr** (e.g. `COMMPROF`) — rerun with `-s` to see it.
 - **A slow CTest run on an MPI build is `MPI_Init` fabric probing, not slow tests** — see `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
+- **A layout assertion must hold at BOTH `TermIndex` widths, and must not be able to switch itself
+  off.** `monoprop_WIDE_TERM_INDEX` is compiled in exactly one place — a single `wide: "on"` cell in
+  `.github/workflows/test.yml`'s matrix — and `just test-wide` locally. Every other build, including
+  every HPC gate, compiles narrow. So an assertion of the form
+  `sizeof(TermIndex) != sizeof(uint32_t) || <the real check>` is not a guard: its first disjunct is
+  *true* under the wide build, which is the only configuration that could have failed it. Write the
+  layout **rule** instead of a byte count, so there is no arm to disable — see
+  `kOccupiedSlotIdField` and the two `static_assert`s beside `CrossRankOccupiedSlot`
+  (`cpp/monoprop/detail/graph_encoding/MPGraphEncodingTypes.h`), which are `12` narrow and `24` wide
+  from one expression. A `BOOST_CHECK_EQUAL` on the same rule belongs in `cpp/tests/` as well, but it
+  is the weaker of the two: it needs the wide build to be *run*, whereas the `static_assert` fails
+  the compile.
+- **Ledger dictionaries exposed to Python are a measurement contract.** `graph_memory_breakdown()`
+  and `operator_memory_breakdown()` (`src/monoprop/bindings/binder.h`) are read from two builds and
+  subtracted, so a key that appears, disappears, or moves in or out of `total_bytes()` silently turns
+  that subtraction into a comparison of two different quantities — the structs are plain aggregates
+  and the bindings are literal `std::map`s, so nothing on the C++ side notices. Pin the key set
+  *exactly* (not as a superset) and pin `total_bytes()` to the sum of its members;
+  `test_graph_memory_breakdown_keys_and_totals` in `tests/test_monoprop_smoke.py` is the pattern.
+  Prefer keeping a key that has become permanently zero, with a comment saying why, over deleting it
+  — a zero row is the evidence that the memory left.
 
 ## Key Dependencies & Integration
 

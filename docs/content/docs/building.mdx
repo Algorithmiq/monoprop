@@ -85,6 +85,28 @@ mpiexec -n 8 uv run python your_script.py
 See [Parallelism and distribution](/features/parallelism) for the communicator options and the
 operator-partitioning controls.
 
+## Build options
+
+Every option below is a CMake cache variable, passed through scikit-build-core as
+`--config-settings=cmake.define.<option>=<value>` (or via
+`SKBUILD_CMAKE_ARGS="-D<option>=<value>"`). They are build-time, not runtime: a
+binary carries the choice, so every MPI rank of a job necessarily agrees on it.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `monoprop_ENABLE_MPI` | `OFF` | Build the MPI transport. Required for multi-rank runs. |
+| `monoprop_WIDE_TERM_INDEX` | `OFF` | 64-bit term indices, for more than 2^32 terms in one partition. |
+| `monoprop_MAX_NUM_MODES` | `250` | Largest mode/qubit count the Python bindings instantiate. |
+| `monoprop_CHECK_EXCHANGE_SYMMETRY` | `OFF` | Audit each layer's derived exchange layout against a real all-to-all. Diagnostic only, and it costs one extra collective per exchange. |
+| `monoprop_ENABLE_CXX_UNIT_TESTS` | `ON` | Build the C++ unit-test executable. |
+
+`monoprop_CHECK_EXCHANGE_SYMMETRY` is deliberately a build option and not an
+environment variable. The audit it enables is itself a collective, so ranks that
+disagreed about whether to run it would hang the job rather than report anything;
+a per-rank environment variable is exactly how they would come to disagree. The
+layout checks that protect memory rather than diagnose routing are unconditional
+and are not affected by it.
+
 ## Building the C++ unit tests
 
 The supported C++ workflow reuses the build tree produced by `uv sync`. Do not

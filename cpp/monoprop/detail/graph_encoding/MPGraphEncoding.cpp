@@ -14,9 +14,11 @@
 
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 
+#include <algorithm>
 #include <format>
 #include <limits>
 #include <memory>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -32,32 +34,16 @@ auto checked_mpi_int(size_t value, const char *what) -> int {
     return static_cast<int>(value);
 }
 
-auto build_layer_exchange_layout(const std::vector<size_t> &send_counts, int scale, const char *what)
-    -> LayerExchangeLayout {
-    const std::string count_label = std::format("{} count", what);
-    const std::string displacement_label = std::format("{} displacement", what);
-
-    LayerExchangeLayout layout;
-    layout.counts.resize(send_counts.size());
-    layout.displs.resize(send_counts.size());
-    size_t total = 0;
-    for (size_t r = 0; r < send_counts.size(); ++r) {
-        const size_t count = static_cast<size_t>(scale) * send_counts[r];
-        layout.counts[r] = checked_mpi_int(count, count_label.c_str());
-        layout.displs[r] = checked_mpi_int(total, displacement_label.c_str());
-        total += count;
+// The slot id is stored as uint32 to keep the occupied record at 12 B. That bounds the flat world at
+// ~4.3e9 participants, which is not a limit anyone will meet, but it is a narrowing conversion and so
+// it is checked rather than cast.
+auto checked_world_slot(size_t rank) -> uint32_t {
+    if (rank > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+        throw std::overflow_error(std::format("World slot {} exceeds the {} the occupied-slot record can hold.",
+                                              rank,
+                                              std::numeric_limits<uint32_t>::max()));
     }
-    layout.total_count = total;
-    return layout;
-}
-
-auto build_derivative_exchange_layout(const LayerExchangeLayout &evolution) -> LayerExchangeLayout {
-    std::vector<size_t> send_counts;
-    send_counts.reserve(evolution.counts.size());
-    for (const int count : evolution.counts) {
-        send_counts.push_back(static_cast<size_t>(count));
-    }
-    return build_layer_exchange_layout(send_counts, 2, "Layer derivative exchange");
+    return static_cast<uint32_t>(rank);
 }
 
 auto checked_term_index(size_t value, const char *what) -> TermIndex {
@@ -100,21 +86,49 @@ auto packed_phase_storage_bytes(const PackedPhaseStorage &storage) -> size_t {
 auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &data) -> PackedCrossRankStorage {
     PackedCrossRankStorage storage;
     const size_t num_ranks = data.size();
-    storage.ranges.resize(num_ranks);
+    storage.world_size = num_ranks;
 
     size_t total_b = 0;
-    size_t total_d = 0;
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         const auto &partner = data[rank];
-        auto &range = storage.ranges[rank];
-        range.sin_send_offset = total_b;
-        range.sin_send_count = static_cast<TermIndex>(partner.sin_send_indices.size());
-        range.sin_recv_offset = total_d;
-        range.sin_recv_count = static_cast<TermIndex>(partner.sin_recv_entries.size());
-        range.in_count = static_cast<TermIndex>(partner.in_count);
+        // B and D are the two endpoints of the same rotation set, so they must be the same
+        // length. The record stores one count and one offset for both; checking here is what
+        // makes that a precondition instead of a convention. Unchecked, a skew would not throw
+        // -- cross_rank_sin_recv_index would mis-derive Q and silently read the wrong endpoint,
+        // and Evolution's self-slot snapshot would run off the end of its B-sized buffer.
+        if (partner.sin_send_indices.size() != partner.sin_recv_entries.size()) {
+            throw std::logic_error(std::format(
+                "Cross-rank slot {} has {} send endpoints against {} recv endpoints; B and D are the same set.",
+                rank,
+                partner.sin_send_indices.size(),
+                partner.sin_recv_entries.size()));
+        }
+        // P (the in-block) is a boundary WITHIN B, so it cannot point past B's end. Checked for the
+        // same reason as the skew above, and more urgently: Q = P+Q - P is computed in unsigned
+        // width by slot_sin_recv_index, so a P past the end does not produce a negative Q that some
+        // signed comparison would reject, it produces a Q near 2^64 that every index compares less
+        // than -- and every D read then addresses B at in_count + idx, off the end of the array.
+        if (partner.in_count > partner.sin_send_indices.size()) {
+            throw std::logic_error(
+                std::format("Cross-rank slot {} declares an in-block of {} inside {} endpoints; the in-block is a "
+                            "boundary within the endpoint list, not an addition to it.",
+                            rank,
+                            partner.in_count,
+                            partner.sin_send_indices.size()));
+        }
+        // The whole point: a slot with no traffic gets no record. Ascending rank order makes `occupied`
+        // sorted by construction, which is what lets readers binary-search it and lets the offset be a
+        // running prefix rather than a stored field.
+        if (partner.sin_send_indices.empty()) {
+            continue;
+        }
+        storage.occupied.push_back({.slot = checked_world_slot(rank),
+                                    .sin_send_count = static_cast<TermIndex>(partner.sin_send_indices.size()),
+                                    .in_count = static_cast<TermIndex>(partner.in_count)});
         total_b += partner.sin_send_indices.size();
-        total_d += partner.sin_recv_entries.size();
     }
+    storage.occupied.shrink_to_fit(); // push_back overshoots, and this array is the thing being shrunk
+    const size_t total_d = total_b;
 
     bool uses_binary_phases = true;
     for (const auto &partner : data) {
@@ -128,10 +142,13 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
     storage.sin_send_indices.resize(total_b);
     storage.sin_recv_phases = make_packed_phase_storage(total_d, uses_binary_phases);
 
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
-        const auto &partner = data[rank];
-        const size_t b_off = storage.ranges[rank].sin_send_offset;
-        const size_t d_off = storage.ranges[rank].sin_recv_offset;
+    // Fill in the same ascending order the offsets were accumulated in, so the running prefix here is
+    // the one for_each_occupied_slot will reconstruct on every later read.
+    size_t offset = 0;
+    for (const auto &entry : storage.occupied) {
+        const auto &partner = data[entry.slot];
+        const size_t b_off = offset;
+        const size_t d_off = b_off; // equal counts, so equal prefix sums
 
         for (size_t k = 0; k < partner.sin_send_indices.size(); ++k) {
             storage.sin_send_indices[b_off + k] = checked_term_index(partner.sin_send_indices[k], "Cross-rank B index");
@@ -142,61 +159,117 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
             (void)i;
             store_packed_phase(storage.sin_recv_phases, d_off + k, phi, "Cross-rank D phase");
         }
+        offset += entry.sin_send_count;
     }
 
     return storage;
 }
 
+auto resolve_self_slot(PackedCrossRankStorage &storage, size_t my_rank) -> void {
+    storage.self_pos = kNoSelfSlot;
+    storage.self_offset = 0;
+    size_t offset = 0;
+    for (size_t pos = 0; pos < storage.occupied.size(); ++pos) {
+        const auto &entry = storage.occupied[pos];
+        if (entry.slot == my_rank) {
+            storage.self_pos = pos;
+            storage.self_offset = offset;
+            return;
+        }
+        offset += entry.sin_send_count;
+    }
+}
+
 auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t {
-    size_t bytes =
-        storage.ranges.capacity() * sizeof(CrossRankPartnerRange) + packed_phase_storage_bytes(storage.sin_recv_phases);
+    size_t bytes = cross_rank_slot_record_bytes(storage) + packed_phase_storage_bytes(storage.sin_recv_phases);
     bytes += storage.sin_send_indices.capacity() * sizeof(TermIndex);
     return bytes;
 }
 
-auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t {
-    return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
+auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size_t {
+    return storage.occupied.capacity() * sizeof(CrossRankOccupiedSlot);
+}
+
+auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t {
+    // No predicate and no scan any more: an entry exists only if the slot carries traffic.
+    return storage.occupied.size();
+}
+
+auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t {
+    size_t count = 0;
+    for (const auto &entry : storage.occupied) {
+        count += entry.sin_send_count;
+    }
+    return count;
+}
+
+auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
+                            size_t my_rank,
+                            int scale,
+                            LayerExchangeLayout &out,
+                            const char *what) -> void {
+    const std::string count_label = std::format("{} count", what);
+    const std::string displacement_label = std::format("{} displacement", what);
+
+    const size_t num_ranks = cross_rank.rank_count();
+    // assign() over resize(): every slot that carries nothing must read zero, and `out` is reused
+    // across layers, so last layer's counts would otherwise survive into this one's.
+    out.counts.assign(num_ranks, 0);
+    out.displs.resize(num_ranks);
+
+    // Scatter over the slots that carry traffic instead of interrogating every possible partner.
+    // sin_send_size(r) is a binary search once the storage is sparse, so the dense probe this
+    // replaces would cost O(P log occupied) per layer per exchange -- to fill an array that is
+    // ~82% zeros at P=512 by construction. Occupancy only falls as P grows, so the gap widens.
+    for_each_occupied_slot(cross_rank, [&](size_t slot, const CrossRankSlotView &view) {
+        if (slot == my_rank) {
+            return; // excluded from the transfer and handled locally, as the stored layout did
+        }
+        out.counts[slot] = checked_mpi_int(static_cast<size_t>(scale) * view.sin_send_count, count_label.c_str());
+    });
+
+    // The prefix sum stays dense: MPI_Alltoallv wants a displacement for every rank, and an empty
+    // slot still needs a valid (repeated) one.
+    size_t total = 0;
+    for (size_t r = 0; r < num_ranks; ++r) {
+        out.displs[r] = checked_mpi_int(total, displacement_label.c_str());
+        total += static_cast<size_t>(out.counts[r]);
+    }
+    out.total_count = total;
 }
 
 auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore> {
     auto storage = std::make_shared<LayerCore>();
-
-    {
-        std::vector<size_t> send_counts;
-        send_counts.reserve(all_partners.size());
-        for (size_t r = 0; r < all_partners.size(); ++r) {
-            send_counts.push_back((r == my_rank) ? size_t{0} : all_partners[r].sin_send_indices.size());
-        }
-        storage->evolution_exchange_layout = build_layer_exchange_layout(send_counts, 1);
-
-        // The derivative layout (2x) is allocated lazily on first gradient read, but validated here: an
-        // overflow must throw during build_graph, not from inside the gradient collective window, where
-        // peers are already blocked in mpi::resolve_recv's count round -> a distributed hang, not an error.
-        static_cast<void>(build_derivative_exchange_layout(storage->evolution_exchange_layout));
-    }
+    const size_t num_ranks = all_partners.size();
 
     storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
+    resolve_self_slot(storage->cross_rank, my_rank);
 
-    // Both are indexed by the same rank space.
-    if (storage->evolution_exchange_layout.counts.size() != storage->cross_rank.rank_count()) {
+    // Both are indexed by the same rank space. Checked here because everything downstream now
+    // derives the layout from cross_rank, so this is the one place the two can still disagree.
+    if (num_ranks != storage->cross_rank.rank_count()) {
         throw ExchangeLayoutRankMismatch(
             std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
-                        storage->evolution_exchange_layout.counts.size(),
+                        num_ranks,
                         storage->cross_rank.rank_count()));
     }
+
+    {
+        // Derive both scales once at build time and throw the result away. This is purely eager
+        // validation: an overflow of MPI's int has to throw from build_graph, not from inside the
+        // exchange, where peers are already committed to a transfer of that size -- there it is a
+        // distributed hang rather than an error. Scale 2 is checked as well as 1 because the
+        // derivative round overflows first and a gradient may run long after the graph was built.
+        //
+        // The vectors are not kept. They are a prefix sum of what cross_rank already holds, and
+        // retaining them per layer per partition is the O(P^2) term this change removes.
+        LayerExchangeLayout scratch;
+        derive_exchange_layout(storage->cross_rank, my_rank, 1, scratch);
+        derive_exchange_layout(storage->cross_rank, my_rank, 2, scratch, "Layer derivative exchange");
+    }
+
     return storage;
 }
 
 } // namespace monoprop::detail
-
-namespace monoprop {
-
-auto LayerCore::derivative_exchange_layout() const -> const LayerExchangeLayout & {
-    if (!derivative_exchange_layout_cache_) {
-        derivative_exchange_layout_cache_ = detail::build_derivative_exchange_layout(evolution_exchange_layout);
-    }
-    return *derivative_exchange_layout_cache_;
-}
-
-} // namespace monoprop

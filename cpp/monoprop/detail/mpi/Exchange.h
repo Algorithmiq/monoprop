@@ -19,16 +19,30 @@
 #include <vector>
 
 #include "monoprop/detail/mpi/MPICompat.h"
-#include "monoprop/detail/mpi/RecvLayout.h"
 
 // Keeps #ifdef monoprop_ENABLE_MPI out of the consumers; non-MPI builds get self-copy stubs.
 
 namespace monoprop::mpi {
 
-// Resolve the recv side of a send-count vector, reusing `cache` when comm size is unchanged: a
-// replayed graph's send pattern is fixed, so a hit removes one blocking count round-trip per layer
-// per evaluation.
-auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache) -> const RecvLayout &;
+// Two checks with different statuses, made in one call because the exchange has one place to make
+// them.
+//
+// 1. ALWAYS, on every build and every path: send_counts.size() == mpi::size(comm). This is a
+//    PRECONDITION of posting the transfer, not a diagnostic about it -- MPI_Alltoallv reads one
+//    count and one displacement per rank whatever the caller's span holds, so a layout built for a
+//    differently sized communicator is an out-of-bounds read, and no configuration may skip it.
+//
+// 2. OPT-IN, and opted into at BUILD time: an audit of the invariant the exchange now rests on -- a
+//    layer's recv counts equal its send counts, so there is no transpose to compute or store (see
+//    Evolution.cpp's derive_layer_exchange). Compiled out unless the CMake option
+//    monoprop_CHECK_EXCHANGE_SYMMETRY is ON, because enabled it costs exactly the collective the
+//    change exists to remove. Not an environment variable, and deliberately not one: the audit IS a
+//    collective, so ranks that disagree about whether to run it hang the job rather than
+//    misreporting, and a per-rank variable is exactly how they come to disagree. A binary cannot.
+//    Worth having at all because of how the invariant fails if a future routing change breaks it: a
+//    peer blocks in MPI_Alltoallv against a size nobody sends, which is a hang with no line number.
+//    This turns that into an exception naming the slot.
+auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm) -> void;
 
 // Idempotent completion handle for a posted payload transfer; move-only, so a request is waited on
 // exactly once. wait() is a no-op on the blocking path and in non-MPI builds. Owns its request: the

@@ -14,6 +14,44 @@
 
 // HybridComm transport equivalence: R MPI ranks x S in-process partitions must behave as one flat P=R*S
 // SPMD world, with only partition 0 touching MPI, exactly as PartitionGroup drives it.
+//
+// ON THE STAGING BLOCK ORDER. The offset tables behind alltoallv/alltoallv_resolve were restructured
+// (Phase P0 publish, contiguous P1 passes, scatter_off_ deleted), and the ordering expectations below
+// were re-derived against the new tables rather than re-run. The conclusion is that they do not move,
+// and it is worth writing down why, because it is not what the shape of the diff suggests:
+//
+//   * The order bytes are DELIVERED in is fixed by recv_displs, which the caller (or, in the fused
+//     verb, the ascending prefix over global source) supplies. The staging layout never reaches the
+//     caller, so no delivery expectation can depend on it.
+//   * The order bytes are STAGED in is unchanged too. The message to rank b still runs destination
+//     partition t ascending, and within each t the source partitions u ascending; only the arithmetic
+//     that produces a block's start changed, and it is elementwise equal to the old running cursor
+//     (see the bit-identity comment above size_staging_send_ in HybridComm.h). So the wire format is
+//     the same and there is no mixed-version interop hazard between ranks.
+//
+// What the old cases could NOT pin is the indexing of the two DERIVED per-destination aggregates the
+// change introduces: col_sum_ (the column sums W) on the send side and recv_col_ on the recv side.
+// Neither existed before -- the old code carried one running cursor over the raw counts and never
+// formed a per-destination total. In every old case a partition sends the same length to every
+// destination, and that makes both aggregates CONSTANT along the very index a slip would scramble:
+// col_sum_[g] is the same value for every g, and recv_col_[a*S+t] depends only on a. A wrong index
+// then reads the right value. Modelled over 8 geometries with R, S in [1, 4]: a transposed or dropped
+// destination index on either aggregate is caught in 0 of 8 geometries by the old count patterns, and
+// in 6 of 8 (send side) and 4 of 8 (recv side) by the pairwise counts below.
+//
+// Two things the pairwise cases do NOT add, recorded so nobody re-derives them the hard way:
+//
+//   * A CONSISTENTLY (dest, source)-transposed staging layout is a genuinely valid alternative tiling.
+//     It mismatches 0 blocks at every geometry and every count pattern tried, old or new, and no
+//     black-box test can distinguish it at any count pattern. Only the bit-identity comment above
+//     size_staging_send_ pins that choice.
+//   * A send-side-ONLY transposition is caught by the old uniform cases at least as well as by the new
+//     ones (63 of 81 blocks wrong at R=3, S=3, against 46-48 for the pairwise pattern). So is a flat
+//     index built as t*R+b instead of b*S+t, when it is the STORE index that slips: 6 of the 9
+//     destination bases move even under uniform counts. That slip is invisible only when it is the
+//     col_sum_ READ index that slips, which is the first case above.
+//
+// The two cases below also reach HybridComm::alltoallv, which no case in this file drove at all.
 
 #include <boost/test/unit_test.hpp>
 
@@ -104,7 +142,9 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_global) {
 }
 
 // begin_alltoallv must deliver each source's block contiguously in ascending global source order with
-// tags intact (Resolve.h's positional pairing).
+// tags intact (Resolve.h's positional pairing). Note which verb this drives: begin_alltoallv routes a
+// hybrid comm with no known recv counts into the FUSED resolve verb, so this and the varying-sizes
+// case below exercise alltoallv_resolve, never HybridComm::alltoallv.
 BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
     if (world_size() < 2) {
         return;
@@ -263,6 +303,178 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
         BOOST_CHECK(e == nullptr);
     }
     BOOST_CHECK_EQUAL(failures.load(), 0);
+}
+
+namespace {
+
+// Counts that depend on BOTH ends of the leg, unlike every case above, where a partition sends the
+// same length to every destination. Round 4 of 5 is the no-zero high-water round that pushes the
+// staging HWM up so the smaller rounds after it run over stale staged bytes; the rest include 0 legs.
+auto pair_count(int g, int d, int round) -> int {
+    if (round % 5 == 4) {
+        return (g * 3 + d * 7) % 11 + 1;
+    }
+    return (g * 2 + d * 3 + round) % 4;
+}
+
+// Unique per (source, destination, index), so a block delivered to the right offset from the WRONG
+// source is caught instead of silently matching.
+auto pair_tag(int g, int d, int j) -> int {
+    return (g * 100 + d) * 1000 + j;
+}
+
+} // namespace
+
+// HybridComm::alltoallv driven directly. Two independent reasons this case exists:
+//
+//   * It is the only DIRECT coverage of HybridComm::alltoallv. begin_alltoallv sends a hybrid comm
+//     with unknown recv counts to the fused verb, so every other case in this file drives that one
+//     instead; the caller-supplied-recv-layout path is reached only through Engine.h's response round
+//     (begin_alltoallv with known recv counts) and so only end to end, by
+//     mpi_distributed_layer_equivalence, where a wrong staging offset arrives as a wrong answer.
+//   * Its count matrix varies along BOTH indices, which is what pins the indexing of col_sum_ and
+//     recv_col_, the two derived per-destination aggregates this change introduces. Under the
+//     per-source-constant counts every case above uses, both aggregates are constant along the index a
+//     slip would scramble, so a mis-indexed read returns the right value anyway. It does NOT pin the
+//     tiling: see the file header for what is and is not distinguishable, with counts.
+BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_pairwise_counts) {
+    if (world_size() < 2) {
+        return;
+    }
+    const int R = world_size();
+    const int rounds = 12;
+    for (const int S : {1, 2, 3}) {
+        const int P = R * S;
+        std::atomic<int> failures{0};
+        std::atomic<int> payload_checks{0};
+        auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+            Comm c = Comm::make_hybrid(&hyb, u);
+            const int g = monoprop::mpi::rank(c);
+            std::vector<int> sc(static_cast<size_t>(P)), sd(static_cast<size_t>(P));
+            std::vector<int> rc(static_cast<size_t>(P)), rd(static_cast<size_t>(P));
+            std::vector<int> send;
+            std::vector<int> recv; // reused across rounds: a stale staged byte surfaces as a wrong tag
+            for (int round = 0; round < rounds; ++round) {
+                send.clear();
+                int so = 0;
+                int ro = 0;
+                for (int d = 0; d < P; ++d) {
+                    const int n = pair_count(g, d, round);
+                    sc[static_cast<size_t>(d)] = n;
+                    sd[static_cast<size_t>(d)] = so;
+                    so += n;
+                    for (int j = 0; j < n; ++j) {
+                        send.push_back(pair_tag(g, d, j));
+                    }
+                    const int m = pair_count(d, g, round); // the transpose: what d sends me
+                    rc[static_cast<size_t>(d)] = m;
+                    rd[static_cast<size_t>(d)] = ro;
+                    ro += m;
+                }
+                recv.assign(static_cast<size_t>(ro), -1);
+                const auto args = monoprop::mpi::FlatAlltoallvArgs<int>{.send = send.data(),
+                                                                        .send_counts = sc.data(),
+                                                                        .send_displs = sd.data(),
+                                                                        .recv = recv.data(),
+                                                                        .recv_counts = rc.data(),
+                                                                        .recv_displs = rd.data()}
+                                      .bytes();
+                hyb.alltoallv(u, args, monoprop::mpi::datatype<int>::get());
+                for (int src = 0; src < P; ++src) {
+                    const int m = rc[static_cast<size_t>(src)];
+                    for (int j = 0; j < m; ++j) {
+                        payload_checks.fetch_add(1);
+                        if (recv[static_cast<size_t>(rd[static_cast<size_t>(src)] + j)] != pair_tag(src, g, j)) {
+                            failures.fetch_add(1);
+                        }
+                    }
+                }
+            }
+        });
+        for (const auto &e : errs) {
+            BOOST_CHECK(e == nullptr);
+        }
+        // Not decoration: a case whose assertions sit inside count-dependent loops can reach none of
+        // them and still pass. This counts the PAYLOAD comparisons specifically -- the ones that would
+        // vanish if every count came back zero -- rather than any assertion at all.
+        BOOST_CHECK_GT(payload_checks.load(), 0);
+        BOOST_CHECK_EQUAL(failures.load(), 0);
+    }
+}
+
+// The same pairwise counts through the fused verb, which resolves the recv layout itself: its recv-side
+// staging is sized from the count matrix on partition 0 rather than from published rows, so it is a
+// genuinely separate path through the offset tables. rc/rd are outputs here and are checked, not
+// supplied.
+BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_pairwise_counts) {
+    if (world_size() < 2) {
+        return;
+    }
+    const int R = world_size();
+    const int rounds = 12;
+    for (const int S : {1, 2, 3}) {
+        const int P = R * S;
+        std::atomic<int> failures{0};
+        // Two counters, not one: the layout checks below run once per source unconditionally, so a
+        // single combined counter would be satisfied by P * rounds even if every resolved count came
+        // back zero and not one payload element were ever examined.
+        std::atomic<int> layout_checks{0};
+        std::atomic<int> payload_checks{0};
+        auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+            Comm c = Comm::make_hybrid(&hyb, u);
+            const int g = monoprop::mpi::rank(c);
+            std::vector<int> sc(static_cast<size_t>(P)), sd(static_cast<size_t>(P));
+            std::vector<int> rc(static_cast<size_t>(P)), rd(static_cast<size_t>(P));
+            std::vector<int> send;
+            std::vector<int> recv; // reused across rounds (staging + recv HWM)
+            for (int round = 0; round < rounds; ++round) {
+                send.clear();
+                int so = 0;
+                for (int d = 0; d < P; ++d) {
+                    const int n = pair_count(g, d, round);
+                    sc[static_cast<size_t>(d)] = n;
+                    sd[static_cast<size_t>(d)] = so;
+                    so += n;
+                    for (int j = 0; j < n; ++j) {
+                        send.push_back(pair_tag(g, d, j));
+                    }
+                }
+                hyb.alltoallv_resolve<int>(u,
+                                           {.send = send.data(),
+                                            .send_counts = sc.data(),
+                                            .send_displs = sd.data(),
+                                            .recv = recv,
+                                            .recv_counts = rc.data(),
+                                            .recv_displs = rd.data()},
+                                           monoprop::mpi::datatype<int>::get());
+                int total = 0;
+                for (int src = 0; src < P; ++src) {
+                    const int m = pair_count(src, g, round);
+                    layout_checks.fetch_add(1);
+                    if (rc[static_cast<size_t>(src)] != m || rd[static_cast<size_t>(src)] != total) {
+                        failures.fetch_add(1);
+                    }
+                    for (int j = 0; j < m; ++j) {
+                        payload_checks.fetch_add(1);
+                        if (recv[static_cast<size_t>(total + j)] != pair_tag(src, g, j)) {
+                            failures.fetch_add(1);
+                        }
+                    }
+                    total += m;
+                }
+                layout_checks.fetch_add(1);
+                if (static_cast<int>(recv.size()) != total) {
+                    failures.fetch_add(1);
+                }
+            }
+        });
+        for (const auto &e : errs) {
+            BOOST_CHECK(e == nullptr);
+        }
+        BOOST_CHECK_GT(layout_checks.load(), 0);
+        BOOST_CHECK_GT(payload_checks.load(), 0);
+        BOOST_CHECK_EQUAL(failures.load(), 0);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global) {

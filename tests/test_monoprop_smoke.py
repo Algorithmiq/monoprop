@@ -155,3 +155,71 @@ def test_bound_graph_methods_accept_declared_arguments(
     assert core.graph_layers() is not None
 
     core.update_initial_operator(op_dict=problem.operator.terms)
+
+
+# The ledger keys are a MEASUREMENT CONTRACT, not decoration: an A/B reads this dictionary from two
+# builds and subtracts. A key that silently appears, disappears or moves in or out of ``total_bytes``
+# turns that subtraction into a comparison of two different quantities, and nothing on the C++ side
+# notices -- ``GraphMemoryBreakdown`` is a plain struct and the binding is a literal map.
+_GRAPH_LEDGER_KEYS = (
+    "layer_descriptor_bytes",
+    "layer_storage_object_bytes",
+    "cos_data_bytes",
+    "cross_rank_bytes",
+    "exchange_layout_bytes",
+)
+_GRAPH_DIAGNOSTIC_KEYS = (
+    "d_slot_record_bytes",
+    "d_layer_cores",
+    "d_slot_records",
+    "d_occupied_slots",
+    "d_cross_rank_endpoints",
+)
+
+
+@parametrize_with_cases(
+    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
+)
+def test_graph_memory_breakdown_keys_and_totals(problem, serial_comm):
+    """``graph_memory_breakdown()`` had no Python-side coverage at all before this."""
+    monomial_circuit = problem.monomial_circuit
+    core = _make_bound_core(problem, serial_comm, schrodinger=False)
+    _evolve_bound_core(core, monomial_circuit)
+
+    breakdown = core.graph_memory_breakdown()
+
+    # Exact, not a superset: a dropped key is what this is here to catch, and so is a new key
+    # appearing without anyone deciding whether it belongs inside total_bytes().
+    assert set(breakdown) == {
+        *_GRAPH_LEDGER_KEYS,
+        "total_bytes",
+        *_GRAPH_DIAGNOSTIC_KEYS,
+    }
+
+    # total_bytes() sums the ledger keys and NOTHING else. The d_ keys are counts, or subsets of a
+    # ledger key, so folding one in would double-count silently.
+    assert breakdown["total_bytes"] == sum(breakdown[k] for k in _GRAPH_LEDGER_KEYS)
+    assert breakdown["total_bytes"] == core.graph_memory_bytes()
+    assert breakdown["total_bytes"] > 0
+
+    # exchange_layout_bytes reads 0 on this branch BECAUSE the per-layer counts/displs are no longer
+    # retained -- they are derived into per-thread scratch for the exchange being posted. The key is
+    # kept rather than deleted precisely so an A/B against a build that did retain them shows the
+    # drop instead of losing the row; asserting the zero is what stops the key from quietly acquiring
+    # a value again without the comment in MPGraph.cpp being revisited.
+    assert breakdown["exchange_layout_bytes"] == 0
+
+    # The graph does not partition: its slot array is indexed by the FLAT world (ranks x partitions),
+    # so slot_records / layer_cores recovers that P whatever geometry the suite is run under. Stated
+    # as divisibility rather than as `== 1`, because the MPI gate runs this file at 16 partitions per
+    # rank too.
+    assert breakdown["d_layer_cores"] > 0
+    assert breakdown["d_slot_records"] % breakdown["d_layer_cores"] == 0
+    assert breakdown["d_slot_records"] // breakdown["d_layer_cores"] >= 1
+
+    # Occupancy is a fraction of the slot array, and an occupied slot holds at least one endpoint --
+    # which is why the endpoint count is the P-independent ceiling on it.
+    assert breakdown["d_occupied_slots"] <= breakdown["d_slot_records"]
+    assert breakdown["d_occupied_slots"] <= breakdown["d_cross_rank_endpoints"]
+    # A subset of cross_rank_bytes, never an addition to it.
+    assert breakdown["d_slot_record_bytes"] <= breakdown["cross_rank_bytes"]

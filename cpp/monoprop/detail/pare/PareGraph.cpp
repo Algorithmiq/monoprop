@@ -26,15 +26,6 @@ namespace monoprop {
 
 namespace {
 
-template <typename Func>
-auto for_each_remote_rank(const LayerTraversal &layer, size_t my_rank, Func &&func) -> void {
-    for (size_t rank = 0; rank < layer.cross_rank_rank_count(); ++rank) {
-        if (rank != my_rank) {
-            func(rank);
-        }
-    }
-}
-
 // Bits of `present` whose absolute index is in the keep set.
 inline auto keep_mask_for_block(const std::vector<char> &keep, size_t base, uint64_t present) -> uint64_t {
     uint64_t mask = 0;
@@ -84,17 +75,13 @@ auto mark_cross_rank_endpoints_kept(const LayerTraversal &layer, size_t my_rank,
             nodes_to_keep[idx] = 1;
         }
     };
-    for (size_t rank = 0; rank < layer.cross_rank_rank_count(); ++rank) {
-        layer.for_each_cross_rank_sin_recv_range(rank,
-                                                 0,
-                                                 layer.cross_rank_sin_recv_size(rank),
-                                                 [&mark](size_t, size_t tgt_idx, int) { mark(tgt_idx); });
-    }
-    for_each_remote_rank(layer, my_rank, [&layer, &mark](size_t rank) {
-        layer.for_each_cross_rank_sin_send_range(rank,
-                                                 0,
-                                                 layer.cross_rank_sin_send_size(rank),
-                                                 [&mark](size_t, size_t src_idx) { mark(src_idx); });
+    layer.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
+        for (size_t k = 0; k < slot.sin_send_count; ++k) {
+            mark(detail::slot_sin_recv_index(slot, k));
+            if (rank != my_rank) {
+                mark(detail::slot_sin_send_index(slot, k));
+            }
+        }
     });
 }
 

@@ -17,6 +17,7 @@
 #include <format>
 #include <print>
 #include <stdexcept>
+#include <vector>
 
 namespace monoprop::mpi {
 
@@ -119,12 +120,16 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm)
 #endif
 }
 
-auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache) -> const RecvLayout & {
+auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm) -> void {
     const auto n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);
-    // alltoall_counts moves comm_size ints each way regardless of `n`, so a send vector that is not
-    // exactly one entry per rank reads and writes out of bounds — reachable because layouts outlive
-    // propagator copies and pare rebuilds.
+    // Above the gate deliberately: the width of the layout is a PRECONDITION of posting the
+    // exchange at all, not part of the optional symmetry audit below, so it must hold on every
+    // build and every path. MPI_Alltoallv reads comm_size counts and comm_size displacements
+    // regardless of `n`, so begin_flat_exchange hands it a short array and the library reads off
+    // the end — undefined behaviour where an exception belongs. Reachable because layouts outlive
+    // propagator copies and pare rebuilds: a graph built for one communicator can be replayed on
+    // another of a different size.
     if (n != comm_size) {
         throw CollectiveArgumentError(
             std::format("Exchange layout has {} send counts but the communicator has {} ranks — a graph built for one "
@@ -132,22 +137,32 @@ auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayout
                         n,
                         comm_size));
     }
-    if (cache.comm_size == comm_size && static_cast<int>(cache.layout.counts.size()) == n) {
-        return cache.layout;
-    }
 
-    RecvLayout &out = cache.layout;
-    out.counts.resize(static_cast<size_t>(n));
-    alltoall_counts(send_counts.data(), out.counts.data(), n, comm);
-    out.displs.resize(static_cast<size_t>(n));
-    long long total = 0;
+#ifndef monoprop_CHECK_EXCHANGE_SYMMETRY
+    return; // audit compiled out; see the build option of the same name
+#else
+    // Compiled in or out, never selected at run time: what follows is a collective, and a
+    // per-rank environment variable that one rank reads differently makes the ranks disagree
+    // about whether the collective happens at all -- a job-wide hang, not a wrong number.
+    // A build option cannot disagree between the ranks of one job.
+    std::vector<int> recv_counts(static_cast<size_t>(n));
+    alltoall_counts(send_counts.data(), recv_counts.data(), n, comm);
     for (int i = 0; i < n; ++i) {
-        out.displs[static_cast<size_t>(i)] = checked_mpi_count(total);
-        total += out.counts[static_cast<size_t>(i)];
+        const int sent = send_counts[static_cast<size_t>(i)];
+        const int received = recv_counts[static_cast<size_t>(i)];
+        if (sent != received) {
+            // Naming the slot and both counts, because the whole point of the check is that the
+            // unguarded failure carries neither.
+            throw CollectiveArgumentError(std::format(
+                "Exchange count matrix is not symmetric at slot {}: this rank sends {} there but receives {} back. "
+                "The exchange derives its recv layout from its send layout on the strength of that equality, so a "
+                "routing change that breaks it must be caught here rather than as a hang in MPI_Alltoallv.",
+                i,
+                sent,
+                received));
+        }
     }
-    out.total = checked_mpi_count(total);
-    cache.comm_size = comm_size;
-    return out;
+#endif // monoprop_CHECK_EXCHANGE_SYMMETRY
 }
 
 } // namespace monoprop::mpi

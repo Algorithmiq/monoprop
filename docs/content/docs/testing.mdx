@@ -85,11 +85,38 @@ A 64-bit `TermIndex` build is the only configuration that compiles the
 just test-wide   # rebuilds via uv sync with monoprop_WIDE_TERM_INDEX=ON, then runs CTest
 ```
 
+Run it whenever you change a stored layout. Continuous integration compiles the
+wide build in a single matrix cell and every other build — local, packaged, and
+on the clusters — is narrow, so a wide-only regression has exactly one place left
+to surface. For the same reason, an assertion about a type's size or alignment
+should state the **rule** rather than a byte count, and should be a
+`static_assert` so that it fails the compile instead of waiting to be run: a guard
+written as `sizeof(TermIndex) != sizeof(uint32_t) || <the real check>` switches
+itself off in the only configuration that could have failed it. The two
+assertions beside `CrossRankOccupiedSlot` in
+`cpp/monoprop/detail/graph_encoding/MPGraphEncodingTypes.h` are the worked
+example: one expression that reads 12 bytes narrow and 24 wide.
+
 CTest runs each Boost case as its own process, so an MPI build's `MPI_Init` probes every
 fabric device per case, whether or not the test sends anything. `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`
 (default) skips that probe for the single-process `serial` variants only; multi-rank variants
 keep the full component set, since they exchange real messages. Turn it off by adding
 `-Dmonoprop_TEST_EXCLUDE_MPI_FABRIC=OFF` to the `SKBUILD_CMAKE_ARGS` MPI build above.
+
+The distributed exchange derives each layer's recv layout from its send layout
+instead of resolving one over the wire. To audit that derivation against a real
+all-to-all on every exchange, rebuild with the check compiled in and run the MPI
+suite:
+
+```bash
+SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON;-Dmonoprop_CHECK_EXCHANGE_SYMMETRY=ON" \
+    uv sync --all-extras --reinstall-package monoprop --no-cache
+mpiexec -n 4 build/editable/Release/bin/monoprop_unit_tests.x
+```
+
+It is a build option rather than an environment variable because the audit is a
+collective; the option table is in [Building from source](/building). Leave it off
+for timing runs — it reinstates the per-exchange collective the derivation removes.
 
 CTest registers every Boost case individually as a `serial` variant. When the
 build has MPI enabled and a launcher is found, it also registers the whole suite
