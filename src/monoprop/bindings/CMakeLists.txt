@@ -183,7 +183,7 @@ install(TARGETS _core LIBRARY DESTINATION ${PROJECT_NAME})
 #
 # skipped for sanitizer builds: INSTALL_TIME generation imports _core, which aborts for an
 # instrumented module unless the sanitizer runtime is preloaded, which would affect the runtime for the whole install
-# instead is worse: it would leak into every build child
+# which would be worse: it would leak into every build child
 if(monoprop_SANITIZER STREQUAL "none")
   nanobind_add_stub(_core
     INSTALL_TIME  # Stub generation postponed to the installation phase.
