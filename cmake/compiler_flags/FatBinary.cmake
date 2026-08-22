@@ -3,11 +3,16 @@
 # The fat binary: one copy of the propagation engine per x86-64 ISA tier, all four in the same wheel,
 # one of them selected when ``monoprop`` is imported.
 #
-# Why whole-library tiering rather than function multiversioning: the vectorization the tiers exist to
-# buy lands in headers (``Bitset.h``, ``algebra/AlgebraCommon.h``) that are inlined into every caller,
-# so a per-function seam -- ``target_clones``, an ifunc resolver -- would suppress exactly the inlining
-# the win depends on. See ``docs/content/docs/fat-binary.mdx`` for the measurements behind that and
-# behind the tier list.
+# Why whole-library tiering rather than ``target_clones``, and not for the reason one first reaches for:
+# ``__attribute__((flatten))`` does answer the "a dispatch seam is an inlining seam" objection, and
+# clones built that way really do vectorize at their own ISA. Two other things rule it out. The top
+# tier cannot be expressed -- ``avx512vpopcntdq`` is not a valid ISA name in the ``target`` attribute
+# and ``arch=`` takes one name from a closed list, while an ``arch=<named core>`` clone resolves on CPU
+# *identity* rather than on features, so it would skip every non-Intel part that has a vector popcount.
+# And flattening this call tree is not affordable: ``build_layer`` fans out over
+# ``with_algebra`` x ``with_store`` x ``with_kernel_width``, so four flattened clones took one TU from
+# 16.7 s to over 20 minutes and ~100 GB of compiler memory. See
+# ``docs/content/docs/fat-binary.mdx`` for the measurements behind that and behind the tier list.
 #
 # Why not glibc-hwcaps, which would need no code at all: its subdirectory names are the four psABI
 # levels, and the top tier here is ``x86-64-v4`` *plus* ``avx512vpopcntdq``. Installing it as

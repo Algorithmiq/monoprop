@@ -40,9 +40,13 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
   logical width as a constructor argument and sizes its monomial storage from it at runtime.
 - **uv workspace**: the repository root is the `monoprop` package; `packages/*` holds the sibling
   distributions. See "Workspace layout" below.
-- **Tiered, not multiversioned**: the ISA is chosen per *whole library*, never per function. The
-  vectorization the tiers buy is in headers that are inlined into their callers, so a `target_clones`
-  seam would suppress the inlining it exists to enable. Consequences for the build: every engine
+- **Tiered, not multiversioned**: the ISA is chosen per *whole library*, never per function.
+  `target_clones` was measured and rejected, but not for the inlining reason -- adding `flatten` does
+  make clones vectorize at their own ISA. It fails because `avx512vpopcntdq` cannot be named in a
+  `target` attribute at all (and an `arch=<named core>` clone dispatches on CPU identity, not
+  features), and because flattening `build_layer`'s `with_algebra` x `with_store` x
+  `with_kernel_width` fan-out four times took one TU from 16.7 s to >20 min and ~100 GB of compiler
+  memory. Consequences for the build: every engine
   source goes through the `monoprop_engine_sources(...)` macro rather than
   `target_sources(monoprop-objs ...)`, or it is missing from three of the four tiers; every per-target
   setting goes through `_monoprop_configure_engine_objs` in `cpp/monoprop/CMakeLists.txt`, so the
