@@ -177,6 +177,7 @@ executed from the notebooks in `docs/notebooks/`.  Building the documentation lo
 ```bash
 just build-docs   # output: docs/out/
 just serve-docs   # live-reloading dev server
+just check-doc-links  # checks exported HTML links (including external URLs)
 ```
 
 ### Keeping documentation up to date

@@ -21,12 +21,6 @@ site := "docs"
 
 docs_uv := "uv run --group docs --group test --no-dev --all-extras"
 
-# `fumapy` (the fumadocs Python docgen) ships inside the npm package; inject it
-# ephemerally and pin griffe to the 1.x line it targets (its newer
-# griffe-typingdoc dependency otherwise pulls an incompatible griffe).
-
-fumapy := "--with " + site + "/node_modules/fumadocs-python --with 'griffe<2' --with 'griffe-typingdoc==0.2.8'"
-
 default: build-docs
 
 test:
@@ -197,7 +191,7 @@ gen-notebooks:
 
 # Generate the Python API reference MDX from docstrings (griffe -> JSON -> MDX).
 gen-api:
-    {{ docs_uv }} {{ fumapy }} fumapy-generate monoprop -d {{ site }}
+    {{ docs_uv }} python {{ site }}/scripts/gen_api_dump.py monoprop -d {{ site }}
     cd {{ site }} && node scripts/generate-api.mjs
 
 # Run the runnable docstring examples (the docstring-level doctest check).
@@ -211,6 +205,10 @@ doctest-docs:
 # Build the static documentation site into `docs/out`.
 build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
     cd {{ site }} && npm run build
+
+# Check exported HTML links (including external URLs).
+check-doc-links:
+    lychee --config .lychee.postbuild.toml --root-dir "{{ project_source_dir }}/docs/out" --fallback-extensions html --index-files index.html 'docs/out/**/*.html'
 
 # Serve the documentation locally with hot reloading.
 serve-docs:

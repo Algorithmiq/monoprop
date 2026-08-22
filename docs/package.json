@@ -13,7 +13,6 @@
     "cnfast": "^0.1.0",
     "fumadocs-core": "16.14.5",
     "fumadocs-mdx": "15.3.0",
-    "fumadocs-python": "^0.1.1",
     "fumadocs-ui": "16.14.5",
     "katex": "^0.18.4",
     "lucide-react": "^1.33.0",
@@ -33,6 +32,7 @@
     "@types/react-dom": "^19.2.4",
     "postcss": "^8.5.26",
     "tailwindcss": "^4.3.3",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "yaml": "^2.9.0"
   }
 }

@@ -98,6 +98,7 @@ parameters:
 coeffs = sim.contract_partially(parameters, inplace=False)
 ```
 
-To read the fully evolved operator as a `MajoranaOperator` (or `PauliOperator` for
-`PauliPropagator`) — without modifying the
-simulator — use `evolved_operator`.
+To read the fully evolved operator as a [MajoranaOperator][] (or [PauliOperator][] for
+[PauliPropagator][]) — without modifying the
+simulator — use [MajoranaPropagator.evolved_operator][majorana_propagator.MajoranaPropagator.evolved_operator]
+(or [PauliPropagator.evolved_operator][pauli_propagator.PauliPropagator.evolved_operator]).

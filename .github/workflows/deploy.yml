@@ -114,7 +114,7 @@ jobs:
           fetch-depth: 0  # such that setuptools_scm can do its job correctly
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.0.0
+        uses: astral-sh/setup-uv@v10.0.1
 
       - name: Build SDist
         run: |
@@ -136,7 +136,7 @@ jobs:
           fetch-depth: 0  # such that hatch-vcs can read the tags
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@v10.0.1
 
       - name: Build sdist and wheel
         run: uv build --package monoprop-bench-tools --out-dir bench-tools-dist
@@ -236,7 +236,7 @@ jobs:
           path: dist
 
       - name: Generate artifact attestations
-        uses: actions/attest-build-provenance@v4.1.1
+        uses: actions/attest-build-provenance@v4.2.2
         with:
           subject-path: "dist/*"
 
