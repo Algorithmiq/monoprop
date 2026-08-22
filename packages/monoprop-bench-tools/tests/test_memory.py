@@ -136,8 +136,7 @@ def test_peak_rss_never_below_current_rss() -> None:
 def _under_sanitizer() -> bool:
     """True when a sanitizer runtime is loaded into this interpreter.
 
-    Detected by symbol rather than by ``LD_PRELOAD``, which says nothing about whether the
-    runtime actually initialised.
+    Symbols confirm initialization; ``LD_PRELOAD`` does not.
     """
     try:
         this_process = ctypes.CDLL(None)
@@ -155,8 +154,7 @@ def test_reset_also_clears_ru_maxrss() -> None:
     if not reset_peak_rss():
         pytest.skip("/proc/self/clear_refs unavailable (non-Linux or kernel < 4.0)")
     if _under_sanitizer():
-        # ASan replaces the allocator, so heap_trim() cannot return the pages and the
-        # runtime's own shadow mappings dominate RSS: the high-water mark never drops.
+        # Sanitizer allocation and shadow mappings make peak-RSS accounting unreliable.
         pytest.skip("peak-RSS accounting is not meaningful under a sanitizer runtime")
 
     blob = bytearray(80 * MIB)

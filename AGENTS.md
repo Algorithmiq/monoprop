@@ -113,7 +113,7 @@ We also use [`just`](https://github.com/casey/just) for task automation.
 ```bash
 uv sync --all-groups --all-extras -v  # Build & install (workspace-wide)
 uv run pytest  # Run tests (monoprop's suite + the workspace members' suites)
-SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=asan-ubsan" uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v  # sanitizer tree (--reinstall: uv keys on file hashes, not env vars)
+SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=asan-ubsan" uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v  # Rebuild when changing sanitizer settings.
 LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" ASAN_OPTIONS=detect_leaks=0 uv run pytest  # Python tests against a sanitizer tree
 just build-docs  # Build documentation
 ```

@@ -1,17 +1,13 @@
-# LeakSanitizer suppressions for the C++ unit-test binary (the gcc-asan-ubsan ctest leg).
+# LeakSanitizer suppressions for the GCC ASan+UBSan C++ test leg.
 #
-# Admission criterion, deliberately narrow: an entry must name an *uninstrumented third-party*
-# allocation that lives until process exit and that we cannot free. Nothing first-party, and
-# never a frame that appears in ordinary allocation stacks -- a suppression like
-# `leak:_PyObject_Malloc` or `leak:default_malloc` matches almost any allocation and would hide
-# the leaks this job exists to find.
+# Entries are limited to unavoidable uninstrumented third-party allocations that persist until
+# process exit. Never suppress first-party allocations or common frames such as
+# `leak:_PyObject_Malloc` and `leak:default_malloc`, which would hide real leaks.
 #
-# There is deliberately no CPython/NumPy section: the Python test leg runs with
-# ASAN_OPTIONS=detect_leaks=0 rather than suppressing interpreter internals, because an
-# instrumented extension inside a stock interpreter cannot give LSan a clean baseline.
+# The Python leg disables leak checks: an instrumented extension in stock CPython cannot give
+# LSan a clean baseline.
 
-# Open MPI and PMIx allocate per-process state during MPI_Init that is never returned to the
-# allocator; libmpi itself is uninstrumented, so LSan cannot see the matching frees.
+# Open MPI and PMIx retain process state initialized by MPI_Init.
 leak:ompi_mpi_init
 leak:ompi_mpi_instance_init
 leak:ompi_comm_init_mpi3
@@ -19,5 +15,5 @@ leak:pmix_hash_fetch
 leak:PMIx_Value_create
 leak:pmix_bfrops_base_value_load
 
-# libevent base owned by Open MPI's progress engine, torn down after LSan's exit-time check.
+# Open MPI tears down this libevent base after LSan's exit-time check.
 leak:event_base_loop

@@ -39,7 +39,7 @@
 
 include(CMakeDependentOption)
 
-# forced OFF in configurations where machine-dependent codegen is pointless or harmful
+# Disable machine-specific code generation for debug and sanitizer builds.
 set(_monoprop_arch_flags_supported TRUE)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR NOT monoprop_SANITIZER STREQUAL "none")
   set(_monoprop_arch_flags_supported FALSE)

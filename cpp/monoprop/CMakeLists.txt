@@ -108,7 +108,7 @@ target_link_libraries(
     Threads::Threads
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
   PRIVATE
-    # monoprop-sanitizers is not part of monopropTargets; keep it out of the export set
+    # Keep the non-exported sanitizer target out of monopropTargets.
     $<BUILD_INTERFACE:monoprop-sanitizers>
     PkgConfig::HWLOC
 )

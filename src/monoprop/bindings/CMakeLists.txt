@@ -129,11 +129,7 @@ target_link_libraries(
 )
 
 if(monoprop_SANITIZER STREQUAL "asan-ubsan")
-  # exempt only bounds-strict, and only here
-  # nanobind's dict caster reaches CPython's tuple storage through PyTuple_GET_ITEM, i.e.
-  # `((PyTupleObject *) op)->ob_item[i]`, where ob_item is declared `PyObject *ob_item[1]` and
-  # validly over-indexed into the trailing allocation. GCC's bounds-strict instruments exactly
-  # that idiom, so nb_dict.h trips it on every dict argument; Clang has no equivalent check.
+  # GCC bounds-strict misdiagnoses nanobind's valid access to a tuple's trailing allocation.
   if(CMAKE_CXX_COMPILER_ID MATCHES GNU)
     set_source_files_properties(
       "${CMAKE_CURRENT_BINARY_DIR}/bindings.cpp"
@@ -181,9 +177,8 @@ install(TARGETS _core LIBRARY DESTINATION ${PROJECT_NAME})
 # generation of Python typing stubs
 # NOTE must come after installing the _core target
 #
-# skipped for sanitizer builds: INSTALL_TIME generation imports _core, which aborts for an
-# instrumented module unless the sanitizer runtime is preloaded, which would affect the runtime for the whole install
-# which would be worse: it would leak into every build child
+# Skip sanitizer builds: INSTALL_TIME stub generation imports _core and requires a preloaded
+# sanitizer runtime throughout installation.
 if(monoprop_SANITIZER STREQUAL "none")
   nanobind_add_stub(_core
     INSTALL_TIME  # Stub generation postponed to the installation phase.
