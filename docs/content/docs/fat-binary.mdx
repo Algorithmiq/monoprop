@@ -103,24 +103,42 @@ too: 91% of the project's vectorized loops are in a single translation unit, and
 
 It was rejected for two other reasons, both measured.
 
-**The top tier cannot be written down.** `avx512vpopcntdq` is rejected outright by the `target`
-attribute — *"ISA 'avx512vpopcntdq' is not supported in 'target' attribute, use 'arch=' syntax"* — and
-`arch=` takes exactly one name from a closed list with no way to add a feature. The escape hatch is
-worse than useless: an `arch=icelake-server` clone resolves on CPU *identity*
-(`cmpl $0x13, __cpu_model+8`), not on features, so Zen 4, Zen 5, Sapphire Rapids and Granite Rapids —
-all of which have a vector popcount — would not select it. Only the psABI-level clones test
-`__cpu_features2` properly. Reproducing the tier would need a whitelist of named cores that goes stale
-with every new part, which is the problem psABI levels exist to solve. `target_clones` could deliver
-v2, v3 and plain v4, losing exactly the +68 loops the ablation attributes entirely to
-`avx512vpopcntdq`.
+**An attribute cannot widen code defined outside it.** The tier itself is expressible: in a plain
+`target` attribute a comma separates *options*, so `target("arch=x86-64-v4,avx512vpopcntdq")` is valid
+(only `target_clones`, where a comma separates *clones*, rejects it). What does not work is getting the
+engine compiled under it. GCC's `ix86_can_inline_p` refuses to inline across an `arch` mismatch, so a
+targeted wrapper around an untargeted body compiles to a four-instruction `jmp` — `flatten` does not
+override that, and `always_inline` on the immediate callee buys exactly one level. Nor does
+`#pragma GCC target`: a template defined outside the region and first instantiated inside it is emitted
+at the command-line target, with zero `vpopcnt` or `zmm` in the object.
+
+So for header-resident code there is exactly one input that widens it: the translation unit's command
+line. The pattern that gets there through a pragma is Highway's `foreach_target.h` — physically
+re-include the kernels inside a per-tier namespace with every standard header hoisted above the region
+— which would make the engine's `namespace monoprop` a macro-named inline namespace per tier, and would
+emit the same four copies of the same code, built serially in one compiler process instead of four in
+parallel.
 
 **And `flatten` does not survive this call tree.** `build_layer` fans out over
-`with_algebra` × `with_store` × `with_kernel_width` — already about a dozen instantiations of
-`fused_find_and_collect` — so flattening inlines that whole fan-out into one function body and
-`target_clones` then makes four copies of it to optimize. Compiling that one translation unit went from
-**16.7 s** to *killed at 21 minutes having peaked around 100 GB of compiler memory*. Not a slow build;
-an unbuildable one, against 16 GB CI runners. `target_clones` with `flatten` is the right tool when a
-small self-contained kernel sits behind one call. Here the kernel is the entire scan.
+`with_algebra` × `with_store` × `with_kernel_width` — 2 × 2 × 5 instantiations of the layer engine — so
+flattening inlines that whole fan-out into one function body and `target_clones` then makes four copies
+of it to optimize. Compiling that one translation unit went from **16.7 s** to *killed at 21 minutes
+having peaked around 100 GB of compiler memory*. Not a slow build; an unbuildable one, against 16 GB CI
+runners.
+
+Collapsing the widest axis does not rescue it. With `monoprop_NARROW_KERNEL_MAX_WORDS=0` the fan-out
+drops 5×, and the same compile still ran out of memory at **24.5 GB after 11 minutes** — while without
+clones that collapsed code builds in **14.75 s in 740 MB**. The cost is not the fan-out, it is that
+`flatten` concentrates it into one function where GCC's per-function passes go superlinear, and then
+multiplies by the clone count. Which is the whole argument for tiering by library: the emitted code is
+the same either way, but as separate translation units the multiplication is linear and parallel rather
+than superlinear in one process. `target_clones` with `flatten` is the right tool when a small
+self-contained kernel sits behind one call; here the kernel is the entire scan.
+
+The duplication *is* reducible, though not that way: 91% of the vectorized loops and 51% of the
+engine's `.text` are in `MonomialPropagator.cpp` alone, so tiering that one translation unit and
+sharing a single baseline copy of the other nine would cut the shipped payload by roughly 40%. The
+price is a real dispatch seam at `build_evolve_result_` rather than at the module boundary.
 
 So the unit of tiering is the whole engine. Each tier is a separate compile of every library
 translation unit *plus* the binding translation unit — the latter matters, because

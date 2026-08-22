@@ -41,12 +41,12 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - **uv workspace**: the repository root is the `monoprop` package; `packages/*` holds the sibling
   distributions. See "Workspace layout" below.
 - **Tiered, not multiversioned**: the ISA is chosen per *whole library*, never per function.
-  `target_clones` was measured and rejected, but not for the inlining reason -- adding `flatten` does
-  make clones vectorize at their own ISA. It fails because `avx512vpopcntdq` cannot be named in a
-  `target` attribute at all (and an `arch=<named core>` clone dispatches on CPU identity, not
-  features), and because flattening `build_layer`'s `with_algebra` x `with_store` x
-  `with_kernel_width` fan-out four times took one TU from 16.7 s to >20 min and ~100 GB of compiler
-  memory. Consequences for the build: every engine
+  An attribute cannot do this job: GCC will not inline across an `arch` mismatch (so a `target`-attributed
+  wrapper around the engine is a `jmp`, `flatten` notwithstanding) and `#pragma GCC target` does not
+  capture templates defined outside its region -- header-resident code is widened by its TU's command
+  line or not at all. And `flatten` + `target_clones` is unaffordable regardless: four flattened clones
+  of `build_layer`'s `with_algebra` x `with_store` x `with_kernel_width` fan-out took one TU from 16.7 s
+  to >20 min at ~100 GB of compiler memory. Consequences for the build: every engine
   source goes through the `monoprop_engine_sources(...)` macro rather than
   `target_sources(monoprop-objs ...)`, or it is missing from three of the four tiers; every per-target
   setting goes through `_monoprop_configure_engine_objs` in `cpp/monoprop/CMakeLists.txt`, so the
