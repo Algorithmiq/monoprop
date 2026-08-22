@@ -82,7 +82,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                  std::optional<std::vector<VecZ>> basis_change,
                                                  size_t logical_num_modes,
                                                  Basis basis,
-                                                 size_t partitions)
+                                                 size_t partitions,
+                                                 PartitionChildFactory child_factory)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
       mp_op_{},
@@ -119,20 +120,21 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             "partitions= / monoprop_PARTITIONS / monoprop_NUM_THREADS so R*S is a consistent world.");
     }
     if (n_partitions > 1) {
-        auto factory = [=](mpi::Comm partition_comm) {
-            return std::make_unique<MonomialPropagator<NumModes>>(initial_operator,
-                                                                  cutoff,
-                                                                  initial_state,
-                                                                  schrodinger_cutoff,
-                                                                  partition_comm,
-                                                                  lower_atol,
-                                                                  upper_atol,
-                                                                  cutoff_type,
-                                                                  basis_change,
-                                                                  logical_num_modes,
-                                                                  basis,
-                                                                  /*partitions=*/1);
-        };
+        PartitionChildFactory factory =
+            child_factory ? std::move(child_factory) : PartitionChildFactory{[=](mpi::Comm partition_comm) {
+                return std::make_unique<MonomialPropagator<NumModes>>(initial_operator,
+                                                                      cutoff,
+                                                                      initial_state,
+                                                                      schrodinger_cutoff,
+                                                                      partition_comm,
+                                                                      lower_atol,
+                                                                      upper_atol,
+                                                                      cutoff_type,
+                                                                      basis_change,
+                                                                      logical_num_modes,
+                                                                      basis,
+                                                                      /*partitions=*/1);
+            }};
         partition_group_ = std::make_unique<detail::partition::PartitionGroup<NumModes>>(static_cast<int>(n_partitions),
                                                                                          factory,
                                                                                          comm);
@@ -258,6 +260,13 @@ template <size_t NumModes>
 template <typename Fn, typename R>
 auto MonomialPropagator<NumModes>::map_partitions_(Fn fn) -> std::vector<R> {
     return detail::partition::map_partitions(*partition_group_, fn);
+}
+
+template <size_t NumModes>
+template <typename Fn, typename R>
+auto MonomialPropagator<NumModes>::map_partitions_indexed_(Fn fn) -> std::vector<R> {
+    return detail::partition::collect_on_all(*partition_group_,
+                                             [&](int r) -> R { return fn(r, partition_group_->partition(r)); });
 }
 
 template <size_t NumModes>
