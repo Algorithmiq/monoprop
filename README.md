@@ -158,6 +158,19 @@ Without a DevContainer, install the prerequisites from the
 [building guide](https://docs.monoprop.algorithmiq.tech/building#prerequisites)
 by hand.
 
+### Nix
+
+The repository is a [Nix flake](https://wiki.nixos.org/wiki/Flakes), so on Nix or
+NixOS none of the prerequisites have to be installed by hand:
+
+```bash
+nix develop            # dev shell: C++ toolchain, hwloc, MPI, uv, just, node
+nix build .#monoprop   # build the package (`.#monoprop-mpi` for the MPI build)
+nix run                # Python interpreter with monoprop importable
+```
+
+Inside `nix develop` the usual `uv sync` and `just` workflows apply unchanged.
+
 ## Contributing
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
