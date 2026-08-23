@@ -6,49 +6,42 @@ description: External and internal benchmarks for `monoprop`.
 
 ## Comparison with other packages
 
-We compare `monoprop` with open-source Majorana and Pauli propagation engines on two
-quantum-simulation workloads. The benchmark code, locked dependencies, configurations, and
-committed results are in [`packages/bench-third-party`](https://github.com/Algorithmiq/monoprop/tree/main/packages/bench-third-party).
+We compare `monoprop` with open-source propagation engines on Majorana- and Pauli-basis
+quantum-simulation workloads. Full settings, caveats, and reproduction instructions follow the
+plots.
 
-### Results at a glance
-
-| Workload | Comparison | Main result | Cross-check / context |
-| --- | --- | --- | --- |
-| 1D Fermi-Hubbard, 20–60 spinful sites | `MajoranaPropagation.jl` | `monoprop` is 22–142× faster over the tested grid | Final overlaps agree within `1.8e-6` |
-| 2D TFIM, 12×12 lattice | Four Pauli engines | `monoprop` is the fastest CPU engine as the operator grows and tracks GPU-accelerated `cuPauliProp` | Per-step expectation values and term counts are recorded |
-| 2D TFIM scaling, 36–324 qubits | Four Pauli engines | 16–105× over `PauliPropagation.jl` and 4.4–15× over GPU `cuPauliProp` | Same model; backend caveats are reported below |
-
-These are wall-clock comparisons of each engine's fastest usable configuration, not equal-core or
-equal-hardware comparisons. They measure the workloads and truncation regimes described below;
-they are not a general ranking over every problem. Threading, timeouts, storage semantics, and
-memory-measurement caveats are reported with the corresponding result.
-The published comparisons report individual measurements rather than runtime distributions, so
-the ratios should be treated as workload-specific measurements rather than uncertainty bounds.
-
-That directory is a standalone `uv` project with its own lockfile, not a member of
-the repository's workspace: it pins CUDA-specific wheels and a narrower Python
-range than `monoprop` itself, so it is kept out of the main resolution.
-
-
-### Majorana Propagation
+### Majorana propagation
 
 We propagate an observable through a Trotterized 1D Fermi-Hubbard circuit for 20, 40, and 60
-spinful sites, tracking runtime, final overlap, operator size, and process memory.
+spinful sites. `monoprop` is 22–142× faster than `MajoranaPropagation.jl` over the tested grid;
+final overlaps agree within `1.8e-6`.
 
 ![Benchmark results for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: number of terms, final overlap, runtime, and memory vs layers](/benchmarks/majorana_results.png)
 
-Number of terms, final overlap, runtime, and memory vs. circuit layers for the 1D Fermi-Hubbard
-model, comparing `monoprop` against `MajoranaPropagation.jl`. See the
-section below for details on the setup and how to reproduce these results.
+Number of terms, final overlap, runtime, and memory versus circuit depth.
 
-![Runtime for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: seconds vs circuit layers, linear axes](/benchmarks/majorana_runtime.png)
+### Pauli propagation
 
-Runtime on its own, both axes linear. Solid lines are `monoprop`, dashed are
-`MajoranaPropagation.jl`, and colour is the system size. Read it as seconds: the Julia engine's
-591 s at 60 sites / 18 layers is drawn 140× the height of `monoprop`'s 4.2 s, and all three
-`monoprop` curves consequently lie along the bottom of the axis — annotated with the top of that
-band, since flat here means small, not zero. For `monoprop`'s own growth with depth, read the
-term-count and memory panels of the combined figure, or the numbers below.
+We propagate a `ZZ` observable through a Trotterized 12×12 transverse-field Ising model.
+`monoprop` is the fastest CPU engine as the operator grows and tracks GPU-accelerated
+`cuPauliProp`.
+
+![Benchmark results for Pauli Propagation engines: Runtime and Memory per Trotter step](/benchmarks/pauli_results.png)
+
+Runtime and process peak memory per Trotter step for five propagation engines.
+
+## Benchmark details and reproduction
+
+The benchmark code, locked dependencies, configurations, and committed results are in
+[`packages/bench-third-party`](https://github.com/Algorithmiq/monoprop/tree/main/packages/bench-third-party).
+That directory is a standalone `uv` project with its own lockfile because it pins CUDA-specific
+wheels and a narrower Python range than `monoprop` itself.
+
+The comparisons use each engine's fastest usable configuration. They are wall-clock measurements,
+not equal-core or equal-hardware comparisons, and should be read as results for these workloads
+rather than a general package ranking.
+
+### Majorana propagation details
 
 #### Results
 
@@ -59,6 +52,11 @@ two engines. `monoprop` retains 1.44–1.50× more terms at the same `atol` and 
 141.6× at 60 sites / 18 layers (4.2 s versus 592 s). Memory is comparable at low depth and
 diverges in `monoprop`'s favour as the operator grows (2834 MB versus 3390 MB at 60 sites / 18
 layers).
+
+![Runtime for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: seconds vs circuit layers, linear axes](/benchmarks/majorana_runtime.png)
+
+Runtime on linear axes; solid lines are `monoprop` and dashed lines are
+`MajoranaPropagation.jl`.
 
 The engines use their respective fastest thread counts: `monoprop` uses 56 threads and
 `MajoranaPropagation.jl` 28. Normalizing by the measured busy-core count leaves an 8.5–52×
@@ -163,7 +161,7 @@ grid, and `majorana_runtime.png`, the runtime alone on linear axes. Runtime gets
 because it is the quantity cited on its own.
 
 
-### Pauli Propagation
+### Pauli propagation details
 
 We propagate a `ZZ` observable through a Trotterized 12×12 transverse-field Ising model (TFIM):
 
@@ -174,12 +172,6 @@ We propagate a `ZZ` observable through a Trotterized 12×12 transverse-field Isi
 - no Pauli-weight cutoff
 
 The complete configuration is in [`settings.json`](https://github.com/Algorithmiq/monoprop/blob/main/packages/bench-third-party/pauli_prop/settings.json).
-
-
-![Benchmark results for Pauli Propagation engines: Runtime and Memory per Trotter step](/benchmarks/pauli_results.png)
-
-Runtime and memory usage per Trotter step for the 2D TFIM problem, comparing `monoprop` against
-other Pauli propagation engines.
 
 #### Results
 
