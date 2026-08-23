@@ -19,4 +19,5 @@ target_sources(
         "${PROJECT_SOURCE_DIR}/cpp/include/${PROJECT_NAME}/MPFunctions.h"
         "${PROJECT_SOURCE_DIR}/cpp/include/${PROJECT_NAME}/MPGraph.h"
         "${PROJECT_SOURCE_DIR}/cpp/include/${PROJECT_NAME}/MonomialPropagator.h"
+        "${PROJECT_SOURCE_DIR}/cpp/include/${PROJECT_NAME}/Tiers.h"
 )

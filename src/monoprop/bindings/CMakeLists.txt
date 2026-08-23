@@ -73,10 +73,15 @@ endif()
 # Build one binding module.
 #
 # One translation unit: MonomialPropagator is a single class, so there is nothing to generate or to
-# split into per-mode-width batches. What there *is* to split is the ISA: `objs` is the engine object
-# library this module links, and monoprop-objs carries its arch flags as PUBLIC compile options, so
-# bindings.cpp is compiled at the tier and not merely linked against it. That matters -- the class's
-# inline header methods and every template it instantiates land in this TU.
+# split into per-mode-width batches. What there *is* to split is the ISA, and OBJS is how: the engine
+# object libraries this module links carry their arch flags as compile options, so bindings.cpp is
+# compiled with them and not merely linked against them. That matters -- the class's inline header
+# methods and every template it instantiates land in this TU.
+#
+# Whether they reach it is the difference between the two fat-binary modes, and it is decided by the
+# scope those flags were attached with (_monoprop_configure_engine_objs). Whole-library: PUBLIC, one
+# module per tier, so this TU is at the tier too. Narrow-seam: the tier libraries' flags are PRIVATE and
+# only monoprop-objs' baseline is PUBLIC, because this one module links every tier at once.
 #
 # Every module is named `_core` on disk whatever its target is called, because CPython derives the
 # init function it looks for from the last component of the module name it is asked to load, and the
@@ -86,12 +91,11 @@ function(_monoprop_add_binding_module)
   set(
     _one_value_args
     TARGET
-    OBJS
     DESTINATION
     OUTPUT_DIR
     INSTALL_RPATH
   )
-  cmake_parse_arguments(PARSE_ARGV 0 _arg "" "${_one_value_args}" "")
+  cmake_parse_arguments(PARSE_ARGV 0 _arg "" "${_one_value_args}" "OBJS")
 
   nanobind_add_module(${_arg_TARGET}
     NB_SUPPRESS_WARNINGS  # suppress warnings from nanobind and Python headers
@@ -135,7 +139,7 @@ function(_monoprop_add_binding_module)
   install(TARGETS ${_arg_TARGET} LIBRARY DESTINATION ${_arg_DESTINATION})
 endfunction()
 
-if(monoprop_ENABLE_FAT_BINARY)
+if(monoprop_ENABLE_FAT_BINARY AND NOT monoprop_FAT_NARROW_SEAM)
   foreach(_tier IN LISTS monoprop_FAT_TIERS)
     monoprop_tier_targets(TIER "${_tier}" OBJS_VAR _tier_objs)
     _monoprop_tier_slug("${_tier}" _slug)
@@ -169,9 +173,12 @@ if(monoprop_ENABLE_FAT_BINARY)
   )
   install(TARGETS _isa LIBRARY DESTINATION ${PROJECT_NAME})
 else()
+  # One module for every tier at once in narrow-seam mode: monoprop_TIERED_OBJ_TARGETS carries the
+  # per-tier copies of the kernel and is empty in a single-ISA build. Their arch flags are PRIVATE, so
+  # bindings.cpp compiles at the baseline here and not at whichever tier links last.
   _monoprop_add_binding_module(
     TARGET _core
-    OBJS monoprop-objs
+    OBJS monoprop-objs ${monoprop_TIERED_OBJ_TARGETS}
     DESTINATION ${PROJECT_NAME}
     OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}
     INSTALL_RPATH "${_rpath_origin}/${CMAKE_INSTALL_LIBDIR}"
@@ -181,10 +188,12 @@ endif()
 # Which module the typing stub is generated from. Every tier exposes the same API -- they differ only
 # in the instructions behind it -- so the baseline is as good as any, and it is the one guaranteed to
 # import on the machine doing the build.
-if(monoprop_ENABLE_FAT_BINARY)
+if(monoprop_ENABLE_FAT_BINARY AND NOT monoprop_FAT_NARROW_SEAM)
   list(GET monoprop_FAT_TIERS 0 _stub_tier)
   set(_stub_python_path "${PROJECT_NAME}/_variants/${_stub_tier}")
 else()
+  # Narrow-seam mode included: there is one module, in the package root, exactly as in a single-ISA
+  # build. Its tiers are inside it.
   set(_stub_python_path "${PROJECT_NAME}")
 endif()
 

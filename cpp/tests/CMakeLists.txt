@@ -44,6 +44,7 @@ target_link_libraries(
   monoprop_unit_tests.x
   PRIVATE
     monoprop-objs
+    ${monoprop_TIERED_OBJ_TARGETS}
     Boost::unit_test_framework
     msgpack-cxx
     PkgConfig::HWLOC

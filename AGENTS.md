@@ -46,7 +46,13 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
   capture templates defined outside its region -- header-resident code is widened by its TU's command
   line or not at all. And `flatten` + `target_clones` is unaffordable regardless: four flattened clones
   of `build_layer`'s `with_algebra` x `with_store` x `with_kernel_width` fan-out took one TU from 16.7 s
-  to >20 min at ~100 GB of compiler memory. Consequences for the build: every engine
+  to >20 min at ~100 GB of compiler memory. Nor is the duplication reducible by tiering only the hot TU
+  and dispatching at `build_evolve_result_`: that is built (`monoprop_FAT_BINARY_MODE=narrow-seam`) and
+  measured, and the linker undoes it -- `build_layer` and every `fused_find_and_collect<A,W>` is a weak
+  COMDAT with the same mangled name in all four tiers, so one copy survives and the link *order* decides
+  which ISA runs. 242 of 249 weak symbols collide; pinning a tier changes nothing; reversing the link
+  order makes every pin fast. `tools/check-tier-symbols.py` is the gate, and the ceiling it would reach
+  if fixed is 87% of the win at 39% of the payload. Consequences for the build: every engine
   source goes through the `monoprop_engine_sources(...)` macro rather than
   `target_sources(monoprop-objs ...)`, or it is missing from three of the four tiers; every per-target
   setting goes through `_monoprop_configure_engine_objs` in `cpp/monoprop/CMakeLists.txt`, so the
@@ -110,7 +116,10 @@ Key files:
   `avx512vpopcntdq`, all `-mtune=skylake`) and `src/monoprop/_bootstrap.py` loads one of them as
   `monoprop._core` at import, choosing with the tiny baseline-ISA probe
   `src/monoprop/bindings/isa.cpp`. Off by default in source builds, where `-march=native` beats every
-  tier. See `docs/content/docs/fat-binary.mdx`.
+  tier. `monoprop_FAT_BINARY_MODE` also selects `narrow-seam`, which tiers one TU behind
+  `detail::build_layer_dispatch` (`cpp/monoprop/detail/evolution/TieredLayerBuild.h`, dispatched in
+  `TierDispatch.cpp`) instead of the whole library -- an experiment that does not work, see the bullet
+  above. See `docs/content/docs/fat-binary.mdx`.
 
 ### Core abstractions (the propagation backbone)
 

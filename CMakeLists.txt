@@ -181,6 +181,7 @@ message(
 message(STATUS "   Vectorization flag     : ${ARCH_FLAG}")
 message(STATUS "   Fat binary             : ${monoprop_ENABLE_FAT_BINARY}")
 if(monoprop_ENABLE_FAT_BINARY)
+  message(STATUS "   Fat binary mode        : ${monoprop_FAT_BINARY_MODE}")
   message(STATUS "   ISA tiers              : ${monoprop_FAT_TIERS}")
   message(STATUS "   Tier tuning            : -mtune=${monoprop_FAT_MTUNE}")
   message(STATUS "   Baseline ISA floor     : ${_monoprop_baseline_flags}")

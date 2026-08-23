@@ -135,10 +135,7 @@ the same either way, but as separate translation units the multiplication is lin
 than superlinear in one process. `target_clones` with `flatten` is the right tool when a small
 self-contained kernel sits behind one call; here the kernel is the entire scan.
 
-The duplication *is* reducible, though not that way: 91% of the vectorized loops and 51% of the
-engine's `.text` are in `MonomialPropagator.cpp` alone, so tiering that one translation unit and
-sharing a single baseline copy of the other nine would cut the shipped payload by roughly 40%. The
-price is a real dispatch seam at `build_evolve_result_` rather than at the module boundary.
+The duplication looks reducible, and that was tried; it has [its own section](#the-narrow-seam-and-why-it-does-not-work) below.
 
 So the unit of tiering is the whole engine. Each tier is a separate compile of every library
 translation unit *plus* the binding translation unit — the latter matters, because
@@ -150,6 +147,81 @@ The hwcaps directory names are the four psABI levels, and `x86-64-v4` **does not
 `avx512vpopcntdq` — Skylake-X and Cascade Lake are `v4` and have no vector popcount. Installing the top
 tier as `x86-64-v4` would hand it to those machines and they would fault. The selection predicate has
 to be ours, so the dispatch has to be ours.
+
+## The narrow seam, and why it does not work
+
+91% of the vectorized loops and 51% of the engine's `.text` are in `MonomialPropagator.cpp` alone, and
+`MonomialPropagator::build_evolve_result_` is a non-template function that is the sole caller of
+`detail::build_layer`. So the duplication looks reducible: compile *one* translation unit per tier, put
+`build_layer`'s instantiation tree in it, compile the other nine once at the baseline, and dispatch
+through a function pointer at that one call — once per gate, against a scan that is O(operator) per
+gate, so the seam itself cannot show up in a measurement.
+
+It is built and it is on the branch, behind `-Dmonoprop_FAT_BINARY_MODE=narrow-seam` (`just
+build-fat-narrow-seam`). Everything about it works except the part it exists for.
+
+The arithmetic is as good as it looks. On this host, against `whole-library` from the same tree:
+
+| | whole-library | narrow-seam |
+| --- | --- | --- |
+| shipped payload | 5.00 MB | **1.96 MB** |
+| extension modules | 4 × ~1 MB + 107 KB probe | 1 × 1.06 MB |
+| engine compile | 197 s CPU | **84 s** |
+| whole build | 423 s CPU / 212 s wall | **296 s / 149 s** |
+| Python suite, C++ suite, `diff-baseline-variants` | pass | pass |
+
+And the concept is sound. With the *top* tier's object placed first on the link line, the seam
+delivers **87%** of the whole-library win — 2089 ms against 2054 ms for a fully-tiered `v4+vpopcntdq`
+build and 2338 ms for `v1`, on the 120-mode Hubbard model; 370.1 ms against 365.2 and 410.0 on the
+127-qubit kicked-Ising one. One translation unit out of ten carries seven eighths of the benefit.
+
+**But the run-time dispatch has nothing to choose between.** Almost everything the tiered translation
+unit emits is a template instantiation — `build_layer` itself (its `auto` parameters make it a
+template), every `fused_find_and_collect<A, W>`, every `LayerBuildEngine<Sink, Store>` — and a template
+instantiation is a weak COMDAT symbol whose mangled name says nothing about the tier it was compiled
+for. 242 of the 249 weak symbols in the `v1` object have byte-identical names in the
+`v4+vpopcntdq` one. The linker keeps one definition per name and discards the rest, so the four tiers
+collapse into whichever the link line lists first, and the four `build_layer_entry` functions the
+dispatcher selects between all tail into the same surviving copy.
+
+The measurements say it plainly. Pinning each tier in turn:
+
+| pinned tier | Hubbard | kicked-Ising |
+| --- | --- | --- |
+| `v1` | 2327.7 ms | 411.6 ms |
+| `v3` | 2340.2 ms | 413.5 ms |
+| `v4+vpopcntdq` | 2318.9 ms | 412.3 ms |
+
+Flat, and level with a fully-baseline whole-library build (2337.9 / 410.0). Relink the identical objects
+with the `v4+vpopcntdq` one first and *every* pin runs at 2089 ms — the link order decides, not the CPU.
+The same relink takes the module from 29 `zmm` and 0 `vpopcnt` instructions to 584 and 57.
+
+None of that is visible from the outside. The module imports, each tier reports its own identity, every
+tier returns [bit-identical numbers](#the-same-answers-on-every-tier), and the whole suite passes — the
+tiers were never supposed to differ in their answers, and they no longer differ in their instructions
+either. Which is why the gate for it is a build-time symbol check, `tools/check-tier-symbols.py`
+(`just check-tier-symbols`), and not a test: it compares the tiers' weak-symbol sets and fails if any
+name appears in two of them.
+
+There is a safety consequence too, and it is the reason the mode carries a CMake warning rather than a
+footnote. The surviving set is not "the first tier" but "the first definition of each name", so a symbol
+only the top tier instantiates survives *from the top tier* — which is why the shipped module still
+holds 29 `zmm` instructions in a build that dispatches to the baseline. Whether they are reachable is
+not the point; a wheel's ISA safety has to be structural, not a matter of which order a list happens to
+be written in.
+
+Two ways out, both real, neither free:
+
+- **One shared object per tier.** COMDAT deduplication is per link, so four small `.so` files keep four
+  copies. No language gymnastics, and the estimate is ~2.9 MB — still 42% under `whole-library`. The
+  work is symbol visibility and the hazard is duplicated function-local statics across DSO boundaries.
+- **A per-tier namespace around the algorithm headers** — Highway's `foreach_target.h` pattern, which
+  gives the instantiations distinct mangled names inside one link. It needs the types that *cross* the
+  seam (`MPOperator`, `Bitset`, `CosMask`, `FusedContract`) to stay outside the per-tier region while
+  the algorithms templated on them move inside, and every standard header hoisted above it. Invasive,
+  and fragile against any `monoprop::`-qualified name inside the region.
+
+Until one of them is done, `whole-library` is the only shippable mode, which is why it is the default.
 
 ## What actually happens on import
 
@@ -270,15 +342,26 @@ without being built.
 
 ## What it costs
 
-About **3.8 MB** of extension modules instead of 1 MB, plus the `~100 KB` probe. Four tiers are also
-roughly four times the compile work of one, which lands on the `manylinux_x86_64` leg of the wheel
-matrix.
+About **4 MB** of extension modules instead of 1 MB, plus the `~100 KB` probe. Four tiers are also
+roughly four times the compile work of one — 197 s of engine compile against 50 s — which lands on the
+`manylinux_x86_64` leg of the wheel matrix.
+
+What it buys, measured end to end at one thread with partitioning off, against the same build pinned to
+`v1`:
+
+| model | `v1` | `v3` | `v4+vpopcntdq` |
+| --- | --- | --- | --- |
+| Hubbard, 120 modes, Majorana | 2337.9 ms | 2179.7 ms (−6.8%) | 2054.0 ms (**−12.1%**) |
+| kicked-Ising, 127 qubits, Pauli | 410.0 ms | 373.0 ms (−9.0%) | 365.2 ms (**−10.9%**) |
+
+Median of five rounds; the round-to-round spread is ~40 ms and ~4 ms respectively, so every step is
+outside it. `v2` was not timed.
 
 ## What is still open
 
-- **None of the above is a measurement of speed.** It is a measurement of what the compiler emitted.
-  The tier list is chosen from codegen, and the timing round is what would settle whether `v2` earns
-  its place and whether the top tier's AVX-512 is a win in wall-clock as well as in instruction count.
+- **Whether `v2` earns its place.** The tier list was chosen from codegen; `v1`, `v3` and the top tier
+  are now timed (above) and each step is a real gain, but `v2` — the one whose whole case is hardware
+  `popcnt` — has not been. It is ~1 MB of the wheel.
 - **`-mprefer-vector-width=256`** costs 25 vectorized loops statically, but AMD's Zen 4 implements
   AVX-512 on a double-pumped 256-bit datapath while Intel's server parts do not. Which way that trade
   goes cannot be counted, only timed, and it needs an Intel data point.

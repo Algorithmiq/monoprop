@@ -37,8 +37,24 @@ from monoprop._bootstrap import VARIANT_ENV_VAR
 INSTALLED = monoprop.available_variants()
 
 pytestmark = pytest.mark.skipif(
-    not INSTALLED, reason="not a fat binary: only one ISA variant is installed"
+    not INSTALLED, reason="not a fat binary: this build ships one ISA variant"
 )
+
+
+def _has_isa_probe() -> bool:
+    """Whether this build ships the standalone CPU probe, i.e. whether it is whole-library.
+
+    A narrow-seam build has no probe: the tier list and the predicates that read it are inside the
+    engine, so there is only one copy of both and nothing for a second copy to disagree with.
+    """
+    try:
+        from monoprop import _isa  # noqa: F401, PLC0415
+    except ImportError:
+        return False
+    return True
+
+
+HAS_ISA_PROBE = _has_isa_probe()
 
 # One rotation on a weight-2 observable inside a wider register, evaluated as bits rather than as a
 # float, so "the tiers agree" means bit-for-bit and not "to some tolerance". The point is not the
@@ -104,6 +120,10 @@ def test_selection_takes_the_best_supported_variant():
     assert monoprop.__variant__ == best
 
 
+@pytest.mark.skipif(
+    not HAS_ISA_PROBE,
+    reason="narrow-seam builds have one tier list, inside the engine; there is no second copy to check",
+)
 def test_the_probe_and_the_install_agree_on_the_tier_list():
     # A tier known to the probe but never installed is silently unreachable; one installed but unknown
     # to the probe can never be selected. Either way the wheel quietly loses a tier.
@@ -157,7 +177,12 @@ def test_pinning_an_uninstalled_variant_is_refused():
         check=False,
     )
     assert completed.returncode != 0
-    assert "is not installed" in completed.stderr
+    # Both build shapes refuse it, in their own words: the Python loader has a directory listing to
+    # compare against, the engine has its generated tier table.
+    assert (
+        "is not installed" in completed.stderr
+        or "is not an ISA tier this build ships" in completed.stderr
+    )
 
 
 @pytest.mark.parametrize("variant", INSTALLED)

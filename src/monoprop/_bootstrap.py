@@ -19,7 +19,10 @@ A wheel built as a fat binary carries the compiled engine once per x86-64 ISA ti
 and registers it as ``monoprop._core``, so every other import in the package is unaffected.
 
 A single-ISA build -- any source build, and every non-x86-64 wheel -- ships ``monoprop/_core``
-directly. There is then nothing to choose and importing this module does nothing at all.
+directly. There is then nothing to choose and importing this module does nothing at all. So does a
+narrow-seam fat binary, whose tiers are inside one ``monoprop/_core`` and are selected by the engine
+itself; :func:`available_variants` and :func:`supported_variants` still answer for it, by asking the
+engine rather than the filesystem.
 
 This module is imported for its side effect, which is why the name sorts ahead of ``_core``: the
 selection has to be in place before the first ``from ._core import ...`` runs, and import sorters
@@ -86,10 +89,11 @@ def _probe() -> ModuleType | None:
     return _isa
 
 
-def available_variants() -> tuple[str, ...]:
-    """ISA variants installed alongside this package, best first.
+def _installed_variants() -> tuple[str, ...]:
+    """ISA variants shipped as separate ``_core`` modules, best first.
 
-    Empty for a single-ISA build, which is the shape of every source build.
+    Non-empty only for a whole-library fat binary, which is the one shape where a variant is a file on
+    disk that this module has to bind by hand.
     """
     root = _variants_root()
     if root is None:
@@ -108,10 +112,39 @@ def available_variants() -> tuple[str, ...]:
     return tuple(ordered)
 
 
+def _core_tiers(accessor: str) -> tuple[str, ...]:
+    """Ask the loaded engine for its tier list, or ``()`` if it has none to give.
+
+    This is the narrow-seam fat binary's answer to the same question: its tiers are inside one module
+    rather than one module each, so the list comes from the engine instead of from the filesystem.
+    """
+    try:
+        # Deliberately lazy. install_core() runs during the package's own import and must not pull
+        # _core in ahead of time -- on a whole-library build there is no _core to pull in yet.
+        from . import _core  # noqa: PLC0415
+    except ImportError:
+        return ()
+    query = getattr(_core, accessor, None)
+    return () if query is None else tuple(query())
+
+
+def available_variants() -> tuple[str, ...]:
+    """ISA variants this build ships, best first.
+
+    Empty for a single-ISA build, which is the shape of every source build. Both fat-binary shapes
+    answer here, so callers -- the ``just`` recipes that sweep the tiers, ``tests/test_variants.py`` --
+    do not have to know which shape they are looking at.
+    """
+    installed = _installed_variants()
+    return installed or _core_tiers("shipped_tiers")
+
+
 def supported_variants() -> tuple[str, ...]:
-    """ISA variants the running CPU can execute, best first, whether installed or not."""
+    """ISA variants the running CPU can execute, best first, whether shipped or not."""
     probe = _probe()
-    return tuple(probe.supported_variants()) if probe is not None else ()
+    if probe is not None:
+        return tuple(probe.supported_variants())
+    return _core_tiers("supported_tiers")
 
 
 def _select(available: tuple[str, ...]) -> str:
@@ -181,7 +214,10 @@ def install_core() -> str:
     if _CORE_MODULE in sys.modules:
         return str(getattr(sys.modules[_CORE_MODULE], "__variant__", ""))
 
-    available = available_variants()
+    # _installed_variants(), not available_variants(): the only thing to install is a separate module
+    # per variant. A narrow-seam build has variants but no modules to bind, and asking the engine for
+    # its tier list here would import _core before the package is ready for it.
+    available = _installed_variants()
     if not available:
         return ""
 

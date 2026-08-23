@@ -84,6 +84,21 @@ build-fat:
     uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_FAT_BINARY=ON"
     uv run --no-sync python -c 'import monoprop; print("loaded", monoprop.__variant__, "of", monoprop.available_variants())'
 
+# The narrow-seam experiment: one tiered translation unit in one module instead of a module per tier.
+# Builds, passes everything and is 61% smaller -- and does not deliver a tier, because the linker
+# deduplicates the four copies of every template instantiation down to one. `check-tier-symbols` is
+# the gate that says so; it fails on purpose. Do not ship this.
+
+build-fat-narrow-seam:
+    uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_FAT_BINARY=ON" --config-settings-package="monoprop:cmake.define.monoprop_FAT_BINARY_MODE=narrow-seam"
+    uv run --no-sync python -c 'import monoprop; print("loaded", monoprop.__variant__, "of", monoprop.available_variants())'
+
+# Whether a narrow-seam build kept its ISA tiers past the linker. Nothing else notices: the tiers agree
+# on every answer, so the whole suite passes while they run identical code.
+
+check-tier-symbols BUILD_DIR='build/editable/Release':
+    uv run --no-sync python tools/check-tier-symbols.py "{{ BUILD_DIR }}"
+
 # Run the Python suite once per installed ISA variant, not just the one this CPU selects. Without
 # this the lower tiers ship untested on every developer machine and every CI runner, since the
 # dispatch always picks the best one available.

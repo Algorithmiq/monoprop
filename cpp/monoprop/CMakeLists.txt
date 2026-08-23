@@ -21,49 +21,64 @@ monoprop_engine_sources(
 #
 # variant_include_dir goes in BEFORE the shared binary include dir, which is what makes a tier report
 # its own identity instead of the build's default one.
-function(_monoprop_configure_engine_objs target arch_flags variant_include_dir)
+#
+# `scope` is PUBLIC for a library whose flags the binding module should inherit, and PRIVATE for one
+# whose flags it must not. In whole-library mode the module *is* the tier, so it wants the tier's
+# -march; in narrow-seam mode it links every tier at once, so inheriting any of them would mean
+# compiling the shared code at whichever tier the linker happened to order last.
+function(
+  _monoprop_configure_engine_objs
+  target
+  arch_flags
+  variant_include_dir
+  scope
+)
   target_compile_definitions(
     ${target}
-    PUBLIC
-      $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
-      $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
-      monoprop_SPARSE_ROW_MIN_MODES=${monoprop_SPARSE_ROW_MIN_MODES}
-      monoprop_NARROW_KERNEL_MAX_WORDS=${monoprop_NARROW_KERNEL_MAX_WORDS}
+    ${scope}
+    $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
+    $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
+    monoprop_SPARSE_ROW_MIN_MODES=${monoprop_SPARSE_ROW_MIN_MODES}
+    monoprop_NARROW_KERNEL_MAX_WORDS=${monoprop_NARROW_KERNEL_MAX_WORDS}
   )
 
   # flags to prepend
   target_compile_options(
     ${target}
     BEFORE
-    PUBLIC
-      "${monoprop_CXX_FLAGS}"
-      "${arch_flags}"
+    ${scope}
+    "${monoprop_CXX_FLAGS}"
+    "${arch_flags}"
   )
 
   # flags to append
-  target_compile_options(${target} PUBLIC "${EXTRA_CXXFLAGS}")
+  target_compile_options(
+    ${target}
+    ${scope}
+    "${EXTRA_CXXFLAGS}"
+  )
 
   target_include_directories(
     ${target}
     BEFORE
-    PUBLIC
-      $<BUILD_INTERFACE:${variant_include_dir}>
+    ${scope}
+    $<BUILD_INTERFACE:${variant_include_dir}>
   )
 
   target_include_directories(
     ${target}
-    PUBLIC
-      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp/include>
-      $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp>
+    ${scope}
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp/include>
+    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp>
   )
 
   target_link_libraries(
     ${target}
-    PUBLIC
-      Boost::boost
-      Threads::Threads
-      $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
+    ${scope}
+    Boost::boost
+    Threads::Threads
+    $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
     PRIVATE
       PkgConfig::HWLOC
   )
@@ -78,7 +93,37 @@ function(_monoprop_configure_engine_objs target arch_flags variant_include_dir)
   )
 endfunction()
 
-if(monoprop_ENABLE_FAT_BINARY)
+if(monoprop_FAT_NARROW_SEAM)
+  # The shared build, at the baseline. ARCH_FLAG is already the baseline tier's flags (FatBinary.cmake
+  # overwrites it), and PUBLIC so bindings.cpp compiles at the same floor.
+  _monoprop_configure_engine_objs(
+    monoprop-objs
+    "${ARCH_FLAG}"
+    "${PROJECT_BINARY_DIR}/include"
+    PUBLIC
+  )
+  # Reaches TierDispatch.cpp, which needs the generated tier table, and bindings.cpp, which reports the
+  # tier that was selected rather than the one it was itself compiled for.
+  target_compile_definitions(monoprop-objs PUBLIC monoprop_FAT_NARROW_SEAM)
+
+  foreach(_tier IN LISTS monoprop_FAT_TIERS)
+    _monoprop_tier_spec(TIER "${_tier}" MARCH_VAR _tier_flags)
+    _monoprop_tier_slug("${_tier}" _slug)
+    _monoprop_configure_engine_objs(
+      monoprop-tier-${_slug}
+      "${_tier_flags}"
+      "${PROJECT_BINARY_DIR}/variants/${_tier}/include"
+      PRIVATE
+    )
+    # The namespace the tiered TU's entry points land in. TierDispatch.cpp reaches them by the same
+    # slug, derived from the same tier id, so the two cannot disagree without the tier list changing.
+    target_compile_definitions(
+      monoprop-tier-${_slug}
+      PRIVATE
+        monoprop_TIER_SLUG=${_slug}
+    )
+  endforeach()
+elseif(monoprop_ENABLE_FAT_BINARY)
   foreach(_tier IN LISTS monoprop_FAT_TIERS)
     monoprop_tier_targets(
       TIER "${_tier}"
@@ -90,6 +135,7 @@ if(monoprop_ENABLE_FAT_BINARY)
       "${_tier_objs}"
       "${_tier_flags}"
       "${_tier_variant_include_dir}"
+      PUBLIC
     )
   endforeach()
 else()
@@ -97,6 +143,7 @@ else()
     monoprop-objs
     "${ARCH_FLAG}"
     "${PROJECT_BINARY_DIR}/include"
+    PUBLIC
   )
 endif()
 
@@ -148,6 +195,13 @@ target_link_libraries(
   PRIVATE
     PkgConfig::HWLOC
 )
+
+# The per-tier object libraries, in narrow-seam mode only (the list is empty otherwise). They are
+# linked rather than spliced in with $<TARGET_OBJECTS:...> at the top level because an object library's
+# own usage requirements -- Boost's include dirs among them -- come with the link and not with the
+# splice. Every consumer of the engine needs this: the shared library here, the binding module, and the
+# C++ test binary, since build_layer_dispatch has no definition without them.
+target_link_libraries(monoprop PRIVATE ${monoprop_TIERED_OBJ_TARGETS})
 
 add_subdirectory(algebra)
 add_subdirectory(core)

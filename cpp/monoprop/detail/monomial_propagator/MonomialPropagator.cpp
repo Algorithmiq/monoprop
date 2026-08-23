@@ -34,7 +34,8 @@
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/EnvConfig.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
-#include "monoprop/detail/evolution/LayerBuilder.h"
+#include "monoprop/detail/evolution/CutoffContext.h"
+#include "monoprop/detail/evolution/TieredLayerBuild.h"
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/partition/PartitionGroup.h"
@@ -734,23 +735,27 @@ auto MonomialPropagator::build_evolve_result_(const VecZ &gen_vec,
     const auto gen_mono = indices_to_bitset_checked(gen_vec, 2 * logical_num_modes_, mp_op_.num_bits());
 
     // The cos-recompute metadata is written onto the returned LayerCore.
-    return detail::build_layer(mp_op_,
-                               gen_mono,
-                               cutoff_fn_,
-                               lower_atol_,
-                               coeffs,
-                               upper_atol_,
-                               param,
-                               only_rotate_len_k,
-                               matched_scratch_,
-                               comm_,
-                               logical_num_modes_,
-                               out_cos,
-                               fused_contract,
-                               schrodinger_,
-                               fused_scale_coeffs,
-                               fused_scale,
-                               basis_);
+    //
+    // Through the tier seam rather than straight into build_layer: this is the one call the fat binary's
+    // ISA tiers sit behind, so build_layer's instantiation tree -- and with it every loop an -march
+    // widens -- lives in a translation unit compiled once per tier, while this one is compiled once.
+    return detail::build_layer_dispatch({.local_op = mp_op_,
+                                         .gen = gen_mono,
+                                         .cutoff_fn = cutoff_fn_,
+                                         .atol = lower_atol_,
+                                         .local_coeffs = coeffs,
+                                         .upper_atol = upper_atol_,
+                                         .param = param,
+                                         .only_rotate_len_k = only_rotate_len_k,
+                                         .matched_scratch = matched_scratch_,
+                                         .comm = comm_,
+                                         .logical_num_modes = logical_num_modes_,
+                                         .out_cos = out_cos,
+                                         .fused_contract = fused_contract,
+                                         .schrodinger = schrodinger_,
+                                         .fused_scale_coeffs = fused_scale_coeffs,
+                                         .fused_scale_out = fused_scale,
+                                         .basis = basis_});
 }
 
 auto MonomialPropagator::propagate_one_(const VecZ &gen_vec,

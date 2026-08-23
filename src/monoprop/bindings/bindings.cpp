@@ -38,6 +38,7 @@
 #include "monoprop/Info.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/Tiers.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
 namespace nb = nanobind;
@@ -74,11 +75,32 @@ NB_MODULE(_core, mod) {
 #endif
 
     mod.attr("__build_type__") = std::string(build_type());
-    mod.attr("__compiler_flags__") = compiler_flags();
+
+    // Provenance has to name the tier that *runs*, not the tier this file was compiled for. They are the
+    // same everywhere except a narrow-seam fat binary, where this TU is at the baseline and the kernel
+    // is not -- and reporting the baseline there would make every wheel's benchmark artifact and every
+    // bug report attribute a v4 run to v1. active_tier() is empty when the build ships one tier, which
+    // is when variant() is the honest answer.
+    //
+    // Reading it here also forces the tier selection at import: a bad monoprop_VARIANT then raises on
+    // `import monoprop` rather than part-way through somebody's propagation.
+    const auto tier = active_tier();
+    auto flags = compiler_flags();
+    if (!tier.empty()) {
+        flags["machine-flags"] = std::string(active_tier_flags());
+    }
+    mod.attr("__compiler_flags__") = flags;
+    mod.attr("__variant__") = std::string(tier.empty() ? variant() : tier);
     // From the build system, since this TU is a real source and not a configured template: the version
     // has to be the one _core was compiled against, which the installed nanobind package need not be.
     mod.attr("__nanobind_version__") = std::string(monoprop_NANOBIND_VERSION);
-    mod.attr("__variant__") = std::string(variant());
+
+    mod.def("shipped_tiers",
+            &shipped_tiers,
+            "Every ISA tier this build ships, best first; empty when the build ships a single tier.");
+    mod.def("supported_tiers",
+            &supported_tiers,
+            "The ISA tiers this build ships that the running CPU can execute, best first.");
 
 #ifdef monoprop_ENABLE_MPI
     mod.attr("has_mpi") = true;
@@ -243,11 +265,11 @@ NB_MODULE(_core, mod) {
         [](MonomialPropagator &self, const VecD &parameters, double atol) -> nb::dict {
             nb::dict py_result;
             for (const auto &[indices, coeff] : self.evolved_operator_terms(parameters, atol)) {
-                nb::tuple_builder key(indices.size());
+                nb::list key;
                 for (const auto &i : indices) {
-                    key.put(i);
+                    key.append(i);
                 }
-                py_result[key.commit()] = coeff;
+                py_result[nb::tuple(key)] = coeff;
             }
 
             if (!self.schrodinger() && std::abs(self.core_term()) >= atol) {
@@ -305,7 +327,6 @@ NB_MODULE(_core, mod) {
                                              {"init_operator_bytes", b.init_operator_bytes},
                                              {"initial_state_bytes", b.initial_state_bytes},
                                              {"inverted_index_bytes", b.inverted_index_bytes},
-                                             {"matched_scratch_bytes", b.matched_scratch_bytes},
                                              {"total_bytes", b.total_bytes()},
                                              // Diagnostics (not part of total_bytes; see the struct).
                                              {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
