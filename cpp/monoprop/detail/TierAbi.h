@@ -14,7 +14,7 @@
 
 // The two-symbol-direction contract between the shared engine and a per-ISA-tier shared object.
 //
-// Only monoprop_FAT_BINARY_MODE=tier-dso puts a boundary here at all: the tiered translation unit is
+// Only a tiered build puts a boundary here at all: the tiered translation unit is
 // linked into libmonoprop-tier-<slug>.so, everything else into the module that loads it. The engine is
 // compiled -fvisibility=hidden throughout (CXX_VISIBILITY_PRESET in cpp/monoprop/CMakeLists.txt), so a
 // symbol that has to cross needs saying so, and the point of naming the two directions separately is

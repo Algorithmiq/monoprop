@@ -1,31 +1,35 @@
 ---
 title: The Fat Binary
-description: Why the published x86-64 wheels carry the engine four times over, how the right copy gets loaded, and how to pin one.
+description: Why an x86-64 build carries the propagation kernel five times over, how the right copy gets loaded, and how to pin one.
 ---
 
-Every published `x86-64` wheel contains the propagation engine **four times**, compiled for four
-different instruction-set levels. Importing `monoprop` picks the best one the CPU can execute. This
-page covers why, how, and what it costs.
+Every `x86-64` build of monoprop — the published wheels and, since it is the default,
+a source build too — contains the propagation kernel **five times**, compiled for five different
+instruction-set configurations. The library picks the best one for the CPU on first use. This page
+covers why, how, and what it costs.
 
-If you are on `aarch64` — Apple silicon, or an Arm server — none of this applies: those wheels carry
-one copy, because there is one relevant ISA and nothing to choose between.
+If you are on `aarch64` — Apple silicon, or an Arm server — none of this applies: those builds carry
+one copy, because there is one relevant ISA and nothing to choose between. That is
+`monoprop_ENABLE_TIERED_DSO`, which defaults on where it can work and off where it cannot.
 
 ## The problem it solves
 
-A source build compiles with `-march=native`, which lets the compiler use every instruction the build
-machine has. That is the fastest thing available and it is also unshippable: the resulting binary
-crashes with `SIGILL` on any older CPU.
+Architecture flags used to be a choice between a fast build and a shippable one. A source build
+defaulted to `-march=native`, which lets the compiler use every instruction the build machine has, and
+which crashes with `SIGILL` on any older CPU. The published wheels therefore turned architecture flags
+**off** entirely.
 
-So the published wheels turned architecture flags **off** entirely. The consequence was easy to miss
-and expensive: developers building from source got a fully vectorized library, while everyone
-installing from PyPI got one compiled for the 2003 `x86-64` baseline. Not merely "less vectorized" —
-at that baseline `std::popcount` has no instruction and compiles to `call __popcountdi2@PLT`, a
-function call, in a library whose inner loops are made of population counts.
+The consequence was easy to miss and expensive: developers building from source got a fully vectorized
+library, while everyone installing from PyPI got one compiled for the 2003 `x86-64` baseline. Not merely
+"less vectorized" — at that baseline `std::popcount` has no instruction and compiles to
+`call __popcountdi2@PLT`, a function call, in a library whose inner loops are made of population counts.
 
-A fat binary is the way out: ship several ISA levels and choose at run time. The alternative — one
-wheel per microarchitecture, and users picking — moves the problem onto the user.
+Shipping several ISA levels and choosing at run time is the way out; the alternative — one wheel per
+microarchitecture, and users picking — moves the problem onto the user. And it turns out to dominate
+`-march=native` rather than merely approximating it, which is why there is no longer a fast-versus-
+portable switch at all: see [what it costs](#what-it-costs).
 
-## Why four tiers, and which four
+## Why five tiers, and which five
 
 The tiers come from a compile-time study of what each ISA level actually buys this codebase, using
 GCC's own `-fopt-info-vec-loop-all` reports across the psABI levels. Counting only project code, and
@@ -40,7 +44,8 @@ headers that are instantiated many times):
 | `x86-64-v4` | 124 | 228 | 352 |
 | `x86-64-v4` + `avx512vpopcntdq` | 192 | 228 | 420 |
 
-Three things in that table decided the tier list.
+Three things in that table decided four of the five tiers. The fifth is not an ISA level at all and is
+[its own section](#the-fifth-tier-is-a-vector-width) below.
 
 **SLP barely moves; loop vectorization is the whole story.** Basic-block vectorization goes 204 → 228
 across the entire range, because the fixed-trip word loops the scan is built from already vectorize
@@ -53,6 +58,11 @@ each of `avx512ifma`, `avx512vbmi`, `avx512vbmi2`, `avx512bitalg`, `gfni`, `vaes
 accounts for exactly **zero**. That is this codebase's shape: `std::popcount` word-loop reductions from
 top to bottom, and no intrinsics anywhere. So the top tier is `-march=x86-64-v4 -mavx512vpopcntdq`, and
 plain `v4` is not shipped — it would be three quarters of a megabyte for nothing.
+
+That exclusion turns out to matter twice. Requiring a vector popcount also excludes Skylake-SP, Cascade
+Lake and Cooper Lake, which are `v4` and have none — and those are precisely the parts that gave AVX-512
+its reputation for costing more clock than it returns. Which is why the vector-width question below has
+a much shorter list of awkward CPUs than it would otherwise.
 
 **That top tier cannot be a psABI level, which rules out one implementation.** More on that below.
 
@@ -89,7 +99,79 @@ badly on anything from 2015 onwards. The AMD penalty is negligible (`znver3` sco
 
 Set `monoprop_FAT_MTUNE` at configure time to try another.
 
-## Why whole libraries, not individual functions
+There is one thing `-mtune` decides that is not scheduling, and finding it is what added the fifth tier.
+
+## The fifth tier is a vector width
+
+The top two tiers are the same instruction set. They differ in one flag,
+`-mprefer-vector-width=256` against `512`, and in nothing else — same `-march`, same
+`__builtin_cpu_supports` requirements, same everything. One of them holds 781 `zmm` instructions and the
+other holds zero.
+
+They exist because that flag was being decided by accident. GCC takes `-mprefer-vector-width` from the
+**tuning** tables when nobody sets it, so the width the top tier compiled at was a consequence of
+`monoprop_FAT_MTUNE` — a core picked for its instruction *schedule*, on the stated reasoning that
+`-mtune` never changes which instructions come out. For AVX-512 widths it does, and the tables disagree
+sharply about it:
+
+| `-mtune=` | effective `-mprefer-vector-width` |
+| --- | --- |
+| `skylake` (what the tiers use), `generic`, `znver4`, `znver5` | 512 |
+| `icelake-server`, `sapphirerapids`, `skylake-avx512` | 256 |
+
+So the shipped width was 512 by inheritance from a decision about scheduling, and would have flipped to
+256 had `monoprop_FAT_MTUNE` ever been pointed at an Intel server core.
+
+**And it is not a question CPUID can answer.** Whether 512-bit vectors are worth using is a property of
+the *implementation* behind the registers — how wide the datapath really is, and what the core charges in
+clock frequency for lighting all of it up. There is no feature bit for either. That is exactly why
+`-mprefer-vector-width` is a tuning flag, and it means a build that fixes it has guessed on the user's
+behalf. Carrying both and choosing at run time is the only way the answer can be right on more than one
+machine.
+
+The choice is a table of core names, `monoprop_FAT_NARROW_VECTOR_CORES` in `FatBinary.cmake`, listing
+the cores that get the 256-bit tier; everything else, known or unknown, gets the 512-bit one. A core is
+on it when it has one of the two reasons to keep wide vectors out:
+
+- **a split datapath.** AMD Zen 4 runs 512-bit operations on 256-bit hardware, so the width halves the
+  instruction count and buys no throughput. This is the one entry that is measured rather than reasoned,
+  and it is measured *against* GCC, which tunes `znver4` to 512. Pinning the two tiers on an EPYC 9R14,
+  single thread, three samples of five rounds each:
+
+  | pinned tier | Hubbard, 120 modes | kicked-Ising, 127 qubits |
+  | --- | --- | --- |
+  | `…-vw512` | 2063.2 ms | 363.9 ms (range 363.5–365.7) |
+  | `…-vw256` | 2058.7 ms | **359.9 ms** (range 358.9–361.3) |
+
+  A tie on Hubbard, and 1.1% to the narrow tier on the Pauli model with the two ranges disjoint. Small,
+  and free: it is the same code compiled twice.
+
+- **a frequency penalty.** Ice Lake through Rocket Lake still drop about 175 MHz of peak clock while
+  512-bit code is in flight, which is what put `-mprefer-vector-width=256` into both compilers' Intel
+  tuning in the first place.
+
+Not on the list: Zen 5, which has the full-width datapath Zen 4 lacks, and Sapphire Rapids onwards,
+where the frequency penalty went away ([llvm/llvm-project#102047](https://github.com/llvm/llvm-project/issues/102047)).
+Those two are the mechanism argument rather than a number — neither could be measured here — and the
+second is a deliberate departure from GCC's own tables, which still say 256 for every Intel AVX-512 core.
+Both are falsifiable in one command: pin the other tier and time it.
+
+### Runnable is not the same as preferred
+
+This tier pair is the reason the dispatch carries two predicates per tier rather than one. Every other
+tier's two are identical.
+
+- **runnable** — the CPU can execute this tier. Feature bits only. This is what gates a
+  `monoprop_VARIANT` pin, because honouring a pin the CPU cannot run means `SIGILL` somewhere inside the
+  scan with nothing left to point at the pin that caused it.
+- **preferred** — the CPU should be *given* this tier without being asked. Runnable, plus the
+  vector-width table. This is what the automatic selection reads, and what `supported_variants()`
+  reports.
+
+Conflating the two would make the 512-bit tier unpinnable on exactly the machines where somebody would
+want to compare it against the narrow one — which is most of the point of shipping both.
+
+## Why translation units, not individual functions
 
 The obvious implementation is GCC's function multiversioning — `target_clones` on the hot kernels, with
 an ifunc resolver picking a clone per call. The natural worry is that a dispatch boundary is an
@@ -135,119 +217,41 @@ the same either way, but as separate translation units the multiplication is lin
 than superlinear in one process. `target_clones` with `flatten` is the right tool when a small
 self-contained kernel sits behind one call; here the kernel is the entire scan.
 
-The duplication looks reducible, and that was tried; it has [its own section](#the-narrow-seam-and-why-it-does-not-work) below.
-
-So the unit of tiering is the whole engine. Each tier is a separate compile of every library
-translation unit *plus* the binding translation unit — the latter matters, because
-`MonomialPropagator`'s inline methods and every template it instantiates are compiled there too.
+The duplication looks reducible, and it is; that is the [next section](#one-translation-unit-per-tier).
 
 The second obvious implementation is `glibc-hwcaps`: drop `libmonoprop.so` into
 `glibc-hwcaps/x86-64-v{2,3,4}/` and let `ld.so` pick, with no code at all. That fails on the top tier.
 The hwcaps directory names are the four psABI levels, and `x86-64-v4` **does not include**
 `avx512vpopcntdq` — Skylake-X and Cascade Lake are `v4` and have no vector popcount. Installing the top
-tier as `x86-64-v4` would hand it to those machines and they would fault. The selection predicate has
-to be ours, so the dispatch has to be ours.
+tier as `x86-64-v4` would hand it to those machines and they would fault. It also has no way to express
+the vector-width pair at all, since that is not an ISA level and never will be. The selection predicate
+has to be ours, so the dispatch has to be ours.
 
-## The narrow seam, and why it does not work
+## One translation unit per tier
 
 91% of the vectorized loops and 51% of the engine's `.text` are in `MonomialPropagator.cpp` alone, and
 `MonomialPropagator::build_evolve_result_` is a non-template function that is the sole caller of
-`detail::build_layer`. So the duplication looks reducible: compile *one* translation unit per tier, put
-`build_layer`'s instantiation tree in it, compile the other nine once at the baseline, and dispatch
-through a function pointer at that one call — once per gate, against a scan that is O(operator) per
-gate, so the seam itself cannot show up in a measurement.
+`detail::build_layer`. So the duplication reduces: compile *one* translation unit per tier, holding
+`build_layer`'s instantiation tree, compile the other nine once at the baseline, and dispatch through a
+function pointer at that one call — once per gate, against a scan that is O(operator) per gate, so the
+seam itself cannot show up in a measurement.
 
-It is built and it is on the branch, behind `-Dmonoprop_FAT_BINARY_MODE=narrow-seam` (`just
-build-fat-narrow-seam`). Everything about it works except the part it exists for.
+That is the shape, and it delivers everything tiering the whole library delivered. Pinning each tier in
+turn against a build where every translation unit was tiered (single thread, partitioning off, medians):
 
-The arithmetic is as good as it looks. On this host, against `whole-library` from the same tree:
-
-| | whole-library | narrow-seam |
-| --- | --- | --- |
-| shipped payload | 5.00 MB | **1.96 MB** |
-| extension modules | 4 × ~1 MB + 107 KB probe | 1 × 1.06 MB |
-| engine compile | 197 s CPU | **84 s** |
-| whole build | 423 s CPU / 212 s wall | **296 s / 149 s** |
-| Python suite, C++ suite, `diff-baseline-variants` | pass | pass |
-
-And the concept is sound. With the *top* tier's object placed first on the link line, the seam
-delivers **87%** of the whole-library win — 2089 ms against 2054 ms for a fully-tiered `v4+vpopcntdq`
-build and 2338 ms for `v1`, on the 120-mode Hubbard model; 370.1 ms against 365.2 and 410.0 on the
-127-qubit kicked-Ising one. One translation unit out of ten carries seven eighths of the benefit.
-
-**But the run-time dispatch has nothing to choose between.** Almost everything the tiered translation
-unit emits is a template instantiation — `build_layer` itself (its `auto` parameters make it a
-template), every `fused_find_and_collect<A, W>`, every `LayerBuildEngine<Sink, Store>` — and a template
-instantiation is a weak COMDAT symbol whose mangled name says nothing about the tier it was compiled
-for. 242 of the 249 weak symbols in the `v1` object have byte-identical names in the
-`v4+vpopcntdq` one. The linker keeps one definition per name and discards the rest, so the four tiers
-collapse into whichever the link line lists first, and the four `build_layer_entry` functions the
-dispatcher selects between all tail into the same surviving copy.
-
-The measurements say it plainly. Pinning each tier in turn:
-
-| pinned tier | Hubbard | kicked-Ising |
-| --- | --- | --- |
-| `v1` | 2327.7 ms | 411.6 ms |
-| `v3` | 2340.2 ms | 413.5 ms |
-| `v4+vpopcntdq` | 2318.9 ms | 412.3 ms |
-
-Flat, and level with a fully-baseline whole-library build (2337.9 / 410.0). Relink the identical objects
-with the `v4+vpopcntdq` one first and *every* pin runs at 2089 ms — the link order decides, not the CPU.
-The same relink takes the module from 29 `zmm` and 0 `vpopcnt` instructions to 584 and 57.
-
-None of that is visible from the outside. The module imports, each tier reports its own identity, every
-tier returns [bit-identical numbers](#the-same-answers-on-every-tier), and the whole suite passes — the
-tiers were never supposed to differ in their answers, and they no longer differ in their instructions
-either. Which is why the gate for it is a build-time symbol check, `tools/check-tier-symbols.py`
-(`just check-tier-symbols`), and not a test: it compares the tiers' weak-symbol sets and fails if any
-name appears in two of them.
-
-There is a safety consequence too, and it is the reason the mode carries a CMake warning rather than a
-footnote. The surviving set is not "the first tier" but "the first definition of each name", so a symbol
-only the top tier instantiates survives *from the top tier* — which is why the shipped module still
-holds 29 `zmm` instructions in a build that dispatches to the baseline. Whether they are reachable is
-not the point; a wheel's ISA safety has to be structural, not a matter of which order a list happens to
-be written in.
-
-Two ways out. The first is built and is the next section; the second is not, and no longer needs to be:
-
-- **One shared object per tier.** COMDAT deduplication is per *link*, so four `.so` files keep four
-  copies. No language gymnastics. This is `monoprop_FAT_BINARY_MODE=tier-dso`.
-- **A per-tier namespace around the algorithm headers** — Highway's `foreach_target.h` pattern, which
-  gives the instantiations distinct mangled names inside one link. It needs the types that *cross* the
-  seam (`MPOperator`, `Bitset`, `CosMask`, `FusedContract`) to stay outside the per-tier region while
-  the algorithms templated on them move inside, and every standard header hoisted above it. Invasive,
-  and fragile against any `monoprop::`-qualified name inside the region. Not attempted, because
-  `tier-dso` reaches the same place without touching a header.
-
-`narrow-seam` is kept as a build mode only because it is the measurement that produced the number
-above, and because `tier-dso` is the same source with a different package boundary. It carries a CMake
-warning and `just check-tier-symbols` fails on it by design. Do not ship it.
-
-## One shared object per tier
-
-`monoprop_FAT_BINARY_MODE=tier-dso` (`just build-fat-tier-dso`) keeps the seam exactly as above — the
-same tiered translation unit, the same `TierDispatch.cpp`, the same generated predicate table, the same
-one extension module — and changes only where a tier's copy *lands*: `monoprop/lib/libmonoprop-tier-<tier
-id>.so`, one per tier, each a `DT_NEEDED` of `monoprop/_core...so`. A shared object is its own link, so
-the deduplication that flattened `narrow-seam` now runs inside a tier instead of across all four.
-
-It works. Pinning each tier in turn, same host and method as the tables above (two samples, medians):
-
-| pinned tier | Hubbard | vs `whole-library` | kicked-Ising | vs `whole-library` |
+| pinned tier | Hubbard | whole library | kicked-Ising | whole library |
 | --- | --- | --- | --- | --- |
 | `v1` | 2325.6 ms | 2337.9 ms | 412.5 ms | 410.0 ms |
 | `v2` | 2150.4 ms | *(not timed)* | 367.6 ms | *(not timed)* |
 | `v3` | 2118.2 ms | 2179.7 ms | 372.9 ms | 373.0 ms |
 | `v4+vpopcntdq` | **2054.2 ms** | 2054.0 ms | **362.4 ms** | 365.2 ms |
 
-Not the 87% the relink experiment predicted — all of it, tier for tier, within the spread. The nine
-translation units left at the baseline turn out to contribute nothing measurable, which is the stronger
-form of the same claim: the ISA matters in `build_layer`'s instantiation tree and effectively nowhere
-else.
+Tier for tier, within the spread. The nine translation units left at the baseline contribute nothing
+measurable, which is the stronger form of the same claim: the ISA matters in `build_layer`'s
+instantiation tree and effectively nowhere else. It costs 3.08 MB of payload against 5.01 MB for tiering
+everything, and 276 s of build CPU against 423 s.
 
-Two findings fall out of finally having every rung timed:
+Two findings fall out of having every rung timed:
 
 - **`v2` is the single biggest step** — 64% of the Hubbard win and 90% of the Pauli one, from `v1`. The
   disassembly says why: the `v1` tier contains **zero** `popcnt` instructions and the `v2` tier contains
@@ -258,37 +262,75 @@ Two findings fall out of finally having every rung timed:
 - **`v3` buys nothing on the Pauli model** (372.9 ms against `v2`'s 367.6 ms, reproduced in both
   samples). Its AVX2 is worth 1.5% on Hubbard and nothing here.
 
-The payload sits between the two other shapes, and the safety property is better than either:
+### The tiers have to land in separate links
 
-| | whole-library | tier-dso | narrow-seam |
-| --- | --- | --- | --- |
-| shipped payload | 5.01 MB | **3.08 MB** | 1.98 MB |
-| shape | 4 modules + probe | 1 module + 4 DSOs | 1 module |
-| whole build | 423 s CPU / 212 s wall | 276 s / 151 s | 296 s / 149 s |
-| widened instructions in what *every* machine runs | none by construction | **none, measured** | 29 `zmm` |
-| tiers survive the linker | yes | **yes** | no |
+One condition on the shape above, and it is the whole of the difficulty. Almost everything the tiered
+translation unit emits is a template instantiation — `build_layer` itself (its `auto` parameters make it
+a template), every `fused_find_and_collect<A, W>`, every `LayerBuildEngine<Sink, Store>` — and a
+template instantiation is a weak COMDAT symbol whose mangled name says nothing about the tier it was
+compiled for. 242 of the 249 weak symbols in the `v1` object have byte-identical names in the
+`v4+vpopcntdq` one.
 
-That last-but-one row is the one that matters most. `narrow-seam` shipped a module holding `zmm`
-instructions of unproven reachability; here `_core.so` and `libmonoprop.so` census at zero on every
-counter, and every widened instruction in the wheel lives inside a `.so` that only loads behind its own
+Put those objects in one link and the linker keeps one definition per name and discards the rest. The
+tiers collapse into whichever the link line lists first, and the `build_layer_entry` functions the
+dispatcher selects between all tail into the same surviving copy. That was built and measured. Pinning
+each tier in turn:
+
+| pinned tier | Hubbard | kicked-Ising |
+| --- | --- | --- |
+| `v1` | 2327.7 ms | 411.6 ms |
+| `v3` | 2340.2 ms | 413.5 ms |
+| `v4+vpopcntdq` | 2318.9 ms | 412.3 ms |
+
+Flat, and level with an all-baseline build (2337.9 / 410.0). Relink the identical objects with the
+`v4+vpopcntdq` one first and *every* pin runs at 2089 ms — the link order decides, not the CPU. The same
+relink takes the module from 29 `zmm` and 0 `vpopcnt` instructions to 584 and 57.
+
+None of that is visible from the outside. The module imports, each tier reports its own identity, every
+tier returns [bit-identical numbers](#the-same-answers-on-every-tier), and the whole suite passes — the
+tiers were never supposed to differ in their answers, and they had stopped differing in their
+instructions too. Which is why the gate is a build-time symbol check, `tools/check-tier-symbols.py`
+(`just check-tier-symbols`), and not a test.
+
+There is a safety consequence as well. The surviving set is not "the first tier" but "the first
+definition of each name", so a symbol only the top tier instantiates survives *from the top tier* —
+which is how a module that dispatches to the baseline still ended up holding 29 `zmm` instructions.
+Whether they are reachable is not the point; a wheel's ISA floor has to be structural, not a matter of
+which order a list happens to be written in.
+
+**COMDAT deduplication is per link, so the fix is a link per tier.** Each tier's copy goes into
+`monoprop/lib/libmonoprop-tier-<tier id>.so`, one per tier, each a `DT_NEEDED` of
+`monoprop/_core...so`; the deduplication then runs inside a tier instead of across all of them. No
+language gymnastics, and the numbers in the table above are that shape measured. The alternative — a
+per-tier namespace around the algorithm headers, Highway's `foreach_target.h` pattern, which gives the
+instantiations distinct mangled names inside one link — needs the types that *cross* the seam
+(`MPOperator`, `Bitset`, `CosMask`, `FusedContract`) to stay outside the per-tier region while the
+algorithms templated on them move inside, plus every standard header hoisted above it. Invasive, fragile
+against any `monoprop::`-qualified name inside the region, and unnecessary.
+
+The safety property comes out better than either alternative, and this one is measured rather than
+argued: `_core.so` and `libmonoprop.so` census at **zero** on every widened-instruction counter, and
+every widened instruction in the wheel lives inside a `.so` that only loads behind its own
 `__builtin_cpu_supports` predicate.
 
 ### What it costs in source
 
-A shared object has to resolve its references, which an object library does not, so the seam acquires an
-ABI. It is small: the tiered translation unit's *only* out-of-line dependencies on the rest of the engine
+A shared object has to resolve its references, which an object in the same link does not, so the seam
+acquires an ABI. It is small: the tiered translation unit's *only* out-of-line dependencies on the engine
 are five functions — `mpi::rank`, `mpi::size`, `mpi::alltoall_counts`,
 `detail::build_layer_storage_unified` and `validate_only_rotate_len_k` — with everything else it needs
 being either a header template it instantiates itself, or libstdc++. The engine is compiled
 `-fvisibility=hidden` throughout, so those five are marked with `monoprop_TIER_ABI` and the three entry
 points with `monoprop_TIER_ENTRY` (`cpp/monoprop/detail/TierAbi.h`). Nothing else crosses.
 
-`just check-tier-symbols` is the gate, and in this mode it checks the properties that make the shape
-sound rather than the weak-symbol disjointness that `narrow-seam` fails: that no tier exports a
-`monoprop` symbol another tier exports, that none exports one *weakly* (which would let the dynamic
-linker re-flatten what the static one no longer can), that every `monoprop` symbol a tier imports is
-exported by the module that loads it — otherwise the process dies at load on a symbol lookup — and that
-the baseline tier and the shared module hold nothing above the floor.
+`just check-tier-symbols` is the gate. It checks that no tier exports a `monoprop` symbol another tier
+exports, that none exports one *weakly* (which would let the dynamic linker re-flatten what the static
+one no longer can), that every `monoprop` symbol a tier imports is exported by the module that loads it —
+otherwise the process dies at load on a symbol lookup — that the baseline tier and the shared module hold
+nothing above the floor, and the one thing no feature query could establish: that the two vector-width
+tiers, which require identical CPU features and differ only in a tuning flag, really did get different
+widths. Without that last check the pair could silently become one build shipped twice, and every test,
+every number and every symbol table would still agree.
 
 Three hazards were checked before the boundary went in, and none of them bites:
 
@@ -304,45 +346,46 @@ Three hazards were checked before the boundary went in, and none of them bites:
   function of the storage width, and only the selected tier's copy is ever touched, so the cost is one
   `Bitset` per thread and nothing else.
 
-## What actually happens on import
+## What actually happens at run time
 
 The wheel looks like this:
 
 ```text
 monoprop/
-├── _isa.abi3.so                 # the CPU probe: baseline ISA, ~100 KB
-├── _bootstrap.py                # the selection
-└── _variants/
-    ├── x86-64-v1/_core.abi3.so
-    ├── x86-64-v2/_core.abi3.so
-    ├── x86-64-v3/_core.abi3.so
-    └── x86-64-v4-vpopcntdq/_core.abi3.so
+├── _core.abi3.so                 # one extension module, compiled at the baseline ISA
+└── lib/
+    ├── libmonoprop.so
+    ├── libmonoprop-tier-x86-64-v1.so
+    ├── libmonoprop-tier-x86-64-v2.so
+    ├── libmonoprop-tier-x86-64-v3.so
+    ├── libmonoprop-tier-x86-64-v4-vpopcntdq-vw256.so
+    └── libmonoprop-tier-x86-64-v4-vpopcntdq-vw512.so
 ```
 
-There is no `monoprop/_core` of its own. `monoprop/_bootstrap.py` is imported first — its name sorts
-ahead of `_core` so that alphabetical import ordering keeps it there — and it:
+Nothing in Python chooses anything. `monoprop._core` is imported the ordinary way, every tier DSO is a
+`DT_NEEDED` of it and is therefore mapped at load, and the choice happens the first time the engine
+needs to build a layer: `TierDispatch.cpp` walks the generated table in best-first order, takes the
+first tier whose *preferred* predicate holds, and caches it in a function-local static. Every later
+gate is an indirect call through that. `monoprop._tiers` only forwards the two queries back into the
+engine, because that is where the answer lives.
 
-1. asks `monoprop._isa` which variants this CPU can run, best first;
-2. takes the best one that is also installed;
-3. loads it under the name `monoprop._core`.
+The predicates are `__builtin_cpu_supports`, which consults `CPUID` **and** `XGETBV` — so an
+AVX-512-capable CPU under a kernel or hypervisor that has not enabled the ZMM register state correctly
+reports the feature as absent, which is what keeps the dispatch off machines that would fault — plus,
+for the 512-bit tier only, `__builtin_cpu_is` against the narrow-vector core table.
 
-Every module in the package then imports `monoprop._core` as usual and is unaware that a choice was
-made. Each variant is named `_core` on disk whatever tier it belongs to, because CPython derives the
-initialization symbol it looks for from the last component of the module name being loaded.
+Two subtleties worth knowing if you work on the build.
 
-`_isa` exists as a separate, deliberately tiny extension because the question "what can this CPU do"
-has to be answered *before* any tiered code is loaded. It is built for the baseline ISA and links no
-engine code, so it is the one module guaranteed to load everywhere. It answers with
-`__builtin_cpu_supports`, which consults `CPUID` **and** `XGETBV` — so an AVX-512-capable CPU under a
-kernel or hypervisor that has not enabled the ZMM register state correctly reports the feature as
-absent, which is what keeps the dispatch off machines that would fault.
+The baseline ISA is applied **globally**, not just to the shared engine's objects. A wheel contains code
+from targets nobody tiered — nanobind's static library, for one — and those compile with whatever
+`-march` the toolchain defaults to, which is *not* necessarily the psABI baseline. GCC as shipped by
+recent Ubuntu is configured `--with-arch-64=x86-64-v3`. Without a global floor the module itself would
+carry AVX2 and would fault on the machines the `v1` tier exists for.
 
-One subtlety worth knowing if you work on the build: the baseline ISA is also applied globally, not
-just to the baseline tier's objects. A wheel contains code from targets nobody tiered — nanobind's
-static library, for one — and those compile with whatever `-march` the toolchain defaults to, which is
-*not* necessarily the psABI baseline. GCC as shipped by recent Ubuntu is configured
-`--with-arch-64=x86-64-v3`. Without a global floor, the `v1` and `v2` variants would carry AVX2 in
-their glue code and `_isa` itself would fault on the machines it exists to detect.
+And the tier a DSO was *compiled* for is checked against the tier the table *selected*. Those are two
+independent paths out of one tier list — a per-tier include directory holding that tier's `Variants.h`,
+and a namespace slug — and a build that wired them to different tiers would run one tier while reporting
+another. The dispatcher compares them once and throws if they disagree.
 
 ## The same answers on every tier
 
@@ -354,17 +397,18 @@ coefficient accumulation. Measured across ISA levels: every evolved term stays b
 the energy moves, by one or two units in the last place. Small — and exactly the wrong shape for a fat
 binary, where it would mean the same wheel answering differently depending on which CPU it landed on.
 So `-ffp-contract=off` is set project-wide, not only in the tiers, which keeps a source build, a wheel
-and every tier bit-comparable. All four tiers produce byte-identical output; `just diff-baseline-variants`
-is the gate on that.
+and every tier bit-comparable. All five tiers produce byte-identical output; `just diff-baseline-variants`
+is the gate on that, and it is a byte diff rather than a tolerance.
 
 For the same reason the sparse/dense row crossover
 (`monoprop_SPARSE_ROW_MIN_MODES`, see [Building from Source](/building)) is pinned to one value across
-all four tiers rather than following each tier's capability. The two row backends agree on term sets
+every tier rather than following each tier's capability. The two row backends agree on term sets
 and values but not on term *order*, so a per-tier threshold would make a wide run's accumulation order
-depend on the host CPU. The pinned value is `256`, which is what three of the four tiers want and what
-today's wheels already use. One consequence to be aware of: a capture from a fat build differs from one
-taken with `monoprop_ENABLE_ARCH_FLAGS=ON` (crossover `768`) on any case at or above 256 storage modes,
-so compare fat against fat.
+depend on the host CPU. The pinned value is `256`, which is what the lower tiers want and what the
+wheels already use. One consequence to be aware of: a capture from a default build differs from one taken
+with `monoprop_ARCH_MARCH=native` (crossover `768`) on any case at or above 256 storage modes, because
+they pick different backends there. Compare like with like — the term sets and values still agree, so
+`just diff-baseline-sparse` holds across the two where `just diff-baseline` does not.
 
 ## Using it
 
@@ -373,90 +417,106 @@ Which variant loaded:
 ```python
 import monoprop
 
-print(monoprop.__variant__)            # e.g. "x86-64-v3", or "native" for a source build
-print(monoprop.available_variants())   # every variant in this install, best first
-print(monoprop.supported_variants())   # every variant this CPU could run, best first
+print(monoprop.__variant__)            # e.g. "x86-64-v3", or "native" for a single-ISA build
+print(monoprop.available_variants())   # every tier in this install, best first
+print(monoprop.supported_variants())   # every tier this CPU would be offered, best first
 ```
 
 `monoprop.__compiler_flags__["machine-flags"]` reports the flags the compiler resolved *for the loaded
-variant*, so it is the authoritative answer to "what was this actually built with".
+tier*, so it is the authoritative answer to "what was this actually built with".
 
-To pin a variant — benchmarking a tier, reproducing a report, bisecting a codegen difference — set
+`supported_variants()` is what the engine would choose from, which is deliberately not the same as what
+the CPU can execute — see [runnable is not preferred](#runnable-is-not-the-same-as-preferred). On a Zen 4
+machine the 512-bit tier is absent from it and can still be pinned.
+
+To pin a tier — benchmarking one, reproducing a report, bisecting a codegen difference — set
 `monoprop_VARIANT`:
 
 ```bash
 monoprop_VARIANT=x86-64-v2 python your_script.py
 ```
 
-Naming a variant that is not installed, or one this CPU cannot execute, is an error rather than a
-silent fallback: the point of pinning one is to know which one ran.
+Naming a tier this build does not ship, or one this CPU cannot execute, is an error rather than a silent
+fallback: the point of pinning one is to know which one ran. Naming one the CPU merely would not have
+chosen is honoured, because comparing it against the one that was chosen is what pinning is for.
 
 ## Building one
 
-The fat binary is **off** by default in source builds, because a source build has `-march=native`,
-which beats every tier:
+You already are. `monoprop_ENABLE_TIERED_DSO` defaults **on** wherever it can work — x86-64, GCC or
+Clang, outside a Debug build — so a plain
 
 ```bash
-just build-fat            # whole-library: one module per tier
-just build-fat-tier-dso   # the seam: one module, one shared object per tier
+uv sync --all-extras -v
 ```
 
-or, directly:
+produces the same shape the wheels do, and there is no config setting for a later `uv run` to lose. The
+alternative is one compile for this machine only, which is what a tight edit-build-test loop wants:
 
 ```bash
-uv sync --all-extras -v --config-settings=cmake.define.monoprop_ENABLE_FAT_BINARY=ON
+just build-native   # monoprop_ENABLE_TIERED_DSO=OFF, monoprop_ARCH_MARCH=native
 ```
 
-Note that a plain `uv run` afterwards re-syncs without that setting and silently replaces the fat
-build with a single-ISA one; use `uv run --no-sync`.
+Asking for the tiered build where it cannot work — a non-x86-64 target, a compiler without
+`__builtin_cpu_supports` — is a configure error rather than a silently untiered build. So is combining it
+with `monoprop_ARCH_MARCH`, which it would otherwise ignore.
 
-Two recipes exist because the dispatch always picks the *best* tier, which means the lower tiers would
+Two recipes exist because the dispatch always picks the *best* tier, which means the others would
 otherwise ship untested from every developer machine and every CI runner:
 
-- `just test-variants` — the Python suite once per installed variant;
-- `just diff-baseline-variants` — a baseline capture per variant, diffed byte-wise against each other.
+- `just test-variants` — the Python suite once per shipped tier;
+- `just diff-baseline-variants` — a baseline capture per tier, diffed byte-wise against each other.
 
-`monoprop_ENABLE_FAT_BINARY` is x86-64 only and needs GCC or Clang; requesting it elsewhere is a
-configure error rather than a silently untiered build. The tier list and the flags live in
-`cmake/compiler_flags/FatBinary.cmake`, which is the only place a tier is declared — the loader's
-predicate table is generated from it, so a tier cannot be built without being selectable or selectable
-without being built.
+The tier list, the flags and the narrow-vector core table live in `cmake/compiler_flags/FatBinary.cmake`,
+which is the only place a tier is declared — the dispatcher's predicate table is generated from it, so a
+tier cannot be built without being selectable or selectable without being built.
 
 ## What it costs
 
-**5.01 MB** of payload under `whole-library`, or **3.08 MB** under `tier-dso`, against ~1.5 MB for a
-single-ISA build. Four tiers are also roughly four times the compile work of one — 197 s of engine
-compile against 50 s — which lands on the `manylinux_x86_64` leg of the wheel matrix; `tier-dso`
-compiles one translation unit per tier instead of all ten, which is most of that back.
+**3.08 MB** of payload against ~1.5 MB for a single-ISA build, and one extra compile of the tiered
+translation unit per tier, which lands on the `manylinux_x86_64` leg of the wheel matrix. Tiering every
+translation unit instead of one would be 5.01 MB and 423 s of build CPU against 276 s.
 
 What it buys, measured end to end at one thread with partitioning off, against the same build pinned to
-`v1`. `whole-library` numbers, median of five rounds:
+`v1`, median of five rounds:
 
 | model | `v1` | `v3` | `v4+vpopcntdq` |
 | --- | --- | --- | --- |
 | Hubbard, 120 modes, Majorana | 2337.9 ms | 2179.7 ms (−6.8%) | 2054.0 ms (**−12.1%**) |
 | kicked-Ising, 127 qubits, Pauli | 410.0 ms | 373.0 ms (−9.0%) | 365.2 ms (**−10.9%**) |
 
-The round-to-round spread is ~40 ms and ~4 ms respectively, so every step is outside it. `tier-dso`
-matches this tier for tier and adds the `v2` rung; see [its table](#one-shared-object-per-tier).
+The round-to-round spread is ~40 ms and ~4 ms respectively, so every step is outside it.
+
+And it costs nothing against the thing it replaced. `-march=native` on the same Zen 4 host, three
+samples of five rounds each against the tiered build's own automatic selection:
+
+| model | `-march=native` | tiered, auto-selected |
+| --- | --- | --- |
+| Hubbard, 120 modes | 2056.3 ms | 2058.7 ms |
+| kicked-Ising, 127 qubits | 363.2 ms | **359.9 ms** |
+
+A tie on one and a 1% loss to the tiers on the other, and the reason is the vector width: `native`
+implies `-mtune=znver4`, which selects 512-bit vectors, and the tier pair picks the width that is
+actually faster here. So the assumption the old default rested on — that a source build's `-march=native`
+beats any portable tier — no longer holds, and the reason to build single-ISA is build time.
 
 ## What is still open
 
 - **Whether `v3` earns its place.** Every rung is now timed, and this is the weak one: 1.5% on Hubbard
   and nothing at all on the Pauli model, where it is if anything slightly behind `v2`. `v2`, whose whole
-  case was hardware `popcnt`, turns out to be the biggest step of the four — so the question the tier
-  list needs asking has inverted.
-- **Which shape ships.** `whole-library` is still the default and still the simplest thing to reason
-  about; `tier-dso` is 39% smaller, builds faster, measures the same, and now passes the same gates. The
-  argument left against it is not performance but surface: four extra shared objects for auditwheel and
-  delocate to relocate, and a five-symbol ABI that has to stay stateless.
-- **`-mprefer-vector-width=256`** costs 25 vectorized loops statically, but AMD's Zen 4 implements
-  AVX-512 on a double-pumped 256-bit datapath while Intel's server parts do not. Which way that trade
-  goes cannot be counted, only timed, and it needs an Intel data point.
-- **The `v1` floor's real audience.** Today's `ARCH_FLAGS=OFF` wheels get whatever the manylinux
-  image's GCC defaults to, which may already be above the baseline. If it is, the `v1` tier is
-  insurance rather than an improvement — worth knowing, since it is the one tier with a pathological
-  `std::popcount`.
+  case was hardware `popcnt`, turns out to be the biggest step — so the question the tier list needs
+  asking has inverted.
+- **The vector-width table's Intel half.** Zen 4 is measured. Zen 5 and Sapphire Rapids onwards are on
+  the 512-bit side of the table for mechanism reasons — a full-width datapath, no frequency penalty —
+  and Ice Lake through Rocket Lake on the 256-bit side for the frequency penalty, none of which has been
+  timed on this codebase. Each needs one run of the two pins on the hardware in question, and the
+  measurement that exists came out *against* the compiler's own tuning table, so these should not be
+  assumed right.
+- **The `v1` floor's real audience.** A machine that predates SSE4.2 is the only thing that loads it,
+  and it is the one tier with a pathological `std::popcount`. Worth knowing whether anyone is on one.
+- **The crossover, per tier.** `monoprop_SPARSE_ROW_MIN_MODES` is pinned at `256` for reproducibility
+  across tiers, and `768` is the measured crossing for the top tier. That costs the top tier a few
+  percent on systems at or above 256 storage modes; buying it back means giving up byte-comparability
+  between tiers, which is not obviously the right trade.
 
 ## See also
 

@@ -88,8 +88,9 @@ class ModeEmbedding:
 # 260 logical modes store as 288 (nine whole 32-mode blocks, nine 64-bit words). Two regimes at once,
 # both of which a released wheel reaches on its own and neither of which any checked-in fixture does:
 #
-#   * 288 >= monoprop_SPARSE_ROW_MIN_MODES for a wheel (256 without architecture flags), so this is the
-#     support-form row store as it ships, not a code path a test forced on.
+#   * 288 >= monoprop_SPARSE_ROW_MIN_MODES for a wheel and for any build that did not ask for
+#     -march=native (256, against native's 768), so this is the support-form row store as it ships,
+#     not a code path a test forced on.
 #   * nine words is past Bitset::kInlineWords (8), so every by-value monomial *spills to the heap*.
 #     Nothing else propagates at a spilled width -- bitset_tests.cpp covers spilled bitsets in
 #     isolation, which is not the same as running a scan, a fold and a wire exchange on them.

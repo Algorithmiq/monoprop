@@ -16,10 +16,9 @@
 // executes on every machine the wheel installs on, including the ones that cannot run any tier above
 // the floor, so it may not itself contain a widened instruction.
 //
-// Contrast with the whole-library fat binary, where the same decision is made in Python before any
-// engine code is loaded at all (src/monoprop/_bootstrap.py). Here the decision is inside the library,
-// which is what lets a single _core.so carry every tier -- and why there is no separate ISA probe
-// module whose tier list could fall out of step.
+// The decision is inside the library rather than in the Python that imports it, which is what lets a
+// single _core.so carry every tier -- and why there is no separate ISA probe module whose tier list
+// could fall out of step with this one.
 
 #include "monoprop/Tiers.h"
 
@@ -34,11 +33,11 @@
 #include "monoprop/detail/TierAbi.h"
 #include "monoprop/detail/evolution/TieredLayerBuild.h"
 
-#ifdef monoprop_FAT_NARROW_SEAM
+#ifdef monoprop_TIERED_DSO
 #include "monoprop/FatVariants.h"
 #endif
 
-#ifndef monoprop_FAT_NARROW_SEAM
+#ifndef monoprop_TIERED_DSO
 
 // ---------------------------------------------------------------------------------------------------
 // Single-tier build: the seam is a direct call and there is no tier to report. The accessors stay
@@ -80,7 +79,7 @@ namespace detail {
 
 // One declaration block per shipped tier, from the same generated table the predicates come from, so a
 // tier cannot be built without being dispatchable or dispatched without being built.
-#define monoprop_DECLARE_TIER(tid, tslug, tpred)                                                         \
+#define monoprop_DECLARE_TIER(tid, tslug, trunnable, tpreferred)                                         \
     namespace tiers::tslug {                                                                             \
     monoprop_TIER_ENTRY auto build_layer_entry(const LayerBuildRequest &) -> std::shared_ptr<LayerCore>; \
     monoprop_TIER_ENTRY auto tier_id() -> std::string_view;                                              \
@@ -95,24 +94,27 @@ namespace {
 
 struct TierRow final {
     std::string_view id;
-    bool (*supported)();
+    bool (*runnable)();  ///< the CPU can execute this tier: what a pin is allowed to ask for
+    bool (*preferred)(); ///< the CPU should be given this tier unasked: what the selection reads
     std::shared_ptr<LayerCore> (*build)(const detail::LayerBuildRequest &);
     std::string_view (*compiled_id)();
     std::string_view (*flags)();
 };
 
 // Best ISA first, which is the selection order: the table's order is load-bearing, not cosmetic.
-#define monoprop_TIER_ROW(tid, tslug, tpred)                                 \
-    TierRow{.id = tid,                                                       \
-            .supported = +[]() -> bool { return static_cast<bool>(tpred); }, \
-            .build = &detail::tiers::tslug::build_layer_entry,               \
-            .compiled_id = &detail::tiers::tslug::tier_id,                   \
+#define monoprop_TIER_ROW(tid, tslug, trunnable, tpreferred)                      \
+    TierRow{.id = tid,                                                            \
+            .runnable = +[]() -> bool { return static_cast<bool>(trunnable); },   \
+            .preferred = +[]() -> bool { return static_cast<bool>(tpreferred); }, \
+            .build = &detail::tiers::tslug::build_layer_entry,                    \
+            .compiled_id = &detail::tiers::tslug::tier_id,                        \
             .flags = &detail::tiers::tslug::tier_machine_flags},
 const TierRow kTiers[] = {monoprop_FAT_VARIANT_TIERS(monoprop_TIER_ROW)};
 #undef monoprop_TIER_ROW
 
-// Shared with the whole-library mode's Python loader, so a pin written against one build shape keeps
-// working against the other.
+// Read here rather than passed in: the selection happens on first use, inside the library, so there is
+// no call for a caller to hang an argument on. Also read by nothing else -- src/monoprop/_tiers.py
+// exports the name for tests, it does not act on it.
 constexpr const char *kPinEnvVar = "monoprop_VARIANT";
 
 // __builtin_cpu_supports reads feature bits a companion builtin has to load first, so: once, before any
@@ -121,10 +123,10 @@ auto probe_cpu() -> void {
     __builtin_cpu_init();
 }
 
-auto join_tiers(bool supported_only) -> std::string {
+auto join_tiers(bool runnable_only) -> std::string {
     std::string out;
     for (const auto &row : kTiers) {
-        if (supported_only && !row.supported()) {
+        if (runnable_only && !row.runnable()) {
             continue;
         }
         if (!out.empty()) {
@@ -144,29 +146,31 @@ auto select_tier() -> const TierRow & {
             if (row.id != pinned) {
                 continue;
             }
-            // A pin the CPU cannot run is refused rather than honoured. Honouring it means SIGILL
+            // Runnable, not preferred: a pin that this CPU merely would not have chosen is honoured,
+            // because comparing the tier it would not have chosen against the one it did is the whole
+            // reason for pinning. A pin it *cannot execute* is refused -- honouring that means SIGILL
             // somewhere inside the scan, with nothing left to point at the pin that caused it.
-            if (!row.supported()) {
+            if (!row.runnable()) {
                 throw std::invalid_argument(std::string(kPinEnvVar) + "='" + pinned
-                                            + "' names an ISA tier this CPU cannot execute. Supported here: "
-                                            + join_tiers(/*supported_only=*/true));
+                                            + "' names an ISA tier this CPU cannot execute. Runnable here: "
+                                            + join_tiers(/*runnable_only=*/true));
             }
             return row;
         }
         throw std::invalid_argument(std::string(kPinEnvVar) + "='" + pinned
                                     + "' is not an ISA tier this build ships. Shipped tiers: "
-                                    + join_tiers(/*supported_only=*/false));
+                                    + join_tiers(/*runnable_only=*/false));
     }
 
     for (const auto &row : kTiers) {
-        if (row.supported()) {
+        if (row.preferred()) {
             return row;
         }
     }
     // Unreachable by construction: the baseline tier's predicate is the literal true. Kept because that
     // is a property of a generated table, and the table is generated from a list somebody can edit.
     throw std::runtime_error("No shipped ISA tier is executable on this CPU. Shipped tiers: "
-                             + join_tiers(/*supported_only=*/false));
+                             + join_tiers(/*runnable_only=*/false));
 }
 
 auto active_row() -> const TierRow & {
@@ -214,7 +218,7 @@ auto supported_tiers() -> std::vector<std::string_view> {
     probe_cpu();
     std::vector<std::string_view> out;
     for (const auto &row : kTiers) {
-        if (row.supported()) {
+        if (row.preferred()) {
             out.emplace_back(row.id);
         }
     }

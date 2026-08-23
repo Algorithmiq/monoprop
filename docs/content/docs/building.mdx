@@ -23,27 +23,39 @@ without MPI, so a from-source build is required for multi-rank runs.
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `monoprop_ENABLE_ARCH_FLAGS` | `ON` (`OFF` for the published wheels) | Compile with `-march=native` / `-xHost`. |
-| `monoprop_ENABLE_FAT_BINARY` | `OFF` (`ON` for the published `x86-64` wheels) | Compile the engine once per x86-64 ISA tier and select one at import. See [The Fat Binary](/fat-binary). |
-| `monoprop_FAT_MTUNE` | `skylake` | The `-mtune` value every fat-binary tier is scheduled for. |
+| `monoprop_ENABLE_TIERED_DSO` | `ON` on `x86-64` with GCC/Clang outside Debug, `OFF` otherwise | Compile the propagation kernel once per x86-64 ISA tier, one shared object each, and dispatch at run time. See [The Fat Binary](/fat-binary). |
+| `monoprop_ARCH_MARCH` | `default` (no `-march` flag) | The `-march` value a **single-ISA** build compiles with; `native` for this machine. Rejected when the tiered build is on, which sets `-march` per tier. |
+| `monoprop_FAT_MTUNE` | `skylake` | The `-mtune` value every tier is scheduled for. |
 | `monoprop_WIDE_TERM_INDEX` | `OFF` | 64-bit term indices, for partitions holding more than ~2^32 terms. |
 | `monoprop_ENABLE_MPI` | `OFF` | Multi-rank support, as above. |
 | `monoprop_SPARSE_ROW_MIN_MODES` | ISA-dependent | Mode count at or above which the operator store prefers sparse rows. |
 | `monoprop_NARROW_KERNEL_MAX_WORDS` | `4` | Storage word counts `1..N` for which the scan's per-term kernel is specialized; `0` disables it. |
 
-`monoprop_ENABLE_ARCH_FLAGS` and `monoprop_ENABLE_FAT_BINARY` are alternatives, not a
-pair. A source build wants the first: `-march=native` uses every instruction the
-machine has and beats any portable tier. A published wheel cannot use it at all, and
-gets the second instead. With the fat binary on, the tiers supply the architecture
-flags and `monoprop_ENABLE_ARCH_FLAGS` has no further effect.
+`monoprop_ENABLE_TIERED_DSO` and `monoprop_ARCH_MARCH` are alternatives, not a pair,
+and asking for both is a configure error rather than one of them being quietly
+ignored. The tiered build is the default and is what the published `x86-64` wheels
+are; `monoprop_ARCH_MARCH=native` is for a local build that wants one compile instead
+of five, and produces something that will `SIGILL` on any older CPU.
 
-`monoprop_SPARSE_ROW_MIN_MODES` follows `monoprop_ENABLE_ARCH_FLAGS` unless you set
-it explicitly: `768` with architecture flags on, `256` without them — and `256` for a
-fat binary, pinned across every tier so that a wide run's term order cannot depend on
-the host CPU. The crossover
-moves because dense monomials cost one pass per storage word while sparse rows are
-flat in the width, so a target without a vector `popcount` reaches the crossover
-sooner. The number is build-time because the ISA is.
+It is no longer the faster of the two, which it used to be assumed to be. Measured on
+a Zen 4 host, `-march=native` matches the tiered build on the 120-mode Hubbard model
+(2056 ms against 2059) and loses to it by 1% on the 127-qubit kicked-Ising one (363.2
+against 359.9) — because `native` implies `-mtune=znver4`, which selects 512-bit
+vectors, and the tiers carry both widths and pick the one that is actually faster
+here. So the reason to build single-ISA is build time, not speed.
+
+`monoprop_SPARSE_ROW_MIN_MODES` is `768` when `monoprop_ARCH_MARCH=native` and `256`
+otherwise, including for the tiered build, where it is pinned across every tier so
+that a wide run's term order cannot depend on the host CPU. The crossover moves
+because dense monomials cost one pass per storage word while sparse rows are flat in
+the width, so a target without a vector `popcount` reaches the crossover sooner. The
+number is build-time because the ISA is.
+
+One consequence, if you keep a stored baseline: a default build and a
+`monoprop_ARCH_MARCH=native` build pick different row backends on any case at or above
+256 storage modes, so they are not byte-comparable there. The term sets and values
+still agree — `just diff-baseline-sparse` is the comparison that holds across the two,
+`just diff-baseline` is not.
 
 Both values are measured end to end through the propagator, at the first whole
 32-mode storage block where sparse rows win by more than the run-to-run spread.
@@ -180,8 +192,10 @@ ctest --test-dir build/editable/Debug
 
 ### Related workflows
 
-- Use `just build-fat`, `just test-variants` and `just diff-baseline-variants` for the
-  multi-ISA build described in [The Fat Binary](/fat-binary).
+- Use `just test-variants` and `just diff-baseline-variants` to exercise every tier of
+  the multi-ISA build described in [The Fat Binary](/fat-binary), not only the one this
+  CPU selects; `just check-tier-symbols` is the build-time gate on it. Note that a
+  Debug tree is single-ISA, so none of the three applies there.
 - Use `just test-wide` for the 64-bit `monoprop_WIDE_TERM_INDEX` configuration.
 - Use `just code-coverage` for the coverage build.
 - Use `ctest --test-dir build/editable/Release -L serial` or `-L mpi-2` to

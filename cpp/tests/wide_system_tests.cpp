@@ -88,8 +88,8 @@ constexpr std::array<std::pair<CutoffType, unsigned int>, 2> kUntruncated{
 } // namespace
 
 // The premise the two cases below rest on. 288 storage modes is at or above the crossover a released
-// wheel is built with (monoprop_SPARSE_ROW_MIN_MODES is 256 unless -march=native moves it to 768), so on
-// a wheel this width selects the support-form store by itself; a dev build with arch flags on gets there
+// wheel is built with (monoprop_SPARSE_ROW_MIN_MODES is 256 unless monoprop_ARCH_MARCH=native moves it to
+// 768), so on a wheel this width selects the support-form store by itself; a native build gets there
 // through monoprop_ROW_STORE=sparse, i.e. the sparse-rows ctest variant. Asserted so that variant cannot
 // quietly have run dense rows a second time. Nine words also puts every monomial here on the heap.
 BOOST_AUTO_TEST_CASE(wide_case_stores_at_two_hundred_eighty_eight_modes) {

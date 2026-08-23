@@ -106,11 +106,13 @@ uv sync --all-extras -v
 uv sync --all-extras -v --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
 ```
 
-A source build compiles with `-march=native`, which is faster than any wheel and not
-portable off the build machine. The multi-ISA build the wheels use is off by default;
-`just build-fat` turns it on. (`just build-fat-tier-dso` builds a 39%-smaller shape of it that
-puts each tier in its own shared object; `just build-fat-narrow-seam` builds a smaller one still
-that does **not** deliver its tiers — see the fat-binary guide.)
+On `x86-64` that gives you the same multi-ISA build the wheels are: the propagation kernel
+compiled once per instruction-set tier, one shared object each, with the best one for the
+CPU chosen at run time. It measures as fast as `-march=native` or slightly faster, so
+there is no portable-versus-fast switch to set — see the
+[fat-binary guide](https://docs.monoprop.algorithmiq.tech/fat-binary). `just build-native`
+builds the single-ISA alternative instead, which is quicker to compile and will not run
+off this machine.
 
 C++ unit-test build:
 

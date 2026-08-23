@@ -76,7 +76,7 @@ def test_the_wide_case_sits_above_the_shipped_sparse_crossover(
     """The premise the rest of this module rests on: 260 logical modes stored at 288.
 
     288 is at or above the crossover a released wheel is built with
-    (``monoprop_SPARSE_ROW_MIN_MODES`` defaults to 256, and to 768 only when ``-march=native`` moves
+    (``monoprop_SPARSE_ROW_MIN_MODES`` defaults to 256, and to 768 only when ``monoprop_ARCH_MARCH=native`` moves
     it), so on a wheel this case reaches the support-form store on its own. A dev build with arch flags
     on selects dense rows at this width and reaches the other backend through
     ``monoprop_ROW_STORE=sparse`` (``just test-sparse-rows``) -- pinned below, so that run cannot

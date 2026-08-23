@@ -51,18 +51,42 @@ option(
 
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
-# Compile the engine once per x86-64 ISA tier and pick one when monoprop is imported. This is what
-# published wheels want and what a source build does not: a source build has -march=native, which is
-# strictly better than any tier, so the default is OFF. See cmake/compiler_flags/FatBinary.cmake and
-# docs/content/docs/fat-binary.mdx.
+# Compile the propagation kernel once per x86-64 ISA tier, each into its own shared object, and pick one
+# on first use. The one switch over how this library is built for a machine, and the shape published
+# wheels are: see cmake/compiler_flags/FatBinary.cmake and docs/content/docs/fat-binary.mdx.
+#
+# On by default wherever it can work, which is the point -- a portable build and a fast one used to be
+# alternatives here, and a wheel had to pick portable. The default is computed rather than a literal
+# because there are three ways it cannot work, and in all three a single-ISA build is not a fallback but
+# the correct shape: a non-x86-64 target has one relevant ISA, a compiler without __builtin_cpu_supports
+# cannot dispatch, and a Debug build wants one quick compile rather than five. Asking for it anyway in
+# the first two cases is a configure error, not a silent downgrade.
+if(
+  CMAKE_SYSTEM_PROCESSOR
+    MATCHES
+    "^(x86_64|amd64|AMD64)$"
+  AND
+    CMAKE_CXX_COMPILER_ID
+      MATCHES
+      "^(GNU|Clang|AppleClang)$"
+  AND
+    NOT
+      CMAKE_BUILD_TYPE
+        STREQUAL
+        "Debug"
+)
+  set(_monoprop_tiered_dso_default ON)
+else()
+  set(_monoprop_tiered_dso_default OFF)
+endif()
 option(
-  monoprop_ENABLE_FAT_BINARY
-  "Build one copy of the engine per x86-64 ISA tier and dispatch at import time"
-  OFF
+  monoprop_ENABLE_TIERED_DSO
+  "Compile the propagation kernel once per x86-64 ISA tier, one shared object each, and dispatch at run time"
+  ${_monoprop_tiered_dso_default}
 )
 
 # Empty means "take the default for this ISA", resolved below once CXXFlags.cmake has defined
-# monoprop_ENABLE_ARCH_FLAGS. A cache entry so a build can pin the crossover explicitly.
+# monoprop_ARCH_MARCH. A cache entry so a build can pin the crossover explicitly.
 set(
   monoprop_SPARSE_ROW_MIN_MODES
   ""
@@ -145,19 +169,19 @@ include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
 # read does, so cache and popcount throughput move it. Both directions cost only a few percent near
 # the crossing, which is why the first *clear* win is the threshold rather than the first win.
 #
-# A fat binary pins one value across every tier rather than following each tier's capability, even
-# though only the top tier has a vector popcount and 768 is the measured crossing there. The two
+# A tiered build pins one value across every tier rather than following each tier's capability, even
+# though only the top tiers have a vector popcount and 768 is the measured crossing there. The two
 # backends agree on term sets and values but not on term *order*, so a per-tier threshold would make a
 # wide run's accumulation order -- and hence its energy in the last bits -- depend on which CPU the
-# wheel landed on. 256 is the value three of the four tiers want and the value today's wheels already
-# use, so nothing regresses; the top tier gives up a few percent on systems at or above 256 modes.
-# One consequence to expect: a fat capture and a monoprop_ENABLE_ARCH_FLAGS=ON capture disagree on
-# any case at or above 256 storage modes, because they pick different backends there. Compare fat
-# against fat -- `just diff-baseline-variants`, not `just diff-baseline`.
+# wheel landed on. 256 is the value the lower tiers want and the value today's wheels already use, so
+# nothing regresses; the top tiers give up a few percent on systems at or above 256 modes.
+#
+# One consequence to expect: a tiered capture and a monoprop_ARCH_MARCH=native capture disagree on any
+# case at or above 256 storage modes, because they pick different backends there. Compare like with
+# like -- `just diff-baseline-variants` across the tiers, and `just diff-baseline` only against a
+# baseline captured from the same shape.
 if(monoprop_SPARSE_ROW_MIN_MODES STREQUAL "")
-  if(monoprop_ENABLE_FAT_BINARY)
-    set(monoprop_SPARSE_ROW_MIN_MODES 256)
-  elseif(monoprop_ENABLE_ARCH_FLAGS)
+  if(monoprop_ARCH_MARCH STREQUAL "native")
     set(monoprop_SPARSE_ROW_MIN_MODES 768)
   else()
     set(monoprop_SPARSE_ROW_MIN_MODES 256)
@@ -179,11 +203,11 @@ message(
   "   Build-type-specific    : ${_cmake_build_type_specific_flags}"
 )
 message(STATUS "   Vectorization flag     : ${ARCH_FLAG}")
-message(STATUS "   Fat binary             : ${monoprop_ENABLE_FAT_BINARY}")
-if(monoprop_ENABLE_FAT_BINARY)
-  message(STATUS "   Fat binary mode        : ${monoprop_FAT_BINARY_MODE}")
+message(STATUS "   Tiered ISA build       : ${monoprop_ENABLE_TIERED_DSO}")
+if(monoprop_ENABLE_TIERED_DSO)
   message(STATUS "   ISA tiers              : ${monoprop_FAT_TIERS}")
   message(STATUS "   Tier tuning            : -mtune=${monoprop_FAT_MTUNE}")
+  message(STATUS "   Narrow-vector cores    : ${_monoprop_narrow_cores}")
   message(STATUS "   Baseline ISA floor     : ${_monoprop_baseline_flags}")
 endif()
 message(

@@ -34,8 +34,8 @@
 // runtime knob because what moves the crossover is the target ISA, which is fixed when the translation
 // unit is compiled: dense costs one pass per storage word and sparse is flat in the width, so without a
 // vector popcount the dense pass degrades an order of magnitude sooner. Set from CMake off
-// monoprop_ENABLE_ARCH_FLAGS (see the top-level CMakeLists for the measured values); the fallback here
-// is the conservative baseline-x86-64 one, so a consumer compiling these headers without the project's
+// monoprop_ARCH_MARCH (see the top-level CMakeLists for the measured values); the fallback here is the
+// conservative baseline-x86-64 one, so a consumer compiling these headers without the project's
 // definitions gets the value that suits the wheels rather than the developer's machine.
 #if !defined(monoprop_SPARSE_ROW_MIN_MODES)
 #define monoprop_SPARSE_ROW_MIN_MODES 256

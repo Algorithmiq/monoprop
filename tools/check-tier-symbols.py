@@ -13,37 +13,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Whether a seam-mode fat binary actually kept its ISA tiers, or lost them to the linker.
+"""Whether a tiered build actually kept its ISA tiers, or lost them to the linker.
 
-The failure this exists for. A tiered translation unit reaches the compiler once per ISA tier, so its
+The failure this exists for. The tiered translation unit reaches the compiler once per ISA tier, so its
 objects genuinely differ -- one has ``vpopcntq`` in it and another does not. But almost everything in
 those objects is a *template instantiation*, emitted as a weak COMDAT symbol whose mangled name says
-nothing about the tier. The linker keeps one definition per name and discards the rest, so if all four
-tiers arrive in one link they collapse to whichever the link line listed first, and the run-time
-dispatch then selects between four entry points that all call the same code.
+nothing about the tier. The linker keeps one definition per name and discards the rest, so tiers that
+arrive in one link collapse to whichever the link line listed first, and the run-time dispatch then
+selects between entry points that all call the same code. Giving each tier its own shared object is what
+prevents that -- COMDAT deduplication is per link -- and this is the check that it worked.
 
 It is invisible from the outside: the module loads, every tier reports its own identity, every tier
 returns bit-identical numbers, and the whole suite passes. Only a benchmark notices, and only if you
 already suspect it -- which is why this is a build-time check and not a test.
 
-The two seam packagings therefore get different checks, chosen by the mode in the tree's CMakeCache:
-
-``tier-dso``    each tier is its own shared object, so each is its own link and the deduplication
-                happens inside a tier instead of across them. Checked structurally: no tier exports a
-                monoprop symbol another one does (nothing to interpose at run time either), every
-                monoprop symbol a tier imports is exported by the module that will load it (or it dies
-                at load with a symbol lookup error), the baseline tier and the shared module hold no
-                widened instruction at all, and the tiers above baseline do.
-
-``narrow-seam`` all four tiers arrive in one link as object libraries. Checked by weak-symbol
-                disjointness, which is the thing that fails -- this mode is a recorded negative result,
-                not a configuration to fix.
+What it checks, per shared object: that no tier exports a ``monoprop`` symbol another one does (so there
+is nothing to interpose at run time either), that every ``monoprop`` symbol a tier imports is exported
+by the module that will load it (or it dies at load with a symbol lookup error), that the baseline tier
+and the shared module hold no widened instruction at all while the tiers above baseline do, and the one
+thing no feature query could establish -- that the two vector-width tiers, which require identical CPU
+features and differ only in ``-mprefer-vector-width``, really did get different widths.
 
 Run it against a build tree::
 
     tools/check-tier-symbols.py build/editable/Release
 
-Exit status is 0 when the tiers are intact, 1 otherwise.
+Exit status is 0 when the tiers are intact, 1 otherwise. A single-ISA build has nothing to check and
+exits 0.
 """
 
 from __future__ import annotations
@@ -55,10 +51,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# One directory per tier in narrow-seam mode, named by CMake from the tier id.
-_TIER_DIR = re.compile(r"^monoprop-tier-(?P<slug>.+)\.dir$")
-
-# One shared object per tier in tier-dso mode, named by CMake from the tier id itself.
+# One shared object per tier, named by CMake from the tier id itself.
 _TIER_DSO = re.compile(r"^libmonoprop-tier-(?P<tier>.+)\.so$")
 
 # An objdump -d instruction line: leading blanks, hex address, colon, tab, mnemonic, operands.
@@ -113,17 +106,6 @@ def wide_census(target: Path) -> collections.Counter[str]:
     return counts
 
 
-def weak_symbols(obj: Path) -> set[str]:
-    """Names of the weak definitions in one object -- i.e. everything the linker may deduplicate."""
-    names = set()
-    for line in _run(["nm", "--defined-only", str(obj)]).splitlines():
-        fields = line.split()
-        # "<addr> <type> <name>"; W/w is a weak definition, which for C++ means a COMDAT
-        if len(fields) == 3 and fields[1] in {"W", "w", "V", "v"}:
-            names.add(fields[2])
-    return names
-
-
 def dynamic_symbols(target: Path) -> tuple[dict[str, str], set[str]]:
     """``({exported name: type letter}, {imported name})`` from one module's dynamic symbol table."""
     exported: dict[str, str] = {}
@@ -142,15 +124,15 @@ def _demangle(name: str) -> str:
 
 
 def _census_row(label: str, counts: collections.Counter[str]) -> str:
-    return f"{label:44s} " + " ".join(f"{counts[k]:>9d}" for k in _WIDE)
+    return f"{label:48s} " + " ".join(f"{counts[k]:>9d}" for k in _WIDE)
 
 
 def _census_header() -> str:
-    return f"{'module':44s} " + " ".join(f"{k:>9s}" for k in _WIDE)
+    return f"{'module':48s} " + " ".join(f"{k:>9s}" for k in _WIDE)
 
 
 def find_tier_dsos(build_dir: Path) -> dict[str, Path]:
-    """One shared object per tier, keyed by tier id -- non-empty only in tier-dso mode."""
+    """One shared object per tier, keyed by tier id -- empty in a single-ISA build."""
     found: dict[str, Path] = {}
     for path in sorted(build_dir.rglob("libmonoprop-tier-*.so")):
         match = _TIER_DSO.match(path.name)
@@ -159,21 +141,8 @@ def find_tier_dsos(build_dir: Path) -> dict[str, Path]:
     return found
 
 
-def find_tier_objects(build_dir: Path) -> dict[str, list[Path]]:
-    """The tiered objects per tier slug, from the directory names CMake generates in narrow-seam mode."""
-    found: dict[str, list[Path]] = {}
-    for entry in sorted((build_dir / "CMakeFiles").glob("monoprop-tier-*.dir")):
-        match = _TIER_DIR.match(entry.name)
-        if match is None:
-            continue
-        objects = sorted(entry.rglob("*.o"))
-        if objects:
-            found[match.group("slug")] = objects
-    return found
-
-
 def find_module(build_dir: Path) -> Path | None:
-    """The one shared extension module a seam-mode build produces, if it has been linked yet."""
+    """The one shared extension module the build produces, if it has been linked yet."""
     candidates = sorted(build_dir.rglob("_core*.so"))
     return candidates[0] if candidates else None
 
@@ -196,6 +165,44 @@ def _check_tier_widths(census: dict[str, collections.Counter[str]]) -> list[str]
         problems.append(
             "no tier above the baseline holds a single widened instruction: the tiers are compiled "
             "but carry the same code, so the run-time dispatch has nothing to choose between"
+        )
+    return problems
+
+
+# The two tiers that are one instruction set at two vector widths. Their ids differ only in this
+# suffix, which is also the -mprefer-vector-width value they were compiled with.
+_VW_SUFFIX = re.compile(r"-vw(?P<width>256|512)$")
+
+
+def _check_vector_widths(census: dict[str, collections.Counter[str]]) -> list[str]:
+    """A width tier has to have got the width it is named for.
+
+    The one check in here that a feature query could not have made. These two tiers require identical
+    CPU features and differ only in a tuning flag, so nothing about the dispatch, the symbol tables or
+    the answers distinguishes them -- if -mprefer-vector-width stopped reaching the compiler the pair
+    would still build, load, dispatch and agree, and the wheel would just carry a duplicate.
+    """
+    problems: list[str] = []
+    widths: dict[str, int] = {}
+    for tier, counts in census.items():
+        match = _VW_SUFFIX.search(tier)
+        if match is None:
+            continue
+        widths[match.group("width")] = counts["zmm"]
+        if match.group("width") == "256" and counts["zmm"]:
+            problems.append(
+                f"tier {tier} was compiled -mprefer-vector-width=256 and holds {counts['zmm']} "
+                "zmm instruction(s) anyway"
+            )
+        if match.group("width") == "512" and not counts["zmm"]:
+            problems.append(
+                f"tier {tier} was compiled -mprefer-vector-width=512 and holds no zmm instruction, "
+                "so it is a copy of the 256-bit tier under another name"
+            )
+    if len(widths) == 2 and widths.get("256") == widths.get("512"):
+        problems.append(
+            "the 256-bit and 512-bit tiers hold the same number of zmm instructions "
+            f"({widths['256']}): the width flag is not reaching the compiler"
         )
     return problems
 
@@ -268,7 +275,7 @@ def _report_seam_abi(
     return problems
 
 
-def check_tier_dso(dsos: dict[str, Path], module: Path | None) -> int:
+def check_tiers(dsos: dict[str, Path], module: Path | None) -> int:
     """The structural checks for one-shared-object-per-tier."""
     failures: list[str] = []
 
@@ -290,9 +297,9 @@ def check_tier_dso(dsos: dict[str, Path], module: Path | None) -> int:
                 module.name + "  (shared, every machine runs it)", module_census
             )
         )
-        # The safety property, and the one narrow-seam could not offer: what every machine executes
-        # regardless of its CPU must hold nothing above the baseline. Reachability arguments are not
-        # good enough here -- a wheel's ISA floor has to be structural.
+        # The safety property: what every machine executes regardless of its CPU must hold nothing
+        # above the baseline. Reachability arguments are not good enough here -- a wheel's ISA floor
+        # has to be structural, not a matter of which code a dispatch happens to reach.
         leaked = {k: module_census[k] for k in _BASELINE_FORBIDDEN if module_census[k]}
         if leaked:
             failures.append(
@@ -302,6 +309,7 @@ def check_tier_dso(dsos: dict[str, Path], module: Path | None) -> int:
             )
 
     failures += _check_tier_widths(census)
+    failures += _check_vector_widths(census)
     failures += _check_tier_exports(exports)
     failures += _report_seam_abi(dsos, exports, imports, module, module_exports)
     if failures:
@@ -316,85 +324,25 @@ def check_tier_dso(dsos: dict[str, Path], module: Path | None) -> int:
     return 0
 
 
-def check_narrow_seam(objects: dict[str, list[Path]], module: Path | None) -> int:
-    """The weak-symbol disjointness check for all-four-tiers-in-one-link. Expected to fail."""
-    _out(
-        f"{'tier':24s} {'objects':>8s} {'weak syms':>10s} "
-        + " ".join(f"{k:>9s}" for k in _WIDE)
-    )
-    per_tier: dict[str, set[str]] = {}
-    for slug, objs in objects.items():
-        weak: set[str] = set()
-        counts: collections.Counter[str] = collections.Counter()
-        for obj in objs:
-            weak |= weak_symbols(obj)
-            counts.update(wide_census(obj))
-        per_tier[slug] = weak
-        _out(
-            f"{slug:24s} {len(objs):8d} {len(weak):10d} "
-            + " ".join(f"{counts[k]:9d}" for k in _WIDE)
-        )
+def is_tiered(build_dir: Path) -> bool | None:
+    """Whether this tree was *configured* tiered, from its own CMakeCache; None if unconfigured.
 
-    if module is not None:
-        counts = wide_census(module)
-        _out(
-            f"\n{'linked ' + module.name:24s} {'':8s} {'':10s} "
-            + " ".join(f"{counts[k]:9d}" for k in _WIDE)
-        )
-
-    owners: dict[str, list[str]] = collections.defaultdict(list)
-    for slug, weak in per_tier.items():
-        for name in weak:
-            owners[name].append(slug)
-    shared = {name: slugs for name, slugs in owners.items() if len(slugs) > 1}
-
-    if not shared:
-        _out(
-            "\nOK: every tier's weak symbols are its own; the linker keeps all of them."
-        )
-        return 0
-
-    _err(
-        f"\nFAIL: {len(shared)} weak symbol(s) are defined by more than one tier. The linker keeps one "
-        "definition per name, so those tiers run the same code -- whichever the link line lists first "
-        "-- whatever the run-time dispatch selected. This is the known narrow-seam defect; build with "
-        "monoprop_FAT_BINARY_MODE=tier-dso instead."
-    )
-    for name in sorted(shared)[:5]:
-        _err(f"  {', '.join(sorted(shared[name]))}: {_demangle(name)[:150]}")
-    if len(shared) > 5:
-        _err(f"  ... and {len(shared) - 5} more")
-    return 1
-
-
-def configured_mode(build_dir: Path) -> str:
-    """The fat-binary shape this tree was *configured* for, from its own CMakeCache.
-
-    Read rather than inferred from which artefacts are on disk. A build tree is incremental and mode
-    switches leave the previous shape's outputs in place -- a narrow-seam build over a tier-dso one
-    still has four libmonoprop-tier-*.so lying beside it -- so file presence identifies the last mode
-    that ran, not the one that produced the module being checked.
+    Read rather than inferred from which artefacts are on disk. A build tree is incremental and turning
+    the option off leaves the previous shape's outputs in place, so file presence identifies the last
+    configuration that ran and not the one that produced the module being checked.
     """
     cache = build_dir / "CMakeCache.txt"
     if not cache.is_file():
-        return "unconfigured"
-    settings: dict[str, str] = {}
+        return None
     for line in cache.read_text().splitlines():
-        match = re.match(r"^(?P<key>monoprop_[A-Z_]+):[A-Z]+=(?P<value>.*)$", line)
+        match = re.match(r"^monoprop_ENABLE_TIERED_DSO:[A-Z]+=(?P<value>.*)$", line)
         if match is not None:
-            settings[match.group("key")] = match.group("value")
-    if settings.get("monoprop_ENABLE_FAT_BINARY", "OFF").upper() not in {
-        "ON",
-        "TRUE",
-        "1",
-        "YES",
-    }:
-        return "single-isa"
-    return settings.get("monoprop_FAT_BINARY_MODE", "whole-library")
+            return match.group("value").upper() in {"ON", "TRUE", "1", "YES"}
+    return False
 
 
 def main() -> int:
-    """Read which seam packaging this build tree was configured for, and run that shape's checks."""
+    """Check a tiered build tree's per-tier shared objects; a single-ISA tree has nothing to check."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "build_dir",
@@ -409,33 +357,27 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    tiered = is_tiered(args.build_dir)
+    if tiered is None:
+        _err(f"{args.build_dir} holds no CMakeCache.txt; configure it first")
+        return 1
+    if not tiered:
+        _out(
+            f"nothing to check: {args.build_dir} is configured monoprop_ENABLE_TIERED_DSO=OFF, so it "
+            "ships one ISA and there is no dispatch for the linker to hollow out"
+        )
+        return 0
+
+    dsos = find_tier_dsos(args.build_dir)
+    if not dsos:
+        _err(
+            f"{args.build_dir} is configured tiered but holds no libmonoprop-tier-*.so; build it first"
+        )
+        return 1
+
     module = args.module if args.module is not None else find_module(args.build_dir)
-    mode = configured_mode(args.build_dir)
-    _out(f"{args.build_dir}: monoprop_FAT_BINARY_MODE={mode}\n")
-
-    if mode == "tier-dso":
-        dsos = find_tier_dsos(args.build_dir)
-        if not dsos:
-            _err(
-                f"{args.build_dir} is configured tier-dso but holds no libmonoprop-tier-*.so; build it first"
-            )
-            return 1
-        return check_tier_dso(dsos, module)
-
-    if mode == "narrow-seam":
-        objects = find_tier_objects(args.build_dir)
-        if not objects:
-            _err(
-                f"{args.build_dir} is configured narrow-seam but holds no tiered objects; build it first"
-            )
-            return 1
-        return check_narrow_seam(objects, module)
-
-    _err(
-        f"nothing to check: {mode} puts each tier in its own module (or has only one), where there is "
-        "no single link for the tiers to collapse inside"
-    )
-    return 0
+    _out(f"{args.build_dir}: {len(dsos)} ISA tier(s)\n")
+    return check_tiers(dsos, module)
 
 
 if __name__ == "__main__":

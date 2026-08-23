@@ -33,6 +33,10 @@ auto active_tier_flags() -> std::string_view;
 /// Every tier this build ships, best ISA first; empty when the build ships a single tier.
 auto shipped_tiers() -> std::vector<std::string_view>;
 
-/// The subset of shipped_tiers() the running CPU can execute, best first.
+/// The subset of shipped_tiers() this CPU would be *given*, best first; the first is what loaded.
+///
+/// Not quite the same as the subset it can execute, and deliberately so: two tiers differ only in vector
+/// width, which is a tuning question rather than a capability one, so a CPU that can run 512-bit code but
+/// is measurably better off without it does not offer that tier here. monoprop_VARIANT can still pin it.
 auto supported_tiers() -> std::vector<std::string_view>;
 } // namespace monoprop

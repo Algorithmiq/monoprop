@@ -74,49 +74,31 @@ test-mpi RANKS='':
     ctest --test-dir build/editable/Release --output-on-failure; \
     done
 
-# Build the fat binary: the engine compiled once per x86-64 ISA tier, with one selected when
-# monoprop is imported. This is what published wheels are, and it is *not* what a source build wants
-# -- -march=native beats every tier -- so it is a separate recipe rather than the default. Note
-# `uv run --no-sync` for everything afterwards: a plain `uv run` re-syncs without the config setting
-# and silently replaces the fat build with a single-ISA one.
+# The tiered build is what a plain `uv sync` gives you and what published wheels are, so there is no
+# recipe for it. This is the other shape: one compile, for this machine only, which is what a tight
+# edit-build-test loop wants -- five tier compiles to find out whether a test passes is four too many.
+# Unshippable by construction, and it says so in monoprop.__variant__.
 
-build-fat:
-    uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_FAT_BINARY=ON"
-    uv run --no-sync python -c 'import monoprop; print("loaded", monoprop.__variant__, "of", monoprop.available_variants())'
+build-native:
+    uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_TIERED_DSO=OFF" --config-settings-package="monoprop:cmake.define.monoprop_ARCH_MARCH=native"
+    uv run --no-sync python -c 'import monoprop; print("loaded", monoprop.__variant__, "of", monoprop.available_variants() or "(single ISA)")'
 
-# The seam, packaged as one shared object per tier: one extension module, plus
-# monoprop/lib/libmonoprop-tier-<id>.so for each tier. 39% smaller than build-fat and measures the same
-# tier for tier, because a shared object is its own link and the template instantiations deduplicate
-# inside a tier instead of across all four. `check-tier-symbols` is the gate.
-
-build-fat-tier-dso:
-    uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_FAT_BINARY=ON" --config-settings-package="monoprop:cmake.define.monoprop_FAT_BINARY_MODE=tier-dso"
-    uv run --no-sync python -c 'import monoprop; print("loaded", monoprop.__variant__, "of", monoprop.available_variants())'
-
-# The narrow-seam experiment: the same seam, but all four tiers in one link as object libraries. Builds,
-# passes everything and is smaller still -- and does not deliver a tier, because the linker deduplicates
-# the four copies of every template instantiation down to one. `check-tier-symbols` is the gate that
-# says so; it fails on purpose. Kept for the measurement. Do not ship this; use build-fat-tier-dso.
-
-build-fat-narrow-seam:
-    uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_FAT_BINARY=ON" --config-settings-package="monoprop:cmake.define.monoprop_FAT_BINARY_MODE=narrow-seam"
-    uv run --no-sync python -c 'import monoprop; print("loaded", monoprop.__variant__, "of", monoprop.available_variants())'
-
-# Whether a seam-mode build kept its ISA tiers past the linker. Nothing else notices: the tiers agree on
-# every answer, so the whole suite passes even when they run identical code. Checks weak-symbol
-# disjointness under narrow-seam, and under tier-dso the export/import contract plus a per-module
-# instruction census. A whole-library build has nothing to check and exits 0.
+# Whether a tiered build kept its ISA tiers past the linker. Nothing else notices: the tiers agree on
+# every answer, so the whole suite passes even when they run identical code. Checks the export/import
+# contract between the tiers and the module that loads them, a per-module instruction census, and that
+# the two vector-width tiers really did get different widths. A single-ISA build exits 0.
 
 check-tier-symbols BUILD_DIR='build/editable/Release':
     uv run --no-sync python tools/check-tier-symbols.py "{{ BUILD_DIR }}"
 
-# Run the Python suite once per installed ISA variant, not just the one this CPU selects. Without
-# this the lower tiers ship untested on every developer machine and every CI runner, since the
-# dispatch always picks the best one available.
+# Run the Python suite once per shipped ISA tier, not just the one this CPU selects. Without this the
+# other tiers ship untested on every developer machine and every CI runner, since the dispatch always
+# picks the best one available. That includes the tier pair differing only in vector width: on any one
+# machine exactly one of the two is ever chosen without a pin.
 
 test-variants:
     variants=$(uv run --no-sync python -c 'import monoprop; print(" ".join(monoprop.available_variants()))'); \
-    if [ -z "$variants" ]; then echo "not a fat binary; run 'just build-fat' first" >&2; exit 1; fi; \
+    if [ -z "$variants" ]; then echo "not a tiered build: monoprop_ENABLE_TIERED_DSO is off here" >&2; exit 1; fi; \
     for v in $variants; do \
     echo "=== monoprop_VARIANT=$v"; \
     monoprop_VARIANT="$v" uv run --no-sync python -m pytest -m "not mpi" -q; \
@@ -128,7 +110,7 @@ test-variants:
 
 diff-baseline-variants:
     variants=$(uv run --no-sync python -c 'import monoprop; print(" ".join(monoprop.available_variants()))'); \
-    if [ -z "$variants" ]; then echo "not a fat binary; run 'just build-fat' first" >&2; exit 1; fi; \
+    if [ -z "$variants" ]; then echo "not a tiered build: monoprop_ENABLE_TIERED_DSO is off here" >&2; exit 1; fi; \
     rm -rf "{{ baseline_dir }}/variants"; \
     for v in $variants; do \
     monoprop_VARIANT="$v" uv run --no-sync python tools/capture-baseline.py --out "{{ baseline_dir }}/variants/$v"; \

@@ -70,133 +70,59 @@ else()
   set(_rpath_origin "$ORIGIN")
 endif()
 
-# Build one binding module.
+# The binding module. One translation unit: MonomialPropagator is a single class, so there is nothing
+# here to generate or to split into per-mode-width batches. What there *is* to split is the ISA, and the
+# tiers do that behind the run-time seam rather than here, so this TU is compiled once, at the baseline.
 #
-# One translation unit: MonomialPropagator is a single class, so there is nothing to generate or to
-# split into per-mode-width batches. What there *is* to split is the ISA, and OBJS is how: the engine
-# object libraries this module links carry their arch flags as compile options, so bindings.cpp is
-# compiled with them and not merely linked against them. That matters -- the class's inline header
-# methods and every template it instantiates land in this TU.
+# Which is a decision made by the scope in _monoprop_configure_engine_objs and not by anything below:
+# the engine libraries this module links carry their arch flags as compile *options*, so a PUBLIC one
+# would reach bindings.cpp -- and only monoprop-objs' baseline is PUBLIC. The tiers' flags are PRIVATE,
+# because this one module links all of them at once and inheriting any of them would mean compiling this
+# TU at whichever tier the linker happened to order last.
 #
-# Whether they reach it is the difference between the fat-binary modes, and it is decided by the scope
-# those flags were attached with (_monoprop_configure_engine_objs). Whole-library: PUBLIC, one module per
-# tier, so this TU is at the tier too. The seam modes: the tier targets' flags are PRIVATE and only
-# monoprop-objs' baseline is PUBLIC, because this one module links every tier at once.
-#
-# Every module is named `_core` on disk whatever its target is called, because CPython derives the
-# init function it looks for from the last component of the module name it is asked to load, and the
-# loader asks for `monoprop._core` for all of them. `destination` and `output_dir` are what keep the
-# identically-named files apart.
-function(_monoprop_add_binding_module)
-  set(
-    _one_value_args
-    TARGET
-    DESTINATION
-    OUTPUT_DIR
+# monoprop_TIERED_TARGETS is the per-tier shared objects, a DT_NEEDED each; it is empty in a single-ISA
+# build, where monoprop-objs carries the kernel itself.
+nanobind_add_module(_core
+  NB_SUPPRESS_WARNINGS  # suppress warnings from nanobind and Python headers
+  NOMINSIZE  # don’t perform optimizations to minimize binary size
+  LTO  # perform link-time optimization
+  BACKEND_MODULE nanobind_backend  # nanobind 3 split mode; rules out STABLE_ABI and NB_STATIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
+)
+
+target_include_directories(
+  _core
+  SYSTEM
+  PRIVATE
+    $<IF:$<BOOL:${mpi4py_FOUND}>,${mpi4py_INCLUDE_DIRS},>
+  PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(
+  _core
+  PRIVATE
+    monoprop-objs
+    ${monoprop_TIERED_TARGETS}
+)
+
+set_target_properties(
+  _core
+  PROPERTIES
+    MACOSX_RPATH
+      ON
+    SKIP_BUILD_RPATH
+      OFF
+    BUILD_WITH_INSTALL_RPATH
+      OFF
     INSTALL_RPATH
-  )
-  cmake_parse_arguments(PARSE_ARGV 0 _arg "" "${_one_value_args}" "OBJS")
+      "${_rpath_origin}/${CMAKE_INSTALL_LIBDIR}"
+    INSTALL_RPATH_USE_LINK_PATH
+      ON
+)
 
-  nanobind_add_module(${_arg_TARGET}
-    NB_SUPPRESS_WARNINGS  # suppress warnings from nanobind and Python headers
-    NOMINSIZE  # don’t perform optimizations to minimize binary size
-    LTO  # perform link-time optimization
-    BACKEND_MODULE nanobind_backend  # nanobind 3 split mode; rules out STABLE_ABI and NB_STATIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
-  )
-
-  target_include_directories(
-    ${_arg_TARGET}
-    SYSTEM
-    PRIVATE
-      $<IF:$<BOOL:${mpi4py_FOUND}>,${mpi4py_INCLUDE_DIRS},>
-    PRIVATE
-      ${CMAKE_CURRENT_BINARY_DIR}
-      ${CMAKE_CURRENT_SOURCE_DIR}
-  )
-
-  target_link_libraries(${_arg_TARGET} PRIVATE ${_arg_OBJS})
-
-  set_target_properties(
-    ${_arg_TARGET}
-    PROPERTIES
-      OUTPUT_NAME
-        "_core"
-      LIBRARY_OUTPUT_DIRECTORY
-        "${_arg_OUTPUT_DIR}"
-      MACOSX_RPATH
-        ON
-      SKIP_BUILD_RPATH
-        OFF
-      BUILD_WITH_INSTALL_RPATH
-        OFF
-      INSTALL_RPATH
-        "${_arg_INSTALL_RPATH}"
-      INSTALL_RPATH_USE_LINK_PATH
-        ON
-  )
-
-  install(TARGETS ${_arg_TARGET} LIBRARY DESTINATION ${_arg_DESTINATION})
-endfunction()
-
-if(monoprop_ENABLE_FAT_BINARY AND NOT monoprop_FAT_NARROW_SEAM)
-  foreach(_tier IN LISTS monoprop_FAT_TIERS)
-    monoprop_tier_targets(TIER "${_tier}" OBJS_VAR _tier_objs)
-    _monoprop_tier_slug("${_tier}" _slug)
-    _monoprop_add_binding_module(
-      TARGET _core-${_slug}
-      OBJS ${_tier_objs}
-      DESTINATION ${PROJECT_NAME}/_variants/${_tier}
-      OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/_variants/${_tier}
-      # two levels deeper than a single-variant build: monoprop/_variants/<tier>/ -> monoprop/lib
-      INSTALL_RPATH "${_rpath_origin}/../../${CMAKE_INSTALL_LIBDIR}"
-    )
-  endforeach()
-
-  # The probe the import-time dispatch runs before it can load anything else, so it is the one
-  # extension that must execute on every machine the wheel installs on: baseline ISA, appended last so
-  # a CXXFLAGS from the environment cannot widen it, and linked against no engine object library so it
-  # cannot inherit a tier's flags either.
-  nanobind_add_module(_isa
-   STABLE_ABI
-    NB_SUPPRESS_WARNINGS
-    NB_STATIC
-    NOMINSIZE
-    ${CMAKE_CURRENT_SOURCE_DIR}/isa.cpp
-  )
-  target_include_directories(_isa PRIVATE ${PROJECT_BINARY_DIR}/include)
-  target_compile_options(
-    _isa
-    PRIVATE
-      -march=x86-64
-      -mtune=${monoprop_FAT_MTUNE}
-  )
-  install(TARGETS _isa LIBRARY DESTINATION ${PROJECT_NAME})
-else()
-  # One module for every tier at once in the seam modes: monoprop_TIERED_TARGETS carries the per-tier
-  # copies of the kernel -- object libraries under narrow-seam, shared objects under tier-dso, a
-  # DT_NEEDED each -- and is empty in a single-ISA build. Their arch flags are PRIVATE, so bindings.cpp
-  # compiles at the baseline here and not at whichever tier links last.
-  _monoprop_add_binding_module(
-    TARGET _core
-    OBJS monoprop-objs ${monoprop_TIERED_TARGETS}
-    DESTINATION ${PROJECT_NAME}
-    OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}
-    INSTALL_RPATH "${_rpath_origin}/${CMAKE_INSTALL_LIBDIR}"
-  )
-endif()
-
-# Which module the typing stub is generated from. Every tier exposes the same API -- they differ only
-# in the instructions behind it -- so the baseline is as good as any, and it is the one guaranteed to
-# import on the machine doing the build.
-if(monoprop_ENABLE_FAT_BINARY AND NOT monoprop_FAT_NARROW_SEAM)
-  list(GET monoprop_FAT_TIERS 0 _stub_tier)
-  set(_stub_python_path "${PROJECT_NAME}/_variants/${_stub_tier}")
-else()
-  # Narrow-seam mode included: there is one module, in the package root, exactly as in a single-ISA
-  # build. Its tiers are inside it.
-  set(_stub_python_path "${PROJECT_NAME}")
-endif()
+install(TARGETS _core LIBRARY DESTINATION ${PROJECT_NAME})
 
 # generation of Python typing stubs
 # NOTE must come after installing the modules above
@@ -204,7 +130,7 @@ nanobind_add_stub(_core_stub
   INSTALL_TIME  # Stub generation postponed to the installation phase.
   MODULE _core  # Specifies the name of the module that should be imported.
   OUTPUT "${PROJECT_NAME}/_core.pyi"  # Specifies the name of the stub file that should be written.
-  PYTHON_PATH "${_stub_python_path}"  # List of search paths - relative to CMAKE_INSTALL_PREFIX - that should be considered when importing the module.
+  PYTHON_PATH "${PROJECT_NAME}"  # List of search paths - relative to CMAKE_INSTALL_PREFIX - that should be considered when importing the module.
   VERBOSE  # Show status messages generated by stubgen.
   MARKER_FILE "${PROJECT_NAME}/py.typed"  # Automatically generate an empty marker file.
 )

@@ -129,11 +129,11 @@ exists for. That is what the wide case is for: `tests/test_wide_system.py` and
 system, which stores at 288 modes — nine words per monomial, an active window 28
 modes short of its storage, and mode lanes past the first codes word. Nine words is
 also past the eight that fit inline in a `Bitset`, so this is the only case in either
-suite that propagates monomials whose words live on the heap. A released wheel
-selects sparse rows at that width on its own; a build with
-`monoprop_ENABLE_ARCH_FLAGS` on gets there through `monoprop_ROW_STORE=sparse`, and
-both suites assert they did, so the sparse variant cannot silently be a second dense
-run. See `tests/data/README.md` on why a wide case is derived rather than checked
+suite that propagates monomials whose words live on the heap. A released wheel and a default source build
+both select sparse rows at that width on their own; a build with
+`monoprop_ARCH_MARCH=native` (crossover `768`) gets there through
+`monoprop_ROW_STORE=sparse`, and both suites assert they did, so the sparse variant
+cannot silently be a second dense run. See `tests/data/README.md` on why a wide case is derived rather than checked
 in.
 
 The two backends agree on term sets and expectation values but not on term *order*,

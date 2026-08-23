@@ -26,7 +26,7 @@
 #
 # Variables used::
 #
-#   monoprop_ENABLE_ARCH_FLAGS
+#   monoprop_ARCH_MARCH
 #   EXTRA_CXXFLAGS
 #
 # Variables modified::
@@ -37,10 +37,21 @@
 #
 #   CXXFLAGS
 
-option(
-  monoprop_ENABLE_ARCH_FLAGS
-  "Enable architecture-specific compiler flags"
-  ON
+# The -march value a single-ISA build compiles with, or "default" for no -march flag at all. A tiered
+# build (monoprop_ENABLE_TIERED_DSO, the default on x86-64) sets -march per tier and rejects this being
+# set to anything else.
+#
+# The default is portable, which is the change from the boolean this replaces: that was ON by default
+# and meant -march=native, so every source build was quietly unshippable and every published wheel had
+# to turn it off -- which is how the wheels ended up at the 2003 baseline in the first place. The tiers
+# are the answer to that, and they are now the default too, so nothing has to opt out of portability to
+# get speed. "native" is still available for a local build that wants one compile instead of five, and
+# unlike the boolean it says so in monoprop.__variant__.
+set(
+  monoprop_ARCH_MARCH
+  "default"
+  CACHE STRING
+  "-march value for a single-ISA build: \"native\" for this machine, \"default\" for no -march flag"
 )
 
 # What CXXFLAGS actually contained, recorded before anything appends to CMAKE_CXX_FLAGS. The fat
@@ -63,24 +74,27 @@ set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
 set(CMAKE_CXX_VISIBILITY_PRESET "hidden")
 set(CMAKE_VISIBILITY_INLINES_HIDDEN TRUE)
 
-# The single place an architecture is chosen. Everything downstream reads monoprop_ARCH_MARCH rather
-# than re-deciding, because the three sites that used to decide independently disagreed: ARCH_FLAG was
-# additionally suppressed in Debug, while the provenance query and the sparse-row crossover were gated
-# on the option alone. A Debug build therefore compiled portable code, advertised the native ISA and
-# took the native-tuned crossover.
-#
-# monoprop_ARCH_MARCH is the -march *value*, or "default" for "no -march flag", which is the spelling
-# _monoprop_query_machine_flags takes.
+# The flag that carries monoprop_ARCH_MARCH, and the only place it is turned into one. Everything
+# downstream -- the provenance header below, the sparse-row crossover in the top-level CMakeLists --
+# reads the *value*, because the three sites that used to decide independently disagreed: this one was
+# additionally suppressed in Debug while the other two were not, so a Debug build compiled portable
+# code, advertised the native ISA and took the native-tuned crossover. There is no Debug case left to
+# get wrong: the default is portable in every build type, and asking for -march=native in a Debug build
+# is a thing somebody did on purpose.
 set(ARCH_FLAG "")
-set(monoprop_ARCH_MARCH "default")
-if(monoprop_ENABLE_ARCH_FLAGS AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    set(ARCH_FLAG "-march=native")
-    set(monoprop_ARCH_MARCH "native")
-  endif()
-  if(CMAKE_CXX_COMPILER_ID MATCHES Intel)
+if(NOT monoprop_ARCH_MARCH STREQUAL "default")
+  if(
+    CMAKE_CXX_COMPILER_ID
+      MATCHES
+      Intel
+    AND
+      monoprop_ARCH_MARCH
+        STREQUAL
+        "native"
+  )
     set(ARCH_FLAG "-xHost")
-    set(monoprop_ARCH_MARCH "native")
+  else()
+    set(ARCH_FLAG "-march=${monoprop_ARCH_MARCH}")
   endif()
 endif()
 
@@ -182,7 +196,7 @@ endfunction()
 # object library puts ahead of the shared one, plus once for the plain single-ISA build.
 #
 # This is the fix for a provenance bug worth naming: the header used to be configured once, from a
-# query of -march=native whenever monoprop_ENABLE_ARCH_FLAGS was ON regardless of what was actually
+# query of -march=native whenever the arch-flags option was ON regardless of what was actually
 # compiled. So monoprop.__variant__, monoprop.__compiler_flags__ and every benchmark artifact's
 # machine-flags entry reported the host's ISA even when the build had been pointed somewhere else --
 # which is exactly the metadata a fat binary needs to be trustworthy, since it is how you tell which
@@ -234,6 +248,6 @@ include(${CMAKE_CURRENT_LIST_DIR}/GNU.CXX.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/Intel.CXX.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/Clang.CXX.cmake)
 
-# Must come last: with the fat binary enabled this overwrites ARCH_FLAG with the baseline tier's flags
-# and defines the per-tier engine targets.
+# Must come last: with the tiered build enabled this overwrites ARCH_FLAG with the baseline tier's flags
+# and defines the per-tier libraries.
 include(${CMAKE_CURRENT_LIST_DIR}/FatBinary.cmake)

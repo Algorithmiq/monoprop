@@ -18,10 +18,6 @@ from __future__ import annotations
 
 import importlib.util
 
-# Must precede ._core: on a fat-binary wheel there is no monoprop/_core to import until this module
-# has bound one of the shipped ISA variants to that name. The module name sorts ahead of _core so
-# alphabetical import ordering keeps it there.
-from ._bootstrap import available_variants, supported_variants
 from ._core import (
     __build_type__,
     __compiler_flags__,
@@ -31,6 +27,7 @@ from ._core import (
     has_mpi,
     is_antihermitian,
 )
+from ._tiers import available_variants, supported_variants
 from ._version import version as __version__
 from .circuit import (
     Circuit,

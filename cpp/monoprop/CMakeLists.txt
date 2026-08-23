@@ -15,17 +15,17 @@ monoprop_engine_sources(
   Validation.cpp
 )
 
-# Everything an engine object library needs beyond its sources. Factored out because the fat binary
-# compiles the engine once per ISA tier and the tiers must differ in exactly two things -- the arch
-# flags and which Variants.h they see -- with nothing else drifting apart between them.
+# Everything an engine library needs beyond its sources. Factored out because a tiered build compiles
+# the kernel once per ISA tier and the tiers must differ in exactly two things -- the arch flags and
+# which Variants.h they see -- with nothing else drifting apart between them.
 #
 # variant_include_dir goes in BEFORE the shared binary include dir, which is what makes a tier report
 # its own identity instead of the build's default one.
 #
 # `scope` is PUBLIC for a library whose flags the binding module should inherit, and PRIVATE for one
-# whose flags it must not. In whole-library mode the module *is* the tier, so it wants the tier's
-# -march; in the seam modes it links every tier at once, so inheriting any of them would mean compiling
-# the shared code at whichever tier the linker happened to order last.
+# whose flags it must not. The tiers are PRIVATE: the module links all of them at once, so inheriting
+# any one tier's -march would mean compiling the shared code at whichever tier the linker ordered last.
+# Only monoprop-objs is PUBLIC, and in a tiered build its flags are the baseline floor.
 function(
   _monoprop_configure_engine_objs
   target
@@ -93,18 +93,20 @@ function(
   )
 endfunction()
 
-if(monoprop_FAT_NARROW_SEAM)
-  # The shared build, at the baseline. ARCH_FLAG is already the baseline tier's flags (FatBinary.cmake
-  # overwrites it), and PUBLIC so bindings.cpp compiles at the same floor.
-  _monoprop_configure_engine_objs(
-    monoprop-objs
-    "${ARCH_FLAG}"
-    "${PROJECT_BINARY_DIR}/include"
-    PUBLIC
-  )
+# The shared engine, at the baseline in a tiered build (FatBinary.cmake has already overwritten
+# ARCH_FLAG with the baseline tier's flags) and at monoprop_ARCH_MARCH's flags otherwise. PUBLIC either
+# way, so bindings.cpp compiles at the same floor.
+_monoprop_configure_engine_objs(
+  monoprop-objs
+  "${ARCH_FLAG}"
+  "${PROJECT_BINARY_DIR}/include"
+  PUBLIC
+)
+
+if(monoprop_ENABLE_TIERED_DSO)
   # Reaches TierDispatch.cpp, which needs the generated tier table, and bindings.cpp, which reports the
   # tier that was selected rather than the one it was itself compiled for.
-  target_compile_definitions(monoprop-objs PUBLIC monoprop_FAT_NARROW_SEAM)
+  target_compile_definitions(monoprop-objs PUBLIC monoprop_TIERED_DSO)
 
   foreach(_tier IN LISTS monoprop_FAT_TIERS)
     _monoprop_tier_spec(TIER "${_tier}" MARCH_VAR _tier_flags)
@@ -123,55 +125,31 @@ if(monoprop_FAT_NARROW_SEAM)
         monoprop_TIER_SLUG=${_slug}
     )
 
-    if(monoprop_FAT_TIER_DSO)
-      # Named for the tier id and not the slug, because the id is what the user sees -- in
-      # monoprop_VARIANT, in monoprop.__variant__ and in a benchmark artifact -- and a file whose name
-      # matches makes a wheel's contents readable without a mangling table.
-      #
-      # Installed beside libmonoprop.so, which is where the binding module's existing $ORIGIN/lib rpath
-      # already looks; the module carries a DT_NEEDED on each of these.
-      set_target_properties(
+    # Named for the tier id and not the slug, because the id is what the user sees -- in
+    # monoprop_VARIANT, in monoprop.__variant__ and in a benchmark artifact -- and a file whose name
+    # matches makes a wheel's contents readable without a mangling table.
+    #
+    # Installed beside libmonoprop.so, which is where the binding module's existing $ORIGIN/lib rpath
+    # already looks; the module carries a DT_NEEDED on each of these.
+    set_target_properties(
+      monoprop-tier-${_slug}
+      PROPERTIES
+        OUTPUT_NAME
+          "monoprop-tier-${_tier}"
+        POSITION_INDEPENDENT_CODE
+          ON
+    )
+    # In monopropTargets because libmonoprop.so genuinely link-depends on these: it carries
+    # TierDispatch.cpp, so a C++ consumer of the installed package needs the tiers present too.
+    install(
+      TARGETS
         monoprop-tier-${_slug}
-        PROPERTIES
-          OUTPUT_NAME
-            "monoprop-tier-${_tier}"
-          POSITION_INDEPENDENT_CODE
-            ON
-      )
-      # In monopropTargets because libmonoprop.so genuinely link-depends on these: it carries
-      # TierDispatch.cpp, so a C++ consumer of the installed package needs the tiers present too.
-      install(
-        TARGETS
-          monoprop-tier-${_slug}
-        EXPORT monopropTargets
-        LIBRARY
-          DESTINATION ${PROJECT_NAME}/${CMAKE_INSTALL_LIBDIR}
-          COMPONENT lib
-      )
-    endif()
-  endforeach()
-elseif(monoprop_ENABLE_FAT_BINARY)
-  foreach(_tier IN LISTS monoprop_FAT_TIERS)
-    monoprop_tier_targets(
-      TIER "${_tier}"
-      OBJS_VAR _tier_objs
-      VARIANT_INCLUDE_DIR_VAR _tier_variant_include_dir
-    )
-    _monoprop_tier_spec(TIER "${_tier}" MARCH_VAR _tier_flags)
-    _monoprop_configure_engine_objs(
-      "${_tier_objs}"
-      "${_tier_flags}"
-      "${_tier_variant_include_dir}"
-      PUBLIC
+      EXPORT monopropTargets
+      LIBRARY
+        DESTINATION ${PROJECT_NAME}/${CMAKE_INSTALL_LIBDIR}
+        COMPONENT lib
     )
   endforeach()
-else()
-  _monoprop_configure_engine_objs(
-    monoprop-objs
-    "${ARCH_FLAG}"
-    "${PROJECT_BINARY_DIR}/include"
-    PUBLIC
-  )
 endif()
 
 include(GenerateExportHeader)
@@ -223,11 +201,8 @@ target_link_libraries(
     PkgConfig::HWLOC
 )
 
-# The per-tier targets, in the seam modes only (the list is empty otherwise). They are linked rather
-# than spliced in with $<TARGET_OBJECTS:...> at the top level because an object library's own usage
-# requirements -- Boost's include dirs among them -- come with the link and not with the splice, and
-# because in tier-dso mode they are not object libraries at all. Every consumer of the engine needs
-# this: the shared library here, the binding module, and the C++ test binary, since
+# The per-tier shared libraries, in a tiered build only (the list is empty otherwise). Every consumer of
+# the engine needs them: the shared library here, the binding module, and the C++ test binary, since
 # build_layer_dispatch has no definition without them.
 target_link_libraries(monoprop PRIVATE ${monoprop_TIERED_TARGETS})
 

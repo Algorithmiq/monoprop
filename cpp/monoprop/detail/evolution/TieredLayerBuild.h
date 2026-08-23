@@ -36,7 +36,7 @@
 // One condition, and it is not negotiable: the tiers' copies of this TU must land in separate links, or
 // their template instantiations -- weak COMDATs whose mangled names carry no tier -- deduplicate down
 // to one and the dispatch below chooses between four names for the same code. That is what
-// monoprop_FAT_BINARY_MODE=tier-dso arranges and what narrow-seam fails to; see FatBinary.cmake.
+// one shared object per tier arranges and one link for all of them does not; see FatBinary.cmake.
 //
 // Why a struct and not the argument list: build_layer takes seventeen parameters, five of them
 // defaulted. A tier entry point has to spell all seventeen, once per tier plus once in the dispatcher's

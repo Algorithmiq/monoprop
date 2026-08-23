@@ -54,7 +54,7 @@ target_link_libraries(
 # whatever module loaded them -- which here is the executable, and an executable puts nothing in
 # .dynsym without being asked. Without this the binary links and then dies at startup on a symbol
 # lookup, so it is not a nicety.
-if(monoprop_FAT_TIER_DSO)
+if(monoprop_ENABLE_TIERED_DSO)
   set_target_properties(
     monoprop_unit_tests.x
     PROPERTIES
