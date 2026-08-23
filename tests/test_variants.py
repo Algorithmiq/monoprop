@@ -44,7 +44,7 @@ pytestmark = pytest.mark.skipif(
 def _has_isa_probe() -> bool:
     """Whether this build ships the standalone CPU probe, i.e. whether it is whole-library.
 
-    A narrow-seam build has no probe: the tier list and the predicates that read it are inside the
+    A seam-mode build has no probe: the tier list and the predicates that read it are inside the
     engine, so there is only one copy of both and nothing for a second copy to disagree with.
     """
     try:
@@ -122,7 +122,7 @@ def test_selection_takes_the_best_supported_variant():
 
 @pytest.mark.skipif(
     not HAS_ISA_PROBE,
-    reason="narrow-seam builds have one tier list, inside the engine; there is no second copy to check",
+    reason="seam-mode builds have one tier list, inside the engine; there is no second copy to check",
 )
 def test_the_probe_and_the_install_agree_on_the_tier_list():
     # A tier known to the probe but never installed is silently unreachable; one installed but unknown

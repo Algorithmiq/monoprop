@@ -29,13 +29,22 @@
 # picked in Python before any engine code loads (src/monoprop/_bootstrap.py). Simple, and nothing in the
 # wheel can be at the wrong ISA by construction.
 #
-# ``narrow-seam`` compiles one translation unit per tier -- the one holding build_layer's instantiation
-# tree -- and everything else once, at the baseline; a single module carries all the tiers and picks one
-# on first use inside the library (cpp/monoprop/detail/evolution/TierDispatch.cpp). Smaller (1.9 MB of
-# payload against 5.0 MB) and quicker to build (84 s of engine compile against 197 s), and it does not
-# work: see the message() below. Kept because the measurement it produced is worth keeping and because
-# the two fixes for it are real -- per-tier shared objects, or a per-tier namespace around the algorithm
-# headers -- and both start from this code.
+# The other two shapes share a source-level *seam*: one translation unit -- the one holding
+# build_layer's instantiation tree -- is compiled once per tier, everything else once at the baseline,
+# and a single extension module picks a tier on first use inside the library
+# (cpp/monoprop/detail/evolution/TierDispatch.cpp). That is monoprop_FAT_NARROW_SEAM, and both modes
+# below set it; they differ only in how a tier's copy is *packaged*, which is what decides whether the
+# tiers survive to run time at all.
+#
+# ``tier-dso`` puts each tier's copy in its own shared object, monoprop/lib/libmonoprop-tier-<slug>.so,
+# exporting nothing but its three entry points. A shared object is its own link, so COMDAT
+# deduplication runs inside it and not across the tiers, which is the whole point. The price is a
+# four-symbol ABI between the shared engine and a tier: see monoprop_TIER_ABI in
+# cpp/monoprop/detail/TierAbi.h.
+#
+# ``narrow-seam`` puts them all in one link as object libraries, and does not work -- see the
+# message() below. Kept because the measurement that rejected it is worth keeping and because
+# ``tier-dso`` is the fix it pointed at, reusing all of the same source.
 #
 # Variables used::
 #
@@ -47,8 +56,10 @@
 #
 #   monoprop_FAT_TIERS               tier ids, baseline first
 #   monoprop_ENGINE_OBJ_TARGETS      object libraries holding the shared engine sources
-#   monoprop_TIERED_OBJ_TARGETS      object libraries holding the tiered sources, one per tier
-#   monoprop_FAT_NARROW_SEAM         TRUE in narrow-seam mode
+#   monoprop_TIERED_TARGETS          one target per tier holding the tiered sources: object libraries
+#                                    in narrow-seam mode, shared libraries in tier-dso mode
+#   monoprop_FAT_NARROW_SEAM         TRUE when the tiers are behind the run-time seam (both modes)
+#   monoprop_FAT_TIER_DSO            TRUE when each tier is its own shared object
 #   ARCH_FLAG                        overwritten with the baseline tier's flags
 #
 # Provides::
@@ -74,7 +85,7 @@ set(
   monoprop_FAT_BINARY_MODE
   "whole-library"
   CACHE STRING
-  "Fat-binary shape: whole-library (a module per tier) or narrow-seam (one tiered TU in one module)"
+  "Fat-binary shape: whole-library (a module per tier), tier-dso (a shared object per tier), or narrow-seam (rejected)"
 )
 set_property(
   CACHE
@@ -82,13 +93,19 @@ set_property(
   PROPERTY
     STRINGS
       "whole-library"
+      "tier-dso"
       "narrow-seam"
 )
 
-if(NOT monoprop_FAT_BINARY_MODE MATCHES "^(whole-library|narrow-seam)$")
+if(
+  NOT
+    monoprop_FAT_BINARY_MODE
+      MATCHES
+      "^(whole-library|tier-dso|narrow-seam)$"
+)
   message(
     FATAL_ERROR
-    "monoprop_FAT_BINARY_MODE must be 'whole-library' or 'narrow-seam', got '${monoprop_FAT_BINARY_MODE}'"
+    "monoprop_FAT_BINARY_MODE must be 'whole-library', 'tier-dso' or 'narrow-seam', got '${monoprop_FAT_BINARY_MODE}'"
   )
 endif()
 
@@ -178,8 +195,9 @@ endfunction()
 
 if(NOT monoprop_ENABLE_FAT_BINARY)
   set(monoprop_ENGINE_OBJ_TARGETS "monoprop-objs")
-  set(monoprop_TIERED_OBJ_TARGETS "")
+  set(monoprop_TIERED_TARGETS "")
   set(monoprop_FAT_NARROW_SEAM FALSE)
+  set(monoprop_FAT_TIER_DSO FALSE)
 
   macro(monoprop_engine_sources)
     target_sources(monoprop-objs PRIVATE ${ARGN})
@@ -298,7 +316,16 @@ string(
 )
 string(APPEND CMAKE_CXX_FLAGS " ${_monoprop_baseline_flags}")
 
-if(monoprop_FAT_BINARY_MODE STREQUAL "narrow-seam")
+set(monoprop_FAT_NARROW_SEAM FALSE)
+set(monoprop_FAT_TIER_DSO FALSE)
+
+if(monoprop_FAT_BINARY_MODE STREQUAL "tier-dso")
+  # Same seam, same sources, same dispatcher as narrow-seam below -- the tiers are just packaged one
+  # shared object each instead of all in one link, which is what keeps their template instantiations
+  # from deduplicating against each other.
+  set(monoprop_FAT_NARROW_SEAM TRUE)
+  set(monoprop_FAT_TIER_DSO TRUE)
+elseif(monoprop_FAT_BINARY_MODE STREQUAL "narrow-seam")
   set(monoprop_FAT_NARROW_SEAM TRUE)
   # Not shippable as it stands, and the reason is not something a test notices. Almost everything the
   # tiered TU emits is a template instantiation -- a weak COMDAT whose mangled name carries no tier --
@@ -311,10 +338,8 @@ if(monoprop_FAT_BINARY_MODE STREQUAL "narrow-seam")
   # narrow-seam section of docs/content/docs/fat-binary.mdx for the numbers and the two ways out.
   message(
     WARNING
-    "monoprop_FAT_BINARY_MODE=narrow-seam is an experiment, not a shippable configuration: COMDAT deduplication collapses the ISA tiers at link time, so the run-time dispatch has nothing to choose between. Run tools/check-tier-symbols.py on this build tree. Use whole-library for anything that ships."
+    "monoprop_FAT_BINARY_MODE=narrow-seam is an experiment, not a shippable configuration: COMDAT deduplication collapses the ISA tiers at link time, so the run-time dispatch has nothing to choose between. Run tools/check-tier-symbols.py on this build tree. Use tier-dso for the same seam with the tiers intact, or whole-library."
   )
-else()
-  set(monoprop_FAT_NARROW_SEAM FALSE)
 endif()
 
 # One Variants.h per tier so each can say which it is, and the object libraries the tiers compile into.
@@ -322,13 +347,14 @@ endif()
 # whole-library: one engine object library per tier, holding every engine source. The baseline reuses
 # monoprop-objs rather than adding a target, so N tiers cost N compiles and not N+1.
 #
-# narrow-seam: monoprop-objs alone holds the shared sources, and each tier gets a small object library
-# holding only the tiered ones. The baseline gets one too, even though its flags are monoprop-objs' own
-# flags: the tiered TU needs a per-target monoprop_TIER_SLUG, and putting the baseline's copy in
-# monoprop-objs would mean defining that on a source file instead of a target -- which is how the same
-# source ends up compiled twice under two slugs the day a second tiered TU is added.
+# narrow-seam and tier-dso: monoprop-objs alone holds the shared sources, and each tier gets a small
+# target holding only the tiered ones -- an object library, or a shared library in tier-dso mode. The
+# baseline gets one too, even though its flags are monoprop-objs' own flags: the tiered TU needs a
+# per-target monoprop_TIER_SLUG, and putting the baseline's copy in monoprop-objs would mean defining
+# that on a source file instead of a target -- which is how the same source ends up compiled twice under
+# two slugs the day a second tiered TU is added.
 set(monoprop_ENGINE_OBJ_TARGETS "")
-set(monoprop_TIERED_OBJ_TARGETS "")
+set(monoprop_TIERED_TARGETS "")
 foreach(_tier IN LISTS monoprop_FAT_TIERS)
   _monoprop_tier_spec(TIER "${_tier}" MARCH_VAR _tier_flags)
   _monoprop_generate_variant_header(
@@ -338,9 +364,14 @@ foreach(_tier IN LISTS monoprop_FAT_TIERS)
   )
   _monoprop_tier_slug("${_tier}" _slug)
 
-  if(monoprop_FAT_NARROW_SEAM)
+  if(monoprop_FAT_TIER_DSO)
+    # SHARED, and that is the entire mechanism: a shared object is its own link, so the tiered TU's weak
+    # COMDAT symbols deduplicate within one tier instead of across all four.
+    add_library(monoprop-tier-${_slug} SHARED "")
+    list(APPEND monoprop_TIERED_TARGETS "monoprop-tier-${_slug}")
+  elseif(monoprop_FAT_NARROW_SEAM)
     add_library(monoprop-tier-${_slug} OBJECT "")
-    list(APPEND monoprop_TIERED_OBJ_TARGETS "monoprop-tier-${_slug}")
+    list(APPEND monoprop_TIERED_TARGETS "monoprop-tier-${_slug}")
   elseif(_tier STREQUAL monoprop_FAT_BASELINE_TIER)
     list(APPEND monoprop_ENGINE_OBJ_TARGETS "monoprop-objs")
   else()
@@ -370,7 +401,7 @@ function(monoprop_tier_targets)
   if(monoprop_FAT_NARROW_SEAM)
     message(
       FATAL_ERROR
-      "monoprop_tier_targets is whole-library only: narrow-seam mode has one engine object library and one binding module, not one per tier. Use monoprop_tiered_targets."
+      "monoprop_tier_targets is whole-library only: the seam modes have one engine object library and one binding module, not one per tier. Use monoprop_tiered_targets."
     )
   endif()
 
@@ -402,14 +433,14 @@ macro(monoprop_engine_sources)
 endmacro()
 
 # Sources that get one copy per ISA tier. In whole-library mode that is every engine object library, so
-# this is monoprop_engine_sources; in narrow-seam mode it is the per-tier libraries and *not*
-# monoprop-objs, which is what keeps the shared build at one copy.
+# this is monoprop_engine_sources; in the seam modes it is the per-tier targets and *not* monoprop-objs,
+# which is what keeps the shared build at one copy.
 #
 # A source belongs here when the ISA is what the code is for -- i.e. it holds a hot instantiation tree.
 # Adding one is not free: it is compiled once per tier, so it multiplies both the wheel and the build.
 macro(monoprop_tiered_engine_sources)
   if(monoprop_FAT_NARROW_SEAM)
-    foreach(_tiered_target IN LISTS monoprop_TIERED_OBJ_TARGETS)
+    foreach(_tiered_target IN LISTS monoprop_TIERED_TARGETS)
       target_sources(${_tiered_target} PRIVATE ${ARGN})
     endforeach()
   else()
@@ -417,15 +448,15 @@ macro(monoprop_tiered_engine_sources)
   endif()
 endmacro()
 
-# The object libraries holding one tier's copy of the tiered sources, and the tier id each was built
-# for, as two parallel lists. Only narrow-seam mode has any.
+# The targets holding one tier's copy of the tiered sources, and the tier id each was built for, as two
+# parallel lists. Only the seam modes have any.
 #
 # Usage:
 #   monoprop_tiered_targets(TARGETS_VAR <var> TIERS_VAR <var>)
 function(monoprop_tiered_targets)
   cmake_parse_arguments(PARSE_ARGV 0 _arg "" "TARGETS_VAR;TIERS_VAR" "")
   if(_arg_TARGETS_VAR)
-    set(${_arg_TARGETS_VAR} "${monoprop_TIERED_OBJ_TARGETS}" PARENT_SCOPE)
+    set(${_arg_TARGETS_VAR} "${monoprop_TIERED_TARGETS}" PARENT_SCOPE)
   endif()
   if(_arg_TIERS_VAR)
     if(monoprop_FAT_NARROW_SEAM)

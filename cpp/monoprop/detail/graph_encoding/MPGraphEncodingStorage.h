@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "monoprop/detail/TierAbi.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 
 namespace monoprop::detail {
@@ -102,6 +103,6 @@ auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> s
 
 // Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so
 // MPI_Alltoallv skips it (replay does a local copy).
-auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
+monoprop_TIER_ABI auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore>;
 } // namespace monoprop::detail

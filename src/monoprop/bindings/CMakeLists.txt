@@ -78,10 +78,10 @@ endif()
 # compiled with them and not merely linked against them. That matters -- the class's inline header
 # methods and every template it instantiates land in this TU.
 #
-# Whether they reach it is the difference between the two fat-binary modes, and it is decided by the
-# scope those flags were attached with (_monoprop_configure_engine_objs). Whole-library: PUBLIC, one
-# module per tier, so this TU is at the tier too. Narrow-seam: the tier libraries' flags are PRIVATE and
-# only monoprop-objs' baseline is PUBLIC, because this one module links every tier at once.
+# Whether they reach it is the difference between the fat-binary modes, and it is decided by the scope
+# those flags were attached with (_monoprop_configure_engine_objs). Whole-library: PUBLIC, one module per
+# tier, so this TU is at the tier too. The seam modes: the tier targets' flags are PRIVATE and only
+# monoprop-objs' baseline is PUBLIC, because this one module links every tier at once.
 #
 # Every module is named `_core` on disk whatever its target is called, because CPython derives the
 # init function it looks for from the last component of the module name it is asked to load, and the
@@ -173,12 +173,13 @@ if(monoprop_ENABLE_FAT_BINARY AND NOT monoprop_FAT_NARROW_SEAM)
   )
   install(TARGETS _isa LIBRARY DESTINATION ${PROJECT_NAME})
 else()
-  # One module for every tier at once in narrow-seam mode: monoprop_TIERED_OBJ_TARGETS carries the
-  # per-tier copies of the kernel and is empty in a single-ISA build. Their arch flags are PRIVATE, so
-  # bindings.cpp compiles at the baseline here and not at whichever tier links last.
+  # One module for every tier at once in the seam modes: monoprop_TIERED_TARGETS carries the per-tier
+  # copies of the kernel -- object libraries under narrow-seam, shared objects under tier-dso, a
+  # DT_NEEDED each -- and is empty in a single-ISA build. Their arch flags are PRIVATE, so bindings.cpp
+  # compiles at the baseline here and not at whichever tier links last.
   _monoprop_add_binding_module(
     TARGET _core
-    OBJS monoprop-objs ${monoprop_TIERED_OBJ_TARGETS}
+    OBJS monoprop-objs ${monoprop_TIERED_TARGETS}
     DESTINATION ${PROJECT_NAME}
     OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}
     INSTALL_RPATH "${_rpath_origin}/${CMAKE_INSTALL_LIBDIR}"

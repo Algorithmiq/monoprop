@@ -26,6 +26,8 @@
 #include <utility>
 #include <vector>
 
+#include "monoprop/detail/TierAbi.h"
+
 // Comm.h owns the MPI_Comm typedef (real or non-MPI fallback) and the runtime-tagged mpi::Comm handle.
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
@@ -87,8 +89,8 @@ inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr) -> void 
 inline auto finalize() -> void {}
 #endif // monoprop_ENABLE_MPI
 
-auto rank(const Comm &comm) -> int;
-auto size(const Comm &comm) -> int;
+monoprop_TIER_ABI auto rank(const Comm &comm) -> int;
+monoprop_TIER_ABI auto size(const Comm &comm) -> int;
 
 template <typename T>
 inline auto allreduce_sum(T local_val, Comm comm) -> T {
@@ -110,7 +112,7 @@ inline auto allreduce_sum(T local_val, Comm comm) -> T {
 auto allreduce_sum_inplace(VecD &values, Comm comm) -> void;
 
 // `n` is the comm size.
-auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void;
+monoprop_TIER_ABI auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void;
 
 // In-flight variable-size all-to-all owning its buffers + layout, so several can be in flight.
 // recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a

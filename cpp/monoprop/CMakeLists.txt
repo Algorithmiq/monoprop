@@ -24,8 +24,8 @@ monoprop_engine_sources(
 #
 # `scope` is PUBLIC for a library whose flags the binding module should inherit, and PRIVATE for one
 # whose flags it must not. In whole-library mode the module *is* the tier, so it wants the tier's
-# -march; in narrow-seam mode it links every tier at once, so inheriting any of them would mean
-# compiling the shared code at whichever tier the linker happened to order last.
+# -march; in the seam modes it links every tier at once, so inheriting any of them would mean compiling
+# the shared code at whichever tier the linker happened to order last.
 function(
   _monoprop_configure_engine_objs
   target
@@ -122,6 +122,33 @@ if(monoprop_FAT_NARROW_SEAM)
       PRIVATE
         monoprop_TIER_SLUG=${_slug}
     )
+
+    if(monoprop_FAT_TIER_DSO)
+      # Named for the tier id and not the slug, because the id is what the user sees -- in
+      # monoprop_VARIANT, in monoprop.__variant__ and in a benchmark artifact -- and a file whose name
+      # matches makes a wheel's contents readable without a mangling table.
+      #
+      # Installed beside libmonoprop.so, which is where the binding module's existing $ORIGIN/lib rpath
+      # already looks; the module carries a DT_NEEDED on each of these.
+      set_target_properties(
+        monoprop-tier-${_slug}
+        PROPERTIES
+          OUTPUT_NAME
+            "monoprop-tier-${_tier}"
+          POSITION_INDEPENDENT_CODE
+            ON
+      )
+      # In monopropTargets because libmonoprop.so genuinely link-depends on these: it carries
+      # TierDispatch.cpp, so a C++ consumer of the installed package needs the tiers present too.
+      install(
+        TARGETS
+          monoprop-tier-${_slug}
+        EXPORT monopropTargets
+        LIBRARY
+          DESTINATION ${PROJECT_NAME}/${CMAKE_INSTALL_LIBDIR}
+          COMPONENT lib
+      )
+    endif()
   endforeach()
 elseif(monoprop_ENABLE_FAT_BINARY)
   foreach(_tier IN LISTS monoprop_FAT_TIERS)
@@ -196,12 +223,13 @@ target_link_libraries(
     PkgConfig::HWLOC
 )
 
-# The per-tier object libraries, in narrow-seam mode only (the list is empty otherwise). They are
-# linked rather than spliced in with $<TARGET_OBJECTS:...> at the top level because an object library's
-# own usage requirements -- Boost's include dirs among them -- come with the link and not with the
-# splice. Every consumer of the engine needs this: the shared library here, the binding module, and the
-# C++ test binary, since build_layer_dispatch has no definition without them.
-target_link_libraries(monoprop PRIVATE ${monoprop_TIERED_OBJ_TARGETS})
+# The per-tier targets, in the seam modes only (the list is empty otherwise). They are linked rather
+# than spliced in with $<TARGET_OBJECTS:...> at the top level because an object library's own usage
+# requirements -- Boost's include dirs among them -- come with the link and not with the splice, and
+# because in tier-dso mode they are not object libraries at all. Every consumer of the engine needs
+# this: the shared library here, the binding module, and the C++ test binary, since
+# build_layer_dispatch has no definition without them.
+target_link_libraries(monoprop PRIVATE ${monoprop_TIERED_TARGETS})
 
 add_subdirectory(algebra)
 add_subdirectory(core)

@@ -210,18 +210,99 @@ holds 29 `zmm` instructions in a build that dispatches to the baseline. Whether 
 not the point; a wheel's ISA safety has to be structural, not a matter of which order a list happens to
 be written in.
 
-Two ways out, both real, neither free:
+Two ways out. The first is built and is the next section; the second is not, and no longer needs to be:
 
-- **One shared object per tier.** COMDAT deduplication is per link, so four small `.so` files keep four
-  copies. No language gymnastics, and the estimate is ~2.9 MB — still 42% under `whole-library`. The
-  work is symbol visibility and the hazard is duplicated function-local statics across DSO boundaries.
+- **One shared object per tier.** COMDAT deduplication is per *link*, so four `.so` files keep four
+  copies. No language gymnastics. This is `monoprop_FAT_BINARY_MODE=tier-dso`.
 - **A per-tier namespace around the algorithm headers** — Highway's `foreach_target.h` pattern, which
   gives the instantiations distinct mangled names inside one link. It needs the types that *cross* the
   seam (`MPOperator`, `Bitset`, `CosMask`, `FusedContract`) to stay outside the per-tier region while
   the algorithms templated on them move inside, and every standard header hoisted above it. Invasive,
-  and fragile against any `monoprop::`-qualified name inside the region.
+  and fragile against any `monoprop::`-qualified name inside the region. Not attempted, because
+  `tier-dso` reaches the same place without touching a header.
 
-Until one of them is done, `whole-library` is the only shippable mode, which is why it is the default.
+`narrow-seam` is kept as a build mode only because it is the measurement that produced the number
+above, and because `tier-dso` is the same source with a different package boundary. It carries a CMake
+warning and `just check-tier-symbols` fails on it by design. Do not ship it.
+
+## One shared object per tier
+
+`monoprop_FAT_BINARY_MODE=tier-dso` (`just build-fat-tier-dso`) keeps the seam exactly as above — the
+same tiered translation unit, the same `TierDispatch.cpp`, the same generated predicate table, the same
+one extension module — and changes only where a tier's copy *lands*: `monoprop/lib/libmonoprop-tier-<tier
+id>.so`, one per tier, each a `DT_NEEDED` of `monoprop/_core...so`. A shared object is its own link, so
+the deduplication that flattened `narrow-seam` now runs inside a tier instead of across all four.
+
+It works. Pinning each tier in turn, same host and method as the tables above (two samples, medians):
+
+| pinned tier | Hubbard | vs `whole-library` | kicked-Ising | vs `whole-library` |
+| --- | --- | --- | --- | --- |
+| `v1` | 2325.6 ms | 2337.9 ms | 412.5 ms | 410.0 ms |
+| `v2` | 2150.4 ms | *(not timed)* | 367.6 ms | *(not timed)* |
+| `v3` | 2118.2 ms | 2179.7 ms | 372.9 ms | 373.0 ms |
+| `v4+vpopcntdq` | **2054.2 ms** | 2054.0 ms | **362.4 ms** | 365.2 ms |
+
+Not the 87% the relink experiment predicted — all of it, tier for tier, within the spread. The nine
+translation units left at the baseline turn out to contribute nothing measurable, which is the stronger
+form of the same claim: the ISA matters in `build_layer`'s instantiation tree and effectively nowhere
+else.
+
+Two findings fall out of finally having every rung timed:
+
+- **`v2` is the single biggest step** — 64% of the Hubbard win and 90% of the Pauli one, from `v1`. The
+  disassembly says why: the `v1` tier contains **zero** `popcnt` instructions and the `v2` tier contains
+  459. `POPCNT` arrived with the psABI's second level, so at plain `-march=x86-64` every
+  `std::popcount` in the engine — and this engine is little else — compiles to the SWAR bit-twiddle.
+  That is a scalar instruction, not a vector one, which is why the static vectorization census that
+  chose the tier list ranked this step near the bottom.
+- **`v3` buys nothing on the Pauli model** (372.9 ms against `v2`'s 367.6 ms, reproduced in both
+  samples). Its AVX2 is worth 1.5% on Hubbard and nothing here.
+
+The payload sits between the two other shapes, and the safety property is better than either:
+
+| | whole-library | tier-dso | narrow-seam |
+| --- | --- | --- | --- |
+| shipped payload | 5.01 MB | **3.08 MB** | 1.98 MB |
+| shape | 4 modules + probe | 1 module + 4 DSOs | 1 module |
+| whole build | 423 s CPU / 212 s wall | 276 s / 151 s | 296 s / 149 s |
+| widened instructions in what *every* machine runs | none by construction | **none, measured** | 29 `zmm` |
+| tiers survive the linker | yes | **yes** | no |
+
+That last-but-one row is the one that matters most. `narrow-seam` shipped a module holding `zmm`
+instructions of unproven reachability; here `_core.so` and `libmonoprop.so` census at zero on every
+counter, and every widened instruction in the wheel lives inside a `.so` that only loads behind its own
+`__builtin_cpu_supports` predicate.
+
+### What it costs in source
+
+A shared object has to resolve its references, which an object library does not, so the seam acquires an
+ABI. It is small: the tiered translation unit's *only* out-of-line dependencies on the rest of the engine
+are five functions — `mpi::rank`, `mpi::size`, `mpi::alltoall_counts`,
+`detail::build_layer_storage_unified` and `validate_only_rotate_len_k` — with everything else it needs
+being either a header template it instantiates itself, or libstdc++. The engine is compiled
+`-fvisibility=hidden` throughout, so those five are marked with `monoprop_TIER_ABI` and the three entry
+points with `monoprop_TIER_ENTRY` (`cpp/monoprop/detail/TierAbi.h`). Nothing else crosses.
+
+`just check-tier-symbols` is the gate, and in this mode it checks the properties that make the shape
+sound rather than the weak-symbol disjointness that `narrow-seam` fails: that no tier exports a
+`monoprop` symbol another tier exports, that none exports one *weakly* (which would let the dynamic
+linker re-flatten what the static one no longer can), that every `monoprop` symbol a tier imports is
+exported by the module that loads it — otherwise the process dies at load on a symbol lookup — and that
+the baseline tier and the shared module hold nothing above the floor.
+
+Three hazards were checked before the boundary went in, and none of them bites:
+
+- **Exceptions across the boundary.** `NonEncodableCoefficient` is thrown from inside `build_layer`'s
+  instantiation tree and caught outside it. With hidden visibility each side gets its own
+  `std::type_info`, and matching would fail if GCC had marked the name unique with a leading `*` — it
+  does not, so libstdc++ compares the name strings and the `catch` matches. Verified directly, and it
+  is a GNU/Linux ELF property; the fat binary is x86-64 ELF only.
+- **Duplicated singletons.** `config::get()`'s cached `Settings` and the `ev_fn` inline variables are
+  reachable only from `MonomialPropagator.cpp`, which stays in the shared module — the tier never
+  instantiates them, so there is no second copy to diverge.
+- **`cached_even_bits`.** Its `thread_local` mask *is* duplicated, once per tier DSO. It is a pure
+  function of the storage width, and only the selected tier's copy is ever touched, so the cost is one
+  `Bitset` per thread and nothing else.
 
 ## What actually happens on import
 
@@ -316,7 +397,8 @@ The fat binary is **off** by default in source builds, because a source build ha
 which beats every tier:
 
 ```bash
-just build-fat
+just build-fat            # whole-library: one module per tier
+just build-fat-tier-dso   # the seam: one module, one shared object per tier
 ```
 
 or, directly:
@@ -342,26 +424,32 @@ without being built.
 
 ## What it costs
 
-About **4 MB** of extension modules instead of 1 MB, plus the `~100 KB` probe. Four tiers are also
-roughly four times the compile work of one — 197 s of engine compile against 50 s — which lands on the
-`manylinux_x86_64` leg of the wheel matrix.
+**5.01 MB** of payload under `whole-library`, or **3.08 MB** under `tier-dso`, against ~1.5 MB for a
+single-ISA build. Four tiers are also roughly four times the compile work of one — 197 s of engine
+compile against 50 s — which lands on the `manylinux_x86_64` leg of the wheel matrix; `tier-dso`
+compiles one translation unit per tier instead of all ten, which is most of that back.
 
 What it buys, measured end to end at one thread with partitioning off, against the same build pinned to
-`v1`:
+`v1`. `whole-library` numbers, median of five rounds:
 
 | model | `v1` | `v3` | `v4+vpopcntdq` |
 | --- | --- | --- | --- |
 | Hubbard, 120 modes, Majorana | 2337.9 ms | 2179.7 ms (−6.8%) | 2054.0 ms (**−12.1%**) |
 | kicked-Ising, 127 qubits, Pauli | 410.0 ms | 373.0 ms (−9.0%) | 365.2 ms (**−10.9%**) |
 
-Median of five rounds; the round-to-round spread is ~40 ms and ~4 ms respectively, so every step is
-outside it. `v2` was not timed.
+The round-to-round spread is ~40 ms and ~4 ms respectively, so every step is outside it. `tier-dso`
+matches this tier for tier and adds the `v2` rung; see [its table](#one-shared-object-per-tier).
 
 ## What is still open
 
-- **Whether `v2` earns its place.** The tier list was chosen from codegen; `v1`, `v3` and the top tier
-  are now timed (above) and each step is a real gain, but `v2` — the one whose whole case is hardware
-  `popcnt` — has not been. It is ~1 MB of the wheel.
+- **Whether `v3` earns its place.** Every rung is now timed, and this is the weak one: 1.5% on Hubbard
+  and nothing at all on the Pauli model, where it is if anything slightly behind `v2`. `v2`, whose whole
+  case was hardware `popcnt`, turns out to be the biggest step of the four — so the question the tier
+  list needs asking has inverted.
+- **Which shape ships.** `whole-library` is still the default and still the simplest thing to reason
+  about; `tier-dso` is 39% smaller, builds faster, measures the same, and now passes the same gates. The
+  argument left against it is not performance but surface: four extra shared objects for auditwheel and
+  delocate to relocate, and a five-symbol ABI that has to stay stateless.
 - **`-mprefer-vector-width=256`** costs 25 vectorized loops statically, but AMD's Zen 4 implements
   AVX-512 on a double-pumped 256-bit datapath while Intel's server parts do not. Which way that trade
   goes cannot be counted, only timed, and it needs an Intel data point.

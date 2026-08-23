@@ -19,10 +19,10 @@ A wheel built as a fat binary carries the compiled engine once per x86-64 ISA ti
 and registers it as ``monoprop._core``, so every other import in the package is unaffected.
 
 A single-ISA build -- any source build, and every non-x86-64 wheel -- ships ``monoprop/_core``
-directly. There is then nothing to choose and importing this module does nothing at all. So does a
-narrow-seam fat binary, whose tiers are inside one ``monoprop/_core`` and are selected by the engine
-itself; :func:`available_variants` and :func:`supported_variants` still answer for it, by asking the
-engine rather than the filesystem.
+directly. There is then nothing to choose and importing this module does nothing at all. So does either
+*seam* shape of the fat binary (``tier-dso``, ``narrow-seam``), whose tiers sit behind one
+``monoprop/_core`` and are selected by the engine itself; :func:`available_variants` and
+:func:`supported_variants` still answer for those, by asking the engine rather than the filesystem.
 
 This module is imported for its side effect, which is why the name sorts ahead of ``_core``: the
 selection has to be in place before the first ``from ._core import ...`` runs, and import sorters
@@ -115,8 +115,8 @@ def _installed_variants() -> tuple[str, ...]:
 def _core_tiers(accessor: str) -> tuple[str, ...]:
     """Ask the loaded engine for its tier list, or ``()`` if it has none to give.
 
-    This is the narrow-seam fat binary's answer to the same question: its tiers are inside one module
-    rather than one module each, so the list comes from the engine instead of from the filesystem.
+    This is a seam-mode fat binary's answer to the same question: its tiers sit behind one module
+    rather than being one module each, so the list comes from the engine instead of from the filesystem.
     """
     try:
         # Deliberately lazy. install_core() runs during the package's own import and must not pull
@@ -215,8 +215,8 @@ def install_core() -> str:
         return str(getattr(sys.modules[_CORE_MODULE], "__variant__", ""))
 
     # _installed_variants(), not available_variants(): the only thing to install is a separate module
-    # per variant. A narrow-seam build has variants but no modules to bind, and asking the engine for
-    # its tier list here would import _core before the package is ready for it.
+    # per variant. A seam-mode build has variants but no modules to bind, and asking the engine for its
+    # tier list here would import _core before the package is ready for it.
     available = _installed_variants()
     if not available:
         return ""

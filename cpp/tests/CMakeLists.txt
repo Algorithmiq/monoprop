@@ -44,11 +44,24 @@ target_link_libraries(
   monoprop_unit_tests.x
   PRIVATE
     monoprop-objs
-    ${monoprop_TIERED_OBJ_TARGETS}
+    ${monoprop_TIERED_TARGETS}
     Boost::unit_test_framework
     msgpack-cxx
     PkgConfig::HWLOC
 )
+
+# In tier-dso mode the tiers are shared objects that resolve their monoprop_TIER_ABI symbols out of
+# whatever module loaded them -- which here is the executable, and an executable puts nothing in
+# .dynsym without being asked. Without this the binary links and then dies at startup on a symbol
+# lookup, so it is not a nicety.
+if(monoprop_FAT_TIER_DSO)
+  set_target_properties(
+    monoprop_unit_tests.x
+    PROPERTIES
+      ENABLE_EXPORTS
+        ON
+  )
+endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/boost-test.cmake)
 

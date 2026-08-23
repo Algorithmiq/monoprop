@@ -77,7 +77,7 @@ NB_MODULE(_core, mod) {
     mod.attr("__build_type__") = std::string(build_type());
 
     // Provenance has to name the tier that *runs*, not the tier this file was compiled for. They are the
-    // same everywhere except a narrow-seam fat binary, where this TU is at the baseline and the kernel
+    // same everywhere except a seam-mode fat binary, where this TU is at the baseline and the kernel
     // is not -- and reporting the baseline there would make every wheel's benchmark artifact and every
     // bug report attribute a v4 run to v1. active_tier() is empty when the build ships one tier, which
     // is when variant() is the honest answer.

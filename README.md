@@ -108,8 +108,9 @@ uv sync --all-extras -v --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
 
 A source build compiles with `-march=native`, which is faster than any wheel and not
 portable off the build machine. The multi-ISA build the wheels use is off by default;
-`just build-fat` turns it on. (`just build-fat-narrow-seam` builds a smaller experimental
-shape of it that does **not** deliver its tiers — see the fat-binary guide.)
+`just build-fat` turns it on. (`just build-fat-tier-dso` builds a 39%-smaller shape of it that
+puts each tier in its own shared object; `just build-fat-narrow-seam` builds a smaller one still
+that does **not** deliver its tiers — see the fat-binary guide.)
 
 C++ unit-test build:
 

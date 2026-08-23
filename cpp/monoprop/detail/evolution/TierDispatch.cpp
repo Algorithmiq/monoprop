@@ -31,6 +31,7 @@
 #include <string_view>
 #include <vector>
 
+#include "monoprop/detail/TierAbi.h"
 #include "monoprop/detail/evolution/TieredLayerBuild.h"
 
 #ifdef monoprop_FAT_NARROW_SEAM
@@ -47,7 +48,7 @@
 namespace monoprop {
 namespace detail {
 namespace tiers::only {
-auto build_layer_entry(const LayerBuildRequest &request) -> std::shared_ptr<LayerCore>;
+monoprop_TIER_ENTRY auto build_layer_entry(const LayerBuildRequest &request) -> std::shared_ptr<LayerCore>;
 } // namespace tiers::only
 
 auto build_layer_dispatch(const LayerBuildRequest &request) -> std::shared_ptr<LayerCore> {
@@ -79,11 +80,11 @@ namespace detail {
 
 // One declaration block per shipped tier, from the same generated table the predicates come from, so a
 // tier cannot be built without being dispatchable or dispatched without being built.
-#define monoprop_DECLARE_TIER(tid, tslug, tpred)                                                             \
-    namespace tiers::tslug {                                                                                 \
-    auto build_layer_entry(const LayerBuildRequest &) -> std::shared_ptr<LayerCore>;                         \
-    auto tier_id() -> std::string_view;                                                                      \
-    auto tier_machine_flags() -> std::string_view;                                                            \
+#define monoprop_DECLARE_TIER(tid, tslug, tpred)                                                         \
+    namespace tiers::tslug {                                                                             \
+    monoprop_TIER_ENTRY auto build_layer_entry(const LayerBuildRequest &) -> std::shared_ptr<LayerCore>; \
+    monoprop_TIER_ENTRY auto tier_id() -> std::string_view;                                              \
+    monoprop_TIER_ENTRY auto tier_machine_flags() -> std::string_view;                                   \
     }
 monoprop_FAT_VARIANT_TIERS(monoprop_DECLARE_TIER)
 #undef monoprop_DECLARE_TIER
@@ -101,11 +102,11 @@ struct TierRow final {
 };
 
 // Best ISA first, which is the selection order: the table's order is load-bearing, not cosmetic.
-#define monoprop_TIER_ROW(tid, tslug, tpred)                                                                 \
-    TierRow{.id = tid,                                                                                       \
-            .supported = +[]() -> bool { return static_cast<bool>(tpred); },                                 \
-            .build = &detail::tiers::tslug::build_layer_entry,                                                \
-            .compiled_id = &detail::tiers::tslug::tier_id,                                                    \
+#define monoprop_TIER_ROW(tid, tslug, tpred)                                 \
+    TierRow{.id = tid,                                                       \
+            .supported = +[]() -> bool { return static_cast<bool>(tpred); }, \
+            .build = &detail::tiers::tslug::build_layer_entry,               \
+            .compiled_id = &detail::tiers::tslug::tier_id,                   \
             .flags = &detail::tiers::tslug::tier_machine_flags},
 const TierRow kTiers[] = {monoprop_FAT_VARIANT_TIERS(monoprop_TIER_ROW)};
 #undef monoprop_TIER_ROW

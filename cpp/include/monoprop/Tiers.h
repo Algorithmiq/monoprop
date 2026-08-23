@@ -18,7 +18,7 @@
 #include <vector>
 
 // The ISA tier a *running* process resolved to, as opposed to Variants.h's variant(), which is the tier
-// the calling translation unit was compiled for. The two differ in a narrow-seam fat binary and only
+// the calling translation unit was compiled for. The two differ in a seam-mode fat binary and only
 // there: every TU but the tiered one is compiled at the baseline, so variant() answers "baseline"
 // throughout while the kernel doing the work is a wider tier. Anything reporting provenance to a user
 // -- monoprop.__variant__, a benchmark artifact's machine flags -- wants these.

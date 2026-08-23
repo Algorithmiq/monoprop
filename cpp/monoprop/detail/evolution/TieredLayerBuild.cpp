@@ -25,6 +25,7 @@
 #include <string_view>
 
 #include "monoprop/Variants.h"
+#include "monoprop/detail/TierAbi.h"
 #include "monoprop/detail/evolution/LayerBuilder.h"
 
 // Undefined in a single-tier build, where there is exactly one copy and the name is arbitrary.
@@ -34,7 +35,7 @@
 
 namespace monoprop::detail::tiers::monoprop_TIER_SLUG {
 
-auto build_layer_entry(const LayerBuildRequest &request) -> std::shared_ptr<LayerCore> {
+monoprop_TIER_ENTRY auto build_layer_entry(const LayerBuildRequest &request) -> std::shared_ptr<LayerCore> {
     return build_layer(request.local_op,
                        request.gen,
                        request.cutoff_fn,
@@ -58,11 +59,11 @@ auto build_layer_entry(const LayerBuildRequest &request) -> std::shared_ptr<Laye
 // one. That is what makes them a check and not a restatement of the table: the dispatcher asserts that
 // the tier it selected reports the id the table selected it under, so a tier target whose include path
 // drifted from its namespace slug fails loudly instead of silently reporting the wrong provenance.
-auto tier_id() -> std::string_view {
+monoprop_TIER_ENTRY auto tier_id() -> std::string_view {
     return variant();
 }
 
-auto tier_machine_flags() -> std::string_view {
+monoprop_TIER_ENTRY auto tier_machine_flags() -> std::string_view {
     return variant_flags();
 }
 

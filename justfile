@@ -84,17 +84,28 @@ build-fat:
     uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_FAT_BINARY=ON"
     uv run --no-sync python -c 'import monoprop; print("loaded", monoprop.__variant__, "of", monoprop.available_variants())'
 
-# The narrow-seam experiment: one tiered translation unit in one module instead of a module per tier.
-# Builds, passes everything and is 61% smaller -- and does not deliver a tier, because the linker
-# deduplicates the four copies of every template instantiation down to one. `check-tier-symbols` is
-# the gate that says so; it fails on purpose. Do not ship this.
+# The seam, packaged as one shared object per tier: one extension module, plus
+# monoprop/lib/libmonoprop-tier-<id>.so for each tier. 39% smaller than build-fat and measures the same
+# tier for tier, because a shared object is its own link and the template instantiations deduplicate
+# inside a tier instead of across all four. `check-tier-symbols` is the gate.
+
+build-fat-tier-dso:
+    uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_FAT_BINARY=ON" --config-settings-package="monoprop:cmake.define.monoprop_FAT_BINARY_MODE=tier-dso"
+    uv run --no-sync python -c 'import monoprop; print("loaded", monoprop.__variant__, "of", monoprop.available_variants())'
+
+# The narrow-seam experiment: the same seam, but all four tiers in one link as object libraries. Builds,
+# passes everything and is smaller still -- and does not deliver a tier, because the linker deduplicates
+# the four copies of every template instantiation down to one. `check-tier-symbols` is the gate that
+# says so; it fails on purpose. Kept for the measurement. Do not ship this; use build-fat-tier-dso.
 
 build-fat-narrow-seam:
     uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_FAT_BINARY=ON" --config-settings-package="monoprop:cmake.define.monoprop_FAT_BINARY_MODE=narrow-seam"
     uv run --no-sync python -c 'import monoprop; print("loaded", monoprop.__variant__, "of", monoprop.available_variants())'
 
-# Whether a narrow-seam build kept its ISA tiers past the linker. Nothing else notices: the tiers agree
-# on every answer, so the whole suite passes while they run identical code.
+# Whether a seam-mode build kept its ISA tiers past the linker. Nothing else notices: the tiers agree on
+# every answer, so the whole suite passes even when they run identical code. Checks weak-symbol
+# disjointness under narrow-seam, and under tier-dso the export/import contract plus a per-module
+# instruction census. A whole-library build has nothing to check and exits 0.
 
 check-tier-symbols BUILD_DIR='build/editable/Release':
     uv run --no-sync python tools/check-tier-symbols.py "{{ BUILD_DIR }}"

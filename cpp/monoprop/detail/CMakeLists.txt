@@ -5,6 +5,7 @@ target_sources(
       TYPE HEADERS
       FILES
         "EnvConfig.h"
+        "TierAbi.h"
 )
 
 add_subdirectory(evolution)
