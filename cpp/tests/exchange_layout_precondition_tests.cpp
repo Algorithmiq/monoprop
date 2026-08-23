@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The width precondition on a layer's exchange layout, driven through ShmComm so it needs no ranks.
+// Preconditions on a layer's exchange layout: the width check needs no ranks (ShmComm), the audit two.
 
 #include <boost/test/unit_test.hpp>
 
@@ -54,3 +54,26 @@ BOOST_AUTO_TEST_CASE(exchange_layout_of_the_right_width_is_accepted) {
     const std::vector<int> exact(1, 0);
     BOOST_CHECK_NO_THROW(monoprop::mpi::check_exchange_symmetry(exact, comm));
 }
+
+#ifdef monoprop_CHECK_EXCHANGE_SYMMETRY
+
+// Unreachable below two ranks: at one participant the alltoall returns this rank's own counts back.
+BOOST_AUTO_TEST_CASE(asymmetric_exchange_counts_are_rejected_by_the_symmetry_audit) {
+    const Comm comm = MPI_COMM_WORLD;
+    const int world_size = monoprop::mpi::size(comm);
+    if (world_size < 2) {
+        BOOST_TEST_MESSAGE(
+            "Skipping asymmetric_exchange_counts_are_rejected_by_the_symmetry_audit: MPI world size=" << world_size);
+        return;
+    }
+
+    // Rank r declares r+1 to every peer, so slot i holds sent=r+1 against received=i+1: a mismatch at
+    // every slot but this rank's own, so the throw fires on all ranks and none is left in the alltoall.
+    const std::vector<int> asymmetric(static_cast<size_t>(world_size), monoprop::mpi::rank(comm) + 1);
+    BOOST_CHECK_THROW(monoprop::mpi::check_exchange_symmetry(asymmetric, comm), CollectiveArgumentError);
+
+    const std::vector<int> symmetric(static_cast<size_t>(world_size), 1);
+    BOOST_CHECK_NO_THROW(monoprop::mpi::check_exchange_symmetry(symmetric, comm));
+}
+
+#endif // monoprop_CHECK_EXCHANGE_SYMMETRY

@@ -5,6 +5,25 @@ set(
   "Semicolon-separated list of ranks for MPI test variants"
 )
 
+# Nine cases early-return at world size 1 and pass having asserted nothing. Empty is exempt:
+# boostAddTests.cmake substitutes 2 for it, so it already has multi-rank coverage.
+if(monoprop_ENABLE_MPI AND NOT "${monoprop_MPI_TEST_PROCS}" STREQUAL "")
+  set(_monoprop_have_multirank OFF)
+  foreach(_monoprop_np IN LISTS monoprop_MPI_TEST_PROCS)
+    if(_monoprop_np GREATER_EQUAL 2)
+      set(_monoprop_have_multirank ON)
+    endif()
+  endforeach()
+  if(NOT _monoprop_have_multirank)
+    message(
+      FATAL_ERROR
+      "monoprop_MPI_TEST_PROCS is \"${monoprop_MPI_TEST_PROCS}\", which has no entry >= 2. "
+      "The multi-rank cases open with `if (world_size() < 2) return;`, so a world-1-only rank list "
+      "reports them Passed having executed zero assertions."
+    )
+  endif()
+endif()
+
 set(_monoprop_mpiexec "${MPIEXEC_EXECUTABLE}")
 if(NOT _monoprop_mpiexec)
   find_program(
