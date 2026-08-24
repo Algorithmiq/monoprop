@@ -70,15 +70,6 @@ public:
 template <size_t NumModes>
 class MonomialPropagator {
 public:
-    // Builds one partition child from a partition-local comm. When supplied, this is used instead
-    // of the base's own factory (which always builds a plain MonomialPropagator<NumModes>) -- a
-    // derived class supplies its own factory, by name, in its own constructor's mem-initializer
-    // list. This is deliberately NOT a virtual method called from inside this constructor: virtual
-    // dispatch during construction always resolves to this class's own override (a base subobject's
-    // dynamic type is this class until this constructor returns), so a virtual "make my own kind of
-    // child" hook would silently keep building plain MonomialPropagator objects no matter what
-    // derived constructor is running. Injecting the factory as an ordinary constructor parameter
-    // sidesteps that trap entirely.
     using PartitionChildFactory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
 
     MonomialPropagator(const OperatorDict &initial_operator,
@@ -289,10 +280,6 @@ public:
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
-    /// Deep-copy hook used when cloning a partition child (see PartitionGroup's copy constructor).
-    /// Unlike the child_factory constructor parameter above, this IS safe as a virtual call: it is
-    /// only ever invoked on an already fully-constructed, already-alive object, never from inside a
-    /// constructor body.
     virtual auto clone_() const -> std::unique_ptr<MonomialPropagator<NumModes>> {
         return std::make_unique<MonomialPropagator<NumModes>>(*this);
     }
@@ -404,17 +391,8 @@ protected:
     // already global on each. Anything hash-partitioned must go through sum_/concat_partitions_ instead.
     auto first_partition_() const -> const MonomialPropagator &;
 
-    /// True iff this object is a multi-partition facade (partition_group_ != nullptr). Lets a
-    /// derived class's own added methods detect a facade and fan out instead of reading this
-    /// object's own (unpopulated) mp_op_/graph_/cutoff_fn_ directly.
     auto is_partition_facade() const -> bool { return static_cast<bool>(partition_group_); }
-
-    /// Indexed variant of map_partitions_: `fn(r, partition)` runs once per partition, `r` in
-    /// [0, partition_count()), and the returned vector is indexed by `r`. Needed whenever a caller
-    /// must hand each partition a DIFFERENT pre-computed input (e.g. its own contiguous slice of a
-    /// term-indexed vector) rather than the same input to every partition -- map_partitions_'s
-    /// callback has no way to know which partition slot it is running in, and a shared mutable
-    /// counter would race across the partitions' concurrently-running master threads.
+    
     template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
     auto map_partitions_indexed_(Fn fn) -> std::vector<R>;
 
