@@ -43,7 +43,7 @@ struct QueryCodec {
     using PosT = typename CQ::PosT;
 
     // Words the QUERY at `off` occupies, NOT counting a trailing fused value word. Asked of the record
-    // rather than derived from k, which does not determine the width once the mode and gw can vary.
+    // rather than derived from k, which does not determine the width once gw can vary.
     [[nodiscard]] static auto query_words(const VecZ &buf, size_t off) -> size_t { return CQ::words_at(buf, off); }
 
     // Complete mode pairs among ascending positions, exposed so no caller names a concrete record type.
