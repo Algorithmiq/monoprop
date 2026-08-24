@@ -1,396 +1,54 @@
 ---
 title: Benchmarks
-description: External and internal benchmarks for `monoprop`.
+description: Internal regression benchmarks and comparisons against other propagation engines.
 ---
 
-
-## Comparison with other packages
-
-
-We provide standalone benchmark scripts comparing `monoprop` against other open-source
-Majorana and Pauli propagation engines. The benchmark suite includes memory and time
-performance metrics, providing insights into the efficiency of different
-propagation engines.
-
-You can find the benchmark scripts in the [`packages/bench-third-party`](https://github.com/Algorithmiq/monoprop/tree/main/packages/bench-third-party) directory.
-The scripts are designed to be run in a controlled environment,
-ensuring fair comparisons between different engines.
-
-That directory is a standalone `uv` project with its own lockfile, not a member of
-the repository's workspace: it pins CUDA-specific wheels and a narrower Python
-range than `monoprop` itself, so it is kept out of the main resolution.
-
-
-### Majorana Propagation
-
-The chosen problem is the 1D Hubbard model, tracking the runtime, expectation value,
-and operator size at each Trotter step.
-
-![Benchmark results for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: number of terms, final overlap, runtime, and memory vs layers](/benchmarks/majorana_results.png)
-
-Number of terms, final overlap, runtime, and memory vs. circuit layers for the 1D Fermi-Hubbard
-model, comparing `monoprop` against `MajoranaPropagation.jl`. See the
-section below for details on the setup and how to reproduce these results.
-
-![Runtime for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: seconds vs circuit layers, linear axes](/benchmarks/majorana_runtime.png)
-
-Runtime on its own, both axes linear. Solid lines are `monoprop`, dashed are
-`MajoranaPropagation.jl`, and colour is the system size. Read it as seconds: the Julia engine's
-591 s at 60 sites / 18 layers is drawn 140× the height of `monoprop`'s 4.2 s, and all three
-`monoprop` curves consequently lie along the bottom of the axis — annotated with the top of that
-band, since flat here means small, not zero. For `monoprop`'s own growth with depth, read the
-term-count and memory panels of the combined figure, or the numbers below.
-
-
-#### SPECS
-
-The benchmark is run on [Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html), one exclusive DCGP node per engine:
-
-- CPU: 2× Intel Xeon Platinum 8480+ (112 cores total, Sapphire Rapids)
-- RAM: ~480 GB
-
-Each engine runs at the thread count it is fastest at — `monoprop` at 56 threads,
-`MajoranaPropagation.jl` at 28 — since they do not peak at the same count.
-
-The end-to-end workflow is:
-
-1. [Set up the Python environment](#1-set-up-the-python-environment).
-2. [Install Julia and `MajoranaPropagation.jl`](#2-install-julia-and-majoranapropagationjl).
-3. [Run the benchmarks](#3-run-the-benchmarks) to produce the JSONL result files.
-4. [Plot the results](#4-plot-the-results) to produce `majorana_results.png` and `majorana_runtime.png`.
-
-#### 1. Set up the Python environment
-
-```bash
-# Navigate to this directory
-cd packages/bench-third-party
-
-# Create the venv and install all Python dependencies (including monoprop itself, in editable mode)
-uv sync
-```
-
-This installs `monoprop` and `numpy`.
-
-#### 2. Install Julia and `MajoranaPropagation.jl`
-
-You can find the installation instructions for Julia and `MajoranaPropagation.jl` in the [official documentation](https://github.com/SparqleSim/MajoranaPropagation.jl).
-
-```bash
-# Install juliaup and the latest stable Julia release
-curl -fsSL https://install.julialang.org | sh
-```
-
-Once Julia has been installed, you can install and instantiate the required packages for the benchmark:
-
-```bash
-julia --project=@. -e 'using Pkg; Pkg.instantiate()'
-
-```
-
-Then, you can precompile the `MajoranaPropagation.jl` package to ensure that it is ready for use:
-
-```bash
-julia --project=@. -e 'using Pkg; Pkg.precompile()'
-```
-
-#### 3. Run the benchmarks
-
-You can run the benchmarks using the provided bash script for both Python and Julia engines. The script will execute the benchmarks and generate the results in two separate JSON files: `julia_hubbard1d_benchmark_results.jsonl` for the Julia engine and `monoprop_hubbard1d_benchmark_results.jsonl` for the Python engine.
-
-```bash
-# Run the benchmarks for both Python and Julia engines
-bash run_benchmarks.sh
-```
-
-Each line of both JSONL files is one benchmark run (one system size / circuit depth pair), with:
-
-- `n_spinful_sites`: number of spinful sites in the 1D Hubbard chain.
-- `n_layers`: number of Trotter layers simulated.
-- `num_terms`: number of Majorana terms kept in the operator at the final layer.
-- `final_overlap`: expectation value at the final layer.
-- `runtime_seconds`: wall-clock time to run all `n_layers` layers.
-- `memory_MB`: peak resident set size over the layer, in megabytes, read from the kernel's
-  `VmHWM` high-water mark and reset per layer.
-- `num_threads`: thread count the run was given (`monoprop_NUM_THREADS` / `JULIA_NUM_THREADS`).
-- `cpu_seconds`: CPU time consumed over the timed loop, summed over all threads.
-- `busy_cores`: `cpu_seconds / runtime_seconds` — how many cores the run actually kept busy.
-  A value near 1 means the run was serial, irrespective of `num_threads`.
-- `peak_rss_MB`, `library_version`, `host`: provenance for the row.
-
-Both engines are multithreaded, but they do not peak at the same thread count, so
-`run_benchmarks.sh` reads `monoprop_NUM_THREADS` and `JULIA_NUM_THREADS` from the environment
-(default 8 each) rather than fixing them. The Julia results additionally record `container` and
-`gc_seconds`: only `VectorMajoranaSum` dispatches into `MajoranaPropagation.jl`'s
-AcceleratedKernels path, while the dict-backed `MajoranaSum` is serial regardless of thread count.
-The Python results additionally record `affinity_cores` and `mu_gates` (see `--mu-gates`, which
-restores the inert chemical-potential gates that the Julia circuit does not have).
-
-#### 4. Plot the results
-
-```bash
-uv run python plot_results.py
-```
-
-This reads the json file results for each simulation and produces two images: `majorana_results.png`,
-combining four linear scale panels (number of terms, final overlap, runtime, and memory) in a 2x2
-grid, and `majorana_runtime.png`, the runtime alone on linear axes. Runtime gets its own file
-because it is the quantity cited on its own.
-
-
-#### Results
-
-Number of terms, final-state overlap, runtime, and memory footprint versus circuit depth for the
-1D Hubbard model, comparing `monoprop` against `MajoranaPropagation.jl` across system sizes
-`n=20`, `40`, and `60`. Final overlaps agree to within 1.8e-6, confirming both engines simulate
-the same physics, and `monoprop` keeps 1.44-1.50× more terms at equal `atol` and cutoff.
-
-`monoprop` is 22-142× faster over the grid, and the gap widens with both depth and system size:
-21.9× at 20 sites / 10 layers, 141.6× at 60 sites / 18 layers (4.2 s versus 592 s). Its runtime
-is nearly flat in site count while the Julia engine's grows roughly linearly. Dividing out the
-cores each engine actually kept busy leaves 8.5-52×, so the majority of the gap is algorithmic
-rather than a thread-count artifact. Memory is comparable at low depth and diverges in
-`monoprop`'s favour as the operator grows (2834 MB versus 3390 MB at 60 sites / 18 layers).
-
-
-### Pauli Propagation
-
-The chosen problem is the Trotterized time evolution of a 2D transverse-field Ising model (TFIM), tracking the runtime,
-expectation value, and operator size at each Trotter step.
-
-
-![Benchmark results for Pauli Propagation engines: Runtime and Memory per Trotter step](/benchmarks/pauli_results.png)
-
-Runtime and memory usage per Trotter step for the 2D TFIM problem, comparing `monoprop` against
-other Pauli propagation engines. See the [Pauli Propagation](#pauli-propagation) section below for
-details on the setup and how to reproduce these results.
-
-
-#### SPECS
-
-- CPU: AMD Ryzen Threadripper PRO 7955WX 16-Cores
-- RAM: 128 GB in dual channel
-- GPU: Nvidia RTX 5090 with 32 GB VRAM
-
-
-The end-to-end workflow is:
-
-1. [Choose the simulation settings](#1-choose-the-simulation-settings) in `settings.json`.
-2. [Set up the Python environment](#2-set-up-the-python-environment).
-3. [(Optional) install Julia and `PauliPropagation.jl`](#3-optional-install-julia-and-pauliPropagationjl).
-4. [Run the benchmarks](#4-run-the-benchmarks) to produce `results.json`.
-5. [Plot the results](#5-plot-the-results) to produce `results.png`.
-
-#### 1. Choose the simulation settings
-
-All simulation parameters live in [`settings.json`](https://github.com/Algorithmiq/monoprop/blob/main/packages/bench-third-party/pauli_prop/settings.json) and are shared by every engine
-(Python and Julia alike), so a single edit compares them all on an identical problem instance:
-
-| Key          | Meaning                                                                               |
-| ------------ | ------------------------------------------------------------------------------------- |
-| `nx`, `ny`   | Size of the qubit grid (columns × rows); total qubits = `nx * ny`, row-major indexed. |
-| `hx`         | Transverse (X) field strength.                                                        |
-| `hz`         | Longitudinal (Z) field strength, i.e. the Hamiltonian's tilt.                         |
-| `j`          | ZZ coupling strength between nearest-neighbor qubits.                                 |
-| `dt`         | Trotter step size.                                                                    |
-| `step_min`   | First Trotter step to simulate (inclusive).                                           |
-| `step_max`   | Last Trotter step to simulate (inclusive).                                            |
-| `lower_atol` | Coefficient magnitude below which Pauli terms are truncated.                          |
-| `cutoff`     | Maximum Pauli weight to keep during propagation; `null` disables weight truncation.   |
-| `obs_qubits` | The qubit pair (row-major grid index) whose `ZZ` correlator is measured.              |
-
-Edit the values directly in `settings.json` before running the benchmarks — e.g. increase
-`nx`/`ny` for a larger system, widen `step_min`/`step_max` to simulate more Trotter steps, or
-relax `lower_atol`/`cutoff` to trade accuracy for speed. All engines read this same file, so no
-code changes are needed to reproduce a benchmark under different conditions.
-
-`Qiskit pauli-prop` is the one exception: its `propagate_through_circuit` API has no weight-based
-cutoff, only a mandatory positive `max_terms` (which also caps its memory pre-allocation, so it
-can't be left unbounded). `run_model.py` sets it to monoprop's own term count at each step, so its
-per-step term budget tracks `cutoff`/`lower_atol` indirectly through monoprop rather than directly.
-
-#### 2. Set up the Python environment
-
-```bash
-# Navigate to this directory
-cd packages/bench-third-party
-
-# Create the venv and install all Python dependencies (including monoprop itself, in editable mode)
-uv sync
-```
-
-This installs `monoprop`, `qiskit`, `ppvm`, `pauli-prop`, and `cuquantum-python-cu12`. Running the
-`cuPauliProp (GPU)` engine requires an NVIDIA GPU with a working CUDA setup; the other three Python
-engines (`monoprop`, `QuEra ppvm`, `Qiskit pauli-prop`) run on CPU only.
-
-#### 3. (Optional) install Julia and `PauliPropagation.jl`
-
-Skip this step if you only want to compare the Python engines — `run_model.py` and
-`plot_results.py` work fine without it. Install it if you also want the `PauliPropagation.jl`
-comparison:
-
-```bash
-# Install juliaup and the latest stable Julia release
-curl -fsSL https://install.julialang.org | sh
-```
-
-Once Julia has been installed, add some utils:
-
-```bash
-julia -e 'using Pkg; Pkg.add(["JSON", "ProgressMeter"])'
-```
-
-Finally, install the package [`PauliPropagation.jl`](https://github.com/SparqleSim/PauliPropagation.jl) v0.7.3:
-
-```bash
-julia -e 'using Pkg; Pkg.add(Pkg.PackageSpec(name="PauliPropagation", version="0.7.3"))'
-```
-
-#### 4. Run the benchmarks
-
-```bash
-# Run the Python engines (monoprop, QuEra ppvm, Qiskit pauli-prop, cuPauliProp) — (re)writes results.json from scratch
-uv run python run_model.py
-
-# (Optional) run the Julia engine — merges its results into the existing results.json
-julia run_model.jl
-```
-
-`run_model.py` must be run first: it (re)creates `results.json` from `settings.json`.
-`run_model.jl` then reads that file and adds the `PauliPropagation.jl` entries to it, so
-re-running `run_model.py` afterwards overwrites the file and drops them again — rerun
-`run_model.jl` too if you do.
-
-For every engine, `results.json` collects, indexed by Trotter step:
-
-- `num_terms`: the number of Pauli/Majorana terms kept in the evolving operator, for every step.
-- `runtime`: wall-clock time per step, in seconds. The first step is excluded: it carries each
-  engine's warm-up (JIT compilation, first-touch allocation), which is not what the per-step
-  comparison is measuring.
-- `memory`: peak resident set size over each step, in megabytes. Every engine is measured the
-  same way, by the kernel's `VmHWM` high-water mark reset at the start of each step, so these
-  curves are directly comparable. It is a whole-process figure, so it includes the interpreter
-  and the loaded libraries; read the growth across steps rather than the absolute value.
-- `native_memory`: where an engine accounts for itself, its own figure (monoprop's C++
-  operator-memory accounting, cuPauliProp's peak device memory over the step,
-  `PauliPropagation.jl`'s `Base.summarysize` of the Pauli sum). These are reference values
-  only: they measure different things and must not be compared across engines. `QuEra ppvm`
-  and `Qiskit pauli-prop` expose no such accounting and so report none. Each record's
-  `operator_memory_metric` names the quantity, which for the GPU depends on the allocator in
-  use — CUDA's resettable `cudaMemPoolAttrUsedMemHigh` where available, otherwise a
-  `MemoryHook` tracking the CuPy pool's `used_bytes()` synchronously on every allocation;
-  both are exact peaks, not samples.
-- `expvals`: the `ZZ` expectation value on `obs_qubits`, for every step.
-
-### 5. Plot the results
-
-```bash
-uv run python plot_results.py
-```
-
-This reads `results.json` and produces a single image, `pauli_results.png`, combining two log-scale
-panels (runtime per Trotter step and operator memory footprint per Trotter step) side by side, for
-each engine present in the file (so they reflect whichever engines you actually ran in step 4).
-
-
-### Results
-
-Runtime and memory footprint per Trotter step for the 2D TFIM problem above, comparing
-`monoprop` against `cuPauliProp (GPU)`, `PauliPropagation.jl`, `QuEra ppvm`, and `Qiskit
-pauli-prop`. `monoprop` tracks the GPU-accelerated `cuPauliProp` closely while running on CPU,
-and outperforms all other CPU-only engines in both time and memory as the operator grows.
-
-
-### Scaling with lattice size
-
-The benchmark above fixes the lattice at 6x6 and walks the Trotter steps. The second Pauli
-benchmark does the opposite: it holds the circuit depth and the truncation fixed and grows the
-lattice, from 6x6 (36 qubits) to 18x18 (324 qubits). Every engine runs the identical model at
-each size, in its own subprocess, and contributes one totals record per size.
-
-![Total runtime versus lattice size, for five Pauli-propagation engines](/benchmarks/pauli_scaling_runtime.png)
-
-At a fixed coefficient truncation the operator saturates: past ~100 qubits every engine carries
-the same ~5.8M terms whatever the lattice, so this measures *cost per term kept* rather than a
-growing problem. `monoprop`'s total runtime stays nearly flat in that regime, which is what makes
-the gap widen with size.
-
-![Final operator memory versus lattice size, for five Pauli-propagation engines](/benchmarks/pauli_scaling_memory.png)
-
-The same saturation shows up in memory: `monoprop`'s footprint flattens near 690 MB from 12x12
-on, while `PauliPropagation.jl`'s keeps climbing to ~1.8 GB at 324 qubits. Compare across engines
-only with the third caveat below in mind — these are not all the same measurement.
-
-![Bar chart of monoprop's speed-up over each other engine, grouped by qubit count](/benchmarks/pauli_speedup.png)
-
-| qubits | PauliPropagation.jl | QuEra ppvm | Qiskit pauli-prop | cuPauliProp (GPU) |
-| -----: | -----: | -----: | -----: | -----: |
-| 36 | 16× | 107× | 165× | 4.4× |
-| 64 | 21× | 209× | 213× | 5.7× |
-| 100 | 33× | 190× | 287× | 8.5× |
-| 144 | 40× | 182× | – | 10× |
-| 196 | 55× | 184× | – | 11× |
-| 256 | 81× | – | – | 11× |
-| 324 | 105× | – | – | 15× |
-
-A dash means the engine did not finish that size within the 300 s per-point budget. Three
-caveats belong with these ratios:
-
-- **Only two of the four CPU engines use more than one core.** `QuEra ppvm` and Qiskit's
-  `pauli-prop` propagate on a single core — measured at 0.99 busy cores mid-propagation — and no
-  environment variable changes it: ppvm's rayon-parallel `PauliSum` lives in its
-  `config::dashmap` variant while its Python bindings expose only the `indexmap` one, and
-  Qiskit's `_accelerate` extension contains no parallel path at all. The ratios above are
-  therefore wall-clock, not per-core.
-- **`PauliPropagation.jl` runs in its fastest documented configuration**, the `VectorPauliSum`
-  container driven by `Performance.propagate!`, which needs the **dev branch (0.8.0+)** for the
-  `Performance` submodule. That path leaves duplicate Pauli strings unmerged, so it reports ~38%
-  more terms than the exact `propagate` path and its expectation value differs by ~1e-4 — its
-  term count is a storage count, not an operator size.
-- **The memory figure is the peak resident set size over each step**, taken from the kernel for
-  every engine alike, so the curves are comparable. Each engine's own accounting, where it has
-  one, is reported separately as `native_memory` and is *not* comparable across engines.
-
-#### SPECS
-The benchmark is run on [Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html):
-
-- CPU: 2× Intel Xeon Platinum 8480+ (112 cores total) — `monoprop` at 56 threads,
-  `PauliPropagation.jl` at 28 threads.
-- GPU: 1× NVIDIA A100 with 64 GB HBM2e, for `cuPauliProp`.
-
-Each record in the committed data carries its own `host`, `threads` and `library_version`, and
-both plotting scripts print that provenance beside the numbers.
-
-#### Running it
-
-```bash
-cd packages/bench-third-party/pauli_prop
-
-# Redraw both figures from the committed ladder — seconds, no propagation
-uv run python plot_scaling.py scaling_results.jsonl
-uv run python plot_speedup.py scaling_results.jsonl
-
-# Or measure it: one subprocess per (size, engine), 5 minutes per point
-uv run python run_scaling.py --output results/scaling.jsonl --timeout 300 \
-  --threads monoprop=56 juliapp=28
-```
-
-Two build notes: 324 qubits needs a `monoprop` mode tier at least that large
-(`-Dmonoprop_MAX_NUM_MODES=352`, since tiers come in 32-mode blocks), and the Julia engine here
-needs the dev branch — `Pkg.add(url="https://github.com/SparqleSim/PauliPropagation.jl",
-rev="dev")` — while the fixed-size `run_model.jl` above is fine on the pinned v0.7.3.
-
+`monoprop` carries two kinds of benchmark: an **internal** pytest suite that guards against
+regressions on every commit, and an **external** comparison against other open-source Pauli and
+Majorana propagation engines.
+
+## How memory is measured
+
+Every figure on this page reports **peak resident set size**, read from the kernel's `VmHWM`
+high-water mark. It is the number to quote, and the only one that is like-for-like against a
+library written in another language.
+
+- **It is exact, not sampled.** The kernel updates `VmHWM` on every RSS increase, so no
+  transient can be missed and no background thread is needed — which also means the GIL cannot
+  hide anything from it.
+- **The window is reset per step.** Each measured region settles the process first
+  (`gc.collect()` + `malloc_trim`, or `GC.gc()` + `malloc_trim` on the Julia side) and then
+  resets `VmHWM` to that floor, so the peak reported is that step's own and not an earlier
+  step's retained garbage. Without the settling the figure tracks the allocator's willingness
+  to return pages more than it tracks what the code needed.
+- **Every engine is measured by the same instrument**, from outside, over exactly the timed
+  region — not by asking each library what it thinks it is using.
+
+It is a whole-process figure, so it includes the interpreter and the loaded libraries. That
+constant is why the curves are worth reading for their *growth*, and why an engine can be
+leaner in RSS while being far slower.
+
+Where an engine also accounts for itself — `monoprop`'s `operator_memory_bytes()`,
+`PauliPropagation.jl`'s `Base.summarysize`, cuPauliProp's device pool — that figure is recorded
+alongside as `native_memory` and drawn as a faint companion line. **Those are not comparable
+with each other**: they count different things in different pools. They are context for a
+single engine's curve, never a cross-engine ranking.
+
+<Callout type="warn">
+GPU engines are the one case where host RSS says nothing: the operator lives on the card, so
+`cuPauliProp`'s host RSS sits flat near 534 MB at every lattice size. Compare it with
+`plot_scaling.py --memory-key working_set_MB`, which adds the device peak to the host figure.
+</Callout>
 
 ## Internal benchmarks
 
-The `monoprop` repository includes a pytest suite measuring the **time** and
-**peak resident memory (RSS)** of monoprop's core operations.
-The suite is separated from the test suite and can be run with `just bench`.
-See below for more detailed instructions.
+A pytest suite measuring the **time** and **peak RSS** of `monoprop`'s core operations. It is
+kept apart from the test suite and run with `just bench`.
 
 ### Running
 
-Each run takes a **label** and becomes one column in `results/REPORT.md`, so
-serial, MPI, and thread variants sit side by side. Extra args go to pytest.
+Each run takes a **label** and becomes one column in `results/REPORT.md`, so serial, MPI and
+threaded variants sit side by side. Extra arguments are forwarded to pytest.
 
 ```bash
 uv sync --group bench                          # once
@@ -404,129 +62,260 @@ monoprop_NUM_THREADS=10 just bench serial-t10  # cap the partition count
 uv run --group bench monoprop-bench-report benches/results  # rebuild report, no re-run
 ```
 
+Two suites are available:
+
+- **`bench_random.py`** — `build_graph`, `pare`, `energy`, `gradient` and `inplace` on a random
+  problem. Configurable with `--gen-length` (4), `--obs-terms` (10000), `--num-generators`
+  (100), `--num-modes` (128), `--cutoff` (6), `--seed` (0) and `--bench-rounds` (1); defaults in
+  parentheses.
+- **`bench_models.py`** — fixed models, marked `slow`: a 120-qubit Fermi-Hubbard 29-step Trotter
+  run (`test_model[hubbard]`) and a 127-qubit kicked-Ising run over 20 layers
+  (`test_model[pauli]`). Override any config field with `--<model>-<field>`, e.g.
+  `--pauli-num-layers 30`; `just bench --help` lists them all.
+
+Each run writes `results/time-<label>.json` (pytest-benchmark) and `<label>.json` (everything
+else); `monoprop-bench-report` merges every label into `results/REPORT.md`.
+
 ### MPI
 
-Communicator-aware: operations are barrier-wrapped so the timed cost is the
-**makespan** across ranks, and memory is the **peak of the RSS summed across
-ranks** (shared pages counted per rank, so an upper bound), not the sum of
-per-rank peaks.
+The suite is communicator-aware: operations are barrier-wrapped so the timed cost is the
+**makespan** across ranks, and memory is the **peak of the summed live PSS**, replayed from
+per-rank timelines. Summing each rank's independently-timed peak would count transients that
+never coexisted; PSS rather than RSS so that a shared page is counted once rather than once per
+rank.
 
 ```bash
 just bench-build-mpi                           # build once (MPI on)
 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 ```
 
-**The MPI build must stay loaded.** monoprop builds `MPI=OFF` by default; a
-non-MPI extension ignores the communicator, so every rank holds the **full**
-operator (N× memory). The recipes use `--no-sync` so the MPI build survives —
-rebuild after editing sources. `just bench-mpi` checks `monoprop.has_mpi` and
-aborts if MPI is missing; extra args are forwarded to `mpiexec` (as root, add
-`--allow-run-as-root`).
-
-### Benchmarks
-
-**Random** (`bench_random.py`; configurable, both pictures) — `build_graph`,
-`pare`, `energy`, `gradient` (graph-based), and `inplace`. CLI options:
-
-| Option | Meaning | Default |
-|---|---|---|
-| `--gen-length` | Majorana operators per generator | 4 |
-| `--obs-terms` | observable terms | 10000 |
-| `--num-generators` | generators (circuit gates) | 100 |
-| `--num-modes` | fermionic modes (Majorana indices = `2·modes`) | 128 |
-| `--cutoff` | truncation cutoff | 6 |
-| `--seed` | RNG seed | 0 |
-| `--bench-rounds` | fixed timing rounds (MPI-safe) | 1 |
-
-**Models** (`bench_models.py`; fixed, in-place, `slow`):
-
-- `test_model[hubbard]` — 120-qubit Fermi-Hubbard, 29-step Trotter.
-- `test_model[pauli]` — 127-qubit Pauli-basis kicked-Ising, 20 layers.
-
-Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`);
-`just bench --help` lists all.
-
-### Output
-
-Each run writes `results/time-<label>.json` (pytest-benchmark) and
-`<label>.json` (everything else); `monoprop-bench-report` merges all labels into
-`results/REPORT.md`. The configuration table records the Python version, the
-nanobind frontend version compiled into the extension, and the installed
-`nanobind-backend` version. Older artifacts without these fields render `—`.
+<Callout type="warn">
+**The MPI build must stay loaded.** `monoprop` builds `MPI=OFF` by default, and a non-MPI
+extension ignores the communicator — every rank then holds the **full** operator, for N× the
+memory. The recipes pass `--no-sync` so the MPI build survives; rebuild after editing sources.
+`just bench-mpi` checks `monoprop.has_mpi` and aborts if it is missing.
+</Callout>
 
 ### Continuous benchmarking
 
-Every commit on `main` is benchmarked by the `bench_main.yml` workflow and the
-results are tracked by [Bencher](https://bencher.dev/), which graphs them over
-time and alerts when a metric drifts outside its threshold.
-
-The workflow runs the same recipes you can run locally:
+Every commit on `main` runs `bench_main.yml`, and the results are tracked by
+[Bencher](https://bencher.dev/), which graphs them over time and alerts when a metric drifts
+outside its threshold. The workflow runs the same recipes you can run locally:
 
 ```bash
-just bench-ci ci-linux          # the default sizes, more rounds, no slow models
+just bench-ci ci-linux          # default sizes, more rounds, no slow models
 just bench-bmf ci-linux         # the same results as Bencher Metric Format JSON
 ```
 
 `monoprop-bench-bmf` merges both artifacts into one report because Bencher accepts a single
-adapter per upload — the stock `python_pytest` adapter would keep the timings
-and drop the memory and operator metrics. Four measures are tracked:
+adapter per upload — the stock `python_pytest` adapter would keep the timings and drop
+everything else. Four measures are tracked:
 
 | Measure | Unit | Source | Threshold |
 |---|---|---|---|
 | `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99 |
-| `peak-memory` | bytes | per-operation peak RSS (`memhwm`) | +10% |
+| `peak-memory` | bytes | per-operation peak RSS (`VmHWM`) | +10% |
 | `resting-memory` | bytes | settled operator + graph footprint | +10% |
 | `terms` | count | terms in the evolved operator | any change |
 
-`terms` is deterministic for a fixed seed and problem size, so it is held to an
-exact match: any drift is an algorithmic change and should be a deliberate one.
-The timing measures are noisy on shared runners, so alerts on `main` are
-recorded but do not fail the build.
-
-Setting this up on a fork needs a Bencher project and a `BENCHER_API_KEY`
-repository secret; the project slug defaults to `monoprop` and can be overridden
-with a `BENCHER_PROJECT` repository variable.
+`terms` is deterministic for a fixed seed and problem size, so it is held to an exact match: any
+drift is an algorithmic change and should be a deliberate one. Timings are noisy on shared
+runners, so alerts on `main` are recorded but do not fail the build.
 
 #### Testbeds
 
-Bencher keys every metric on (branch, testbed, measure), so a testbed is one
-machine shape and its history is only meaningful against itself. Changing the
-hardware under a testbed name shows up as a step change in every series, which
-is why each machine gets its own name and why the runner shapes below are pinned
-rather than ranged.
-
-The build, benchmark and upload steps live once in the reusable
-`.github/workflows/bench.yml`; a caller workflow supplies the runner, the
-testbed name and the result label:
+Bencher keys every metric on (branch, testbed, measure), so a testbed is one machine shape and
+its history is only meaningful against itself. Changing the hardware under a testbed name shows
+up as a step change in every series, which is why each machine gets its own name.
 
 | Workflow | Runner | Testbed | Label | Profile |
 |---|---|---|---|---|
 | `bench_main.yml` | GitHub-hosted `ubuntu-26.04` | `ubuntu-26.04` | `ci-linux` | `not slow`, 5 rounds |
 | `bench_bare_metal.yml` | [RunsOn](https://runs-on.com/) EC2 node | `aws-c7i-4xlarge` | `ci-bare-metal` | everything, 3 rounds |
 
-The bare-metal workflow provisions a dedicated node per run, so the machine is
-billed per commit rather than continuously and nothing else is scheduled on it
-while the benchmarks run. That lower noise floor is the point: it is what a
-testbed needs before its timing thresholds can be tightened enough to gate on.
-It is also why it can afford the slow fixed models that the shared runner skips,
-and why fewer rounds reach the same confidence there.
+The bare-metal workflow provisions a dedicated node per run, so nothing else is scheduled on it
+while the benchmarks run. That lower noise floor is the point: it is what a testbed needs before
+its timing thresholds can be tightened enough to gate on, and it is why it can afford the slow
+fixed models the shared runner skips.
 
-It is skipped unless the `BENCH_BARE_METAL` repository variable is set to
-`true` — without a RunsOn stack answering the label, the job would queue until
-it timed out on every commit. The node's shape is defined under `runners.bench`
-in `.github/runs-on.yml`; on public repositories RunsOn reads that file from the
-default branch only, so changes to it take effect after merge, not in the pull
-request that makes them.
+It is skipped unless the `BENCH_BARE_METAL` repository variable is `true` — without a RunsOn
+stack answering the label, the job would queue until it timed out on every commit. The node's
+shape lives under `runners.bench` in `.github/runs-on.yml`; on public repositories RunsOn reads
+that file from the default branch only, so changes take effect after merge, not in the pull
+request making them.
 
-A new testbed starts with no history, so its first runs raise no alerts and its
-thresholds need setting once enough points exist to see the noise. Which
-benchmarks run, and how many rounds each gets, are the `bench-markers` and
-`bench-rounds` inputs of the reusable workflow; `bench-ci` reads them from the
-environment, so a profile can be reproduced locally:
+Which benchmarks run, and how many rounds each gets, are the `bench-markers` and `bench-rounds`
+inputs of the reusable `bench.yml`. Changing either for a testbed that already has history
+rewrites what its series measures, so pick them before the first run:
 
 ```bash
 monoprop_BENCH_MARKERS= monoprop_BENCH_ROUNDS=3 just bench-ci ci-bare-metal
 ```
 
-Changing either for a testbed that already has history rewrites what its series
-measures, so pick them before the first run rather than after.
+## Comparison with other packages
+
+Standalone scripts comparing `monoprop` against other open-source Pauli and Majorana
+propagation engines live in
+[`packages/bench-third-party`](https://github.com/Algorithmiq/monoprop/tree/main/packages/bench-third-party).
+That directory is a standalone `uv` project with its own lockfile, deliberately outside the
+repository workspace: it pins CUDA-specific wheels and a narrower Python range than `monoprop`
+itself.
+
+The comparisons are measured on [Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html),
+one exclusive DCGP node per engine:
+
+- **CPU** 2× Intel Xeon Platinum 8480+ (112 cores, Sapphire Rapids), ~480 GB RAM
+- **GPU** 1× NVIDIA A100 64 GB, for `cuPauliProp`
+
+Each engine runs at the thread count it is fastest at, since they do not peak at the same one.
+Rather than trusting that prose, read it off the data: every record carries its own `host`,
+`threads` and `library_version`, and the plotting scripts print that provenance beside the
+numbers they draw.
+
+### Pauli propagation
+
+Trotterized time evolution of a 2D transverse-field Ising model, measuring the `ZZ` correlator on
+a fixed qubit pair. Two sweeps: one grows the circuit depth at a fixed lattice, the other grows
+the lattice at a fixed depth.
+
+#### Fixed lattice, increasing depth
+
+A 12×12 lattice (144 qubits) over 28 Trotter points, `dt = 0.05`, coefficients truncated below
+`1e-6`, no weight cutoff.
+
+![Runtime and peak RSS per Trotter step for five Pauli propagation engines](/benchmarks/pauli_results.png)
+
+`monoprop` tracks the GPU-accelerated `cuPauliProp` closely while running on CPU, and beats every
+other CPU engine in both time and memory as the operator grows. Solid lines are peak RSS; the
+faint companions are each engine's own accounting, for context only.
+
+#### Increasing lattice size
+
+The complement: circuit depth and truncation held fixed while the lattice grows from 6×6 (36
+qubits) to 18×18 (324 qubits). Each engine runs the identical model at each size in its own
+subprocess.
+
+![Total runtime versus lattice size, five Pauli propagation engines](/benchmarks/pauli_scaling_runtime.png)
+
+At a fixed coefficient truncation the operator **saturates**: past ~100 qubits every engine
+carries the same ~5.84M terms whatever the lattice. This therefore measures *cost per term kept*,
+not a growing problem — which is exactly why `monoprop`'s total runtime stays nearly flat, and
+why the gap widens with size.
+
+![Peak RSS versus lattice size, five Pauli propagation engines](/benchmarks/pauli_scaling_memory.png)
+
+The same saturation shows in memory. `monoprop` goes from 871 MB at 36 qubits to 1134 MB at 324
+— a 1.3× rise across a 9× larger lattice — while `PauliPropagation.jl` climbs from 1199 MB to
+4185 MB, a 3.5× rise. The ratio between them widens from 1.4× to 3.7×.
+
+![Bar chart of monoprop's speed-up over each engine, grouped by qubit count](/benchmarks/pauli_speedup.png)
+
+| qubits | metric | PauliPropagation.jl | QuEra ppvm | Qiskit pauli-prop | cuPauliProp (GPU) |
+| -----: | :----- | -----: | -----: | -----: | -----: |
+| 36 | speed-up | 16× | 107× | 165× | 4.4× |
+| 36 | RSS ratio | 1.4× | 0.6× | 2.6× | – |
+| 100 | speed-up | 33× | 190× | 287× | 8.5× |
+| 100 | RSS ratio | 2.0× | 0.7× | 5.5× | – |
+| 196 | speed-up | 55× | 184× | – | 11× |
+| 196 | RSS ratio | 2.6× | 0.8× | – | – |
+| 324 | speed-up | 105× | – | – | 15× |
+| 324 | RSS ratio | 3.7× | – | – | – |
+
+Speed-up is wall-clock total runtime relative to `monoprop`; RSS ratio is the other engine's peak
+RSS divided by `monoprop`'s, so above 1 means `monoprop` used less. A dash means the engine did
+not finish that size within the 300 s per-point budget, or — for the GPU — that host RSS does not
+describe it.
+
+Three caveats belong with these ratios:
+
+- **`QuEra ppvm` uses less memory than `monoprop`**, consistently 0.6–0.8× the peak RSS, while
+  being 107–209× slower. It is the one engine that trades the other way, and the table would be
+  misleading without saying so.
+- **Only two of the four CPU engines use more than one core.** `QuEra ppvm` and Qiskit's
+  `pauli-prop` propagate on a single core — measured at 0.99 busy cores mid-propagation — and no
+  environment variable changes it: ppvm's rayon-parallel `PauliSum` lives in its `config::dashmap`
+  variant while its Python bindings expose only `indexmap`, and Qiskit's `_accelerate` extension
+  has no parallel path at all. These ratios are wall-clock, not per-core.
+- **`PauliPropagation.jl` runs in its fastest documented configuration**, the `VectorPauliSum`
+  container driven by `Performance.propagate!`, which needs the dev branch (0.8.0+). That path
+  leaves duplicate Pauli strings unmerged, so it reports ~38% more terms than the exact
+  `propagate` path and its expectation value differs by ~1e-4 — its term count is a storage
+  count, not an operator size.
+
+### Majorana propagation
+
+Trotterized time evolution of the 1D Fermi-Hubbard model at 60 spinful sites over 20 layers,
+tracking runtime, expectation value, term count and memory at each layer. Both engines at 24
+threads.
+
+![Term count, expectation value, runtime and peak RSS versus layer, monoprop vs MajoranaPropagation.jl](/benchmarks/majorana_results.png)
+
+![Runtime versus circuit depth on linear axes, monoprop vs MajoranaPropagation.jl](/benchmarks/majorana_runtime.png)
+
+Runtime also gets its own linear-axis figure, since it is the quantity most often cited alone.
+`monoprop`'s curve lies along the bottom of that axis, annotated with the top of the band so that
+flat reads as small rather than as zero.
+
+Both engines simulate the same physics: the expectation values agree to within 2.0e-6 at every
+layer. `monoprop` keeps 1.38× more terms at equal truncation, and still finishes the 20 layers in
+**92.5 s against 2908.5 s**, a 31× speed-up overall and 29× on the final layer alone. Peak RSS is
+**10.6 GB against 15.7 GB**, 1.48× less, despite the larger retained operator.
+
+Note that only `VectorMajoranaSum` dispatches into `MajoranaPropagation.jl`'s AcceleratedKernels
+path; the dict-backed `MajoranaSum` is serial regardless of thread count.
+
+### Reproducing
+
+Every engine is driven from one `uv` project:
+
+```bash
+cd packages/bench-third-party
+uv sync    # monoprop (editable), qiskit, ppvm, pauli-prop, cuquantum-python-cu12
+```
+
+The Julia engines are optional — the Python comparisons run without them:
+
+```bash
+curl -fsSL https://install.julialang.org | sh          # juliaup + latest stable Julia
+julia -e 'using Pkg; Pkg.add(["JSON", "ProgressMeter"])'
+```
+
+Then, per benchmark:
+
+```bash
+# Pauli, fixed lattice — edit settings.json first to change the model
+cd pauli_prop
+uv run python run_model.py        # monoprop, ppvm, qiskit, cuPauliProp
+julia run_model.jl                # optional; merges PauliPropagation.jl into results.json
+uv run python plot_results.py
+
+# Pauli, lattice ladder — 5 minutes per (size, engine)
+uv run python run_scaling.py --output scaling_results.jsonl \
+    --timeout 300 --threads monoprop=56 juliapp=28
+uv run python plot_scaling.py scaling_results.jsonl
+uv run python plot_speedup.py scaling_results.jsonl
+
+# Majorana
+cd ../majorana_prop
+monoprop_NUM_THREADS=56 JULIA_NUM_THREADS=28 bash run_benchmarks.sh
+```
+
+All Pauli model parameters live in
+[`settings.json`](https://github.com/Algorithmiq/monoprop/blob/main/packages/bench-third-party/pauli_prop/settings.json)
+and are shared by every engine, so one edit compares them all on an identical problem instance.
+The output schemas, the full field lists and the per-engine caveats are documented in
+[`packages/bench-third-party/README.md`](https://github.com/Algorithmiq/monoprop/tree/main/packages/bench-third-party).
+
+<Callout type="info">
+Three things that reliably bite:
+
+- **324 qubits needs a large enough mode tier** — build with `-Dmonoprop_MAX_NUM_MODES=352`,
+  since tiers come in 32-mode blocks.
+- **The two Pauli benchmarks want different Julia packages.** The lattice ladder needs
+  `PauliPropagation.jl` **dev (0.8.0+)** for the `Performance` submodule; the fixed-lattice
+  `run_model.jl` runs on the pinned **v0.7.3**.
+- **`run_model.py` and `run_model.jl` merge into the same `results.json`.** Each preserves the
+  other's entries, so they can be run in either order and re-run independently — but the Qiskit
+  backend needs a `monoprop` run in the *same* invocation, since its mandatory term budget
+  tracks `monoprop`'s per-step term count.
+</Callout>

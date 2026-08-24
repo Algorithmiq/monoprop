@@ -16,10 +16,10 @@ The end-to-end workflow is:
 2. Set up the Python environment.
 3. (Optional) install Julia and `PauliPropagation.jl`
 4. Run the benchmarks to produce `results.json`.
-5. Plot the results to produce `runtime.png` and `memory.png`.
+5. Plot the results to produce `pauli_results.png`.
 
 
-For more details, check the documentation at [benchmark guide](https://docs.algorithmiq.fi/monoprop/benchmarks.html)
+For more details, check the [benchmark guide](https://docs.monoprop.algorithmiq.tech/benchmarks).
 
 ## Layout of the Pauli benchmarks
 
