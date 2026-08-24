@@ -309,56 +309,9 @@ protected:
     // structural position bound when it has one.
     auto packed_inline_width_() const -> size_t;
 
-private:
-    unsigned int cutoff_;
-
-    std::optional<double> lower_atol_, upper_atol_;
-    double core_term_{0.0};
-
-    // Bumped by every initial-operator re-weight. A functional snapshots the operator coefficients, so
-    // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
-    size_t initial_operator_epoch_{0};
-
-    size_t logical_num_modes_{NumModes};
-
-    CutoffType cutoff_type_;
-    std::optional<std::vector<VecZ>> basis_change_;
-
-    // Immutable after construction.
-    Basis basis_{Basis::Majorana};
-
-    // Intra-process partition runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a partition facade
-    // whose own mp_op_/graph_ are unused and every method fans out to the S partition propagators.
-    std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
-    // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
-    friend class detail::partition::PartitionGroup<NumModes>;
-
-    // A facade's own graph_/mp_op_ are never populated, so handing them out would return plausible-looking
-    // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.
-    auto require_single_partition_(const char *what) const -> void {
-        if (partition_group_) {
-            throw MultiPartitionUnsupported(
-                std::format("{} is not available on a multi-partition propagator: the facade owns "
-                            "no operator or graph of its own. Use the partition-transparent "
-                            "accessors (size(), graph_size(), evolved_operator_terms(), ...) or "
-                            "construct with partitions=1.",
-                            what));
-        }
-    }
-
-protected:
     // `requested` 0 ⇒ env/auto. Returns 1 for the ordinary single-partition path.
     static auto resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t;
 
-private:
-    auto partitioned_size_() const -> size_t;
-    auto partitioned_graph_size_() const -> std::pair<size_t, size_t>;
-    auto partitioned_graph_layers_() const -> size_t;
-    auto partitioned_core_term_() const -> double;
-    auto partitioned_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes>;
-    auto partitioned_graph_memory_usage_() const -> GraphMemoryBreakdown;
-
-protected:
     // Partition fan-out vocabulary. Every one of these is facade-only: partition_group_ != nullptr is a precondition.
     //
     // `for_each_partition_` / `map_partitions_` / `concat_partitions_` dispatch to the partitions' own pinned master
@@ -397,6 +350,49 @@ protected:
     auto map_partitions_indexed_(Fn fn) -> std::vector<R>;
 
 private:
+    unsigned int cutoff_;
+
+    std::optional<double> lower_atol_, upper_atol_;
+    double core_term_{0.0};
+
+    // Bumped by every initial-operator re-weight. A functional snapshots the operator coefficients, so
+    // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
+    size_t initial_operator_epoch_{0};
+
+    size_t logical_num_modes_{NumModes};
+
+    CutoffType cutoff_type_;
+    std::optional<std::vector<VecZ>> basis_change_;
+
+    // Immutable after construction.
+    Basis basis_{Basis::Majorana};
+
+    // Intra-process partition runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a partition facade
+    // whose own mp_op_/graph_ are unused and every method fans out to the S partition propagators.
+    std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
+    // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
+    friend class detail::partition::PartitionGroup<NumModes>;
+
+    // A facade's own graph_/mp_op_ are never populated, so handing them out would return plausible-looking
+    // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.
+    auto require_single_partition_(const char *what) const -> void {
+        if (partition_group_) {
+            throw MultiPartitionUnsupported(
+                std::format("{} is not available on a multi-partition propagator: the facade owns "
+                            "no operator or graph of its own. Use the partition-transparent "
+                            "accessors (size(), graph_size(), evolved_operator_terms(), ...) or "
+                            "construct with partitions=1.",
+                            what));
+        }
+    }
+
+    auto partitioned_size_() const -> size_t;
+    auto partitioned_graph_size_() const -> std::pair<size_t, size_t>;
+    auto partitioned_graph_layers_() const -> size_t;
+    auto partitioned_core_term_() const -> double;
+    auto partitioned_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes>;
+    auto partitioned_graph_memory_usage_() const -> GraphMemoryBreakdown;
+
     auto cos_index_count_() const -> size_t;
 
     // Validation stays at the call site, so a rejected value throws before anything is mutated, and
