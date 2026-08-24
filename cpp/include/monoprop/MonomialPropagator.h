@@ -392,7 +392,7 @@ protected:
     auto first_partition_() const -> const MonomialPropagator &;
 
     auto is_partition_facade() const -> bool { return static_cast<bool>(partition_group_); }
-    
+
     template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
     auto map_partitions_indexed_(Fn fn) -> std::vector<R>;
 
