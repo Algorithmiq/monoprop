@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <type_traits>
 #include <vector>
 
@@ -70,6 +71,13 @@ inline auto store_packed_phase(PackedPhaseStorage &storage, size_t idx, int phas
         storage.phase_words[packed_phase_word_index(idx)] |= packed_phase_bit_mask(idx);
     }
 }
+
+// A slot's B and D sides are the same endpoint set, and its in-block a boundary within that set.
+// Both are invariants of how the layer was built, so a violation is a bug here, not bad input.
+class CrossRankSlotLayoutError : public std::logic_error {
+public:
+    using std::logic_error::logic_error;
+};
 
 auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &data) -> PackedCrossRankStorage;
 

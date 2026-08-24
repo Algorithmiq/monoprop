@@ -92,7 +92,7 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
         // The record stores one count and one offset for both B and D, so their equal length is a
         // precondition: a skew would not throw, it would mis-derive Q and read the wrong endpoint.
         if (partner.sin_send_indices.size() != partner.sin_recv_entries.size()) {
-            throw std::logic_error(std::format(
+            throw CrossRankSlotLayoutError(std::format(
                 "Cross-rank slot {} has {} send endpoints against {} recv endpoints; B and D are the same set.",
                 rank,
                 partner.sin_send_indices.size(),
@@ -102,7 +102,7 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
         // slot_sin_recv_index, so a P past the end yields not a negative Q but one near 2^64, which
         // every index compares less than -- and every D read then addresses B off the end.
         if (partner.in_count > partner.sin_send_indices.size()) {
-            throw std::logic_error(
+            throw CrossRankSlotLayoutError(
                 std::format("Cross-rank slot {} declares an in-block of {} inside {} endpoints; the in-block is a "
                             "boundary within the endpoint list, not an addition to it.",
                             rank,
