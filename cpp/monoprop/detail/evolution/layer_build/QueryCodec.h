@@ -66,6 +66,13 @@ struct QueryCodec {
         return CQ::push_mono(buf, mono, phase);
     }
 
+    // From ascending positions, which is what the partner merge hands the emit site; the dense overload
+    // above is for callers that hold only a bitset.
+    template <typename PosU>
+    static auto push_positions(VecZ &buf, const PosU *pos, size_t k, int phase) -> size_t {
+        return CQ::push(buf, pos, k, phase);
+    }
+
     // Identical in both formats: the value is one bit_cast word after the query's words.
     static auto push_value(VecZ &buf, double v) -> void { buf.push_back(encode_value(v)); }
 
