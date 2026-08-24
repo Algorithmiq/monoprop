@@ -450,7 +450,9 @@ Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`)
 
 Each run writes `results/time-<label>.json` (pytest-benchmark) and
 `<label>.json` (everything else); `monoprop-bench-report` merges all labels into
-`results/REPORT.md`.
+`results/REPORT.md`. The configuration table records the Python version, the
+nanobind frontend version compiled into the extension, and the installed
+`nanobind-backend` version. Older artifacts without these fields render `—`.
 
 ### Continuous benchmarking
 
