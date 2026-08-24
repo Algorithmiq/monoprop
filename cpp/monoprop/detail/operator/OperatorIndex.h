@@ -526,6 +526,9 @@ private:
         if (qk != static_cast<size_t>(c)) {
             return false;
         }
+        // std::equal, i.e. a memcmp CALL, and MEASURED to be the right choice: replacing it with the
+        // obvious scalar loop cost 54.6M instructions on the pauli cell, because glibc's AVX2 memcmp
+        // beats a byte loop even at the ~5 PosT this compares. Do not "optimise" the call away again.
         return std::equal(q, q + qk, &rows_[(i * stride_) + 1]);
     }
 

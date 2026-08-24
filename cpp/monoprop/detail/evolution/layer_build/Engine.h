@@ -29,6 +29,7 @@
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
 #include "monoprop/detail/evolution/layer_build/QueryCodec.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
@@ -341,8 +342,9 @@ struct LayerBuildEngine {
     std::vector<DeferredSelfMiss> deferred_self_misses;
     // Deferred-miss positions, concatenated in miss order; parallel to deferred_self_misses.
     std::vector<RowPosT> deferred_pos_flat_;
-    // Per-batch decode scratch for resolve_range_; a member so one allocation serves every batch.
-    std::vector<RowPosT> self_pos_flat_;
+    // This pass's self-owned queries as positions, straight from the scan: never encoded, so the resolve
+    // below has nothing to decode. Parallel to src_idx_r[my_rank].
+    SelfQueryStage<NumModes> self_stage_;
     // Scan-captured v_src per query (ContractSink only via Sink::wants_values; empty for GraphSink).
     std::vector<std::vector<double>> src_val_r;
     // Fused query+value send scratch (ContractSink, R>1): shared by a gate's two exchange passes.
@@ -370,17 +372,16 @@ struct LayerBuildEngine {
 
     // Resolve this rank's own query stream inline, then clear it so the alltoallv never sends to self.
     auto resolve_self_queries(bool is_leader_pass) -> void {
-        VecZ &lq = queries_r[my_rank];
         std::vector<size_t> &ls = src_idx_r[my_rank];
         std::vector<double> *lv = nullptr;
         if constexpr (Sink::wants_values) {
             lv = &src_val_r[my_rank];
         }
-        // One source per query, pushed by the scan, so the count needs neither a walk nor a division.
-        assert(ls.size() == QueryCodec<NumModes>::count_queries(lq, sink.querier_layout())
-               && "the self query buffer does not hold exactly one query per source");
-        resolve_range_(lq, ls, lv, ls.size(), is_leader_pass);
-        lq.clear();
+        // The scan routes a self-owned partner to the stage, never to the wire buffer.
+        assert(queries_r[my_rank].empty() && "a self-owned query was encoded instead of staged");
+        assert(ls.size() == self_stage_.size() && "the self stage does not hold exactly one query per source");
+        resolve_range_(ls, lv, is_leader_pass);
+        self_stage_.clear();
         ls.clear();
         if constexpr (Sink::wants_values) {
             src_val_r[my_rank].clear();
@@ -396,9 +397,11 @@ struct LayerBuildEngine {
     auto run_exchange(bool is_leader_pass,
                       std::vector<VecZ> &&queries,
                       std::vector<std::vector<size_t>> &&src_idx,
-                      std::vector<std::vector<double>> &&src_val) -> void {
+                      std::vector<std::vector<double>> &&src_val,
+                      SelfQueryStage<NumModes> &&self_stage) -> void {
         queries_r = std::move(queries);
         src_idx_r = std::move(src_idx);
+        self_stage_ = std::move(self_stage);
         // src_val is empty unless Sink::wants_values, so the move is a no-op under GraphSink.
         src_val_r = std::move(src_val);
         if (!is_leader_pass && R > 1) {
@@ -505,13 +508,11 @@ private:
     // Batched self-resolve over the index's group-prefetch find_batch; hits/misses are emitted to the sink
     // in query order. `lv` is the per-query v_src array parallel to `ls` (read only when Sink::wants_values).
     static constexpr size_t kResolveBatch = 64;
-    auto resolve_range_(VecZ &lq,
-                        std::vector<size_t> &ls,
-                        [[maybe_unused]] std::vector<double> *lv,
-                        size_t hi,
-                        bool is_leader_pass) -> void {
+    auto resolve_range_(std::vector<size_t> &ls, [[maybe_unused]] std::vector<double> *lv, bool is_leader_pass)
+        -> void {
         const size_t op_size = local_op.store->size();
-        // pos_off/k_of index self_pos_flat_, rebuilt per batch but keeping its capacity; no dense keys.
+        // Gathered per batch because a matched follower is skipped; the offsets stay ABSOLUTE into the
+        // stage's pos_flat, so find_batch_positions reads it in place and nothing is copied.
         std::array<size_t, kResolveBatch> pos_off;
         std::array<uint32_t, kResolveBatch> k_of;
         std::array<uint32_t, kResolveBatch> hashes;
@@ -519,27 +520,18 @@ private:
         std::array<size_t, kResolveBatch> srcs;
         std::array<double, kResolveBatch> vals;
         std::array<size_t, kResolveBatch> found;
-        using QC = QueryCodec<NumModes>;
-        const QueryLayout layout = sink.querier_layout();
-        // A cursor, not an ordinal, and it must advance even when the query is skipped.
-        size_t off = 0;
+        const size_t hi = self_stage_.size();
         size_t q = 0;
         while (q < hi) {
             size_t m = 0;
-            self_pos_flat_.clear();
             for (; q < hi && m < kResolveBatch; ++q) {
                 const size_t src = ls[q];
-                const size_t this_off = off;
                 if (!is_leader_pass && matched.is_marked(src)) {
-                    off = QC::next_off(lq, layout, this_off);
                     continue; // follower already matched by a leader → not an independent rotation
                 }
-                const size_t k = QC::k_at(lq, this_off);
-                const size_t at = self_pos_flat_.size();
-                self_pos_flat_.resize(at + k); // default-init grow: read_positions writes every element
-                off = QC::read_positions(lq, layout, this_off, self_pos_flat_.data() + at, phases[m]);
-                pos_off[m] = at;
-                k_of[m] = static_cast<uint32_t>(k);
+                pos_off[m] = self_stage_.pos_off[q];
+                k_of[m] = self_stage_.k_of[q];
+                phases[m] = self_stage_.phase_of[q];
                 srcs[m] = src;
                 if constexpr (Sink::wants_values) {
                     vals[m] = (*lv)[q];
@@ -550,7 +542,7 @@ private:
                 break;
             }
             // The hashes come back because a miss needs one at insert, folded from these same positions.
-            local_op.store->find_batch_positions(self_pos_flat_.data(),
+            local_op.store->find_batch_positions(self_stage_.pos_flat.data(),
                                                  pos_off.data(),
                                                  k_of.data(),
                                                  m,
@@ -569,9 +561,9 @@ private:
                     sink.self_hit(srcs[j], found[j], phases[j], v_src);
                 }
                 else {
-                    // self_pos_flat_ is cleared by the next batch, so copy now, into one gate-long buffer.
+                    // The stage dies with this pass and the misses are flushed after both, so copy now.
                     const size_t at = deferred_pos_flat_.size();
-                    const auto *const first = self_pos_flat_.data() + pos_off[j];
+                    const auto *const first = self_stage_.pos_flat.data() + pos_off[j];
                     deferred_pos_flat_.insert(deferred_pos_flat_.end(), first, first + k_of[j]);
                     deferred_self_misses.push_back({at, k_of[j], hashes[j], srcs[j], phases[j], v_src});
                 }
@@ -625,7 +617,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
     }
     assert(fused_scale_coeffs == nullptr || (local_coeffs && &local_coeffs->get() == fused_scale_coeffs));
 
-    FusedScanResult fused = [&] {
+    FusedScanResult<NumModes> fused = [&] {
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
         return with_algebra<NumModes>(basis, [&]<typename A>() {
             return fused_find_and_collect<NumModes, A>(local_op,
@@ -667,11 +659,13 @@ auto build_layer(MPOperator<NumModes> &local_op,
         eng.run_exchange(/*is_leader_pass=*/true,
                          std::move(fused.leader_queries),
                          std::move(fused.leader_src),
-                         std::move(fused.leader_val));
+                         std::move(fused.leader_val),
+                         std::move(fused.leader_self));
         eng.run_exchange(/*is_leader_pass=*/false,
                          std::move(fused.follower_queries),
                          std::move(fused.follower_src),
-                         std::move(fused.follower_val));
+                         std::move(fused.follower_val),
+                         std::move(fused.follower_self));
 
         return eng.finish(std::move(cos_all), out_cos);
     };
