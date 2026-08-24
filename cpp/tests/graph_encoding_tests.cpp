@@ -204,8 +204,11 @@ BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_overflow_throws) 
     // A count that fits int at 1x but not at 2x. build_layer_storage_unified derives the 2x layout
     // eagerly, so the throw lands in build_graph rather than inside the collective window, where the
     // peers of a rank that threw are already blocked against a size nobody will send.
+    // Declared, not materialised: 2^30 real endpoints cost a 16 GB runner its whole VM.
     const size_t just_over_half = static_cast<size_t>(std::numeric_limits<int>::max()) / 2 + 1;
-    const auto storage = detail::build_packed_cross_rank_storage(slot_partners({just_over_half}));
+    PackedCrossRankStorage storage;
+    storage.world_size = 2;
+    storage.occupied.push_back(CrossRankOccupiedSlot{.slot = 0, .sin_send_count = just_over_half, .in_count = 0});
 
     LayerExchangeLayout derived;
     BOOST_CHECK_NO_THROW(detail::derive_exchange_layout(storage, /*my_rank=*/1, 1, derived));
