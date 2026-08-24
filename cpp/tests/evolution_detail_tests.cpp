@@ -86,12 +86,12 @@ BOOST_AUTO_TEST_CASE(matched_epoch_tail_grow) {
     BOOST_TEST(!set.is_marked(3));
 }
 
-// When the epoch counter saturates uint32_t, begin_gate zero-fills and restarts so marks stay correct.
-BOOST_AUTO_TEST_CASE(matched_epoch_u32_wrap_resets) {
+// Reaches the wrap by assigning cur_, which pins the branch and the counter restart but not the fill.
+BOOST_AUTO_TEST_CASE(matched_epoch_stamp_wrap_resets) {
     MatchedEpochSet set;
     set.begin_gate(4); // allocate the backing array
     // Force the counter to the wrap boundary; a stale slot still equals the pre-wrap counter.
-    set.cur_ = std::numeric_limits<uint32_t>::max();
+    set.cur_ = std::numeric_limits<MatchedEpochSet::Stamp>::max();
     set.mark(1);
     BOOST_TEST(set.is_marked(1));
 
@@ -100,6 +100,35 @@ BOOST_AUTO_TEST_CASE(matched_epoch_u32_wrap_resets) {
     BOOST_TEST(!set.is_marked(1));
     set.mark(2);
     BOOST_TEST(set.is_marked(2));
+}
+
+// Reaches the wrap by counting gates, with the mark at epoch 1 so a missing fill would alias onto it.
+BOOST_AUTO_TEST_CASE(matched_epoch_stamp_wrap_reached_by_gate_count) {
+    constexpr auto kMaxStamp = std::numeric_limits<MatchedEpochSet::Stamp>::max();
+    constexpr size_t kPeriod = static_cast<size_t>(kMaxStamp);
+
+    MatchedEpochSet set;
+    set.begin_gate(4);
+    BOOST_REQUIRE(set.cur_ == MatchedEpochSet::Stamp{1});
+    set.mark(1);
+    BOOST_TEST(set.is_marked(1));
+
+    // One increment per gate, folded into a single assertion rather than 65534 of them.
+    bool one_epoch_per_gate = true;
+    for (size_t k = 2; k <= kPeriod; ++k) {
+        set.begin_gate(4);
+        one_epoch_per_gate = one_epoch_per_gate && (static_cast<size_t>(set.cur_) == k);
+    }
+    BOOST_TEST(one_epoch_per_gate);
+    BOOST_TEST(set.cur_ == kMaxStamp); // boundary reached by counting, not by assignment
+
+    // The wrap: cur_ returns to 1, the surviving mark's own stamp, so a false is_marked(1) is the fill.
+    set.begin_gate(4);
+    BOOST_TEST(set.cur_ == MatchedEpochSet::Stamp{1});
+    BOOST_TEST(!set.is_marked(1));
+    set.mark(2);
+    BOOST_TEST(set.is_marked(2));
+    BOOST_TEST(!set.is_marked(1));
 }
 
 // A self-resolve hit whose index the store only grew into after construction is a real hit -- it must reach
