@@ -1,0 +1,21 @@
+# RunsOn runner definitions (https://runs-on.com/docs/runners/labels/).
+#
+# Read from the default branch on public repositories, so edits here only take
+# effect once merged.
+
+runners:
+  # Used by .github/workflows/bench_bare_metal.yml.
+  #
+  # Every field is pinned rather than ranged. Bencher compares each run against
+  # this testbed's own history, so a different instance type or core count is a
+  # step change in the series rather than a data point -- widening any of these
+  # means retiring the testbed and starting a new one.
+  bench:
+    # Avoid expand to partial family
+    family: ["c7i.4xlarge"]
+    cpu: 16
+    ram: 32
+    image: ubuntu26-full-x64
+    volume: 40gb:gp3
+    spot: false
+    ssh: false
