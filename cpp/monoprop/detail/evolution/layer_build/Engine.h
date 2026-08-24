@@ -500,7 +500,8 @@ private:
                 }
                 // kNotFound == kMissingIndex == size_t max, so one bound check covers both.
                 if (found[j] < op_size) {
-                    if (is_leader_pass) {
+                    // Freshly inserted partners (found >= combined_size) skip the mark: combined_size bounds it.
+                    if (is_leader_pass && found[j] < combined_size) {
                         matched.mark(found[j]);
                     }
                     sink.self_hit(srcs[j], found[j], phases[j], v_src);
