@@ -132,8 +132,8 @@ public:
         if (partition_group_) {
             return partitioned_operator_memory_usage_();
         }
-        // matched_scratch_ is propagator-owned, so estimate_memory_usage() cannot see it; on a facade the
-        // partitioned path above already picks it up per partition.
+        // The stamp array is a member of THIS class, not of the operator, so the operator-side estimate
+        // leaves matched_scratch_bytes at 0 and only this level can fill it in.
         auto breakdown = detail::estimate_memory_usage(mp_op_);
         breakdown.matched_scratch_bytes = matched_scratch_.memory_bytes();
         return breakdown;
