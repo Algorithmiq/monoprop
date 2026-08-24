@@ -154,8 +154,17 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
                                                    matched,
                                                    combined_size,
                                                    RecordingSink{});
-    detail::query_push<8>(eng.queries_r[0], terms[1], 1);
-    detail::query_push<8>(eng.queries_r[0], terms[5], -1);
+    // The self leg is staged as positions, never encoded, so this feeds the stage the scan would fill.
+    using Eng = detail::LayerBuildEngine<8, RecordingSink>;
+    const auto stage_self = [&eng](const Monomial<8> &m, int phase) {
+        std::vector<Eng::RowPosT> pos;
+        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+            pos.push_back(static_cast<Eng::RowPosT>(b));
+        }
+        eng.self_stage_.push(pos.data(), pos.size(), phase);
+    };
+    stage_self(terms[1], 1);
+    stage_self(terms[5], -1);
     eng.src_idx_r[0] = {0, 2};
 
     eng.resolve_self_queries(/*is_leader_pass=*/true);
