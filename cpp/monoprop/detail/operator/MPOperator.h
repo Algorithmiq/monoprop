@@ -235,8 +235,7 @@ struct MPOperator {
         }
 
         VecZ new_inds(size() - state_scored_rows_);
-        std::ranges::iota(new_inds, state_scored_rows_);
-
+        std::iota(new_inds.begin(), new_inds.end(), state_scored_rows_); // NOLINT(modernize-use-ranges)
         const auto paired_inds = is_fully_paired<NumModes>(new_inds, *store);
         state_rows_.reserve(state_rows_.size() + paired_inds.size());
         state_vals_.reserve(state_vals_.size() + paired_inds.size());
