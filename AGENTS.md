@@ -56,11 +56,8 @@ The root `pyproject.toml` declares a `[tool.uv.workspace]`, so one `uv.lock` cov
   wheels, so it is a standalone uv project with its own `uv.lock`. Run it with
   `cd packages/bench-third-party && uv sync`, never from the root environment.
 - `benches/` — monoprop's own benchmark suite (`conftest.py`, `bench_*.py`, `results/`). It stays in
-  the repository and imports the tools package. `bench_bindings.py` contains serial-only boundary
-  microbenchmarks; run it on a fixed host and Release build. Artifacts record Python, compiled
-  nanobind frontend, and runtime backend versions. Benchmark names are Bencher's history key, so
-  they must not move with a library release; that is why the suite is not in
-  `monoprop-bench-tools`.
+  the repository and imports the tools package. Benchmark names are Bencher's history key, so they
+  must not move with a library release; that is why the suite is not in `monoprop-bench-tools`.
 
 Dependency groups follow from that split: `test` is monoprop's own suite only (cibuildwheel installs
 it against a built wheel, so it must not reference a workspace member), `workspace-test` adds

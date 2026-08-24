@@ -11,20 +11,10 @@ documentation for detailed instructions.
 ## What lives where
 
 This directory holds only monoprop's own benchmarks — `conftest.py` (the fixtures
-and the results schema), `bench_random.py`, `bench_models.py`, `bench_bindings.py`,
-and `results/`. The binding microbenchmarks are serial-only and isolate Python/C++
-call and return-conversion costs from propagation work. Run them directly with:
-
-```bash
-uv run pytest benches/bench_bindings.py --benchmark-only
-```
+and the results schema), `bench_random.py`, `bench_models.py`, and `results/`.
 
 Benchmark names are the key [Bencher](https://bencher.dev/) stores history under,
 so they stay here rather than moving with a library release.
-
-Each run records its Python version, the nanobind version compiled into the
-extension, and the installed `nanobind-backend` version. Keep the host, Release
-build, and benchmark command fixed when comparing binding revisions.
 
 Everything reusable is in the `monoprop-bench-tools` package
 ([`../packages/monoprop-bench-tools`](../packages/monoprop-bench-tools)): the

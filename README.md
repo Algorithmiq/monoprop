@@ -35,9 +35,7 @@ and against [`MajoranaPropagation.jl`](https://github.com/SparqleSim/MajoranaPro
 Head to our [benchmarks page](https://docs.monoprop.algorithmiq.tech/benchmarks) for more details.
 
 Every commit on `main` also runs the internal benchmark suite, tracked over time
-with [Bencher](https://bencher.dev/) to catch propagation and Python/C++ binding
-regressions. Reports record the Python, nanobind frontend, and runtime backend
-versions for reproducible comparisons.
+with [Bencher](https://bencher.dev/) to catch performance regressions.
 
 📖 **Full documentation:** <https://docs.monoprop.algorithmiq.tech>
 

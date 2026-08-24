@@ -446,21 +446,6 @@ aborts if MPI is missing; extra args are forwarded to `mpiexec` (as root, add
 Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`);
 `just bench --help` lists all.
 
-**Bindings** (`bench_bindings.py`; fixed, serial-only) — low-work calls that
-isolate Python/C++ boundary costs: positional and keyword dispatch, a bound
-method, an already-created expectation-value functional, and raw evolved-operator
-conversion for one and 1,024 terms. These are microbenchmarks of binding overhead,
-not propagation throughput. Run only this group with:
-
-```bash
-uv run pytest benches/bench_bindings.py --benchmark-only
-```
-
-For an upgrade comparison, use Release builds on one pinned host and keep the
-interpreter and command fixed. Compare the old dependency, the new dependency
-before wrapper edits, and the new dependency after wrapper edits to separate
-automatic nanobind improvements from source-level changes.
-
 ### Output
 
 Each run writes `results/time-<label>.json` (pytest-benchmark) and
