@@ -134,8 +134,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_exchange_layout_scale_and_displacements) {
     BOOST_CHECK_EQUAL(s2.total_count, 16U);
 }
 
-// The claim under test is EQUIVALENCE: what the exchange derives at the call site must equal,
-// elementwise, the oracle in ExchangeLayoutOracle.h rather than hand-written literals.
+// The derived layout must equal the ExchangeLayoutOracle.h reference elementwise, not literals.
 namespace {
 
 auto slot_partners(const std::vector<size_t> &sin_send_counts) -> std::vector<CrossRankPartnerData> {
@@ -156,7 +155,6 @@ BOOST_AUTO_TEST_CASE(graph_encoding_derived_layout_matches_the_layout_it_replace
     const auto storage = detail::build_packed_cross_rank_storage(slot_partners(counts));
 
     for (size_t my_rank = 0; my_rank < counts.size(); ++my_rank) {
-        // The self slot is excluded from the transfer and handled locally.
         std::vector<size_t> expected_counts = counts;
         expected_counts[my_rank] = 0;
 
@@ -173,7 +171,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_derived_layout_matches_the_layout_it_replace
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_derived_layout_reuses_its_scratch) {
-    // Reused across layers: a stale tail would be read by MPI as a real count for an unused slot.
+    // Reused across layers: a stale tail reads as a real count for an unused slot.
     const auto wide = detail::build_packed_cross_rank_storage(slot_partners({1, 2, 3, 4}));
     const auto narrow = detail::build_packed_cross_rank_storage(slot_partners({7, 7}));
 
@@ -187,7 +185,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_derived_layout_reuses_its_scratch) {
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_a_zero_traffic_slot_still_gets_a_valid_displacement) {
-    // Empty slots hide prefix-sum off-by-ones: count 0, but the displacement must still advance.
+    // Count 0, but the displacement must still advance.
     const auto storage = detail::build_packed_cross_rank_storage(slot_partners({0, 4, 0, 0, 6}));
     LayerExchangeLayout derived;
     detail::derive_exchange_layout(storage, /*my_rank=*/3, 1, derived);
@@ -201,10 +199,9 @@ BOOST_AUTO_TEST_CASE(graph_encoding_a_zero_traffic_slot_still_gets_a_valid_displ
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_derivative_exchange_layout_overflow_throws) {
-    // A count that fits int at 1x but not at 2x. build_layer_storage_unified derives the 2x layout
-    // eagerly, so the throw lands in build_graph rather than inside the collective window, where the
-    // peers of a rank that threw are already blocked against a size nobody will send.
-    // Declared, not materialised: 2^30 real endpoints cost a 16 GB runner its whole VM.
+    // Fits int at 1x but not 2x. The 2x layout is derived eagerly, so the throw lands in build_graph
+    // rather than inside a collective window where the peers are already committed.
+    // Declared, not materialised: 2^30 real endpoints exhaust a 16 GB runner.
     const size_t just_over_half = static_cast<size_t>(std::numeric_limits<int>::max()) / 2 + 1;
     PackedCrossRankStorage storage;
     storage.world_size = 2;
@@ -241,8 +238,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_d_from_b_derivation_both_arms) {
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 0, 4), 22U);
 }
 
-// The accounting split behind graph_memory_breakdown(): the slot-record cost is set by the size of
-// the world and does not move when the traffic through it does.
+// The accounting split behind graph_memory_breakdown(): slot-record cost tracks the world, not traffic.
 
 BOOST_AUTO_TEST_CASE(graph_encoding_occupied_slots_counts_only_slots_carrying_traffic) {
     // Zeros at the front, in the interior and at the back -- the three places a scan loses count.
@@ -251,12 +247,12 @@ BOOST_AUTO_TEST_CASE(graph_encoding_occupied_slots_counts_only_slots_carrying_tr
     BOOST_CHECK_EQUAL(storage.rank_count(), 6U);
     BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(storage), 2U);
     BOOST_CHECK_EQUAL(detail::cross_rank_endpoint_count(storage), 10U);
-    // The ceiling this instrument exists to expose: an occupied slot holds at least one endpoint.
+    // An occupied slot holds at least one endpoint.
     BOOST_CHECK_LE(detail::cross_rank_occupied_slots(storage), detail::cross_rank_endpoint_count(storage));
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_slot_record_bytes_track_the_traffic_not_the_world) {
-    // Same traffic, four times the world: the record array is a function of what is sent.
+    // Same traffic, four times the world.
     const auto narrow = detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0}));
     const auto wide =
         detail::build_packed_cross_rank_storage(slot_partners({5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
@@ -265,32 +261,29 @@ BOOST_AUTO_TEST_CASE(graph_encoding_slot_record_bytes_track_the_traffic_not_the_
     BOOST_CHECK_EQUAL(wide.rank_count(), 16U);
     BOOST_CHECK_EQUAL(detail::cross_rank_endpoint_count(narrow), detail::cross_rank_endpoint_count(wide));
     BOOST_CHECK_EQUAL(detail::cross_rank_occupied_slots(narrow), detail::cross_rank_occupied_slots(wide));
-    // The world quadrupled and the record array did not move at all.
     BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(narrow), detail::cross_rank_slot_record_bytes(wide));
     BOOST_CHECK_EQUAL(detail::cross_rank_slot_record_bytes(wide), 1U * sizeof(CrossRankOccupiedSlot));
-    // And the slot records are a slice of cross_rank_bytes, not an addition to it.
+    // A slice of cross_rank_bytes, not an addition to it.
     BOOST_CHECK_LT(detail::cross_rank_slot_record_bytes(wide), detail::cross_rank_storage_bytes(wide));
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_a_layer_retains_no_exchange_layout) {
-    // The point of the change: a built layer holds the slot records and nothing else sized by P.
-    // Neither side of the exchange is retained -- not the send layout, and not a transpose of it.
+    // A built layer holds the slot records and nothing else sized by P.
+    // Neither side of the exchange is retained.
     const auto core = detail::build_layer_storage_unified(slot_partners({3, 0, 5}), /*my_rank=*/1);
 
-    // Not stored, but recoverable from the slot records alone: 3 + 5, my_rank's own slot excluded.
+    // Recoverable from the slot records alone: 3 + 5, my_rank's own slot excluded.
     LayerExchangeLayout derived;
     detail::derive_exchange_layout(core->cross_rank, /*my_rank=*/1, /*scale=*/1, derived);
     BOOST_CHECK_EQUAL(derived.total_count, 8U);
 
-    // A LayerCore is held L x P times across a job, so pin its size against the members it should
-    // have: three vectors plus the scalars. A new P-sized member costs once per layer per partition.
+    // Held L x P times across a job, so a new P-sized member costs once per layer per partition.
     BOOST_CHECK_LE(sizeof(LayerCore), 256U);
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_skewed_endpoint_counts_are_refused) {
-    // The packed record keeps one count and one offset for both B and D. Nothing in the TYPE prevents
-    // a skew, and unchecked it would not throw: Q would be mis-derived and a wrong-but-valid endpoint
-    // read. Refusing at the choke point makes the assumption a precondition.
+    // One count and one offset serve both B and D, and the type does not prevent a skew: unchecked it
+    // mis-derives Q and reads a wrong-but-valid endpoint rather than throwing.
     std::vector<CrossRankPartnerData> data(1);
     data[0].sin_send_indices.push_back(1);
     data[0].sin_send_indices.push_back(2);
@@ -301,9 +294,8 @@ BOOST_AUTO_TEST_CASE(graph_encoding_skewed_endpoint_counts_are_refused) {
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_an_in_block_past_the_endpoint_list_is_refused) {
-    // in_count is a boundary INSIDE B and the out-block size is an unsigned subtraction, so one past
-    // the end wraps instead of going negative. Refused where the record is built, so the reader can
-    // subtract without branching.
+    // in_count bounds a block inside B, and the out-block size is an unsigned subtraction, so one past
+    // the end wraps rather than going negative.
     std::vector<CrossRankPartnerData> data(1);
     data[0].sin_send_indices.push_back(1);
     data[0].sin_send_indices.push_back(2);
@@ -313,20 +305,19 @@ BOOST_AUTO_TEST_CASE(graph_encoding_an_in_block_past_the_endpoint_list_is_refuse
 
     BOOST_CHECK_THROW(detail::build_packed_cross_rank_storage(data), std::logic_error);
 
-    // The boundary itself is legal: in_count == B.size() is an all-in slot with an empty out-block.
+    // in_count == B.size() is legal: an all-in slot with an empty out-block.
     data[0].in_count = 2;
     BOOST_CHECK_NO_THROW(detail::build_packed_cross_rank_storage(data));
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_occupied_sweep_matches_the_dense_sweep_it_replaces) {
-    // Zeros at the front, interior and back, and a slot whose in_count splits the B list, so the
-    // derived offset has somewhere to go wrong.
+    // Zeros at front, interior and back, plus a slot whose in_count splits the B list.
     auto data = slot_partners({0, 3, 0, 0, 7, 0});
     data[1].in_count = 1;
     data[4].in_count = 4;
     const auto storage = detail::build_packed_cross_rank_storage(data);
 
-    // The offsets are the prefix over ALL slots, to which the empty ones contributed zero.
+    // The offsets prefix over all slots; the empty ones contributed zero.
     struct Expected {
         size_t slot, offset, count, in_count;
     };
@@ -345,7 +336,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_occupied_sweep_matches_the_dense_sweep_it_re
         BOOST_CHECK_EQUAL(seen[k].in_count, expected[k].in_count);
     }
 
-    // The general single-slot resolver must agree with the sweep, including on an absent slot.
+    // The single-slot resolver must agree with the sweep, including on an absent slot.
     for (const auto &e : expected) {
         const auto view = detail::cross_rank_slot(storage, e.slot);
         BOOST_CHECK_EQUAL(view.phase_offset, e.offset);
@@ -366,7 +357,7 @@ BOOST_AUTO_TEST_CASE(graph_encoding_self_slot_is_resolved_without_a_search) {
     BOOST_CHECK_EQUAL(self.sin_send_count, 7U);
     BOOST_CHECK_EQUAL(self.phase_offset, 3U);
 
-    // A rank whose own slot carries nothing must resolve to an empty view, not to a neighbour's.
+    // A rank whose own slot carries nothing resolves to an empty view, not a neighbour's.
     detail::resolve_self_slot(storage, 2);
     BOOST_CHECK_EQUAL(storage.self_pos, kNoSelfSlot);
     BOOST_CHECK_EQUAL(detail::cross_rank_self_slot(storage).sin_send_count, 0U);

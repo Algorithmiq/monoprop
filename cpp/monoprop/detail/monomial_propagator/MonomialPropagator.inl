@@ -811,7 +811,6 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
     auto relabel = [this](size_t layer, size_t new_param_index) {
         auto &target = graph_.get_layer(layer);
         auto new_core = std::make_shared<LayerCore>(target.core());
-        // A plain copy, with nothing to invalidate: the core retains no exchange state.
         new_core->param_index = new_param_index;
         if (const CosMask *pruned = target.pruned_cos()) {
             target = Layer(std::move(new_core), *pruned);

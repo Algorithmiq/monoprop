@@ -28,9 +28,8 @@
 
 namespace monoprop {
 
-// counts/displs for one alltoallv, dense int[P] as MPI requires. A TRANSIENT: materialized into
-// per-thread scratch for the exchange being posted, never retained per layer. It describes the recv
-// side too, the count matrix being symmetric.
+// counts/displs for one alltoallv, dense int[P] as MPI requires. Materialised into per-thread scratch
+// for the exchange being posted, never retained per layer, and it describes the recv side too.
 struct LayerExchangeLayout final {
     std::vector<int> counts;
     std::vector<int> displs;
@@ -108,22 +107,19 @@ struct CrossRankPartnerData {
     // Default-init: every element is overwritten before any read.
     DefaultInitVector<size_t> sin_send_indices;
     DefaultInitVector<std::pair<size_t, int>> sin_recv_entries;
-    // Size of the in-block (P); a boundary within sin_send_indices, so P <= sin_send_indices.size().
+    // In-block size, a boundary within sin_send_indices.
     size_t in_count = 0;
 };
 
-// One world slot that carries traffic. The dense array this replaces held a record per POSSIBLE
-// partner, so it was sized by the flat world P and the graph carried P-squared records however little
-// was ever sent; what is stored here is bounded by the traffic instead. Neither the D range (it IS the
-// B range, permuted; enforced in build_packed_cross_rank_storage) nor the B/D offset (the running
-// prefix over stored entries) is a field: a size_t offset would pad the record from 12 B to 24.
+// One world slot that carries traffic, so the array is bounded by the traffic and not by the flat
+// world P. The D range is the B range permuted, and the B/D offset is a running prefix, so neither is
+// a field: a size_t offset would pad the record from 12 B to 24.
 struct CrossRankOccupiedSlot final {
     uint32_t slot = 0; // flat world slot id -- what the dense array encoded by position
-    // TermIndex-wide so one slot in one layer can exceed 2^32 endpoints.
     TermIndex sin_send_count = 0;
     TermIndex in_count = 0;
 };
-// Stated as a width-independent rule so that it holds, and is checked, on both TermIndex widths.
+// A width-independent rule, so it is checked on both TermIndex widths.
 inline constexpr size_t kOccupiedSlotIdField = std::max(sizeof(uint32_t), alignof(TermIndex));
 static_assert(sizeof(CrossRankOccupiedSlot) == kOccupiedSlotIdField + 2 * sizeof(TermIndex),
               "the occupied-slot record is the graph's P coefficient: it must carry no padding beyond the "
@@ -132,25 +128,24 @@ static_assert(alignof(CrossRankOccupiedSlot) == alignof(TermIndex),
               "the record aligns to its widest member; if that stops holding the size rule above is "
               "measuring something else.");
 
-// Sentinel for self_pos: this rank's own slot carries no traffic in this layer.
+// self_pos sentinel: this rank's own slot carries no traffic in this layer.
 inline constexpr size_t kNoSelfSlot = static_cast<size_t>(-1);
 
 struct PackedCrossRankStorage final {
-    // Ascending by slot, unique, every entry carrying traffic.
     std::vector<CrossRankOccupiedSlot> occupied;
     std::vector<TermIndex> sin_send_indices;
     PackedPhaseStorage sin_recv_phases; // one phased entry per D index, sign baked in
 
-    // P. Not recoverable from the array length any more, and MPI_Alltoallv still wants dense counts.
+    // P. No longer recoverable from the array length, and MPI_Alltoallv still wants dense counts.
     size_t world_size = 0;
 
-    // The self slot is read in the innermost gradient loop, so it is resolved once at build for O(1).
+    // Read in the innermost gradient loop, so resolved once at build.
     size_t self_pos = kNoSelfSlot;
     size_t self_offset = 0;
 
     auto rank_count() const -> size_t { return world_size; }
 
-    // O(log occupied); a sweep over every partner should use for_each_occupied_slot instead.
+    // O(log occupied); a sweep should use for_each_occupied_slot.
     auto find(size_t rank) const -> const CrossRankOccupiedSlot * {
         const auto it = std::ranges::lower_bound(occupied, rank, {}, [](const CrossRankOccupiedSlot &e) {
             return static_cast<size_t>(e.slot);
@@ -162,7 +157,6 @@ struct PackedCrossRankStorage final {
         const auto *e = find(rank);
         return e == nullptr ? 0 : e->sin_send_count;
     }
-    // Same count as the send side: B and D are the same endpoint set, permuted.
     auto sin_recv_size(size_t rank) const -> size_t { return sin_send_size(rank); }
     auto in_count(size_t rank) const -> size_t {
         const auto *e = find(rank);
@@ -172,10 +166,6 @@ struct PackedCrossRankStorage final {
 
 struct LayerCore final {
     PackedCrossRankStorage cross_rank;
-
-    // NOTHING about the exchange is retained here: counts[r] is cross_rank.sin_send_size(r) except at
-    // my_rank, displs is its prefix sum, and the recv layout is that same array (the count matrix is
-    // symmetric). detail::derive_exchange_layout rebuilds it into per-thread scratch when needed.
 
     // Per-layer recompute metadata: generator_words = this layer's generator G as backing words;
     // scaled_count = fold truncation bound = operator size after this layer's partner inserts.

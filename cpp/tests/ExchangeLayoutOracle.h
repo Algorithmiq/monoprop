@@ -14,11 +14,9 @@
 
 #pragma once
 
-// The independent reference for a layer's exchange layout: counts[r] = scale * send_counts[r], with
-// prefix-sum displacements. derive_exchange_layout in the library must agree with this elementwise.
-// It lives in cpp/tests and not in the library on purpose: an oracle compiled in beside its subject
-// gets refactored beside it, and a check that moves with what it checks asserts nothing.
-// checked_mpi_int is borrowed deliberately -- the narrowing guard is not part of the rule under test.
+// The independent reference for a layer's exchange layout, which derive_exchange_layout must match
+// elementwise: counts[r] = scale * send_counts[r], displacements their prefix sum.
+// Outside the library on purpose: an oracle refactored beside its subject asserts nothing.
 
 #include <cstddef>
 #include <format>

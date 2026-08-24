@@ -15,9 +15,8 @@
 // HybridComm transport equivalence: R MPI ranks x S in-process partitions must behave as one flat P=R*S
 // SPMD world, with only partition 0 touching MPI, exactly as PartitionGroup drives it.
 //
-// The staging layout never reaches a caller, so no case here can distinguish a CONSISTENTLY
-// (dest, source)-transposed tiling from the shipped one; only the bit-identity comment above
-// size_staging_send_ in HybridComm.h pins that choice.
+// The staging layout never reaches a caller, so no case here distinguishes a consistently transposed
+// tiling from the shipped one; only the bit-identity comment in HybridComm.h pins that choice.
 
 #include <boost/test/unit_test.hpp>
 
@@ -108,7 +107,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_global) {
 }
 
 // begin_alltoallv must deliver each source's block contiguously in ascending global source order with
-// tags intact (Resolve.h's positional pairing). With no known recv counts this drives the FUSED verb.
+// tags intact (Resolve.h's positional pairing). With no known recv counts this drives the fused verb.
 BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
     if (world_size() < 2) {
         return;
@@ -271,8 +270,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
 
 namespace {
 
-// Counts depending on BOTH ends of the leg; every 5th round is a no-zero high-water round, so the
-// smaller rounds after it run over stale staged bytes.
+// Counts depending on both ends of the leg; every 5th round is a high-water round, so the smaller
+// rounds after it run over stale staged bytes.
 auto pair_count(int g, int d, int round) -> int {
     if (round % 5 == 4) {
         return (g * 3 + d * 7) % 11 + 1;
@@ -280,16 +279,15 @@ auto pair_count(int g, int d, int round) -> int {
     return (g * 2 + d * 3 + round) % 4;
 }
 
-// Unique per (source, destination, index), so a block from the WRONG source cannot silently match.
+// Unique per (source, destination, index), so a block from the wrong source cannot match.
 auto pair_tag(int g, int d, int j) -> int {
     return (g * 100 + d) * 1000 + j;
 }
 
 } // namespace
 
-// The only direct coverage of HybridComm::alltoallv (every other case here drives the fused verb), and
-// the only count matrix that varies along BOTH indices, which is what pins the indexing of col_sum_ and
-// recv_col_: under per-source-constant counts both are constant along the index a slip would scramble.
+// The only direct coverage of HybridComm::alltoallv, and the only count matrix varying along both
+// indices, which is what pins the indexing of col_sum_ and recv_col_.
 BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_pairwise_counts) {
     if (world_size() < 2) {
         return;
@@ -353,8 +351,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_pairwise_counts) {
     }
 }
 
-// The same pairwise counts through the fused verb, whose recv staging is sized from the count matrix on
-// partition 0 rather than from published rows. rc/rd are outputs here and are checked, not supplied.
+// The same pairwise counts through the fused verb, whose recv staging is sized from the count matrix
+// rather than from published rows. rc/rd are outputs here, and are checked.
 BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_pairwise_counts) {
     if (world_size() < 2) {
         return;

@@ -40,14 +40,11 @@ struct GraphMemoryBreakdown final {
     size_t cross_rank_bytes = 0;
     size_t exchange_layout_bytes = 0;
 
-    // Diagnostics, deliberately EXCLUDED from total_bytes(): folding any in would silently redefine
-    // graph_memory_bytes(). The split matters because slot_record_bytes is the part sized by the flat
-    // world (see CrossRankOccupiedSlot) and the endpoint count below is the part sized by traffic.
-    size_t slot_record_bytes = 0; // one record per STORED world slot -- occupied only, once sparse
-    size_t layer_cores = 0;       // distinct LayerCores walked (shared cores counted once)
-    size_t slot_records = 0;      // the flat world P per core, so slot_records / layer_cores == P
-    size_t occupied_slots = 0;    // slots carrying any traffic: occupancy = occupied_slots / slot_records
-    // Cross-rank endpoints: the traffic itself, and the ceiling on occupied_slots.
+    // Diagnostics, outside total_bytes(): counts, or a subset of a byte field, not additions to it.
+    size_t slot_record_bytes = 0;
+    size_t layer_cores = 0;
+    size_t slot_records = 0; // slot_records / layer_cores is the flat world P
+    size_t occupied_slots = 0;
     size_t cross_rank_endpoints = 0;
 
     auto total_bytes() const -> size_t {

@@ -157,10 +157,9 @@ def test_bound_graph_methods_accept_declared_arguments(
     core.update_initial_operator(op_dict=problem.operator.terms)
 
 
-# The ledger keys are a MEASUREMENT CONTRACT, not decoration: an A/B reads this dictionary from two
-# builds and subtracts. A key that silently appears, disappears or moves in or out of ``total_bytes``
-# turns that subtraction into a comparison of two different quantities, and nothing on the C++ side
-# notices -- ``GraphMemoryBreakdown`` is a plain struct and the binding is a literal map.
+# The ledger keys are a measurement contract: an A/B reads this dictionary from two builds and
+# subtracts, so a key that appears, disappears or crosses ``total_bytes`` compares two different
+# quantities. Nothing on the C++ side notices.
 _GRAPH_LEDGER_KEYS = (
     "layer_descriptor_bytes",
     "layer_storage_object_bytes",
@@ -188,38 +187,30 @@ def test_graph_memory_breakdown_keys_and_totals(problem, serial_comm):
 
     breakdown = core.graph_memory_breakdown()
 
-    # Exact, not a superset: a dropped key is what this is here to catch, and so is a new key
-    # appearing without anyone deciding whether it belongs inside total_bytes().
+    # Exact, not a superset: both a dropped key and an undecided new one are what this catches.
     assert set(breakdown) == {
         *_GRAPH_LEDGER_KEYS,
         "total_bytes",
         *_GRAPH_DIAGNOSTIC_KEYS,
     }
 
-    # total_bytes() sums the ledger keys and NOTHING else. The d_ keys are counts, or subsets of a
-    # ledger key, so folding one in would double-count silently.
+    # total_bytes() sums the ledger keys only; the d_ keys are counts or subsets, so folding one in
+    # would double-count.
     assert breakdown["total_bytes"] == sum(breakdown[k] for k in _GRAPH_LEDGER_KEYS)
     assert breakdown["total_bytes"] == core.graph_memory_bytes()
     assert breakdown["total_bytes"] > 0
 
-    # exchange_layout_bytes reads 0 on this branch BECAUSE the per-layer counts/displs are no longer
-    # retained -- they are derived into per-thread scratch for the exchange being posted. The key is
-    # kept rather than deleted precisely so an A/B against a build that did retain them shows the
-    # drop instead of losing the row; asserting the zero is what stops the key from quietly acquiring
-    # a value again without the comment in MPGraph.cpp being revisited.
+    # Zero because the per-layer counts/displs are no longer retained. The key is kept rather than
+    # deleted so an A/B against a build that retained them shows the drop instead of losing the row.
     assert breakdown["exchange_layout_bytes"] == 0
 
-    # The graph does not partition: its slot array is indexed by the FLAT world (ranks x partitions),
-    # so slot_records / layer_cores recovers that P whatever geometry the suite is run under. Stated
-    # as divisibility rather than as `== 1`, because the MPI gate runs this file at 16 partitions per
-    # rank too.
+    # The slot array is indexed by the flat world, so slot_records / layer_cores recovers P. Stated as
+    # divisibility, not `== 1`, because the MPI gate also runs this at 16 partitions per rank.
     assert breakdown["d_layer_cores"] > 0
     assert breakdown["d_slot_records"] % breakdown["d_layer_cores"] == 0
     assert breakdown["d_slot_records"] // breakdown["d_layer_cores"] >= 1
 
-    # Occupancy is a fraction of the slot array, and an occupied slot holds at least one endpoint --
-    # which is why the endpoint count is the P-independent ceiling on it.
+    # An occupied slot holds at least one endpoint, so the endpoint count is the P-independent ceiling.
     assert breakdown["d_occupied_slots"] <= breakdown["d_slot_records"]
     assert breakdown["d_occupied_slots"] <= breakdown["d_cross_rank_endpoints"]
-    # A subset of cross_rank_bytes, never an addition to it.
     assert breakdown["d_slot_record_bytes"] <= breakdown["cross_rank_bytes"]

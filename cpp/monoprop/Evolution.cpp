@@ -60,9 +60,6 @@ auto combine_endpoint_contrib(const EndpointContrib &a, const EndpointContrib &b
 struct FlatExchangeBuffers {
     VecD send_buffer;
     VecD recv_buffer;
-    // Derived per layer for the exchange being posted, and reused, so it allocates once per thread per
-    // world size; one exchange in flight per thread, as send_buffer above has always required. ONE
-    // layout, not two: it describes the recv side as well. See derive_layer_exchange.
     LayerExchangeLayout layout;
 };
 
@@ -137,7 +134,6 @@ struct InFlightExchange {
     bool active = false;
 };
 
-// Callers run layer_exchange_participates first, so no layout is derived for a transfer that never posts.
 template <typename Pack>
 inline auto begin_layer_exchange(const LayerTraversal &layer, int scale, const mpi::Comm &comm, Pack pack)
     -> InFlightExchange {
@@ -172,10 +168,8 @@ inline auto finish_layer_exchange(InFlightExchange &in_flight, Apply apply)
                                  .my_rank = in_flight.my_rank});
 }
 
-// Per-thread pre-cos snapshot buffers, reused across layers to avoid a malloc/free per layer. Passed whole
-// to the pack and apply passes: each reads two of the four vectors, and re-splitting them at every hand-off
-// is what lets a send buffer be mistaken for a recv one.
-// Indexed by occupied position, not world slot, so nothing here grows with P.
+// Per-thread pre-cos snapshot buffers, reused across layers, indexed by occupied position. Passed
+// whole rather than re-split at each hand-off, which is how a send buffer becomes a recv one.
 struct DerivativeSnapshotScratch {
     std::vector<VecD> sin_send_state;
     std::vector<VecD> sin_send_op;
@@ -337,7 +331,6 @@ inline auto finish_cross_rank_evolution_exchange(VecD &op,
 // read-after-write hazard.
 auto apply_self_slot_derivative_paired(VecD &state, VecD &op, const LayerTraversal &layer, const TrigValues &trig)
     -> EndpointContrib {
-    // O(1) and rank-free: the layer records where its own slot sits at build time.
     const auto slot = layer.cross_rank_self_slot();
     const size_t self_d_count = slot.sin_send_count;
     if (self_d_count == 0) {
@@ -368,8 +361,7 @@ auto apply_self_slot_derivative_paired(VecD &state, VecD &op, const LayerTravers
     return local;
 }
 
-// The self slot recovers live, so it is emptied rather than filled: a previous layer's snapshot at
-// this position must not be readable.
+// Emptied, not filled: the self slot recovers live, and a previous layer's snapshot must not be read.
 void clear_slot_snapshot(DerivativeSnapshotScratch &snap, size_t pos) {
     snap.sin_send_state[pos].clear();
     snap.sin_send_op[pos].clear();
@@ -408,8 +400,7 @@ void snapshot_remote_endpoints(const VecD &state,
                                const LayerTraversal &layer,
                                size_t my_rank,
                                DerivativeSnapshotScratch &snap) {
-    // Sized by the slots that carry traffic. Grow-only: shrinking would free the allocations this
-    // scratch exists to reuse, and positions past the occupancy are never visited.
+    // Grow-only: shrinking would free the allocations this scratch exists to reuse.
     const size_t occupied = layer.occupied_slot_count();
     const auto grow = [occupied](std::vector<VecD> &v) {
         if (v.size() < occupied) {
@@ -475,8 +466,8 @@ auto evolve_step_traversal_impl(VecD &op,
 
     auto *const op_data = op.data();
 
-    // Snapshot this rank's own sin_send values before the cos pass; runs unconditionally (the remote
-    // pack skips the self slot) so single-rank works. Rank-free: the layer records where its slot sits.
+    // This rank's own sin_send values before the cos pass. Unconditional, since the remote pack skips
+    // the self slot, so single-rank works.
     const auto self_slot = layer.cross_rank_self_slot();
     const size_t self_b_count = self_slot.sin_send_count;
     VecD self_b_snapshot;
@@ -490,8 +481,7 @@ auto evolve_step_traversal_impl(VecD &op,
     cos_scale(layer_idx, op_data, cos_val);
     finish_cross_rank_evolution_exchange(op, layer, sin_val, in_flight);
 
-    // Self-slot sin_recv entries: op[i] is already cos-scaled, so only the sine term is added. B and D
-    // have the same count, so self_b_count serves both.
+    // Self-slot sin_recv entries: op[i] is already cos-scaled, so only the sine term is added.
     for (size_t k = 0; k < self_b_count; ++k) {
         const size_t i = detail::slot_sin_recv_index(self_slot, k);
         op[i] += sin_val * static_cast<double>(detail::slot_sin_recv_phase(self_slot, k)) * self_b_snapshot[k];

@@ -89,8 +89,8 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
     size_t total_b = 0;
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         const auto &partner = data[rank];
-        // The record stores one count and one offset for both B and D, so their equal length is a
-        // precondition: a skew would not throw, it would mis-derive Q and read the wrong endpoint.
+        // One count and one offset serve both B and D: a skew mis-derives Q and reads the wrong
+        // endpoint rather than throwing.
         if (partner.sin_send_indices.size() != partner.sin_recv_entries.size()) {
             throw CrossRankSlotLayoutError(std::format(
                 "Cross-rank slot {} has {} send endpoints against {} recv endpoints; B and D are the same set.",
@@ -98,9 +98,8 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
                 partner.sin_send_indices.size(),
                 partner.sin_recv_entries.size()));
         }
-        // P (the in-block) is a boundary WITHIN B. Q = P+Q - P is computed in unsigned width by
-        // slot_sin_recv_index, so a P past the end yields not a negative Q but one near 2^64, which
-        // every index compares less than -- and every D read then addresses B off the end.
+        // The in-block bounds a block within B, and Q is an unsigned subtraction, so a boundary past
+        // the end wraps near 2^64 instead of going negative and every D read runs off the array.
         if (partner.in_count > partner.sin_send_indices.size()) {
             throw CrossRankSlotLayoutError(
                 std::format("Cross-rank slot {} declares an in-block of {} inside {} endpoints; the in-block is a "
@@ -113,8 +112,8 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
         if (partner.sin_send_indices.empty()) {
             continue;
         }
-        // Checked, not cast: readers rebuild offsets from the STORED counts, so a truncated slot
-        // would shift every later slot's window.
+        // Checked, not cast: readers rebuild offsets from the stored counts, so a truncated slot
+        // shifts every later slot's window.
         storage.occupied.push_back(
             {.slot = checked_world_slot(rank),
              .sin_send_count = checked_term_index(partner.sin_send_indices.size(), "Cross-rank slot endpoint count"),
@@ -136,7 +135,7 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
     storage.sin_send_indices.resize(total_b);
     storage.sin_recv_phases = make_packed_phase_storage(total_d, uses_binary_phases);
 
-    // Same ascending order the offsets accumulate in, so readers reconstruct this exact prefix.
+    // The order the offsets accumulate in, so readers reconstruct this exact prefix.
     size_t offset = 0;
     for (const auto &entry : storage.occupied) {
         const auto &partner = data[entry.slot];
@@ -184,7 +183,6 @@ auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size
 }
 
 auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t {
-    // No predicate and no scan any more: an entry exists only if the slot carries traffic.
     return storage.occupied.size();
 }
 
@@ -216,8 +214,8 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
     out.counts.assign(num_ranks, 0);
     out.displs.resize(num_ranks);
 
-    // Scatter over the slots that carry traffic: a dense probe would binary-search every possible
-    // partner, at O(P log occupied) per exchange, to fill an array that is mostly zeros.
+    // Scatter over the occupied slots: a dense probe would binary-search every possible partner to
+    // fill an array that is mostly zeros.
     for_each_occupied_slot(cross_rank, [my_rank, &out, scale, what](size_t slot, const CrossRankSlotView &view) {
         if (slot == my_rank) {
             return; // excluded from the transfer and handled locally, as the stored layout did
@@ -242,9 +240,8 @@ auto build_layer_storage_unified(const std::vector<CrossRankPartnerData> &all_pa
     resolve_self_slot(storage->cross_rank, my_rank);
 
     {
-        // Eager validation, result discarded: an int overflow must throw from build_graph, not from
-        // inside an exchange whose peers are already committed, where it is a hang. Scale 2 alone
-        // suffices -- its counts are exactly 2x scale 1's, so scale 1 cannot overflow on its own.
+        // Result discarded: an int overflow must throw here, not inside a committed exchange. Scale 2
+        // bounds scale 1.
         LayerExchangeLayout scratch;
         derive_exchange_layout(storage->cross_rank, my_rank, 2, scratch, "Layer derivative exchange");
     }

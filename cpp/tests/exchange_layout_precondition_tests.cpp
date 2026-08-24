@@ -28,8 +28,7 @@ using monoprop::mpi::Comm;
 using monoprop::mpi::ShmComm;
 
 BOOST_AUTO_TEST_CASE(exchange_layout_width_is_checked) {
-    // Sized 4 but driven by one thread: the throw must precede any collective, or this hangs
-    // instead of failing -- the width is checked against mpi::size(comm) alone.
+    // Sized 4 but driven by one thread: the throw must precede any collective, or this hangs.
     ShmComm world(4);
     const Comm comm = Comm::make_shm(&world, /*rank=*/0);
     BOOST_REQUIRE_EQUAL(monoprop::mpi::size(comm), 4);
@@ -44,7 +43,6 @@ BOOST_AUTO_TEST_CASE(exchange_layout_width_is_checked) {
     BOOST_CHECK_THROW(monoprop::mpi::check_exchange_layout_width(empty, comm), CollectiveArgumentError);
 }
 
-// The complement: a layout of exactly the right width is accepted.
 BOOST_AUTO_TEST_CASE(exchange_layout_of_the_right_width_is_accepted) {
     ShmComm world(1);
     const Comm comm = Comm::make_shm(&world, /*rank=*/0);
