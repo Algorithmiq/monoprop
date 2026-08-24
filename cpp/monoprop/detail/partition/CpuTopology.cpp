@@ -15,8 +15,9 @@
 #include "monoprop/detail/partition/CpuTopology.h"
 
 #include <algorithm>
-#include <bit>
+#include <array>
 #include <cstdio>
+#include <format>
 #include <map>
 #include <mutex>
 #include <print>
@@ -278,76 +279,63 @@ auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) 
     return true;
 }
 
-/* ── Mask arithmetic for the placement report ──────────────────────────────── */
+/* ── summarize_masks ──────────────────────────────────────────────────────── */
 
-auto cpu_mask_popcount(const uint64_t *mask, size_t words) -> size_t {
-    if (mask == nullptr) {
-        return 0;
-    }
-    size_t n = 0;
-    for (size_t w = 0; w < words; ++w) {
-        n += static_cast<size_t>(std::popcount(mask[w]));
-    }
-    return n;
-}
+// hwloc indexes a bitmap in unsigned long units, so a 64-bit word must be one of them.
+static_assert(sizeof(unsigned long) == sizeof(uint64_t), "the mask word is not an hwloc bitmap unit");
 
-auto cpu_mask_union(uint64_t *out, const uint64_t *masks, size_t n, size_t words) -> void {
-    if (out == nullptr) {
-        return;
+auto summarize_masks(const uint64_t *masks, size_t n, size_t words, size_t self) -> std::optional<MaskSummary> {
+    if (masks == nullptr || n == 0 || words == 0 || self >= n) {
+        return std::nullopt;
     }
-    std::fill_n(out, words, uint64_t{0});
-    if (masks == nullptr) {
-        return;
+    const hwloc_bitmap_t row = hwloc_bitmap_alloc();
+    const hwloc_bitmap_t all = hwloc_bitmap_alloc();
+    if (row == nullptr || all == nullptr) {
+        hwloc_bitmap_free(row);
+        hwloc_bitmap_free(all);
+        return std::nullopt;
     }
-    for (size_t r = 0; r < n; ++r) {
+    MaskSummary out;
+    bool ok = true;
+    for (size_t r = 0; r < n && ok; ++r) {
+        hwloc_bitmap_zero(row);
         for (size_t w = 0; w < words; ++w) {
-            out[w] |= masks[(r * words) + w];
+            hwloc_bitmap_set_ith_ulong(row, static_cast<unsigned>(w), masks[(r * words) + w]);
+        }
+        ok = hwloc_bitmap_weight(row) > 0; // an all-zero row is a mask that did not fit the exchange window
+        if (r == self) {
+            out.cpus = static_cast<size_t>(hwloc_bitmap_weight(row));
+        }
+        hwloc_bitmap_or(all, all, row);
+    }
+    if (ok) {
+        out.node_cpus = static_cast<size_t>(hwloc_bitmap_weight(all));
+        std::array<char, 512> text{};
+        const int need = hwloc_bitmap_list_snprintf(text.data(), text.size(), all);
+        out.cpu_list = text.data();
+        // Truncation is stated, never silent: a cut list read as complete is a smaller machine. Cut
+        // back to the last whole range first, so the marker never follows a half-written CPU id.
+        if (need >= static_cast<int>(text.size())) {
+            const size_t last = out.cpu_list.rfind(',');
+            out.cpu_list.resize(last == std::string::npos ? 0 : last + 1);
+            out.cpu_list += "+";
         }
     }
+    hwloc_bitmap_free(row);
+    hwloc_bitmap_free(all);
+    return ok ? std::optional{out} : std::nullopt;
 }
 
-auto cpu_mask_ranges(const uint64_t *mask, size_t words) -> std::string {
-    if (mask == nullptr) {
-        return "none";
-    }
-    std::string text;
-    size_t runs = 0;
-    size_t dropped = 0;
-    const size_t bits = words * 64;
-    for (size_t bit = 0; bit < bits;) {
-        if (((mask[bit / 64] >> (bit % 64)) & 1U) == 0U) {
-            ++bit;
-            continue;
-        }
-        size_t last = bit;
-        while (last + 1 < bits && ((mask[(last + 1) / 64] >> ((last + 1) % 64)) & 1U) != 0U) {
-            ++last;
-        }
-        ++runs;
-        // Counted before it is formatted, so ",+N" names runs that exist and were left out.
-        if (runs > kMaxCpuRanges) {
-            ++dropped;
-        }
-        else {
-            if (!text.empty()) {
-                text += ',';
-            }
-            // A single-CPU run is the bare id rather than "7-7".
-            text += std::to_string(bit);
-            if (last != bit) {
-                text += '-';
-                text += std::to_string(last);
-            }
-        }
-        bit = last + 1;
-    }
-    if (text.empty()) {
-        return "none";
-    }
-    if (dropped != 0) {
-        text += ",+" + std::to_string(dropped);
-    }
-    return text;
+auto format_place_line(int mpi_rank, int node_rank, int node_size, const char *verdict, const MaskSummary &summary)
+    -> std::string {
+    return std::format("COMMPLACE rank={} node_rank={} node_size={} masks={} cpus={} node_cpus={} cpu_list={}\n",
+                       mpi_rank,
+                       node_rank,
+                       node_size,
+                       verdict,
+                       summary.cpus,
+                       summary.node_cpus,
+                       summary.cpu_list);
 }
 
 /* ── partition_cpusets ─────────────────────────────────────────────────────── */

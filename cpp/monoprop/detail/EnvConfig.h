@@ -21,13 +21,9 @@
 // Single home for runtime environment configuration. Kept dependency-free by design, because it is
 // pulled into hot-path headers.
 //
-//   monoprop_NUM_THREADS    positive int (1..1e6), else ignored                → num_threads
+//   monoprop_NUM_THREADS        positive int (1..1e6), else ignored → num_threads
 //   monoprop_COMMPLACE          bool, default OFF; one COMMPLACE line per rank on stderr → commplace
 //   monoprop_PARTITIONS         int N | "auto" | "off"; parsed where it is used (resolve_partition_count_)
-//
-// monoprop_PARTITION_PINNING is deleted and pinning is unconditional. Its parser matched only the
-// first CHARACTER, so `off`, `OFF` and `disabled` all parsed as ON; parse_env_flag compares whole
-// words instead, which is the one thing that bug was about.
 
 namespace monoprop::config {
 
@@ -44,12 +40,11 @@ inline auto iequals(const char *value, const char *lower) -> bool {
     return *value == *lower;
 }
 
-// Off when unset, empty, or a WHOLE-WORD match on 0/false/no/off; on otherwise. Whole words because
-// first-character matching is what read `off` as ON.
-inline auto parse_env_flag(const char *value) -> bool {
+inline auto parse_flag(const char *value, bool default_value) -> bool {
     if (value == nullptr || value[0] == '\0') {
-        return false;
+        return default_value;
     }
+    // Whole words: matching only the first character read `off` and `OFF` as ON.
     return !(iequals(value, "0") || iequals(value, "false") || iequals(value, "no") || iequals(value, "off"));
 }
 
@@ -80,7 +75,7 @@ inline auto get() -> const Settings & {
     static const Settings settings = [] {
         Settings s;
         s.num_threads = detail::parse_positive_int(std::getenv("monoprop_NUM_THREADS"));
-        s.commplace = detail::parse_env_flag(std::getenv("monoprop_COMMPLACE"));
+        s.commplace = detail::parse_flag(std::getenv("monoprop_COMMPLACE"), false);
         return s;
     }();
     return settings;

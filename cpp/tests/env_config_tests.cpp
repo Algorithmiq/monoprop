@@ -18,35 +18,34 @@
 
 #include "monoprop/detail/EnvConfig.h"
 
-using monoprop::config::detail::parse_env_flag;
+using monoprop::config::detail::parse_flag;
 using monoprop::config::detail::parse_positive_int;
 
-BOOST_AUTO_TEST_CASE(env_config_parse_env_flag_unset_and_empty_are_off) {
-    BOOST_CHECK_EQUAL(parse_env_flag(nullptr), false);
-    BOOST_CHECK_EQUAL(parse_env_flag(""), false);
+BOOST_AUTO_TEST_CASE(env_config_parse_flag_default_when_unset_or_empty) {
+    BOOST_CHECK_EQUAL(parse_flag(nullptr, true), true);
+    BOOST_CHECK_EQUAL(parse_flag(nullptr, false), false);
+    BOOST_CHECK_EQUAL(parse_flag("", true), true);
+    BOOST_CHECK_EQUAL(parse_flag("", false), false);
 }
 
-BOOST_AUTO_TEST_CASE(env_config_parse_env_flag_falsey_words_in_any_case) {
-    // `off` and `OFF` are the cases the deleted first-character parser read as ON.
+BOOST_AUTO_TEST_CASE(env_config_parse_flag_falsey_words_in_any_case) {
+    // `off`, `OFF` and `Off` are the cases the old first-character parser read as ON.
     for (const char *v : {"0", "false", "FALSE", "False", "no", "NO", "No", "off", "OFF", "Off"}) {
-        BOOST_CHECK_MESSAGE(parse_env_flag(v) == false, v);
+        BOOST_CHECK_MESSAGE(parse_flag(v, true) == false, v);
     }
 }
 
-BOOST_AUTO_TEST_CASE(env_config_parse_env_flag_truthy_words) {
+BOOST_AUTO_TEST_CASE(env_config_parse_flag_truthy_words) {
     for (const char *v : {"1", "true", "TRUE", "yes", "on", "ON", "anything"}) {
-        BOOST_CHECK_MESSAGE(parse_env_flag(v), v);
+        BOOST_CHECK_MESSAGE(parse_flag(v, false), v);
     }
 }
 
-BOOST_AUTO_TEST_CASE(env_config_parse_env_flag_compares_whole_words) {
-    // A first-character parser calls every one of these off; a whole-word one calls them all on.
-    for (const char *v : {"offbeat", "november", "0abc", "nope", "falsey", "f", "n"}) {
-        BOOST_CHECK_MESSAGE(parse_env_flag(v), v);
+BOOST_AUTO_TEST_CASE(env_config_parse_flag_compares_whole_words) {
+    // Whole words, so a falsey word's prefix, extension and initial are all ON. `f` and `n` were falsey.
+    for (const char *v : {"offbeat", "november", "0abc", "nope", "falsey", "f", "n", "of", "fals"}) {
+        BOOST_CHECK_MESSAGE(parse_flag(v, false), v);
     }
-    // The converse: a prefix of a falsey word is not that word either.
-    BOOST_CHECK_EQUAL(parse_env_flag("of"), true);
-    BOOST_CHECK_EQUAL(parse_env_flag("fals"), true);
 }
 
 BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_null_and_malformed) {

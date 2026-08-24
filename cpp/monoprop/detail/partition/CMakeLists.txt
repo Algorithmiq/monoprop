@@ -6,7 +6,6 @@ target_sources(
       FILES
         "CpuTopology.h"
         "PartitionGroup.h"
-        "PlacementReport.h"
 )
 
 target_sources(monoprop-objs PRIVATE CpuTopology.cpp)

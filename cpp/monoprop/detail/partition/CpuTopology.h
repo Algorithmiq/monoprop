@@ -28,6 +28,7 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -100,22 +101,35 @@ auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
  */
 [[nodiscard]] auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool;
 
-//! How many CPUs are set in the @p words -word mask at @p mask; 0 for a null mask.
-[[nodiscard]] auto cpu_mask_popcount(const uint64_t *mask, size_t words) -> size_t;
+//! What one host's exchanged affinity masks add up to. The union says what the JOB got, not what one rank got.
+struct MaskSummary {
+    size_t cpus = 0;               //!< CPUs in our own mask
+    size_t node_cpus = 0;          //!< CPUs in the union over the host
+    std::string cpu_list = "none"; //!< that union as ascending ranges, "0-15,64-79"
+};
 
-/*! @brief OR the @p n masks of @p words words laid end to end in @p masks into @p out (@p words words).
- *  The union says which CPUs the JOB got, as opposed to which this one rank got; @p out is cleared, not accumulated.
+/*! @brief Summarize the @p n masks of @p words words laid end to end in @p masks, row @p self being ours.
+ *  @returns nullopt for a null/empty argument or any all-zero row: a mask that did not fit the exchange
+ *           window cannot be summed with the others. Diagnostic only; nothing branches on the result.
  */
-auto cpu_mask_union(uint64_t *out, const uint64_t *masks, size_t n, size_t words) -> void;
+[[nodiscard]] auto summarize_masks(const uint64_t *masks, size_t n, size_t words, size_t self)
+    -> std::optional<MaskSummary>;
 
-//! At most this many ascending runs are spelled out by cpu_mask_ranges(); the rest are counted in a ",+N" suffix.
-inline constexpr size_t kMaxCpuRanges = 32;
+/* COMMPLACE (monoprop_COMMPLACE): a rank seeing 16 of a host's 128 CPUs is equally "my own 16" and
+ * "eight of us share these 16", and only the co-located ranks' masks separate them, so the exchange
+ * PartitionGroup already runs to place also reports. Report-only; nothing branches on the line. */
 
-/*! @brief The set bits of @p mask as an ascending, comma-separated range list: "0-15,64-79".
- *  A single-CPU run is the bare id ("7"), an empty or null mask is "none", and truncation past
- *  kMaxCpuRanges is stated as a trailing ",+N" so a cut list is never read as a complete one.
+/*! @brief One newline-terminated COMMPLACE line naming what the launcher handed this rank.
+ *  @param verdict how the co-located masks relate: "private" (pairwise disjoint), "shared" (two ranks
+ *         can land on one CPU), "alone" (the only rank on its host, which is NOT "private"), or
+ *         "unknown" (a mask did not fit the exchanged window, so no verdict is sound).
+ *  Returned, not written, so a binary launched without the knob set still reaches the formatting.
  */
-[[nodiscard]] auto cpu_mask_ranges(const uint64_t *mask, size_t words) -> std::string;
+[[nodiscard]] auto format_place_line(int mpi_rank,
+                                     int node_rank,
+                                     int node_size,
+                                     const char *verdict,
+                                     const MaskSummary &summary) -> std::string;
 
 //! Whether the launcher has already handed this rank a private slice of the node, or the node's CPUs are shared.
 enum class NodeMask { Shared, PerRank };

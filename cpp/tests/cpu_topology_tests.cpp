@@ -24,13 +24,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <set>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #if defined(__linux__)
@@ -38,7 +35,6 @@
 #endif
 
 #include "monoprop/detail/partition/CpuTopology.h"
-#include "monoprop/detail/partition/PlacementReport.h"
 
 namespace partition = monoprop::detail::partition;
 using partition::topo_detail::placement_order;
@@ -403,171 +399,49 @@ BOOST_AUTO_TEST_CASE(cpu_topology_shared_mask_keeps_co_located_ranks_disjoint) {
 
 #endif // __linux__
 
-/* ── Mask arithmetic and the COMMPLACE line ───────────────────────────────── */
+/* ── summarize_masks and the COMMPLACE line ───────────────────────────────── */
 
-namespace {
-
-// A mask of the exchange width holding exactly `pus`, so the helpers see their real argument shape.
-auto mask_of(const std::vector<size_t> &pus) -> std::vector<uint64_t> {
-    return packed_masks({pus}, partition::kAffinityMaskWords);
-}
-
-/* A stream emit_place_line can be pointed at and read back. std::tmpfile rather than a named path:
- * nothing here outlives the case, and CTest runs cases from a shared working directory. */
-class CaptureFile {
-public:
-    CaptureFile() : f_(std::tmpfile()) { BOOST_REQUIRE(f_ != nullptr); }
-    ~CaptureFile() {
-        if (f_ != nullptr) {
-            std::fclose(f_);
-        }
-    }
-    CaptureFile(const CaptureFile &) = delete;
-    auto operator=(const CaptureFile &) -> CaptureFile & = delete;
-
-    auto stream() const -> std::FILE * { return f_; }
-
-    auto text() const -> std::string {
-        std::fflush(f_);
-        std::rewind(f_);
-        std::string out;
-        std::array<char, 4096> buf{};
-        while (const size_t n = std::fread(buf.data(), 1, buf.size(), f_)) {
-            out.append(buf.data(), n);
-        }
-        return out;
-    }
-
-private:
-    std::FILE *f_;
-};
-
-// Counted rather than searched for once: an instrument that fires the wrong number of times is
-// invisible to a "contains" check.
-auto count(std::string_view haystack, std::string_view needle) -> size_t {
-    size_t n = 0;
-    for (size_t at = haystack.find(needle); at != std::string_view::npos; at = haystack.find(needle, at + 1)) {
-        ++n;
-    }
-    return n;
-}
-
-// Field extraction keyed on "name=", so a reordered line still reads.
-auto field(std::string_view line, std::string_view name) -> std::string {
-    const size_t at = line.find(name);
-    BOOST_REQUIRE(at != std::string_view::npos);
-    const size_t start = at + name.size();
-    const size_t end = line.find_first_of(" \n", start);
-    return std::string(line.substr(start, end - start));
-}
-
-} // namespace
-
-BOOST_AUTO_TEST_CASE(cpu_topology_mask_popcount_and_union) {
+BOOST_AUTO_TEST_CASE(cpu_topology_summarize_masks) {
     constexpr size_t kWords = partition::kAffinityMaskWords;
 
-    const auto empty = mask_of({});
-    BOOST_CHECK_EQUAL(partition::cpu_mask_popcount(empty.data(), kWords), 0U);
-    BOOST_CHECK_EQUAL(partition::cpu_mask_popcount(nullptr, kWords), 0U);
+    // Two ranks holding one CPU each and two ranks sharing the same CPUs differ in exactly node_cpus.
+    const auto private_ = packed_masks({{0, 1}, {2, 3}}, kWords);
+    const auto priv = partition::summarize_masks(private_.data(), 2, kWords, 0);
+    BOOST_REQUIRE(priv.has_value());
+    BOOST_CHECK_EQUAL(priv->cpus, 2U);
+    BOOST_CHECK_EQUAL(priv->node_cpus, 4U);
+    BOOST_CHECK_EQUAL(priv->cpu_list, "0-3");
 
-    const auto spread = mask_of({0, 63, 64, 4095});
-    BOOST_CHECK_EQUAL(partition::cpu_mask_popcount(spread.data(), kWords), 4U);
+    const auto shared = packed_masks({{0, 1}, {0, 1}}, kWords);
+    const auto shd = partition::summarize_masks(shared.data(), 2, kWords, 1);
+    BOOST_REQUIRE(shd.has_value());
+    BOOST_CHECK_EQUAL(shd->cpus, 2U);
+    BOOST_CHECK_EQUAL(shd->node_cpus, 2U);
 
-    // Two ranks holding 16 each and two ranks sharing the same 16 differ in exactly this number.
-    const auto two_private = packed_masks({{0, 1}, {2, 3}}, kWords);
-    std::vector<uint64_t> u(kWords, 0);
-    partition::cpu_mask_union(u.data(), two_private.data(), 2, kWords);
-    BOOST_CHECK_EQUAL(partition::cpu_mask_popcount(u.data(), kWords), 4U);
+    // A run crossing a 64-bit word boundary is ONE run: a per-word loop would print "63,64".
+    const auto cross = packed_masks({{63, 64}}, kWords);
+    BOOST_CHECK_EQUAL(partition::summarize_masks(cross.data(), 1, kWords, 0).value().cpu_list, "63-64");
 
-    const auto two_shared = packed_masks({{0, 1}, {0, 1}}, kWords);
-    partition::cpu_mask_union(u.data(), two_shared.data(), 2, kWords);
-    BOOST_CHECK_EQUAL(partition::cpu_mask_popcount(u.data(), kWords), 2U);
-
-    // The destination is cleared, not accumulated into: a reused buffer must not report the old CPUs.
-    const auto lone = packed_masks({{9}}, kWords);
-    partition::cpu_mask_union(u.data(), lone.data(), 1, kWords);
-    BOOST_CHECK_EQUAL(partition::cpu_mask_popcount(u.data(), kWords), 1U);
-
-    // n == 0 is a cleared destination, not untouched memory.
-    partition::cpu_mask_union(u.data(), two_private.data(), 0, kWords);
-    BOOST_CHECK_EQUAL(partition::cpu_mask_popcount(u.data(), kWords), 0U);
+    // No summary rather than a plausible zero: an all-zero row is a mask that did not fit the window.
+    const auto with_empty = packed_masks({{0, 1}, {}}, kWords);
+    BOOST_CHECK(!partition::summarize_masks(with_empty.data(), 2, kWords, 0).has_value());
+    BOOST_CHECK(!partition::summarize_masks(nullptr, 1, kWords, 0).has_value());
+    BOOST_CHECK(!partition::summarize_masks(private_.data(), 2, kWords, 2).has_value()); // self out of range
 }
 
-BOOST_AUTO_TEST_CASE(cpu_topology_mask_ranges_formatting) {
-    constexpr size_t kWords = partition::kAffinityMaskWords;
-
-    // An empty mask is a WORD: a blank value in a KEY=value log line reads as a truncated line.
-    BOOST_CHECK_EQUAL(partition::cpu_mask_ranges(mask_of({}).data(), kWords), "none");
-    BOOST_CHECK_EQUAL(partition::cpu_mask_ranges(nullptr, kWords), "none");
-
-    // A single CPU is the bare id, not "7-7".
-    BOOST_CHECK_EQUAL(partition::cpu_mask_ranges(mask_of({7}).data(), kWords), "7");
-
-    // The shape a correctly bound rank produces: one contiguous run.
-    std::vector<size_t> block;
-    for (size_t i = 16; i < 32; ++i) {
-        block.push_back(i);
-    }
-    BOOST_CHECK_EQUAL(partition::cpu_mask_ranges(mask_of(block).data(), kWords), "16-31");
-
-    // A run crossing a 64-bit word boundary is ONE run: a per-word loop would split this into "63,64".
-    BOOST_CHECK_EQUAL(partition::cpu_mask_ranges(mask_of({63, 64}).data(), kWords), "63-64");
-    BOOST_CHECK_EQUAL(partition::cpu_mask_ranges(mask_of({0, 1, 64, 65, 130}).data(), kWords), "0-1,64-65,130");
-
-    // Truncation is stated, never silent: a cut list that looked complete would be read as a smaller machine.
-    std::vector<size_t> sparse;
-    for (size_t i = 0; i < partition::kMaxCpuRanges + 8; ++i) {
-        sparse.push_back(i * 2); // isolated bits ⇒ one run each
-    }
-    const auto truncated = partition::cpu_mask_ranges(mask_of(sparse).data(), kWords);
-    BOOST_CHECK_EQUAL(truncated.substr(truncated.size() - 3), ",+8");
-    BOOST_CHECK_EQUAL(count(truncated, ","), partition::kMaxCpuRanges);
-    BOOST_CHECK_EQUAL(truncated.substr(0, 6), "0,2,4,");
-}
-
-// The flag is a parameter so this is reachable: monoprop_COMMPLACE is parsed once per process and
-// cached, so a binary not launched with it set could not otherwise reach the emitting path.
+// The formatter returns a string rather than writing one, so this is reachable in a binary launched
+// without monoprop_COMMPLACE set -- the knob gates only PartitionGroup's write.
 BOOST_AUTO_TEST_CASE(cpu_topology_place_line_reports_every_field) {
-    const CaptureFile cap;
-    partition::PlacementReport rep;
-    rep.mpi_rank = 5;
-    rep.node_rank = 2;
-    rep.node_size = 8;
-    rep.masks = "private";
-    rep.cpus = 16;
-    rep.node_cpus = 128;
-    rep.node_cpu_list = "0-127";
-
-    BOOST_CHECK_EQUAL(partition::emit_place_line(cap.stream(), true, rep), 1);
-    const auto text = cap.text();
-    BOOST_CHECK_EQUAL(count(text, "COMMPLACE"), 1U);
-    BOOST_CHECK_EQUAL(count(text, "\n"), 1U); // terminated, so a second line cannot merge into it
-    BOOST_CHECK_EQUAL(field(text, "rank="), "5");
-    BOOST_CHECK_EQUAL(field(text, "node_rank="), "2");
-    BOOST_CHECK_EQUAL(field(text, "node_size="), "8");
-    BOOST_CHECK_EQUAL(field(text, "masks="), "private");
-    BOOST_CHECK_EQUAL(field(text, "cpus="), "16");
-    BOOST_CHECK_EQUAL(field(text, "node_cpus="), "128");
-    BOOST_CHECK_EQUAL(field(text, "cpu_list="), "0-127");
+    const partition::MaskSummary sum{.cpus = 16, .node_cpus = 128, .cpu_list = "0-127"};
+    // Whole line, not field lookups: a reordered or unterminated line has to fail too.
+    BOOST_CHECK_EQUAL(partition::format_place_line(5, 2, 8, "private", sum),
+                      "COMMPLACE rank=5 node_rank=2 node_size=8 masks=private cpus=16 node_cpus=128 "
+                      "cpu_list=0-127\n");
 }
 
-// The other half of the contract: "the knob was off" and "the instrument never fired" must be the
-// same observation only when the knob really is off.
-BOOST_AUTO_TEST_CASE(cpu_topology_place_line_is_gated) {
-    const CaptureFile cap;
-    const partition::PlacementReport rep;
-    BOOST_CHECK_EQUAL(partition::emit_place_line(cap.stream(), false, rep), 0);
-    BOOST_CHECK(cap.text().empty());
-}
-
-// A default report is the "could not classify" state and must SAY so rather than print a plausible zero.
-BOOST_AUTO_TEST_CASE(cpu_topology_place_line_default_is_unknown_not_a_verdict) {
-    const CaptureFile cap;
-    const partition::PlacementReport rep;
-    BOOST_CHECK_EQUAL(partition::emit_place_line(cap.stream(), true, rep), 1);
-    const auto text = cap.text();
-    BOOST_CHECK_EQUAL(field(text, "masks="), "unknown");
-    BOOST_CHECK_EQUAL(field(text, "cpus="), "0");
-    BOOST_CHECK_EQUAL(field(text, "node_size="), "1");
-    BOOST_CHECK_EQUAL(field(text, "cpu_list="), "none"); // an unset list is still a word
+// The state summarize_masks refuses to classify must SAY unknown rather than print a plausible zero.
+BOOST_AUTO_TEST_CASE(cpu_topology_place_line_unknown_is_not_a_verdict) {
+    BOOST_CHECK_EQUAL(partition::format_place_line(0, 0, 1, "unknown", partition::MaskSummary{}),
+                      "COMMPLACE rank=0 node_rank=0 node_size=1 masks=unknown cpus=0 node_cpus=0 "
+                      "cpu_list=none\n");
 }
