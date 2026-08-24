@@ -50,6 +50,16 @@ ORDER = list(COLORS)
 # run, which is why it is a constant rather than something inferred per record.
 DEVICE_BACKENDS = {"cuPauliProp (GPU)"}
 
+# What `final_memory_MB` must have been measured with for the default figure's axis label
+# to be true. Kept in sync with `backends.HOST_MEMORY_METRIC` by `check_memory_metric`
+# rather than imported, so this script stays runnable without the backend dependencies.
+HOST_MEMORY_METRIC = "peak process RSS over the step (kernel VmHWM)"
+
+# Columns whose value is only a host-RSS figure if the record was written by the current
+# schema. An older runner put each library's own accounting in `final_memory_MB`, which is
+# indistinguishable from a host figure once it is a bare float on an axis.
+HOST_MEMORY_COLUMNS = {"final_memory_MB"}
+
 # Per memory column: axis label and headline fragment. The label has to follow the column
 # actually plotted -- a figure titled "final memory" whichever key was passed is how an
 # operator-memory curve gets read as a host-RSS one.
@@ -118,6 +128,39 @@ def add_working_set(records: list[dict]) -> None:
             continue
         device = r.get("operator_memory_MB")
         r["working_set_MB"] = None if device is None else device + (host or 0.0)
+
+
+def check_memory_metric(records: list[dict], memory_key: str) -> list[str]:
+    """Flag records whose `final_memory_MB` was not measured as host RSS.
+
+    The axis label for this column asserts a specific instrument. A record written before
+    `final_memory_MB` became the host high-water mark carries its library's own accounting
+    there instead -- a smaller number, on a different pool, that plots perfectly happily
+    under an RSS title. `memory_metric` is the only thing that distinguishes them, so it is
+    checked rather than assumed: regenerate the sweep, or pass an explicit `--memory-key`.
+    """
+    if memory_key not in HOST_MEMORY_COLUMNS:
+        return []
+    stale: dict[str, str] = {}
+    for r in records:
+        if r.get("status") != "ok":
+            continue
+        metric = r.get("memory_metric", "")
+        if metric != HOST_MEMORY_METRIC:
+            stale.setdefault(r["label"], metric or "(unrecorded)")
+    if not stale:
+        return []
+    detail = ", ".join(
+        f"{label}: {metric!r}" for label, metric in sorted(stale.items())
+    )
+    return [
+        (
+            f"WARNING: `{memory_key}` is labelled {HOST_MEMORY_METRIC!r} but these "
+            f"records were measured otherwise -- {detail}. The memory figure is "
+            "mislabelled; re-run run_scaling.py, or plot --memory-key "
+            "operator_memory_MB explicitly."
+        )
+    ]
 
 
 def warn_mixed_hosts(records: list[dict]) -> list[str]:
@@ -358,6 +401,8 @@ def main() -> None:
     add_working_set(records)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for warning in warn_mixed_hosts(records):
+        print(warning)
+    for warning in check_memory_metric(records, args.memory_key):
         print(warning)
 
     _figure(
