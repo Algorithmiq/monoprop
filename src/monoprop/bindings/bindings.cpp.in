@@ -112,6 +112,7 @@ NB_MODULE(_core, m) {
     // clang-format on
     m.attr("__build_type__") = std::string(build_type());
     m.attr("__compiler_flags__") = compiler_flags();
+    m.attr("__nanobind_version__") = std::string("@nanobind_VERSION@");
     m.attr("__variant__") = std::string(variant());
 
 #ifdef monoprop_ENABLE_MPI
