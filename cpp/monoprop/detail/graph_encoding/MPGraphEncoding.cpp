@@ -218,7 +218,7 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
 
     // Scatter over the slots that carry traffic: a dense probe would binary-search every possible
     // partner, at O(P log occupied) per exchange, to fill an array that is mostly zeros.
-    for_each_occupied_slot(cross_rank, [&](size_t slot, const CrossRankSlotView &view) {
+    for_each_occupied_slot(cross_rank, [my_rank, &out, scale, what](size_t slot, const CrossRankSlotView &view) {
         if (slot == my_rank) {
             return; // excluded from the transfer and handled locally, as the stored layout did
         }
@@ -234,11 +234,11 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
     out.total_count = total;
 }
 
-auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
+auto build_layer_storage_unified(const std::vector<CrossRankPartnerData> &all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore> {
     auto storage = std::make_shared<LayerCore>();
 
-    storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
+    storage->cross_rank = build_packed_cross_rank_storage(all_partners);
     resolve_self_slot(storage->cross_rank, my_rank);
 
     {

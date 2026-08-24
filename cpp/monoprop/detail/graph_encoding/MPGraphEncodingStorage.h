@@ -202,6 +202,6 @@ auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
 
 // Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so
 // MPI_Alltoallv skips it (replay does a local copy).
-auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
+auto build_layer_storage_unified(const std::vector<CrossRankPartnerData> &all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore>;
 } // namespace monoprop::detail

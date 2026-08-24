@@ -75,7 +75,7 @@ auto mark_cross_rank_endpoints_kept(const LayerTraversal &layer, size_t my_rank,
             nodes_to_keep[idx] = 1;
         }
     };
-    layer.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
+    layer.for_each_occupied_slot([&mark, my_rank](size_t rank, const detail::CrossRankSlotView &slot) {
         for (size_t k = 0; k < slot.sin_send_count; ++k) {
             mark(detail::slot_sin_recv_index(slot, k));
             if (rank != my_rank) {

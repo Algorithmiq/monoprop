@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -151,11 +152,10 @@ struct PackedCrossRankStorage final {
 
     // O(log occupied); a sweep over every partner should use for_each_occupied_slot instead.
     auto find(size_t rank) const -> const CrossRankOccupiedSlot * {
-        const auto it =
-            std::lower_bound(occupied.begin(), occupied.end(), rank, [](const CrossRankOccupiedSlot &e, size_t r) {
-                return e.slot < r;
-            });
-        return (it == occupied.end() || it->slot != rank) ? nullptr : &*it;
+        const auto it = std::ranges::lower_bound(occupied, rank, {}, [](const CrossRankOccupiedSlot &e) {
+            return static_cast<size_t>(e.slot);
+        });
+        return (it == occupied.end() || it->slot != rank) ? nullptr : std::to_address(it);
     }
 
     auto sin_send_size(size_t rank) const -> size_t {

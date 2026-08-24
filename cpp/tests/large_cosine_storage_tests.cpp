@@ -47,7 +47,7 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
     }
     p.in_count = 12; // in-block size P (D indices are derived from B via in_count)
 
-    auto storage = detail::build_layer_storage_unified(std::move(cross_rank), /*my_rank=*/0);
+    auto storage = detail::build_layer_storage_unified(cross_rank, /*my_rank=*/0);
 
     // An engaged pruned_cos stores its filtered cosine list explicitly, so num_cos_inds() reports its
     // total_count.

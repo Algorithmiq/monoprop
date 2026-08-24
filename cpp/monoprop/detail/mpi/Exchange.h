@@ -95,7 +95,7 @@ inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks,
         return Ticket{};
     }
     (void)num_ranks;
-    auto request = MPI_REQUEST_NULL;
+    MPI_Request request = MPI_REQUEST_NULL;
     MPI_Ialltoallv(args.send,
                    args.send_counts,
                    args.send_displs,
