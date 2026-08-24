@@ -584,7 +584,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
                        extend_coeffs_from_current_picture_if_needed_(coeffs);
 
                        Layer layer(std::move(storage));
-                       detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v) {
+                       detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v, double *) {
                            detail::scale_cos_mask(c, *cos, v);
                        };
                        evolve_step(coeffs, layer, apply_angle, comm_, cos_scale);
@@ -896,24 +896,46 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
     }
 
     const auto *sc = &inverted_index;
-    detail::LayerCosScale cos_scale = [cache, sc](size_t i, double *c, double v) {
+    detail::LayerCosScale cos_scale = [cache, sc](size_t i, double *c, double v, double *record) {
         const auto &e = (*cache)[i];
         if (!e.recomputes_cos) {
-            detail::scale_cos_mask(c, *e.filtered, v);
+            if (record != nullptr) {
+                detail::scale_cos_mask<true>(c, *e.filtered, v, record);
+            }
+            else {
+                detail::scale_cos_mask(c, *e.filtered, v);
+            }
+        }
+        else if (record != nullptr) {
+            detail::scale_cos_lazy<NumModes, true>(*sc, e.recipe, c, v, record);
         }
         else {
             detail::scale_cos_lazy<NumModes>(*sc, e.recipe, c, v);
         }
     };
     detail::LayerCosAccumulate cos_acc =
-        [cache, sc](size_t i, double *s, double *h, const double *cached, double v, double sec) {
+        [cache, sc](size_t i, double *s, double *h, const double *record, double v, double sec) {
             const auto &e = (*cache)[i];
             if (!e.recomputes_cos) {
-                return detail::accumulate_cos_mask(s, h, *e.filtered, cached, v, sec);
+                if (record != nullptr) {
+                    return detail::accumulate_cos_mask<true>(s, h, *e.filtered, record, v, sec);
+                }
+                return detail::accumulate_cos_mask(s, h, *e.filtered, record, v, sec);
             }
-            return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, cached, v, sec);
+            if (record != nullptr) {
+                return detail::accumulate_cos_lazy<NumModes, true>(*sc, e.recipe, s, h, record, v, sec);
+            }
+            return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, record, v, sec);
         };
-    return {.scale = std::move(cos_scale), .accumulate = std::move(cos_acc)};
+    // Sized once here rather than per call: the gradient records every layer, so nothing would be saved by
+    // deferring, and a recompute layer's count costs a fold.
+    auto counts = std::make_shared<std::vector<size_t>>();
+    counts->reserve(cache->size());
+    for (const auto &e : *cache) {
+        counts->push_back(e.recomputes_cos ? detail::fold_popcount_lazy<NumModes>(inverted_index, e.recipe)
+                                           : e.filtered->total_count);
+    }
+    return {.scale = std::move(cos_scale), .accumulate = std::move(cos_acc), .cos_counts = std::move(counts)};
 }
 
 template <size_t NumModes>

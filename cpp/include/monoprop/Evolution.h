@@ -29,6 +29,16 @@ struct LayerAngle {
     double param = 0.0;     ///< the optimizer parameter driving this layer
 };
 
+/// Forward-pass recording of one layer's pre-layer operator coefficients, for the gradient to replay.
+///
+/// The gradient reads a record and never writes one. A null member means "not recorded" and the reverse
+/// pass falls back to dividing `op` by the layer's cosine, which is exact but amplifies any error already
+/// in `op` by 1/|cos|; recording is what breaks that compounding at a near-singular layer.
+struct LayerCosRecord {
+    double *cos = nullptr;       ///< the layer's cosine set, in forward sweep order; length = its cosine count
+    double *endpoints = nullptr; ///< the self slot's sin_recv coefficients, in sin_recv order
+};
+
 /// Forward-evolve `op` through one layer; each rank owns its local coefficients, cross-rank cycles are communicated.
 monoprop_EXPORT auto evolve_step(VecD &op,
                                  const Layer &layer,
@@ -42,7 +52,8 @@ monoprop_EXPORT auto evolve_step(VecD &op,
                                  double param,
                                  size_t layer_idx,
                                  mpi::Comm comm,
-                                 const detail::LayerCosScale &cos_scale) -> void;
+                                 const detail::LayerCosScale &cos_scale,
+                                 LayerCosRecord record = {}) -> void;
 
 /// Forward-evolve `coeffs` through every layer of `graph`, returning this rank's evolved coefficients.
 monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
@@ -52,8 +63,7 @@ monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
                                      const detail::LayerCosScale &cos_scale) -> VecD;
 
 /// Reverse-mode derivative of one layer: inverse-rotates (state, op) in place and returns the gradient term.
-/// `cached_op` is the forward pass's pre-layer coefficients for this layer, used in place of dividing `op`
-/// by the layer's cosine; null falls back to that division.
+/// `record` must be the one the forward pass wrote for this same `layer_idx`.
 monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
                                                      VecD &op,
                                                      const MPGraphView &graph,
@@ -61,5 +71,5 @@ monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
                                                      LayerAngle angle,
                                                      mpi::Comm comm,
                                                      const detail::LayerCosAccumulate &cos_acc,
-                                                     const double *cached_op = nullptr) -> double;
+                                                     LayerCosRecord record = {}) -> double;
 } // namespace monoprop

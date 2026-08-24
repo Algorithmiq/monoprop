@@ -171,6 +171,62 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
     }
 }
 
+// The record the forward sweep writes must replay the pre-scale coefficients exactly. Driven with a
+// sec_val that is not 1/cos_val, so the division fallback could not reproduce them by accident.
+BOOST_AUTO_TEST_CASE(recorded_cosine_sweep_replays_pre_layer_coefficients) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    SimulatorConfig cfg{.comm = MPI_COMM_SELF};
+    auto sim = build_simulator<kNumModes>(data, cfg);
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+
+    const auto &inverted_index = sim.mp_op().inverted_index();
+    const auto &graph = sim.graph();
+    const size_t n = sim.mp_op().size();
+    BOOST_REQUIRE(n > 0);
+
+    std::vector<double> baseline(n);
+    std::vector<double> state0(n);
+    for (size_t i = 0; i < n; ++i) {
+        baseline[i] = 1.0 + static_cast<double>(i) * 1e-3;
+        state0[i] = 0.5 + static_cast<double>(i) * 1e-3;
+    }
+    const double cos_val = 0.6234;
+    const double wrong_sec = 1.0; // 1/cos_val is ~1.6042
+
+    size_t recorded_layers = 0;
+    for (size_t li = 0; li < graph.layers(); ++li) {
+        const auto layer = graph.get_layer_traversal(li);
+        if (layer.generator_words().empty()) {
+            continue;
+        }
+        const auto gen = generator_of<kNumModes>(layer);
+        auto prepared = monoprop::detail::make_fold_cache<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
+        auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
+
+        std::vector<double> record(monoprop::detail::fold_popcount<kNumModes>(prepared));
+        std::vector<double> coeff = baseline;
+        monoprop::detail::scale_cos_lazy<kNumModes, true>(inverted_index, recipe, coeff.data(), cos_val, record.data());
+
+        std::vector<double> state = state0;
+        std::vector<double> ham = coeff;
+        monoprop::detail::accumulate_cos_lazy<kNumModes, true>(inverted_index,
+                                                               recipe,
+                                                               state.data(),
+                                                               ham.data(),
+                                                               record.data(),
+                                                               cos_val,
+                                                               wrong_sec);
+
+        BOOST_TEST_INFO("layer " << li);
+        BOOST_TEST(std::memcmp(ham.data(), baseline.data(), n * sizeof(double)) == 0);
+        if (!record.empty()) {
+            ++recorded_layers;
+        }
+    }
+    // A fixture whose every layer has an empty cosine set would pass the memcmp vacuously.
+    BOOST_TEST(recorded_layers > 0u);
+}
+
 // Lives here because it re-runs the same recompute machinery exercised above.
 BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};

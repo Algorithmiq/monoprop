@@ -19,19 +19,26 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
+#include <vector>
 
 namespace monoprop::detail {
 
 // Per-layer cosine callbacks; `layer` selects the cosine set to replay. Scale is the forward path
-// (coeff *= cos); Accumulate is the reverse path (state *= cos, ham taken from `cached` -- the forward
-// pass's pre-layer coefficients -- or ham *= sec when `cached` is null) and returns Σ state·ham.
-using LayerCosScale = std::function<void(size_t layer, double *coeff, double cos_val)>;
+// (coeff *= cos, writing the pre-scale coefficients to `record` in sweep order when it is non-null);
+// Accumulate is the reverse path (state *= cos, ham read back from `record` in that same order, or
+// ham *= sec when `record` is null) and returns Σ state·ham.
+//
+// The two sweeps walk one layer's cosine set in the same order off the same fold, so the record needs
+// no index map -- but that also means a record written for layer L is only readable back at layer L.
+using LayerCosScale = std::function<void(size_t layer, double *coeff, double cos_val, double *record)>;
 using LayerCosAccumulate = std::function<
-    double(size_t layer, double *state, double *ham, const double *cached, double cos_val, double sec_val)>;
-
+    double(size_t layer, double *state, double *ham, const double *record, double cos_val, double sec_val)>;
 struct CosCallbacks {
     LayerCosScale scale;           ///< forward path; required whenever the parameters are non-empty
     LayerCosAccumulate accumulate; ///< reverse path; required by the gradient only
+    /// Per-layer cosine-set size, i.e. each layer's record length. Required by the gradient only.
+    std::shared_ptr<const std::vector<size_t>> cos_counts;
 };
 
 } // namespace monoprop::detail

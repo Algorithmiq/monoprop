@@ -349,42 +349,45 @@ inline auto finish_cross_rank_evolution_exchange(VecD &op,
     });
 }
 
-// Snapshot-free self-slot endpoint pass: sin_recv entries k and k+pairs are the two endpoints of one
-// rotation, so reading both (pre-cos recovered from the post-cos slots) before writing either avoids the
-// read-after-write hazard.
+// Self-slot endpoint pass: sin_recv entries k and k+pairs are the two endpoints of one rotation, so
+// reading both before writing either avoids the read-after-write hazard. `record` is the forward pass's
+// pre-layer op at these same sin_recv positions, so it indexes by k, not by the operator index.
 auto apply_self_slot_derivative_paired(VecD &state,
                                        VecD &op,
                                        const LayerTraversal &layer,
                                        size_t my_rank,
                                        const TrigValues &trig,
-                                       const double *cached) -> EndpointContrib {
+                                       const double *record) -> EndpointContrib {
     const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);
     if (self_d_count == 0) {
         return {};
     }
     const auto pairs = self_d_count / 2;
+    const bool replay = record != nullptr;
     EndpointContrib local{};
     for (size_t k = 0; k < pairs; ++k) {
         const size_t i1 = layer.cross_rank_sin_recv_index_at(my_rank, k);
         const double phi1 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k));
         const size_t i2 = layer.cross_rank_sin_recv_index_at(my_rank, k + pairs);
         const auto phi2 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k + pairs));
-        // Recover pre-cos values; with a cache, op[i] no longer holds the post-cos value, so re-apply
-        // the layer's rotation to the cached pre-layer coefficients instead of undoing the cos pass.
+        // h1/h2 are the layer's post-rotation op values, needed for the two sums below. With a record
+        // they are rebuilt forward from it, because the cos pass has already replaced op[i] with the
+        // pre-layer value; without one they are recovered by undoing that pass's division.
         const double s1 = state[i1] * trig.sec_val;
         const double s2 = state[i2] * trig.sec_val;
-        const double h1 = (cached != nullptr) ? ((trig.cos_val * cached[i1]) + (trig.sin_val * phi1 * cached[i2]))
-                                              : (op[i1] * trig.cos_val);
-        const double h2 = (cached != nullptr) ? ((trig.cos_val * cached[i2]) + (trig.sin_val * phi2 * cached[i1]))
-                                              : (op[i2] * trig.cos_val);
+        const double h1 =
+            replay ? ((trig.cos_val * record[k]) + (trig.sin_val * phi1 * record[k + pairs])) : (op[i1] * trig.cos_val);
+        const double h2 =
+            replay ? ((trig.cos_val * record[k + pairs]) + (trig.sin_val * phi2 * record[k])) : (op[i2] * trig.cos_val);
         local.cos_terms += (s1 * h1) + (s2 * h2);
         local.sin_terms += (phi1 * s1 * h2) + (phi2 * s2 * h1);
-        // Inverse-rotation write-back (−sin); see apply_cross_rank_derivative_exchange_impl.
+        // Inverse-rotation write-back (−sin); see apply_cross_rank_derivative_exchange_impl. A record
+        // already holds the value that inverse would land on, so it is written straight through.
         const double ps1 = -trig.sin_val * phi1;
         const double ps2 = -trig.sin_val * phi2;
-        op[i1] = (h1 * trig.cos_val) + (ps1 * h2);
+        op[i1] = replay ? record[k] : ((h1 * trig.cos_val) + (ps1 * h2));
         state[i1] = (s1 * trig.cos_val) + (ps1 * s2);
-        op[i2] = (h2 * trig.cos_val) + (ps2 * h1);
+        op[i2] = replay ? record[k + pairs] : ((h2 * trig.cos_val) + (ps2 * h1));
         state[i2] = (s2 * trig.cos_val) + (ps2 * s1);
     }
     return local;
@@ -447,7 +450,7 @@ auto state_operator_derivative_local(VecD &state,
                                      LayerAngle angle,
                                      mpi::Comm comm,
                                      const detail::LayerCosAccumulate &cos_acc,
-                                     const double *cached_op) -> double {
+                                     LayerCosRecord record) -> double {
     const TrigValues trig(angle.param, angle.gen_coeff);
     const auto layer = graph.get_layer_traversal(layer_idx);
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
@@ -460,11 +463,11 @@ auto state_operator_derivative_local(VecD &state,
     auto in_flight = begin_cross_rank_derivative_exchange(snap, layer, comm);
 
     // A = Σ s_old·h_old over all anticommuting indices, endpoints included — hence the subtraction below.
-    const double A = cos_acc(layer_idx, state.data(), op.data(), cached_op, trig.cos_val, trig.sec_val);
+    const double A = cos_acc(layer_idx, state.data(), op.data(), record.cos, trig.cos_val, trig.sec_val);
 
     EndpointContrib ep;
     if (my_rank < R) {
-        ep = apply_self_slot_derivative_paired(state, op, layer, my_rank, trig, cached_op);
+        ep = apply_self_slot_derivative_paired(state, op, layer, my_rank, trig, record.endpoints);
     }
     const auto remote = finish_cross_rank_derivative_exchange(state, op, layer, snap, trig, in_flight);
     ep = combine_endpoint_contrib(ep, remote);
@@ -478,7 +481,8 @@ auto evolve_step_traversal_impl(VecD &op,
                                 double param,
                                 size_t layer_idx,
                                 const mpi::Comm &comm,
-                                const detail::LayerCosScale &cos_scale) -> void {
+                                const detail::LayerCosScale &cos_scale,
+                                LayerCosRecord record) -> void {
     const double cos_val = std::cos(2 * param);
     const double sin_val = std::sin(2 * param);
 
@@ -489,6 +493,7 @@ auto evolve_step_traversal_impl(VecD &op,
     // Snapshot my_rank's own sin_send values before the cos pass; runs unconditionally (the remote pack
     // skips my_rank) so single-rank works.
     const size_t self_b_count = (my_rank < layer.cross_rank_rank_count()) ? layer.cross_rank_sin_send_size(my_rank) : 0;
+    const size_t self_d_count = (my_rank < layer.cross_rank_rank_count()) ? layer.cross_rank_sin_recv_size(my_rank) : 0;
     VecD self_b_snapshot;
     self_b_snapshot.resize(self_b_count);
     if (self_b_count > 0) {
@@ -498,14 +503,22 @@ auto evolve_step_traversal_impl(VecD &op,
         });
     }
 
+    // The reverse pass reaches its endpoints by sin_recv position, not by operator index, so the record
+    // is filled in that order -- and, like self_b_snapshot above, before the cos pass overwrites op.
+    if (record.endpoints != nullptr) {
+        auto *const ep_record = record.endpoints;
+        layer.for_each_cross_rank_sin_recv_range(my_rank, 0, self_d_count, [ep_record, &op](size_t k, size_t i, int) {
+            ep_record[k] = op[i];
+        });
+    }
+
     // Pack + start the exchange before the cos scan so partner values are pre-cos and the transfer overlaps.
     auto in_flight = begin_cross_rank_evolution_exchange(op, layer, comm);
-    cos_scale(layer_idx, op_data, cos_val);
+    cos_scale(layer_idx, op_data, cos_val, record.cos);
     finish_cross_rank_evolution_exchange(op, layer, sin_val, in_flight);
 
     // Self-slot sin_recv entries: op[i] is already cos-scaled, so only the sine term is added.
     if (self_b_count > 0) {
-        const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);
         layer.for_each_cross_rank_sin_recv_range(my_rank,
                                                  0,
                                                  self_d_count,
@@ -521,14 +534,15 @@ auto evolve_step(VecD &op,
                  double param,
                  size_t layer_idx,
                  mpi::Comm comm,
-                 const detail::LayerCosScale &cos_scale) -> void {
-    evolve_step_traversal_impl(op, graph.get_layer_traversal(layer_idx), param, layer_idx, comm, cos_scale);
+                 const detail::LayerCosScale &cos_scale,
+                 LayerCosRecord record) -> void {
+    evolve_step_traversal_impl(op, graph.get_layer_traversal(layer_idx), param, layer_idx, comm, cos_scale, record);
 }
 
 // A standalone Layer replays as a one-layer graph, so layer_idx 0 is the only cosine set to select.
 auto evolve_step(VecD &op, const Layer &layer, double param, mpi::Comm comm, const detail::LayerCosScale &cos_scale)
     -> void {
-    evolve_step_traversal_impl(op, layer.traversal(), param, 0, comm, cos_scale);
+    evolve_step_traversal_impl(op, layer.traversal(), param, 0, comm, cos_scale, {});
 }
 
 auto evolve_operator(VecD &&coeffs,

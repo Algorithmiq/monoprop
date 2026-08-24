@@ -181,34 +181,64 @@ template <size_t NumModes>
     return apply_fold_mask(blk[wi - bb], wi, r.fold, row_parity);
 }
 
+// Cos-index count straight off a LazyFold, so a retained callback can size a record without holding the
+// graph. Same block walk as scale_cos_lazy below; fold_popcount needs a materialised FoldCache instead.
 template <size_t NumModes>
-auto scale_cos_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, double *coeff, double cos_val)
-    -> void {
+auto fold_popcount_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r) -> size_t {
     const size_t mask_words = r.fold.mask_words;
     const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
+    size_t total = 0;
+    std::vector<uint64_t> &blk = column_block_scratch();
+    for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
+        const size_t be = std::min(bb + kColumnBlockWords, mask_words);
+        combine_columns_block<NumModes>(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
+        for (size_t wi = bb; wi < be; ++wi) {
+            total += static_cast<size_t>(std::popcount(recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity)));
+        }
+    }
+    return total;
+}
+
+// Record == true additionally writes each pre-scale coefficient to `record` in sweep order, for the
+// gradient to read back; the flag is a template parameter so the no-record sweep keeps its plain body.
+template <size_t NumModes, bool Record = false>
+auto scale_cos_lazy(const InvertedIndex<NumModes> &sc,
+                    const LazyFold<NumModes> &r,
+                    double *coeff,
+                    double cos_val,
+                    double *record = nullptr) -> void {
+    const size_t mask_words = r.fold.mask_words;
+    const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
+    [[maybe_unused]] size_t pos = 0;
     std::vector<uint64_t> &blk = column_block_scratch();
     for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
         combine_columns_block<NumModes>(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
         for (size_t wi = bb; wi < be; ++wi) {
             for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
+                if constexpr (Record) {
+                    record[pos++] = coeff[i];
+                }
                 coeff[i] *= cos_val;
             });
         }
     }
 }
 
-template <size_t NumModes>
+// Replay == true takes the pre-layer coefficients from `record` (written by scale_cos_lazy<_, true> over
+// the same fold) instead of dividing them back out of `ham`, which amplifies error by 1/|cos|.
+template <size_t NumModes, bool Replay = false>
 auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
                          const LazyFold<NumModes> &r,
                          double *state,
                          double *ham,
-                         const double *cached,
+                         const double *record,
                          double cos_val,
                          double sec_val) -> double {
     const size_t mask_words = r.fold.mask_words;
     const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
     double loc = 0.0;
+    [[maybe_unused]] size_t pos = 0;
     std::vector<uint64_t> &blk = column_block_scratch();
     for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
@@ -216,7 +246,12 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
         for (size_t wi = bb; wi < be; ++wi) {
             for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
                 loc += state[i] * ham[i];
-                ham[i] = (cached != nullptr) ? cached[i] : (ham[i] * sec_val);
+                if constexpr (Replay) {
+                    ham[i] = record[pos++];
+                }
+                else {
+                    ham[i] *= sec_val;
+                }
                 state[i] *= cos_val;
             });
         }
@@ -224,26 +259,41 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
     return loc;
 }
 
-inline auto scale_cos_mask(double *coeff, const CosMask &cos, double cos_val) -> void {
+// Record / Replay as in the lazy pair above.
+template <bool Record = false>
+inline auto scale_cos_mask(double *coeff, const CosMask &cos, double cos_val, double *record = nullptr) -> void {
     const size_t n = cos.blocks.size();
+    [[maybe_unused]] size_t pos = 0;
     for (size_t k = 0; k < n; ++k) {
         const auto [base, bits] = cos.blocks[k];
-        for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
+        for_each_cos_index(base, bits, [&](size_t i) {
+            if constexpr (Record) {
+                record[pos++] = coeff[i];
+            }
+            coeff[i] *= cos_val;
+        });
     }
 }
+template <bool Replay = false>
 inline auto accumulate_cos_mask(double *state,
                                 double *ham,
                                 const CosMask &cos,
-                                const double *cached,
+                                const double *record,
                                 double cos_val,
                                 double sec_val) -> double {
     const size_t n = cos.blocks.size();
     double loc = 0.0;
+    [[maybe_unused]] size_t pos = 0;
     for (size_t k = 0; k < n; ++k) {
         const auto [base, bits] = cos.blocks[k];
         for_each_cos_index(base, bits, [&](size_t i) {
             loc += state[i] * ham[i];
-            ham[i] = (cached != nullptr) ? cached[i] : (ham[i] * sec_val);
+            if constexpr (Replay) {
+                ham[i] = record[pos++];
+            }
+            else {
+                ham[i] *= sec_val;
+            }
             state[i] *= cos_val;
         });
     }

@@ -14,10 +14,10 @@
 
 #include "monoprop/MPFunctions.h"
 
-#include <algorithm>
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
+#include <vector>
 
 #include "monoprop/Evolution.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
@@ -46,8 +46,40 @@ struct EvalScratch {
     VecD op;
     VecD mapped_params;
     VecD gradient;
-    VecD layer_op_cache;
+    VecD cos_record;    // every layer's cosine + endpoint values, concatenated
+    VecZ record_offset; // per layer: start of its slice in cos_record
 };
+
+// Reserve one record slice per layer in a single buffer.
+//
+// Every layer is recorded, because a layer's record restores exactly the coefficients that layer's cosine
+// sweep divided -- and no others. Skipping a layer therefore leaves its coefficients to be divided
+// unrecovered, and a later layer's record only rescues the ones its own cosine set happens to cover: a
+// coefficient anticommuting with few generators is reset rarely while still being divided often, so its
+// error compounds over the whole circuit rather than between consecutive records. See issue #146, where
+// 550 layers at |cos| ~ 0.5 drive the gradient to 1e+30 against a true value of 0.08.
+auto layout_cos_records(const MPGraphView &graph,
+                        const std::vector<size_t> &cos_counts,
+                        size_t my_rank,
+                        EvalScratch &scratch) -> void {
+    const size_t layers = graph.layers();
+    scratch.record_offset.resize(layers);
+    size_t total = 0;
+    for (size_t i = 0; i < layers; ++i) {
+        const auto layer = graph.get_layer_traversal(i);
+        const size_t endpoints =
+            (my_rank < layer.cross_rank_rank_count()) ? layer.cross_rank_sin_recv_size(my_rank) : 0;
+        scratch.record_offset[i] = total;
+        total += cos_counts[i] + endpoints;
+    }
+    scratch.cos_record.resize(total);
+}
+
+// The slice layout_cos_records reserved for `layer_idx`.
+auto layer_cos_record(const std::vector<size_t> &cos_counts, EvalScratch &scratch, size_t layer_idx) -> LayerCosRecord {
+    auto *const slice = scratch.cos_record.data() + scratch.record_offset[layer_idx];
+    return {.cos = slice, .endpoints = slice + cos_counts[layer_idx]};
+}
 
 auto eval_scratch() -> EvalScratch & {
     static thread_local EvalScratch scratch;
@@ -73,7 +105,7 @@ auto fill_mapped_params(VecD &result,
 auto prepare_evolved_operator(const EvalRequest &request,
                               mpi::Comm comm,
                               const detail::LayerCosScale &cos_scale,
-                              VecD *layer_cache = nullptr) -> void {
+                              const std::vector<size_t> *cos_counts = nullptr) -> void {
     // Checked once here rather than at each caller: evolve_operator invokes cos_scale per layer, so an
     // empty callback would otherwise surface as a std::bad_function_call naming nothing.
     if (!cos_scale) {
@@ -82,18 +114,16 @@ auto prepare_evolved_operator(const EvalRequest &request,
     auto &scratch = eval_scratch();
     fill_mapped_params(scratch.mapped_params, request.params, request.parameter_mapping, request.gen_coeffs, 1.0, true);
     scratch.op = request.op;
-    if (layer_cache == nullptr) {
+    if (cos_counts == nullptr) {
         scratch.op = evolve_operator(std::move(scratch.op), request.graph, scratch.mapped_params, comm, cos_scale);
         return;
     }
 
-    // Step layer by layer so each layer's pre-layer coefficients are kept for the reverse pass, which reads
-    // them instead of dividing the evolved operator back out by the layer's cosine.
-    const size_t stride = scratch.op.size();
-    layer_cache->resize(request.graph.layers() * stride);
+    // Step layer by layer to hand each its own record slice.
+    layout_cos_records(request.graph, *cos_counts, static_cast<size_t>(mpi::rank(comm)), scratch);
     for (size_t i = 0; i < request.graph.layers(); ++i) {
-        std::copy_n(scratch.op.data(), stride, layer_cache->data() + (i * stride));
-        evolve_step(scratch.op, request.graph, scratch.mapped_params[i], i, comm, cos_scale);
+        const auto record = layer_cos_record(*cos_counts, scratch, i);
+        evolve_step(scratch.op, request.graph, scratch.mapped_params[i], i, comm, cos_scale, record);
     }
 }
 
@@ -226,9 +256,12 @@ auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
         return {request.e_core + mpi::allreduce_sum(request.state.dot(request.op), comm), VecD(0)};
     }
 
-    // cos.scale is checked in prepare_evolved_operator, shared by both paths; cos.accumulate is this path's own.
-    if (!cos.accumulate) {
-        throw MissingLayerCallback("ev_and_grad requires a cos_acc (reverse) callback.");
+    // cos.scale is checked in prepare_evolved_operator, shared by both paths; the other two are this
+    // path's own. Without cos_count the record layout cannot be sized, and the reverse loop would index
+    // whatever layout a previous call on this thread left behind.
+    if (!cos.accumulate || !cos.cos_counts) {
+        throw MissingLayerCallback(
+            "ev_and_grad requires a cos_acc (reverse) callback and its per-layer cosine counts.");
     }
 
     // The reverse pass back-evolves the state in place, which destroys sparsity at the first layer, so
@@ -236,11 +269,10 @@ auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
     // building one.
     auto &scratch = eval_scratch();
     request.state.scatter_into(scratch.state);
-    prepare_evolved_operator(request, comm, cos.scale, &scratch.layer_op_cache);
+    prepare_evolved_operator(request, comm, cos.scale, cos.cos_counts.get());
 
     auto &state_ = scratch.state;
     auto &op_ = scratch.op;
-    const size_t stride = op_.size();
     const auto expectation_value = mpi::allreduce_sum(inner_product(state_, op_), comm);
 
     const auto &parameter_mapping = request.parameter_mapping;
@@ -256,7 +288,7 @@ auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
                                             {.gen_coeff = request.gen_coeffs[i], .param = request.params[param_ind]},
                                             comm,
                                             cos.accumulate,
-                                            scratch.layer_op_cache.data() + (idx * stride));
+                                            layer_cos_record(*cos.cos_counts, scratch, idx));
     }
 
     mpi::allreduce_sum_inplace(scratch.gradient, comm);
