@@ -85,9 +85,6 @@ Two consequences when sizing a run:
   prefix sum over what the layer already holds, and the recv side equals the send
   side, so neither is stored per layer nor resolved over the wire.
 
-A build with `monoprop_CHECK_EXCHANGE_SYMMETRY=ON` audits that derivation against
-a real all-to-all on every exchange; see [Building from source](/building).
-
 ### Enabling MPI
 
 MPI is **off by default**, so the prebuilt PyPI wheels run single-rank and the

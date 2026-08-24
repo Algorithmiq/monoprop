@@ -96,9 +96,8 @@ name and cannot address suite-nested cases, tests use flat
   (recompute equivalence + snapshot invariance), `exact_upper_atol_rescue.cpp`,
   `large_cosine_storage_tests.cpp`, `gate_boundaries.cpp`.
 - **Graph encoding / packing**: `graph_encoding_tests.cpp` (CosineWordBuilder
-  coalescer, checked_* overflow guards, packed-phase storage + int8 read, the
-  derived exchange layout against the independent `ExchangeLayoutOracle.h`
-  reference, and both arms of the D-from-B derivation).
+  coalescer, checked_* overflow guards, packed-phase storage + int8 read,
+  build_layer_exchange_layout, and both arms of the D-from-B derivation).
 - **Graph / paring**: `pare_graph_tests.cpp`, `mpi_pare.cpp`,
   `mp_graph_tests.cpp` (MPGraph slice_graph/slice_view transforms, the
   front_offset lazy-compaction arms, MPGraphView reverse mapping + OOB throw).
@@ -111,7 +110,7 @@ name and cannot address suite-nested cases, tests use flat
   `update_initial_operator.cpp`, `ctor_validation_tests.cpp` (constructor guard
   rails + MPGraph bounds).
 - **Exchange layout preconditions**: `exchange_layout_precondition_tests.cpp`
-  (the layout width check, driven through ShmComm, with the symmetry audit off).
+  (the layout width check, driven through ShmComm).
 
 New `*.cpp` files are auto-discovered on the next configure — no CMake edit
 needed.
