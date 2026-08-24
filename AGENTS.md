@@ -150,8 +150,11 @@ Key files:
   support cutoff or a narrower active window keeps going through `CutoffEvaluator`, and
   `uses_word_cutoff()` is how a test tells those apart. (A support arm was tried and measured: ~1% worse
   everywhere, and no gain even on the Pauli models that use it, because their per-term time is not in the
-  cutoff.) `WordKernel<W>` (`Bitset.h`) is the five word ops with `W` fixed. Two of them — the fused XOR
-  and the AND-fold behind `parity_and` — are the *same* definitions `Bitset`'s own inline arms use
+  cutoff.) `WordKernel<W>` (`Bitset.h`) is the four word ops with `W` fixed that stand in for a `Bitset`
+  *method* — standing in for one is the membership rule, which is why the scan's fifth bound-width pass,
+  `fully_paired_words<W>`, lives in `algebra/AlgebraCommon.h` beside the `cutoff_sums` it answers for and
+  the even-bit literal it shares with `CutoffMasks::make`. Two of the four — the fused XOR and the
+  AND-fold behind `parity_and` — are the *same* definitions `Bitset`'s own inline arms use
   (`detail::fused_xor_words` / `and_fold_words`, declared ahead of both), because one of them decides
   emitted term signs and neither may drift from the method it stands in for. `splitmix` is deliberately
   a second implementation instead: that value is `monomial_hash`, so it routes MPI ownership and must
@@ -160,7 +163,17 @@ Key files:
   `DenseTermProducts` over the whole inline regime, not just the capped widths — both files sweep the
   regime through the one `test_utils::for_each_inline_width` in `cpp/tests/InlineWidths.h`, so the range
   cannot be narrowed in one of them alone. And the kernel's precondition is that every operand is
-  inline, so `W` is never bound above `Bitset::kInlineWords`.
+  inline, so `W` is never bound above `Bitset::kInlineWords` — the ceiling
+  `monoprop_NARROW_KERNEL_MAX_WORDS` is checked against at configure time, scraped out of `Bitset.h`
+  rather than restated in `CMakeLists.txt`. `DenseTermProductsW` is non-copyable because its three word
+  pointers point into its own bitsets; a copy would read and write the original's storage.
+  Two further bindings were tried past this seam and both measured at nothing — under 0.05% of the
+  instruction count on either shipping model, pinned single-threaded — because the optimizer already
+  hoists them out of the inlined scan loop: resolving the algebra's per-term sign inputs into a
+  per-gate struct the kernel holds (`A::SignContext`), and writing the query record with the word count
+  bound (`query_push_words<W>`, one capacity check instead of one per word). Measure any third one the
+  same way before adding it; wall clock cannot see this range, and neither can an instruction count taken
+  with the thread pool live, which spins hard enough to inflate the total ~14x.
 - **The query record**: a store is queried in the form it keys its rows by, so a resolve never converts —
   `QueryKeysFor<Store>` (`layer_build/Common.h`) picks the batch, and `query_payload_words_for(store,
   capacity)` the width. A buffer is `[nq][record 0]…[record nq-1][dense escape tail]`: the header,

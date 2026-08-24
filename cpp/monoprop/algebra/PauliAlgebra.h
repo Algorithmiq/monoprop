@@ -92,19 +92,31 @@ namespace detail {
 }
 } // namespace detail
 
-// Per-generator context for the hot emit-sign kernel: nz_words lets pauli_rotation_sign() skip words
-// outside G's support.
+// One entry per word G occupies -- the only words the sign kernel below visits, since elsewhere the
+// mono/new_mono Y counts cancel and x_gen is 0. All three fields are fixed for the layer, so they are
+// derived once here rather than in the per-term loop, which used to rebuild G's x-plane from G's own
+// word on every term and needed the even mask parked in the context to do it.
 //
-// nz_words is a vector, not the std::array<size_t, num_words()> it was: with no compile-time width there
-// is no bound to size an array by. It holds at most num_words() entries and is built once per layer,
-// so the allocation is per layer while the reads are per term -- the same trade the retained LazyFold
-// already makes for its columns.
+// Deriving them here is a simplification and not a speedup: measured pinned single-threaded, it moves
+// the instruction count on either shipping model by under 0.05%, because the optimizer was already
+// hoisting the derivation out of the inlined scan loop.
+struct PauliGenWord {
+    size_t w;     // storage word index, ascending
+    uint64_t e;   // the even-bit mask for word w
+    uint64_t x_g; // G's x-plane in word w, aligned onto the even lane
+};
+
+// Per-generator context for the hot emit-sign kernel. Three members, not five: `words` carries its own
+// length, and the even mask no longer has to be held here because nothing rebuilds it per term.
+//
+// `words` is a vector, not the std::array<..., num_words()> the word list was: with no compile-time
+// width there is no bound to size an array by. It holds at most num_words() entries and is built once
+// per layer, so the allocation is per layer while the reads are per term -- the same trade the retained
+// LazyFold already makes for its columns.
 struct PauliGenContext final {
     Bitset gen{};
     size_t g_y = 0;
-    std::vector<size_t> nz_words{};
-    size_t nz_count = 0;
-    Bitset e_mask{}; // held here so the hot sign kernel never rebuilds it per term
+    std::vector<PauliGenWord> words{};
 };
 
 // Call once per layer, not per term.
@@ -112,13 +124,17 @@ auto make_pauli_gen_context(const MonomialLike auto &gen) -> PauliGenContext {
     PauliGenContext ctx;
     const size_t nw = gen.num_words();
     ctx.gen = gen;
-    ctx.e_mask = pauli_even_mask(gen.size());
     ctx.g_y = pauli_y_count(gen);
-    ctx.nz_words.resize(nw);
+    const auto &e_mask = cached_even_bits<LSb0>(gen.size());
+    ctx.words.reserve(nw);
     for (size_t w = 0; w < nw; ++w) {
-        if (gen.word(w) != 0) {
-            ctx.nz_words[ctx.nz_count++] = w;
+        const uint64_t word = gen.word(w);
+        if (word == 0) {
+            continue;
         }
+        const uint64_t e = e_mask.word(w);
+        const auto [v_g, u_g] = detail::pauli_uv(word, e);
+        ctx.words.push_back({w, e, u_g ^ v_g});
     }
     return ctx;
 }
@@ -131,24 +147,19 @@ auto make_pauli_gen_context(const MonomialLike auto &gen) -> PauliGenContext {
 //
 // Takes the two operands as word pointers, which is the form the per-gate kernel already has: it
 // resolved them once, where mono.word(w) / new_mono.word(w) re-select a storage pointer on every one
-// of the ctx.nz_count accesses. Both must point at ctx.gen's width.
-[[gnu::always_inline]] inline auto pauli_rotation_sign_words(const auto &ctx,
+// of the ctx.words accesses. Both must point at ctx.gen's width.
+[[gnu::always_inline]] inline auto pauli_rotation_sign_words(const PauliGenContext &ctx,
                                                              const uint64_t *mono,
                                                              const uint64_t *new_mono) -> int {
-    // From the context, not rebuilt: this runs once per emitted rotation, and since Stage 2b a mask
-    // is a runtime-width object construction rather than the compile-time constant it used to be.
-    const auto &e_mask = ctx.e_mask;
     long delta = static_cast<long>(ctx.g_y);
     long cross = 0;
-    for (size_t k = 0; k < ctx.nz_count; ++k) {
-        const size_t w = ctx.nz_words[k];
-        const uint64_t e = e_mask.word(w);
+    const size_t n = ctx.words.size();
+    for (size_t k = 0; k < n; ++k) {
+        const auto [w, e, x_g] = ctx.words[k];
         const auto [v_m, u_m] = detail::pauli_uv(mono[w], e);
         const auto [v_n, u_n] = detail::pauli_uv(new_mono[w], e);
-        const auto [v_g, u_g] = detail::pauli_uv(ctx.gen.word(w), e);
         delta += std::popcount(v_m & ~u_m);
         delta -= std::popcount(v_n & ~u_n);
-        const uint64_t x_g = u_g ^ v_g;
         cross += std::popcount(v_m & x_g);
     }
     return detail::mod4(delta + 2 * cross) == 1 ? -1 : 1;

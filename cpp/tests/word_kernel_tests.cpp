@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// detail::WordKernel<W> against the Bitset methods it restates with the word count bound at compile
-// time. Every one of the five is a second copy of an existing computation, so the only thing worth
-// testing is that the two copies agree -- at every W in the inline regime, on the word patterns that
-// distinguish a per-word fold from a whole-register one.
+// The scan's bound-width word passes against the computations they restate: detail::WordKernel<W>'s
+// four Bitset methods, and detail::fully_paired_words<W>, whose oracle is cutoff_sums rather than a
+// Bitset method (which is why it lives in AlgebraCommon.h and is tested here anyway -- one sweep over
+// the inline regime, one set of word patterns). Every one of them is a second copy of an existing
+// computation, so the only thing worth testing is that the two copies agree -- at every W in the
+// inline regime, on the word patterns that distinguish a per-word fold from a whole-register one.
 //
 // splitmix carries the strongest obligation and gets the strictest test: that value is monomial_hash,
 // which routes MPI ownership, so a divergence would move terms between ranks rather than merely run
@@ -160,10 +162,10 @@ BOOST_AUTO_TEST_CASE(word_kernel_parity_and_matches_bitset) {
 }
 
 // The cutoff's fully-paired clause. The oracle is cutoff_sums' xor_sum over the whole register, which
-// is the only window the kernel is allowed to answer for (a narrower one keeps going through the
-// evaluator -- see DenseTermProductsW). The kernel carries the even-bit pattern as a literal, so the
-// mask built here is also the check that the literal is what even_bits<LSb0> would have produced.
-BOOST_AUTO_TEST_CASE(word_kernel_fully_paired_matches_cutoff_sums) {
+// is the only window the pass is allowed to answer for (a narrower one keeps going through the
+// evaluator -- see DenseTermProductsW). It carries the even-bit pattern as a literal, so the mask built
+// here is also the check that the literal is what even_bits<LSb0> would have produced.
+BOOST_AUTO_TEST_CASE(fully_paired_words_matches_cutoff_sums) {
     std::mt19937_64 rng(5150U);
     for_each_inline_width([&]<size_t W>(std::integral_constant<size_t, W>) {
         const size_t num_bits = W * Bitset::word_width;
@@ -176,7 +178,7 @@ BOOST_AUTO_TEST_CASE(word_kernel_fully_paired_matches_cutoff_sums) {
         for (const auto &words : interesting_words<W>(rng)) {
             const Bitset bs = from_words<W>(words);
             const bool expected = monoprop::cutoff_sums(bs, num_bits / 2).xor_sum == 0;
-            BOOST_TEST(WordKernel<W>::fully_paired(bs.data()) == expected);
+            BOOST_TEST(monoprop::detail::fully_paired_words<W>(bs.data()) == expected);
             paired += expected ? 1 : 0;
             unpaired += expected ? 0 : 1;
         }

@@ -193,11 +193,10 @@ def _record_row_store(propagator: Any) -> None:
     """
     if _rank() != 0:
         return
-    # None => binding predates rows_are_sparse
-    sparse = getattr(propagator._simulator, "rows_are_sparse", None)
-    if sparse is None:
-        return
-    resolved = "sparse" if sparse else "dense"
+    # Read straight off the binding, with no getattr fallback: a benchmark whose whole job is to name
+    # the backend that ran must fail loudly against an extension that cannot say, not quietly record
+    # nothing.
+    resolved = "sparse" if propagator._simulator.rows_are_sparse else "dense"
     seen = _RESULTS["meta"].get("row_store_effective")
     _RESULTS["meta"]["row_store_effective"] = (
         resolved if seen in (None, resolved) else "mixed"

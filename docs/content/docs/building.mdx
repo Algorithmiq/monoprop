@@ -52,7 +52,8 @@ its time is in the per-term product at all: a tight `lower_atol` admits more ter
 gate and gains the most, a loose one rejects them on their coefficient before the
 product is ever computed and gains little. The cost is one instantiation of the scan per specialized width,
 about 11% of `.text` at the default `4`. Set it to `0` for a build that only ever runs
-wide registers, and to `8` to cover the whole inline regime.
+wide registers, and to `8` to cover the whole inline regime — which is also the ceiling, since a
+specialized kernel assumes its operands are inline. Configure rejects anything above it.
 
 ### Choosing the row backend at run time
 

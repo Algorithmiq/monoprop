@@ -703,6 +703,10 @@ namespace detail {
 // exactly W words, and W <= kInlineWords so no operand is spilled. The only legal caller is one that
 // bound W from a width it owns for the whole loop -- see DenseTermProductsW, which is the seam that
 // binds it once per gate.
+//
+// Standing in for a Bitset method is also what decides membership: the scan's other bound-width word
+// pass, fully_paired_words, answers a question about the algebra rather than the storage, so it lives
+// beside its own oracle in AlgebraCommon.h instead.
 template <size_t W>
 struct WordKernel {
     static_assert(W >= 1 && W <= Bitset::kInlineWords,
@@ -725,26 +729,6 @@ struct WordKernel {
     // Bitset::parity_and with W fixed, likewise.
     [[nodiscard]] static auto parity_and(const word_type *a, const word_type *b) noexcept -> bool {
         return (std::popcount(and_fold_words<W>(a, b)) & 1U) != 0;
-    }
-
-    // xor_sum == 0 from cutoff_sums, i.e. "every occupied mode has both its Majoranas" -- the clause
-    // that keeps a fully paired term whatever its length. Folded with OR and tested against zero
-    // rather than summing popcounts: the caller only ever compares the sum to zero, and the two are
-    // equivalent because each per-word term is non-negative.
-    //
-    // The even-bit mask is the literal rather than an argument, which is what makes this W loads
-    // instead of 2W: a storage width is a whole number of words, so even_bits<LSb0> is this pattern in
-    // every one of them. Its top-word trim at a non-word-multiple width is unobservable here -- bits
-    // above the logical width are never set, so they pair with themselves either way.
-    // (word >> 1) & mask cannot cross a word because a mode's two bits are 2m and 2m+1.
-    [[nodiscard]] static auto fully_paired(const word_type *a) noexcept -> bool {
-        constexpr word_type kEven = 0x5555555555555555ULL;
-        word_type unpaired = 0;
-        for (size_t i = 0; i < W; ++i) {
-            const word_type word = a[i];
-            unpaired |= (word & kEven) ^ ((word >> 1) & kEven);
-        }
-        return unpaired == 0;
     }
 
     // SplitmixHash with W fixed. Must stay bit-identical to it: this value routes MPI ownership, so a

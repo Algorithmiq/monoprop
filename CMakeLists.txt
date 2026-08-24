@@ -63,8 +63,8 @@ set(
 # How many storage words the scan's per-term kernel is specialized for. The gain is confined to narrow
 # registers -- it is the per-term word loops getting a compile-time trip count, which matters least
 # where the loop is longest -- so this is a cap and not a switch: 0 turns the specialization off
-# entirely and gives the unspecialized kernel at every width, 8 (Bitset::kInlineWords) specializes the
-# whole inline regime. See cpp/monoprop/detail/evolution/layer_build/TermProduct.h.
+# entirely and gives the unspecialized kernel at every width, Bitset::kInlineWords specializes the whole
+# inline regime. See cpp/monoprop/detail/evolution/layer_build/TermProduct.h.
 set(
   monoprop_NARROW_KERNEL_MAX_WORDS
   4
@@ -72,12 +72,31 @@ set(
   "Storage word counts 1..N for which the per-term scan kernel is specialized (0 disables)"
 )
 
+# The upper bound is Bitset::kInlineWords -- a specialized kernel's precondition is that every operand
+# is inline -- read out of the header rather than restated here. TermProduct.h static_asserts the same
+# bound, but only after a compile has started; this is the check that names the variable the user set.
+file(
+  STRINGS
+  "${CMAKE_CURRENT_SOURCE_DIR}/cpp/monoprop/Bitset.h"
+  monoprop_INLINE_WORDS_DECL
+  REGEX "kInlineWords[ \t]*=[ \t]*[0-9]+"
+  LIMIT_COUNT 1
+)
+string(REGEX MATCH "[0-9]+" monoprop_INLINE_WORDS "${monoprop_INLINE_WORDS_DECL}")
+if(NOT monoprop_INLINE_WORDS)
+  message(
+    FATAL_ERROR
+    "could not read Bitset::kInlineWords out of cpp/monoprop/Bitset.h; the declaration this scrapes moved"
+  )
+endif()
+
 if(
-  NOT monoprop_NARROW_KERNEL_MAX_WORDS MATCHES "^[0-8]$"
+  NOT monoprop_NARROW_KERNEL_MAX_WORDS MATCHES "^[0-9]+$"
+  OR monoprop_NARROW_KERNEL_MAX_WORDS GREATER monoprop_INLINE_WORDS
 )
   message(
     FATAL_ERROR
-    "monoprop_NARROW_KERNEL_MAX_WORDS must be 0..8 (Bitset::kInlineWords), got '${monoprop_NARROW_KERNEL_MAX_WORDS}'"
+    "monoprop_NARROW_KERNEL_MAX_WORDS must be 0..${monoprop_INLINE_WORDS} (Bitset::kInlineWords), got '${monoprop_NARROW_KERNEL_MAX_WORDS}'"
   )
 endif()
 

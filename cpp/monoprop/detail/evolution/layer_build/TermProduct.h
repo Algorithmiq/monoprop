@@ -148,6 +148,14 @@ public:
         }
     }
 
+    // The word pointers below point into this object's own bitsets, so a copy would leave the copy
+    // reading and writing the original's storage. Nothing copies this -- it is the scan's per-gate
+    // local -- so the case is made unrepresentable rather than documented.
+    DenseTermProductsW(const DenseTermProductsW &) = delete;
+    auto operator=(const DenseTermProductsW &) -> DenseTermProductsW & = delete;
+    DenseTermProductsW(DenseTermProductsW &&) = delete;
+    auto operator=(DenseTermProductsW &&) -> DenseTermProductsW & = delete;
+
     template <typename Store>
     [[gnu::always_inline]] auto product(const Store &store, size_t i) -> TermProduct {
         WordKernel<W>::clear(mono_words_);
@@ -165,7 +173,7 @@ public:
             // Same two clauses as CutoffEvaluator::passes_with_popcount for a length cutoff, in the
             // same order: the popcount test proves keep without reading the monomial, and the paired
             // test is the xor_sum == 0 clause that rescues a fully paired term of any length.
-            return new_pop <= *length_cutoff_ || WordKernel<W>::fully_paired(new_words_);
+            return new_pop <= *length_cutoff_ || fully_paired_words<W>(new_words_);
         }
         return cutoff_->passes_with_popcount(new_mono_, new_pop);
     }
