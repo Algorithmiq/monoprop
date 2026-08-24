@@ -36,8 +36,10 @@ import gc
 import hashlib
 import json
 import os
+import platform
 import socket
 from dataclasses import asdict, fields
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -191,6 +193,11 @@ def _core_md5() -> str:
 
 def _meta() -> dict[str, Any]:
     """Return this run's configuration metadata for the report."""
+    try:
+        nanobind_backend_version = version("nanobind-backend")
+    except PackageNotFoundError:
+        nanobind_backend_version = "not installed"
+
     return {
         "label": os.environ.get("monoprop_BENCH_LABEL", "?"),  # noqa: SIM112
         "ranks": _size(),
@@ -202,6 +209,9 @@ def _meta() -> dict[str, Any]:
         "monoprop_core_md5": _core_md5(),
         "monoprop_variant": monoprop.__variant__,
         "monoprop_compiler_flags": monoprop.__compiler_flags__,
+        "python_version": platform.python_version(),
+        "nanobind_version": monoprop.__nanobind_version__,
+        "nanobind_backend_version": nanobind_backend_version,
         "monoprop_max_num_modes": monoprop.MAX_NUM_MODES,
         "malloc_arena_max": os.environ.get("MALLOC_ARENA_MAX", "default"),
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS", "default"),

@@ -121,6 +121,22 @@ def test_build_report_includes_hyperparameters(tmp_path: Path) -> None:
     assert md.index("## Hyperparameters") < md.index("## Heisenberg")
 
 
+def test_build_report_includes_runtime_provenance(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    _write_results(
+        tmp_path,
+        meta={
+            "python_version": "3.13.2",
+            "nanobind_version": "3.2.0",
+            "nanobind_backend_version": "2.4.0",
+        },
+    )
+    md = _collapse(report.build_report(tmp_path))
+
+    assert "| Python | nanobind | Backend |" in md
+    assert "| np1 | 3.13.2 | 3.2.0 | 2.4.0 |" in md
+
+
 def test_fmt_config_formats_floats_compactly() -> None:
     assert report._fmt_config(1e-5) == "1e-05"
     assert report._fmt_config(1.0) == "1"
