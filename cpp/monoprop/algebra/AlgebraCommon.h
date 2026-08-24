@@ -278,18 +278,27 @@ public:
         return cutoff_fn_(mono);
     }
 
-    // Same decision without cutoff_sums: the caller already knows k, so only d is computed. No
-    // popcount early-out, deliberately -- the digest is cheaper than the branch. nullopt if opaque.
+    // The decision from the (k, d) digest alone. The emit site gets both out of the partner merge, so
+    // nothing here reads a bitset. Same precondition as cutoff_sums(k, d): d must have been folded
+    // without an active mask, which holds for a well-formed monomial. nullopt if opaque.
+    auto passes_from_digest(size_t k, size_t d) const -> std::optional<bool> {
+        if (length_cutoff_ != nullptr) {
+            return length_keeps(k, d, length_cutoff_->cutoff);
+        }
+        if (support_cutoff_ != nullptr) {
+            return support_keeps(k, d, support_cutoff_->cutoff);
+        }
+        return std::nullopt;
+    }
+
+    // The same decision when only the dense form is at hand, so d must be folded out of it.
     auto passes_from_dense(const Monomial<NumModes> &mono, size_t k) const -> std::optional<bool> {
         // paired_mode_count has no active_mask, so it agrees with cutoff_sums(mono, L) only above it.
         assert(mono.find_first() >= active_bit_offset_() && "monomial has a set bit below its active offset");
-        if (length_cutoff_ != nullptr) {
-            return length_keeps(k, paired_mode_count<NumModes>(mono), length_cutoff_->cutoff);
+        if (length_cutoff_ == nullptr && support_cutoff_ == nullptr) {
+            return std::nullopt;
         }
-        if (support_cutoff_ != nullptr) {
-            return support_keeps(k, paired_mode_count<NumModes>(mono), support_cutoff_->cutoff);
-        }
-        return std::nullopt;
+        return passes_from_digest(k, paired_mode_count<NumModes>(mono));
     }
 
     // Upper bound on the set bits (physical slots) a surviving term can carry, so the store can size

@@ -130,6 +130,22 @@ auto check_bucket_ownership(const std::vector<VecZ> &buckets, size_t ranks, size
     }
 }
 
+// The self-owned bucket is staged as positions, not encoded, so it is invisible to the walk above --
+// without this the r == my_rank arm of the routing decision goes unchecked.
+auto check_self_ownership(const detail::SelfQueryStage<32> &stage,
+                          size_t ranks,
+                          size_t my_rank,
+                          size_t &checked) -> void {
+    for (size_t q = 0; q < stage.size(); ++q) {
+        Monomial<32> mono;
+        for (size_t j = 0; j < stage.k_of[q]; ++j) {
+            mono.set(static_cast<size_t>(stage.pos_flat[stage.pos_off[q] + j]));
+        }
+        BOOST_REQUIRE_EQUAL(find_rank<32>(mono, ranks), my_rank);
+        ++checked;
+    }
+}
+
 } // namespace
 
 // The scan hashes the partner it just built; find_rank hashes what the resolve side decoded off the
@@ -155,6 +171,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                    std::optional<double>{0.3});
 
     size_t checked = 0;
+    size_t self_checked = 0;
     for (const size_t ranks : {2U, 4U, 8U}) {
         const auto res = detail::fused_find_and_collect<kN, MajoranaAlgebra<kN>>(op,
                                                                                  gen,
@@ -168,9 +185,21 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                                  nullptr,
                                                                                  1.0);
         BOOST_REQUIRE_EQUAL(res.leader_queries.size(), ranks);
+        // The scan routes a self-owned partner to the stage, so bucket 0 must be empty here.
+        BOOST_REQUIRE(res.leader_queries[0].empty());
+        BOOST_REQUIRE(res.follower_queries[0].empty());
         check_bucket_ownership(res.leader_queries, ranks, checked);
         check_bucket_ownership(res.follower_queries, ranks, checked);
+        check_self_ownership(res.leader_self, ranks, /*my_rank=*/0, self_checked);
+        check_self_ownership(res.follower_self, ranks, /*my_rank=*/0, self_checked);
     }
-    // Without this the loop above passes trivially if the scan emitted nothing at all.
-    BOOST_TEST(checked > 1000U);
+    // Without this the loop above passes trivially if the scan emitted nothing. The floor is on the SUM
+    // because that is what is invariant across the split: the encoded counter alone fell to 797 of 1161
+    // when the self-owned partners moved into the stage, with nothing going unchecked. Each arm still
+    // carries its own floor -- a routing bug sending everything one way leaves the sum intact -- and the
+    // message prints the measured 797/364 so those can be re-grounded rather than guessed.
+    BOOST_TEST_MESSAGE("encoded=" << checked << " staged=" << self_checked);
+    BOOST_TEST(checked + self_checked > 1000U);
+    BOOST_TEST(checked > 500U);
+    BOOST_TEST(self_checked > 200U);
 }

@@ -7,6 +7,9 @@ target_sources(
         "Common.h"
         "Engine.h"
         "FusedApply.h"
+        "PartnerMerge.h"
+        "QueryCodec.h"
         "Resolve.h"
         "Scan.h"
+        "SparseQuery.h"
 )

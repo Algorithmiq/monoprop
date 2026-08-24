@@ -5,4 +5,5 @@ target_sources(
       TYPE HEADERS
       FILES
         "Monomial.h"
+        "SparseMonomial.h"
 )
