@@ -176,6 +176,66 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map
     BOOST_CHECK(op.get_operator() == coeffs);
 }
 
+// erase/clear leave bucket_count(), so init_operator_bytes must fall, not just the entry count.
+BOOST_AUTO_TEST_CASE(mp_operator_get_operator_releases_init_map_when_fully_bound) {
+    const auto a = indices_to_bitset<8>({0, 1});
+    const auto b = indices_to_bitset<8>({2, 3});
+    auto op = build_indexed_op({a, b});
+
+    op.init_op_map.reserve(4096); // buckets far in excess of the two live entries
+    op.init_op_map[a] = 3.0;
+    op.init_op_map[b] = 5.0;
+
+    const auto before = detail::estimate_memory_usage<8>(op);
+    BOOST_REQUIRE_EQUAL(before.init_operator_entries, 2U);
+
+    const VecD &coeffs = op.get_operator();
+    BOOST_REQUIRE_EQUAL(coeffs.size(), 2U);
+    BOOST_CHECK_EQUAL(coeffs[0], 3.0);
+    BOOST_CHECK_EQUAL(coeffs[1], 5.0);
+
+    const auto after = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_EQUAL(after.init_operator_entries, 0U);
+    BOOST_CHECK_LT(after.init_operator_bytes, before.init_operator_bytes);
+    BOOST_CHECK_EQUAL(op.init_op_map.bucket_count(), 0U); // released, not merely shrunk to the minimum
+}
+
+// Partial bind: the pending entry survives with its value and the bucket array shrinks to the remainder.
+BOOST_AUTO_TEST_CASE(mp_operator_get_operator_shrinks_init_map_when_partially_bound) {
+    const auto a = indices_to_bitset<8>({0, 1});
+    const auto b = indices_to_bitset<8>({2, 3});
+    const auto absent = indices_to_bitset<8>({4, 5});
+    auto op = build_indexed_op({a, b});
+
+    op.init_op_map.reserve(4096);
+    op.init_op_map[a] = 3.0;
+    op.init_op_map[absent] = 9.0;
+
+    const auto before = detail::estimate_memory_usage<8>(op);
+    (void)op.get_operator();
+    const auto after = detail::estimate_memory_usage<8>(op);
+
+    BOOST_REQUIRE_EQUAL(after.init_operator_entries, 1U);
+    const auto found = op.init_op_map.find(absent);
+    BOOST_REQUIRE(found != op.init_op_map.end());
+    BOOST_CHECK_EQUAL(found->second, 9.0);
+    BOOST_CHECK(op.init_op_map.find(a) == op.init_op_map.end());
+    BOOST_CHECK_LT(after.init_operator_bytes, before.init_operator_bytes);
+}
+
+// Nothing bound: the map is left exactly as it was, buckets included.
+BOOST_AUTO_TEST_CASE(mp_operator_get_operator_keeps_init_map_when_nothing_bound) {
+    auto op = build_indexed_op({indices_to_bitset<8>({0, 1})});
+
+    const auto absent = indices_to_bitset<8>({4, 5});
+    op.init_op_map[absent] = 9.0;
+
+    (void)op.get_operator();
+    const auto after = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_EQUAL(after.init_operator_entries, 1U);
+    BOOST_CHECK(op.init_op_map.find(absent) != op.init_op_map.end());
+}
+
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pauli) {
     const auto present = indices_to_bitset<8>({0, 2});
     auto op = build_indexed_op({present}, Basis::Pauli); // row 0 indexed
@@ -321,6 +381,22 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_matched_scratch_nonzero_after_a_gate)
     auto without = live;
     without.matched_scratch_bytes = 0;
     BOOST_CHECK_EQUAL(live.total_bytes() - without.total_bytes(), live.matched_scratch_bytes);
+}
+
+// init_operator_entries is a count: accumulated by operator+= but never summed into total_bytes().
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_init_operator_entries_out_of_total) {
+    detail::MPOperatorMemoryBreakdown<8> acc;
+    acc.op_coeffs_bytes = 100;
+    acc.init_operator_entries = 2;
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 100U);
+
+    detail::MPOperatorMemoryBreakdown<8> other;
+    other.op_coeffs_bytes = 20;
+    other.init_operator_entries = 5;
+
+    acc += other;
+    BOOST_CHECK_EQUAL(acc.init_operator_entries, 7U);
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 120U);
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {

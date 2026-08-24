@@ -202,11 +202,11 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         [](MonomialPropagator<NumModes> &self, const VecD &parameters, double atol) -> nb::dict {
             nb::dict py_result;
             for (const auto &[indices, coeff] : self.evolved_operator_terms(parameters, atol)) {
-                nb::list key;
+                nb::tuple_builder key(indices.size());
                 for (const auto &i : indices) {
-                    key.append(i);
+                    key.put(i);
                 }
-                py_result[nb::tuple(key)] = coeff;
+                py_result[key.commit()] = coeff;
             }
 
             if (!self.schrodinger() && std::abs(self.core_term()) >= atol) {
@@ -270,7 +270,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
                                              {"d_invidx_dense_columns", b.inverted_index_dense_columns},
                                              {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
-                                             {"d_state_coeffs_nonzero", b.state_coeffs_nonzero}};
+                                             {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
+                                             {"d_init_operator_entries", b.init_operator_entries}};
     });
 }
 } // namespace monoprop::bindings::detail
