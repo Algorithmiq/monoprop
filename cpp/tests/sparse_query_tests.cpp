@@ -92,8 +92,8 @@ auto strided(size_t k, size_t start, size_t step, size_t universe) -> std::vecto
     return v;
 }
 
-// Uniform draws are what can reach bitmap mode -- gap coding wins every regular pattern -- but see
-// sparse_record_actually_exercises_its_bitmap_mode: at narrow widths they cannot reach it either.
+// Uniform draws are the widest gap widths, which is the case a regular pattern never reaches; see
+// sparse_record_reaches_the_widest_gap_width for why a narrow universe needs a run plus one outlier.
 auto scattered(size_t k, size_t universe, std::mt19937_64 &rng) -> std::vector<uint16_t> {
     std::vector<uint16_t> pool(universe);
     for (size_t j = 0; j < universe; ++j) {
@@ -168,10 +168,11 @@ BOOST_AUTO_TEST_CASE(sparse_record_handles_widths_that_are_not_whole_words) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(sparse_record_actually_exercises_its_bitmap_mode) {
-    // Two generators because uniform draws CANNOT reach bitmap at kBits=24: bitmap is one word there, so
-    // gap must need two (19 + (k-1)*gw > 64), which only a dense run plus one far outlier forces.
-    const auto count_bitmap = [](auto tag, size_t universe) {
+BOOST_AUTO_TEST_CASE(sparse_record_reaches_the_widest_gap_width) {
+    // gw == kPosBits is the record's worst case and uniform draws CANNOT reach it at kBits=24: it needs
+    // one gap of at least half the universe, which only a dense run plus one far outlier forces. The
+    // shape of the input is a selection rule, so this generator is kept even though bitmap mode is gone.
+    const auto count_widest = [](auto tag, size_t universe) {
         using SQ = SparseQuery<decltype(tag)::value>;
         size_t used = 0;
         size_t bad = 0;
@@ -180,14 +181,16 @@ BOOST_AUTO_TEST_CASE(sparse_record_actually_exercises_its_bitmap_mode) {
                 return;
             }
             VecZ buf;
-            (void)SQ::push(buf, pos.data(), pos.size(), 1);
-            if (SQ::header_at(buf, 0).mode != SQ::kModeBitmap) {
+            const size_t w = SQ::push(buf, pos.data(), pos.size(), 1);
+            const size_t gw = SQ::gap_width(pos.data(), pos.size());
+            if (gw != SQ::kPosBits) {
                 return;
             }
             ++used;
             std::vector<uint16_t> back(pos.size());
             SQ::read_positions(buf, 0, back.data());
-            bad += static_cast<size_t>(back != pos || SQ::k_at(buf, 0) != pos.size());
+            bad += static_cast<size_t>(back != pos || SQ::k_at(buf, 0) != pos.size()
+                                       || w != SQ::words_of(SQ::gap_bits(pos.size(), gw)));
         };
         std::mt19937_64 rng(0xB1747U ^ universe);
         for (size_t trial = 0; trial < 600; ++trial) {
@@ -206,9 +209,9 @@ BOOST_AUTO_TEST_CASE(sparse_record_actually_exercises_its_bitmap_mode) {
         }
         return std::pair<size_t, size_t>{used, bad};
     };
-    const auto narrow = count_bitmap(std::integral_constant<size_t, 12>{}, 24);
-    const auto partial = count_bitmap(std::integral_constant<size_t, 250>{}, 500);
-    const auto bucket = count_bitmap(std::integral_constant<size_t, 128>{}, 256);
+    const auto narrow = count_widest(std::integral_constant<size_t, 12>{}, 24);
+    const auto partial = count_widest(std::integral_constant<size_t, 250>{}, 500);
+    const auto bucket = count_widest(std::integral_constant<size_t, 128>{}, 256);
     BOOST_TEST(narrow.first > 0U);
     BOOST_TEST(partial.first > 0U);
     BOOST_TEST(bucket.first > 0U);
@@ -217,8 +220,9 @@ BOOST_AUTO_TEST_CASE(sparse_record_actually_exercises_its_bitmap_mode) {
     BOOST_TEST(bucket.second == 0U);
 }
 
-BOOST_AUTO_TEST_CASE(sparse_record_survives_the_six_bit_k_escape) {
-    for (const size_t k : {size_t{62}, size_t{63}, size_t{64}, size_t{200}}) {
+BOOST_AUTO_TEST_CASE(sparse_record_survives_the_five_bit_k_escape) {
+    // The escape is at k = 31 now, not 63: both boundaries are here so a field-width change is caught.
+    for (const size_t k : {size_t{30}, size_t{31}, size_t{32}, size_t{62}, size_t{63}, size_t{64}, size_t{200}}) {
         const auto pos = strided(k, 0, 3, 2048);
         BOOST_REQUIRE_EQUAL(pos.size(), k);
         differential<1024>(pos, 1);
@@ -226,7 +230,8 @@ BOOST_AUTO_TEST_CASE(sparse_record_survives_the_six_bit_k_escape) {
 }
 
 BOOST_AUTO_TEST_CASE(sparse_record_bounds_the_fully_paired_term) {
-    // Every bit set: 514 words in FIXED at NumModes=1024, one word in BITMAP. Hence the argmin.
+    // Every bit set means every gap is 0, so gw is 0 and the payload is one raw position: 23 header
+    // bits + 11 = one word, where raw lanes would take 514. This is what pays for deleting the argmin.
     std::vector<uint16_t> all(2048);
     for (size_t j = 0; j < all.size(); ++j) {
         all[j] = static_cast<uint16_t>(j);
@@ -235,25 +240,70 @@ BOOST_AUTO_TEST_CASE(sparse_record_bounds_the_fully_paired_term) {
     BOOST_TEST(sw == 1U);
 }
 
-BOOST_AUTO_TEST_CASE(sparse_record_never_exceeds_the_dense_words_it_replaces) {
-    const auto check = [](auto tag, size_t universe, size_t dense_words) {
+BOOST_AUTO_TEST_CASE(sparse_record_never_exceeds_its_own_raw_lanes) {
+    // The one width guarantee that survives deleting the argmin, and it is exhaustive rather than
+    // sampled: gw = bit_width(max gap) <= kPosBits, so kPosBits + (k-1)*gw <= k*kPosBits at every k.
+    const auto check = [](auto tag) {
         using SQ = SparseQuery<decltype(tag)::value>;
-        std::mt19937_64 rng(0xC0FFEE ^ universe);
-        for (size_t k = 0; k <= universe; k += std::max<size_t>(1, universe / 37)) {
-            const auto pos = scattered(k, universe, rng);
-            VecZ buf;
-            const size_t w = SQ::push(buf, pos.data(), pos.size(), 1);
-            BOOST_TEST(w <= dense_words + 1,
-                       "k=" << k << " at U=" << universe << " took " << w << " words vs dense " << dense_words);
+        size_t cells = 0;
+        size_t bad = 0;
+        for (size_t k = 0; k <= SQ::kMaxPositions; ++k) {
+            for (size_t gw = 0; gw <= SQ::kPosBits; ++gw) {
+                const size_t lanes = SQ::words_of(SQ::header_bits_for(k) + (k * SQ::kPosBits));
+                bad += static_cast<size_t>(SQ::words_of(SQ::gap_bits(k, gw)) > lanes);
+                ++cells;
+            }
         }
+        return std::pair<size_t, size_t>{cells, bad};
     };
-    check(std::integral_constant<size_t, 32>{}, 64, 2);
-    check(std::integral_constant<size_t, 128>{}, 256, 5);
-    check(std::integral_constant<size_t, 250>{}, 500, 9);
+    const auto narrow = check(std::integral_constant<size_t, 12>{});
+    const auto bucket = check(std::integral_constant<size_t, 128>{});
+    const auto wide = check(std::integral_constant<size_t, 250>{});
+    BOOST_TEST(narrow.second == 0U);
+    BOOST_TEST(bucket.second == 0U);
+    BOOST_TEST(wide.second == 0U);
+    // A guarded loop that asserted nothing would pass the three above; these are the cell counts.
+    BOOST_TEST(narrow.first == 25U * 6U);
+    BOOST_TEST(bucket.first == 257U * 9U);
+    BOOST_TEST(wide.first == 501U * 10U);
+}
+
+BOOST_AUTO_TEST_CASE(sparse_record_documents_what_deleting_the_argmin_cost) {
+    // Deleting FIXED and BITMAP has a price, and this pins it to a number rather than leaving it to be
+    // rediscovered. The three formulas below are the DELETED encoder's, with its own 10-bit header and
+    // 16-bit k escape, so the comparison is against what actually shipped in #263.
+    using SQ = SparseQuery<128>;
+    const auto old_words = [](size_t k, size_t gw) {
+        const size_t h = 10U + ((k >= 63U) ? 16U : 0U);
+        return std::min({SQ::words_of(h + (k * SQ::kPosBits)),
+                         SQ::words_of(h + 4U + (k == 0 ? 0U : SQ::kPosBits + ((k - 1U) * gw))),
+                         SQ::words_of(h + SQ::kBits)});
+    };
+    // Nothing in the supported envelope loses: Pauli cutoff 16 bounds k at 32, and the widest k ever
+    // captured is 23 (pauli c12, 45,296 records).
+    size_t crossings = 0;
+    for (size_t k = 0; k <= 33U; ++k) {
+        for (size_t gw = 0; gw <= SQ::kPosBits; ++gw) {
+            crossings += static_cast<size_t>(SQ::words_of(SQ::gap_bits(k, gw)) > old_words(k, gw));
+        }
+    }
+    BOOST_TEST(crossings == 0U);
+
+    // Above it, a raw mask wins, and 34 is where. If a field width changes, this number moves and says so.
+    size_t first = SQ::kMaxPositions + 1U;
+    for (size_t k = 0; k <= SQ::kMaxPositions && first > SQ::kMaxPositions; ++k) {
+        for (size_t gw = 0; gw <= SQ::kPosBits; ++gw) {
+            if (SQ::words_of(SQ::gap_bits(k, gw)) > old_words(k, gw)) {
+                first = k;
+                break;
+            }
+        }
+    }
+    BOOST_TEST(first == 34U);
 }
 
 BOOST_AUTO_TEST_CASE(sparse_record_walks_a_multi_query_buffer_exactly) {
-    // Mixed width and mixed mode, which is the case a hardcoded stride gets wrong.
+    // Mixed width, which is the case a hardcoded stride gets wrong.
     using SQ = SparseQuery<128>;
     using QC = QueryCodec<128>;
     const QueryLayout layout{/*fused=*/false};
@@ -287,8 +337,9 @@ BOOST_AUTO_TEST_CASE(sparse_record_walks_a_multi_query_buffer_exactly) {
     BOOST_TEST(off == buf.size());
 }
 
-BOOST_AUTO_TEST_CASE(sparse_record_picks_the_smallest_of_its_three_modes) {
-    // Load-bearing: gap ALONE is 8.56 B/term against fixed lanes' 8.00 on uniform draws at 250 modes.
+BOOST_AUTO_TEST_CASE(sparse_record_is_exactly_the_gap_code_it_costed) {
+    // What the argmin test became: there is one closed form now, so the encoder's width and the costing
+    // function must agree on every draw, including the uniform ones that used to select other modes.
     using SQ = SparseQuery<128>;
     std::mt19937_64 rng(12345);
     for (size_t trial = 0; trial < 400; ++trial) {
@@ -297,10 +348,10 @@ BOOST_AUTO_TEST_CASE(sparse_record_picks_the_smallest_of_its_three_modes) {
         VecZ buf;
         const size_t w = SQ::push(buf, pos.data(), pos.size(), 1);
         const size_t gwid = SQ::gap_width(pos.data(), pos.size());
-        const size_t best = std::min({SQ::words_of(SQ::fixed_bits(pos.size())),
-                                      SQ::words_of(SQ::gap_bits(pos.size(), gwid)),
-                                      SQ::words_of(SQ::bitmap_bits(pos.size()))});
-        BOOST_TEST(w == best, "k=" << k << " wrote " << w << " words, best was " << best);
+        BOOST_TEST(w == SQ::words_of(SQ::gap_bits(pos.size(), gwid)),
+                   "k=" << k << " wrote " << w << " words, costed "
+                        << SQ::words_of(SQ::gap_bits(pos.size(), gwid)));
+        BOOST_TEST(w <= SQ::words_of(SQ::header_bits_for(pos.size()) + (pos.size() * SQ::kPosBits)));
     }
 }
 
@@ -479,4 +530,64 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_value_channel_is_bit_exact_and_reusable
     VecZ dirty{1, 2, 3};
     QC::build_fused(empty, {}, dirty);
     BOOST_TEST(dirty.empty());
+}
+
+// Positions with exactly k entries whose widest gap is exactly `gw`: one gap of 2^(gw-1) -- the smallest
+// value of that bit width -- then a contiguous run. Empty if the shape does not fit the universe.
+namespace {
+auto gap_shaped(size_t k, size_t gw, size_t universe) -> std::vector<uint16_t> {
+    std::vector<uint16_t> v;
+    if (k == 0) {
+        return v;
+    }
+    if (gw == 0 || k == 1) {
+        if (gw != 0 || k > universe) {
+            return v;
+        }
+        for (size_t j = 0; j < k; ++j) {
+            v.push_back(static_cast<uint16_t>(j));
+        }
+        return v;
+    }
+    const size_t second = (size_t{1} << (gw - 1)) + 1U; // gap value 2^(gw-1), i.e. bit_width == gw
+    if (second + (k - 2U) >= universe) {
+        return v;
+    }
+    v.push_back(0);
+    for (size_t j = 0; j + 1 < k; ++j) {
+        v.push_back(static_cast<uint16_t>(second + j));
+    }
+    return v;
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(sparse_record_round_trips_every_reachable_k_and_gap_width) {
+    // The whole (k, gw) surface of the one remaining form, constructed rather than drawn: a random draw
+    // reaches neither gw = kPosBits nor the escape boundary. differential() carries ten assertions per
+    // cell, and `cells` is here so a shape that stops fitting cannot silently empty the loop.
+    using SQ = SparseQuery<128>;
+    size_t cells = 0;
+    for (size_t k = 0; k <= 40U; ++k) {
+        for (size_t gw = 0; gw <= SQ::kPosBits; ++gw) {
+            if (k < 2U && gw > 0U) {
+                continue; // one gap width is reachable below k = 2, so the other rows are the same cell
+            }
+            const auto pos = gap_shaped(k, gw, SQ::kBits);
+            if (pos.size() != k) {
+                continue;
+            }
+            BOOST_REQUIRE_EQUAL(SQ::gap_width(pos.data(), k), k < 2 ? 0U : gw);
+            const size_t w = differential<128>(pos, (k % 3U) == 0U ? 0 : ((k % 3U) == 1U ? 1 : -1));
+            BOOST_TEST(w == SQ::words_of(SQ::gap_bits(k, k < 2 ? 0U : gw)));
+            ++cells;
+        }
+    }
+    BOOST_TEST(cells == 353U);
+
+    // The width boundary: k = kBits is a fully paired term, one word because every gap is 0.
+    for (const size_t k : {size_t{254}, size_t{255}, size_t{256}}) {
+        const auto pos = gap_shaped(k, 0, SQ::kBits);
+        BOOST_REQUIRE_EQUAL(pos.size(), k);
+        BOOST_TEST(differential<128>(pos, 1) == 1U);
+    }
 }
