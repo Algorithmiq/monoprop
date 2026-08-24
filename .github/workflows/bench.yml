@@ -98,7 +98,7 @@ jobs:
             --branch main \
             --adapter json \
             --file bmf.json \
-            --github-actions "$GH_TOKEN" \
+            --github-actions "${{ secretes.GITHUB_TOKEN }}" \
             --thresholds-reset \
             --threshold-measure latency \
             --threshold-test t_test \
