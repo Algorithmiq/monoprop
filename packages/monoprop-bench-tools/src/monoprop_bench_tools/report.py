@@ -198,10 +198,22 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
     metas = {lbl: results.get(lbl, {}).get("meta", {}) for lbl in labels}
     if not any(metas.values()):
         return []
-    headers = ["Label", "Ranks", "monoprop threads", "CPUs (logical/physical)", "Host"]
+    headers = [
+        "Label",
+        "Python",
+        "nanobind",
+        "Backend",
+        "Ranks",
+        "monoprop threads",
+        "CPUs (logical/physical)",
+        "Host",
+    ]
     rows = [
         [
             label,
+            str(metas[label].get("python_version", "—")),
+            str(metas[label].get("nanobind_version", "—")),
+            str(metas[label].get("nanobind_backend_version", "—")),
             str(metas[label].get("ranks", "—")),
             str(metas[label].get("monoprop_threads", "default")),
             _fmt_cpus(metas[label]),
