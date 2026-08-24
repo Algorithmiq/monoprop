@@ -64,9 +64,6 @@ jobs:
         run: |
           uv sync --no-progress --group bench --all-extras -v
 
-      # Inputs reach the shell through the environment rather than `${{ }}`
-      # interpolation, which would splice them into the script text. The recipe
-      # quotes both, so a marker expression may contain spaces or be empty.
       - name: Run benchmarks
         env:
           BENCHER_LABEL: ${{ inputs.label }}
@@ -83,22 +80,20 @@ jobs:
 
       - uses: bencherdev/bencher@v0.6.11
 
-      # Credentials and the project slug go through the environment rather than
-      # the command line: `bencher` reads BENCHER_PROJECT / BENCHER_API_KEY
-      # natively, and it keeps a maintainer-set variable out of the shell's
-      # parsing.
+      # The project slug and API key go through the environment rather than the
+      # command line: `bencher` reads BENCHER_PROJECT / BENCHER_API_KEY natively,
+      # and it keeps a maintainer-set variable out of the shell's parsing.
       - name: Track benchmarks with Bencher
         env:
           BENCHER_PROJECT: ${{ vars.BENCHER_PROJECT || 'monoprop' }}
           BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
           BENCHER_TESTBED: ${{ inputs.testbed }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           bencher run \
             --branch main \
             --adapter json \
             --file bmf.json \
-            --github-actions "${{ secretes.GITHUB_TOKEN }}" \
+            --github-actions "${{ secrets.GITHUB_TOKEN }}" \
             --thresholds-reset \
             --threshold-measure latency \
             --threshold-test t_test \
