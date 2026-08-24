@@ -12,9 +12,13 @@ Majorana and Pauli propagation engines. The benchmark suite includes memory and 
 performance metrics, providing insights into the efficiency of different
 propagation engines.
 
-You can find the benchmark scripts in the [`benches/third_party`](https://github.com/Algorithmiq/monoprop/tree/main/benches/third_party) directory.
+You can find the benchmark scripts in the [`packages/bench-third-party`](https://github.com/Algorithmiq/monoprop/tree/main/packages/bench-third-party) directory.
 The scripts are designed to be run in a controlled environment,
 ensuring fair comparisons between different engines.
+
+That directory is a standalone `uv` project with its own lockfile, not a member of
+the repository's workspace: it pins CUDA-specific wheels and a narrower Python
+range than `monoprop` itself, so it is kept out of the main resolution.
 
 
 ### Majorana Propagation
@@ -59,7 +63,7 @@ The end-to-end workflow is:
 
 ```bash
 # Navigate to this directory
-cd benches/third_party
+cd packages/bench-third-party
 
 # Create the venv and install all Python dependencies (including monoprop itself, in editable mode)
 uv sync
@@ -178,7 +182,7 @@ The end-to-end workflow is:
 
 #### 1. Choose the simulation settings
 
-All simulation parameters live in [`settings.json`](settings.json) and are shared by every engine
+All simulation parameters live in [`settings.json`](https://github.com/Algorithmiq/monoprop/blob/main/packages/bench-third-party/pauli_prop/settings.json) and are shared by every engine
 (Python and Julia alike), so a single edit compares them all on an identical problem instance:
 
 | Key          | Meaning                                                                               |
@@ -208,7 +212,7 @@ per-step term budget tracks `cutoff`/`lower_atol` indirectly through monoprop ra
 
 ```bash
 # Navigate to this directory
-cd benches/third_party
+cd packages/bench-third-party
 
 # Create the venv and install all Python dependencies (including monoprop itself, in editable mode)
 uv sync
@@ -359,7 +363,7 @@ both plotting scripts print that provenance beside the numbers.
 #### Running it
 
 ```bash
-cd benches/third_party/pauli_prop
+cd packages/bench-third-party/pauli_prop
 
 # Redraw both figures from the committed ladder — seconds, no propagation
 uv run python plot_scaling.py scaling_results.jsonl
@@ -396,7 +400,7 @@ just bench serial --num-modes 64 --bench-rounds 10
 
 monoprop_NUM_THREADS=10 just bench serial-t10  # cap the partition count
 
-uv run --group bench python benches/report.py  # rebuild report, no re-run
+uv run --group bench monoprop-bench-report benches/results  # rebuild report, no re-run
 ```
 
 ### MPI
@@ -453,8 +457,10 @@ Override any config field via `--<model>-<field>` (e.g. `--pauli-num-layers 30`)
 ### Output
 
 Each run writes `results/time-<label>.json` (pytest-benchmark) and
-`<label>.json` (everything else); `report.py` merges all labels into
-`results/REPORT.md`.
+`<label>.json` (everything else); `monoprop-bench-report` merges all labels into
+`results/REPORT.md`. The configuration table records the Python version, the
+nanobind frontend version compiled into the extension, and the installed
+`nanobind-backend` version. Older artifacts without these fields render `—`.
 
 The **Configuration** table names the row backend the run actually used, as `asked → ran`. Both halves
 are needed: `monoprop_ROW_STORE` records what was requested, but its default of `auto` leaves the
@@ -482,7 +488,7 @@ just bench-ci ci-linux          # the default sizes, more rounds, no slow models
 just bench-bmf ci-linux         # the same results as Bencher Metric Format JSON
 ```
 
-`bmf.py` merges both artifacts into one report because Bencher accepts a single
+`monoprop-bench-bmf` merges both artifacts into one report because Bencher accepts a single
 adapter per upload — the stock `python_pytest` adapter would keep the timings
 and drop the memory and operator metrics. Four measures are tracked:
 
@@ -501,3 +507,47 @@ recorded but do not fail the build.
 Setting this up on a fork needs a Bencher project and a `BENCHER_API_KEY`
 repository secret; the project slug defaults to `monoprop` and can be overridden
 with a `BENCHER_PROJECT` repository variable.
+
+#### Testbeds
+
+Bencher keys every metric on (branch, testbed, measure), so a testbed is one
+machine shape and its history is only meaningful against itself. Changing the
+hardware under a testbed name shows up as a step change in every series, which
+is why each machine gets its own name and why the runner shapes below are pinned
+rather than ranged.
+
+The build, benchmark and upload steps live once in the reusable
+`.github/workflows/bench.yml`; a caller workflow supplies the runner, the
+testbed name and the result label:
+
+| Workflow | Runner | Testbed | Label | Profile |
+|---|---|---|---|---|
+| `bench_main.yml` | GitHub-hosted `ubuntu-26.04` | `ubuntu-26.04` | `ci-linux` | `not slow`, 5 rounds |
+| `bench_bare_metal.yml` | [RunsOn](https://runs-on.com/) EC2 node | `aws-c7i-4xlarge` | `ci-bare-metal` | everything, 3 rounds |
+
+The bare-metal workflow provisions a dedicated node per run, so the machine is
+billed per commit rather than continuously and nothing else is scheduled on it
+while the benchmarks run. That lower noise floor is the point: it is what a
+testbed needs before its timing thresholds can be tightened enough to gate on.
+It is also why it can afford the slow fixed models that the shared runner skips,
+and why fewer rounds reach the same confidence there.
+
+It is skipped unless the `BENCH_BARE_METAL` repository variable is set to
+`true` — without a RunsOn stack answering the label, the job would queue until
+it timed out on every commit. The node's shape is defined under `runners.bench`
+in `.github/runs-on.yml`; on public repositories RunsOn reads that file from the
+default branch only, so changes to it take effect after merge, not in the pull
+request that makes them.
+
+A new testbed starts with no history, so its first runs raise no alerts and its
+thresholds need setting once enough points exist to see the noise. Which
+benchmarks run, and how many rounds each gets, are the `bench-markers` and
+`bench-rounds` inputs of the reusable workflow; `bench-ci` reads them from the
+environment, so a profile can be reproduced locally:
+
+```bash
+monoprop_BENCH_MARKERS= monoprop_BENCH_ROUNDS=3 just bench-ci ci-bare-metal
+```
+
+Changing either for a testbed that already has history rewrites what its series
+measures, so pick them before the first run rather than after.

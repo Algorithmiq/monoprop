@@ -1,9 +1,10 @@
 [build-system]
 requires = [
-  "nanobind>=2.13.0,<3",
+  "mpi4py>=4.1.0",
+  "nanobind-backend>=1.0.0",
+  "nanobind==3.0.0",
   "scikit-build-core>=1.0.3,<2",
   "setuptools-scm>=8",
-  "mpi4py>=4.1.0",
 ]
 build-backend = "scikit_build_core.build"
 
@@ -37,7 +38,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dynamic = ["version"]
-dependencies = ["numpy>=2", "msgpack>=1.0.0"]
+dependencies = ["msgpack>=1.0.0", "nanobind-backend>=1.0.0", "numpy>=2"]
 
 
 [project.urls]
@@ -54,9 +55,14 @@ qiskit = ["qiskit>=2.0.0"]
 dev = ["prek>=0.4", "ruff==0.15.20"]
 # The documentation site is built with Fumadocs (Next.js); see `docs/`.
 # Python's only roles are converting the tutorial notebooks to Markdown
-# (`nbconvert`) and generating the API reference from docstrings (`griffe`,
-# injected via the `fumadocs-python` npm package in the `gen-api` recipe).
-docs = ["nbconvert", "pytest-markdown-docs", { include-group = "interactive" }]
+# (`nbconvert`) and dumping the API surface from docstrings (`griffe`, driven by
+# `docs/scripts/gen_api_dump.py` in the `gen-api` recipe).
+docs = [
+  "griffelib>=2.2,<3",
+  "nbconvert",
+  "pytest-markdown-docs",
+  { include-group = "interactive" },
+]
 interactive = [
   "ipykernel",
   "matplotlib",
@@ -64,6 +70,9 @@ interactive = [
   "qiskit>=2.0.0",
   "pyscf",
 ]
+# Dependencies of monoprop's own suite (`tests/`). Deliberately free of workspace
+# members: cibuildwheel installs this group to exercise a *built wheel*, and a
+# workspace member would drag monoprop back in from source.
 test = [
   "psutil>=7.2",
   "pytest-cases>=3.8.6,<4",
@@ -73,7 +82,10 @@ test = [
   "pytest>=8.2.2,<9.1",
   "tabulate>=0.9",
 ]
-bench = [{ include-group = "test" }, "pytest-benchmark>=5"]
+# What `uv run pytest` needs at the repository root, which also collects the
+# workspace members' suites (see `testpaths`).
+workspace-test = [{ include-group = "test" }, "monoprop-bench-tools"]
+bench = [{ include-group = "workspace-test" }, "pytest-benchmark>=5"]
 
 
 [tool.uv]
@@ -81,13 +93,26 @@ python-preference = "only-managed"
 keyring-provider = "subprocess"
 cache-keys = [
   { file = "pyproject.toml" },
+  { file = "CMakeLists.txt" },
+  { file = "cmake/**/*" },
+  { file = "cpp/**/CMakeLists.txt" },
   { file = "cpp/include/**/*.h" },
   { file = "cpp/include/**/*.h.in" },
   { file = "cpp/monoprop/**/*.{h,cpp}" },
-  { file = "**/CMakeLists.txt" },
-  { file = "cmake/**/*" },
-  { file = "src/monoprop/bindings/bindings.cpp.in" },
+  { file = "src/monoprop/**/CMakeLists.txt" },
+  # the binding sources themselves, not a template: bindings.cpp is a real file now, so a change to
+  # it has to invalidate the cached build
+  { file = "src/monoprop/bindings/*.cpp" },
+  { file = "tools/*.py" },
 ]
+
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/bench-third-party"]
+
+[tool.uv.sources]
+monoprop-bench-tools = { workspace = true }
 
 
 [[tool.dynamic-metadata]]
@@ -99,8 +124,8 @@ provider = "scikit_build_core.metadata.setuptools_scm"
 minimum-version = "build-system.requires"
 # setuptools-style build caching in a local directory
 build-dir = "build/{state}/{build_type}"
-# build stable ABI wheels for CPython 3.12+
-wheel.py-api = "cp312"
+# build stable ABI wheels for CPython 3.11
+wheel.py-api = "cp311"
 logging.level = "INFO"
 # read CMake version from CMakeLists.txt
 cmake.version = "CMakeLists.txt"
@@ -110,6 +135,7 @@ sdist.exclude = [
   ".github",
   ".devcontainer",
   ".vscode",
+  "packages",
   "performance_scripts",
   "results",
   "src/ex_script.cpp",
@@ -150,11 +176,11 @@ addopts = [
 ]
 xfail_strict = true
 filterwarnings = ["error"]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/monoprop-bench-tools/tests"]
 # Collect both the test suite (test_*.py) and the benchmark suite (bench_*.py);
 # benches/ is excluded from testpaths so it only runs when invoked explicitly.
 python_files = ["test_*.py", "bench_*.py"]
-pythonpath = [".", "benches"]
+pythonpath = ["."]
 markers = [
   "slow: mark test as slow (>=1 minute runtime)",
   "mpi: mark test as requiring --with-mpi (pytest-mpi)",
@@ -196,6 +222,7 @@ exclude_also = [
 # for the default settings, see: https://docs.astral.sh/ruff/configuration/#configuring-ruff
 exclude = [
   "src/monoprop/_version.py",
+  "packages/monoprop-bench-tools/src/monoprop_bench_tools/_version.py",
   "docs/conf.py",
   "performance_scripts/*.py",
 ]
@@ -294,16 +321,24 @@ flake8-annotations.allow-star-arg-any = true
 # - ANN (flake8-annotations)
 # - I002 (isort required import)
 "tests/**/test_*.py" = ["ANN", "I002"]
+# workspace members carry their own test suites, under the same relaxations
+"packages/*/tests/*" = ["S101", "D", "C901", "INP001", "E721", "ANN", "I002"]
 # ignore I002 (isort required import) for all `__init__.py` files
 "src/monoprop/**/__init__.py" = ["I002"]
 # benchmark suite: asserts are fine (S101), it is an intentional non-package
-# directory loaded via pythonpath (INP001), the MPI communicator type is
-# unavoidably dynamic (ANN401), and report.py intentionally prints (T201).
-"benches/*" = ["S101", "INP001", "ANN401", "T201"]
+# directory holding pytest modules (INP001), and the MPI communicator type is
+# unavoidably dynamic (ANN401).
+"benches/*" = ["S101", "INP001", "ANN401"]
 # benchmark test functions: annotations on the pytest signatures are just noise.
 "benches/bench_*.py" = ["ANN"]
-# cupy is an optional, GPU-only dependency of a separate uv project (benches/third_party);
-"benches/_memory_gpu.py" = ["PLC0415"]
+# the report renderer writes to stdout by design (T201) and the MPI communicator
+# type is unavoidably dynamic (ANN401).
+"packages/monoprop-bench-tools/src/**" = ["ANN401", "T201"]
+# cupy comes from an optional, GPU-only extra, so it is imported inside the
+# functions that need it (PLC0415).
+"packages/monoprop-bench-tools/src/monoprop_bench_tools/memory/gpu.py" = [
+  "PLC0415",
+]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,
@@ -343,9 +378,9 @@ reportMatchNotExhaustive = "information"
 
 
 [tool.cibuildwheel]
+build = "cp3??-*"
 build-frontend = "uv"
 build-verbosity = 1
-build = ["cp311-*", "cp312-*", "cp313-*", "cp314-*"]
 skip = ["*-musllinux_*"]
 test-command = "python -m pytest {package}/tests"
 test-groups = ["test"]

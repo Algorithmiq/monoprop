@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the benchmark report builder (``benches/report.py``).
+"""Unit tests for the benchmark report builder.
 
 Each run contributes two artifacts to the results directory: ``time-<label>.json``
 (pytest-benchmark timings) and ``<label>.json`` (everything else, keyed by section).
@@ -24,7 +24,7 @@ import json
 import re
 from typing import TYPE_CHECKING
 
-import report
+from monoprop_bench_tools import report
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -119,6 +119,22 @@ def test_build_report_includes_hyperparameters(tmp_path: Path) -> None:
     # lower_atol is per-model, not a sampled hyperparameter.
     assert "| lower_atol |" not in md
     assert md.index("## Hyperparameters") < md.index("## Heisenberg")
+
+
+def test_build_report_includes_runtime_provenance(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    _write_results(
+        tmp_path,
+        meta={
+            "python_version": "3.13.2",
+            "nanobind_version": "3.2.0",
+            "nanobind_backend_version": "2.4.0",
+        },
+    )
+    md = _collapse(report.build_report(tmp_path))
+
+    assert "| Python | nanobind | Backend |" in md
+    assert "| np1 | 3.13.2 | 3.2.0 | 2.4.0 |" in md
 
 
 def test_fmt_config_formats_floats_compactly() -> None:

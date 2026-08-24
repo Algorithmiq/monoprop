@@ -21,11 +21,16 @@
 
 #include <algorithm>
 #include <complex>
+#include <optional>
 #include <utility>
 #include <vector>
 
+#include "monoprop/MonomialPropagator.h"
 #include "monoprop/algebra/Algebra.h"
+#include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/operator/MPOperator.h"
+
+#include "TestPropagator.h"
 
 using namespace monoprop;
 using cd = std::complex<double>;
@@ -186,6 +191,66 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map
     BOOST_CHECK(op.get_operator() == coeffs);
 }
 
+// erase/clear leave bucket_count(), so init_operator_bytes must fall, not just the entry count.
+BOOST_AUTO_TEST_CASE(mp_operator_get_operator_releases_init_map_when_fully_bound) {
+    const auto a = bs({0, 1});
+    const auto b = bs({2, 3});
+    auto op = build_indexed_op({a, b});
+
+    op.init_op_map.reserve(4096); // buckets far in excess of the two live entries
+    op.init_op_map[a] = 3.0;
+    op.init_op_map[b] = 5.0;
+
+    const auto before = detail::estimate_memory_usage(op);
+    BOOST_REQUIRE_EQUAL(before.init_operator_entries, 2U);
+
+    const VecD &coeffs = op.get_operator();
+    BOOST_REQUIRE_EQUAL(coeffs.size(), 2U);
+    BOOST_CHECK_EQUAL(coeffs[0], 3.0);
+    BOOST_CHECK_EQUAL(coeffs[1], 5.0);
+
+    const auto after = detail::estimate_memory_usage(op);
+    BOOST_CHECK_EQUAL(after.init_operator_entries, 0U);
+    BOOST_CHECK_LT(after.init_operator_bytes, before.init_operator_bytes);
+    BOOST_CHECK_EQUAL(op.init_op_map.bucket_count(), 0U); // released, not merely shrunk to the minimum
+}
+
+// Partial bind: the pending entry survives with its value and the bucket array shrinks to the remainder.
+BOOST_AUTO_TEST_CASE(mp_operator_get_operator_shrinks_init_map_when_partially_bound) {
+    const auto a = bs({0, 1});
+    const auto b = bs({2, 3});
+    const auto absent = bs({4, 5});
+    auto op = build_indexed_op({a, b});
+
+    op.init_op_map.reserve(4096);
+    op.init_op_map[a] = 3.0;
+    op.init_op_map[absent] = 9.0;
+
+    const auto before = detail::estimate_memory_usage(op);
+    (void)op.get_operator();
+    const auto after = detail::estimate_memory_usage(op);
+
+    BOOST_REQUIRE_EQUAL(after.init_operator_entries, 1U);
+    const auto found = op.init_op_map.find(absent);
+    BOOST_REQUIRE(found != op.init_op_map.end());
+    BOOST_CHECK_EQUAL(found->second, 9.0);
+    BOOST_CHECK(op.init_op_map.find(a) == op.init_op_map.end());
+    BOOST_CHECK_LT(after.init_operator_bytes, before.init_operator_bytes);
+}
+
+// Nothing bound: the map is left exactly as it was, buckets included.
+BOOST_AUTO_TEST_CASE(mp_operator_get_operator_keeps_init_map_when_nothing_bound) {
+    auto op = build_indexed_op({bs({0, 1})});
+
+    const auto absent = bs({4, 5});
+    op.init_op_map[absent] = 9.0;
+
+    (void)op.get_operator();
+    const auto after = detail::estimate_memory_usage(op);
+    BOOST_CHECK_EQUAL(after.init_operator_entries, 1U);
+    BOOST_CHECK(op.init_op_map.find(absent) != op.init_op_map.end());
+}
+
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pauli) {
     const auto present = bs({0, 2});
     auto op = build_indexed_op({present}, Basis::Pauli); // row 0 indexed
@@ -288,8 +353,8 @@ BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_pre
 
 // get_operator() drains init_op_map as each pending term appears as a row, and a flat map keeps its slot
 // array across erases -- so a propagator would otherwise carry an empty map sized for the whole initial
-// operator for its whole life. The release must fire only once the map is *empty*: a partially drained map
-// still has to answer for the terms left in it.
+// operator for its whole life. The release is a shrink-to-fit, so a partial drain keeps a table for the
+// terms left in it and a full drain gives the array back outright.
 BOOST_AUTO_TEST_CASE(mp_operator_drained_init_map_gives_its_slot_array_back) {
     detail::MPOperator op(kNumBits);
     // Two pending terms, only one of which is a findable row -- append_term writes a row, index_term is
@@ -302,7 +367,8 @@ BOOST_AUTO_TEST_CASE(mp_operator_drained_init_map_gives_its_slot_array_back) {
 
     (void)op.get_operator();
     BOOST_CHECK_EQUAL(op.init_op_map.size(), 1U); // the unmaterialized term stays
-    BOOST_CHECK_EQUAL(op.init_op_map.bucket_count(), buckets_when_pending);
+    BOOST_CHECK_LE(op.init_op_map.bucket_count(), buckets_when_pending);
+    BOOST_CHECK_GE(op.init_op_map.bucket_count(), 1U);
     BOOST_CHECK_EQUAL(detail::estimate_memory_usage(op).init_operator_entries, 1U);
     BOOST_CHECK_EQUAL(op.op_coeffs[0], 1.5);
 
@@ -350,6 +416,62 @@ BOOST_AUTO_TEST_CASE(mp_operator_init_map_accounts_for_spilled_keys) {
     narrow.init_op_map[bs({0, 1})] = 1.0;
     BOOST_CHECK_EQUAL(detail::estimate_memory_usage(narrow).init_operator_bytes,
                       detail::unordered_flat_map_storage_bytes(narrow.init_op_map));
+}
+
+// matched_scratch_bytes is summed by total_bytes() and accumulated by operator+= for the facade's sum.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_counts_matched_scratch_in_total_and_sum) {
+    detail::MPOperatorMemoryBreakdown acc;
+    acc.op_coeffs_bytes = 100;
+    acc.matched_scratch_bytes = 7;
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 107U);
+
+    detail::MPOperatorMemoryBreakdown other;
+    other.op_coeffs_bytes = 20;
+    other.matched_scratch_bytes = 3;
+
+    acc += other;
+    BOOST_CHECK_EQUAL(acc.matched_scratch_bytes, 10U);
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 130U);
+
+    // An operator on its own has no stamp array to report.
+    auto bare = build_indexed_op({bs({0, 1})});
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage(bare).matched_scratch_bytes, 0U);
+}
+
+// epoch_ is empty until the first begin_gate, so this must apply a gate before the bytes can be nonzero.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_matched_scratch_nonzero_after_a_gate) {
+    constexpr size_t kModes = 2;
+    OperatorDict ham;
+    ham[VecZ{0, 1}] = cd{0.0, 1.0};
+    VecZ initial_state{0, 1};
+    auto sim = test_utils::make_propagator<kModes>(ham, 2 * kModes, initial_state);
+    BOOST_CHECK_EQUAL(sim.operator_memory_usage().matched_scratch_bytes, 0U); // no gate applied yet
+
+    const std::vector<VecZ> monos{{0}};
+    sim.build_graph(monos, VecZ{0}, VecD{1.0});
+
+    const auto live = sim.operator_memory_usage();
+    BOOST_CHECK_GT(live.matched_scratch_bytes, 0U);
+
+    auto without = live;
+    without.matched_scratch_bytes = 0;
+    BOOST_CHECK_EQUAL(live.total_bytes() - without.total_bytes(), live.matched_scratch_bytes);
+}
+
+// init_operator_entries is a count: accumulated by operator+= but never summed into total_bytes().
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_init_operator_entries_out_of_total) {
+    detail::MPOperatorMemoryBreakdown acc;
+    acc.op_coeffs_bytes = 100;
+    acc.init_operator_entries = 2;
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 100U);
+
+    detail::MPOperatorMemoryBreakdown other;
+    other.op_coeffs_bytes = 20;
+    other.init_operator_entries = 5;
+
+    acc += other;
+    BOOST_CHECK_EQUAL(acc.init_operator_entries, 7U);
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 120U);
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {

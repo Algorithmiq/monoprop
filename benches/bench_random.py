@@ -16,27 +16,73 @@
 
 from __future__ import annotations
 
-from _builders import barriered
+from monoprop_bench_tools.models import barrier_setup, barriered
 
 PARE_THRESHOLD = 1e-10
 INPLACE_LOWER_ATOL = 1e-5
 
 
 def test_random_build_graph(
-    benchmark, make_random_propagator, bench_comm, bench_rounds
+    benchmark,
+    make_random_propagator,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    record_opsize,
 ):
     """Benchmark building the propagation graph from a fresh propagator."""
+    last = []
 
     def setup():
-        return (make_random_propagator(),), {}
+        built = make_random_propagator()
+        last[:] = [built[0]]
+        op_memory.open()  # inside setup, so the window excludes the construction
+        return (built,), {}
 
     def build(built):
         propagator, circuit = built
         propagator.build_graph(circuit)
 
     benchmark.pedantic(
-        barriered(build, bench_comm), setup=setup, rounds=bench_rounds, iterations=1
+        barriered(build, bench_comm),
+        setup=barrier_setup(bench_comm, setup),
+        rounds=bench_rounds,
+        iterations=1,
     )
+    op_memory.close(last[0])
+    assert record_opsize(last[0]) > 0
+    assert last[0].graph_layers > 0
+
+
+def test_random_propagate(
+    benchmark,
+    make_random_propagator,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    record_opsize,
+):
+    """Benchmark in-place evolution alone, with no expectation value and no graph."""
+    last = []
+
+    def setup():
+        built = make_random_propagator()
+        last[:] = [built[0]]
+        op_memory.open()
+        return (built,), {}
+
+    def run(built):
+        propagator, circuit = built
+        propagator.propagate(circuit)
+
+    benchmark.pedantic(
+        barriered(run, bench_comm),
+        setup=barrier_setup(bench_comm, setup),
+        rounds=bench_rounds,
+        iterations=1,
+    )
+    op_memory.close(last[0])
+    assert record_opsize(last[0]) > 0
 
 
 def test_random_pare(benchmark, built_graph, bench_comm, bench_rounds):
@@ -47,34 +93,52 @@ def test_random_pare(benchmark, built_graph, bench_comm, bench_rounds):
             pare_threshold=PARE_THRESHOLD,
         )
 
-    benchmark.pedantic(barriered(pare, bench_comm), rounds=bench_rounds, iterations=1)
-
-
-def test_random_energy(
-    benchmark, built_graph, random_problem, bench_comm, bench_rounds
-):
-    """Benchmark evaluating the expectation-value functional."""
-    functional = built_graph.expectation_value_functional()
-    result = benchmark.pedantic(
-        barriered(functional, bench_comm),
-        args=(random_problem.parameters,),
+    benchmark.pedantic(
+        barriered(pare, bench_comm),
+        setup=barrier_setup(bench_comm),
         rounds=bench_rounds,
         iterations=1,
     )
+
+
+def test_random_energy(
+    benchmark, built_graph, random_problem, bench_comm, bench_rounds, op_memory
+):
+    """Benchmark evaluating the expectation-value functional."""
+    functional = built_graph.expectation_value_functional()
+    op_memory.open()
+
+    # The entry barrier must stay untimed, so it lives in a setup, and a setup that returns args forbids args=.
+    def setup():
+        return (random_problem.parameters,), {}
+
+    result = benchmark.pedantic(
+        barriered(functional, bench_comm),
+        setup=barrier_setup(bench_comm, setup),
+        rounds=bench_rounds,
+        iterations=1,
+    )
+    op_memory.close(built_graph)
     assert isinstance(result, float)
 
 
 def test_random_gradient(
-    benchmark, built_graph, random_problem, bench_comm, bench_rounds
+    benchmark, built_graph, random_problem, bench_comm, bench_rounds, op_memory
 ):
     """Benchmark evaluating the expectation-value-and-gradient functional."""
     functional = built_graph.expectation_value_and_gradient_functional()
+    op_memory.open()
+
+    def setup():
+        return (random_problem.parameters,), {}
+
     _value, gradient = benchmark.pedantic(
         barriered(functional, bench_comm),
-        args=(random_problem.parameters,),
+        setup=barrier_setup(bench_comm, setup),
         rounds=bench_rounds,
         iterations=1,
     )
+    op_memory.close(built_graph)
     assert len(gradient) == len(random_problem.parameters)
 
 
@@ -90,6 +154,9 @@ def test_random_inplace(benchmark, make_random_propagator, bench_comm, bench_rou
         return propagator.expectation_value()
 
     result = benchmark.pedantic(
-        barriered(run, bench_comm), setup=setup, rounds=bench_rounds, iterations=1
+        barriered(run, bench_comm),
+        setup=barrier_setup(bench_comm, setup),
+        rounds=bench_rounds,
+        iterations=1,
     )
     assert isinstance(result, float)

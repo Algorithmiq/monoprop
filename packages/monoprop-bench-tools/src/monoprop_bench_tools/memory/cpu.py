@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import os
 import threading
 import time
 from pathlib import Path
@@ -124,6 +125,55 @@ def resting_rss_bytes() -> int:
     return rss_bytes()
 
 
+def _parse_cpu_list(spec: str) -> set[int]:
+    """Expand a kernel CPU list (``0-3,8``) into a set of CPU numbers."""
+    cpus: set[int] = set()
+    for part in spec.split(","):
+        if not part:
+            continue
+        lo, _, hi = part.partition("-")
+        cpus.update(range(int(lo), int(hi or lo) + 1))
+    return cpus
+
+
+def pinned_thread_summary() -> dict[str, int | list[int]]:
+    """Count this rank's own threads bound to a single CPU; all-zero means ``/proc`` was unreadable, not unpinned."""
+    try:
+        tasks = list(Path("/proc/self/task").iterdir())
+    except OSError:  # pragma: no cover - non-Linux or restricted /proc
+        return {
+            "threads": 0,
+            "single_cpu_threads": 0,
+            "distinct_pinned_cpus": 0,
+            "affinity_cpus": 0,
+            "pinned_cpus": [],
+        }
+
+    threads = 0
+    pinned: set[int] = set()
+    single = 0
+    for task in tasks:
+        try:
+            text = (task / "status").read_text()
+        except OSError:  # thread exited between listing and reading
+            continue
+        threads += 1
+        for line in text.splitlines():
+            if line.startswith("Cpus_allowed_list:"):
+                cpus = _parse_cpu_list(line.split(":", 1)[1].strip())
+                if len(cpus) == 1:
+                    single += 1
+                    pinned |= cpus
+                break
+    return {
+        "threads": threads,
+        "single_cpu_threads": single,
+        "distinct_pinned_cpus": len(pinned),
+        "affinity_cpus": len(os.sched_getaffinity(0)),
+        "pinned_cpus": sorted(pinned),
+    }
+
+
 class HighWaterMark:
     """Exact peak RSS over the enclosed block, straight from the kernel.
 
@@ -144,12 +194,20 @@ class HighWaterMark:
     """
 
     def __init__(self, *, settle: bool = True) -> None:
+        """Prepare a window.
+
+        Args:
+            settle: Whether to settle the process (``gc.collect()`` + ``malloc_trim``)
+                before taking the baseline. Pass ``False`` only when the caller has
+                already settled and the extra pause would perturb the measurement.
+        """
         self._settle = settle
         self.baseline_bytes = 0
         self.peak_bytes = 0
         self.exact = False
 
     def __enter__(self) -> Self:
+        """Take the baseline and reset the kernel's peak-RSS window to it."""
         self.baseline_bytes = resting_rss_bytes() if self._settle else rss_bytes()
         self.exact = reset_peak_rss()
         self.peak_bytes = self.baseline_bytes
@@ -161,8 +219,17 @@ class HighWaterMark:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        """Read the peak back, never below the baseline. Exceptions propagate."""
         observed = peak_rss_bytes() if self.exact else rss_bytes()
         self.peak_bytes = max(self.baseline_bytes, observed)
+
+    def start(self) -> Self:
+        """Open the window explicitly; a ``pedantic`` run cannot be wrapped in a ``with``."""
+        return self.__enter__()
+
+    def stop(self) -> None:
+        """Close the window explicitly (same as ``__exit__``)."""
+        self.__exit__(None, None, None)
 
     @property
     def delta_bytes(self) -> int:
@@ -196,6 +263,12 @@ class PssSampler:
     """
 
     def __init__(self, interval: float = SAMPLE_INTERVAL_S) -> None:
+        """Prepare a sampler.
+
+        Args:
+            interval: Seconds between samples. Shorter closes the gap to the true peak
+                at the cost of perturbing the timed thread more often.
+        """
         self._interval = interval
         self._samples: list[tuple[float, int]] = []
         self._stop = threading.Event()
@@ -207,6 +280,7 @@ class PssSampler:
             self._stop.wait(self._interval)
 
     def __enter__(self) -> Self:
+        """Record one sample, then start sampling in the background."""
         self._samples.append((time.time(), pss_bytes()))
         self._thread.start()
         return self
@@ -217,6 +291,7 @@ class PssSampler:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        """Stop the thread, join it, and record a final sample. Exceptions propagate."""
         self._stop.set()
         self._thread.join()
         self._samples.append((time.time(), pss_bytes()))

@@ -21,12 +21,6 @@ site := "docs"
 
 docs_uv := "uv run --group docs --group test --no-dev --all-extras"
 
-# `fumapy` (the fumadocs Python docgen) ships inside the npm package; inject it
-# ephemerally and pin griffe to the 1.x line it targets (its newer
-# griffe-typingdoc dependency otherwise pulls an incompatible griffe).
-
-fumapy := "--with " + site + "/node_modules/fumadocs-python --with 'griffe<2' --with 'griffe-typingdoc==0.2.8'"
-
 default: build-docs
 
 test:
@@ -70,7 +64,7 @@ test-sparse-rows:
 # Pass RANKS as either a single integer or a semicolon-separated list (e.g. "1;2;4").
 
 test-mpi RANKS='':
-    uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v
+    uv sync --all-extras --group workspace-test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v
     export OMPI_MCA_rmaps_base_oversubscribe="1"; \
     ranks="${1:-${monoprop_MPI_TEST_PROCS:-2}}"; \
     for r in ${ranks//;/ }; \
@@ -86,14 +80,14 @@ test-mpi RANKS='':
 # guards them from bit-rotting. Serial is enough to exercise those branches.
 
 test-wide:
-    uv sync --all-extras --group test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_WIDE_TERM_INDEX=ON"
+    uv sync --all-extras --group workspace-test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_WIDE_TERM_INDEX=ON"
     uv run --no-sync python -m pytest -m "not mpi"
     ctest --test-dir build/editable/Release --output-on-failure
 
 # Report code coverage.
 
 code-coverage:
-    uv sync --no-progress --group test --all-extras --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.build-type=Coverage" -v
+    uv sync --no-progress --group workspace-test --all-extras --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.build-type=Coverage" -v
 
     # run python tests
     uv run --no-sync python -m pytest --cov=src/monoprop --cov-report=lcov:python-coverage.info
@@ -163,7 +157,7 @@ bench LABEL *ARGS:
     monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
         uv run --no-sync python -m pytest benches -o filterwarnings=default \
         --benchmark-json="{{ bench_results }}/time-$label.json" "$@"
-    uv run --no-sync python benches/report.py "{{ bench_results }}"
+    uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 
 # Needs an MPI build (`just bench-build-mpi`) -- a non-MPI build is rejected by the
 # preflight. Extra args are passed to mpiexec for pinning (and, as root, add
@@ -180,7 +174,7 @@ bench-mpi LABEL RANKS *MPIARGS:
         -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS "$@" \
         python -m pytest benches -o filterwarnings=default \
         --benchmark-json="{{ bench_results }}/time-$label.json"
-    uv run --no-sync python benches/report.py "{{ bench_results }}"
+    uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 
 # A plain `just bench` uses `--no-sync`, so this MPI build survives until the next
 # explicit `uv sync` / rebuild.
@@ -197,29 +191,34 @@ bench-smoke:
         uv run --no-sync python -m pytest benches -o filterwarnings=default \
         --benchmark-json="{{ bench_results }}/time-smoke.json" \
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16
-    uv run --no-sync python benches/report.py "{{ bench_results }}"
+    uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 
 # Deliberately keeps the `bench` default sizes rather than inventing a second set
 # to keep in sync: they run in well under a minute yet leave the heavier
 # Schrödinger operations in the 50 ms - 1 s range, where runner noise does not
 # swamp the signal. Only the slow fixed models are dropped; they run nightly.
 # More rounds than a local run, because CI reports the mean.
+#
+# The marker expression and round count come from the environment so a caller can
+# pass values containing spaces, or an empty marker to select everything:
+#   monoprop_BENCH_MARKERS= monoprop_BENCH_ROUNDS=3 just bench-ci ci-bare-metal
 
 # Run the continuous-benchmarking profile tracked by Bencher.
-bench-ci LABEL:
+bench-ci LABEL *ARGS:
     @mkdir -p "{{ bench_results }}"
-    label="$1"; \
+    label="$1"; shift; \
     monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
         uv run --no-sync python -m pytest benches -o filterwarnings=default \
         --benchmark-json="{{ bench_results }}/time-$label.json" \
-        -m "not slow" --bench-rounds 5
+        -m "${monoprop_BENCH_MARKERS-not slow}" \
+        --bench-rounds "${monoprop_BENCH_ROUNDS:-5}" "$@"
 
 # Convert one LABEL's artifacts into Bencher Metric Format JSON on stdout, e.g.
 #   just bench-ci ci-linux && just bench-bmf ci-linux > bmf.json
 
 # Emit LABEL's results as Bencher Metric Format JSON.
 bench-bmf LABEL:
-    uv run --no-sync python benches/bmf.py "{{ bench_results }}" "$1"
+    uv run --no-sync monoprop-bench-bmf "{{ bench_results }}" "$1"
 
 # Execute the tutorial notebooks and convert them to Markdown. Notebook
 
@@ -229,7 +228,7 @@ gen-notebooks:
 
 # Generate the Python API reference MDX from docstrings (griffe -> JSON -> MDX).
 gen-api:
-    {{ docs_uv }} {{ fumapy }} fumapy-generate monoprop -d {{ site }}
+    {{ docs_uv }} python {{ site }}/scripts/gen_api_dump.py monoprop -d {{ site }}
     cd {{ site }} && node scripts/generate-api.mjs
 
 # Run the runnable docstring examples (the docstring-level doctest check).
@@ -238,10 +237,15 @@ doctest-py:
 
 doctest-docs:
     {{ docs_uv }} python -m pytest --markdown-docs docs/content/docs --ignore=docs/content/docs/tutorials --ignore=docs/content/docs/api
+    {{ docs_uv }} python -m pytest --markdown-docs README.md
 
 # Build the static documentation site into `docs/out`.
 build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
     cd {{ site }} && npm run build
+
+# Check exported HTML links (including external URLs).
+check-doc-links:
+    lychee --config .lychee.postbuild.toml --root-dir "{{ project_source_dir }}/docs/out" --fallback-extensions html --index-files index.html 'docs/out/**/*.html'
 
 # Serve the documentation locally with hot reloading.
 serve-docs:

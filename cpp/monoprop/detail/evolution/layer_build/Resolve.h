@@ -167,7 +167,7 @@ auto insert_incoming_misses(auto &op, auto &store, const auto &pr) -> void {
 // op is deduced (MPOperator, an argument type); Sink stays named -- it is referenced by name below
 // (typename Sink::Response). No width is named anywhere here any more: the record stride is a member of
 // the sink and the monomial width comes off the operator.
-template <class Sink>
+template <typename Sink>
 auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                       auto &op,
                       auto &store,
@@ -207,7 +207,7 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
 // local rank was already resolved inline, so it is skipped here. inc_r[r][q] answers query q from rank r.
 // Unlike resolve_incoming, nothing here touches the operator, so no argument needs deducing at all --
 // Sink stays named for the same reason as above.
-template <class Sink>
+template <typename Sink>
 auto process_responses(const std::vector<std::vector<typename Sink::Response>> &inc_r,
                        const std::vector<std::vector<size_t>> &src_idx,
                        const std::vector<VecZ> &queries, // serialized query buffers (for phase recovery)

@@ -21,6 +21,7 @@ import importlib.util
 from ._core import (
     __build_type__,
     __compiler_flags__,
+    __nanobind_version__,
     __variant__,
     antihermitian_generator_correction,
     has_mpi,
@@ -56,6 +57,7 @@ __all__ = [
     "PauliPropagator",
     "__build_type__",
     "__compiler_flags__",
+    "__nanobind_version__",
     "__variant__",
     "__version__",
     "antihermitian_generator_correction",

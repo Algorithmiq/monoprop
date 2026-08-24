@@ -67,11 +67,10 @@ message(STATUS "Using nanobind: ${nanobind_DIR} (version ${nanobind_VERSION})")
 # One translation unit: MonomialPropagator is a single class, so there is nothing to generate or to
 # split into per-mode-width batches.
 nanobind_add_module(_core
- STABLE_ABI  # perform a stable ABI build
   NB_SUPPRESS_WARNINGS  # suppress warnings from nanobind and Python headers
-  NB_STATIC  # compile the core nanobind library as a static library
   NOMINSIZE  # don’t perform optimizations to minimize binary size
   LTO  # perform link-time optimization
+  BACKEND_MODULE nanobind_backend  # nanobind 3 split mode; rules out STABLE_ABI and NB_STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
 )
 
@@ -83,6 +82,12 @@ target_include_directories(
   PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_compile_definitions(
+  _core
+  PRIVATE
+    monoprop_NANOBIND_VERSION="${nanobind_VERSION}"
 )
 
 target_link_libraries(_core PRIVATE monoprop-objs)

@@ -14,10 +14,10 @@
 
 """Convert one label's benchmark artifacts to Bencher Metric Format (BMF) JSON.
 
-``report.py`` renders every label side by side for humans; this renders a single
-label for `Bencher <https://bencher.dev/>`_, which tracks the metrics over time
-and alerts on regressions. Both read the same two artifacts written by
-``just bench <label>``: ``time-<label>.json`` (pytest-benchmark) and
+:mod:`monoprop_bench_tools.report` renders every label side by side for humans;
+this renders a single label for `Bencher <https://bencher.dev/>`_, which tracks
+the metrics over time and alerts on regressions. Both read the same two artifacts
+written by ``just bench <label>``: ``time-<label>.json`` (pytest-benchmark) and
 ``<label>.json`` (memory, operator sizes).
 
 Bencher accepts one adapter per report, so timings and memory are merged here and
@@ -38,7 +38,7 @@ Four measures are emitted:
 
 Usage::
 
-    uv run --no-sync python benches/bmf.py benches/results <label>
+    monoprop-bench-bmf <results_dir> <label>
 """
 
 from __future__ import annotations
@@ -57,6 +57,10 @@ _NS_PER_S = 1e9
 # describe a built operator rather than one timed call.
 _OPERATOR = "operator"
 
+# ``opsize``/``memrest`` are also keyed by pytest node id (``::``, as report.py reads
+# them) for a private A/B harness; those are not operators, so they are skipped here.
+_NODE_ID_SEP = "::"
+
 Metric = dict[str, float]
 Bmf = dict[str, dict[str, Metric]]
 
@@ -64,7 +68,7 @@ Bmf = dict[str, dict[str, Metric]]
 def _read_json(path: Path) -> Any:
     """Return the parsed JSON at ``path``.
 
-    Unlike ``report.py``, a missing or malformed artifact is fatal: a partial
+    Unlike :mod:`monoprop_bench_tools.report`, a missing or malformed artifact is fatal: a partial
     upload would silently seed Bencher's history with the wrong baseline.
     """
     if not path.is_file():
@@ -118,25 +122,26 @@ def build_bmf(results_dir: Path, label: str) -> Bmf:
     for benchmark, latency in _timings(results_dir, label):
         bmf.setdefault(benchmark, {})["latency"] = latency
 
-    # ``memhwm`` is the kernel's exact peak RSS per operation (summed over ranks
-    # under MPI), which is what REPORT.md shows; ``mem`` is the peak-of-sum PSS
-    # lower bound for the same window and would only duplicate the signal.
+    # ``memhwm`` is the kernel's exact peak RSS per operation, summed over ranks under MPI.
     for benchmark, peak in results.get("memhwm", {}).items():
         measure(benchmark, "peak-memory", peak)
 
     for key, size in results.get("opsize", {}).items():
-        measure(f"{_OPERATOR}[{key}]", "terms", size["terms"])
+        if _NODE_ID_SEP not in key:
+            measure(f"{_OPERATOR}[{key}]", "terms", size["terms"])
 
     for key, resting in results.get("memrest", {}).items():
-        measure(f"{_OPERATOR}[{key}]", "resting-memory", resting)
+        if _NODE_ID_SEP not in key:
+            measure(f"{_OPERATOR}[{key}]", "resting-memory", resting)
 
     return bmf
 
 
-def main(argv: list[str]) -> None:
+def main(argv: list[str] | None = None) -> None:
     """Write ``label``'s BMF JSON to stdout."""
+    argv = sys.argv[1:] if argv is None else argv
     if len(argv) != 2:
-        msg = "usage: bmf.py <results_dir> <label>"
+        msg = "usage: monoprop-bench-bmf <results_dir> <label>"
         raise SystemExit(msg)
     results_dir, label = Path(argv[0]), argv[1]
     json.dump(build_bmf(results_dir, label), sys.stdout, indent=2)
@@ -144,4 +149,4 @@ def main(argv: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main()

@@ -79,13 +79,13 @@ Two things to know when reading the output:
   `OPERATOR_MEMORY_METRICS` in `backends.py` record which is which, and every record also
   carries `peak_rss_MB` for the process lifetime.
 - **The GPU backend's own figure is a device high-water mark, not an end-of-step reading**,
-  so a transient freed inside a step still counts. `benches/_memory_gpu.py` picks the strongest
+  so a transient freed inside a step still counts. `monoprop_bench_tools.memory.gpu` picks the strongest
   counter the allocator allows and names it in `operator_memory_metric`: CUDA's resettable
   `cudaMemPoolAttrUsedMemHigh` when CuPy runs on `malloc_async`, otherwise a `MemoryHook`
   that tracks the default pool's `used_bytes()` synchronously on every allocation event —
   both are exact. (An earlier version read `total_bytes()` once at the end of the block;
   that missed transients because CuPy can return freed blocks to the driver before the
-  block closes, so it was replaced.) Run `python ../_memory_gpu.py` on the GPU host to see
+  block closes, so it was replaced.) Run `python -m monoprop_bench_tools.memory.gpu` on the GPU host to see
   which strategy is active and confirm it catches a freed transient.
 - **`PauliPropagation.jl` runs in its fastest documented configuration**, which is not its
   default: the `VectorPauliSum` container driven by `Performance.propagate!`, with

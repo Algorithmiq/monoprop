@@ -304,7 +304,7 @@ struct ContractSink {
 // Owns build_layer's machinery over a compile-time Sink policy and a concrete row backend.
 // combined_size = the pre-layer operator size. Store is a template parameter, not reached through
 // local_op, because it fixes the key batch type and the row writes: build_layer binds it once.
-template <class Sink, class Store>
+template <typename Sink, typename Store>
 struct LayerBuildEngine {
     struct DeferredSelfMiss {
         // A handle into the key batch's retained storage, not a copy: the key is in whatever form the store
@@ -544,7 +544,8 @@ private:
                 }
                 // kNotFound == kMissingIndex == size_t max, so one bound check covers both.
                 if (found[j] < op_size) {
-                    if (is_leader_pass) {
+                    // Freshly inserted partners (found >= combined_size) skip the mark: combined_size bounds it.
+                    if (is_leader_pass && found[j] < combined_size) {
                         matched.mark(found[j]);
                     }
                     sink.self_hit(srcs[j], found[j], phases[j], v_src);
@@ -609,7 +610,7 @@ auto build_layer(auto &local_op,
     // it (the per-term kernel, the key batch, the row writes), and binding it here means the choice costs
     // one branch per layer instead of one per term. Both arms are instantiated, so this doubles the
     // scan/engine template instantiations -- the same trade with_algebra already makes for Basis.
-    std::shared_ptr<LayerCore> storage = local_op.with_store([&]<class S>(S &store) -> std::shared_ptr<LayerCore> {
+    std::shared_ptr<LayerCore> storage = local_op.with_store([&]<typename S>(S &store) -> std::shared_ptr<LayerCore> {
         // The record shape, derived once per layer and passed to everything that reads a record: the scan's
         // kernel, the engine's key batch and the sink's strides. Both numbers are functions of the store, the
         // generator and the cutoff, so every rank computes the same pair without communication.
@@ -618,7 +619,7 @@ auto build_layer(auto &local_op,
 
         FusedScanResult fused = [&] {
             double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
-            return with_algebra(basis, [&]<class A>() {
+            return with_algebra(basis, [&]<typename A>() {
                 // Third and last thing bound once per layer, beside the algebra and the backend: the
                 // storage word count, so the scan's per-term word loops have a compile-time trip count.
                 return with_kernel_width<S>(gen.num_words(), [&]<size_t W>(std::integral_constant<size_t, W>) {
@@ -653,7 +654,7 @@ auto build_layer(auto &local_op,
         }
         fused.cos_blocks = std::vector<CosMask>{};
 
-        auto run = [&]<class Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
+        auto run = [&]<typename Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
             LayerBuildEngine<Sink, S> eng(local_op,
                                           store,
                                           comm,

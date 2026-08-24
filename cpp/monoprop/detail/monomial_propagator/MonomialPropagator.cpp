@@ -459,7 +459,7 @@ auto MonomialPropagator::cos_index_count_() const -> size_t {
 
 auto MonomialPropagator::validate_cutoff_config_(CutoffType cutoff_type,
                                                  const std::optional<std::vector<VecZ>> &basis_change) const -> void {
-    with_algebra(basis_, [&]<class A>() {
+    with_algebra(basis_, [&]<typename A>() {
         if (A::requires_support_cutoff && cutoff_type != CutoffType::Support) {
             throw CutoffConfigError("Pauli basis requires cutoff_type == Support "
                                     "(Length has no Pauli-weight meaning under the Pauli encoding).");

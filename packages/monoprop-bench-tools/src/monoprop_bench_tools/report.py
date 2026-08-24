@@ -20,7 +20,7 @@ serial / MPI / thread variants sit side by side.
 
 Usage::
 
-    uv run --group bench python benches/report.py [results_dir]
+    monoprop-bench-report <results_dir>
 """
 
 from __future__ import annotations
@@ -35,8 +35,6 @@ from tabulate import tabulate
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-RESULTS_DIR = Path(__file__).parent / "results"
 
 _PICTURES = ("heisenberg", "schrodinger")
 _PICTURE_NAMES = {"heisenberg": "Heisenberg", "schrodinger": "Schrödinger"}
@@ -211,6 +209,9 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
         return []
     headers = [
         "Label",
+        "Python",
+        "nanobind",
+        "Backend",
         "Ranks",
         "monoprop threads",
         "Row store",
@@ -220,6 +221,9 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
     rows = [
         [
             label,
+            str(metas[label].get("python_version", "—")),
+            str(metas[label].get("nanobind_version", "—")),
+            str(metas[label].get("nanobind_backend_version", "—")),
             str(metas[label].get("ranks", "—")),
             str(metas[label].get("monoprop_threads", "default")),
             _fmt_row_store(metas[label]),
@@ -479,7 +483,10 @@ def build_report(results_dir: Path) -> str:
 def main(argv: list[str] | None = None) -> int:
     """Write ``REPORT.md`` into the results directory."""
     argv = sys.argv[1:] if argv is None else argv
-    results_dir = Path(argv[0]) if argv else RESULTS_DIR
+    if len(argv) != 1:
+        msg = "usage: monoprop-bench-report <results_dir>"
+        raise SystemExit(msg)
+    results_dir = Path(argv[0])
     report = build_report(results_dir)
     out_path = results_dir / "REPORT.md"
     out_path.write_text(report)

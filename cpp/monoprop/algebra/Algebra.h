@@ -150,7 +150,7 @@ static_assert(Algebra<PauliAlgebra>);
 
 // The single runtime->policy branch: the hot backbone passes a generic lambda and is then fully
 // specialized on the chosen algebra. Both arms must return the same type.
-template <class F>
+template <typename F>
 auto with_algebra(Basis basis, F &&f) {
     if (basis == Basis::Pauli) {
         return std::forward<F>(f).template operator()<PauliAlgebra>();
@@ -161,10 +161,10 @@ auto with_algebra(Basis basis, F &&f) {
 // Point-dispatch helpers for cold sites (per-layer / per-materialization) that carry a runtime Basis.
 
 auto algebra_fold_generator(Basis basis, const MonomialLike auto &gen) -> std::remove_cvref_t<decltype(gen)> {
-    return with_algebra(basis, [&]<class A>() { return A::fold_generator(gen); });
+    return with_algebra(basis, [&]<typename A>() { return A::fold_generator(gen); });
 }
 auto algebra_fold_needs_odd_correction(Basis basis, const MonomialLike auto &gen) -> bool {
-    return with_algebra(basis, [&]<class A>() { return A::fold_needs_odd_correction(gen); });
+    return with_algebra(basis, [&]<typename A>() { return A::fold_needs_odd_correction(gen); });
 }
 // These three branch on Basis directly instead of going through with_algebra. Both algebras'
 // encode_coeff/decode_coeff/state_phase are width-agnostic passthroughs to the free functions called

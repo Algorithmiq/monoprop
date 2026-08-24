@@ -50,10 +50,9 @@ Built = tuple[MajoranaPropagator, Circuit]
 
 
 def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
-    """Wrap ``fn`` so all MPI ranks enter and leave the call together.
+    """Wrap ``fn`` in the timed *exit* barrier, making each measurement the makespan.
 
-    The barriers make each rank's measured time reflect the makespan (the slowest
-    rank). A serial run returns ``fn`` unchanged, so there is no overhead.
+    The entry barrier lives untimed in :func:`barrier_setup`. Serial runs return ``fn``.
 
     Args:
         fn: The callable to wrap.
@@ -63,12 +62,26 @@ def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
         return fn
 
     def wrapped(*args: object, **kwargs: object) -> _T:
-        comm.Barrier()
         result = fn(*args, **kwargs)
         comm.Barrier()
         return result
 
     return wrapped
+
+
+def barrier_setup(
+    comm: Any | None, setup: Callable[[], _T] | None = None
+) -> Callable[[], _T] | None:
+    """Untimed *entry* barrier for ``pedantic(setup=...)``; serial runs return ``setup``, ``None`` included."""
+    if comm is None or comm.Get_size() == 1:
+        return setup
+
+    def wrapped_setup() -> _T:
+        result = setup() if setup is not None else None
+        comm.Barrier()
+        return result  # type: ignore[return-value]
+
+    return wrapped_setup
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +139,21 @@ def _random_terms(
     ]
 
 
+def _random_majorana_operator(
+    terms: list[tuple[int, ...]],
+    coefficients: list[float],
+    num_modes: int,
+) -> MajoranaOperator:
+    """Build a :class:`MajoranaOperator` from already-canonical :func:`_random_terms` output.
+
+    Bypasses ``__init__``, whose sign re-derivation duplicates the whole term mapping.
+    """
+    operator = MajoranaOperator.__new__(MajoranaOperator)
+    operator.num_modes = num_modes
+    operator.terms = dict(zip(terms, coefficients, strict=True))
+    return operator
+
+
 def make_random_problem(
     *,
     gen_length: int = 4,
@@ -154,7 +182,7 @@ def make_random_problem(
 
     obs_majoranas = _random_terms(rng, obs_terms, gen_length, num_majorana_indices)
     obs_coeffs = rng.standard_normal(obs_terms).tolist()  # Hermitian -> real
-    observable = MajoranaOperator(dict(zip(obs_majoranas, obs_coeffs)), num_modes)
+    observable = _random_majorana_operator(obs_majoranas, obs_coeffs, num_modes)
 
     gen_majoranas = _random_terms(rng, num_generators, gen_length, num_majorana_indices)
     gen_coeffs = rng.standard_normal(num_generators).tolist()

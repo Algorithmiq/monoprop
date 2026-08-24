@@ -138,8 +138,9 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# setuptools_scm
+# setuptools_scm / hatch-vcs
 src/*/_version.py
+packages/*/src/*/_version.py
 
 
 # ruff
@@ -180,3 +181,6 @@ notes/**
 
 # `just capture-baseline` / `just diff-baseline` output (tools/capture-baseline.py)
 .baseline-capture/**
+
+# Useful when running in clusters
+logs/

@@ -39,6 +39,7 @@ endif()
 
 set(extra_args ${TEST_EXTRA_ARGS})
 set(properties ${TEST_PROPERTIES})
+set(serial_env ${TEST_SERIAL_ENVIRONMENT})
 set(script)
 set(tests)
 
@@ -205,6 +206,8 @@ foreach(LINE ${LINES})
         ${extra_args}
       LABELS
         serial
+      ENVIRONMENT
+        ${serial_env}
     )
     # The same case again with the support-form row backend forced. Every fixture and oracle in the
     # suite is well below SparseRowStore::preferred_for_modes()'s crossover, so the automatic choice

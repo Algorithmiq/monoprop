@@ -75,6 +75,9 @@ NB_MODULE(_core, mod) {
 
     mod.attr("__build_type__") = std::string(build_type());
     mod.attr("__compiler_flags__") = compiler_flags();
+    // From the build system, since this TU is a real source and not a configured template: the version
+    // has to be the one _core was compiled against, which the installed nanobind package need not be.
+    mod.attr("__nanobind_version__") = std::string(monoprop_NANOBIND_VERSION);
     mod.attr("__variant__") = std::string(variant());
 
 #ifdef monoprop_ENABLE_MPI
@@ -240,11 +243,11 @@ NB_MODULE(_core, mod) {
         [](MonomialPropagator &self, const VecD &parameters, double atol) -> nb::dict {
             nb::dict py_result;
             for (const auto &[indices, coeff] : self.evolved_operator_terms(parameters, atol)) {
-                nb::list key;
+                nb::tuple_builder key(indices.size());
                 for (const auto &i : indices) {
-                    key.append(i);
+                    key.put(i);
                 }
-                py_result[nb::tuple(key)] = coeff;
+                py_result[key.commit()] = coeff;
             }
 
             if (!self.schrodinger() && std::abs(self.core_term()) >= atol) {
@@ -302,6 +305,7 @@ NB_MODULE(_core, mod) {
                                              {"init_operator_bytes", b.init_operator_bytes},
                                              {"initial_state_bytes", b.initial_state_bytes},
                                              {"inverted_index_bytes", b.inverted_index_bytes},
+                                             {"matched_scratch_bytes", b.matched_scratch_bytes},
                                              {"total_bytes", b.total_bytes()},
                                              // Diagnostics (not part of total_bytes; see the struct).
                                              {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},

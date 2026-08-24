@@ -15,7 +15,10 @@
 #include "monoprop/detail/partition/CpuTopology.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <map>
+#include <mutex>
+#include <print>
 #include <vector>
 
 #include <hwloc.h>
@@ -88,7 +91,7 @@ namespace topo_detail {
 
 auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t group_index, size_t group_count)
     -> std::vector<int> {
-    if (cores.empty() || group_count * n > cores.size()) {
+    if (cores.empty() || group_count == 0 || group_count * n > cores.size()) {
         return {};
     }
 
@@ -218,14 +221,88 @@ auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
     return cores;
 }
 
+/* ── affinity_mask_words ───────────────────────────────────────────────────── */
+
+auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool {
+    if (out == nullptr || nwords == 0) {
+        return false;
+    }
+    std::fill_n(out, nwords, uint64_t{0});
+    const auto topo = get_topology();
+    if (!topo) {
+        return false;
+    }
+    const hwloc_cpuset_t allowed = effective_allowed_cpuset(topo);
+    if (!allowed) {
+        return false;
+    }
+    // Refused rather than truncated: a truncated mask could compare disjoint against a peer it overlaps.
+    const int last = hwloc_bitmap_last(allowed);
+    const bool representable = last >= 0 && static_cast<size_t>(last) < nwords * 64;
+    if (representable) {
+        for (int pu = hwloc_bitmap_first(allowed); pu >= 0; pu = hwloc_bitmap_next(allowed, pu)) {
+            out[static_cast<size_t>(pu) / 64] |= uint64_t{1} << (static_cast<size_t>(pu) % 64);
+        }
+    }
+    hwloc_bitmap_free(allowed);
+    return representable;
+}
+
+/* ── masks_are_pairwise_disjoint ───────────────────────────────────────────── */
+
+auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool {
+    if (masks == nullptr || words == 0 || n < 2) {
+        return false;
+    }
+    // An all-zero mask is disjoint from everything, so empty is rejected before the pairwise test.
+    for (size_t r = 0; r < n; ++r) {
+        bool any = false;
+        for (size_t w = 0; w < words && !any; ++w) {
+            any = masks[(r * words) + w] != 0;
+        }
+        if (!any) {
+            return false;
+        }
+    }
+    for (size_t a = 0; a < n; ++a) {
+        for (size_t b = a + 1; b < n; ++b) {
+            for (size_t w = 0; w < words; ++w) {
+                if ((masks[(a * words) + w] & masks[(b * words) + w]) != 0) {
+                    return false; // two peers share a CPU: not private
+                }
+            }
+        }
+    }
+    return true;
+}
+
 /* ── partition_cpusets ─────────────────────────────────────────────────────── */
 
-auto partition_cpusets(size_t n, size_t group_index, size_t group_count) -> std::vector<CpuSet> {
+auto partition_cpusets(size_t n, size_t group_index, size_t group_count, NodeMask mask) -> std::vector<CpuSet> {
     if (!config::get().partition_pinning) {
         return {};
     }
     const auto cores = enumerate_physical_cores();
+
+    // A private mask IS this rank's share: the launcher already separated co-located ranks.
+    if (mask == NodeMask::PerRank) {
+        group_index = 0;
+        group_count = 1;
+    }
     const auto order = topo_detail::placement_order(cores, n, group_index, group_count);
+
+    if (order.empty()) {
+        static std::once_flag warned;
+        std::call_once(warned, [&] {
+            std::print(stderr,
+                       "monoprop: partition pinning requested but not possible "
+                       "({} cores visible, {} groups x {} partitions); threads run unpinned.\n",
+                       cores.size(),
+                       group_count,
+                       n);
+            std::fflush(stderr);
+        });
+    }
 
     std::vector<CpuSet> sets(order.size());
     for (size_t i = 0; i < order.size(); ++i) {

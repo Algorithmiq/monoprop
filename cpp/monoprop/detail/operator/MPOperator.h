@@ -67,21 +67,21 @@ struct MPOperator {
     // their arrays), which keeps MPOperator itself cheaply movable.
     std::unique_ptr<OperatorIndex> dense_rows = nullptr;
     std::unique_ptr<SparseRowStore> sparse_rows = nullptr;
-    VecD op_coeffs = {};
+    VecD op_coeffs;
     // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
     // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are
     // scored in ascending order and the set is only ever appended to.
-    std::vector<TermIndex> state_rows_ = {};
-    VecD state_vals_ = {};         // parallel to state_rows_; every entry is a unit phase (+-1), never 0
-    size_t state_scored_rows_ = 0; // rows [0, state_scored_rows_) have been scored into state_rows_/state_vals_
+    std::vector<TermIndex> state_rows_;
+    VecD state_vals_;               // parallel to state_rows_; every entry is a unit phase (+-1), never 0
+    size_t state_scored_rows_{0uz}; // rows [0, state_scored_rows_) have been scored into state_rows_/state_vals_
     // The dense state: empty in Heisenberg unless a caller asks dense_state() to cache one; in Schrödinger
     // it is the live coefficient vector evolution mutates in place.
-    VecD state_coeffs = {};
-    MonomialMap init_op_map = {};
-    VecZ initial_state = {};
+    VecD state_coeffs;
+    MonomialMap init_op_map{};
+    VecZ initial_state;
     // Set once at propagator construction.
-    Basis basis = Basis::Majorana;
-    mutable std::optional<InvertedIndex> inverted_index_ = std::nullopt;
+    Basis basis{Basis::Majorana};
+    mutable std::optional<InvertedIndex> inverted_index_{std::nullopt};
 
     // num_bits is the storage bit width of every monomial this operator holds. No default constructor:
     // the width used to come free from NumModes, and a default-constructed store would be a width-0
@@ -107,14 +107,14 @@ struct MPOperator {
 
     // Binds the live store to a concrete type for the duration of the call. Both arms are instantiated,
     // so `f` must be a generic lambda and must return the same type from each.
-    template <class F>
+    template <typename F>
     [[gnu::always_inline]] auto with_store(F &&f) -> decltype(auto) {
         if (sparse_rows) {
             return f(*sparse_rows);
         }
         return f(*dense_rows);
     }
-    template <class F>
+    template <typename F>
     [[gnu::always_inline]] auto with_store(F &&f) const -> decltype(auto) {
         if (sparse_rows) {
             return f(*sparse_rows);
@@ -190,8 +190,7 @@ struct MPOperator {
         return *inverted_index_;
     }
 
-    // Pending init_op_map terms are erased after the lookup loop: the flat_map is not iterable while
-    // mutating.
+    // erase/clear keep bucket_count(), which init_operator_bytes reports, so drained buckets must be released.
     auto get_operator() -> const VecD & {
         if (size() == op_coeffs.size()) {
             return op_coeffs;
@@ -203,26 +202,23 @@ struct MPOperator {
             return op_coeffs;
         }
 
-        MonomialList del;
-        for (const auto &kv : init_op_map) {
-            const auto &mono = kv.first;
-            const auto coeff = kv.second;
-            if (const auto found = find(mono)) {
-                op_coeffs[*found] = coeff;
-                del.push_back(mono);
+        const auto before = init_op_map.size();
+        erase_if(init_op_map, [this](const auto &kv) {
+            const auto found = find(kv.first);
+            if (found) {
+                op_coeffs[*found] = kv.second;
             }
-        }
-
-        for (const auto &mono : del) {
-            init_op_map.erase(mono);
-        }
+            return found.has_value();
+        });
         // Erasing does not give the slot array back, and a drained map is the normal end state: every
         // initial-operator term is materialized as a row by the time the caches are warmed, so without
         // this the propagator carries an empty map sized for the whole initial operator for its whole
-        // life -- 2.5 MB behind zero entries for a 20k-term observable. Assignment, not clear(), because
-        // clear() is what keeps the capacity.
-        if (init_op_map.empty()) {
-            init_op_map = MonomialMap{};
+        // life -- 2.5 MB behind zero entries for a 20k-term observable.
+        //
+        // rehash(0) rather than clear(): it shrinks to what the entries left behind need, which is the
+        // whole array once the map has drained and a smaller one while terms are still pending.
+        if (init_op_map.size() != before) {
+            init_op_map.rehash(0);
         }
 
         return op_coeffs;
@@ -319,8 +315,7 @@ struct MPOperator {
         }
 
         VecZ new_inds(size() - state_scored_rows_);
-        std::iota(new_inds.begin(), new_inds.end(), state_scored_rows_);
-
+        std::iota(new_inds.begin(), new_inds.end(), state_scored_rows_); // NOLINT(modernize-use-ranges)
         with_store([&](const auto &rows) {
             const auto paired_inds = is_fully_paired(new_inds, rows, num_bits());
             state_rows_.reserve(state_rows_.size() + paired_inds.size());
@@ -382,32 +377,33 @@ inline auto monomial_map_bytes(const MonomialMap &map) -> size_t {
 // No width parameter: nothing in here is width-dependent, and it never was -- every field is a byte
 // count.
 struct MPOperatorMemoryBreakdown final {
-    size_t operator_terms_bytes = 0;
-    size_t op_coeffs_bytes = 0;
-    size_t state_coeffs_bytes = 0;
-    size_t indexing_bytes = 0;
-    size_t init_operator_bytes = 0;
-    size_t initial_state_bytes = 0;
-    size_t inverted_index_bytes = 0;
+    size_t operator_terms_bytes{0uz};
+    size_t op_coeffs_bytes{0uz};
+    size_t state_coeffs_bytes{0uz};
+    size_t indexing_bytes{0uz};
+    size_t init_operator_bytes{0uz};
+    size_t initial_state_bytes{0uz};
+    size_t inverted_index_bytes{0uz};
+    // The MatchedEpochSet stamp array. Propagator-owned, so 0 unless MonomialPropagator fills it in.
+    size_t matched_scratch_bytes{0uz};
 
     // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
     // never double-count.
-    size_t inverted_index_dense_bytes = 0;  // of inverted_index_bytes: full-height bitmap columns
-    size_t inverted_index_sparse_bytes = 0; // of inverted_index_bytes: ascending set-row lists
+    size_t inverted_index_dense_bytes{0uz};  // of inverted_index_bytes: full-height bitmap columns
+    size_t inverted_index_sparse_bytes{0uz}; // of inverted_index_bytes: ascending set-row lists
     // of inverted_index_bytes: the Column vector itself, one entry per bit position. The only term that
     // scales with the mode count instead of the operator, so it is what a width sweep has to watch.
-    size_t inverted_index_columns_bytes = 0;
-    size_t inverted_index_dense_columns = 0;
-    size_t operator_terms_slack_bytes = 0; // of operator_terms_bytes: unused geometric-growth capacity
+    size_t inverted_index_columns_bytes{0uz};
+    size_t inverted_index_dense_columns{0uz};
+    size_t operator_terms_slack_bytes{0uz}; // of operator_terms_bytes: unused geometric-growth capacity
     // of state_coeffs_bytes: entries of the state that are not exactly 0.0
-    size_t state_coeffs_nonzero = 0;
-    // Live entries of init_op_map. Not derivable from init_operator_bytes: a flat map keeps its bucket
-    // count across erases, so the byte figure cannot tell a full map from a drained one.
-    size_t init_operator_entries = 0;
+    size_t state_coeffs_nonzero{0uz};
+    // Live entries behind init_operator_bytes, which is bucket_count(): bytes with no entries are dead buckets.
+    size_t init_operator_entries{0uz};
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
-               + initial_state_bytes + inverted_index_bytes;
+               + initial_state_bytes + inverted_index_bytes + matched_scratch_bytes;
     }
 
     auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
@@ -418,6 +414,7 @@ struct MPOperatorMemoryBreakdown final {
         init_operator_bytes += o.init_operator_bytes;
         initial_state_bytes += o.initial_state_bytes;
         inverted_index_bytes += o.inverted_index_bytes;
+        matched_scratch_bytes += o.matched_scratch_bytes;
         inverted_index_dense_bytes += o.inverted_index_dense_bytes;
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_columns_bytes += o.inverted_index_columns_bytes;

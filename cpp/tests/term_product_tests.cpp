@@ -94,7 +94,7 @@ auto paired_term(size_t num_modes, size_t modes) -> Bitset {
 
 // One term against one generator through both kernels, comparing every answer the scan reads. The two
 // stores must hold the same monomial at index i, which the caller guarantees by inserting in lockstep.
-template <class A>
+template <typename A>
 auto check_term(DenseTermProducts<A> &dense,
                 SparseTermProducts<A> &sparse_kernel,
                 const OperatorIndex &packed,
@@ -171,7 +171,7 @@ auto check_term(DenseTermProducts<A> &dense,
 }
 
 // Every term of `terms` against every generator of `gens`, over one algebra and one cutoff.
-template <class A>
+template <typename A>
 auto sweep(const std::vector<Bitset> &terms,
            const std::vector<Bitset> &gens,
            const CutoffFn &cutoff_fn,
@@ -446,7 +446,7 @@ struct NarrowSeen {
 // One term through both dense kernels, comparing every answer the scan reads plus the product itself.
 // Unlike the sparse comparison the records must agree *byte for byte*: both push a dense monomial, so
 // any difference here is a difference in the product.
-template <class A, size_t W>
+template <typename A, size_t W>
 auto check_narrow_term(DenseTermProducts<A> &reference_kernel,
                        DenseTermProductsW<A, W> &candidate_kernel,
                        const OperatorIndex &packed,
@@ -488,7 +488,7 @@ auto check_narrow_term(DenseTermProducts<A> &reference_kernel,
 }
 
 // Every term of `terms` against every generator of `gens`, at the one width W the terms are built for.
-template <class A, size_t W>
+template <typename A, size_t W>
 auto sweep_narrow(const std::vector<Bitset> &terms,
                   const std::vector<Bitset> &gens,
                   const CutoffFn &cutoff_fn,
