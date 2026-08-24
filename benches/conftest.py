@@ -223,7 +223,6 @@ def _meta() -> dict[str, Any]:
         "python_version": platform.python_version(),
         "nanobind_version": monoprop.__nanobind_version__,
         "nanobind_backend_version": nanobind_backend_version,
-        "monoprop_max_num_modes": monoprop.MAX_NUM_MODES,
         "malloc_arena_max": os.environ.get("MALLOC_ARENA_MAX", "default"),
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS", "default"),
         # Filled by _record_placement: the threads exist only once a propagator does.
